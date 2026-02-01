@@ -13,7 +13,7 @@ const fundingOptions = [
     bestFor: 'When you need cash now—not next month.',
     description:
       "Get a lump sum of cash today, pay it back as a percentage of future sales. When business is slow, payments adjust. When it's good, you're free faster.",
-    metric: '$25K - $500K',
+    metric: '$5K - $1M',
     metricLabel: 'Funding range',
     speed: '24-48 hours',
     color: '#00D49D',
@@ -26,7 +26,7 @@ const fundingOptions = [
     bestFor: "For the things you can't predict.",
     description:
       "Equipment breaks. Suppliers demand early payment. Opportunities appear. Draw what you need, when you need it. Only pay for what you use.",
-    metric: 'Up to $250K',
+    metric: 'Up to $1.25M',
     metricLabel: 'Credit available',
     speed: '1-3 days',
     color: '#007EA7',

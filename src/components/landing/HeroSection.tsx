@@ -353,24 +353,24 @@ export default function HeroSection() {
             transition={{ duration: 0.8, delay: 0.5 }}
             className="hidden lg:block relative"
           >
-            {/* Floating stat cards */}
+            {/* Floating stat cards - positioned outside the main card */}
             <FloatingStat
               value="48hrs"
               label="Average funding time"
               delay={0.8}
-              className="absolute -top-4 left-0 z-20"
+              className="absolute -top-12 -left-12 z-30"
             />
             <FloatingStat
               value="93%"
               label="Approval rate"
               delay={1}
-              className="absolute top-24 -right-4 z-20"
+              className="absolute top-16 -right-16 z-30"
             />
             <FloatingStat
               value="$3M"
               label="Max funding"
               delay={1.2}
-              className="absolute bottom-20 -left-8 z-20"
+              className="absolute bottom-8 -left-16 z-30"
             />
 
             {/* Main visual card */}

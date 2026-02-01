@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
   ArrowLeftIcon,
-  PencilIcon,
   GlobeAltIcon,
   PhoneIcon,
   EnvelopeIcon,
@@ -93,14 +92,60 @@ const STATUS_OPTIONS: { value: LenderStatus; label: string; color: string }[] = 
   { value: "inactive", label: "Inactive", color: "bg-gray-100 text-gray-500" },
 ];
 
+interface LenderFormData {
+  company_name: string;
+  website: string;
+  description: string;
+  status: LenderStatus;
+  lender_types: string[];
+  paper_types: PaperType[];
+  primary_contact_name: string;
+  primary_contact_email: string;
+  primary_contact_phone: string;
+  commission_type: string;
+  commission_rate: string;
+  commission_notes: string;
+  min_funding_amount: string;
+  max_funding_amount: string;
+  min_time_in_business: string;
+  min_monthly_revenue: string;
+  min_credit_score: string;
+  notes: string;
+}
+
+const initialFormData: LenderFormData = {
+  company_name: "",
+  website: "",
+  description: "",
+  status: "potential",
+  lender_types: [],
+  paper_types: [],
+  primary_contact_name: "",
+  primary_contact_email: "",
+  primary_contact_phone: "",
+  commission_type: "points",
+  commission_rate: "",
+  commission_notes: "",
+  min_funding_amount: "",
+  max_funding_amount: "",
+  min_time_in_business: "",
+  min_monthly_revenue: "",
+  min_credit_score: "",
+  notes: "",
+};
+
 export default function LenderDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [lender, setLender] = useState<Lender | null>(null);
   const [documents, setDocuments] = useState<LenderDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"overview" | "contacts" | "documents" | "notes" | "ai">("overview");
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [documentType, setDocumentType] = useState("agreement");
+
+  // Form state for inline editing
+  const [formData, setFormData] = useState<LenderFormData>(initialFormData);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   // AI Extraction state
   const [isExtracting, setIsExtracting] = useState(false);
@@ -112,12 +157,70 @@ export default function LenderDetailPage() {
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [isApplyingData, setIsApplyingData] = useState(false);
 
+  // Notes state
+  const [notes, setNotes] = useState("");
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [notesSaved, setNotesSaved] = useState(false);
+
+  // Edit modal state
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+
   useEffect(() => {
     if (id) {
       fetchLender();
       fetchDocuments();
     }
   }, [id]);
+
+  // Sync form data when lender data loads
+  useEffect(() => {
+    if (lender) {
+      setFormData({
+        company_name: lender.company_name || "",
+        website: lender.website || "",
+        description: lender.description || "",
+        status: (lender.status as LenderStatus) || "potential",
+        lender_types: lender.lender_types || [],
+        paper_types: lender.paper_types || [],
+        primary_contact_name: lender.primary_contact_name || "",
+        primary_contact_email: lender.primary_contact_email || "",
+        primary_contact_phone: lender.primary_contact_phone || "",
+        commission_type: lender.commission_type || "points",
+        commission_rate: lender.commission_rate?.toString() || "",
+        commission_notes: lender.commission_notes || "",
+        min_funding_amount: lender.min_funding_amount?.toString() || "",
+        max_funding_amount: lender.max_funding_amount?.toString() || "",
+        min_time_in_business: lender.min_time_in_business?.toString() || "",
+        min_monthly_revenue: lender.min_monthly_revenue?.toString() || "",
+        min_credit_score: lender.min_credit_score?.toString() || "",
+        notes: lender.notes || "",
+      });
+      setNotes(lender.notes || "");
+    }
+  }, [lender]);
+
+  const handleSaveNotes = async () => {
+    if (!lender) return;
+    setIsSavingNotes(true);
+    setNotesSaved(false);
+
+    try {
+      const { error } = await supabase
+        .from("lenders")
+        .update({ notes })
+        .eq("id", lender.id);
+
+      if (error) throw error;
+      setNotesSaved(true);
+      setTimeout(() => setNotesSaved(false), 2000);
+      fetchLender();
+    } catch (error) {
+      console.error("Error saving notes:", error);
+      alert("Failed to save notes");
+    } finally {
+      setIsSavingNotes(false);
+    }
+  };
 
   const fetchLender = async () => {
     setIsLoading(true);
@@ -263,12 +366,57 @@ export default function LenderDetailPage() {
         .eq("id", lender.id);
 
       if (error) throw error;
+      setFormData((prev) => ({ ...prev, status: newStatus }));
       fetchLender();
     } catch (error) {
       console.error("Error updating status:", error);
       alert("Failed to update status");
     } finally {
       setIsUpdatingStatus(false);
+    }
+  };
+
+  const handleSaveAll = async () => {
+    if (!lender) return;
+    setIsSaving(true);
+    setSaveSuccess(false);
+
+    try {
+      const payload = {
+        company_name: formData.company_name,
+        website: formData.website || null,
+        description: formData.description || null,
+        status: formData.status,
+        lender_types: formData.lender_types,
+        paper_types: formData.paper_types,
+        primary_contact_name: formData.primary_contact_name || null,
+        primary_contact_email: formData.primary_contact_email || null,
+        primary_contact_phone: formData.primary_contact_phone || null,
+        commission_type: formData.commission_type || null,
+        commission_rate: formData.commission_rate ? parseFloat(formData.commission_rate) : null,
+        commission_notes: formData.commission_notes || null,
+        min_funding_amount: formData.min_funding_amount ? parseFloat(formData.min_funding_amount) : null,
+        max_funding_amount: formData.max_funding_amount ? parseFloat(formData.max_funding_amount) : null,
+        min_time_in_business: formData.min_time_in_business ? parseInt(formData.min_time_in_business) : null,
+        min_monthly_revenue: formData.min_monthly_revenue ? parseFloat(formData.min_monthly_revenue) : null,
+        min_credit_score: formData.min_credit_score ? parseInt(formData.min_credit_score) : null,
+        notes: formData.notes || null,
+      };
+
+      const { error } = await supabase
+        .from("lenders")
+        .update(payload)
+        .eq("id", lender.id);
+
+      if (error) throw error;
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2000);
+      fetchLender();
+    } catch (error) {
+      console.error("Error saving lender:", error);
+      alert("Failed to save changes");
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -377,12 +525,23 @@ export default function LenderDetailPage() {
                 {isExtracting ? "Extracting..." : "AI Extract"}
               </button>
             )}
+            {saveSuccess && (
+              <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                <CheckIcon className="w-4 h-4" />
+                Saved
+              </span>
+            )}
             <button
-              onClick={() => setIsEditModalOpen(true)}
+              onClick={handleSaveAll}
+              disabled={isSaving}
               className="btn-primary flex items-center gap-2"
             >
-              <PencilIcon className="w-4 h-4" />
-              Edit
+              {isSaving ? (
+                <ArrowPathIcon className="w-4 h-4 animate-spin" />
+              ) : (
+                <CheckIcon className="w-4 h-4" />
+              )}
+              {isSaving ? "Saving..." : "Save Changes"}
             </button>
           </div>
         </div>
@@ -619,12 +778,39 @@ export default function LenderDetailPage() {
 
       {activeTab === "notes" && (
         <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-          <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Notes</h3>
-          {lender.notes ? (
-            <p className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{lender.notes}</p>
-          ) : (
-            <p className="text-gray-500">No notes yet. Click Edit to add notes.</p>
-          )}
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-gray-900 dark:text-white">Notes</h3>
+            <div className="flex items-center gap-2">
+              {notesSaved && (
+                <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                  <CheckIcon className="w-4 h-4" />
+                  Saved
+                </span>
+              )}
+              <button
+                onClick={handleSaveNotes}
+                disabled={isSavingNotes || notes === (lender.notes || "")}
+                className="btn-primary text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isSavingNotes ? (
+                  <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CheckIcon className="w-4 h-4" />
+                )}
+                {isSavingNotes ? "Saving..." : "Save Notes"}
+              </button>
+            </div>
+          </div>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Add notes about this lender..."
+            rows={12}
+            className="input-field w-full resize-y min-h-[200px] font-mono text-sm"
+          />
+          <p className="text-xs text-gray-500 mt-2">
+            Use this space to track important details, conversation history, or any other relevant information about this lender.
+          </p>
         </div>
       )}
 
