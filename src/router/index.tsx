@@ -18,10 +18,12 @@ import AdminDashboardPage from "../pages/admin/AdminDashboardPage.tsx";
 import KanbanBoardPage from "../pages/admin/KanbanBoardPage.tsx";
 import LendersListPage from "../pages/admin/lenders/LendersListPage.tsx";
 import LenderDetailPage from "../pages/admin/lenders/LenderDetailPage.tsx";
+import LenderResourcesPage from "../pages/admin/lenders/LenderResourcesPage.tsx";
 import CustomersListPage from "../pages/admin/customers/CustomersListPage.tsx";
 import CustomerDetailPage from "../pages/admin/customers/CustomerDetailPage.tsx";
 import MarketingPage from "../pages/admin/MarketingPage.tsx";
 import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
+import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
 
 // Portal pages
 import PortalLayout from "../pages/portal/PortalLayout.tsx";
@@ -120,6 +122,10 @@ const router = createBrowserRouter([
                     element: <LendersListPage />,
                   },
                   {
+                    path: "resources",
+                    element: <LenderResourcesPage />,
+                  },
+                  {
                     path: ":id",
                     element: <LenderDetailPage />,
                   },
@@ -153,6 +159,17 @@ const router = createBrowserRouter([
                   {
                     index: true,
                     element: <UnitEconomicsPage />,
+                  },
+                ],
+              },
+              // Business Model Canvas (super_admin only)
+              {
+                path: "bmc",
+                element: <SuperAdminProtectedRoute />,
+                children: [
+                  {
+                    index: true,
+                    element: <BusinessModelCanvasPage />,
                   },
                 ],
               },

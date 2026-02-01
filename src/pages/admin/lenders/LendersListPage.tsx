@@ -6,6 +6,7 @@ import {
   BuildingLibraryIcon,
   GlobeAltIcon,
   ArrowTopRightOnSquareIcon,
+  BookOpenIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import LenderEditModal from "../../../components/lenders/LenderEditModal";
@@ -116,13 +117,22 @@ export default function LendersListPage() {
             Manage your funding partners and lender relationships
           </p>
         </div>
-        <button
-          onClick={() => setIsAddModalOpen(true)}
-          className="btn-primary flex items-center gap-2"
-        >
-          <PlusIcon className="w-5 h-5" />
-          Add Lender
-        </button>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/admin/lenders/resources"
+            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+          >
+            <BookOpenIcon className="w-5 h-5" />
+            Lender Resources
+          </Link>
+          <button
+            onClick={() => setIsAddModalOpen(true)}
+            className="btn-primary flex items-center gap-2"
+          >
+            <PlusIcon className="w-5 h-5" />
+            Add Lender
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
