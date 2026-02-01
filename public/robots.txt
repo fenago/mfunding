@@ -1,0 +1,44 @@
+# Momentum Funding - robots.txt
+# https://momentumfunding.com/robots.txt
+
+User-agent: *
+Allow: /
+
+# Disallow admin and private areas
+Disallow: /admin/
+Disallow: /api/
+Disallow: /private/
+
+# Allow important resources
+Allow: /favicon.svg
+Allow: /og-image.jpg
+Allow: /twitter-image.jpg
+
+# Sitemap location
+Sitemap: https://momentumfunding.com/sitemap.xml
+
+# Crawl delay for polite bots
+Crawl-delay: 1
+
+# Google-specific
+User-agent: Googlebot
+Allow: /
+Disallow: /admin/
+
+# Bing-specific
+User-agent: Bingbot
+Allow: /
+Disallow: /admin/
+
+# Block AI training bots (optional - you can remove these if you want AI training)
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /

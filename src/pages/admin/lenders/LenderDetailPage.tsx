@@ -33,6 +33,8 @@ interface Contact {
   is_primary: boolean;
 }
 
+type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
+
 interface Lender {
   id: string;
   company_name: string;
@@ -40,6 +42,7 @@ interface Lender {
   description: string | null;
   status: string;
   lender_types: string[];
+  paper_types: PaperType[];
   primary_contact_name: string | null;
   primary_contact_email: string | null;
   primary_contact_phone: string | null;
@@ -72,6 +75,13 @@ const GEMINI_MODELS: { value: GeminiModel; label: string }[] = [
 ];
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
+
+const PAPER_TYPE_CONFIG: Record<PaperType, { label: string; description: string; color: string }> = {
+  a_paper: { label: "A Paper", description: "700+ credit, clean", color: "bg-green-100 text-green-800" },
+  b_paper: { label: "B Paper", description: "600-699 credit", color: "bg-blue-100 text-blue-800" },
+  c_paper: { label: "C Paper", description: "500-599 credit", color: "bg-yellow-100 text-yellow-800" },
+  d_paper: { label: "D Paper", description: "Below 500, stacked", color: "bg-red-100 text-red-800" },
+};
 
 const STATUS_OPTIONS: { value: LenderStatus; label: string; color: string }[] = [
   { value: "potential", label: "Potential", color: "bg-gray-100 text-gray-800" },
@@ -459,6 +469,22 @@ export default function LenderDetailPage() {
                         className="px-2 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded text-xs"
                       >
                         {type.replace(/_/g, " ")}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {lender.paper_types && lender.paper_types.length > 0 && (
+                <div>
+                  <span className="text-gray-500">Paper Types:</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {lender.paper_types.map((type) => (
+                      <span
+                        key={type}
+                        className={`px-2 py-0.5 rounded text-xs font-medium ${PAPER_TYPE_CONFIG[type]?.color || "bg-gray-100 text-gray-700"}`}
+                      >
+                        {PAPER_TYPE_CONFIG[type]?.label || type}
                       </span>
                     ))}
                   </div>

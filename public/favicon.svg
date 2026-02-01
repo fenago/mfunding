@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="momentum-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00D49D"/>
+      <stop offset="100%" style="stop-color:#007EA7"/>
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="30" fill="#0A2342"/>
+  <!-- Momentum arrow/M mark -->
+  <path d="M16 44 L16 24 L24 36 L32 20 L40 36 L48 24 L48 44"
+        fill="none"
+        stroke="url(#momentum-gradient)"
+        stroke-width="4"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <!-- Upward arrow accent -->
+  <path d="M32 12 L32 20 M28 16 L32 12 L36 16"
+        fill="none"
+        stroke="#00D49D"
+        stroke-width="3"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>

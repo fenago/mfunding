@@ -11,6 +11,7 @@ import {
   ChevronRightIcon,
   ArrowLeftOnRectangleIcon,
   CalculatorIcon,
+  RectangleGroupIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
@@ -30,6 +31,7 @@ const navItems: NavItem[] = [
   { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: ["admin", "super_admin"] },
   { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
   { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },
+  { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: ["super_admin"] },
   { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: ["super_admin"] },
 ];
 

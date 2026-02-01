@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
+import { SignInPageSEO } from "../../components/seo/SEO";
 
 const SignInPage = () => {
   // ==============================
@@ -36,6 +37,7 @@ const SignInPage = () => {
   };
   return (
     <main className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+      <SignInPageSEO />
       <Link className="absolute top-6 left-6 text-ocean-blue hover:text-deep-sea transition-colors" to="/">
         ◄ Home
       </Link>

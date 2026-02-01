@@ -12,6 +12,7 @@ import supabase from "../../../supabase";
 import LenderEditModal from "../../../components/lenders/LenderEditModal";
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
+type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
 
 interface Lender {
   id: string;
@@ -19,6 +20,8 @@ interface Lender {
   website: string | null;
   status: LenderStatus;
   lender_types: string[];
+  paper_types: PaperType[];
+  min_credit_score: number | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
   primary_contact_phone: string | null;
@@ -33,6 +36,13 @@ const STATUS_CONFIG: Record<LenderStatus, { label: string; color: string; priori
   potential: { label: "Potential", color: "bg-gray-100 text-gray-800", priority: 5 },
   rejected: { label: "Rejected", color: "bg-red-100 text-red-800", priority: 6 },
   inactive: { label: "Inactive", color: "bg-gray-100 text-gray-600", priority: 7 },
+};
+
+const PAPER_TYPE_CONFIG: Record<PaperType, { label: string; description: string; color: string; minScore: number; maxScore: number }> = {
+  a_paper: { label: "A Paper", description: "700+ credit, clean", color: "bg-green-100 text-green-800", minScore: 700, maxScore: 850 },
+  b_paper: { label: "B Paper", description: "600-699 credit", color: "bg-blue-100 text-blue-800", minScore: 600, maxScore: 699 },
+  c_paper: { label: "C Paper", description: "500-599 credit", color: "bg-yellow-100 text-yellow-800", minScore: 500, maxScore: 599 },
+  d_paper: { label: "D Paper", description: "Below 500, stacked", color: "bg-red-100 text-red-800", minScore: 0, maxScore: 499 },
 };
 
 // Status order for display (most relevant first)
@@ -51,6 +61,8 @@ export default function LendersListPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [paperTypeFilter, setPaperTypeFilter] = useState<string>("");
+  const [creditScoreFilter, setCreditScoreFilter] = useState<string>("");
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   useEffect(() => {
@@ -79,6 +91,24 @@ export default function LendersListPage() {
       }
       if (statusFilter && lender.status !== statusFilter) {
         return false;
+      }
+      if (paperTypeFilter && (!lender.paper_types || !lender.paper_types.includes(paperTypeFilter as PaperType))) {
+        return false;
+      }
+      if (creditScoreFilter) {
+        const score = parseInt(creditScoreFilter);
+        // Check if lender can handle this credit score based on their paper types or min_credit_score
+        if (lender.min_credit_score && score < lender.min_credit_score) {
+          return false;
+        }
+        // Also filter by paper type ranges if paper_types is set
+        if (lender.paper_types && lender.paper_types.length > 0) {
+          const canHandle = lender.paper_types.some((pt) => {
+            const config = PAPER_TYPE_CONFIG[pt];
+            return score >= config.minScore && score <= config.maxScore;
+          });
+          if (!canHandle) return false;
+        }
       }
       return true;
     })
@@ -159,6 +189,42 @@ export default function LendersListPage() {
             </option>
           ))}
         </select>
+        <select
+          value={paperTypeFilter}
+          onChange={(e) => setPaperTypeFilter(e.target.value)}
+          className="input-field w-36"
+        >
+          <option value="">All Paper</option>
+          {Object.entries(PAPER_TYPE_CONFIG).map(([value, config]) => (
+            <option key={value} value={value}>
+              {config.label}
+            </option>
+          ))}
+        </select>
+        <div className="relative">
+          <input
+            type="number"
+            placeholder="Credit Score"
+            value={creditScoreFilter}
+            onChange={(e) => setCreditScoreFilter(e.target.value)}
+            className="input-field w-32"
+            min="300"
+            max="850"
+          />
+        </div>
+        {(statusFilter || paperTypeFilter || creditScoreFilter || searchQuery) && (
+          <button
+            onClick={() => {
+              setStatusFilter("");
+              setPaperTypeFilter("");
+              setCreditScoreFilter("");
+              setSearchQuery("");
+            }}
+            className="px-3 py-2 text-sm text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       {/* Lenders Grid - Grouped by Status */}
@@ -230,8 +296,23 @@ export default function LendersListPage() {
                       </p>
                     )}
 
-                    {lender.lender_types && lender.lender_types.length > 0 && (
+                    {/* Paper Types */}
+                    {lender.paper_types && lender.paper_types.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-3">
+                        {lender.paper_types.map((type) => (
+                          <span
+                            key={type}
+                            className={`px-2 py-0.5 text-xs rounded font-medium ${PAPER_TYPE_CONFIG[type]?.color || "bg-gray-100 text-gray-600"}`}
+                          >
+                            {PAPER_TYPE_CONFIG[type]?.label || type}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Lender Types */}
+                    {lender.lender_types && lender.lender_types.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
                         {lender.lender_types.slice(0, 3).map((type) => (
                           <span
                             key={type}

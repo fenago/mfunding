@@ -13,7 +13,7 @@ const navLinks = [
   { name: 'Funding Options', href: '#features' },
   { name: 'How It Works', href: '#how-it-works' },
   { name: 'Success Stories', href: '#case-study' },
-  { name: 'Security', href: '#security' },
+  { name: 'FAQ', href: '#faq' },
 ];
 
 export default function Navbar() {
