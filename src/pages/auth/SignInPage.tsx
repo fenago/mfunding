@@ -35,29 +35,31 @@ const SignInPage = () => {
     setStatus("");
   };
   return (
-    <main>
-      <Link className="home-link" to="/">
+    <main className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+      <Link className="absolute top-6 left-6 text-ocean-blue hover:text-deep-sea transition-colors" to="/">
         ◄ Home
       </Link>
-      <form className="main-container" onSubmit={handleSubmit}>
-        <h1 className="header-text">Sign In</h1>
+      <form className="w-full max-w-md flex flex-col gap-4 card p-8" onSubmit={handleSubmit}>
+        <h1 className="heading-3 text-midnight-blue text-center mb-4">Sign In</h1>
         <input
+          className="input-field"
           name="email"
           onChange={handleInputChange}
           type="email"
           placeholder="Email"
         />
         <input
+          className="input-field"
           name="password"
           onChange={handleInputChange}
           type="password"
           placeholder="Password"
         />
-        <button type="submit">Login</button>
-        <Link className="auth-link" to="/auth/sign-up">
+        <button className="btn-primary w-full" type="submit">Login</button>
+        <Link className="text-center text-ocean-blue hover:text-deep-sea transition-colors text-sm" to="/auth/sign-up">
           Don't have an account? Sign Up
         </Link>
-        {status && <p>{status}</p>}
+        {status && <p className="text-center text-text-secondary">{status}</p>}
       </form>
     </main>
   );

@@ -1,10 +1,13 @@
 import { Outlet } from "react-router-dom";
 import { SessionProvider } from "./context/SessionContext";
+import { UserProfileProvider } from "./context/UserProfileContext";
 
 const Providers = () => {
   return (
     <SessionProvider>
-      <Outlet />
+      <UserProfileProvider>
+        <Outlet />
+      </UserProfileProvider>
     </SessionProvider>
   );
 };

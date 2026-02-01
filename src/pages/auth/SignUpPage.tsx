@@ -36,38 +36,34 @@ const SignUpPage = () => {
   };
 
   return (
-    <main>
-      <Link className="home-link" to="/">
+    <main className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+      <Link className="absolute top-6 left-6 text-ocean-blue hover:text-deep-sea transition-colors" to="/">
         ◄ Home
       </Link>
-      <form className="main-container" onSubmit={handleSubmit}>
-        <h1 className="header-text">Sign Up</h1>
-        <p
-          style={{
-            textAlign: "center",
-            fontSize: "0.8rem",
-            color: "#777",
-          }}
-        >
+      <form className="w-full max-w-md flex flex-col gap-4 card p-8" onSubmit={handleSubmit}>
+        <h1 className="heading-3 text-midnight-blue text-center mb-2">Sign Up</h1>
+        <p className="text-center text-body-sm text-text-secondary mb-2">
           Demo app, please don't use your real email or password
         </p>
         <input
+          className="input-field"
           name="email"
           onChange={handleInputChange}
           type="email"
           placeholder="Email"
         />
         <input
+          className="input-field"
           name="password"
           onChange={handleInputChange}
           type="password"
           placeholder="Password"
         />
-        <button type="submit">Create Account</button>
-        <Link className="auth-link" to="/auth/sign-in">
+        <button className="btn-primary w-full" type="submit">Create Account</button>
+        <Link className="text-center text-ocean-blue hover:text-deep-sea transition-colors text-sm" to="/auth/sign-in">
           Already have an account? Sign In
         </Link>
-        {status && <p>{status}</p>}
+        {status && <p className="text-center text-text-secondary">{status}</p>}
       </form>
     </main>
   );
