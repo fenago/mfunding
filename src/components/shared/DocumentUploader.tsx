@@ -1,10 +1,10 @@
 import { useState, useCallback } from "react";
-import { DocumentArrowUpIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { DocumentArrowUpIcon, XMarkIcon, CheckCircleIcon, ExclamationCircleIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { useSession } from "../../context/SessionContext";
 
 interface DocumentUploaderProps {
-  entityType: "lender" | "customer";
+  entityType: "lender" | "customer" | "company";
   entityId: string;
   bucket: string;
   onUploadComplete: (document: UploadedDocument) => void;
@@ -12,6 +12,7 @@ interface DocumentUploaderProps {
   acceptedTypes?: string[];
   maxSizeMB?: number;
   documentType?: string;
+  multiple?: boolean;
 }
 
 interface UploadedDocument {
@@ -20,6 +21,13 @@ interface UploadedDocument {
   storage_path: string;
   file_size: number;
   mime_type: string;
+}
+
+interface FileWithStatus {
+  id: string;
+  file: File;
+  status: "pending" | "uploading" | "success" | "error";
+  error?: string;
 }
 
 export default function DocumentUploader({
@@ -31,22 +39,20 @@ export default function DocumentUploader({
   acceptedTypes = [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png"],
   maxSizeMB = 10,
   documentType = "other",
+  multiple = true,
 }: DocumentUploaderProps) {
   const { session } = useSession();
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<FileWithStatus[]>([]);
 
   const maxSizeBytes = maxSizeMB * 1024 * 1024;
 
   const validateFile = (file: File): string | null => {
-    // Check file size
     if (file.size > maxSizeBytes) {
       return `File size exceeds ${maxSizeMB}MB limit`;
     }
 
-    // Check file type
     const extension = "." + file.name.split(".").pop()?.toLowerCase();
     const isValidType = acceptedTypes.some(
       (type) => type.toLowerCase() === extension || file.type.includes(type.replace(".", ""))
@@ -73,96 +79,153 @@ export default function DocumentUploader({
     e.preventDefault();
     setIsDragging(false);
 
-    const file = e.dataTransfer.files[0];
-    if (file) {
+    const files = Array.from(e.dataTransfer.files);
+    const filesToAdd = multiple ? files : files.slice(0, 1);
+
+    const validFiles: FileWithStatus[] = [];
+    filesToAdd.forEach((file) => {
       const error = validateFile(file);
       if (error) {
         onError?.(error);
-        return;
+      } else {
+        validFiles.push({ id: crypto.randomUUID(), file, status: "pending" });
       }
-      setSelectedFile(file);
+    });
+
+    if (validFiles.length > 0) {
+      setSelectedFiles((prev) => multiple ? [...prev, ...validFiles] : validFiles);
     }
-  }, []);
+  }, [multiple, onError, maxSizeBytes, acceptedTypes]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    const filesToAdd = multiple ? files : files.slice(0, 1);
+
+    const validFiles: FileWithStatus[] = [];
+    filesToAdd.forEach((file) => {
       const error = validateFile(file);
       if (error) {
         onError?.(error);
-        return;
+      } else {
+        validFiles.push({ id: crypto.randomUUID(), file, status: "pending" });
       }
-      setSelectedFile(file);
+    });
+
+    if (validFiles.length > 0) {
+      setSelectedFiles((prev) => multiple ? [...prev, ...validFiles] : validFiles);
     }
+
+    e.target.value = "";
   };
 
-  const handleUpload = async () => {
-    if (!selectedFile || !session?.user?.id) return;
+  const uploadSingleFile = async (fileWithStatus: FileWithStatus): Promise<boolean> => {
+    const { file, id } = fileWithStatus;
 
-    setIsUploading(true);
-    setUploadProgress(0);
+    // Update status to uploading
+    setSelectedFiles((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, status: "uploading" as const } : f))
+    );
 
     try {
-      // Generate unique file path
-      const fileExt = selectedFile.name.split(".").pop();
-      const fileName = `${entityType}/${entityId}/${Date.now()}.${fileExt}`;
+      const fileExt = file.name.split(".").pop();
+      const fileName = `${entityType}/${entityId}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
 
-      // Upload to Supabase Storage
       const { error: uploadError } = await supabase.storage
         .from(bucket)
-        .upload(fileName, selectedFile, {
+        .upload(fileName, file, {
           cacheControl: "3600",
           upsert: false,
         });
 
       if (uploadError) throw uploadError;
 
-      setUploadProgress(50);
+      const tableName = entityType === "lender"
+        ? "lender_documents"
+        : entityType === "customer"
+          ? "customer_documents"
+          : "company_documents";
 
-      // Determine the table based on entity type
-      const tableName = entityType === "lender" ? "lender_documents" : "customer_documents";
-      const foreignKey = entityType === "lender" ? "lender_id" : "customer_id";
+      // Build the insert payload based on entity type
+      const insertPayload: Record<string, unknown> = {
+        document_type: documentType,
+        filename: file.name,
+        storage_path: fileName,
+        file_size: file.size,
+        mime_type: file.type,
+        uploaded_by: session?.user?.id,
+      };
 
-      // Create document record in database
+      // Add foreign key only for lender/customer entities
+      if (entityType === "lender") {
+        insertPayload.lender_id = entityId;
+      } else if (entityType === "customer") {
+        insertPayload.customer_id = entityId;
+      }
+
       const { data, error: dbError } = await supabase
         .from(tableName)
-        .insert({
-          [foreignKey]: entityId,
-          document_type: documentType,
-          filename: selectedFile.name,
-          storage_path: fileName,
-          file_size: selectedFile.size,
-          mime_type: selectedFile.type,
-          uploaded_by: session.user.id,
-        })
+        .insert(insertPayload)
         .select()
         .single();
 
       if (dbError) throw dbError;
 
-      setUploadProgress(100);
+      // Update status to success
+      setSelectedFiles((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, status: "success" as const } : f))
+      );
 
       onUploadComplete({
         id: data.id,
-        filename: selectedFile.name,
+        filename: file.name,
         storage_path: fileName,
-        file_size: selectedFile.size,
-        mime_type: selectedFile.type,
+        file_size: file.size,
+        mime_type: file.type,
       });
 
-      setSelectedFile(null);
+      return true;
     } catch (error) {
       console.error("Upload error:", error);
-      onError?.("Failed to upload document. Please try again.");
-    } finally {
-      setIsUploading(false);
-      setUploadProgress(0);
+      setSelectedFiles((prev) =>
+        prev.map((f) =>
+          f.id === id ? { ...f, status: "error" as const, error: "Upload failed" } : f
+        )
+      );
+      return false;
     }
   };
 
-  const clearSelectedFile = () => {
-    setSelectedFile(null);
+  const handleUploadAll = async () => {
+    if (!session?.user?.id || selectedFiles.length === 0) return;
+
+    const pendingFiles = selectedFiles.filter((f) => f.status === "pending");
+    if (pendingFiles.length === 0) return;
+
+    setIsUploading(true);
+
+    // Upload files sequentially to avoid overwhelming the server
+    for (const fileWithStatus of pendingFiles) {
+      await uploadSingleFile(fileWithStatus);
+    }
+
+    setIsUploading(false);
+
+    // Clear successful uploads after a delay
+    setTimeout(() => {
+      setSelectedFiles((prev) => prev.filter((f) => f.status !== "success"));
+    }, 2000);
   };
+
+  const removeFile = (id: string) => {
+    setSelectedFiles((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  const clearAllFiles = () => {
+    setSelectedFiles([]);
+  };
+
+  const pendingCount = selectedFiles.filter((f) => f.status === "pending").length;
+  const successCount = selectedFiles.filter((f) => f.status === "success").length;
 
   return (
     <div className="space-y-4">
@@ -182,10 +245,10 @@ export default function DocumentUploader({
         >
           <DocumentArrowUpIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <p className="text-gray-600 dark:text-gray-400 mb-2">
-            {isDragging ? "Drop file here" : "Click or drag to upload"}
+            {isDragging ? "Drop files here" : `Click or drag to upload ${multiple ? "files" : "a file"}`}
           </p>
           <p className="text-sm text-gray-500">
-            {acceptedTypes.join(", ")} up to {maxSizeMB}MB
+            {acceptedTypes.join(", ")} up to {maxSizeMB}MB {multiple && "each"}
           </p>
         </div>
         <input
@@ -194,50 +257,88 @@ export default function DocumentUploader({
           accept={acceptedTypes.join(",")}
           onChange={handleFileSelect}
           disabled={isUploading}
+          multiple={multiple}
         />
       </label>
 
-      {/* Selected File Preview */}
-      {selectedFile && (
-        <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-          <div className="flex items-center gap-3 min-w-0">
-            <DocumentArrowUpIcon className="w-8 h-8 text-gray-400 flex-shrink-0" />
-            <div className="min-w-0">
-              <p className="font-medium text-gray-900 dark:text-white truncate">
-                {selectedFile.name}
-              </p>
-              <p className="text-sm text-gray-500">
-                {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {!isUploading && (
+      {/* Selected Files List */}
+      {selectedFiles.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              {selectedFiles.length} file{selectedFiles.length !== 1 ? "s" : ""} selected
+              {successCount > 0 && ` (${successCount} uploaded)`}
+            </span>
+            {!isUploading && pendingCount > 0 && (
               <button
-                onClick={clearSelectedFile}
-                className="p-1 text-gray-400 hover:text-gray-600 rounded"
+                onClick={clearAllFiles}
+                className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
               >
-                <XMarkIcon className="w-5 h-5" />
+                Clear all
               </button>
             )}
-            <button
-              onClick={handleUpload}
-              disabled={isUploading}
-              className="btn-primary text-sm px-4 py-2 disabled:opacity-50"
-            >
-              {isUploading ? `Uploading ${uploadProgress}%` : "Upload"}
-            </button>
           </div>
-        </div>
-      )}
 
-      {/* Upload Progress */}
-      {isUploading && (
-        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-          <div
-            className="bg-mint-green h-2 rounded-full transition-all duration-300"
-            style={{ width: `${uploadProgress}%` }}
-          />
+          <div className="max-h-60 overflow-y-auto space-y-2">
+            {selectedFiles.map((fileWithStatus) => (
+              <div
+                key={fileWithStatus.id}
+                className={`flex items-center justify-between p-3 rounded-lg border ${
+                  fileWithStatus.status === "success"
+                    ? "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800"
+                    : fileWithStatus.status === "error"
+                    ? "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800"
+                    : fileWithStatus.status === "uploading"
+                    ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800"
+                    : "bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700"
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  {fileWithStatus.status === "success" ? (
+                    <CheckCircleIcon className="w-5 h-5 text-green-500 flex-shrink-0" />
+                  ) : fileWithStatus.status === "error" ? (
+                    <ExclamationCircleIcon className="w-5 h-5 text-red-500 flex-shrink-0" />
+                  ) : fileWithStatus.status === "uploading" ? (
+                    <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                  ) : (
+                    <DocumentArrowUpIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                      {fileWithStatus.file.name}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {(fileWithStatus.file.size / 1024 / 1024).toFixed(2)} MB
+                      {fileWithStatus.error && (
+                        <span className="text-red-500 ml-2">{fileWithStatus.error}</span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+                {fileWithStatus.status === "pending" && !isUploading && (
+                  <button
+                    onClick={() => removeFile(fileWithStatus.id)}
+                    className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Upload Button */}
+          {pendingCount > 0 && (
+            <button
+              onClick={handleUploadAll}
+              disabled={isUploading}
+              className="w-full btn-primary py-2 disabled:opacity-50"
+            >
+              {isUploading
+                ? `Uploading...`
+                : `Upload ${pendingCount} file${pendingCount !== 1 ? "s" : ""}`}
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -12,7 +12,6 @@ import {
   CheckIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
-import LenderEditModal from "../../../components/lenders/LenderEditModal";
 import LenderContactList from "../../../components/lenders/LenderContactList";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
@@ -92,6 +91,23 @@ const STATUS_OPTIONS: { value: LenderStatus; label: string; color: string }[] = 
   { value: "inactive", label: "Inactive", color: "bg-gray-100 text-gray-500" },
 ];
 
+const LENDER_TYPES = [
+  { value: "mca", label: "MCA" },
+  { value: "term_loan", label: "Term Loan" },
+  { value: "line_of_credit", label: "Line of Credit" },
+  { value: "equipment_financing", label: "Equipment Financing" },
+  { value: "invoice_factoring", label: "Invoice Factoring" },
+  { value: "sba_loan", label: "SBA Loan" },
+  { value: "revenue_based", label: "Revenue Based" },
+  { value: "real_estate", label: "Real Estate" },
+];
+
+const COMMISSION_TYPES = [
+  { value: "points", label: "Points (% of funded)" },
+  { value: "split", label: "Split" },
+  { value: "flat", label: "Flat Fee" },
+];
+
 interface LenderFormData {
   company_name: string;
   website: string;
@@ -157,14 +173,6 @@ export default function LenderDetailPage() {
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [isApplyingData, setIsApplyingData] = useState(false);
 
-  // Notes state
-  const [notes, setNotes] = useState("");
-  const [isSavingNotes, setIsSavingNotes] = useState(false);
-  const [notesSaved, setNotesSaved] = useState(false);
-
-  // Edit modal state
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-
   useEffect(() => {
     if (id) {
       fetchLender();
@@ -195,32 +203,8 @@ export default function LenderDetailPage() {
         min_credit_score: lender.min_credit_score?.toString() || "",
         notes: lender.notes || "",
       });
-      setNotes(lender.notes || "");
     }
   }, [lender]);
-
-  const handleSaveNotes = async () => {
-    if (!lender) return;
-    setIsSavingNotes(true);
-    setNotesSaved(false);
-
-    try {
-      const { error } = await supabase
-        .from("lenders")
-        .update({ notes })
-        .eq("id", lender.id);
-
-      if (error) throw error;
-      setNotesSaved(true);
-      setTimeout(() => setNotesSaved(false), 2000);
-      fetchLender();
-    } catch (error) {
-      console.error("Error saving notes:", error);
-      alert("Failed to save notes");
-    } finally {
-      setIsSavingNotes(false);
-    }
-  };
 
   const fetchLender = async () => {
     setIsLoading(true);
@@ -374,6 +358,24 @@ export default function LenderDetailPage() {
     } finally {
       setIsUpdatingStatus(false);
     }
+  };
+
+  const handleLenderTypeToggle = (type: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      lender_types: prev.lender_types.includes(type)
+        ? prev.lender_types.filter((t) => t !== type)
+        : [...prev.lender_types, type],
+    }));
+  };
+
+  const handlePaperTypeToggle = (type: PaperType) => {
+    setFormData((prev) => ({
+      ...prev,
+      paper_types: prev.paper_types.includes(type)
+        ? prev.paper_types.filter((t) => t !== type)
+        : [...prev.paper_types, type],
+    }));
   };
 
   const handleSaveAll = async () => {
@@ -568,154 +570,314 @@ export default function LenderDetailPage() {
 
       {/* Tab Content */}
       {activeTab === "overview" && (
-        <div className="grid md:grid-cols-2 gap-6">
-          {/* Company Info */}
+        <div className="space-y-6">
+          {/* Company Info Section */}
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-            <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Company Info</h3>
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-ocean-blue rounded-full"></span>
+              Company Information
+            </h3>
 
-            {lender.description && (
-              <p className="text-gray-600 dark:text-gray-400 text-sm mb-4">
-                {lender.description}
-              </p>
-            )}
-
-            <div className="space-y-3">
-              {lender.primary_contact_name && (
-                <div className="flex items-center gap-3">
-                  <UserIcon className="w-5 h-5 text-gray-400" />
-                  <span className="text-sm text-gray-700 dark:text-gray-300">
-                    {lender.primary_contact_name}
-                  </span>
-                </div>
-              )}
-              {lender.primary_contact_email && (
-                <div className="flex items-center gap-3">
-                  <EnvelopeIcon className="w-5 h-5 text-gray-400" />
-                  <a
-                    href={`mailto:${lender.primary_contact_email}`}
-                    className="text-sm text-ocean-blue hover:underline"
-                  >
-                    {lender.primary_contact_email}
-                  </a>
-                </div>
-              )}
-              {lender.primary_contact_phone && (
-                <div className="flex items-center gap-3">
-                  <PhoneIcon className="w-5 h-5 text-gray-400" />
-                  <a
-                    href={`tel:${lender.primary_contact_phone}`}
-                    className="text-sm text-ocean-blue hover:underline"
-                  >
-                    {lender.primary_contact_phone}
-                  </a>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Funding Details */}
-          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-            <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Funding Details</h3>
-
-            <div className="space-y-3 text-sm">
-              {lender.lender_types && lender.lender_types.length > 0 && (
-                <div>
-                  <span className="text-gray-500">Products:</span>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {lender.lender_types.map((type) => (
-                      <span
-                        key={type}
-                        className="px-2 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded text-xs"
-                      >
-                        {type.replace(/_/g, " ")}
-                      </span>
-                    ))}
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Company Name *
+                </label>
+                <input
+                  type="text"
+                  value={formData.company_name}
+                  onChange={(e) => setFormData({ ...formData, company_name: e.target.value })}
+                  className="input-field"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Website URL
+                </label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <GlobeAltIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={formData.website}
+                      onChange={(e) => setFormData({ ...formData, website: e.target.value })}
+                      placeholder="https://lender-website.com"
+                      className="input-field pl-9"
+                    />
                   </div>
+                  {formData.website && (
+                    <a
+                      href={formData.website.startsWith("http") ? formData.website : `https://${formData.website}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center px-3 py-2 bg-ocean-blue text-white rounded-lg hover:bg-ocean-blue/90 transition-colors"
+                      title="Open website in new tab"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                      </svg>
+                    </a>
+                  )}
                 </div>
-              )}
-
-              {lender.paper_types && lender.paper_types.length > 0 && (
-                <div>
-                  <span className="text-gray-500">Paper Types:</span>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {lender.paper_types.map((type) => (
-                      <span
-                        key={type}
-                        className={`px-2 py-0.5 rounded text-xs font-medium ${PAPER_TYPE_CONFIG[type]?.color || "bg-gray-100 text-gray-700"}`}
-                      >
-                        {PAPER_TYPE_CONFIG[type]?.label || type}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {(lender.min_funding_amount || lender.max_funding_amount) && (
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Funding Range:</span>
-                  <span className="text-gray-900 dark:text-white">
-                    ${lender.min_funding_amount?.toLocaleString() || "0"} - $
-                    {lender.max_funding_amount?.toLocaleString() || "∞"}
-                  </span>
-                </div>
-              )}
-
-              {lender.commission_rate && (
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Commission:</span>
-                  <span className="text-gray-900 dark:text-white">
-                    {lender.commission_rate}% {lender.commission_type}
-                  </span>
-                </div>
-              )}
-
-              {lender.min_time_in_business && (
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Min Time in Business:</span>
-                  <span className="text-gray-900 dark:text-white">
-                    {lender.min_time_in_business} months
-                  </span>
-                </div>
-              )}
-
-              {lender.min_monthly_revenue && (
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Min Monthly Revenue:</span>
-                  <span className="text-gray-900 dark:text-white">
-                    ${lender.min_monthly_revenue.toLocaleString()}
-                  </span>
-                </div>
-              )}
-
-              {lender.min_credit_score && (
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Min Credit Score:</span>
-                  <span className="text-gray-900 dark:text-white">
-                    {lender.min_credit_score}
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Commission Details */}
-          {(lender.commission_rate || lender.commission_notes) && (
-            <div className="md:col-span-2 bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-              <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Commission Details</h3>
-              <div className="space-y-2">
-                {lender.commission_rate && (
-                  <p className="text-sm text-gray-700 dark:text-gray-300">
-                    <strong>Rate:</strong> {lender.commission_rate}% ({lender.commission_type || "points"})
-                  </p>
-                )}
-                {lender.commission_notes && (
-                  <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
-                    {lender.commission_notes}
-                  </p>
-                )}
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Description
+                </label>
+                <textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  className="input-field"
+                  rows={3}
+                  placeholder="What products do they offer? What makes them unique?"
+                />
               </div>
             </div>
-          )}
+
+            {/* Primary Contact */}
+            <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
+              <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                <UserIcon className="w-4 h-4 text-gray-400" />
+                Primary Contact
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Name</label>
+                  <input
+                    type="text"
+                    value={formData.primary_contact_name}
+                    onChange={(e) => setFormData({ ...formData, primary_contact_name: e.target.value })}
+                    className="input-field text-sm"
+                    placeholder="John Smith"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Email</label>
+                  <div className="relative">
+                    <EnvelopeIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="email"
+                      value={formData.primary_contact_email}
+                      onChange={(e) => setFormData({ ...formData, primary_contact_email: e.target.value })}
+                      className="input-field text-sm pl-9"
+                      placeholder="john@lender.com"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Phone</label>
+                  <div className="relative">
+                    <PhoneIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      type="tel"
+                      value={formData.primary_contact_phone}
+                      onChange={(e) => setFormData({ ...formData, primary_contact_phone: e.target.value })}
+                      className="input-field text-sm pl-9"
+                      placeholder="(555) 123-4567"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Products & Paper Types */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-mint-green rounded-full"></span>
+              Products & Credit Quality
+            </h3>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Lender Types (Products Offered)
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {LENDER_TYPES.map((type) => (
+                    <button
+                      key={type.value}
+                      type="button"
+                      onClick={() => handleLenderTypeToggle(type.value)}
+                      className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
+                        formData.lender_types.includes(type.value)
+                          ? "bg-ocean-blue text-white border-ocean-blue"
+                          : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-ocean-blue"
+                      }`}
+                    >
+                      {type.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Paper Types (Credit Quality Tiers)
+                </label>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  {Object.entries(PAPER_TYPE_CONFIG).map(([value, config]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => handlePaperTypeToggle(value as PaperType)}
+                      className={`px-3 py-2 text-sm rounded-lg border transition-colors text-left ${
+                        formData.paper_types.includes(value as PaperType)
+                          ? config.color + " border-2 border-current"
+                          : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-gray-400"
+                      }`}
+                    >
+                      <span className="font-medium">{config.label}</span>
+                      <span className="block text-xs opacity-75">{config.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Funding Requirements */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-teal rounded-full"></span>
+              Funding Requirements
+            </h3>
+
+            <div className="grid md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Min Funding Amount
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                  <input
+                    type="number"
+                    value={formData.min_funding_amount}
+                    onChange={(e) => setFormData({ ...formData, min_funding_amount: e.target.value })}
+                    className="input-field pl-7"
+                    placeholder="5000"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Max Funding Amount
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                  <input
+                    type="number"
+                    value={formData.max_funding_amount}
+                    onChange={(e) => setFormData({ ...formData, max_funding_amount: e.target.value })}
+                    className="input-field pl-7"
+                    placeholder="500000"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Min Time in Business
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={formData.min_time_in_business}
+                    onChange={(e) => setFormData({ ...formData, min_time_in_business: e.target.value })}
+                    className="input-field pr-16"
+                    placeholder="6"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">months</span>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Min Monthly Revenue
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                  <input
+                    type="number"
+                    value={formData.min_monthly_revenue}
+                    onChange={(e) => setFormData({ ...formData, min_monthly_revenue: e.target.value })}
+                    className="input-field pl-7"
+                    placeholder="15000"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Min Credit Score
+                </label>
+                <input
+                  type="number"
+                  value={formData.min_credit_score}
+                  onChange={(e) => setFormData({ ...formData, min_credit_score: e.target.value })}
+                  className="input-field"
+                  placeholder="500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Commission Section */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-yellow-500 rounded-full"></span>
+              Commission Details
+            </h3>
+
+            <div className="grid md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Commission Type
+                </label>
+                <select
+                  value={formData.commission_type}
+                  onChange={(e) => setFormData({ ...formData, commission_type: e.target.value })}
+                  className="input-field"
+                >
+                  {COMMISSION_TYPES.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Commission Rate
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={formData.commission_rate}
+                    onChange={(e) => setFormData({ ...formData, commission_rate: e.target.value })}
+                    className="input-field pr-8"
+                    placeholder="10"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Commission Notes
+              </label>
+              <textarea
+                value={formData.commission_notes}
+                onChange={(e) => setFormData({ ...formData, commission_notes: e.target.value })}
+                className="input-field"
+                rows={3}
+                placeholder="Details about commission structure, tiers, bonuses, etc."
+              />
+            </div>
+          </div>
         </div>
       )}
 
@@ -780,36 +942,17 @@ export default function LenderDetailPage() {
         <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-semibold text-gray-900 dark:text-white">Notes</h3>
-            <div className="flex items-center gap-2">
-              {notesSaved && (
-                <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
-                  <CheckIcon className="w-4 h-4" />
-                  Saved
-                </span>
-              )}
-              <button
-                onClick={handleSaveNotes}
-                disabled={isSavingNotes || notes === (lender.notes || "")}
-                className="btn-primary text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {isSavingNotes ? (
-                  <ArrowPathIcon className="w-4 h-4 animate-spin" />
-                ) : (
-                  <CheckIcon className="w-4 h-4" />
-                )}
-                {isSavingNotes ? "Saving..." : "Save Notes"}
-              </button>
-            </div>
           </div>
           <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
+            value={formData.notes}
+            onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
             placeholder="Add notes about this lender..."
             rows={12}
             className="input-field w-full resize-y min-h-[200px] font-mono text-sm"
           />
           <p className="text-xs text-gray-500 mt-2">
             Use this space to track important details, conversation history, or any other relevant information about this lender.
+            Click "Save Changes" in the header to save your notes.
           </p>
         </div>
       )}
@@ -1001,14 +1144,6 @@ export default function LenderDetailPage() {
           )}
         </div>
       )}
-
-      {/* Edit Modal */}
-      <LenderEditModal
-        isOpen={isEditModalOpen}
-        onClose={() => setIsEditModalOpen(false)}
-        onSave={fetchLender}
-        lender={lender as Parameters<typeof LenderEditModal>[0]["lender"]}
-      />
     </div>
   );
 }

@@ -6,8 +6,22 @@ import {
   BuildingOfficeIcon,
   CreditCardIcon,
   CheckIcon,
+  DocumentIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
+import supabase from "../../supabase";
+import DocumentUploader from "../../components/shared/DocumentUploader";
+import DocumentList from "../../components/shared/DocumentList";
+
+interface CompanyDocument {
+  id: string;
+  document_type: string;
+  filename: string;
+  storage_path: string;
+  file_size: number;
+  status: string;
+  created_at: string;
+}
 
 interface SettingSection {
   id: string;
@@ -65,6 +79,10 @@ export default function AdminSettingsPage() {
   const [companyPhone, setCompanyPhone] = useState("");
   const [ein, setEin] = useState("");
 
+  // Company documents state
+  const [companyDocuments, setCompanyDocuments] = useState<CompanyDocument[]>([]);
+  const [documentType, setDocumentType] = useState("business_license");
+
   // Initialize form values when profile loads
   useEffect(() => {
     if (profile) {
@@ -76,6 +94,42 @@ export default function AdminSettingsPage() {
       setEin(profile.ein || "");
     }
   }, [profile]);
+
+  // Fetch company documents
+  useEffect(() => {
+    fetchCompanyDocuments();
+  }, []);
+
+  const fetchCompanyDocuments = async () => {
+    const { data, error } = await supabase
+      .from("company_documents")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching company documents:", error);
+    } else {
+      // Add a status field for DocumentList compatibility
+      setCompanyDocuments((data || []).map(doc => ({ ...doc, status: "approved" })));
+    }
+  };
+
+  const handleDocumentUploadComplete = () => {
+    fetchCompanyDocuments();
+  };
+
+  const handleDocumentDelete = async (docId: string) => {
+    const { error } = await supabase
+      .from("company_documents")
+      .delete()
+      .eq("id", docId);
+
+    if (error) {
+      console.error("Error deleting document:", error);
+    } else {
+      setCompanyDocuments((prev) => prev.filter((d) => d.id !== docId));
+    }
+  };
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
@@ -291,6 +345,66 @@ export default function AdminSettingsPage() {
                         <CheckIcon className="w-4 h-4" />
                         Saved successfully
                       </span>
+                    )}
+                  </div>
+
+                  {/* Company Documents Section */}
+                  <div className="pt-6 mt-6 border-t border-gray-200 dark:border-gray-700">
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                      <DocumentIcon className="w-5 h-5" />
+                      Company Documents
+                    </h3>
+                    <p className="text-sm text-gray-500 mb-4">
+                      Upload important business documents like licenses, tax returns, insurance certificates, and operating agreements.
+                    </p>
+
+                    {/* Document Type Selector */}
+                    <div className="mb-4">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Document Type
+                      </label>
+                      <select
+                        value={documentType}
+                        onChange={(e) => setDocumentType(e.target.value)}
+                        className="input-field w-64"
+                      >
+                        <option value="business_license">Business License</option>
+                        <option value="tax_return">Tax Return</option>
+                        <option value="insurance">Insurance Certificate</option>
+                        <option value="operating_agreement">Operating Agreement</option>
+                        <option value="articles_of_incorporation">Articles of Incorporation</option>
+                        <option value="ein_letter">EIN Letter</option>
+                        <option value="bank_statement">Bank Statement</option>
+                        <option value="lease_agreement">Lease Agreement</option>
+                        <option value="iso_agreement">ISO Agreement</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </div>
+
+                    {/* Document Uploader */}
+                    <DocumentUploader
+                      entityType="company"
+                      entityId="company"
+                      bucket="company-documents"
+                      documentType={documentType}
+                      onUploadComplete={handleDocumentUploadComplete}
+                      onError={(error) => alert(error)}
+                    />
+
+                    {/* Documents List */}
+                    {companyDocuments.length > 0 && (
+                      <div className="mt-6">
+                        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+                          Uploaded Documents
+                        </h4>
+                        <DocumentList
+                          documents={companyDocuments}
+                          bucket="company-documents"
+                          onDelete={handleDocumentDelete}
+                          canDelete={true}
+                          showStatus={false}
+                        />
+                      </div>
                     )}
                   </div>
                 </div>
