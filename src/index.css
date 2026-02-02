@@ -547,10 +547,6 @@ body {
   background-color: #0A1628;
 }
 
-.dark .bg-white {
-  background-color: #111D2E;
-}
-
 /* Reliable heading text class for both themes */
 .text-heading {
   color: #111827 !important;
@@ -583,10 +579,8 @@ body {
 }
 
 /* Dark mode cards */
-.dark .card,
-.dark .bg-white.rounded-xl,
-.dark .bg-white.rounded-2xl {
-  background-color: #1A2942;
+.dark .card {
+  background-color: #1F2937;
   border-color: #374151;
 }
 
