@@ -62,7 +62,7 @@ const LogoMark = ({ className = '' }: { className?: string }) => (
 
 // Full wordmark
 const Wordmark = ({ theme = 'dark', className = '' }: { theme?: 'light' | 'dark'; className?: string }) => (
-  <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-midnight-blue'} ${className}`}>
+  <span className={`font-semibold ${theme === 'dark' ? 'text-white' : 'text-midnight-blue dark:text-white'} ${className}`}>
     Momentum
   </span>
 );
