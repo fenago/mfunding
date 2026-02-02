@@ -82,7 +82,7 @@ function Slider({
     <div className="p-4 rounded-xl bg-white/50 border border-gray-100">
       <div className="flex items-center gap-2 mb-3">
         <Icon className="w-4 h-4 text-ocean-blue" />
-        <span className="text-sm font-medium text-midnight-blue">{label}</span>
+        <span className="text-sm font-medium text-heading">{label}</span>
       </div>
 
       <div className="text-2xl font-bold text-ocean-blue mb-3">
@@ -741,7 +741,7 @@ export default function CalculatorSection() {
             >
               <CalculatorIcon className="w-8 h-8 text-white" />
             </motion.div>
-            <h2 className="heading-2 text-midnight-blue mb-3">
+            <h2 className="heading-2 text-heading mb-3">
               See the <span className="text-brand-gradient">Real Numbers</span>
             </h2>
             <p className="text-text-secondary text-lg max-w-xl mx-auto">

@@ -553,20 +553,29 @@ body {
 
 /* Reliable heading text class for both themes */
 .text-heading {
-  color: #111827;
+  color: #111827 !important;
 }
 
 .dark .text-heading {
-  color: #F9FAFB;
+  color: #FFFFFF !important;
 }
 
 /* Reliable body text class for both themes */
 .text-body {
-  color: #4B5563;
+  color: #4B5563 !important;
 }
 
 .dark .text-body {
-  color: #D1D5DB;
+  color: #E5E7EB !important;
+}
+
+/* Force white card backgrounds in light mode */
+.bg-white {
+  background-color: #FFFFFF !important;
+}
+
+.dark .bg-white {
+  background-color: #1F2937 !important;
 }
 
 .dark .text-text-secondary {

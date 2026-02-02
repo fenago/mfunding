@@ -39,7 +39,7 @@ export default function SecuritySection() {
               <div className="w-12 h-12 rounded-xl bg-ocean-blue/10 flex items-center justify-center">
                 <ShieldCheckIcon className="w-6 h-6 text-ocean-blue" />
               </div>
-              <h3 className="text-xl font-semibold text-midnight-blue">
+              <h3 className="text-xl font-semibold text-heading">
                 Securely Connects to Your Bank
               </h3>
             </div>
@@ -62,7 +62,7 @@ export default function SecuritySection() {
                     </span>
                   </div>
                   <div>
-                    <p className="font-semibold text-midnight-blue">{integration.name}</p>
+                    <p className="font-semibold text-heading">{integration.name}</p>
                     <p className="text-xs text-text-secondary">{integration.description}</p>
                   </div>
                 </div>
@@ -81,7 +81,7 @@ export default function SecuritySection() {
               <div className="w-12 h-12 rounded-xl bg-mint-green/10 flex items-center justify-center">
                 <LockClosedIcon className="w-6 h-6 text-mint-green" />
               </div>
-              <h3 className="text-xl font-semibold text-midnight-blue">
+              <h3 className="text-xl font-semibold text-heading">
                 Your Data is Always Protected
               </h3>
             </div>
@@ -98,7 +98,7 @@ export default function SecuritySection() {
                   key={index}
                   className="bg-mint-green/10 rounded-lg px-4 py-2 border border-mint-green/20"
                 >
-                  <p className="font-bold text-midnight-blue text-sm">{cert.name}</p>
+                  <p className="font-bold text-heading text-sm">{cert.name}</p>
                   <p className="text-xs text-text-secondary">{cert.label}</p>
                 </div>
               ))}

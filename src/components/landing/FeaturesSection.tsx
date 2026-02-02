@@ -134,7 +134,7 @@ function FundingCard({ option, index }: { option: typeof fundingOptions[0]; inde
 
           {/* Tagline */}
           <motion.h3
-            className="text-2xl font-bold text-midnight-blue dark:text-white mb-2"
+            className="text-2xl font-bold text-heading mb-2"
             whileHover={{ x: 3 }}
           >
             {option.tagline}
@@ -154,7 +154,7 @@ function FundingCard({ option, index }: { option: typeof fundingOptions[0]; inde
             }}
             whileHover={{ scale: 1.02 }}
           >
-            <p className="text-sm text-midnight-blue dark:text-white">
+            <p className="text-sm text-heading">
               <span className="font-semibold" style={{ color: option.color }}>Best for:</span> {option.bestFor}
             </p>
           </motion.div>
@@ -257,7 +257,7 @@ export default function FeaturesSection() {
           >
             Funding Solutions
           </motion.span>
-          <h2 className="heading-2 text-midnight-blue dark:text-white mb-4">
+          <h2 className="heading-2 text-heading mb-4">
             Three Ways to{' '}
             <motion.span
               className="text-transparent bg-clip-text bg-gradient-to-r from-mint-green to-teal"

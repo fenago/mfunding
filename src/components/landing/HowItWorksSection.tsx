@@ -137,7 +137,7 @@ function FlipCard({ step, index }: { step: typeof steps[0]; index: number }) {
           </motion.div>
 
           {/* Title */}
-          <h3 className="text-xl font-semibold text-midnight-blue dark:text-white mb-3">
+          <h3 className="text-xl font-semibold text-heading mb-3">
             {step.title}
           </h3>
 
@@ -270,7 +270,7 @@ export default function HowItWorksSection() {
             >
               The Process
             </motion.span>
-            <h2 className="heading-2 text-midnight-blue dark:text-white mb-4">
+            <h2 className="heading-2 text-heading mb-4">
               How It{' '}
               <motion.span
                 className="text-transparent bg-clip-text bg-gradient-to-r from-mint-green to-teal"

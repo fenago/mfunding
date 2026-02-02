@@ -17,7 +17,7 @@ export default function VideoSection() {
             transition={{ duration: 0.5 }}
             className="text-center mb-12"
           >
-            <h2 className="heading-2 text-midnight-blue mb-4">
+            <h2 className="heading-2 text-heading mb-4">
               Hear From a Business Owner Just Like You
             </h2>
             <p className="text-text-secondary text-lg">

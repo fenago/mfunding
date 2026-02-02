@@ -70,7 +70,7 @@ function FAQItem({ faq, isOpen, onClick, index }: {
         className="w-full py-6 flex items-center justify-between text-left group"
         aria-expanded={isOpen}
       >
-        <h3 className="text-lg font-semibold text-midnight-blue dark:text-white pr-8 group-hover:text-ocean-blue transition-colors">
+        <h3 className="text-lg font-semibold text-heading pr-8 group-hover:text-ocean-blue transition-colors">
           {faq.question}
         </h3>
         <motion.div
@@ -139,7 +139,7 @@ export default function FAQSection() {
             Common Questions
           </motion.span>
 
-          <h2 className="heading-2 text-midnight-blue dark:text-white mb-4">
+          <h2 className="heading-2 text-heading mb-4">
             Frequently Asked{' '}
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-mint-green to-teal">
               Questions
