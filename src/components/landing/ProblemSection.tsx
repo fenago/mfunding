@@ -206,13 +206,13 @@ export default function ProblemSection() {
           >
             The Problem
           </motion.span>
-          <h2 className="heading-2 text-midnight-blue dark:text-white mb-4">
+          <h2 className="heading-2 mb-4" style={{ color: '#0A2342' }}>
             We Know What You're{' '}
             <motion.span
               className="relative inline-block"
               whileHover={{ scale: 1.02 }}
             >
-              <span className="relative z-10">Going Through.</span>
+              <span className="relative z-10" style={{ color: '#0A2342' }}>Going Through.</span>
               <motion.span
                 className="absolute bottom-0 left-0 w-full h-3 bg-red-500/20 -z-10"
                 initial={{ scaleX: 0 }}
@@ -245,7 +245,7 @@ export default function ProblemSection() {
           {problems.map((problem, index) => (
             <motion.div key={index} variants={itemVariants}>
               <TiltCard
-                className="bg-white dark:bg-midnight-blue/50 rounded-2xl p-8 shadow-lg border border-gray-100 dark:border-white/10 h-full"
+                className="problem-card rounded-2xl p-8 shadow-lg border border-gray-100 dark:border-slate-600 h-full"
                 glowColor={problem.color}
               >
                 {/* Gradient overlay */}
@@ -271,22 +271,23 @@ export default function ProblemSection() {
 
                   {/* Title & Description */}
                   <motion.h3
-                    className="text-xl font-semibold text-midnight-blue dark:text-white mb-3"
+                    className="text-xl font-semibold mb-3"
+                    style={{ color: '#1F2937' }}
                     whileHover={{ x: 3 }}
                     transition={{ duration: 0.2 }}
                   >
                     {problem.title}
                   </motion.h3>
-                  <p className="text-text-secondary mb-6 leading-relaxed">
+                  <p className="mb-6 leading-relaxed" style={{ color: '#4B5563' }}>
                     {problem.description}
                   </p>
 
                   {/* Stat with animation */}
-                  <div className="pt-6 border-t border-gray-100 dark:border-white/10">
+                  <div className="pt-6 border-t border-gray-200">
                     <div className="mb-2">
                       <AnimatedStat value={problem.stat} suffix={problem.statSuffix} color={problem.color} />
                     </div>
-                    <p className="text-sm text-text-secondary">
+                    <p className="text-sm" style={{ color: '#4B5563' }}>
                       {problem.statLabel}
                     </p>
                   </div>

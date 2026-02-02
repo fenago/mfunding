@@ -555,6 +555,15 @@ body {
   border-color: #374151;
 }
 
+/* Problem section cards - specific styling for better contrast */
+.problem-card {
+  background-color: #FFFFFF;
+}
+
+.dark .problem-card {
+  background-color: #334155; /* slate-700 */
+}
+
 /* Dark mode inputs */
 .dark .input-field {
   background-color: #1A2942;
