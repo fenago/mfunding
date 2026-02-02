@@ -109,7 +109,7 @@ export default function SolutionSection() {
               The Solution
             </motion.span>
 
-            <h2 className="heading-2 text-midnight-blue dark:text-white mb-6">
+            <h2 className="heading-2 text-gray-900 dark:text-white mb-6">
               We Say{' '}
               <motion.span
                 className="inline-block text-mint-green"
@@ -139,7 +139,7 @@ export default function SolutionSection() {
               the people who get their hands dirty every day. We don't care about your credit score
               from 2019. We look at your business{' '}
               <motion.span
-                className="font-semibold text-midnight-blue dark:text-white relative inline-block"
+                className="font-semibold text-gray-900 dark:text-white relative inline-block"
                 whileHover={{ scale: 1.02 }}
               >
                 right now
@@ -171,7 +171,7 @@ export default function SolutionSection() {
 
               <div className="relative z-10">
                 <motion.p
-                  className="text-lg font-semibold text-midnight-blue dark:text-white mb-2"
+                  className="text-lg font-semibold text-gray-900 dark:text-white mb-2"
                   whileHover={{ x: 3 }}
                 >
                   Your business tells a story. We actually read it.
@@ -205,7 +205,7 @@ export default function SolutionSection() {
                   <XMarkIcon className="w-5 h-5 text-error" />
                 </motion.div>
                 <div>
-                  <p className="font-semibold text-midnight-blue dark:text-white">The Bank Process</p>
+                  <p className="font-semibold text-gray-900 dark:text-white">The Bank Process</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">Weeks to months</p>
                 </div>
               </div>
@@ -287,7 +287,7 @@ export default function SolutionSection() {
                   <CheckIcon className="w-5 h-5 text-mint-green" />
                 </motion.div>
                 <div>
-                  <p className="font-semibold text-midnight-blue dark:text-white">The Momentum Process</p>
+                  <p className="font-semibold text-gray-900 dark:text-white">The Momentum Process</p>
                   <motion.p
                     className="text-sm text-mint-green font-medium"
                     animate={{ opacity: [0.7, 1, 0.7] }}
@@ -319,7 +319,7 @@ export default function SolutionSection() {
                             : { scale: 1, boxShadow: '0 0 0 rgba(0,212,157,0)' }
                         }
                       >
-                        <span className="text-midnight-blue font-bold">{index + 1}</span>
+                        <span className="font-bold text-gray-900">{index + 1}</span>
 
                         {/* Pulse ring animation */}
                         {index === 2 && (
@@ -333,7 +333,7 @@ export default function SolutionSection() {
                           />
                         )}
                       </motion.div>
-                      <p className="text-sm font-medium text-midnight-blue dark:text-white">{item.step}</p>
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">{item.step}</p>
                       <p className="text-xs text-text-secondary">{item.time}</p>
                     </motion.div>
 

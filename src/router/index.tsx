@@ -22,6 +22,7 @@ import LenderResourcesPage from "../pages/admin/lenders/LenderResourcesPage.tsx"
 import CustomersListPage from "../pages/admin/customers/CustomersListPage.tsx";
 import CustomerDetailPage from "../pages/admin/customers/CustomerDetailPage.tsx";
 import MarketingPage from "../pages/admin/MarketingPage.tsx";
+import MarketingResourcesPage from "../pages/admin/marketing/MarketingResourcesPage.tsx";
 import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
 
@@ -148,6 +149,10 @@ const router = createBrowserRouter([
                   {
                     index: true,
                     element: <MarketingPage />,
+                  },
+                  {
+                    path: "resources",
+                    element: <MarketingResourcesPage />,
                   },
                 ],
               },

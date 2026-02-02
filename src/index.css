@@ -539,12 +539,13 @@ body {
   background-color: #111D2E;
 }
 
-.dark .text-midnight-blue {
+/* Dark mode text color override - properly scoped */
+.dark .text-midnight-blue:not([class*="dark:"]) {
   color: #F9FAFB;
 }
 
 .dark .text-text-secondary {
-  color: #9CA3AF;
+  color: #D1D5DB; /* Lighter gray for better contrast in dark mode */
 }
 
 /* Dark mode cards */

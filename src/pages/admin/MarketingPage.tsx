@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import {
   PlusIcon,
   MagnifyingGlassIcon,
@@ -6,6 +7,7 @@ import {
   GlobeAltIcon,
   CurrencyDollarIcon,
   PencilIcon,
+  BookOpenIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import VendorEditModal from "../../components/marketing/VendorEditModal";
@@ -130,16 +132,25 @@ export default function MarketingPage() {
             Manage your lead sources and marketing vendors
           </p>
         </div>
-        <button
-          onClick={() => {
-            setSelectedVendor(null);
-            setIsModalOpen(true);
-          }}
-          className="btn-primary flex items-center gap-2"
-        >
-          <PlusIcon className="w-5 h-5" />
-          Add Vendor
-        </button>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/admin/marketing/resources"
+            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+          >
+            <BookOpenIcon className="w-5 h-5" />
+            Marketing Resources
+          </Link>
+          <button
+            onClick={() => {
+              setSelectedVendor(null);
+              setIsModalOpen(true);
+            }}
+            className="btn-primary flex items-center gap-2"
+          >
+            <PlusIcon className="w-5 h-5" />
+            Add Vendor
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
