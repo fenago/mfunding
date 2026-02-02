@@ -1,7 +1,6 @@
-import { motion, useMotionTemplate, useMotionValue } from 'framer-motion';
-import { ClockIcon, DocumentTextIcon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
+import { motion } from 'framer-motion';
+import { ClockIcon, DocumentTextIcon, CurrencyDollarIcon, CheckIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 import { useRef, useState, useEffect } from 'react';
-import { cn } from '@/lib/utils';
 
 const problems = [
   {
@@ -11,8 +10,14 @@ const problems = [
     stat: '75',
     statSuffix: '%',
     statLabel: 'of small business loans get declined.',
-    color: '#E11D48', // Red
-    gradient: 'from-red-500/20 to-red-600/10',
+    color: '#E11D48',
+    backTitle: 'We Say Yes.',
+    backItems: [
+      '93% approval rate',
+      'No credit score minimum',
+      'Based on your cash flow',
+      'Decision in hours, not weeks',
+    ],
   },
   {
     icon: CurrencyDollarIcon,
@@ -21,8 +26,14 @@ const problems = [
     stat: '88',
     statSuffix: '%',
     statLabel: 'of businesses face cash flow gaps.',
-    color: '#F59E0B', // Amber
-    gradient: 'from-amber-500/20 to-amber-600/10',
+    color: '#F59E0B',
+    backTitle: 'Funds by Tomorrow.',
+    backItems: [
+      'Same-day approval possible',
+      'Funds in 24-48 hours',
+      'Flexible repayment terms',
+      'No collateral required',
+    ],
   },
   {
     icon: DocumentTextIcon,
@@ -31,57 +42,16 @@ const problems = [
     stat: '25',
     statSuffix: '+',
     statLabel: 'hours wasted on bank applications.',
-    color: '#6366F1', // Indigo
-    gradient: 'from-indigo-500/20 to-indigo-600/10',
+    color: '#6366F1',
+    backTitle: '5-Minute Application.',
+    backItems: [
+      'Simple online form',
+      'Just 3 months bank statements',
+      'No lengthy paperwork',
+      'Seize opportunities fast',
+    ],
   },
 ];
-
-// 3D tilt card component
-function TiltCard({ children, className, glowColor }: { children: React.ReactNode; className?: string; glowColor: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const mouseX = useMotionValue(0);
-  const mouseY = useMotionValue(0);
-  const [isHovered, setIsHovered] = useState(false);
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
-    mouseX.set(e.clientX - rect.left);
-    mouseY.set(e.clientY - rect.top);
-  };
-
-  const background = useMotionTemplate`
-    radial-gradient(
-      350px circle at ${mouseX}px ${mouseY}px,
-      ${glowColor}15,
-      transparent 80%
-    )
-  `;
-
-  return (
-    <motion.div
-      ref={ref}
-      onMouseMove={handleMouseMove}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      className={cn('relative overflow-hidden', className)}
-      style={{ transformStyle: 'preserve-3d' }}
-      whileHover={{
-        scale: 1.02,
-        rotateX: 2,
-        rotateY: -2,
-        transition: { duration: 0.2 },
-      }}
-    >
-      {/* Glow effect */}
-      <motion.div
-        className="pointer-events-none absolute inset-0 z-0 opacity-0 transition-opacity duration-300"
-        style={{ background, opacity: isHovered ? 1 : 0 }}
-      />
-      <div className="relative z-10">{children}</div>
-    </motion.div>
-  );
-}
 
 // Animated number counter
 function AnimatedStat({ value, suffix, color }: { value: string; suffix: string; color: string }) {
@@ -118,7 +88,6 @@ function AnimatedStat({ value, suffix, color }: { value: string; suffix: string;
     const timer = setInterval(() => {
       currentStep++;
       const progress = currentStep / steps;
-      // Ease out cubic
       const eased = 1 - Math.pow(1 - progress, 3);
       setCount(Math.round(eased * numValue));
 
@@ -145,28 +114,149 @@ function AnimatedStat({ value, suffix, color }: { value: string; suffix: string;
   );
 }
 
-const containerVariants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: {
-      staggerChildren: 0.15,
-    },
-  },
-};
+// Flip Card Component
+function FlipCard({ problem, index }: { problem: typeof problems[0]; index: number }) {
+  const [isFlipped, setIsFlipped] = useState(false);
 
-const itemVariants = {
-  hidden: { opacity: 0, y: 30, scale: 0.95 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    scale: 1,
-    transition: {
-      duration: 0.6,
-      ease: [0.4, 0, 0.2, 1] as const,
-    },
-  },
-};
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 50 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true }}
+      transition={{ duration: 0.6, delay: index * 0.15 }}
+      className="relative h-[420px] cursor-pointer group"
+      style={{ perspective: 1000 }}
+      onClick={() => setIsFlipped(!isFlipped)}
+    >
+      {/* Card container */}
+      <motion.div
+        className="relative w-full h-full"
+        animate={{ rotateY: isFlipped ? 180 : 0 }}
+        transition={{ duration: 0.6, type: 'spring', stiffness: 100 }}
+        style={{ transformStyle: 'preserve-3d' }}
+      >
+        {/* Front of card */}
+        <div
+          className="absolute inset-0 bg-white dark:bg-slate-800 rounded-2xl p-8 shadow-lg border border-gray-100 dark:border-slate-600 overflow-hidden"
+          style={{ backfaceVisibility: 'hidden' }}
+        >
+          {/* Animated gradient on hover */}
+          <motion.div
+            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl"
+            style={{
+              background: `linear-gradient(135deg, ${problem.color}10 0%, transparent 60%)`,
+            }}
+          />
+
+          <div className="relative z-10 h-full flex flex-col">
+            {/* Icon */}
+            <motion.div
+              className="w-14 h-14 rounded-xl flex items-center justify-center mb-6 relative overflow-hidden"
+              style={{ backgroundColor: `${problem.color}15` }}
+              whileHover={{ scale: 1.1, rotate: 5 }}
+            >
+              <problem.icon className="w-7 h-7" style={{ color: problem.color }} />
+            </motion.div>
+
+            {/* Title & Description */}
+            <h3 className="text-xl font-semibold text-heading mb-3">
+              {problem.title}
+            </h3>
+            <p className="text-body mb-6 leading-relaxed flex-1">
+              {problem.description}
+            </p>
+
+            {/* Stat */}
+            <div className="pt-6 border-t border-gray-200 dark:border-slate-600">
+              <div className="mb-2">
+                <AnimatedStat value={problem.stat} suffix={problem.statSuffix} color={problem.color} />
+              </div>
+              <p className="text-sm text-body">
+                {problem.statLabel}
+              </p>
+            </div>
+
+            {/* Click hint */}
+            <motion.div
+              className="absolute bottom-4 right-4 text-xs text-body flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+              animate={{ x: [0, 5, 0] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+            >
+              Click for solution
+              <ArrowRightIcon className="w-3 h-3" />
+            </motion.div>
+          </div>
+        </div>
+
+        {/* Back of card */}
+        <div
+          className="absolute inset-0 rounded-2xl p-8 overflow-hidden"
+          style={{
+            backfaceVisibility: 'hidden',
+            transform: 'rotateY(180deg)',
+            background: `linear-gradient(135deg, ${problem.color} 0%, ${problem.color}dd 100%)`,
+          }}
+        >
+          {/* Pattern overlay */}
+          <div
+            className="absolute inset-0 opacity-10"
+            style={{
+              backgroundImage: `radial-gradient(circle at center, white 1px, transparent 1px)`,
+              backgroundSize: '20px 20px',
+            }}
+          />
+
+          <div className="relative z-10 h-full flex flex-col">
+            {/* Back title */}
+            <h3 className="text-2xl font-bold text-white mb-6">
+              {problem.backTitle}
+            </h3>
+
+            {/* Items list */}
+            <ul className="space-y-4 flex-1">
+              {problem.backItems.map((item, i) => (
+                <motion.li
+                  key={i}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={isFlipped ? { opacity: 1, x: 0 } : { opacity: 0, x: -20 }}
+                  transition={{ delay: 0.3 + i * 0.1 }}
+                  className="flex items-center gap-3 text-white"
+                >
+                  <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+                    <CheckIcon className="w-4 h-4 text-white" />
+                  </div>
+                  <span>{item}</span>
+                </motion.li>
+              ))}
+            </ul>
+
+            {/* CTA */}
+            <motion.a
+              href="#apply"
+              className="inline-flex items-center justify-center gap-2 mt-4 px-6 py-3 bg-white text-gray-900 font-semibold rounded-lg hover:bg-gray-100 transition-colors"
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              Get Started
+              <ArrowRightIcon className="w-4 h-4" />
+            </motion.a>
+
+            {/* Click to flip back */}
+            <motion.div
+              className="absolute bottom-4 right-4 text-white/70 text-sm flex items-center gap-2"
+              animate={{ x: [0, -5, 0] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+            >
+              <ArrowRightIcon className="w-4 h-4 rotate-180" />
+              Click to go back
+            </motion.div>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
 
 export default function ProblemSection() {
   return (
@@ -228,73 +318,26 @@ export default function ProblemSection() {
             whileInView={{ opacity: 1 }}
             viewport={{ once: true }}
             transition={{ delay: 0.3 }}
-            className="text-text-secondary text-lg max-w-2xl mx-auto"
+            className="text-text-secondary text-lg max-w-2xl mx-auto mb-4"
           >
             The sleepless nights. The worried looks from your family. The frustration of being treated like a number. We've seen it all—and we're here to change it.
+          </motion.p>
+          <motion.p
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true }}
+            className="text-sm text-mint-green font-medium"
+          >
+            Click any card to see how we help
           </motion.p>
         </motion.div>
 
         {/* Problems Grid */}
-        <motion.div
-          variants={containerVariants}
-          initial="hidden"
-          whileInView="visible"
-          viewport={{ once: true, margin: '-50px' }}
-          className="grid md:grid-cols-3 gap-8"
-        >
+        <div className="grid md:grid-cols-3 gap-8">
           {problems.map((problem, index) => (
-            <motion.div key={index} variants={itemVariants}>
-              <TiltCard
-                className="problem-card rounded-2xl p-8 shadow-lg border border-gray-100 dark:border-slate-600 h-full"
-                glowColor={problem.color}
-              >
-                {/* Gradient overlay */}
-                <div className={cn('absolute inset-0 opacity-0 hover:opacity-100 transition-opacity duration-500 rounded-2xl bg-gradient-to-br', problem.gradient)} />
-
-                <div className="relative z-10">
-                  {/* Icon with animated background */}
-                  <motion.div
-                    className="w-14 h-14 rounded-xl flex items-center justify-center mb-6 relative overflow-hidden"
-                    style={{ backgroundColor: `${problem.color}15` }}
-                    whileHover={{ scale: 1.1, rotate: 5 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <motion.div
-                      className="absolute inset-0"
-                      style={{ backgroundColor: problem.color }}
-                      initial={{ scale: 0, opacity: 0 }}
-                      whileHover={{ scale: 2, opacity: 0.2 }}
-                      transition={{ duration: 0.4 }}
-                    />
-                    <problem.icon className="w-7 h-7 relative z-10" style={{ color: problem.color }} />
-                  </motion.div>
-
-                  {/* Title & Description */}
-                  <motion.h3
-                    className="text-xl font-semibold text-heading mb-3"
-                    whileHover={{ x: 3 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    {problem.title}
-                  </motion.h3>
-                  <p className="text-body mb-6 leading-relaxed">
-                    {problem.description}
-                  </p>
-
-                  {/* Stat with animation */}
-                  <div className="pt-6 border-t border-gray-200">
-                    <div className="mb-2">
-                      <AnimatedStat value={problem.stat} suffix={problem.statSuffix} color={problem.color} />
-                    </div>
-                    <p className="text-sm text-body">
-                      {problem.statLabel}
-                    </p>
-                  </div>
-                </div>
-              </TiltCard>
-            </motion.div>
+            <FlipCard key={index} problem={problem} index={index} />
           ))}
-        </motion.div>
+        </div>
       </div>
     </section>
   );

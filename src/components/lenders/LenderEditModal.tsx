@@ -2,19 +2,11 @@ import { useState, useEffect } from "react";
 import {
   XMarkIcon,
   GlobeAltIcon,
-  ArrowPathIcon,
   SparklesIcon,
-  CpuChipIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
-import {
-  extractLenderInfo,
-  fetchWebsiteContent,
-  type GeminiModel,
-} from "../../lib/gemini";
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
-
 type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
 
 interface LenderFormData {
@@ -24,17 +16,34 @@ interface LenderFormData {
   status: LenderStatus;
   lender_types: string[];
   paper_types: PaperType[];
+  funding_products: string[];
   primary_contact_name: string;
   primary_contact_email: string;
   primary_contact_phone: string;
-  commission_type: string;
-  commission_rate: string;
-  commission_notes: string;
+  // Funding range
   min_funding_amount: string;
   max_funding_amount: string;
+  // Requirements
   min_time_in_business: string;
   min_monthly_revenue: string;
+  min_daily_balance: string;
   min_credit_score: string;
+  requires_collateral: boolean;
+  // Pricing/Terms
+  commission_structure: string;
+  factor_rate_range: string;
+  term_lengths: string;
+  advance_rate: string;
+  // Operations
+  funding_speed: string;
+  stacking_policy: string;
+  industries_restricted: string[];
+  industries_preferred: string[];
+  states_restricted: string[];
+  // Submission
+  submission_email: string;
+  submission_portal_url: string;
+  submission_notes: string;
   notes: string;
 }
 
@@ -46,17 +55,29 @@ interface Lender {
   status: LenderStatus;
   lender_types: string[];
   paper_types: PaperType[];
+  funding_products: string[] | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
   primary_contact_phone: string | null;
-  commission_type: string | null;
-  commission_rate: number | null;
-  commission_notes: string | null;
   min_funding_amount: number | null;
   max_funding_amount: number | null;
   min_time_in_business: number | null;
   min_monthly_revenue: number | null;
+  min_daily_balance: number | null;
   min_credit_score: number | null;
+  requires_collateral: boolean | null;
+  commission_structure: string | null;
+  factor_rate_range: string | null;
+  term_lengths: string | null;
+  advance_rate: string | null;
+  funding_speed: string | null;
+  stacking_policy: string | null;
+  industries_restricted: string[] | null;
+  industries_preferred: string[] | null;
+  states_restricted: string[] | null;
+  submission_email: string | null;
+  submission_portal_url: string | null;
+  submission_notes: string | null;
   notes: string | null;
 }
 
@@ -67,7 +88,7 @@ interface LenderEditModalProps {
   lender?: Lender | null;
 }
 
-const LENDER_TYPES = [
+const FUNDING_PRODUCTS = [
   { value: "mca", label: "MCA" },
   { value: "term_loan", label: "Term Loan" },
   { value: "line_of_credit", label: "Line of Credit" },
@@ -95,15 +116,12 @@ const STATUS_OPTIONS: { value: LenderStatus; label: string }[] = [
   { value: "inactive", label: "Inactive" },
 ];
 
-const COMMISSION_TYPES = [
-  { value: "points", label: "Points (% of funded)" },
-  { value: "split", label: "Split" },
-  { value: "flat", label: "Flat Fee" },
-];
-
-const GEMINI_MODELS: { value: GeminiModel; label: string }[] = [
-  { value: "gemini-2.0-flash", label: "Gemini Flash (Fast)" },
-  { value: "gemini-2.0-pro-exp", label: "Gemini Pro (Better)" },
+const STACKING_OPTIONS = [
+  { value: "", label: "Select..." },
+  { value: "no_stacking", label: "No Stacking" },
+  { value: "2nd_position", label: "2nd Position OK" },
+  { value: "will_stack", label: "Will Stack" },
+  { value: "case_by_case", label: "Case by Case" },
 ];
 
 const initialFormData: LenderFormData = {
@@ -113,17 +131,29 @@ const initialFormData: LenderFormData = {
   status: "potential",
   lender_types: [],
   paper_types: [],
+  funding_products: [],
   primary_contact_name: "",
   primary_contact_email: "",
   primary_contact_phone: "",
-  commission_type: "points",
-  commission_rate: "",
-  commission_notes: "",
   min_funding_amount: "",
   max_funding_amount: "",
   min_time_in_business: "",
   min_monthly_revenue: "",
+  min_daily_balance: "",
   min_credit_score: "",
+  requires_collateral: false,
+  commission_structure: "",
+  factor_rate_range: "",
+  term_lengths: "",
+  advance_rate: "",
+  funding_speed: "",
+  stacking_policy: "",
+  industries_restricted: [],
+  industries_preferred: [],
+  states_restricted: [],
+  submission_email: "",
+  submission_portal_url: "",
+  submission_notes: "",
   notes: "",
 };
 
@@ -135,12 +165,9 @@ export default function LenderEditModal({
 }: LenderEditModalProps) {
   const [formData, setFormData] = useState<LenderFormData>(initialFormData);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [extractError, setExtractError] = useState<string | null>(null);
-  const [extractSuccess, setExtractSuccess] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"basic" | "funding" | "commission">("basic");
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>("gemini-2.0-flash");
-  const [showModelSelect, setShowModelSelect] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<"basic" | "requirements" | "terms" | "submission">("basic");
 
   useEffect(() => {
     if (lender) {
@@ -151,88 +178,106 @@ export default function LenderEditModal({
         status: lender.status || "potential",
         lender_types: lender.lender_types || [],
         paper_types: lender.paper_types || [],
+        funding_products: lender.funding_products || [],
         primary_contact_name: lender.primary_contact_name || "",
         primary_contact_email: lender.primary_contact_email || "",
         primary_contact_phone: lender.primary_contact_phone || "",
-        commission_type: lender.commission_type || "points",
-        commission_rate: lender.commission_rate?.toString() || "",
-        commission_notes: lender.commission_notes || "",
         min_funding_amount: lender.min_funding_amount?.toString() || "",
         max_funding_amount: lender.max_funding_amount?.toString() || "",
         min_time_in_business: lender.min_time_in_business?.toString() || "",
         min_monthly_revenue: lender.min_monthly_revenue?.toString() || "",
+        min_daily_balance: lender.min_daily_balance?.toString() || "",
         min_credit_score: lender.min_credit_score?.toString() || "",
+        requires_collateral: lender.requires_collateral || false,
+        commission_structure: lender.commission_structure || "",
+        factor_rate_range: lender.factor_rate_range || "",
+        term_lengths: lender.term_lengths || "",
+        advance_rate: lender.advance_rate || "",
+        funding_speed: lender.funding_speed || "",
+        stacking_policy: lender.stacking_policy || "",
+        industries_restricted: lender.industries_restricted || [],
+        industries_preferred: lender.industries_preferred || [],
+        states_restricted: lender.states_restricted || [],
+        submission_email: lender.submission_email || "",
+        submission_portal_url: lender.submission_portal_url || "",
+        submission_notes: lender.submission_notes || "",
         notes: lender.notes || "",
       });
     } else {
       setFormData(initialFormData);
     }
     setActiveTab("basic");
-    setExtractError(null);
-    setExtractSuccess(null);
+    setScanMessage(null);
   }, [lender, isOpen]);
 
-  const handleExtractFromUrl = async () => {
+  const handleScanWebsite = async () => {
     if (!formData.website) {
-      setExtractError("Please enter a website URL first");
+      setScanMessage({ type: "error", text: "Please enter a website URL first" });
       return;
     }
 
-    setIsExtracting(true);
-    setExtractError(null);
-    setExtractSuccess(null);
+    setIsScanning(true);
+    setScanMessage(null);
 
     try {
-      // Normalize the URL
-      let url = formData.website;
-      if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        url = "https://" + url;
+      const url = formData.website.startsWith("http") ? formData.website : `https://${formData.website}`;
+
+      const { data, error } = await supabase.functions.invoke("scan-lender-website", {
+        body: { url },
+      });
+
+      if (error) throw error;
+
+      if (data.success && data.data) {
+        const extracted = data.data;
+
+        setFormData((prev) => ({
+          ...prev,
+          company_name: extracted.company_name || prev.company_name,
+          description: extracted.description || prev.description,
+          primary_contact_name: extracted.primary_contact_name || prev.primary_contact_name,
+          primary_contact_email: extracted.primary_contact_email || prev.primary_contact_email,
+          primary_contact_phone: extracted.primary_contact_phone || prev.primary_contact_phone,
+          funding_products: extracted.funding_products?.length > 0 ? extracted.funding_products : prev.funding_products,
+          min_funding_amount: extracted.min_funding_amount?.toString() || prev.min_funding_amount,
+          max_funding_amount: extracted.max_funding_amount?.toString() || prev.max_funding_amount,
+          min_time_in_business: extracted.min_time_in_business?.toString() || prev.min_time_in_business,
+          min_monthly_revenue: extracted.min_monthly_revenue?.toString() || prev.min_monthly_revenue,
+          min_credit_score: extracted.min_credit_score?.toString() || prev.min_credit_score,
+          commission_structure: extracted.commission_structure || prev.commission_structure,
+          factor_rate_range: extracted.factor_rate_range || prev.factor_rate_range,
+          term_lengths: extracted.term_lengths || prev.term_lengths,
+          advance_rate: extracted.advance_rate || prev.advance_rate,
+          funding_speed: extracted.funding_speed || prev.funding_speed,
+          stacking_policy: extracted.stacking_policy || prev.stacking_policy,
+          industries_restricted: extracted.industries_restricted?.length > 0 ? extracted.industries_restricted : prev.industries_restricted,
+          industries_preferred: extracted.industries_preferred?.length > 0 ? extracted.industries_preferred : prev.industries_preferred,
+          states_restricted: extracted.states_restricted?.length > 0 ? extracted.states_restricted : prev.states_restricted,
+          submission_email: extracted.submission_email || prev.submission_email,
+          submission_portal_url: extracted.submission_portal_url || prev.submission_portal_url,
+          notes: extracted.notes
+            ? (prev.notes ? `${extracted.notes}\n\n---\n\nPREVIOUS NOTES:\n${prev.notes}` : extracted.notes)
+            : prev.notes,
+        }));
+
+        setScanMessage({ type: "success", text: "Website scanned! Review the extracted data." });
+      } else {
+        throw new Error(data.error || "Failed to extract data");
       }
-
-      // Update the URL field with normalized URL
-      setFormData((prev) => ({ ...prev, website: url }));
-
-      // Fetch website content
-      const websiteContent = await fetchWebsiteContent(url);
-
-      // Extract info using Gemini AI
-      const extracted = await extractLenderInfo(websiteContent, selectedModel);
-
-      // Update form with extracted data (only fill in empty fields or improve existing)
-      setFormData((prev) => ({
-        ...prev,
-        company_name: extracted.company_name || prev.company_name,
-        description: extracted.description || prev.description,
-        lender_types: extracted.lender_types && extracted.lender_types.length > 0
-          ? extracted.lender_types
-          : prev.lender_types,
-        min_funding_amount: extracted.min_funding_amount?.toString() || prev.min_funding_amount,
-        max_funding_amount: extracted.max_funding_amount?.toString() || prev.max_funding_amount,
-        min_time_in_business: extracted.min_time_in_business?.toString() || prev.min_time_in_business,
-        min_monthly_revenue: extracted.min_monthly_revenue?.toString() || prev.min_monthly_revenue,
-        min_credit_score: extracted.min_credit_score?.toString() || prev.min_credit_score,
-        notes: extracted.notes
-          ? prev.notes
-            ? `${prev.notes}\n\n--- AI Extracted ---\n${extracted.notes}`
-            : extracted.notes
-          : prev.notes,
-      }));
-
-      setExtractSuccess(`Successfully extracted info using ${selectedModel === "gemini-2.0-flash" ? "Gemini Flash" : "Gemini Pro"}`);
     } catch (error) {
-      console.error("Extraction error:", error);
-      setExtractError(error instanceof Error ? error.message : "Failed to extract information");
+      console.error("Scan error:", error);
+      setScanMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to scan website" });
     } finally {
-      setIsExtracting(false);
+      setIsScanning(false);
     }
   };
 
-  const handleLenderTypeToggle = (type: string) => {
+  const handleProductToggle = (product: string) => {
     setFormData((prev) => ({
       ...prev,
-      lender_types: prev.lender_types.includes(type)
-        ? prev.lender_types.filter((t) => t !== type)
-        : [...prev.lender_types, type],
+      funding_products: prev.funding_products.includes(product)
+        ? prev.funding_products.filter((p) => p !== product)
+        : [...prev.funding_products, product],
     }));
   };
 
@@ -258,32 +303,37 @@ export default function LenderEditModal({
         status: formData.status,
         lender_types: formData.lender_types,
         paper_types: formData.paper_types,
+        funding_products: formData.funding_products,
         primary_contact_name: formData.primary_contact_name || null,
         primary_contact_email: formData.primary_contact_email || null,
         primary_contact_phone: formData.primary_contact_phone || null,
-        commission_type: formData.commission_type || null,
-        commission_rate: formData.commission_rate ? parseFloat(formData.commission_rate) : null,
-        commission_notes: formData.commission_notes || null,
         min_funding_amount: formData.min_funding_amount ? parseFloat(formData.min_funding_amount) : null,
         max_funding_amount: formData.max_funding_amount ? parseFloat(formData.max_funding_amount) : null,
         min_time_in_business: formData.min_time_in_business ? parseInt(formData.min_time_in_business) : null,
         min_monthly_revenue: formData.min_monthly_revenue ? parseFloat(formData.min_monthly_revenue) : null,
+        min_daily_balance: formData.min_daily_balance ? parseFloat(formData.min_daily_balance) : null,
         min_credit_score: formData.min_credit_score ? parseInt(formData.min_credit_score) : null,
+        requires_collateral: formData.requires_collateral,
+        commission_structure: formData.commission_structure || null,
+        factor_rate_range: formData.factor_rate_range || null,
+        term_lengths: formData.term_lengths || null,
+        advance_rate: formData.advance_rate || null,
+        funding_speed: formData.funding_speed || null,
+        stacking_policy: formData.stacking_policy || null,
+        industries_restricted: formData.industries_restricted,
+        industries_preferred: formData.industries_preferred,
+        states_restricted: formData.states_restricted,
+        submission_email: formData.submission_email || null,
+        submission_portal_url: formData.submission_portal_url || null,
+        submission_notes: formData.submission_notes || null,
         notes: formData.notes || null,
       };
 
       if (lender) {
-        // Update existing lender
-        const { error } = await supabase
-          .from("lenders")
-          .update(payload)
-          .eq("id", lender.id);
-
+        const { error } = await supabase.from("lenders").update(payload).eq("id", lender.id);
         if (error) throw error;
       } else {
-        // Create new lender
         const { error } = await supabase.from("lenders").insert(payload);
-
         if (error) throw error;
       }
 
@@ -301,35 +351,33 @@ export default function LenderEditModal({
 
   const tabs = [
     { id: "basic", label: "Basic Info" },
-    { id: "funding", label: "Funding Details" },
-    { id: "commission", label: "Commission" },
+    { id: "requirements", label: "Requirements" },
+    { id: "terms", label: "Terms & Pricing" },
+    { id: "submission", label: "Submission" },
   ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
             {lender ? "Edit Lender" : "Add Lender"}
           </h2>
-          <button
-            onClick={onClose}
-            className="p-2 text-gray-400 hover:text-gray-600 rounded-lg"
-          >
+          <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-600 rounded-lg">
             <XMarkIcon className="w-5 h-5" />
           </button>
         </div>
 
         {/* Tabs */}
         <div className="border-b border-gray-200 dark:border-gray-700 px-6">
-          <nav className="flex gap-6">
+          <nav className="flex gap-4 overflow-x-auto">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                className={`py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                className={`py-3 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
                   activeTab === tab.id
                     ? "border-ocean-blue text-ocean-blue"
                     : "border-transparent text-gray-500 hover:text-gray-700"
@@ -346,10 +394,10 @@ export default function LenderEditModal({
           <div className="p-6 overflow-y-auto max-h-[calc(90vh-200px)]">
             {activeTab === "basic" && (
               <div className="space-y-4">
-                {/* URL Extraction with AI */}
+                {/* Website + AI Scan */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Website URL
+                    Website
                   </label>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
@@ -357,72 +405,36 @@ export default function LenderEditModal({
                       <input
                         type="text"
                         value={formData.website}
-                        onChange={(e) => setFormData({ ...formData, website: e.target.value })}
-                        placeholder="https://lender-website.com"
+                        onChange={(e) => {
+                          setFormData({ ...formData, website: e.target.value });
+                          setScanMessage(null);
+                        }}
                         className="input-field pl-9"
+                        placeholder="https://lender-website.com"
                       />
-                    </div>
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={handleExtractFromUrl}
-                        disabled={isExtracting || !formData.website}
-                        className="btn-primary flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
-                      >
-                        {isExtracting ? (
-                          <ArrowPathIcon className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <SparklesIcon className="w-4 h-4" />
-                        )}
-                        {isExtracting ? "Extracting..." : "AI Extract"}
-                      </button>
                     </div>
                     <button
                       type="button"
-                      onClick={() => setShowModelSelect(!showModelSelect)}
-                      className="p-2 text-gray-500 hover:text-ocean-blue border border-gray-300 dark:border-gray-600 rounded-lg hover:border-ocean-blue"
-                      title="Select AI Model"
+                      onClick={handleScanWebsite}
+                      disabled={isScanning || !formData.website}
+                      className="px-4 py-2 bg-gradient-to-r from-purple-600 to-ocean-blue text-white font-medium rounded-lg hover:from-purple-700 hover:to-ocean-blue/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all"
                     >
-                      <CpuChipIcon className="w-5 h-5" />
+                      {isScanning ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          <span className="hidden sm:inline">Scanning...</span>
+                        </>
+                      ) : (
+                        <>
+                          <SparklesIcon className="w-4 h-4" />
+                          <span className="hidden sm:inline">AI Scan</span>
+                        </>
+                      )}
                     </button>
                   </div>
-
-                  {/* Model Selector Dropdown */}
-                  {showModelSelect && (
-                    <div className="mt-2 p-3 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
-                      <label className="block text-xs font-medium text-gray-500 mb-2">
-                        AI Model Selection
-                      </label>
-                      <div className="flex gap-2">
-                        {GEMINI_MODELS.map((model) => (
-                          <button
-                            key={model.value}
-                            type="button"
-                            onClick={() => {
-                              setSelectedModel(model.value);
-                              setShowModelSelect(false);
-                            }}
-                            className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                              selectedModel === model.value
-                                ? "bg-ocean-blue text-white border-ocean-blue"
-                                : "bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-ocean-blue"
-                            }`}
-                          >
-                            {model.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {extractError && (
-                    <p className="text-sm mt-1 text-red-500">
-                      {extractError}
-                    </p>
-                  )}
-                  {extractSuccess && (
-                    <p className="text-sm mt-1 text-green-600">
-                      {extractSuccess}
+                  {scanMessage && (
+                    <p className={`text-sm mt-2 ${scanMessage.type === "success" ? "text-green-600" : "text-red-600"}`}>
+                      {scanMessage.text}
                     </p>
                   )}
                 </div>
@@ -448,45 +460,56 @@ export default function LenderEditModal({
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                     className="input-field"
-                    rows={3}
-                    placeholder="What products do they offer? What makes them unique?"
+                    rows={2}
                   />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Status
-                  </label>
-                  <select
-                    value={formData.status}
-                    onChange={(e) => setFormData({ ...formData, status: e.target.value as LenderStatus })}
-                    className="input-field"
-                  >
-                    {STATUS_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Status
+                    </label>
+                    <select
+                      value={formData.status}
+                      onChange={(e) => setFormData({ ...formData, status: e.target.value as LenderStatus })}
+                      className="input-field"
+                    >
+                      {STATUS_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Funding Speed
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.funding_speed}
+                      onChange={(e) => setFormData({ ...formData, funding_speed: e.target.value })}
+                      className="input-field"
+                      placeholder="Same day, 24-48 hours..."
+                    />
+                  </div>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Lender Types
+                    Funding Products
                   </label>
                   <div className="flex flex-wrap gap-2">
-                    {LENDER_TYPES.map((type) => (
+                    {FUNDING_PRODUCTS.map((product) => (
                       <button
-                        key={type.value}
+                        key={product.value}
                         type="button"
-                        onClick={() => handleLenderTypeToggle(type.value)}
+                        onClick={() => handleProductToggle(product.value)}
                         className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
-                          formData.lender_types.includes(type.value)
+                          formData.funding_products.includes(product.value)
                             ? "bg-ocean-blue text-white border-ocean-blue"
                             : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-ocean-blue"
                         }`}
                       >
-                        {type.label}
+                        {product.label}
                       </button>
                     ))}
                   </div>
@@ -505,7 +528,7 @@ export default function LenderEditModal({
                         className={`px-3 py-2 text-sm rounded-lg border transition-colors text-left ${
                           formData.paper_types.includes(type.value)
                             ? type.color + " border-2"
-                            : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-gray-400"
+                            : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600"
                         }`}
                       >
                         <span className="font-medium">{type.label}</span>
@@ -515,47 +538,37 @@ export default function LenderEditModal({
                   </div>
                 </div>
 
-                <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
-                  <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3">
-                    Primary Contact
-                  </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">Name</label>
-                      <input
-                        type="text"
-                        value={formData.primary_contact_name}
-                        onChange={(e) => setFormData({ ...formData, primary_contact_name: e.target.value })}
-                        className="input-field text-sm"
-                        placeholder="John Smith"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">Email</label>
-                      <input
-                        type="email"
-                        value={formData.primary_contact_email}
-                        onChange={(e) => setFormData({ ...formData, primary_contact_email: e.target.value })}
-                        className="input-field text-sm"
-                        placeholder="john@lender.com"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">Phone</label>
-                      <input
-                        type="tel"
-                        value={formData.primary_contact_phone}
-                        onChange={(e) => setFormData({ ...formData, primary_contact_phone: e.target.value })}
-                        className="input-field text-sm"
-                        placeholder="(555) 123-4567"
-                      />
-                    </div>
+                {/* Contact */}
+                <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+                  <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3">Primary Contact</h4>
+                  <div className="grid grid-cols-3 gap-3">
+                    <input
+                      type="text"
+                      value={formData.primary_contact_name}
+                      onChange={(e) => setFormData({ ...formData, primary_contact_name: e.target.value })}
+                      className="input-field text-sm"
+                      placeholder="Name"
+                    />
+                    <input
+                      type="email"
+                      value={formData.primary_contact_email}
+                      onChange={(e) => setFormData({ ...formData, primary_contact_email: e.target.value })}
+                      className="input-field text-sm"
+                      placeholder="Email"
+                    />
+                    <input
+                      type="tel"
+                      value={formData.primary_contact_phone}
+                      onChange={(e) => setFormData({ ...formData, primary_contact_phone: e.target.value })}
+                      className="input-field text-sm"
+                      placeholder="Phone"
+                    />
                   </div>
                 </div>
               </div>
             )}
 
-            {activeTab === "funding" && (
+            {activeTab === "requirements" && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -590,21 +603,18 @@ export default function LenderEditModal({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Min Time in Business
+                      Min Time in Business (months)
                     </label>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        value={formData.min_time_in_business}
-                        onChange={(e) => setFormData({ ...formData, min_time_in_business: e.target.value })}
-                        className="input-field pr-16"
-                        placeholder="6"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">months</span>
-                    </div>
+                    <input
+                      type="number"
+                      value={formData.min_time_in_business}
+                      onChange={(e) => setFormData({ ...formData, min_time_in_business: e.target.value })}
+                      className="input-field"
+                      placeholder="6"
+                    />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -621,6 +631,9 @@ export default function LenderEditModal({
                       />
                     </div>
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                       Min Credit Score
@@ -633,6 +646,132 @@ export default function LenderEditModal({
                       placeholder="500"
                     />
                   </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Min Daily Balance
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                      <input
+                        type="number"
+                        value={formData.min_daily_balance}
+                        onChange={(e) => setFormData({ ...formData, min_daily_balance: e.target.value })}
+                        className="input-field pl-7"
+                        placeholder="1000"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Stacking Policy
+                    </label>
+                    <select
+                      value={formData.stacking_policy}
+                      onChange={(e) => setFormData({ ...formData, stacking_policy: e.target.value })}
+                      className="input-field"
+                    >
+                      {STACKING_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center pt-6">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.requires_collateral}
+                        onChange={(e) => setFormData({ ...formData, requires_collateral: e.target.checked })}
+                        className="w-4 h-4 rounded border-gray-300 text-ocean-blue focus:ring-ocean-blue"
+                      />
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Requires Collateral</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Industries Restricted (won't fund)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.industries_restricted.join(", ")}
+                    onChange={(e) => setFormData({ ...formData, industries_restricted: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+                    className="input-field"
+                    placeholder="Gambling, Cannabis, Adult..."
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Industries Preferred (specialize in)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.industries_preferred.join(", ")}
+                    onChange={(e) => setFormData({ ...formData, industries_preferred: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+                    className="input-field"
+                    placeholder="Restaurants, Retail, Medical..."
+                  />
+                </div>
+              </div>
+            )}
+
+            {activeTab === "terms" && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Commission Structure
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.commission_structure}
+                    onChange={(e) => setFormData({ ...formData, commission_structure: e.target.value })}
+                    className="input-field"
+                    placeholder="2-4 points, 10% of funded amount..."
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Factor Rate Range
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.factor_rate_range}
+                      onChange={(e) => setFormData({ ...formData, factor_rate_range: e.target.value })}
+                      className="input-field"
+                      placeholder="1.15 - 1.45"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Advance Rate
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.advance_rate}
+                      onChange={(e) => setFormData({ ...formData, advance_rate: e.target.value })}
+                      className="input-field"
+                      placeholder="Up to 150% of monthly revenue"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Term Lengths
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.term_lengths}
+                    onChange={(e) => setFormData({ ...formData, term_lengths: e.target.value })}
+                    className="input-field"
+                    placeholder="3-18 months"
+                  />
                 </div>
 
                 <div>
@@ -643,60 +782,63 @@ export default function LenderEditModal({
                     value={formData.notes}
                     onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
                     className="input-field"
-                    rows={4}
-                    placeholder="Additional notes about this lender's requirements, preferences, etc."
+                    rows={6}
                   />
                 </div>
               </div>
             )}
 
-            {activeTab === "commission" && (
+            {activeTab === "submission" && (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Commission Type
-                    </label>
-                    <select
-                      value={formData.commission_type}
-                      onChange={(e) => setFormData({ ...formData, commission_type: e.target.value })}
-                      className="input-field"
-                    >
-                      {COMMISSION_TYPES.map((type) => (
-                        <option key={type.value} value={type.value}>
-                          {type.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Commission Rate
-                    </label>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formData.commission_rate}
-                        onChange={(e) => setFormData({ ...formData, commission_rate: e.target.value })}
-                        className="input-field pr-8"
-                        placeholder="10"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
-                    </div>
-                  </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Submission Email
+                  </label>
+                  <input
+                    type="email"
+                    value={formData.submission_email}
+                    onChange={(e) => setFormData({ ...formData, submission_email: e.target.value })}
+                    className="input-field"
+                    placeholder="submissions@lender.com"
+                  />
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    Commission Notes
+                    Submission Portal URL
+                  </label>
+                  <input
+                    type="url"
+                    value={formData.submission_portal_url}
+                    onChange={(e) => setFormData({ ...formData, submission_portal_url: e.target.value })}
+                    className="input-field"
+                    placeholder="https://portal.lender.com"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    States Restricted
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.states_restricted.join(", ")}
+                    onChange={(e) => setFormData({ ...formData, states_restricted: e.target.value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean) })}
+                    className="input-field"
+                    placeholder="ND, SD, VT..."
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Submission Notes
                   </label>
                   <textarea
-                    value={formData.commission_notes}
-                    onChange={(e) => setFormData({ ...formData, commission_notes: e.target.value })}
+                    value={formData.submission_notes}
+                    onChange={(e) => setFormData({ ...formData, submission_notes: e.target.value })}
                     className="input-field"
                     rows={4}
-                    placeholder="Details about commission structure, tiers, bonuses, etc."
+                    placeholder="Required documents, submission process notes..."
                   />
                 </div>
               </div>

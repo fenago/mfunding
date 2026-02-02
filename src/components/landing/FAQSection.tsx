@@ -196,10 +196,10 @@ export default function FAQSection() {
               </motion.span>
             </a>
             <a
-              href="tel:+18005550123"
+              href="tel:+19546679477"
               className="text-ocean-blue hover:text-mint-green transition-colors font-medium"
             >
-              Or call us: (800) 555-0123
+              Or call us: 954-667-9477
             </a>
           </div>
         </motion.div>

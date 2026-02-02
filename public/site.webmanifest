@@ -38,21 +38,5 @@
       "sizes": "180x180",
       "type": "image/png"
     }
-  ],
-  "screenshots": [
-    {
-      "src": "/screenshot-wide.jpg",
-      "sizes": "1280x720",
-      "type": "image/jpeg",
-      "form_factor": "wide",
-      "label": "Momentum Funding Homepage"
-    },
-    {
-      "src": "/screenshot-mobile.jpg",
-      "sizes": "750x1334",
-      "type": "image/jpeg",
-      "form_factor": "narrow",
-      "label": "Momentum Funding Mobile"
-    }
   ]
 }

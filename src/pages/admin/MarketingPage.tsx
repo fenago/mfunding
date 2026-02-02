@@ -6,13 +6,20 @@ import {
   MegaphoneIcon,
   GlobeAltIcon,
   CurrencyDollarIcon,
-  PencilIcon,
   BookOpenIcon,
+  ArrowTopRightOnSquareIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import VendorEditModal from "../../components/marketing/VendorEditModal";
 
 type VendorStatus = "researching" | "testing" | "active" | "paused" | "discontinued";
+
+interface PricingProduct {
+  product: string;
+  price: string;
+  minimum: string;
+  notes: string;
+}
 
 interface MarketingVendor {
   id: string;
@@ -31,14 +38,23 @@ interface MarketingVendor {
   total_revenue: number;
   notes: string | null;
   created_at: string;
+  // Enhanced fields
+  pricing_products: PricingProduct[] | null;
+  minimum_order: string | null;
+  return_policy: string | null;
+  exclusivity: string | null;
+  lead_generation_method: string | null;
+  volume_available: string | null;
+  industries_served: string[] | null;
+  additional_services: string[] | null;
 }
 
-const STATUS_CONFIG: Record<VendorStatus, { label: string; color: string; priority: number }> = {
-  active: { label: "Active", color: "bg-green-100 text-green-800", priority: 1 },
-  testing: { label: "Testing", color: "bg-blue-100 text-blue-800", priority: 2 },
-  researching: { label: "Researching", color: "bg-gray-100 text-gray-800", priority: 3 },
-  paused: { label: "Paused", color: "bg-yellow-100 text-yellow-800", priority: 4 },
-  discontinued: { label: "Discontinued", color: "bg-red-100 text-red-800", priority: 5 },
+const STATUS_CONFIG: Record<VendorStatus, { label: string; color: string; borderColor: string; priority: number }> = {
+  active: { label: "Active", color: "bg-green-100 text-green-800", borderColor: "border-l-green-500", priority: 1 },
+  testing: { label: "Testing", color: "bg-blue-100 text-blue-800", borderColor: "border-l-blue-500", priority: 2 },
+  researching: { label: "Researching", color: "bg-gray-100 text-gray-800", borderColor: "border-l-gray-400", priority: 3 },
+  paused: { label: "Paused", color: "bg-yellow-100 text-yellow-800", borderColor: "border-l-yellow-500", priority: 4 },
+  discontinued: { label: "Discontinued", color: "bg-red-100 text-red-800", borderColor: "border-l-red-500", priority: 5 },
 };
 
 // Status order for display (most active/relevant first)
@@ -228,65 +244,62 @@ export default function MarketingPage() {
                 {vendorsInGroup.map((vendor) => {
                   const roi = calculateROI(vendor);
                   const conversionRate = calculateConversionRate(vendor);
+                  const statusConfig = STATUS_CONFIG[vendor.status];
 
                   return (
                     <div
                       key={vendor.id}
-                      className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 hover:shadow-lg transition-shadow"
+                      onClick={() => {
+                        setSelectedVendor(vendor);
+                        setIsModalOpen(true);
+                      }}
+                      className={`bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 border-l-4 ${statusConfig.borderColor} hover:shadow-lg hover:border-ocean-blue/30 transition-all cursor-pointer`}
                     >
                       <div className="flex items-start justify-between mb-3">
                         <h3 className="font-semibold text-gray-900 dark:text-white">
                           {vendor.vendor_name}
                         </h3>
-                        <button
-                          onClick={() => {
-                            setSelectedVendor(vendor);
-                            setIsModalOpen(true);
-                          }}
-                          className="p-1 text-gray-400 hover:text-ocean-blue rounded"
-                          title="Edit"
-                        >
-                          <PencilIcon className="w-4 h-4" />
-                        </button>
                       </div>
 
                       {vendor.website && (
-                        <a
-                          href={vendor.website}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-2 text-sm text-ocean-blue mb-2"
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(vendor.website!, "_blank");
+                          }}
+                          className="flex items-center gap-2 text-sm text-ocean-blue hover:text-ocean-blue/80 mb-2 cursor-pointer"
                         >
                           <GlobeAltIcon className="w-4 h-4" />
-                          {vendor.website.replace(/^https?:\/\//, "")}
-                        </a>
+                          <span className="truncate">{vendor.website.replace(/^https?:\/\//, "")}</span>
+                          <ArrowTopRightOnSquareIcon className="w-3 h-3 flex-shrink-0" />
+                        </div>
                       )}
 
                       {vendor.cost_per_lead && (
                         <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 mb-3">
-                          <CurrencyDollarIcon className="w-4 h-4" />
-                          ${vendor.cost_per_lead}/lead
+                          <CurrencyDollarIcon className="w-4 h-4 text-mint-green" />
+                          <span className="font-medium">${vendor.cost_per_lead}/lead</span>
                         </div>
                       )}
 
                       {/* Metrics */}
                       <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                         <div className="text-center">
-                          <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                          <p className="text-lg font-bold text-gray-900 dark:text-white">
                             {vendor.leads_purchased}
                           </p>
                           <p className="text-xs text-gray-500">Leads</p>
                         </div>
                         <div className="text-center">
-                          <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                          <p className="text-lg font-bold text-gray-900 dark:text-white">
                             {conversionRate.toFixed(1)}%
                           </p>
                           <p className="text-xs text-gray-500">Conv.</p>
                         </div>
                         <div className="text-center">
                           <p
-                            className={`text-lg font-semibold ${
-                              roi >= 0 ? "text-green-600" : "text-red-600"
+                            className={`text-lg font-bold ${
+                              roi >= 0 ? "text-emerald-600" : "text-red-600"
                             }`}
                           >
                             {roi >= 0 ? "+" : ""}
@@ -297,11 +310,11 @@ export default function MarketingPage() {
                       </div>
 
                       {vendor.lead_types && vendor.lead_types.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-3">
+                        <div className="flex flex-wrap gap-1.5 mt-3">
                           {vendor.lead_types.map((type) => (
                             <span
                               key={type}
-                              className="px-2 py-0.5 text-xs bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded"
+                              className="px-2.5 py-1 text-xs bg-ocean-blue/10 text-ocean-blue dark:bg-ocean-blue/20 dark:text-ocean-blue font-medium rounded-full"
                             >
                               {type.replace(/_/g, " ")}
                             </span>
