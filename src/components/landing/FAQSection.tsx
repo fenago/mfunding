@@ -93,7 +93,7 @@ function FAQItem({ faq, isOpen, onClick, index }: {
             transition={{ duration: 0.3, ease: 'easeInOut' }}
             className="overflow-hidden"
           >
-            <p className="pb-6 text-text-secondary leading-relaxed pr-12">
+            <p className="pb-6 text-gray-600 dark:text-gray-300 leading-relaxed pr-12">
               {faq.answer}
             </p>
           </motion.div>

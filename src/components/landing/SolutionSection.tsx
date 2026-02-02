@@ -206,7 +206,7 @@ export default function SolutionSection() {
                 </motion.div>
                 <div>
                   <p className="font-semibold text-midnight-blue dark:text-white">The Bank Process</p>
-                  <p className="text-sm text-text-secondary">Weeks to months</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Weeks to months</p>
                 </div>
               </div>
 
@@ -220,7 +220,7 @@ export default function SolutionSection() {
                       viewport={{ once: true }}
                       transition={{ delay: index * 0.05 }}
                       whileHover={{ scale: 1.05, backgroundColor: 'rgba(239,68,68,0.1)' }}
-                      className="bg-white dark:bg-midnight-blue/50 px-3 py-1.5 rounded-md text-sm text-text-secondary border border-gray-200 dark:border-white/10 cursor-default transition-colors"
+                      className="bg-white dark:bg-midnight-blue/50 px-3 py-1.5 rounded-md text-sm text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-white/10 cursor-default transition-colors"
                     >
                       {step}
                     </motion.div>
