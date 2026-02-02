@@ -206,13 +206,13 @@ export default function ProblemSection() {
           >
             The Problem
           </motion.span>
-          <h2 className="heading-2 text-gray-900 dark:text-white mb-4">
+          <h2 className="heading-2 text-heading mb-4">
             We Know What You're{' '}
             <motion.span
               className="relative inline-block"
               whileHover={{ scale: 1.02 }}
             >
-              <span className="relative z-10 text-gray-900 dark:text-white">Going Through.</span>
+              <span className="relative z-10 text-heading">Going Through.</span>
               <motion.span
                 className="absolute bottom-0 left-0 w-full h-3 bg-red-500/20 -z-10"
                 initial={{ scaleX: 0 }}
@@ -271,13 +271,13 @@ export default function ProblemSection() {
 
                   {/* Title & Description */}
                   <motion.h3
-                    className="text-xl font-semibold text-gray-900 dark:text-white mb-3"
+                    className="text-xl font-semibold text-heading mb-3"
                     whileHover={{ x: 3 }}
                     transition={{ duration: 0.2 }}
                   >
                     {problem.title}
                   </motion.h3>
-                  <p className="text-gray-600 dark:text-gray-300 mb-6 leading-relaxed">
+                  <p className="text-body mb-6 leading-relaxed">
                     {problem.description}
                   </p>
 
@@ -286,7 +286,7 @@ export default function ProblemSection() {
                     <div className="mb-2">
                       <AnimatedStat value={problem.stat} suffix={problem.statSuffix} color={problem.color} />
                     </div>
-                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                    <p className="text-sm text-body">
                       {problem.statLabel}
                     </p>
                   </div>

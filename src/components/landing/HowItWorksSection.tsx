@@ -142,7 +142,7 @@ function FlipCard({ step, index }: { step: typeof steps[0]; index: number }) {
           </h3>
 
           {/* Description */}
-          <p className="text-gray-600 dark:text-gray-300 leading-relaxed mb-6">
+          <p className="text-body leading-relaxed mb-6">
             {step.description}
           </p>
 
@@ -158,7 +158,7 @@ function FlipCard({ step, index }: { step: typeof steps[0]; index: number }) {
 
           {/* Click to flip hint */}
           <motion.div
-            className="absolute bottom-4 right-4 text-xs text-gray-600 dark:text-gray-300 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute bottom-4 right-4 text-xs text-body flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
             animate={{ x: [0, 5, 0] }}
             transition={{ duration: 1.5, repeat: Infinity }}
           >
@@ -367,7 +367,7 @@ export default function HowItWorksSection() {
                     <h3 className="text-2xl font-semibold text-midnight-blue mb-3">
                       Transparent Pricing, No Surprises
                     </h3>
-                    <p className="text-gray-600 dark:text-gray-300 leading-relaxed">
+                    <p className="text-body leading-relaxed">
                       Our fees are built into the total repayment amount. There are no hidden costs or
                       application fees. You'll know the full cost of your funding upfront before you commit.
                     </p>

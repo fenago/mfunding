@@ -109,7 +109,7 @@ export default function SolutionSection() {
               The Solution
             </motion.span>
 
-            <h2 className="heading-2 text-gray-900 dark:text-white mb-6">
+            <h2 className="heading-2 text-heading mb-6">
               We Say{' '}
               <motion.span
                 className="inline-block text-mint-green"
@@ -139,7 +139,7 @@ export default function SolutionSection() {
               the people who get their hands dirty every day. We don't care about your credit score
               from 2019. We look at your business{' '}
               <motion.span
-                className="font-semibold text-gray-900 dark:text-white relative inline-block"
+                className="font-semibold text-heading relative inline-block"
                 whileHover={{ scale: 1.02 }}
               >
                 right now
@@ -171,7 +171,7 @@ export default function SolutionSection() {
 
               <div className="relative z-10">
                 <motion.p
-                  className="text-lg font-semibold text-gray-900 dark:text-white mb-2"
+                  className="text-lg font-semibold text-heading mb-2"
                   whileHover={{ x: 3 }}
                 >
                   Your business tells a story. We actually read it.
@@ -205,8 +205,8 @@ export default function SolutionSection() {
                   <XMarkIcon className="w-5 h-5 text-error" />
                 </motion.div>
                 <div>
-                  <p className="font-semibold text-gray-900 dark:text-white">The Bank Process</p>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Weeks to months</p>
+                  <p className="font-semibold text-heading">The Bank Process</p>
+                  <p className="text-sm text-body">Weeks to months</p>
                 </div>
               </div>
 
@@ -220,7 +220,7 @@ export default function SolutionSection() {
                       viewport={{ once: true }}
                       transition={{ delay: index * 0.05 }}
                       whileHover={{ scale: 1.05, backgroundColor: 'rgba(239,68,68,0.1)' }}
-                      className="bg-white dark:bg-midnight-blue/50 px-3 py-1.5 rounded-md text-sm text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-white/10 cursor-default transition-colors"
+                      className="bg-white dark:bg-midnight-blue/50 px-3 py-1.5 rounded-md text-sm text-body border border-gray-200 dark:border-white/10 cursor-default transition-colors"
                     >
                       {step}
                     </motion.div>
@@ -287,7 +287,7 @@ export default function SolutionSection() {
                   <CheckIcon className="w-5 h-5 text-mint-green" />
                 </motion.div>
                 <div>
-                  <p className="font-semibold text-gray-900 dark:text-white">The Momentum Process</p>
+                  <p className="font-semibold text-heading">The Momentum Process</p>
                   <motion.p
                     className="text-sm text-mint-green font-medium"
                     animate={{ opacity: [0.7, 1, 0.7] }}
@@ -333,7 +333,7 @@ export default function SolutionSection() {
                           />
                         )}
                       </motion.div>
-                      <p className="text-sm font-medium text-gray-900 dark:text-white">{item.step}</p>
+                      <p className="text-sm font-medium text-heading">{item.step}</p>
                       <p className="text-xs text-text-secondary">{item.time}</p>
                     </motion.div>
 

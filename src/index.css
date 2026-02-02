@@ -551,9 +551,22 @@ body {
   background-color: #111D2E;
 }
 
-/* Dark mode text color override - properly scoped */
-.dark .text-midnight-blue:not([class*="dark:"]) {
+/* Reliable heading text class for both themes */
+.text-heading {
+  color: #111827;
+}
+
+.dark .text-heading {
   color: #F9FAFB;
+}
+
+/* Reliable body text class for both themes */
+.text-body {
+  color: #4B5563;
+}
+
+.dark .text-body {
+  color: #D1D5DB;
 }
 
 .dark .text-text-secondary {

@@ -160,7 +160,7 @@ function FundingCard({ option, index }: { option: typeof fundingOptions[0]; inde
           </motion.div>
 
           {/* Description */}
-          <p className="text-gray-600 dark:text-gray-300 mb-6 leading-relaxed">
+          <p className="text-body mb-6 leading-relaxed">
             {option.description}
           </p>
 
@@ -174,7 +174,7 @@ function FundingCard({ option, index }: { option: typeof fundingOptions[0]; inde
               >
                 {option.metric}
               </motion.p>
-              <p className="text-xs text-gray-600 dark:text-gray-300">{option.metricLabel}</p>
+              <p className="text-xs text-body">{option.metricLabel}</p>
             </div>
             <div>
               <motion.p
@@ -184,7 +184,7 @@ function FundingCard({ option, index }: { option: typeof fundingOptions[0]; inde
               >
                 {option.speed}
               </motion.p>
-              <p className="text-xs text-gray-600 dark:text-gray-300">Funding speed</p>
+              <p className="text-xs text-body">Funding speed</p>
             </div>
           </div>
 
