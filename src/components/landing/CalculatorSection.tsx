@@ -110,9 +110,9 @@ export default function CalculatorSection() {
   const [frequency, setFrequency] = useState<'daily' | 'weekly'>('daily');
 
   const totalRepayment = amount * factorRate;
-  const totalDays = term * 30; // approximate days in term
-  const totalWeeks = term * 4.33; // approximate weeks in term
-  const dailyPayment = Math.round(totalRepayment / totalDays);
+  const totalBusinessDays = term * 20; // ~20 business days per month
+  const totalWeeks = term * 4; // 4 weeks per month
+  const dailyPayment = Math.round(totalRepayment / totalBusinessDays);
   const weeklyPayment = Math.round(totalRepayment / totalWeeks);
   const payment = frequency === 'daily' ? dailyPayment : weeklyPayment;
 
