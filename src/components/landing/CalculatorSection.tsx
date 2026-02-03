@@ -104,17 +104,18 @@ function RangeSlider({
 }
 
 export default function CalculatorSection() {
-  const [amount, setAmount] = useState(20000);
+  const [amount, setAmount] = useState(50000);
   const [factorRate, setFactorRate] = useState(1.29);
-  const [term, setTerm] = useState(10);
-  const [frequency, setFrequency] = useState<'daily' | 'weekly'>('daily');
+  const [term, setTerm] = useState(18);
+  const [frequency, setFrequency] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
 
   const totalRepayment = amount * factorRate;
   const totalBusinessDays = term * 20; // ~20 business days per month
   const totalWeeks = term * 4; // 4 weeks per month
   const dailyPayment = Math.round(totalRepayment / totalBusinessDays);
   const weeklyPayment = Math.round(totalRepayment / totalWeeks);
-  const payment = frequency === 'daily' ? dailyPayment : weeklyPayment;
+  const monthlyPayment = Math.round(totalRepayment / term);
+  const payment = frequency === 'daily' ? dailyPayment : frequency === 'weekly' ? weeklyPayment : monthlyPayment;
 
   const handleAmountInput = (val: string) => {
     const num = parseInt(val.replace(/,/g, ''));
@@ -321,6 +322,16 @@ export default function CalculatorSection() {
                       >
                         Weekly
                       </button>
+                      <button
+                        onClick={() => setFrequency('monthly')}
+                        className={`px-5 py-2 text-sm font-semibold transition-colors ${
+                          frequency === 'monthly'
+                            ? 'bg-[#4CAF50] text-white'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                        }`}
+                      >
+                        Monthly
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -328,7 +339,7 @@ export default function CalculatorSection() {
                 {/* Result */}
                 <div className="flex items-center justify-between pt-4 border-t border-gray-100 dark:border-gray-700">
                   <p className="text-3xl font-bold text-[#4CAF50]">
-                    ${formatCurrency(payment)}/{frequency === 'daily' ? 'day' : 'week'}
+                    ${formatCurrency(payment)}/{frequency === 'daily' ? 'day' : frequency === 'weekly' ? 'wk' : 'mo'}
                   </p>
                   <a
                     href="#apply"
