@@ -53,6 +53,19 @@ interface Lender {
   min_time_in_business: number | null;
   min_monthly_revenue: number | null;
   min_credit_score: number | null;
+  min_daily_balance: number | null;
+  funding_speed: string | null;
+  factor_rate_range: string | null;
+  term_lengths: string | null;
+  advance_rate: string | null;
+  stacking_policy: string | null;
+  requires_collateral: boolean | null;
+  industries_restricted: string[] | null;
+  industries_preferred: string[] | null;
+  states_restricted: string[] | null;
+  submission_email: string | null;
+  submission_portal_url: string | null;
+  submission_notes: string | null;
   notes: string | null;
   created_at: string;
 }
@@ -126,6 +139,19 @@ interface LenderFormData {
   min_time_in_business: string;
   min_monthly_revenue: string;
   min_credit_score: string;
+  min_daily_balance: string;
+  funding_speed: string;
+  factor_rate_range: string;
+  term_lengths: string;
+  advance_rate: string;
+  stacking_policy: string;
+  requires_collateral: boolean;
+  industries_restricted: string;
+  industries_preferred: string;
+  states_restricted: string;
+  submission_email: string;
+  submission_portal_url: string;
+  submission_notes: string;
   notes: string;
 }
 
@@ -147,6 +173,19 @@ const initialFormData: LenderFormData = {
   min_time_in_business: "",
   min_monthly_revenue: "",
   min_credit_score: "",
+  min_daily_balance: "",
+  funding_speed: "",
+  factor_rate_range: "",
+  term_lengths: "",
+  advance_rate: "",
+  stacking_policy: "",
+  requires_collateral: false,
+  industries_restricted: "",
+  industries_preferred: "",
+  states_restricted: "",
+  submission_email: "",
+  submission_portal_url: "",
+  submission_notes: "",
   notes: "",
 };
 
@@ -201,6 +240,19 @@ export default function LenderDetailPage() {
         min_time_in_business: lender.min_time_in_business?.toString() || "",
         min_monthly_revenue: lender.min_monthly_revenue?.toString() || "",
         min_credit_score: lender.min_credit_score?.toString() || "",
+        min_daily_balance: lender.min_daily_balance?.toString() || "",
+        funding_speed: lender.funding_speed || "",
+        factor_rate_range: lender.factor_rate_range || "",
+        term_lengths: lender.term_lengths || "",
+        advance_rate: lender.advance_rate || "",
+        stacking_policy: lender.stacking_policy || "",
+        requires_collateral: lender.requires_collateral || false,
+        industries_restricted: lender.industries_restricted?.join(", ") || "",
+        industries_preferred: lender.industries_preferred?.join(", ") || "",
+        states_restricted: lender.states_restricted?.join(", ") || "",
+        submission_email: lender.submission_email || "",
+        submission_portal_url: lender.submission_portal_url || "",
+        submission_notes: lender.submission_notes || "",
         notes: lender.notes || "",
       });
     }
@@ -300,11 +352,40 @@ export default function LenderDetailPage() {
       if (extractedData.lender_types && extractedData.lender_types.length > 0) {
         updates.lender_types = extractedData.lender_types;
       }
+      if (extractedData.paper_types && extractedData.paper_types.length > 0) {
+        updates.paper_types = extractedData.paper_types as PaperType[];
+      }
       if (extractedData.min_funding_amount) updates.min_funding_amount = extractedData.min_funding_amount;
       if (extractedData.max_funding_amount) updates.max_funding_amount = extractedData.max_funding_amount;
       if (extractedData.min_time_in_business) updates.min_time_in_business = extractedData.min_time_in_business;
       if (extractedData.min_monthly_revenue) updates.min_monthly_revenue = extractedData.min_monthly_revenue;
       if (extractedData.min_credit_score) updates.min_credit_score = extractedData.min_credit_score;
+      if (extractedData.min_daily_balance) updates.min_daily_balance = extractedData.min_daily_balance;
+      if (extractedData.commission_type) updates.commission_type = extractedData.commission_type;
+      if (extractedData.commission_rate) updates.commission_rate = extractedData.commission_rate;
+      if (extractedData.commission_notes) updates.commission_notes = extractedData.commission_notes;
+      if (extractedData.funding_speed) updates.funding_speed = extractedData.funding_speed;
+      if (extractedData.factor_rate_range) updates.factor_rate_range = extractedData.factor_rate_range;
+      if (extractedData.term_lengths) updates.term_lengths = extractedData.term_lengths;
+      if (extractedData.advance_rate) updates.advance_rate = extractedData.advance_rate;
+      if (extractedData.stacking_policy) updates.stacking_policy = extractedData.stacking_policy;
+      if (extractedData.requires_collateral !== undefined && extractedData.requires_collateral !== null) {
+        updates.requires_collateral = extractedData.requires_collateral;
+      }
+      if (extractedData.industries_restricted && extractedData.industries_restricted.length > 0) {
+        updates.industries_restricted = extractedData.industries_restricted;
+      }
+      if (extractedData.industries_preferred && extractedData.industries_preferred.length > 0) {
+        updates.industries_preferred = extractedData.industries_preferred;
+      }
+      if (extractedData.states_restricted && extractedData.states_restricted.length > 0) {
+        updates.states_restricted = extractedData.states_restricted;
+      }
+      if (extractedData.submission_email) updates.submission_email = extractedData.submission_email;
+      if (extractedData.submission_portal_url) updates.submission_portal_url = extractedData.submission_portal_url;
+      if (extractedData.primary_contact_name) updates.primary_contact_name = extractedData.primary_contact_name;
+      if (extractedData.primary_contact_email) updates.primary_contact_email = extractedData.primary_contact_email;
+      if (extractedData.primary_contact_phone) updates.primary_contact_phone = extractedData.primary_contact_phone;
       if (extractedData.notes) {
         updates.notes = lender.notes
           ? `${lender.notes}\n\n--- AI Extracted (${new Date().toLocaleDateString()}) ---\n${extractedData.notes}`
@@ -402,6 +483,19 @@ export default function LenderDetailPage() {
         min_time_in_business: formData.min_time_in_business ? parseInt(formData.min_time_in_business) : null,
         min_monthly_revenue: formData.min_monthly_revenue ? parseFloat(formData.min_monthly_revenue) : null,
         min_credit_score: formData.min_credit_score ? parseInt(formData.min_credit_score) : null,
+        min_daily_balance: formData.min_daily_balance ? parseInt(formData.min_daily_balance) : null,
+        funding_speed: formData.funding_speed || null,
+        factor_rate_range: formData.factor_rate_range || null,
+        term_lengths: formData.term_lengths || null,
+        advance_rate: formData.advance_rate || null,
+        stacking_policy: formData.stacking_policy || null,
+        requires_collateral: formData.requires_collateral || false,
+        industries_restricted: formData.industries_restricted ? formData.industries_restricted.split(",").map(s => s.trim()).filter(Boolean) : null,
+        industries_preferred: formData.industries_preferred ? formData.industries_preferred.split(",").map(s => s.trim()).filter(Boolean) : null,
+        states_restricted: formData.states_restricted ? formData.states_restricted.split(",").map(s => s.trim()).filter(Boolean) : null,
+        submission_email: formData.submission_email || null,
+        submission_portal_url: formData.submission_portal_url || null,
+        submission_notes: formData.submission_notes || null,
         notes: formData.notes || null,
       };
 
@@ -875,6 +969,218 @@ export default function LenderDetailPage() {
                 className="input-field"
                 rows={3}
                 placeholder="Details about commission structure, tiers, bonuses, etc."
+              />
+            </div>
+          </div>
+
+          {/* Terms & Policies Section */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-purple-500 rounded-full"></span>
+              Terms & Policies
+            </h3>
+
+            <div className="grid md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Funding Speed
+                </label>
+                <input
+                  type="text"
+                  value={formData.funding_speed}
+                  onChange={(e) => setFormData({ ...formData, funding_speed: e.target.value })}
+                  className="input-field"
+                  placeholder="e.g. 24-48 hours"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Factor Rate Range
+                </label>
+                <input
+                  type="text"
+                  value={formData.factor_rate_range}
+                  onChange={(e) => setFormData({ ...formData, factor_rate_range: e.target.value })}
+                  className="input-field"
+                  placeholder="e.g. 1.15 - 1.45"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Term Lengths
+                </label>
+                <input
+                  type="text"
+                  value={formData.term_lengths}
+                  onChange={(e) => setFormData({ ...formData, term_lengths: e.target.value })}
+                  className="input-field"
+                  placeholder="e.g. 3-18 months"
+                />
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-4 mt-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Advance Rate
+                </label>
+                <input
+                  type="text"
+                  value={formData.advance_rate}
+                  onChange={(e) => setFormData({ ...formData, advance_rate: e.target.value })}
+                  className="input-field"
+                  placeholder="e.g. Up to 150% of monthly revenue"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Stacking Policy
+                </label>
+                <input
+                  type="text"
+                  value={formData.stacking_policy}
+                  onChange={(e) => setFormData({ ...formData, stacking_policy: e.target.value })}
+                  className="input-field"
+                  placeholder="e.g. No stacking, 2nd position OK"
+                />
+              </div>
+              <div className="flex items-end gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Min Daily Balance
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                    <input
+                      type="number"
+                      value={formData.min_daily_balance}
+                      onChange={(e) => setFormData({ ...formData, min_daily_balance: e.target.value })}
+                      className="input-field pl-7"
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 pb-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.requires_collateral}
+                    onChange={(e) => setFormData({ ...formData, requires_collateral: e.target.checked })}
+                    className="w-4 h-4 text-ocean-blue rounded border-gray-300 focus:ring-ocean-blue"
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">Requires Collateral</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* Industry & Geographic Coverage */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-teal-500 rounded-full"></span>
+              Industry & Geographic Coverage
+            </h3>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Preferred Industries
+                </label>
+                <input
+                  type="text"
+                  value={formData.industries_preferred}
+                  onChange={(e) => setFormData({ ...formData, industries_preferred: e.target.value })}
+                  className="input-field"
+                  placeholder="e.g. Construction, Restaurant, Trucking"
+                />
+                <p className="text-xs text-gray-400 mt-1">Comma-separated list</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Restricted Industries
+                </label>
+                <input
+                  type="text"
+                  value={formData.industries_restricted}
+                  onChange={(e) => setFormData({ ...formData, industries_restricted: e.target.value })}
+                  className="input-field"
+                  placeholder="e.g. Cannabis, Adult Entertainment, Gambling"
+                />
+                <p className="text-xs text-gray-400 mt-1">Comma-separated list</p>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Restricted States
+              </label>
+              <input
+                type="text"
+                value={formData.states_restricted}
+                onChange={(e) => setFormData({ ...formData, states_restricted: e.target.value })}
+                className="input-field"
+                placeholder="e.g. NY, CA, VT"
+              />
+              <p className="text-xs text-gray-400 mt-1">Comma-separated state abbreviations</p>
+            </div>
+          </div>
+
+          {/* Deal Submission */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-indigo-500 rounded-full"></span>
+              Deal Submission
+            </h3>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Submission Email
+                </label>
+                <input
+                  type="email"
+                  value={formData.submission_email}
+                  onChange={(e) => setFormData({ ...formData, submission_email: e.target.value })}
+                  className="input-field"
+                  placeholder="deals@lender.com"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Broker Portal URL
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={formData.submission_portal_url}
+                    onChange={(e) => setFormData({ ...formData, submission_portal_url: e.target.value })}
+                    className="input-field flex-1"
+                    placeholder="https://portal.lender.com"
+                  />
+                  {formData.submission_portal_url && (
+                    <a
+                      href={formData.submission_portal_url.startsWith("http") ? formData.submission_portal_url : `https://${formData.submission_portal_url}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-2 bg-ocean-blue text-white rounded-lg hover:bg-ocean-blue/90 text-sm flex items-center gap-1"
+                    >
+                      <GlobeAltIcon className="w-4 h-4" />
+                      Open
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Submission Notes
+              </label>
+              <textarea
+                value={formData.submission_notes}
+                onChange={(e) => setFormData({ ...formData, submission_notes: e.target.value })}
+                className="input-field"
+                rows={2}
+                placeholder="How to submit deals, required documents, etc."
               />
             </div>
           </div>

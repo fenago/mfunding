@@ -43,36 +43,103 @@ export interface LenderExtraction {
   company_name?: string;
   description?: string;
   lender_types?: string[];
+  paper_types?: string[];
   min_funding_amount?: number;
   max_funding_amount?: number;
   min_time_in_business?: number;
   min_monthly_revenue?: number;
   min_credit_score?: number;
+  min_daily_balance?: number;
+  commission_type?: string;
+  commission_rate?: number;
+  commission_notes?: string;
+  funding_speed?: string;
+  factor_rate_range?: string;
+  term_lengths?: string;
+  advance_rate?: string;
+  stacking_policy?: string;
+  requires_collateral?: boolean;
+  industries_restricted?: string[];
+  industries_preferred?: string[];
+  states_restricted?: string[];
+  submission_email?: string;
+  submission_portal_url?: string;
+  primary_contact_name?: string;
+  primary_contact_email?: string;
+  primary_contact_phone?: string;
   notes?: string;
 }
 
-const EXTRACTION_PROMPT = `You are analyzing a business lending company's website. Extract the following information if available:
+const EXTRACTION_PROMPT = `You are analyzing a business lending/MCA company's website for a broker CRM. Extract ALL of the following information if available:
 
+BASIC INFO:
 1. Company name
 2. Brief description of what they do (1-2 sentences)
 3. Types of lending products offered (choose from: mca, term_loan, line_of_credit, equipment_financing, invoice_factoring, sba_loan, revenue_based, real_estate)
-4. Minimum funding amount (as a number)
-5. Maximum funding amount (as a number)
-6. Minimum time in business required (in months)
-7. Minimum monthly revenue required (as a number)
-8. Minimum credit score required (as a number)
-9. Any other important notes about their offerings or requirements
+4. Credit quality / paper types they accept (choose from: a_paper, b_paper, c_paper, d_paper). Determine based on credit score requirements: A=700+, B=600-699, C=500-599, D=below 500 or stacked/defaulted
+
+FUNDING REQUIREMENTS:
+5. Minimum funding amount (number in dollars)
+6. Maximum funding amount (number in dollars)
+7. Minimum time in business required (number in months)
+8. Minimum monthly revenue required (number in dollars)
+9. Minimum credit score required (number)
+10. Minimum daily bank balance required (number in dollars)
+
+COMMISSION & TERMS:
+11. Commission/compensation type for brokers (choose one: points, split, flat)
+12. Commission rate (number - percentage or points value)
+13. Commission notes (any details about commission tiers, bonuses, structure)
+14. Funding speed (e.g. "Same day", "24-48 hours", "3-5 days")
+15. Factor rate range (e.g. "1.15 - 1.45")
+16. Available term lengths (e.g. "3-18 months")
+17. Advance rate (e.g. "Up to 150% of monthly revenue")
+18. Stacking policy (e.g. "No stacking", "2nd position OK", "Up to 3 positions")
+19. Whether collateral is required (true/false)
+
+INDUSTRY & GEOGRAPHY:
+20. Industries they will NOT fund (array of strings)
+21. Industries they specialize in or prefer (array of strings)
+22. States they do NOT serve (array of state abbreviations)
+
+CONTACT & SUBMISSION:
+23. Contact person name (account manager, partner contact)
+24. Contact email
+25. Contact phone number
+26. Deal submission email (where brokers send deals)
+27. Broker portal or submission URL
+
+28. Any other important notes about their offerings
 
 Return your response as valid JSON with this exact structure:
 {
   "company_name": "string or null",
   "description": "string or null",
-  "lender_types": ["array of strings from the allowed types"],
+  "lender_types": ["array of product types"],
+  "paper_types": ["array: a_paper, b_paper, c_paper, d_paper"],
   "min_funding_amount": number or null,
   "max_funding_amount": number or null,
   "min_time_in_business": number or null,
   "min_monthly_revenue": number or null,
   "min_credit_score": number or null,
+  "min_daily_balance": number or null,
+  "commission_type": "points or split or flat or null",
+  "commission_rate": number or null,
+  "commission_notes": "string or null",
+  "funding_speed": "string or null",
+  "factor_rate_range": "string or null",
+  "term_lengths": "string or null",
+  "advance_rate": "string or null",
+  "stacking_policy": "string or null",
+  "requires_collateral": boolean or null,
+  "industries_restricted": ["array of strings"] or null,
+  "industries_preferred": ["array of strings"] or null,
+  "states_restricted": ["array of state abbreviations"] or null,
+  "primary_contact_name": "string or null",
+  "primary_contact_email": "string or null",
+  "primary_contact_phone": "string or null",
+  "submission_email": "string or null",
+  "submission_portal_url": "string or null",
   "notes": "string or null"
 }
 
@@ -109,7 +176,7 @@ export async function extractLenderInfo(
           temperature: 0.1,
           topK: 1,
           topP: 1,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
         },
       }),
     }
