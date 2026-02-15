@@ -196,10 +196,10 @@ export default function FAQSection() {
               </motion.span>
             </a>
             <a
-              href="tel:+19546679477"
+              href="tel:+17864182051"
               className="text-ocean-blue hover:text-mint-green transition-colors font-medium"
             >
-              Or call us: 954-667-9477
+              Or call us: (786) 418-2051
             </a>
           </div>
         </motion.div>
