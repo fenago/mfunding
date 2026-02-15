@@ -2,10 +2,19 @@ import { Link } from 'react-router-dom';
 import Logo from '../ui/Logo';
 
 const footerLinks = {
-  fundingOptions: [
+  businessLoans: [
     { name: 'Merchant Cash Advance', href: '/business-loans/merchant-cash-advance' },
-    { name: 'Business Line of Credit', href: '/business-loans/line-of-credit' },
     { name: 'Equipment Financing', href: '/business-loans/equipment-financing' },
+    { name: 'Startup Loans', href: '/business-loans/startup-loans' },
+    { name: 'SBA 7(a) Loan', href: '/business-loans/sba-loans' },
+    { name: 'Business Term Loan', href: '/business-loans/term-loans' },
+    { name: 'Line of Credit', href: '/business-loans/line-of-credit' },
+  ],
+  realEstate: [
+    { name: 'Hard Money Bridge Loans', href: '/real-estate/hard-money-bridge' },
+    { name: 'Rental Property Loans', href: '/real-estate/rental-investment' },
+    { name: 'Commercial Mortgage', href: '/real-estate/commercial-mortgage' },
+    { name: 'Construction Loans', href: '/real-estate/construction-loans' },
   ],
   resources: [
     { name: 'How It Works', href: '/#how-it-works' },
@@ -13,8 +22,8 @@ const footerLinks = {
     { name: 'Apply Now', href: '/#apply' },
   ],
   company: [
-    { name: 'About Us', href: '/#security' },
-    { name: 'Contact', href: '/#apply' },
+    { name: 'About Us', href: '/about' },
+    { name: 'Contact', href: '/contact' },
   ],
   legal: [
     { name: 'Privacy Policy', href: '/privacy' },
@@ -59,9 +68,9 @@ export default function Footer() {
     <footer className="bg-midnight-blue text-white">
       <div className="container-max py-16 lg:py-20">
         {/* Main Footer Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-8 lg:gap-12">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8 lg:gap-10">
           {/* Company Info */}
-          <div className="col-span-2 md:col-span-3 lg:col-span-1">
+          <div className="col-span-2 md:col-span-3 lg:col-span-2">
             {/* Logo */}
             <Link to="/" className="inline-block mb-4">
               <Logo variant="full" size="md" theme="dark" />
@@ -88,11 +97,25 @@ export default function Footer() {
             </div>
           </div>
 
-          {/* Funding Options */}
+          {/* Business Loans */}
           <div>
-            <h4 className="font-semibold text-white mb-4">Funding Options</h4>
+            <h4 className="font-semibold text-white mb-4">Business Loans</h4>
             <ul className="space-y-3">
-              {footerLinks.fundingOptions.map((link) => (
+              {footerLinks.businessLoans.map((link) => (
+                <li key={link.name}>
+                  <Link to={link.href} className="text-white/60 hover:text-white text-sm transition-colors">
+                    {link.name}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* Real Estate */}
+          <div>
+            <h4 className="font-semibold text-white mb-4">Real Estate</h4>
+            <ul className="space-y-3">
+              {footerLinks.realEstate.map((link) => (
                 <li key={link.name}>
                   <Link to={link.href} className="text-white/60 hover:text-white text-sm transition-colors">
                     {link.name}
@@ -114,11 +137,7 @@ export default function Footer() {
                 </li>
               ))}
             </ul>
-          </div>
-
-          {/* Company */}
-          <div>
-            <h4 className="font-semibold text-white mb-4">Company</h4>
+            <h4 className="font-semibold text-white mb-4 mt-6">Company</h4>
             <ul className="space-y-3">
               {footerLinks.company.map((link) => (
                 <li key={link.name}>

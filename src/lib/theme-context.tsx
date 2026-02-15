@@ -34,7 +34,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         return stored;
       }
     }
-    return 'system';
+    return 'light';
   });
 
   const [resolved, setResolved] = useState<ResolvedTheme>(() => resolve(mode));

@@ -11,6 +11,8 @@ import BusinessLoansHubPage from "../pages/business-loans/BusinessLoansHubPage.t
 import ProductDetailPage from "../pages/business-loans/ProductDetailPage.tsx";
 import RealEstateHubPage from "../pages/real-estate/RealEstateHubPage.tsx";
 import RealEstateDetailPage from "../pages/real-estate/RealEstateDetailPage.tsx";
+import AboutPage from "../pages/AboutPage.tsx";
+import ContactPage from "../pages/ContactPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
@@ -84,6 +86,14 @@ const router = createBrowserRouter([
       {
         path: "/real-estate/:slug",
         element: <RealEstateDetailPage />,
+      },
+      {
+        path: "/about",
+        element: <AboutPage />,
+      },
+      {
+        path: "/contact",
+        element: <ContactPage />,
       },
       // Auth Protected routes
       {
