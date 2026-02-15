@@ -33,6 +33,7 @@ interface InteractionTimelineProps {
     subject?: string;
     content: string;
     follow_up_date?: string;
+    created_at?: string;
   }) => Promise<void>;
   showAddForm?: boolean;
   isLoading?: boolean;
@@ -108,6 +109,7 @@ export default function InteractionTimeline({
     subject: "",
     content: "",
     follow_up_date: "",
+    custom_timestamp: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -122,8 +124,11 @@ export default function InteractionTimeline({
         subject: formData.subject || undefined,
         content: formData.content,
         follow_up_date: formData.follow_up_date || undefined,
+        created_at: formData.custom_timestamp
+          ? new Date(formData.custom_timestamp).toISOString()
+          : undefined,
       });
-      setFormData({ interaction_type: "note", subject: "", content: "", follow_up_date: "" });
+      setFormData({ interaction_type: "note", subject: "", content: "", follow_up_date: "", custom_timestamp: "" });
       setIsFormOpen(false);
     } catch (error) {
       console.error("Failed to add interaction:", error);
@@ -176,15 +181,27 @@ export default function InteractionTimeline({
                 required
               />
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-500">Follow-up:</label>
-                  <input
-                    type="date"
-                    value={formData.follow_up_date}
-                    onChange={(e) => setFormData({ ...formData, follow_up_date: e.target.value })}
-                    className="input-field text-sm py-1 px-2"
-                  />
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-gray-500">Date/Time:</label>
+                    <input
+                      type="datetime-local"
+                      value={formData.custom_timestamp}
+                      onChange={(e) => setFormData({ ...formData, custom_timestamp: e.target.value })}
+                      className="input-field text-sm py-1 px-2"
+                      title="Leave blank to use current time"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-gray-500">Follow-up:</label>
+                    <input
+                      type="date"
+                      value={formData.follow_up_date}
+                      onChange={(e) => setFormData({ ...formData, follow_up_date: e.target.value })}
+                      className="input-field text-sm py-1 px-2"
+                    />
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -215,7 +232,7 @@ export default function InteractionTimeline({
         </div>
       ) : interactions.length === 0 ? (
         <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-          No interactions recorded yet
+          No activity recorded yet
         </div>
       ) : (
         <div className="relative">

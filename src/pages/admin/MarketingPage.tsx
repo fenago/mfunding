@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   PlusIcon,
   MagnifyingGlassIcon,
@@ -73,6 +73,7 @@ export default function MarketingPage() {
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedVendor, setSelectedVendor] = useState<MarketingVendor | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchVendors();
@@ -249,10 +250,7 @@ export default function MarketingPage() {
                   return (
                     <div
                       key={vendor.id}
-                      onClick={() => {
-                        setSelectedVendor(vendor);
-                        setIsModalOpen(true);
-                      }}
+                      onClick={() => navigate(`/admin/marketing/${vendor.id}`)}
                       className={`bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 border-l-4 ${statusConfig.borderColor} hover:shadow-lg hover:border-ocean-blue/30 transition-all cursor-pointer`}
                     >
                       <div className="flex items-start justify-between mb-3">

@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { XMarkIcon, SparklesIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import InteractionTimeline from "../shared/InteractionTimeline";
+import { useActivityLog } from "../../hooks/useActivityLog";
 
 type VendorStatus = "researching" | "testing" | "active" | "paused" | "discontinued";
 
@@ -121,9 +123,10 @@ export default function VendorEditModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [activeTab, setActiveTab] = useState<"basic" | "pricing" | "details" | "notes">("basic");
+  const [activeTab, setActiveTab] = useState<"basic" | "pricing" | "details" | "activity" | "notes">("basic");
   const [newIndustry, setNewIndustry] = useState("");
   const [newService, setNewService] = useState("");
+  const { activities, isLoading: isLoadingActivities, addActivity } = useActivityLog("marketing_vendor", vendor?.id);
 
   const handleScanWebsite = async () => {
     if (!formData.website) {
@@ -306,6 +309,7 @@ export default function VendorEditModal({
     { id: "basic", label: "Basic Info" },
     { id: "pricing", label: "Products & Pricing" },
     { id: "details", label: "Details" },
+    ...(vendor ? [{ id: "activity", label: `Activity Log (${activities.length})` }] : []),
     { id: "notes", label: "Notes" },
   ];
 
@@ -851,6 +855,17 @@ export default function VendorEditModal({
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {activeTab === "activity" && vendor && (
+              <div className="space-y-4">
+                <InteractionTimeline
+                  interactions={activities}
+                  onAddInteraction={addActivity}
+                  showAddForm={true}
+                  isLoading={isLoadingActivities}
+                />
               </div>
             )}
 

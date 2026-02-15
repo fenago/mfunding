@@ -10,16 +10,17 @@ import { useUserProfile } from '../../context/UserProfileContext';
 import supabase from '../../supabase';
 
 const navLinks = [
-  { name: 'Funding Options', href: '#features' },
-  { name: 'How It Works', href: '#how-it-works' },
-  { name: 'Success Stories', href: '#case-study' },
-  { name: 'FAQ', href: '#faq' },
+  { name: 'Business Loans', href: '/business-loans' },
+  { name: 'Real Estate', href: '/real-estate' },
+  { name: 'How It Works', href: '/#how-it-works' },
+  { name: 'Success Stories', href: '/#case-study' },
+  { name: 'FAQ', href: '/#faq' },
 ];
 
 export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const { theme } = useTheme();
+  const { resolved: theme } = useTheme();
   const { session } = useSession();
   const { isAdmin, profile } = useUserProfile();
   const navigate = useNavigate();
@@ -64,25 +65,31 @@ export default function Navbar() {
 
           {/* Desktop Navigation */}
           <div className="hidden lg:flex items-center gap-8">
-            {navLinks.map((link, index) => (
-              <motion.a
-                key={link.name}
-                href={link.href}
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 + index * 0.1 }}
-                className={`relative text-sm font-medium transition-colors group ${
-                  isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
-                }`}
-                whileHover={{ y: -2 }}
-              >
-                {link.name}
-                <motion.span
-                  className="absolute -bottom-1 left-0 w-0 h-0.5 bg-mint-green group-hover:w-full transition-all duration-300"
-                  style={{ originX: 0 }}
-                />
-              </motion.a>
-            ))}
+            {navLinks.map((link, index) => {
+              const className = `relative text-sm font-medium transition-colors group ${
+                isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
+              }`;
+              const inner = (
+                <>
+                  {link.name}
+                  <motion.span
+                    className="absolute -bottom-1 left-0 w-0 h-0.5 bg-mint-green group-hover:w-full transition-all duration-300"
+                    style={{ originX: 0 }}
+                  />
+                </>
+              );
+              return (
+                <motion.div
+                  key={link.name}
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 + index * 0.1 }}
+                  whileHover={{ y: -2 }}
+                >
+                  <Link to={link.href} className={className}>{inner}</Link>
+                </motion.div>
+              );
+            })}
           </div>
 
           {/* Desktop CTAs */}
@@ -131,21 +138,14 @@ export default function Navbar() {
                 </Link>
               </motion.div>
             )}
-            <motion.a
-              href="#apply"
-              className="relative overflow-hidden bg-gradient-to-r from-mint-green to-teal text-midnight-blue font-semibold text-sm px-6 py-2.5 rounded-lg"
-              whileHover={{ scale: 1.05, boxShadow: '0 0 20px rgba(0, 212, 157, 0.4)' }}
-              whileTap={{ scale: 0.95 }}
-            >
-              <motion.span
-                className="absolute inset-0 bg-white"
-                initial={{ x: '-100%' }}
-                whileHover={{ x: '100%' }}
-                transition={{ duration: 0.5 }}
-                style={{ opacity: 0.2 }}
-              />
-              <span className="relative z-10">Apply Now</span>
-            </motion.a>
+            <motion.div whileHover={{ scale: 1.05, boxShadow: '0 0 20px rgba(0, 212, 157, 0.4)' }} whileTap={{ scale: 0.95 }}>
+              <Link
+                to="/#apply"
+                className="relative overflow-hidden inline-block bg-gradient-to-r from-mint-green to-teal text-midnight-blue font-semibold text-sm px-6 py-2.5 rounded-lg"
+              >
+                <span className="relative z-10">Apply Now</span>
+              </Link>
+            </motion.div>
           </div>
 
           {/* Mobile Menu Button */}
@@ -199,17 +199,20 @@ export default function Navbar() {
           >
             <div className="container-max py-6 flex flex-col gap-2">
               {navLinks.map((link, index) => (
-                <motion.a
-                  key={link.name}
-                  href={link.href}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.1 }}
-                  className="text-text-secondary font-medium py-3 px-4 rounded-lg hover:bg-mint-green/10 hover:text-midnight-blue transition-all"
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  {link.name}
-                </motion.a>
+                  <motion.div
+                    key={link.name}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: index * 0.1 }}
+                  >
+                    <Link
+                      to={link.href}
+                      className="block text-text-secondary font-medium py-3 px-4 rounded-lg hover:bg-mint-green/10 hover:text-midnight-blue transition-all"
+                      onClick={() => setIsMobileMenuOpen(false)}
+                    >
+                      {link.name}
+                    </Link>
+                  </motion.div>
               ))}
               <hr className="my-2 border-gray-200 dark:border-gray-700" />
               <div className="flex items-center justify-between px-4 py-2">
@@ -268,16 +271,19 @@ export default function Navbar() {
                   </Link>
                 </motion.div>
               )}
-              <motion.a
-                href="#apply"
+              <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.5 }}
-                className="bg-gradient-to-r from-mint-green to-teal text-midnight-blue font-semibold text-center py-3 px-4 rounded-lg mt-2"
-                onClick={() => setIsMobileMenuOpen(false)}
               >
-                Apply Now
-              </motion.a>
+                <Link
+                  to="/#apply"
+                  className="block bg-gradient-to-r from-mint-green to-teal text-midnight-blue font-semibold text-center py-3 px-4 rounded-lg mt-2"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                >
+                  Apply Now
+                </Link>
+              </motion.div>
             </div>
           </motion.div>
         )}

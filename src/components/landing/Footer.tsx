@@ -3,22 +3,22 @@ import Logo from '../ui/Logo';
 
 const footerLinks = {
   fundingOptions: [
-    { name: 'Merchant Cash Advance', href: '#features' },
-    { name: 'Business Line of Credit', href: '#features' },
-    { name: 'Equipment Financing', href: '#features' },
+    { name: 'Merchant Cash Advance', href: '/business-loans/merchant-cash-advance' },
+    { name: 'Business Line of Credit', href: '/business-loans/line-of-credit' },
+    { name: 'Equipment Financing', href: '/business-loans/equipment-financing' },
   ],
   resources: [
-    { name: 'How It Works', href: '#how-it-works' },
-    { name: 'Success Stories', href: '#case-study' },
-    { name: 'Apply Now', href: '#apply' },
+    { name: 'How It Works', href: '/#how-it-works' },
+    { name: 'Success Stories', href: '/#case-study' },
+    { name: 'Apply Now', href: '/#apply' },
   ],
   company: [
-    { name: 'About Us', href: '#security' },
-    { name: 'Contact', href: '#apply' },
+    { name: 'About Us', href: '/#security' },
+    { name: 'Contact', href: '/#apply' },
   ],
   legal: [
-    { name: 'Privacy Policy', href: '/privacy', isRoute: true },
-    { name: 'Terms of Service', href: '/terms', isRoute: true },
+    { name: 'Privacy Policy', href: '/privacy' },
+    { name: 'Terms of Service', href: '/terms' },
   ],
 };
 
@@ -94,12 +94,9 @@ export default function Footer() {
             <ul className="space-y-3">
               {footerLinks.fundingOptions.map((link) => (
                 <li key={link.name}>
-                  <a
-                    href={link.href}
-                    className="text-white/60 hover:text-white text-sm transition-colors"
-                  >
+                  <Link to={link.href} className="text-white/60 hover:text-white text-sm transition-colors">
                     {link.name}
-                  </a>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -111,12 +108,9 @@ export default function Footer() {
             <ul className="space-y-3">
               {footerLinks.resources.map((link) => (
                 <li key={link.name}>
-                  <a
-                    href={link.href}
-                    className="text-white/60 hover:text-white text-sm transition-colors"
-                  >
+                  <Link to={link.href} className="text-white/60 hover:text-white text-sm transition-colors">
                     {link.name}
-                  </a>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -128,12 +122,9 @@ export default function Footer() {
             <ul className="space-y-3">
               {footerLinks.company.map((link) => (
                 <li key={link.name}>
-                  <a
-                    href={link.href}
-                    className="text-white/60 hover:text-white text-sm transition-colors"
-                  >
+                  <Link to={link.href} className="text-white/60 hover:text-white text-sm transition-colors">
                     {link.name}
-                  </a>
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -145,21 +136,9 @@ export default function Footer() {
             <ul className="space-y-3">
               {footerLinks.legal.map((link) => (
                 <li key={link.name}>
-                  {link.isRoute ? (
-                    <Link
-                      to={link.href}
-                      className="text-white/60 hover:text-white text-sm transition-colors"
-                    >
-                      {link.name}
-                    </Link>
-                  ) : (
-                    <a
-                      href={link.href}
-                      className="text-white/60 hover:text-white text-sm transition-colors"
-                    >
-                      {link.name}
-                    </a>
-                  )}
+                  <Link to={link.href} className="text-white/60 hover:text-white text-sm transition-colors">
+                    {link.name}
+                  </Link>
                 </li>
               ))}
             </ul>

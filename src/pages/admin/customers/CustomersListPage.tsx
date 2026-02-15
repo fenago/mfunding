@@ -10,7 +10,7 @@ import {
 import supabase from "../../../supabase";
 import CustomerEditModal from "../../../components/customers/CustomerEditModal";
 
-type CustomerStatus = "lead" | "contacted" | "application_submitted" | "in_review" | "approved" | "funded" | "declined" | "follow_up";
+type CustomerStatus = "lead" | "contacted" | "application_submitted" | "in_review" | "approved" | "funded" | "renewed" | "declined" | "follow_up";
 
 interface Customer {
   id: string;
@@ -33,7 +33,8 @@ const STATUS_CONFIG: Record<CustomerStatus, { label: string; color: string; prio
   contacted: { label: "Contacted", color: "bg-blue-100 text-blue-800", priority: 5 },
   lead: { label: "Lead", color: "bg-gray-100 text-gray-800", priority: 6 },
   funded: { label: "Funded", color: "bg-emerald-100 text-emerald-800", priority: 7 },
-  declined: { label: "Declined", color: "bg-red-100 text-red-800", priority: 8 },
+  renewed: { label: "Renewed", color: "bg-teal-100 text-teal-800", priority: 8 },
+  declined: { label: "Declined", color: "bg-red-100 text-red-800", priority: 9 },
 };
 
 // Status order for display (most actionable first)
@@ -45,6 +46,7 @@ const STATUS_ORDER: CustomerStatus[] = [
   "contacted",
   "lead",
   "funded",
+  "renewed",
   "declined",
 ];
 

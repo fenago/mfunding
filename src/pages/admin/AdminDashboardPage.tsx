@@ -6,6 +6,8 @@ import {
   MegaphoneIcon,
   ClipboardDocumentListIcon,
   ArrowTrendingUpIcon,
+  ChartBarSquareIcon,
+  SignalIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
@@ -99,6 +101,13 @@ export default function AdminDashboardPage() {
     fetchStats();
   }, []);
 
+  const colorRgb: Record<string, string> = {
+    "bg-blue-500": "59,130,246",
+    "bg-green-500": "34,197,94",
+    "bg-purple-500": "168,85,247",
+    "bg-orange-500": "249,115,22",
+  };
+
   const statCards = [
     {
       title: "Total Lenders",
@@ -173,7 +182,8 @@ export default function AdminDashboardPage() {
             >
               <div className="flex items-center justify-between mb-4">
                 <div
-                  className={`p-3 rounded-lg ${card.color} bg-opacity-10`}
+                  className="p-3 rounded-lg"
+                  style={{ backgroundColor: `rgba(${colorRgb[card.color] || "59,130,246"}, 0.15)` }}
                 >
                   <Icon
                     className={`w-6 h-6 ${card.color.replace("bg-", "text-")}`}
@@ -237,6 +247,24 @@ export default function AdminDashboardPage() {
                 <MegaphoneIcon className="w-5 h-5 text-purple-500" />
                 <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
                   Marketing
+                </span>
+              </Link>
+              <Link
+                to="/admin/analytics"
+                className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+              >
+                <ChartBarSquareIcon className="w-5 h-5 text-cyan-500" />
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
+                  Analytics
+                </span>
+              </Link>
+              <Link
+                to="/admin/analytics/realtime"
+                className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+              >
+                <SignalIcon className="w-5 h-5 text-green-500" />
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
+                  Real-Time
                 </span>
               </Link>
             </>

@@ -1,5 +1,4 @@
-import { Outlet } from "react-router-dom";
-import NotFoundPage from "../pages/404Page";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
 import { useUserProfile } from "../context/UserProfileContext";
 import LoadingPage from "../pages/LoadingPage";
@@ -7,9 +6,10 @@ import LoadingPage from "../pages/LoadingPage";
 const AdminProtectedRoute = () => {
   const { session } = useSession();
   const { isAdmin, isLoading } = useUserProfile();
+  const location = useLocation();
 
   if (!session) {
-    return <NotFoundPage />;
+    return <Navigate to="/auth/sign-in" state={{ from: location }} replace />;
   }
 
   if (isLoading) {
@@ -17,7 +17,7 @@ const AdminProtectedRoute = () => {
   }
 
   if (!isAdmin) {
-    return <NotFoundPage />;
+    return <Navigate to="/" replace />;
   }
 
   return <Outlet />;

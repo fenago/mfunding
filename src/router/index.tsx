@@ -7,6 +7,10 @@ import NotFoundPage from "../pages/404Page.tsx";
 import PrivacyPolicyPage from "../pages/PrivacyPolicyPage.tsx";
 import TermsOfServicePage from "../pages/TermsOfServicePage.tsx";
 import UnitEconomicsPage from "../pages/UnitEconomicsPage.tsx";
+import BusinessLoansHubPage from "../pages/business-loans/BusinessLoansHubPage.tsx";
+import ProductDetailPage from "../pages/business-loans/ProductDetailPage.tsx";
+import RealEstateHubPage from "../pages/real-estate/RealEstateHubPage.tsx";
+import RealEstateDetailPage from "../pages/real-estate/RealEstateDetailPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
@@ -23,6 +27,9 @@ import CustomersListPage from "../pages/admin/customers/CustomersListPage.tsx";
 import CustomerDetailPage from "../pages/admin/customers/CustomerDetailPage.tsx";
 import MarketingPage from "../pages/admin/MarketingPage.tsx";
 import MarketingResourcesPage from "../pages/admin/marketing/MarketingResourcesPage.tsx";
+import VendorDetailPage from "../pages/admin/marketing/VendorDetailPage.tsx";
+import AnalyticsDashboardPage from "../pages/admin/analytics/AnalyticsDashboardPage.tsx";
+import RealTimeDashboardPage from "../pages/admin/analytics/RealTimeDashboardPage.tsx";
 import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
 
@@ -61,6 +68,22 @@ const router = createBrowserRouter([
       {
         path: "/unit-economics",
         element: <UnitEconomicsPage />,
+      },
+      {
+        path: "/business-loans",
+        element: <BusinessLoansHubPage />,
+      },
+      {
+        path: "/business-loans/:slug",
+        element: <ProductDetailPage />,
+      },
+      {
+        path: "/real-estate",
+        element: <RealEstateHubPage />,
+      },
+      {
+        path: "/real-estate/:slug",
+        element: <RealEstateDetailPage />,
       },
       // Auth Protected routes
       {
@@ -153,6 +176,25 @@ const router = createBrowserRouter([
                   {
                     path: "resources",
                     element: <MarketingResourcesPage />,
+                  },
+                  {
+                    path: ":id",
+                    element: <VendorDetailPage />,
+                  },
+                ],
+              },
+              // Analytics (super_admin only)
+              {
+                path: "analytics",
+                element: <SuperAdminProtectedRoute />,
+                children: [
+                  {
+                    index: true,
+                    element: <AnalyticsDashboardPage />,
+                  },
+                  {
+                    path: "realtime",
+                    element: <RealTimeDashboardPage />,
                   },
                 ],
               },

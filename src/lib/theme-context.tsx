@@ -1,71 +1,87 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 
-type Theme = 'light' | 'dark';
+type ThemeMode = 'light' | 'dark' | 'system';
+type ResolvedTheme = 'light' | 'dark';
 
 interface ThemeContextType {
-  theme: Theme;
-  toggleTheme: () => void;
-  setTheme: (theme: Theme) => void;
+  mode: ThemeMode;
+  resolved: ResolvedTheme;
+  setMode: (mode: ThemeMode) => void;
+  cycleMode: () => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'momentum-theme';
+const CYCLE_ORDER: ThemeMode[] = ['light', 'dark', 'system'];
+
+function getSystemTheme(): ResolvedTheme {
+  if (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    return 'dark';
+  }
+  return 'light';
+}
+
+function resolve(mode: ThemeMode): ResolvedTheme {
+  return mode === 'system' ? getSystemTheme() : mode;
+}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    // Check localStorage first
+  const [mode, setModeState] = useState<ThemeMode>(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-      if (stored === 'light' || stored === 'dark') {
+      const stored = localStorage.getItem(STORAGE_KEY) as ThemeMode | null;
+      if (stored === 'light' || stored === 'dark' || stored === 'system') {
         return stored;
       }
-      // Check system preference
-      if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        return 'dark';
-      }
     }
-    return 'light';
+    return 'system';
   });
 
-  useEffect(() => {
-    const root = document.documentElement;
+  const [resolved, setResolved] = useState<ResolvedTheme>(() => resolve(mode));
 
-    if (theme === 'dark') {
+  // Apply dark class and persist
+  useEffect(() => {
+    const r = resolve(mode);
+    setResolved(r);
+    const root = document.documentElement;
+    if (r === 'dark') {
       root.classList.add('dark');
     } else {
       root.classList.remove('dark');
     }
+    localStorage.setItem(STORAGE_KEY, mode);
+  }, [mode]);
 
-    localStorage.setItem(STORAGE_KEY, theme);
-  }, [theme]);
-
-  // Listen for system preference changes
+  // Listen for system preference changes when in system mode
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-
-    const handleChange = (e: MediaQueryListEvent) => {
-      // Only auto-switch if user hasn't set a preference
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (!stored) {
-        setThemeState(e.matches ? 'dark' : 'light');
+    const handleChange = () => {
+      if (mode === 'system') {
+        const r = getSystemTheme();
+        setResolved(r);
+        const root = document.documentElement;
+        if (r === 'dark') {
+          root.classList.add('dark');
+        } else {
+          root.classList.remove('dark');
+        }
       }
     };
-
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
-  }, []);
+  }, [mode]);
 
-  const toggleTheme = () => {
-    setThemeState((prev) => (prev === 'light' ? 'dark' : 'light'));
-  };
+  const setMode = (newMode: ThemeMode) => setModeState(newMode);
 
-  const setTheme = (newTheme: Theme) => {
-    setThemeState(newTheme);
+  const cycleMode = () => {
+    setModeState((prev) => {
+      const idx = CYCLE_ORDER.indexOf(prev);
+      return CYCLE_ORDER[(idx + 1) % CYCLE_ORDER.length];
+    });
   };
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme, setTheme }}>
+    <ThemeContext.Provider value={{ mode, resolved, setMode, cycleMode }}>
       {children}
     </ThemeContext.Provider>
   );
@@ -77,4 +93,10 @@ export function useTheme() {
     throw new Error('useTheme must be used within a ThemeProvider');
   }
   return context;
+}
+
+// Backward compat — old components use `theme` and `toggleTheme`
+export function useThemeCompat() {
+  const { resolved, cycleMode } = useTheme();
+  return { theme: resolved, toggleTheme: cycleMode };
 }

@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Enable class-based dark mode (ThemeProvider adds .dark to <html>) */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ===================================
    Momentum Funding Design System
    Tailwind CSS v4 Theme Configuration
@@ -535,16 +538,26 @@ body {
 
 .dark {
   color-scheme: dark;
+  /* Override gray scale for better dark mode surface hierarchy.
+     Creates clear visual separation: page bg → card bg → elevated elements.
+     Inspired by GitHub's dark theme for professional readability. */
+  --color-gray-900: #0D1117;
+  --color-gray-800: #161B22;
+  --color-gray-700: #21262D;
+  --color-gray-600: #30363D;
+  --color-gray-500: #8B949E;
+  --color-gray-400: #C9D1D9;
+  --color-gray-300: #E6EDF3;
 }
 
 .dark body {
-  background-color: #0A1628;
-  color: #F9FAFB;
+  background-color: #0D1117;
+  color: #F0F6FC;
 }
 
 /* Dark mode overrides for sections */
 .dark .bg-background {
-  background-color: #0A1628;
+  background-color: #0D1117;
 }
 
 /* Reliable heading text class for both themes */
@@ -571,7 +584,7 @@ body {
 }
 
 .dark .bg-white {
-  background-color: #1F2937 !important;
+  background-color: #161B22 !important;
 }
 
 .dark .text-text-secondary {
@@ -580,8 +593,8 @@ body {
 
 /* Dark mode cards */
 .dark .card {
-  background-color: #1F2937;
-  border-color: #374151;
+  background-color: #161B22;
+  border-color: #21262D;
 }
 
 /* Problem section cards - specific styling for better contrast */
@@ -590,18 +603,18 @@ body {
 }
 
 .dark .problem-card {
-  background-color: #334155; /* slate-700 */
+  background-color: #21262D;
 }
 
 /* Dark mode inputs */
 .dark .input-field {
-  background-color: #1A2942;
-  border-color: #374151;
-  color: #F9FAFB;
+  background-color: #0D1117;
+  border-color: #21262D;
+  color: #F0F6FC;
 }
 
 .dark .input-field::placeholder {
-  color: #6B7280;
+  color: #8B949E;
 }
 
 .dark .input-field:focus {
@@ -626,8 +639,19 @@ body {
 
 /* Dark mode glass effect */
 .dark .glass {
-  background: rgba(26, 41, 66, 0.8);
-  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(13, 17, 23, 0.8);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Recharts dark mode text — ensures chart labels and legends are readable */
+.dark .recharts-text {
+  fill: #C9D1D9;
+}
+.dark .recharts-legend-item-text {
+  color: #C9D1D9 !important;
+}
+.dark .recharts-cartesian-axis-tick-value {
+  fill: #8B949E;
 }
 
 /* Smooth transition for theme switch */

@@ -12,8 +12,14 @@ import {
   ArrowLeftOnRectangleIcon,
   CalculatorIcon,
   RectangleGroupIcon,
+  ChartBarSquareIcon,
+  SignalIcon,
+  SunIcon,
+  MoonIcon,
+  ComputerDesktopIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
+import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
 import Logo from "../ui/Logo";
 
@@ -30,6 +36,8 @@ const navItems: NavItem[] = [
   { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ["super_admin"] },
   { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: ["admin", "super_admin"] },
   { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
+  { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: ["super_admin"] },
+  { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },
   { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: ["super_admin"] },
   { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: ["super_admin"] },
@@ -42,6 +50,9 @@ export default function AdminSidebar() {
   });
   const location = useLocation();
   const { profile, isSuperAdmin, isAdmin } = useUserProfile();
+  const { mode, cycleMode } = useTheme();
+  const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
+  const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
 
   useEffect(() => {
     localStorage.setItem("adminSidebarCollapsed", JSON.stringify(isCollapsed));
@@ -78,16 +89,25 @@ export default function AdminSidebar() {
             <Logo variant="full" size="sm" theme="light" />
           </Link>
         )}
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
-        >
-          {isCollapsed ? (
-            <ChevronRightIcon className="w-5 h-5" />
-          ) : (
-            <ChevronLeftIcon className="w-5 h-5" />
-          )}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={cycleMode}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+            title={`Theme: ${themeLabel}`}
+          >
+            <ThemeIcon className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
+          >
+            {isCollapsed ? (
+              <ChevronRightIcon className="w-5 h-5" />
+            ) : (
+              <ChevronLeftIcon className="w-5 h-5" />
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Navigation */}
@@ -102,7 +122,7 @@ export default function AdminSidebar() {
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
                 active
                   ? "bg-mint-green/10 text-mint-green dark:text-mint-green"
-                  : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white"
               }`}
               title={isCollapsed ? item.name : undefined}
             >
@@ -124,7 +144,7 @@ export default function AdminSidebar() {
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
               {profile?.display_name || profile?.email?.split("@")[0]}
             </p>
-            <p className="text-xs text-gray-500 truncate">{profile?.email}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{profile?.email}</p>
             <span
               className={`inline-block mt-1 px-2 py-0.5 text-xs font-medium rounded-full ${
                 isSuperAdmin
@@ -138,7 +158,7 @@ export default function AdminSidebar() {
         )}
         <button
           onClick={handleSignOut}
-          className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${
+          className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white transition-colors ${
             isCollapsed ? "justify-center" : ""
           }`}
           title={isCollapsed ? "Sign Out" : undefined}

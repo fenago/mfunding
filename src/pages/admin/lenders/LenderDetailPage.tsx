@@ -15,6 +15,8 @@ import supabase from "../../../supabase";
 import LenderContactList from "../../../components/lenders/LenderContactList";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
+import InteractionTimeline from "../../../components/shared/InteractionTimeline";
+import { useActivityLog } from "../../../hooks/useActivityLog";
 import {
   extractLenderInfo,
   fetchWebsiteContent,
@@ -152,7 +154,6 @@ interface LenderFormData {
   submission_email: string;
   submission_portal_url: string;
   submission_notes: string;
-  notes: string;
 }
 
 const initialFormData: LenderFormData = {
@@ -186,7 +187,6 @@ const initialFormData: LenderFormData = {
   submission_email: "",
   submission_portal_url: "",
   submission_notes: "",
-  notes: "",
 };
 
 export default function LenderDetailPage() {
@@ -194,8 +194,9 @@ export default function LenderDetailPage() {
   const [lender, setLender] = useState<Lender | null>(null);
   const [documents, setDocuments] = useState<LenderDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "contacts" | "documents" | "notes" | "ai">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "contacts" | "documents" | "activity" | "ai">("overview");
   const [documentType, setDocumentType] = useState("agreement");
+  const { activities, isLoading: isLoadingActivities, addActivity } = useActivityLog("lender", id);
 
   // Form state for inline editing
   const [formData, setFormData] = useState<LenderFormData>(initialFormData);
@@ -253,7 +254,6 @@ export default function LenderDetailPage() {
         submission_email: lender.submission_email || "",
         submission_portal_url: lender.submission_portal_url || "",
         submission_notes: lender.submission_notes || "",
-        notes: lender.notes || "",
       });
     }
   }, [lender]);
@@ -387,9 +387,16 @@ export default function LenderDetailPage() {
       if (extractedData.primary_contact_email) updates.primary_contact_email = extractedData.primary_contact_email;
       if (extractedData.primary_contact_phone) updates.primary_contact_phone = extractedData.primary_contact_phone;
       if (extractedData.notes) {
-        updates.notes = lender.notes
-          ? `${lender.notes}\n\n--- AI Extracted (${new Date().toLocaleDateString()}) ---\n${extractedData.notes}`
-          : extractedData.notes;
+        // Add AI-extracted notes as an activity log entry
+        try {
+          await addActivity({
+            interaction_type: "note",
+            subject: "AI Extracted Notes",
+            content: extractedData.notes,
+          });
+        } catch (e) {
+          console.error("Failed to log AI extraction notes:", e);
+        }
       }
 
       console.log("Applying updates:", updates);
@@ -496,7 +503,6 @@ export default function LenderDetailPage() {
         submission_email: formData.submission_email || null,
         submission_portal_url: formData.submission_portal_url || null,
         submission_notes: formData.submission_notes || null,
-        notes: formData.notes || null,
       };
 
       const { error } = await supabase
@@ -541,7 +547,7 @@ export default function LenderDetailPage() {
     { id: "overview", label: "Overview" },
     { id: "contacts", label: `Contacts (${lender.contacts?.length || 0})` },
     { id: "documents", label: `Documents (${documents.length})` },
-    { id: "notes", label: "Notes" },
+    { id: "activity", label: `Activity Log (${activities.length})` },
     { id: "ai", label: "AI Extract" },
   ];
 
@@ -1244,22 +1250,14 @@ export default function LenderDetailPage() {
         </div>
       )}
 
-      {activeTab === "notes" && (
+      {activeTab === "activity" && (
         <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-900 dark:text-white">Notes</h3>
-          </div>
-          <textarea
-            value={formData.notes}
-            onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-            placeholder="Add notes about this lender..."
-            rows={12}
-            className="input-field w-full resize-y min-h-[200px] font-mono text-sm"
+          <InteractionTimeline
+            interactions={activities}
+            onAddInteraction={addActivity}
+            showAddForm={true}
+            isLoading={isLoadingActivities}
           />
-          <p className="text-xs text-gray-500 mt-2">
-            Use this space to track important details, conversation history, or any other relevant information about this lender.
-            Click "Save Changes" in the header to save your notes.
-          </p>
         </div>
       )}
 

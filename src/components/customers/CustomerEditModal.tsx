@@ -2,8 +2,14 @@ import { useState, useEffect } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 
-type CustomerStatus = "lead" | "contacted" | "application_submitted" | "in_review" | "approved" | "funded" | "declined" | "follow_up";
+type CustomerStatus = "lead" | "contacted" | "application_submitted" | "in_review" | "approved" | "funded" | "renewed" | "declined" | "follow_up";
 type LeadSource = "website" | "live_transfer" | "aged_lead" | "referral" | "cold_call" | "partner" | "marketing" | "other";
+type ApplicationType = "mini_app" | "full_app" | "";
+
+interface MarketingVendorOption {
+  id: string;
+  vendor_name: string;
+}
 
 interface CustomerFormData {
   first_name: string;
@@ -26,6 +32,9 @@ interface CustomerFormData {
   next_follow_up_date: string;
   follow_up_notes: string;
   notes: string;
+  vendor_id: string;
+  is_live_transfer: boolean;
+  application_type: ApplicationType;
 }
 
 interface Customer {
@@ -50,6 +59,9 @@ interface Customer {
   next_follow_up_date: string | null;
   follow_up_notes: string | null;
   notes: string | null;
+  vendor_id: string | null;
+  is_live_transfer: boolean;
+  application_type: string | null;
 }
 
 interface CustomerEditModalProps {
@@ -66,6 +78,7 @@ const STATUS_OPTIONS: { value: CustomerStatus; label: string }[] = [
   { value: "in_review", label: "In Review" },
   { value: "approved", label: "Approved" },
   { value: "funded", label: "Funded" },
+  { value: "renewed", label: "Renewed" },
   { value: "declined", label: "Declined" },
   { value: "follow_up", label: "Follow Up" },
 ];
@@ -98,6 +111,12 @@ const US_STATES = [
   "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 ];
 
+const APPLICATION_TYPE_OPTIONS: { value: ApplicationType; label: string }[] = [
+  { value: "", label: "Not Started" },
+  { value: "mini_app", label: "Mini Application" },
+  { value: "full_app", label: "Full Application" },
+];
+
 const initialFormData: CustomerFormData = {
   first_name: "",
   last_name: "",
@@ -119,6 +138,9 @@ const initialFormData: CustomerFormData = {
   next_follow_up_date: "",
   follow_up_notes: "",
   notes: "",
+  vendor_id: "",
+  is_live_transfer: false,
+  application_type: "",
 };
 
 export default function CustomerEditModal({
@@ -130,6 +152,18 @@ export default function CustomerEditModal({
   const [formData, setFormData] = useState<CustomerFormData>(initialFormData);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<"contact" | "business" | "funding">("contact");
+  const [vendors, setVendors] = useState<MarketingVendorOption[]>([]);
+
+  useEffect(() => {
+    const fetchVendors = async () => {
+      const { data } = await supabase
+        .from("marketing_vendors")
+        .select("id, vendor_name")
+        .order("vendor_name");
+      if (data) setVendors(data);
+    };
+    fetchVendors();
+  }, []);
 
   useEffect(() => {
     if (customer) {
@@ -154,6 +188,9 @@ export default function CustomerEditModal({
         next_follow_up_date: customer.next_follow_up_date?.split("T")[0] || "",
         follow_up_notes: customer.follow_up_notes || "",
         notes: customer.notes || "",
+        vendor_id: customer.vendor_id || "",
+        is_live_transfer: customer.is_live_transfer || false,
+        application_type: (customer.application_type as ApplicationType) || "",
       });
     } else {
       setFormData(initialFormData);
@@ -167,7 +204,7 @@ export default function CustomerEditModal({
 
     setIsSubmitting(true);
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         first_name: formData.first_name,
         last_name: formData.last_name,
         email: formData.email || null,
@@ -188,6 +225,9 @@ export default function CustomerEditModal({
         next_follow_up_date: formData.next_follow_up_date || null,
         follow_up_notes: formData.follow_up_notes || null,
         notes: formData.notes || null,
+        vendor_id: formData.vendor_id || null,
+        is_live_transfer: formData.is_live_transfer,
+        application_type: formData.application_type || null,
       };
 
       if (customer) {
@@ -402,6 +442,57 @@ export default function CustomerEditModal({
                       ))}
                     </select>
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Source Vendor
+                    </label>
+                    <select
+                      value={formData.vendor_id}
+                      onChange={(e) => setFormData({ ...formData, vendor_id: e.target.value })}
+                      className="input-field"
+                    >
+                      <option value="">No vendor</option>
+                      {vendors.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.vendor_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Application Type
+                    </label>
+                    <select
+                      value={formData.application_type}
+                      onChange={(e) => setFormData({ ...formData, application_type: e.target.value as ApplicationType })}
+                      className="input-field"
+                    >
+                      {APPLICATION_TYPE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.is_live_transfer}
+                      onChange={(e) => setFormData({ ...formData, is_live_transfer: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-mint-green"></div>
+                    <span className="ml-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Live Transfer
+                    </span>
+                  </label>
                 </div>
               </div>
             )}

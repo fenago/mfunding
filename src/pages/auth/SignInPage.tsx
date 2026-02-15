@@ -36,13 +36,13 @@ const SignInPage = () => {
     setStatus("");
   };
   return (
-    <main className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
+    <main className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col items-center justify-center p-6">
       <SignInPageSEO />
       <Link className="absolute top-6 left-6 text-ocean-blue hover:text-deep-sea transition-colors" to="/">
         ◄ Home
       </Link>
-      <form className="w-full max-w-md flex flex-col gap-4 card p-8" onSubmit={handleSubmit}>
-        <h1 className="heading-3 text-midnight-blue text-center mb-4">Sign In</h1>
+      <form className="w-full max-w-md flex flex-col gap-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg p-8" onSubmit={handleSubmit}>
+        <h1 className="heading-3 text-gray-900 dark:text-white text-center mb-4">Sign In</h1>
         <input
           className="input-field"
           name="email"
@@ -58,10 +58,10 @@ const SignInPage = () => {
           placeholder="Password"
         />
         <button className="btn-primary w-full" type="submit">Login</button>
-        <Link className="text-center text-ocean-blue hover:text-deep-sea transition-colors text-sm" to="/auth/sign-up">
+        <Link className="text-center text-ocean-blue hover:text-mint-green transition-colors text-sm" to="/auth/sign-up">
           Don't have an account? Sign Up
         </Link>
-        {status && <p className="text-center text-text-secondary">{status}</p>}
+        {status && <p className="text-center text-gray-500 dark:text-gray-400">{status}</p>}
       </form>
     </main>
   );

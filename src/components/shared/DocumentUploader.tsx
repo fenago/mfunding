@@ -36,7 +36,7 @@ export default function DocumentUploader({
   bucket,
   onUploadComplete,
   onError,
-  acceptedTypes = [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png"],
+  acceptedTypes = [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".xlsx", ".xls", ".csv"],
   maxSizeMB = 10,
   documentType = "other",
   multiple = true,

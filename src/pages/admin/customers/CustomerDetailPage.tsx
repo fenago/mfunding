@@ -17,6 +17,7 @@ import InteractionTimeline from "../../../components/shared/InteractionTimeline"
 import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
 import StatusBadge from "../../../components/shared/StatusBadge";
+import { useActivityLog } from "../../../hooks/useActivityLog";
 
 interface Customer {
   id: string;
@@ -42,21 +43,9 @@ interface Customer {
   follow_up_notes: string | null;
   notes: string | null;
   created_at: string;
-}
-
-interface Interaction {
-  id: string;
-  interaction_type: string;
-  subject: string | null;
-  content: string | null;
-  old_status: string | null;
-  new_status: string | null;
-  call_duration: number | null;
-  call_outcome: string | null;
-  follow_up_date: string | null;
-  logged_by: string | null;
-  logged_by_name?: string;
-  created_at: string;
+  vendor_id: string | null;
+  is_live_transfer: boolean;
+  application_type: string | null;
 }
 
 interface CustomerDocument {
@@ -72,18 +61,16 @@ interface CustomerDocument {
 export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [customer, setCustomer] = useState<Customer | null>(null);
-  const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [documents, setDocuments] = useState<CustomerDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingInteractions, setIsLoadingInteractions] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "documents" | "funding" | "ai">("overview");
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [documentType, setDocumentType] = useState("bank_statement");
+  const { activities, isLoading: isLoadingActivities, addActivity } = useActivityLog("customer", id);
 
   useEffect(() => {
     if (id) {
       fetchCustomer();
-      fetchInteractions();
       fetchDocuments();
     }
   }, [id]);
@@ -104,33 +91,21 @@ export default function CustomerDetailPage() {
     setIsLoading(false);
   };
 
-  const fetchInteractions = async () => {
-    setIsLoadingInteractions(true);
-    const { data, error } = await supabase
-      .from("customer_interactions")
-      .select(`
-        *,
-        profiles:logged_by (
-          first_name,
-          last_name
-        )
-      `)
-      .eq("customer_id", id)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("Error fetching interactions:", error);
-    } else {
-      // Map logged_by profile to logged_by_name
-      const interactionsWithNames = data?.map((i) => ({
-        ...i,
-        logged_by_name: i.profiles
-          ? `${i.profiles.first_name || ""} ${i.profiles.last_name || ""}`.trim()
-          : null,
-      })) || [];
-      setInteractions(interactionsWithNames);
+  const handleAddInteraction = async (data: {
+    interaction_type: string;
+    subject?: string;
+    content: string;
+    follow_up_date?: string;
+    created_at?: string;
+  }) => {
+    await addActivity(data);
+    if (data.follow_up_date) {
+      await supabase
+        .from("customers")
+        .update({ next_follow_up_date: data.follow_up_date })
+        .eq("id", id);
+      fetchCustomer();
     }
-    setIsLoadingInteractions(false);
   };
 
   const fetchDocuments = async () => {
@@ -145,37 +120,6 @@ export default function CustomerDetailPage() {
     } else {
       setDocuments(data || []);
     }
-  };
-
-  const handleAddInteraction = async (data: {
-    interaction_type: string;
-    subject?: string;
-    content: string;
-    follow_up_date?: string;
-  }) => {
-    const { error } = await supabase.from("customer_interactions").insert({
-      customer_id: id,
-      interaction_type: data.interaction_type,
-      subject: data.subject || null,
-      content: data.content,
-      follow_up_date: data.follow_up_date || null,
-    });
-
-    if (error) {
-      console.error("Error adding interaction:", error);
-      throw error;
-    }
-
-    // Update customer follow-up date if provided
-    if (data.follow_up_date) {
-      await supabase
-        .from("customers")
-        .update({ next_follow_up_date: data.follow_up_date })
-        .eq("id", id);
-    }
-
-    fetchInteractions();
-    fetchCustomer();
   };
 
   const handleDocumentUploadComplete = () => {
@@ -218,7 +162,7 @@ export default function CustomerDetailPage() {
 
   const tabs = [
     { id: "overview", label: "Overview" },
-    { id: "timeline", label: `Timeline (${interactions.length})` },
+    { id: "timeline", label: `Timeline (${activities.length})` },
     { id: "documents", label: `Documents (${documents.length})` },
     { id: "funding", label: "Funding" },
     { id: "ai", label: "AI Assist" },
@@ -435,10 +379,10 @@ export default function CustomerDetailPage() {
       {activeTab === "timeline" && (
         <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
           <InteractionTimeline
-            interactions={interactions}
+            interactions={activities}
             onAddInteraction={handleAddInteraction}
             showAddForm={true}
-            isLoading={isLoadingInteractions}
+            isLoading={isLoadingActivities}
           />
         </div>
       )}
