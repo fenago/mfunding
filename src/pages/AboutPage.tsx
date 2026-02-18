@@ -66,7 +66,7 @@ const team = [
   {
     name: 'Dr. E. Lee',
     role: 'Founder, Board Chair & CEO',
-    image: '/team/dr-lee.jpg',
+    image: '/team/dr-lee.png',
     bio: 'With over two decades of experience in financial services and business strategy, Dr. Lee founded Momentum Funding to bridge the gap between hardworking business owners and the capital they need to grow.',
   },
   {
