@@ -78,7 +78,7 @@ const team = [
   {
     name: 'Carlos Marquez',
     role: 'VP of Operations',
-    image: '/team/carlos-marquez.jpg',
+    image: '/team/carlos-marquez.png',
     bio: "Carlos oversees the day-to-day operations that make our 24-hour funding promise possible, streamlining processes so business owners spend less time waiting and more time growing.",
   },
 ];
