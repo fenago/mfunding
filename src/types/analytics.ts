@@ -85,3 +85,121 @@ export interface RecentActivity {
   createdAt: string;
   loggedByName: string | null;
 }
+
+// ===== Deal-Level Analytics Types =====
+
+export interface LeadSource {
+  id: string;
+  name: string;
+  type: LeadSourceType;
+  vendorId: string | null;
+  costPerLead: number | null;
+  monthlyBudget: number | null;
+  totalLeads: number;
+  totalFunded: number;
+  totalSpend: number;
+  totalRevenue: number;
+  costPerFundedDeal: number | null;
+  roiPercentage: number | null;
+  status: string;
+}
+
+export type LeadSourceType =
+  | "live_transfer"
+  | "google_ads"
+  | "aged_lead"
+  | "ucc_filing"
+  | "referral"
+  | "sub_iso"
+  | "organic"
+  | "social_media"
+  | "other";
+
+export interface PipelineVelocity {
+  stageTransition: string;
+  stageLabel: string;
+  avgDays: number | null;
+  sampleSize: number;
+}
+
+export interface DealFunnelStage {
+  stage: string;
+  label: string;
+  count: number;
+  color: string;
+}
+
+export interface CloserPerformance {
+  closerId: string;
+  closerName: string;
+  totalLeadsAssigned: number;
+  totalDealsFunded: number;
+  totalDealsLost: number;
+  closeRate: number;
+  totalRevenue: number;
+  avgDealSize: number;
+  avgDaysToFund: number | null;
+  dealsThisMonth: number;
+  revenueThisMonth: number;
+}
+
+export interface LenderPerformance {
+  lenderId: string;
+  lenderName: string;
+  totalSubmissions: number;
+  totalApproved: number;
+  totalDeclined: number;
+  totalFunded: number;
+  approvalRate: number;
+  avgOfferAmount: number;
+  avgFactorRate: number;
+  avgCommissionPoints: number;
+  avgResponseDays: number | null;
+}
+
+export interface MarketPerformance {
+  market: string;
+  marketLabel: string;
+  totalLeads: number;
+  totalFunded: number;
+  totalLost: number;
+  closeRate: number;
+  totalRevenue: number;
+  avgDealSize: number;
+  avgDaysToFund: number | null;
+  leadsThisMonth: number;
+  fundedThisMonth: number;
+}
+
+export interface MonthlyRevenue {
+  month: string;
+  dealsFunded: number;
+  totalFundedAmount: number;
+  avgDealSize: number;
+  mcaDeals: number;
+  termLoanDeals: number;
+  locDeals: number;
+  sbaDeals: number;
+  equipmentDeals: number;
+  renewalDeals: number;
+  newDeals: number;
+}
+
+export interface LeadSourceROI {
+  sourceId: string;
+  sourceName: string;
+  sourceType: LeadSourceType;
+  totalLeads: number;
+  totalFunded: number;
+  totalSpend: number;
+  totalRevenue: number;
+  costPerFundedDeal: number | null;
+  roiPercentage: number | null;
+}
+
+export interface CostPerFundedDealCard {
+  label: string;
+  costPerDeal: number | null;
+  totalFunded: number;
+  totalSpend: number;
+}

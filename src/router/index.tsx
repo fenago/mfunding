@@ -32,8 +32,21 @@ import MarketingResourcesPage from "../pages/admin/marketing/MarketingResourcesP
 import VendorDetailPage from "../pages/admin/marketing/VendorDetailPage.tsx";
 import AnalyticsDashboardPage from "../pages/admin/analytics/AnalyticsDashboardPage.tsx";
 import RealTimeDashboardPage from "../pages/admin/analytics/RealTimeDashboardPage.tsx";
+import DealAnalyticsPage from "../pages/admin/analytics/DealAnalyticsPage.tsx";
+import CloserPerformancePage from "../pages/admin/analytics/CloserPerformancePage.tsx";
+import LenderPerformancePage from "../pages/admin/analytics/LenderPerformancePage.tsx";
+import MarketPerformancePage from "../pages/admin/analytics/MarketPerformancePage.tsx";
+import LeadSourceROIPage from "../pages/admin/analytics/LeadSourceROIPage.tsx";
 import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
+import DealListPage from "../pages/admin/deals/DealListPage.tsx";
+import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
+
+// Commission & Financial Engine pages
+import CloserListPage from "../pages/admin/closers/CloserListPage.tsx";
+import CloserDetailPage from "../pages/admin/closers/CloserDetailPage.tsx";
+import SubISOListPage from "../pages/admin/sub-isos/SubISOListPage.tsx";
+import CommissionDashboardPage from "../pages/admin/commissions/CommissionDashboardPage.tsx";
 
 // Portal pages
 import PortalLayout from "../pages/portal/PortalLayout.tsx";
@@ -165,6 +178,52 @@ const router = createBrowserRouter([
                   },
                 ],
               },
+              // Deals (admin+)
+              {
+                path: "deals",
+                element: <DealListPage />,
+              },
+              {
+                path: "deals/:id",
+                element: <DealDetailPage />,
+              },
+              // Closers (super_admin only)
+              {
+                path: "closers",
+                element: <SuperAdminProtectedRoute />,
+                children: [
+                  {
+                    index: true,
+                    element: <CloserListPage />,
+                  },
+                  {
+                    path: ":id",
+                    element: <CloserDetailPage />,
+                  },
+                ],
+              },
+              // Sub-ISOs (super_admin only)
+              {
+                path: "sub-isos",
+                element: <SuperAdminProtectedRoute />,
+                children: [
+                  {
+                    index: true,
+                    element: <SubISOListPage />,
+                  },
+                ],
+              },
+              // Commissions (super_admin only)
+              {
+                path: "commissions",
+                element: <SuperAdminProtectedRoute />,
+                children: [
+                  {
+                    index: true,
+                    element: <CommissionDashboardPage />,
+                  },
+                ],
+              },
               // Customers (admin+)
               {
                 path: "customers",
@@ -205,6 +264,26 @@ const router = createBrowserRouter([
                   {
                     path: "realtime",
                     element: <RealTimeDashboardPage />,
+                  },
+                  {
+                    path: "deals",
+                    element: <DealAnalyticsPage />,
+                  },
+                  {
+                    path: "closers",
+                    element: <CloserPerformancePage />,
+                  },
+                  {
+                    path: "lenders",
+                    element: <LenderPerformancePage />,
+                  },
+                  {
+                    path: "markets",
+                    element: <MarketPerformancePage />,
+                  },
+                  {
+                    path: "lead-sources",
+                    element: <LeadSourceROIPage />,
                   },
                 ],
               },

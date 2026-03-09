@@ -18,6 +18,7 @@ import VendorROITable from "../../../components/analytics/VendorROITable";
 import DateRangePicker, { getDefaultDateRange } from "../../../components/analytics/DateRangePicker";
 import type { DateRange } from "../../../types/analytics";
 import { useTheme } from "../../../lib/theme-context";
+import AnalyticsTabNav from "../../../components/analytics/AnalyticsTabNav";
 
 const FUNNEL_COLORS_LIGHT = [
   "#0A2342", // lead - midnight blue
@@ -91,6 +92,9 @@ export default function AnalyticsDashboardPage() {
         </div>
         <DateRangePicker value={dateRange} onChange={setDateRange} />
       </div>
+
+      {/* Tab Navigation */}
+      <AnalyticsTabNav />
 
       {/* KPI Cards */}
       {kpiMetrics && (

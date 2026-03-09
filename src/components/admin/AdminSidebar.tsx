@@ -17,6 +17,10 @@ import {
   SunIcon,
   MoonIcon,
   ComputerDesktopIcon,
+  DocumentTextIcon,
+  UserGroupIcon,
+  BuildingOffice2Icon,
+  BanknotesIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
@@ -35,6 +39,10 @@ const navItems: NavItem[] = [
   { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ["admin", "super_admin"] },
   { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ["super_admin"] },
   { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: ["admin", "super_admin"] },
+  { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: ["admin", "super_admin"] },
+  { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: ["super_admin"] },
+  { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: ["super_admin"] },
+  { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: ["super_admin"] },
   { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
   { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: ["super_admin"] },
   { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },

@@ -19,6 +19,7 @@ import {
 } from "recharts";
 import { useRealTimeDashboard } from "../../../hooks/useAnalytics";
 import type { RecentActivity } from "../../../types/analytics";
+import AnalyticsTabNav from "../../../components/analytics/AnalyticsTabNav";
 
 function formatTimeAgo(date: Date): string {
   const now = new Date();
@@ -107,6 +108,9 @@ export default function RealTimeDashboardPage() {
           </button>
         </div>
       </div>
+
+      {/* Tab Navigation */}
+      <AnalyticsTabNav />
 
       {/* Live Transfer Tracker */}
       <div className="bg-gradient-to-r from-ocean-blue to-teal rounded-xl p-6 text-white">

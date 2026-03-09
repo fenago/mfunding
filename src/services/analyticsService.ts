@@ -8,6 +8,14 @@ import type {
   TodayStats,
   LeadSourceData,
   RecentActivity,
+  PipelineVelocity,
+  CloserPerformance,
+  LenderPerformance,
+  MarketPerformance,
+  MonthlyRevenue,
+  LeadSourceROI,
+  CostPerFundedDealCard,
+  DealFunnelStage,
 } from "../types/analytics";
 
 function toISODate(date: Date): string {
@@ -419,6 +427,353 @@ export async function fetchLeadSourceBreakdown(dateRange?: DateRange): Promise<L
       percentage: (count / total) * 100,
     }))
     .sort((a, b) => b.count - a.count);
+}
+
+// ===== Deal-Level Analytics Functions =====
+
+const DEAL_STATUSES = [
+  "new", "contacted", "qualifying", "application_sent", "docs_collected",
+  "submitted_to_funder", "offer_received", "offer_presented", "funded",
+];
+
+const DEAL_STATUS_LABELS: Record<string, string> = {
+  new: "New Lead",
+  contacted: "Contacted",
+  qualifying: "Qualifying",
+  application_sent: "App Sent",
+  docs_collected: "Docs Collected",
+  submitted_to_funder: "Submitted",
+  offer_received: "Offer Received",
+  offer_presented: "Offer Presented",
+  funded: "Funded",
+};
+
+const DEAL_FUNNEL_COLORS = [
+  "#0A2342", "#0C516E", "#007EA7", "#0097A7", "#00A896",
+  "#00B88A", "#00C49F", "#00D49D", "#22C55E",
+];
+
+const MARKET_LABELS: Record<string, string> = {
+  indianapolis: "Indianapolis, IN",
+  phoenix: "Phoenix/Scottsdale, AZ",
+  columbus: "Columbus/Cincinnati, OH",
+  dc: "Washington DC/NoVA",
+  sacramento: "Sacramento, CA",
+  south_florida: "South Florida",
+};
+
+const PIPELINE_STAGE_LABELS: Record<string, string> = {
+  new_to_contacted: "New to Contacted",
+  contacted_to_qualified: "Contacted to Qualified",
+  qualified_to_app_sent: "Qualified to App Sent",
+  app_sent_to_docs: "App Sent to Docs",
+  docs_to_submitted: "Docs to Submitted",
+  submitted_to_offer: "Submitted to Offer",
+  offer_to_funded: "Offer to Funded",
+  total_lead_to_funded: "Total: Lead to Funded",
+};
+
+export async function fetchDealFunnelMetrics(dateRange?: DateRange): Promise<DealFunnelStage[]> {
+  const filter = getDateRangeFilter(dateRange);
+
+  const stages: DealFunnelStage[] = [];
+
+  // For the funnel, count deals that have reached each stage (cumulative)
+  // A funded deal has passed through all stages
+  for (let i = 0; i < DEAL_STATUSES.length; i++) {
+    const status = DEAL_STATUSES[i];
+    let query = supabase
+      .from("deals")
+      .select("*", { count: "exact", head: true });
+
+    if (i < DEAL_STATUSES.length - 1) {
+      // Count deals currently at this stage OR that have passed it
+      // We use the status order - any deal at this stage or beyond
+      const validStatuses = DEAL_STATUSES.slice(i);
+      query = query.in("status", [...validStatuses, "renewal_eligible"]);
+    } else {
+      // Funded specifically
+      query = query.in("status", ["funded", "renewal_eligible"]);
+    }
+
+    if (filter) {
+      query = query.gte("created_at", filter.start).lte("created_at", filter.end);
+    }
+
+    const { count } = await query;
+
+    stages.push({
+      stage: status,
+      label: DEAL_STATUS_LABELS[status] || status,
+      count: count || 0,
+      color: DEAL_FUNNEL_COLORS[i],
+    });
+  }
+
+  return stages;
+}
+
+export async function fetchCostPerFundedDeal(
+  groupBy: "source" | "market" = "source"
+): Promise<CostPerFundedDealCard[]> {
+  if (groupBy === "source") {
+    const { data } = await supabase
+      .from("lead_sources")
+      .select("name, total_funded, total_spend, cost_per_funded_deal")
+      .eq("status", "active")
+      .order("total_funded", { ascending: false });
+
+    if (!data || data.length === 0) return [];
+
+    return data.map((row) => ({
+      label: row.name,
+      costPerDeal: row.cost_per_funded_deal,
+      totalFunded: row.total_funded || 0,
+      totalSpend: row.total_spend || 0,
+    }));
+  }
+
+  // Group by market using deals table
+  const { data } = await supabase
+    .from("deals")
+    .select("market, amount_funded, status");
+
+  if (!data || data.length === 0) return [];
+
+  const marketMap = new Map<string, { funded: number; spend: number }>();
+  for (const deal of data) {
+    const market = deal.market || "unknown";
+    const entry = marketMap.get(market) || { funded: 0, spend: 0 };
+    if (deal.status === "funded") {
+      entry.funded += 1;
+    }
+    marketMap.set(market, entry);
+  }
+
+  return Array.from(marketMap.entries()).map(([market, stats]) => ({
+    label: MARKET_LABELS[market] || market,
+    costPerDeal: null, // We don't have per-deal cost by market from the table
+    totalFunded: stats.funded,
+    totalSpend: stats.spend,
+  }));
+}
+
+export async function fetchPipelineVelocity(): Promise<PipelineVelocity[]> {
+  const { data, error } = await supabase.from("v_pipeline_velocity").select("*");
+
+  if (error || !data) return [];
+
+  return data.map((row) => ({
+    stageTransition: row.stage_transition,
+    stageLabel: PIPELINE_STAGE_LABELS[row.stage_transition] || row.stage_transition,
+    avgDays: row.avg_days ? Number(row.avg_days) : null,
+    sampleSize: row.sample_size || 0,
+  }));
+}
+
+export async function fetchCloserPerformance(): Promise<CloserPerformance[]> {
+  const { data, error } = await supabase.from("v_closer_performance").select("*");
+
+  if (error || !data) return [];
+
+  return data.map((row) => ({
+    closerId: row.closer_id,
+    closerName: row.closer_name || "Unknown",
+    totalLeadsAssigned: row.total_leads_assigned || 0,
+    totalDealsFunded: row.total_deals_funded || 0,
+    totalDealsLost: row.total_deals_lost || 0,
+    closeRate: Number(row.close_rate) || 0,
+    totalRevenue: Number(row.total_revenue) || 0,
+    avgDealSize: Number(row.avg_deal_size) || 0,
+    avgDaysToFund: row.avg_days_to_fund ? Number(row.avg_days_to_fund) : null,
+    dealsThisMonth: row.deals_this_month || 0,
+    revenueThisMonth: Number(row.revenue_this_month) || 0,
+  }));
+}
+
+export async function fetchLenderPerformance(): Promise<LenderPerformance[]> {
+  const { data, error } = await supabase.from("v_lender_approval_rates").select("*");
+
+  if (error || !data) return [];
+
+  return data.map((row) => ({
+    lenderId: row.lender_id,
+    lenderName: row.lender_name || "Unknown",
+    totalSubmissions: row.total_submissions || 0,
+    totalApproved: row.total_approved || 0,
+    totalDeclined: row.total_declined || 0,
+    totalFunded: row.total_funded || 0,
+    approvalRate: Number(row.approval_rate) || 0,
+    avgOfferAmount: Number(row.avg_offer_amount) || 0,
+    avgFactorRate: Number(row.avg_factor_rate) || 0,
+    avgCommissionPoints: Number(row.avg_commission_points) || 0,
+    avgResponseDays: row.avg_response_days ? Number(row.avg_response_days) : null,
+  }));
+}
+
+export async function fetchMarketPerformance(): Promise<MarketPerformance[]> {
+  const { data, error } = await supabase.from("v_market_performance").select("*");
+
+  if (error || !data) return [];
+
+  return data.map((row) => ({
+    market: row.market,
+    marketLabel: MARKET_LABELS[row.market] || row.market || "Unknown",
+    totalLeads: row.total_leads || 0,
+    totalFunded: row.total_funded || 0,
+    totalLost: row.total_lost || 0,
+    closeRate: Number(row.close_rate) || 0,
+    totalRevenue: Number(row.total_revenue) || 0,
+    avgDealSize: Number(row.avg_deal_size) || 0,
+    avgDaysToFund: row.avg_days_to_fund ? Number(row.avg_days_to_fund) : null,
+    leadsThisMonth: row.leads_this_month || 0,
+    fundedThisMonth: row.funded_this_month || 0,
+  }));
+}
+
+export async function fetchLeadSourceROI(): Promise<LeadSourceROI[]> {
+  const { data } = await supabase
+    .from("lead_sources")
+    .select("*")
+    .eq("status", "active")
+    .order("total_revenue", { ascending: false });
+
+  if (!data || data.length === 0) return [];
+
+  return data.map((row) => ({
+    sourceId: row.id,
+    sourceName: row.name,
+    sourceType: row.type,
+    totalLeads: row.total_leads || 0,
+    totalFunded: row.total_funded || 0,
+    totalSpend: row.total_spend || 0,
+    totalRevenue: row.total_revenue || 0,
+    costPerFundedDeal: row.cost_per_funded_deal ? Number(row.cost_per_funded_deal) : null,
+    roiPercentage: row.roi_percentage ? Number(row.roi_percentage) : null,
+  }));
+}
+
+export async function fetchMonthlyRevenue(dateRange?: DateRange): Promise<MonthlyRevenue[]> {
+  // Try the view first; fall back to direct query
+  const { data: viewData, error } = await supabase
+    .from("v_monthly_revenue")
+    .select("*")
+    .order("month", { ascending: true });
+
+  if (!error && viewData && viewData.length > 0) {
+    let filtered = viewData;
+    if (dateRange) {
+      const start = dateRange.start.toISOString();
+      const end = dateRange.end.toISOString();
+      filtered = viewData.filter((r) => r.month >= start && r.month <= end);
+    }
+
+    return filtered.map((row) => ({
+      month: row.month ? new Date(row.month).toISOString().slice(0, 7) : "",
+      dealsFunded: row.deals_funded || 0,
+      totalFundedAmount: Number(row.total_funded_amount) || 0,
+      avgDealSize: Number(row.avg_deal_size) || 0,
+      mcaDeals: row.mca_deals || 0,
+      termLoanDeals: row.term_loan_deals || 0,
+      locDeals: row.loc_deals || 0,
+      sbaDeals: row.sba_deals || 0,
+      equipmentDeals: row.equipment_deals || 0,
+      renewalDeals: row.renewal_deals || 0,
+      newDeals: row.new_deals || 0,
+    }));
+  }
+
+  // Fallback: direct query on deals table
+  let query = supabase
+    .from("deals")
+    .select("funded_at, amount_funded, deal_type, is_renewal")
+    .eq("status", "funded")
+    .not("funded_at", "is", null);
+
+  if (dateRange) {
+    const filter = getDateRangeFilter(dateRange);
+    if (filter) {
+      query = query.gte("funded_at", filter.start).lte("funded_at", filter.end);
+    }
+  }
+
+  const { data } = await query;
+  if (!data || data.length === 0) return [];
+
+  const buckets = new Map<string, MonthlyRevenue>();
+
+  for (const deal of data) {
+    const monthKey = new Date(deal.funded_at).toISOString().slice(0, 7);
+    const entry = buckets.get(monthKey) || {
+      month: monthKey,
+      dealsFunded: 0,
+      totalFundedAmount: 0,
+      avgDealSize: 0,
+      mcaDeals: 0,
+      termLoanDeals: 0,
+      locDeals: 0,
+      sbaDeals: 0,
+      equipmentDeals: 0,
+      renewalDeals: 0,
+      newDeals: 0,
+    };
+
+    entry.dealsFunded++;
+    entry.totalFundedAmount += deal.amount_funded || 0;
+
+    if (deal.deal_type === "mca") entry.mcaDeals++;
+    else if (deal.deal_type === "term_loan") entry.termLoanDeals++;
+    else if (deal.deal_type === "line_of_credit") entry.locDeals++;
+    else if (deal.deal_type === "sba") entry.sbaDeals++;
+    else if (deal.deal_type === "equipment_financing") entry.equipmentDeals++;
+
+    if (deal.is_renewal) entry.renewalDeals++;
+    else entry.newDeals++;
+
+    buckets.set(monthKey, entry);
+  }
+
+  return Array.from(buckets.values())
+    .map((b) => ({
+      ...b,
+      avgDealSize: b.dealsFunded > 0 ? b.totalFundedAmount / b.dealsFunded : 0,
+    }))
+    .sort((a, b) => a.month.localeCompare(b.month));
+}
+
+export async function fetchCloseRateTrend(dateRange?: DateRange): Promise<TrendDataPoint[]> {
+  let query = supabase
+    .from("deals")
+    .select("created_at, status, funded_at");
+
+  const filter = getDateRangeFilter(dateRange);
+  if (filter) {
+    query = query.gte("created_at", filter.start).lte("created_at", filter.end);
+  }
+
+  const { data } = await query;
+  if (!data || data.length === 0) return [];
+
+  // Group by month
+  const buckets = new Map<string, { total: number; funded: number }>();
+
+  for (const deal of data) {
+    const monthKey = new Date(deal.created_at).toISOString().slice(0, 7);
+    const entry = buckets.get(monthKey) || { total: 0, funded: 0 };
+    entry.total++;
+    if (deal.status === "funded" || deal.status === "renewal_eligible") {
+      entry.funded++;
+    }
+    buckets.set(monthKey, entry);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([date, stats]) => ({
+      date,
+      value: stats.total > 0 ? (stats.funded / stats.total) * 100 : 0,
+      label: `${stats.funded}/${stats.total}`,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function fetchRecentActivity(limit = 10): Promise<RecentActivity[]> {
