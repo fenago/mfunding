@@ -8,7 +8,6 @@ import CaseStudySection from '../components/landing/CaseStudySection';
 import HowItWorksSection from '../components/landing/HowItWorksSection';
 import SecuritySection from '../components/landing/SecuritySection';
 import FAQSection from '../components/landing/FAQSection';
-import VideoSection from '../components/landing/VideoSection';
 import ApplySection from '../components/landing/ApplySection';
 import Footer from '../components/landing/Footer';
 import { SpotlightCursor } from '../components/ui/spotlight-cursor';
@@ -38,7 +37,6 @@ const HomePage = () => {
         <HowItWorksSection />
         <SecuritySection />
         <FAQSection />
-        <VideoSection />
         <ApplySection />
       </main>
       <Footer />
