@@ -66,6 +66,25 @@ So: *funder* accept/decline = per-submission (many per deal); *merchant* accept/
 
 ---
 
+# Funnel reality — MOST deals die (design for it, not against it)
+
+At an 8–14% close rate, **~86–92% of every deal never funds.** Loss is the *dominant* outcome — the normal case — not an exception to bolt on. The waterfall sheds volume at every stage, heaviest early. Roughly where deals die, most → least:
+
+1. **Never reached / not qualified** (New Lead → Qualifying) — the biggest die-off by far.
+2. **Won't provide docs / bank statements** (the #1 mid-funnel leak).
+3. **Funders decline** — often *all* of them.
+4. **Merchant declines** the offer.
+
+So the pipeline is **not a conveyor belt to "Funded"** — it's a **sorting machine** that pushes the few forward and routes the many into the right bucket. The automation's real work is the losers:
+
+- The **loss/nurture pool is the single largest segment of the database** — bigger than the active pipeline. It's an asset, not garbage: the reactivation engine (Sequence F) + UCC/renewal triggers turn it into ongoing **~$0-cost volume** (3–5% re-engage per month).
+- **Every loss is tagged** (`lost_reason`) so the **funnel waterfall + loss-reason breakdown are the primary KPIs** — they show exactly where the leak is and what to fix.
+- **Suppress the truly dead** (opt-out/DNC, prohibited industry) so you never pay to message a corpse.
+
+Build the loss-handling machinery first-class — that's where most of the volume, and most of the recoverable money, lives.
+
+---
+
 # Branches, loops & recovery paths — every outcome (so nothing dead-ends silently)
 
 A deal at any stage has three kinds of outcome: **forward** (happy path), **stall** (no response → a nurture sequence), or **branch** (a specific negative that routes somewhere). No path is allowed to silently dead-end — every loss is tagged with a `lost_reason` and dropped into reactivation.
