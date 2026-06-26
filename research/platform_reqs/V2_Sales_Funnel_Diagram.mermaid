@@ -1,0 +1,69 @@
+---
+title: MFunding MCA Deal Pipeline — Complete Sales Funnel
+---
+flowchart TD
+    subgraph ACQUISITION["🎯 ACQUISITION LAYER"]
+        LT["📞 Live Transfers\n100/month × $75 avg\n$7,500/mo"]
+        GA["🔍 Google Ads\n40 leads/month\n$5,550/mo"]
+        AGED["📋 Aged Leads + UCC\n$0.50-$5/lead\nVolume channel"]
+        REF["🤝 Referrals\nCPAs, Agents, Partners\n$100 gift card/funded"]
+        SUBISO["🏢 Sub-ISO Overflow\nDeals from partners\n$0 lead cost"]
+        REN["🔄 Renewals\n60% seek more at 6mo\n$0 cost"]
+    end
+
+    subgraph QUALIFICATION["✅ QUALIFICATION — GHL CRM"]
+        IC["Initial Contact\n⏱️ < 60 sec transfers, < 5 min web\n📊 Target: 65% contact rate"]
+        QC["Qualification Call\nRevenue $15K+? 6+ months?\nActive bank account?\n📊 Target: 55% qualify"]
+    end
+
+    subgraph CONVERSION["💰 CONVERSION LAYER"]
+        APP["Application Sent\nTake app ON THE CALL\n📊 Target: 65% submit"]
+        DOCS["Docs Collected\n🔗 Plaid Link (60 sec) or\n📸 Text photos / email PDFs\n📊 Target: 50% complete\n⚠️ #1 LEAK — BIGGEST REVENUE LOSS"]
+        SUB["Submitted to Funders\n📤 VA sends to 3-5 funders\n📊 Target: 55% get approved"]
+        OFFER["Offer Received\nPresent 2+ offers always\n📊 Target: 75% accept"]
+    end
+
+    subgraph FUNDING["🏆 FUNDING LAYER"]
+        FUND["DEAL FUNDED\n💵 8 pts on $50K = $4,000\n📊 Target: 85% of accepted fund"]
+        REVIEW["Google Review + Referral Ask\n⭐ $100 gift card per referral"]
+        RENEW["Renewal Pipeline\n📊 Auto-trigger at 40/60/75% paydown\n💵 6 pts on renewals = $3,000"]
+    end
+
+    subgraph RECOVERY["♻️ RECOVERY LAYER — GHL Automation"]
+        LOST["Dead / Lost Lead"]
+        NURTURE["30-60-90 Day\nNurture Sequences"]
+        REACT["Monthly Reactivation\nBlast to Dead DB\n3-5% re-engage"]
+    end
+
+    LT --> IC
+    GA --> IC
+    AGED --> IC
+    REF --> IC
+    SUBISO --> IC
+    IC -->|"Contacted"| QC
+    IC -->|"No answer / bad #"| LOST
+    QC -->|"Qualified"| APP
+    QC -->|"Not qualified"| LOST
+    APP -->|"App received"| DOCS
+    APP -->|"Never submits"| LOST
+    DOCS -->|"Plaid or manual docs received"| SUB
+    DOCS -->|"Goes dark"| LOST
+    SUB --> OFFER
+    SUB -->|"All declined"| LOST
+    OFFER -->|"Accepted"| FUND
+    OFFER -->|"Declined terms"| LOST
+    FUND --> REVIEW
+    REVIEW --> RENEW
+    RENEW -->|"Renewal eligible"| IC
+    REN --> IC
+    LOST --> NURTURE
+    NURTURE --> REACT
+    REACT -->|"Re-engaged"| IC
+
+    style ACQUISITION fill:#0B1D3A,color:#fff,stroke:#00C853
+    style QUALIFICATION fill:#132E5B,color:#fff,stroke:#00C853
+    style CONVERSION fill:#1A3F6F,color:#fff,stroke:#00C853
+    style FUNDING fill:#00C853,color:#fff,stroke:#0B1D3A
+    style RECOVERY fill:#FFB300,color:#0B1D3A,stroke:#0B1D3A
+    style FUND fill:#00C853,color:#fff,stroke:#fff,stroke-width:3px
+    style DOCS fill:#FF6D00,color:#fff,stroke:#fff,stroke-width:2px

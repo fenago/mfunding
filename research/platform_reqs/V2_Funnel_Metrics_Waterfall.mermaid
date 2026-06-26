@@ -1,0 +1,44 @@
+---
+title: MFunding Funnel Waterfall — 140 Leads In → How Many Fund? (Most Likely Scenario)
+---
+flowchart LR
+    subgraph INPUT["INPUT: 140 LEADS/MONTH"]
+        A["140 Total Leads\n100 Live Transfers ($75 avg)\n40 Google Ads ($60 avg)\nBlended CPL: $70"]
+    end
+
+    subgraph STAGE1["CONTACT — 65%"]
+        B["91 Contacted\n65% contact rate\n📉 49 lost: wrong #, no answer,\nvoicemail, disconnected"]
+    end
+
+    subgraph STAGE2["QUALIFIED — 55%"]  
+        C["50 Qualified\n55% of contacted\n📉 41 lost: too new, low revenue,\nwrong industry, not interested"]
+    end
+
+    subgraph STAGE3["APP + DOCS — 65% × 50%"]
+        D["33 Apps Submitted\n65% submit app\n📉 17 lost: never completed"]
+        E["16 Docs Complete\n50% via Plaid or manual\n📉 17 lost: never sent docs\n⚠️ #1 LEAK — FIX THIS FIRST"]
+    end
+
+    subgraph STAGE4["FUNDER — 55%"]
+        F["9 Offers Received\n55% get at least 1 offer\n📉 7 lost: all funders declined"]
+    end
+
+    subgraph STAGE5["CLOSE — 75% × 85%"]
+        G["7 Accepted\n75% accept offer\n📉 2 lost: terms rejected"]
+        H["6 DEALS FUNDED\n85% of accepted\n📉 1 lost: fell apart at contract"]
+    end
+
+    subgraph RESULT["💰 MONTHLY RESULT"]
+        I["6 Funded Deals\n× 8 pts on $50K avg\n= $24,000 Gross Commission\n\nIf you close all yourself:\nNet = $24,000 - $9,800 costs\n= $14,200/month\n\nWith closer at 50% split:\nYour net = ~$7,000/month\n+ you close some yourself"]
+    end
+
+    A --> B --> C --> D --> E --> F --> G --> H --> I
+
+    style INPUT fill:#0B1D3A,color:#fff
+    style STAGE1 fill:#132E5B,color:#fff
+    style STAGE2 fill:#1A3F6F,color:#fff
+    style STAGE3 fill:#FF6D00,color:#fff
+    style STAGE4 fill:#1A3F6F,color:#fff
+    style STAGE5 fill:#00C853,color:#fff
+    style RESULT fill:#00C853,color:#fff,stroke:#fff,stroke-width:3px
+    style E fill:#FF0000,color:#fff,stroke:#fff,stroke-width:2px

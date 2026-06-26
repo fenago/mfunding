@@ -17,6 +17,7 @@ import InteractionTimeline from "../../../components/shared/InteractionTimeline"
 import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
 import StatusBadge from "../../../components/shared/StatusBadge";
+import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 interface Customer {
@@ -201,13 +202,16 @@ export default function CustomerDetailPage() {
               </p>
             )}
           </div>
-          <button
-            onClick={() => setIsEditModalOpen(true)}
-            className="btn-primary flex items-center gap-2"
-          >
-            <PencilIcon className="w-4 h-4" />
-            Edit
-          </button>
+          <div className="flex items-center gap-2">
+            <SyncToGHLButton entity="customer" id={customer.id} onSynced={() => fetchCustomer()} />
+            <button
+              onClick={() => setIsEditModalOpen(true)}
+              className="btn-primary flex items-center gap-2"
+            >
+              <PencilIcon className="w-4 h-4" />
+              Edit
+            </button>
+          </div>
         </div>
       </div>
 

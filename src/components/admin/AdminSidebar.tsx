@@ -21,6 +21,7 @@ import {
   UserGroupIcon,
   BuildingOffice2Icon,
   BanknotesIcon,
+  ArrowsRightLeftIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
@@ -48,6 +49,7 @@ const navItems: NavItem[] = [
   { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },
   { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: ["super_admin"] },
+  { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: ["super_admin"] },
   { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: ["super_admin"] },
 ];
 

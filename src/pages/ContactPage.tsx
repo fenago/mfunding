@@ -19,8 +19,8 @@ const contactInfo = [
   {
     icon: PhoneIcon,
     label: 'Phone',
-    value: '(786) 418-2051',
-    href: 'tel:+17864182051',
+    value: '(786) 840-9404 | (888) 596-5378',
+    href: 'tel:+17868409404',
     description: 'Mon–Fri, 9am–6pm EST',
   },
   {

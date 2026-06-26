@@ -25,6 +25,7 @@ import {
   SUBMISSION_STATUS_CONFIG,
 } from "../../../types/deals";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
+import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 // Required stip document types for a deal
@@ -209,6 +210,7 @@ export default function DealDetailPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <SyncToGHLButton entity="deal" id={deal.id} onSynced={() => fetchDeal()} />
             {deal.customer && (
               <Link
                 to={`/admin/customers/${deal.customer_id}`}

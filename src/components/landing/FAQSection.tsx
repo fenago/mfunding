@@ -196,10 +196,10 @@ export default function FAQSection() {
               </motion.span>
             </a>
             <a
-              href="tel:+17864182051"
+              href="tel:+17868409404"
               className="text-ocean-blue hover:text-mint-green transition-colors font-medium"
             >
-              Or call us: (786) 418-2051
+              Or call us: (786) 840-9404 | Toll Free: (888) 596-5378
             </a>
           </div>
         </motion.div>

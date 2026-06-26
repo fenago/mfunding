@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MFunding — Fast Business Capital $10K to $500K</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy: #0B1D3A;
+    --green: #00C853;
+    --green-dark: #00A844;
+    --gold: #FFB300;
+    --light: #F4F7FA;
+    --white: #FFFFFF;
+    --gray: #6B7A8D;
+    --border: #DDE3EB;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'DM Sans', sans-serif; color: var(--navy); background: var(--white); -webkit-font-smoothing: antialiased; }
+
+  .hero {
+    background: linear-gradient(135deg, #0B1D3A 0%, #132E5B 50%, #1A3F6F 100%);
+    color: var(--white); position: relative; overflow: hidden;
+  }
+  .hero::before {
+    content: ''; position: absolute; top: -40%; right: -20%;
+    width: 700px; height: 700px;
+    background: radial-gradient(circle, rgba(0,200,83,0.08) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+  .hero-inner {
+    max-width: 1100px; margin: 0 auto; padding: 48px 24px 56px;
+    display: grid; grid-template-columns: 1fr 380px; gap: 48px;
+    align-items: center; position: relative; z-index: 1;
+  }
+  .hero-badge {
+    display: inline-block; background: rgba(0,200,83,0.15); color: var(--green);
+    font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 20px;
+    margin-bottom: 20px; letter-spacing: 0.5px;
+  }
+  .hero h1 { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 44px; font-weight: 800; line-height: 1.15; margin-bottom: 18px; }
+  .hero h1 span { color: var(--green); }
+  .hero-sub { font-size: 18px; color: rgba(255,255,255,0.75); line-height: 1.6; margin-bottom: 28px; max-width: 480px; }
+  .trust-row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .trust-item { display: flex; align-items: center; gap: 8px; font-size: 14px; color: rgba(255,255,255,0.7); }
+  .trust-item .check { width: 20px; height: 20px; background: var(--green); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; color: white; flex-shrink: 0; }
+
+  .form-card { background: var(--white); border-radius: 16px; padding: 32px 28px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+  .form-card h2 { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 22px; color: var(--navy); margin-bottom: 4px; }
+  .form-card .form-sub { font-size: 14px; color: var(--gray); margin-bottom: 20px; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 13px; font-weight: 600; color: var(--navy); margin-bottom: 5px; }
+  .form-group input, .form-group select {
+    width: 100%; padding: 12px 14px; border: 1.5px solid var(--border); border-radius: 10px;
+    font-size: 15px; font-family: 'DM Sans', sans-serif; color: var(--navy); background: var(--light); transition: border 0.2s;
+  }
+  .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--green); background: var(--white); }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  .btn-submit {
+    width: 100%; padding: 16px; background: var(--green); color: var(--white); border: none;
+    border-radius: 10px; font-size: 17px; font-weight: 700; font-family: 'DM Sans', sans-serif;
+    cursor: pointer; transition: background 0.2s, transform 0.1s; margin-top: 6px;
+  }
+  .btn-submit:hover { background: var(--green-dark); transform: translateY(-1px); }
+  .form-footer { text-align: center; font-size: 12px; color: var(--gray); margin-top: 12px; }
+  .form-footer svg { vertical-align: middle; margin-right: 4px; }
+
+  .steps { background: var(--light); padding: 64px 24px; }
+  .steps-inner { max-width: 900px; margin: 0 auto; text-align: center; }
+  .section-label { font-size: 13px; font-weight: 600; color: var(--green); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; }
+  .section-title { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 32px; font-weight: 800; margin-bottom: 48px; }
+  .steps-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 32px; text-align: center; }
+  .step-card { background: var(--white); border-radius: 14px; padding: 32px 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .step-num { width: 48px; height: 48px; background: linear-gradient(135deg, var(--green), #00E676); color: white; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; font-family: 'Plus Jakarta Sans', sans-serif; margin-bottom: 16px; }
+  .step-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+  .step-card p { font-size: 14px; color: var(--gray); line-height: 1.6; }
+
+  .products { padding: 64px 24px; max-width: 900px; margin: 0 auto; }
+  .products-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 40px; }
+  .product-item { border: 1.5px solid var(--border); border-radius: 12px; padding: 24px; transition: border 0.2s, box-shadow 0.2s; }
+  .product-item:hover { border-color: var(--green); box-shadow: 0 4px 16px rgba(0,200,83,0.1); }
+  .product-item h4 { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+  .product-item .range { font-size: 14px; color: var(--green); font-weight: 600; margin-bottom: 8px; }
+  .product-item p { font-size: 13px; color: var(--gray); line-height: 1.5; }
+
+  .testimonials { background: var(--navy); color: var(--white); padding: 64px 24px; }
+  .testimonials-inner { max-width: 900px; margin: 0 auto; }
+  .testimonials .section-label { color: var(--gold); }
+  .testimonials .section-title { color: var(--white); }
+  .test-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; }
+  .test-card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 24px; }
+  .test-stars { color: var(--gold); font-size: 16px; margin-bottom: 12px; }
+  .test-card p { font-size: 14px; line-height: 1.6; color: rgba(255,255,255,0.8); margin-bottom: 16px; font-style: italic; }
+  .test-author { font-size: 13px; font-weight: 600; }
+  .test-biz { font-size: 12px; color: rgba(255,255,255,0.5); }
+
+  .faq { padding: 64px 24px; max-width: 700px; margin: 0 auto; }
+  .faq-item { border-bottom: 1px solid var(--border); padding: 20px 0; }
+  .faq-q { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+  .faq-a { font-size: 14px; color: var(--gray); line-height: 1.6; }
+
+  .cta-bar { background: var(--green); padding: 40px 24px; text-align: center; }
+  .cta-bar h2 { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 28px; font-weight: 800; color: var(--white); margin-bottom: 8px; }
+  .cta-bar p { color: rgba(255,255,255,0.85); font-size: 16px; margin-bottom: 20px; }
+  .cta-bar a { display: inline-block; background: var(--white); color: var(--green-dark); font-weight: 700; font-size: 16px; padding: 14px 36px; border-radius: 10px; text-decoration: none; transition: transform 0.15s; }
+  .cta-bar a:hover { transform: translateY(-2px); }
+
+  .phone-strip { background: var(--navy); text-align: center; padding: 14px; color: rgba(255,255,255,0.7); font-size: 14px; }
+  .phone-strip a { color: var(--gold); font-weight: 700; text-decoration: none; font-size: 18px; }
+
+  footer { background: #060E1A; padding: 32px 24px; text-align: center; font-size: 12px; color: rgba(255,255,255,0.35); line-height: 1.8; }
+
+  @media (max-width: 768px) {
+    .hero-inner { grid-template-columns: 1fr; padding: 32px 20px 40px; gap: 32px; }
+    .hero h1 { font-size: 32px; }
+    .steps-grid, .test-grid { grid-template-columns: 1fr; }
+    .products-grid { grid-template-columns: 1fr; }
+    .form-row { grid-template-columns: 1fr; }
+    .section-title { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="phone-strip">
+  Prefer to talk? Call now: <a href="tel:+15551234567">(555) 123-4567</a>
+</div>
+
+<section class="hero">
+  <div class="hero-inner">
+    <div>
+      <div class="hero-badge">✦ MFunding — Trusted by 500+ Business Owners</div>
+      <h1>Get <span>$10K–$500K</span> in Business Capital — As Fast as 24 Hours</h1>
+      <p class="hero-sub">We work with 50+ funding partners to find the best capital solution for YOUR business. All credit histories welcome. Faster than banks, more options than you think.</p>
+      <div class="trust-row">
+        <div class="trust-item"><div class="check">✓</div> No upfront fees</div>
+        <div class="trust-item"><div class="check">✓</div> 500+ credit score OK</div>
+        <div class="trust-item"><div class="check">✓</div> Same-day decisions</div>
+      </div>
+    </div>
+    <div class="form-card">
+      <h2>See What You Qualify For</h2>
+      <p class="form-sub">Takes 60 seconds. No impact to your credit.</p>
+      <form id="leadForm" onsubmit="handleSubmit(event)">
+        <div class="form-row">
+          <div class="form-group"><label>First Name</label><input type="text" name="first" placeholder="John" required></div>
+          <div class="form-group"><label>Last Name</label><input type="text" name="last" placeholder="Smith" required></div>
+        </div>
+        <div class="form-group"><label>Business Name</label><input type="text" name="business" placeholder="Smith's Auto Repair" required></div>
+        <div class="form-group"><label>Phone Number</label><input type="tel" name="phone" placeholder="(555) 000-0000" required></div>
+        <div class="form-group"><label>Email</label><input type="email" name="email" placeholder="john@business.com" required></div>
+        <div class="form-row">
+          <div class="form-group"><label>Monthly Revenue</label>
+            <select name="revenue" required>
+              <option value="">Select...</option>
+              <option>Under $15,000</option>
+              <option>$15,000 – $25,000</option>
+              <option>$25,000 – $50,000</option>
+              <option>$50,000 – $100,000</option>
+              <option>$100,000+</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Time in Business</label>
+            <select name="time" required>
+              <option value="">Select...</option>
+              <option>Less than 6 months</option>
+              <option>6 – 12 months</option>
+              <option>1 – 2 years</option>
+              <option>2 – 5 years</option>
+              <option>5+ years</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group"><label>How Much Capital Do You Need?</label>
+          <select name="amount" required>
+            <option value="">Select...</option>
+            <option>$5,000 – $25,000</option>
+            <option>$25,000 – $50,000</option>
+            <option>$50,000 – $100,000</option>
+            <option>$100,000 – $250,000</option>
+            <option>$250,000 – $500,000</option>
+          </select>
+        </div>
+        <button class="btn-submit" type="submit">Get My Free Quote →</button>
+        <div class="form-footer">
+          <svg width="12" height="14" fill="none" viewBox="0 0 12 14"><path d="M10 5H9V3.5C9 1.57 7.43 0 5.5 0S2 1.57 2 3.5V5H1C.45 5 0 5.45 0 6v7c0 .55.45 1 1 1h9c.55 0 1-.45 1-1V6c0-.55-.45-1-1-1ZM5.5 10.5c-.83 0-1.5-.67-1.5-1.5S4.67 7.5 5.5 7.5 7 8.17 7 9s-.67 1.5-1.5 1.5ZM7.5 5h-4V3.5C3.5 2.4 4.4 1.5 5.5 1.5S7.5 2.4 7.5 3.5V5Z" fill="#9CA3AF"/></svg>
+          Your information is secure and never shared.
+        </div>
+      </form>
+    </div>
+  </div>
+</section>
+
+<section class="steps">
+  <div class="steps-inner">
+    <div class="section-label">How It Works</div>
+    <h2 class="section-title">Funded in 3 Simple Steps</h2>
+    <div class="steps-grid">
+      <div class="step-card">
+        <div class="step-num">1</div>
+        <h3>Apply in 60 Seconds</h3>
+        <p>Fill out the quick form above. No paperwork, no credit pull, no commitment. We just need the basics to match you with the right funding partners.</p>
+      </div>
+      <div class="step-card">
+        <div class="step-num">2</div>
+        <h3>Get Multiple Offers</h3>
+        <p>We submit to our network of 50+ funding partners who compete for your business. You'll receive 1–3 offers, often within hours.</p>
+      </div>
+      <div class="step-card">
+        <div class="step-num">3</div>
+        <h3>Get Funded Fast</h3>
+        <p>Choose the best offer. Securely verify your bank account in seconds with our instant verification technology. Funds deposited — often within 24 hours.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="products">
+  <div style="text-align:center;">
+    <div class="section-label">Capital Solutions</div>
+    <h2 class="section-title">Options for Every Business Need</h2>
+  </div>
+  <div class="products-grid">
+    <div class="product-item">
+      <h4>Working Capital</h4>
+      <div class="range">$10K – $500K</div>
+      <p>Fast capital for payroll, inventory, marketing, or any business expense. Flexible repayment based on your revenue.</p>
+    </div>
+    <div class="product-item">
+      <h4>Revenue-Based Funding</h4>
+      <div class="range">$10K – $250K</div>
+      <p>Advance based on your business revenue. Payments adjust with your sales volume — pay less when business is slower.</p>
+    </div>
+    <div class="product-item">
+      <h4>Business Line of Credit</h4>
+      <div class="range">$10K – $250K</div>
+      <p>Draw funds whenever you need them and only pay on what you use. Revolving access to capital.</p>
+    </div>
+    <div class="product-item">
+      <h4>Equipment Financing</h4>
+      <div class="range">$10K – $500K</div>
+      <p>Finance new or used equipment with the equipment itself as collateral. Lower rates, longer terms.</p>
+    </div>
+  </div>
+</section>
+
+<section class="testimonials">
+  <div class="testimonials-inner">
+    <div style="text-align:center;">
+      <div class="section-label">What Our Clients Say</div>
+      <h2 class="section-title">Real Results from Real Business Owners</h2>
+    </div>
+    <div class="test-grid">
+      <div class="test-card">
+        <div class="test-stars">★★★★★</div>
+        <p>"I was turned down by my bank and thought I had no options. MFunding got me $75K in working capital in less than 48 hours. Saved my business."</p>
+        <div class="test-author">Marco R.</div>
+        <div class="test-biz">Restaurant Owner, Phoenix AZ</div>
+      </div>
+      <div class="test-card">
+        <div class="test-stars">★★★★★</div>
+        <p>"The process was incredibly fast. Applied Monday, had three offers by Tuesday, money in my account Wednesday. Exactly what I needed for our expansion."</p>
+        <div class="test-author">Sarah T.</div>
+        <div class="test-biz">Salon Owner, Indianapolis IN</div>
+      </div>
+      <div class="test-card">
+        <div class="test-stars">★★★★★</div>
+        <p>"My credit isn't perfect but they found me a great option. Now I'm on my second round of funding and growing faster than ever."</p>
+        <div class="test-author">James D.</div>
+        <div class="test-biz">Contractor, Columbus OH</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="faq">
+  <div style="text-align:center;">
+    <div class="section-label">Common Questions</div>
+    <h2 class="section-title">Frequently Asked Questions</h2>
+  </div>
+  <div class="faq-item">
+    <div class="faq-q">What credit score do I need?</div>
+    <div class="faq-a">We work with business owners across the credit spectrum. While some of our partners require 650+, we have options for scores as low as 500. Your monthly revenue and time in business matter more than your credit score.</div>
+  </div>
+  <div class="faq-item">
+    <div class="faq-q">How fast can I get funded?</div>
+    <div class="faq-a">Many clients receive offers within hours and capital within 24–48 hours of accepting an offer. Our instant bank verification technology speeds up the process significantly.</div>
+  </div>
+  <div class="faq-item">
+    <div class="faq-q">Are there any upfront fees?</div>
+    <div class="faq-a">No. There are never any upfront fees to apply or receive offers. Our service is completely free to you — we're compensated by our funding partners.</div>
+  </div>
+  <div class="faq-item">
+    <div class="faq-q">Will applying affect my credit score?</div>
+    <div class="faq-a">No. The initial application and matching process does not involve a hard credit pull. A credit check may occur only after you choose to move forward with a specific offer.</div>
+  </div>
+  <div class="faq-item">
+    <div class="faq-q">What documents will I need?</div>
+    <div class="faq-a">Most of our partners just need to verify your business bank account — which you can do instantly through our secure portal. Some programs may also request basic identification. We'll walk you through everything.</div>
+  </div>
+</section>
+
+<section class="cta-bar">
+  <h2>Ready to Get Funded?</h2>
+  <p>Join hundreds of business owners who got the capital they needed — fast.</p>
+  <a href="#leadForm">Apply Now — It's Free →</a>
+</section>
+
+<footer>
+  <p>© 2026 MFunding, LLC. All rights reserved. | mfunding.com<br>
+  This is not a commitment to provide funding. All offers are subject to approval. Terms and conditions apply.<br>
+  Capital amounts, terms, and speed depend on individual business qualifications. MFunding acts as a broker connecting businesses with funding partners.</p>
+</footer>
+
+<script>
+function handleSubmit(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('.btn-submit');
+  btn.textContent = '✓ Submitted! We\'ll call you shortly.';
+  btn.style.background = '#0B1D3A';
+  btn.disabled = true;
+  // INTEGRATION: Push to GHL via webhook
+  // fetch('https://services.leadconnectorhq.com/hooks/YOUR_WEBHOOK_ID', {
+  //   method: 'POST', body: new FormData(e.target)
+  // });
+}
+</script>
+</body>
+</html>

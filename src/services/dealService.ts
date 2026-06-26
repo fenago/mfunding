@@ -9,6 +9,10 @@ import type {
   UpdateDealData,
   DealFilters,
 } from "../types/deals";
+import { calculateCommission, createCommission } from "./commissionService";
+import { syncDealToGHL } from "./ghlService";
+import { COMMISSION_DEFAULTS } from "../types/commissions";
+import type { CommissionLeadSource, Commission } from "../types/commissions";
 
 // Stage → timestamp column mapping
 const STATUS_TIMESTAMP_MAP: Partial<Record<DealStatus, string>> = {
@@ -177,7 +181,96 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
     throw error;
   }
 
+  // Auto-generate the commission when a deal becomes funded (best-effort —
+  // never block the status change if commission creation fails).
+  if (newStatus === "funded") {
+    try {
+      await autoCreateCommissionForFundedDeal(deal as Deal);
+    } catch (e) {
+      console.error("Auto commission creation failed:", e);
+    }
+  }
+
+  // Auto-push the stage change to GHL when the deal is already linked, so the
+  // opportunity stage stays in sync without a manual "Sync to GHL" click.
+  // (Only for already-linked deals — we don't create GHL records here.)
+  const d = deal as Deal;
+  if (d.ghl_opportunity_id || d.ghl_contact_id) {
+    try {
+      await syncDealToGHL(id);
+    } catch (e) {
+      console.error("GHL stage sync failed:", e);
+    }
+  }
+
   return deal as Deal;
+}
+
+/**
+ * Create the commission for a funded deal, computing splits via the commission
+ * engine. No-op if the deal has no funded amount or already has a commission.
+ * Note: deals.assigned_closer_id references profiles(id); commissions.closer_id
+ * references closers(id) — so we map the assigned profile to its closer record.
+ */
+export async function autoCreateCommissionForFundedDeal(deal: Deal): Promise<Commission | null> {
+  if (!deal.amount_funded || deal.amount_funded <= 0) return null;
+
+  const { data: existing } = await supabase
+    .from("commissions")
+    .select("id")
+    .eq("deal_id", deal.id)
+    .limit(1);
+  if (existing && existing.length > 0) return null;
+
+  let closerId: string | null = null;
+  if (deal.assigned_closer_id) {
+    const { data: closer } = await supabase
+      .from("closers")
+      .select("id")
+      .eq("user_id", deal.assigned_closer_id)
+      .maybeSingle();
+    if (closer) closerId = closer.id;
+  }
+
+  const isRenewal = !!deal.is_renewal;
+  const commissionPoints = isRenewal
+    ? COMMISSION_DEFAULTS.RENEWAL_POINTS
+    : COMMISSION_DEFAULTS.NEW_DEAL_POINTS;
+  const leadSource: CommissionLeadSource = isRenewal
+    ? "renewal"
+    : deal.lead_source && /self/i.test(deal.lead_source)
+      ? "self_generated"
+      : "company";
+
+  const calc = calculateCommission({
+    amountFunded: deal.amount_funded,
+    commissionPoints,
+    closerId,
+    leadSource,
+    isRenewal,
+  });
+
+  return await createCommission({
+    deal_id: deal.id,
+    deal_submission_id: null,
+    gross_commission: calc.grossCommission,
+    commission_points: calc.commissionPoints,
+    closer_id: closerId,
+    closer_split_percentage: calc.closerSplitPercentage,
+    closer_amount: calc.closerAmount,
+    company_amount: calc.companyAmount,
+    sub_iso_id: null,
+    override_points: calc.overridePoints,
+    override_amount: calc.overrideAmount,
+    manager_override_percentage: null,
+    manager_override_amount: calc.managerOverrideAmount,
+    payment_status: "pending",
+    funder_paid_at: null,
+    closer_paid_at: null,
+    clawback_amount: 0,
+    clawback_reason: null,
+    notes: "Auto-generated on deal funded",
+  } as Omit<Commission, "id" | "created_at" | "updated_at">);
 }
 
 export async function submitToFunder(

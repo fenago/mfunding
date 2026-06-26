@@ -1,0 +1,77 @@
+---
+title: MFunding Follow-Up Decision Tree — When They Say No or Go Dark
+---
+flowchart TD
+    START["Lead Goes Cold / Says No\n(GHL auto-detects via pipeline stage + time)"]
+    
+    START --> WHY{"What happened?\n(Tag in GHL)"}
+    
+    WHY -->|"No answer\n(never reached)"| NA["SEQUENCE B\nNO ANSWER\n7-Day Blitz"]
+    WHY -->|"Interested but\nnever sent docs"| STIP["SEQUENCE A\nSTIPS/DOCS GHOST\n14-Day Recovery\n⚠️ HIGHEST PRIORITY"]  
+    WHY -->|"Said 'not now'\nor 'not interested'"| NOTINT["SEQUENCE C\nSOFT NO\n90-Day Nurture"]
+    WHY -->|"Declined the\noffer terms"| DECL["SEQUENCE D\nOFFER DECLINED\n45-Day Rework"]
+    WHY -->|"Funded by\ncompetitor"| COMP["SEQUENCE E-ALT\nLOST TO COMPETITOR\nRenewal Play"]
+
+    subgraph S1["📵 SEQUENCE B — NO ANSWER (7 Days)"]
+        NA --> NA1["Day 0: SMS intro\n'Trying to reach you about capital'"]
+        NA1 --> NA2["Day 0 +2hr: Call #2"]
+        NA2 --> NA3["Day 1 AM: SMS\n'Text CALL and I'll ring you'"]
+        NA3 --> NA4["Day 1 PM: Email\nwith value prop"]
+        NA4 --> NA5["Day 2: Call #3\n+ voicemail"]
+        NA5 --> NA6["Day 4: SMS\n'Text STOP if not interested'"]
+        NA6 --> NA7["Day 7: Breakup SMS\n→ Move to 60-day nurture"]
+    end
+
+    subgraph S2["📄 SEQUENCE A — STIPS/DOCS (14 Days) ⚠️"]
+        STIP --> ST1["Day 0: SMS\nPlaid link + text photo option"]
+        ST1 --> ST2["Day 0 +2hr: SMS\nSecure upload link again"]
+        ST2 --> ST3["Day 1: Call\n'Walk you through Plaid — 60 sec'"]
+        ST3 --> ST4["Day 2: SMS\n'3 easy ways to send docs'"]
+        ST4 --> ST5["Day 4: Call + voicemail drop\n'Funder ready, just need bank info'"]
+        ST5 --> ST6["Day 7: SMS urgency\n'Pre-approval expiring'"]
+        ST6 --> ST7["Day 10: Email\n'Application still open'"]
+        ST7 --> ST8["Day 14: Breakup SMS\n(10-15% re-engage here!)\n→ Move to 30-day nurture"]
+    end
+
+    subgraph S3["🤚 SEQUENCE C — SOFT NO (90 Days)"]
+        NOTINT --> SN1["Day 0: 'Totally understand'\nKeep file on hand"]
+        SN1 --> SN2["Day 30: SMS check-in"]
+        SN2 --> SN3["Day 45: Email value content"]
+        SN3 --> SN4["Day 60: SMS 'new programs'"]
+        SN4 --> SN5["Day 75: Email case study"]
+        SN5 --> SN6["Day 90: SMS check-in\n→ Move to quarterly ping"]
+    end
+
+    subgraph S4["❌ SEQUENCE D — OFFER DECLINED (45 Days)"]
+        DECL --> OD1["Day 0: Call — 'What didn't work?'"]
+        OD1 --> OD2["Day 0: Resubmit to\ndifferent funders"]
+        OD2 --> OD3["Day 1-3: Present new offers"]
+        OD3 --> OD4["Day 7: 'One more option'"]
+        OD4 --> OD5["Day 14: Breakup\n→ 30-day nurture"]
+        OD5 --> OD6["Day 45: 'New programs available'"]
+    end
+
+    subgraph S5["🏁 LOST TO COMPETITOR — Renewal Play"]
+        COMP --> LC1["Day 0: 'Congrats on getting funded'"]
+        LC1 --> LC2["Day 60: 'How's the funding working?'"]
+        LC2 --> LC3["Day 90: 'Renewal options available'"]
+        LC3 --> LC4["Day 120: Call\n'Check renewal eligibility'"]
+    end
+
+    subgraph SF["♻️ SEQUENCE F — MONTHLY REACTIVATION"]
+        MASS["Monthly blast to ALL dead leads\nRotate 3 message templates\n3-5% re-engage = free leads"]
+    end
+
+    S1 --> SF
+    S2 --> SF
+    S3 --> SF
+    S4 --> SF
+    S5 --> SF
+
+    style START fill:#FF6D00,color:#fff,stroke:#fff,stroke-width:2px
+    style S1 fill:#1A3F6F,color:#fff
+    style S2 fill:#FF6D00,color:#fff
+    style S3 fill:#0B1D3A,color:#fff
+    style S4 fill:#C62828,color:#fff
+    style S5 fill:#FFB300,color:#0B1D3A
+    style SF fill:#00C853,color:#fff

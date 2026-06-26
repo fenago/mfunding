@@ -1,0 +1,50 @@
+name: Supabase Heartbeat
+
+# Keeps the FREE-tier "CAI3303Demo" Supabase project (ref ehibjeonqpqskhcvizow)
+# from auto-pausing after ~7 days of inactivity. Free projects sleep when idle,
+# which makes every query time out until manually resumed. This pings the REST
+# API twice a day so the database registers regular activity and stays awake.
+
+on:
+  schedule:
+    # Times are UTC. GitHub may delay scheduled runs by a few minutes — that's
+    # fine, we only need ~2 hits/day well inside the 7-day pause window.
+    - cron: "17 8 * * *"   # ~08:17 UTC  (early-day ping)
+    - cron: "17 20 * * *"  # ~20:17 UTC  (late-day ping)
+  workflow_dispatch: {}     # allow manual runs from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        env:
+          # URL is public (also baked into the frontend bundle), so it's safe to
+          # default it here. The anon key must be set as a repo secret:
+          #   Settings → Secrets and variables → Actions → New repository secret
+          #   Name: SUPABASE_ANON_KEY   Value: <the project's anon/public key>
+          SUPABASE_URL: ${{ vars.SUPABASE_URL || 'https://ehibjeonqpqskhcvizow.supabase.co' }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::SUPABASE_ANON_KEY secret is not set — add it under repo Settings → Secrets → Actions."
+            exit 1
+          fi
+
+          # Query a real table so the request actually reaches Postgres (the
+          # PostgREST root /rest/v1/ is gated at the API gateway and returns 401
+          # without touching the DB, so it would NOT count as activity).
+          # `lenders` is always populated; select+limit keeps it cheap.
+          status=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            "${SUPABASE_URL}/rest/v1/lenders?select=id&limit=1")
+
+          echo "Heartbeat HTTP status: ${status}"
+
+          # 2xx/3xx = awake and responding. Anything else (timeouts return 000)
+          # likely means the project is paused or unreachable.
+          case "$status" in
+            2*|3*) echo "Supabase is awake."; exit 0 ;;
+            *)     echo "::error::Unexpected status ${status} — project may be paused or unreachable."; exit 1 ;;
+          esac

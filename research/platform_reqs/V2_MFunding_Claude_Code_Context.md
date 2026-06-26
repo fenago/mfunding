@@ -1,5 +1,5 @@
-# MFunding.com — Claude Code Project Context
-## Everything Claude Code Needs to Know About This Business & Codebase
+# MFunding.com — Complete Claude Code Context
+## Everything Claude Code Needs to Know About This Business
 ### Last Updated: March 2026
 
 ---
@@ -14,7 +14,7 @@ This document summarizes the complete strategic planning conversation for MFundi
 
 ## BUSINESS IDENTITY
 
-- **Company:** MFunding (Florida C-Corp)
+- **Company:** MFunding, LLC (Florida LLC)
 - **Website:** mfunding.com
 - **Business model:** ISO (Independent Sales Organization) that brokers business funding products — primarily Merchant Cash Advances (initial focus), with expansion into term loans, SBA loans, lines of credit, and equipment financing
 - **What we do:** Connect small businesses needing capital with funders and lenders who provide working capital, advances, loans, and credit lines
@@ -24,12 +24,6 @@ This document summarizes the complete strategic planning conversation for MFundi
 ### Multi-Product Strategy
 
 MFunding offers multiple business funding products including MCA, term loans, lines of credit, SBA loans, and equipment financing. The initial go-to-market focus is MCA because it has the fastest close times (24–48 hours vs. weeks for SBA), highest approval rates for imperfect credit, and the most established broker commission structure. All operational documents are built around MCA workflows but apply to other products with minor adjustments. The critical compliance distinction: **MCA products must NEVER be called "loans"** (they are purchases of future receivables). **Actual loan products use standard lending terminology.** Closers and all automated communications must know which product is being discussed and use appropriate language for that product. The pipeline, CRM, follow-up sequences, and financial model are product-agnostic — an MCA and a term loan flow through the same 9-stage funnel. The differences are: which funders receive the submission, what stips/docs are required, and what compliance disclosures apply.
-
----
-
-## ⚠️ GOHIGHLEVEL SKILL — USE THE PROJECT ONE
-
-For ANY GoHighLevel work in this project, always use the **`mfunding-ghl`** skill (`.claude/skills/mfunding-ghl/`), which targets the MFunding sub-account (location `t7NmVR4WCy927j4Zon4b`, "MFunding.net"). **Never** use the global `ghl` skill — it points at a different account (OSP) and personal skills override project ones, so it stays available but must not be used here. GHL credentials live in `.env` (`GHL_API_KEY`, `GHL_LOCATION_ID`, gitignored) and are mirrored in the Supabase vault for edge functions.
 
 ---
 
@@ -62,71 +56,32 @@ MCA Closer (1099 independent contractor sales rep working under MFunding)
 
 ---
 
-## ARCHITECTURE DECISION
-
-**GoHighLevel = Operational CRM for closers and VAs.** Do NOT replicate GHL features in React/Supabase.
-**React + Supabase = Management layer, public site, portals, Plaid, analytics, compliance, eSignature, Google Workspace.**
-
-### What GHL Handles (Do NOT Build)
-- Live deal pipeline (drag-and-drop stages)
-- SMS/email automation sequences (all 6 follow-up sequences)
-- AI Employee for 24/7 pre-qualification
-- Phone system with local numbers per market
-- Landing pages at funding.mfunding.com/[city]
-- Sub-ISO white-label portal (GHL sub-accounts)
-- Lead round-robin assignment
-- Missed-call text-back
-- Google Ads conversion tracking
-
-### What React + Supabase Handles (What We Build)
-- Public marketing website (landing page, product pages, SEO content, about, contact)
-- Customer application portal with Plaid Link (apply.mfunding.com)
-- Admin dashboard (deal management, commission tracking, analytics, compliance)
-- Merchant portal (deal status, document upload, offer review, contract signing)
-- Plaid integration (bank verification, transaction analysis)
-- Commission tracking and calculation engine
-- GHL two-way sync (webhooks + API)
-- Analytics and reporting (cost-per-funded-deal, pipeline velocity, closer performance)
-- Compliance disclosure engine (state-specific)
-- E-Docs & eSignature (contract templates, generation, embedded signing, vault)
-- Google Workspace integration (Gmail, Calendar, Drive, Sheets, Docs, Meet, People)
-- Underwriting workbench (configurable scorecard, risk dashboard)
-
----
-
 ## TECHNOLOGY STACK
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Frontend** | React 19 + Vite + TypeScript + Tailwind CSS + DaisyUI | Main website (mfunding.com) |
-| **Database** | Supabase (PostgreSQL) | Database, auth, RLS, edge functions, storage |
-| **Charts** | Recharts | Analytics dashboards |
-| **CRM / Automation** | GoHighLevel SaaS Pro ($497/mo) | Lead management, pipelines, SMS/email automation, AI Employee, Sub-ISO white-label portal |
-| **Campaign Landing Pages** | GHL page builder | funding.mfunding.com/[city] — per-city pages with auto-CRM integration |
-| **Bank Verification** | Plaid API | Instant 3-6 month bank transaction history |
-| **Application Portal** | React + Plaid Link | apply.mfunding.com — custom portal for instant bank verification |
-| **Phone System** | GHL built-in (LeadConnector) | Call tracking, recording, local numbers per market |
-| **AI** | Google Gemini 2.0 | Customer recommendations, AI-powered matching |
-| **Web Scraping** | Firecrawl + Hyperbrowser | Lender/vendor website analysis |
-| **Deployment** | Netlify (primary), Vercel (backup) | Hosting and CI/CD |
+| Component | Technology | Monthly Cost | Purpose |
+|-----------|-----------|-------------|---------|
+| **CRM / Automation** | GoHighLevel SaaS Pro | $497/mo | Lead management, pipelines, SMS/email automation, AI Employee, landing pages, phone system, Sub-ISO white-label portal |
+| **Main Website** | React | Hosting cost | mfunding.com — brand hub, SEO content, trust/credibility |
+| **Campaign Landing Pages** | GHL page builder | Included | funding.mfunding.com/[city] — per-city pages with auto-CRM integration |
+| **Bank Verification** | Plaid API | ~$200/mo | Instant 3–6 month bank transaction history — replaces manual bank statement collection |
+| **Application Portal** | React + Plaid Link | Dev cost | apply.mfunding.com — custom portal for instant bank verification |
+| **Phone System** | GHL built-in (LeadConnector) | Usage-based | Call tracking, recording, local numbers per market city |
+| **Sub-ISO Portal** | GHL SaaS Mode sub-accounts | Included in SaaS Pro | White-labeled business platform for Sub-ISO partners |
 
 ### Architecture
 
 ```
-mfunding.com (React + Vite)                GHL (Landing Pages + CRM + Sub-ISO Portal)
-─────────────────────────────              ──────────────────────────────────────────
-Main brand website                         Campaign pages (per city)
-  └─ About / Trust / SEO                     └─ funding.mfunding.com/indianapolis
-  └─ Product pages (business loans, CRE)     └─ funding.mfunding.com/phoenix
-  └─ Blog / Educational content              └─ funding.mfunding.com/columbus
-  └─ Customer portal (/portal/*)             └─ funding.mfunding.com/financiamiento (Spanish)
-  └─ Admin dashboard (/admin/*)           Sub-ISO white-label portals
-  └─ "Apply Now" → redirects to GHL         └─ Each Sub-ISO gets own GHL sub-account
-
-apply.mfunding.com (React + Plaid)
-  └─ Merchant connects bank via Plaid
-  └─ 60-second bank verification
-  └─ 3-6 months transaction data
+mfunding.com (React)                     GHL (Landing Pages + CRM + Sub-ISO Portal)
+─────────────────────                     ──────────────────────────────────────────
+Main brand website                        Campaign pages (per city)
+  └─ About / Trust / SEO                    └─ funding.mfunding.com/indianapolis
+  └─ Blog / Educational content              └─ funding.mfunding.com/phoenix
+  └─ "Apply Now" → redirects to GHL          └─ funding.mfunding.com/columbus
+                                              └─ funding.mfunding.com/financiamiento (Spanish)
+apply.mfunding.com (React + Plaid)        Sub-ISO white-label portals
+  └─ Merchant connects bank via Plaid        └─ Each Sub-ISO gets own GHL sub-account
+  └─ 60-second bank verification             └─ Own landing pages, pipeline, CRM, automations
+  └─ 3-6 months transaction data             └─ Deal submissions flow to MFunding for processing
 ```
 
 **Key design decision:** ALL campaign landing pages are on GHL (not React). Reason: GHL form submissions automatically trigger CRM entry, tagging, workflows, and follow-up sequences — zero integration work needed.
@@ -190,7 +145,7 @@ New Lead → Contacted → Qualifying → Application Sent → Docs Collected �
 | 2. Initial Contact | First conversation | 65%+ contact rate | Speed to contact < 60 sec (transfers), < 5 min (web) |
 | 3. Qualification | BANT-F qualification | 55–65% of contacted | Revenue, time in biz, amount needed, industry |
 | 4. Application Sent | App completed (ideally on first call) | 65–75% of qualified | Time to submit < 24 hours |
-| 5. Docs Collected | Bank statements via Plaid or manual | 50–60% of apps | **#1 LEAK IN FUNNEL** — Plaid = 60 seconds vs. days for manual |
+| 5. Docs Collected ⚠️ | Bank statements via Plaid or manual | 50–60% of apps | **#1 LEAK IN FUNNEL** — Plaid = 60 seconds vs. days for manual |
 | 6. Submitted to Funder | Package sent to 3–5 funders | 55–65% approval rate | Track per-funder approval rates |
 | 7. Offer Presented | Best offers shown to merchant | 70–80% acceptance | Always present 2+ offers |
 | 8. Funded | Money deposited | 85–90% of accepted | Commission paid 5 biz days after funder pays |
@@ -311,81 +266,51 @@ New Lead → Contacted → Qualifying → Application Sent → Docs Collected �
 
 ---
 
-## DATABASE (Supabase)
-
-**Project name:** `CAI3303Demo` (Supabase project ref `ehibjeonqpqskhcvizow`, region us-east-2 / East US Ohio, compute NANO).
-**URL:** `https://ehibjeonqpqskhcvizow.supabase.co`
-
-> ⚠️ **Free tier auto-pause:** This is a FREE Supabase project, so it pauses itself after ~7 days of inactivity. When paused, all SQL/REST queries time out (`Connection terminated due to connection timeout`) even though the dashboard URL still resolves — resume it from the dashboard and wait a few minutes for it to come up. A scheduled heartbeat keeps it awake: `.github/workflows/supabase-heartbeat.yml` pings the REST API twice a day (and can be triggered manually). The same ping is in `scripts/heartbeat.sh` for local/manual use.
-
-All tables use UUID primary keys and have RLS enabled. Key existing tables:
-- **profiles** — User accounts (roles: user, admin, super_admin)
-- **customers** — CRM pipeline (statuses: lead → contacted → application_submitted → in_review → approved → funded → renewed → declined → follow_up)
-- **customer_interactions** — Activity history per customer
-- **customer_documents** — Document management per customer
-- **lenders** — Funder network (39 lenders with types, requirements, commission structures)
-- **lender_documents** — Lender agreement/rate sheet storage
-- **marketing_vendors** — Lead vendor management (11 vendors)
-- **messages** — Internal messaging system
-- **kanban_tasks** — Internal project management
-- **funding_applications** — Public intake form submissions
-- **activity_log** — Polymorphic audit trail across entities
-- **company_documents** — Internal company documents
-- **documents / document_chunks / document_embeddings** — AI/RAG document system
-
----
-
-## ROUTE STRUCTURE
-
-### Public Routes
-- `/` — Landing page
-- `/about`, `/contact`, `/privacy`, `/terms`
-- `/business-loans`, `/business-loans/:slug`
-- `/real-estate`, `/real-estate/:slug`
-- `/auth/sign-in`, `/auth/sign-up`
-
-### Customer Portal (authenticated)
-- `/portal/` — Dashboard
-- `/portal/documents` — Document management
-- `/portal/inbox` — Messaging
-
-### Admin (admin + super_admin)
-- `/admin/` — Dashboard
-- `/admin/todos` — Kanban board
-- `/admin/customers`, `/admin/customers/:id`
-- `/admin/analytics`, `/admin/analytics/realtime`
-
-### Super Admin only
-- `/admin/lenders`, `/admin/lenders/:id`, `/admin/lenders/resources`
-- `/admin/marketing`, `/admin/marketing/:id`, `/admin/marketing/resources`
-- `/admin/unit-economics`, `/admin/bmc`, `/admin/settings`
-
----
-
-## CODING CONVENTIONS
-
-- React 19 functional components with TypeScript
-- Tailwind CSS + DaisyUI for styling
-- Supabase client at `src/supabase/index.ts`
-- Path alias: `@` maps to `src/`
-- Context providers in `src/context/`
-- Custom hooks in `src/hooks/`
-- Services in `src/services/`
-- Types in `src/types/`
-
----
-
 ## LEGAL DOCUMENTS IN PACKAGE
 
 ### 1. Independent Contractor Commission Agreement (v2_MCA_Commission_Agreement.docx)
 - For 1099 MCA closers working under MFunding
+- **⚠️ SCOPE FIX NEEDED:** Section 2 currently says "merchant cash advance (MCA) brokerage sales services." This should be updated to: **"business funding brokerage services including but not limited to merchant cash advances, term loans, lines of credit, equipment financing, SBA loans, and related commercial financing products"** — otherwise the non-compete and non-circumvention clauses may not cover non-MCA products.
 - Schedule A: Fill-in rates for company-lead commission (rec: 40–50%), self-gen commission (rec: 60–70%), renewal commission (rec: 30–40%), optional draw against commission (rec: $2,500/mo for 90 days)
 - Covers: scope of services, payment terms (5 biz days after funder pays), clawback provision, independent contractor status, non-solicitation (12 months), non-circumvention (12 months), confidentiality, TCPA/regulatory compliance, MCA-as-receivables-not-loans language
+- Dispute resolution: binding arbitration in Miami-Dade County, FL
 
 ### 2. Sub-ISO Partner Agreement (v2_Sub_ISO_Partner_Agreement.docx)
 - For Sub-ISO partners submitting deals through MFunding's funder network
+- **⚠️ SCOPE FIX NEEDED:** Same as Commission Agreement — broaden scope language from MCA-only to all business funding products to ensure non-circumvention covers term loans, SBA, etc.
 - Schedule A: MFunding override (rec: 2 points), monthly platform fee ($99–$199), SMS/phone usage rebilling
-- Covers: funder access, GHL platform provision, deal submission workflow, independent contractor status, non-circumvention (18 months), funder exclusivity, liquidated damages ($25K or 12 months commissions for circumvention breach), insurance requirement (E&O or GL minimum $500K), compliance obligations
+- Covers: funder access, GHL platform provision, deal submission workflow, independent contractor status, non-circumvention (18 months — longer than closer agreement), funder exclusivity, liquidated damages ($25K or 12 months commissions for circumvention breach), insurance requirement (E&O or GL minimum $500K), compliance obligations
+- Auto-renewing 12-month terms with 60-day notice for non-renewal
+- Platform access revoked within 48 hours of termination
+
+### 3. GHL Platform Strategy (v2_GHL_Platform_Strategy.docx)
+- Phased implementation plan for GoHighLevel SaaS Pro
+- Phase 1 (Months 1–3): Own operations — pipeline, landing pages, workflows, AI Employee, phone, reporting
+- Phase 2 (Months 4–6): Team scaling — closer accounts, VA permissions, round-robin assignment
+- Phase 3 (Month 9+): Sub-ISO white-label — Snapshot template, SaaS Mode, Stripe billing, recruitment funnel, usage rebilling
+- Complete feature map for MCA brokerage use
+- Cost structure breakdown (all usage-based costs)
+- Implementation checklist by month
+
+### 4. Financial Model (v2_MCA_Brokerage_Financial_Model.xlsx)
+- 9-tab workbook: Assumptions, Monthly P&L (12 months), Scenario Comparison (Conservative/Most Likely/Optimistic), Market Allocation, Break-Even Analysis, Scaling P&L (24 months with staffing phases), Compensation Guide, Hiring Roadmap, Sub-ISO Economics
+- All formulas reference Assumptions tab — change one input, entire model updates
+- Key input variables: lead costs, conversion rates, deal size, points, close rates, staff costs
+- Includes ramp-up multiplier for realistic Month 1–12 projections
+
+---
+
+## DOCUMENTS PRODUCED IN THIS CONVERSATION
+
+| Document | What It Contains |
+|----------|-----------------|
+| **V2_MFunding_Brokerage_Playbook.md** | Live transfer vendor list (with pricing), funder tiers (A/B/C/D paper), funder sourcing strategy, Google Ads keyword strategy, referral partnership plan, tech stack overview, compliance requirements, 90-day launch plan |
+| **V2_MFunding_Campaign_Strategy.md** | 5 Google Ads campaigns with full keyword lists, ad copy (15 headlines + 4 descriptions), Spanish-language campaign, negative keywords list, live transfer hot market targeting (Priority 1/2/3), vendor qualification specs, financial projections by phase, weekly operations checklist, scaling decision tree |
+| **V2_MFunding_Landing_Page.html** | Production-ready HTML landing page for mfunding.com. Navy/green/gold design, hero with lead form (name, business, phone, email, revenue, time in biz, amount needed), 3-step process, product grid, testimonials from target markets, FAQ section, CTA. Form handler ready for GHL webhook integration. |
+| **V2_MFunding_Funnel_FollowUp_CRM.md** | Complete 9-stage funnel definition with metrics/targets/red flags at every stage, master metrics dashboard (12 KPIs), 6 complete follow-up sequences with word-for-word SMS/call/email scripts, GHL SaaS Pro setup guide with week-by-week priorities, daily operations workflow |
+| **V2_Sales_Funnel_Diagram.mermaid** | Visual flowchart: lead acquisition → qualification → conversion → funding → recovery loop for dead leads |
+| **V2_Follow_Up_Decision_Tree.mermaid** | Visual decision tree: 5 branches for why leads go cold, each leading to its own sequence |
+| **V2_Funnel_Metrics_Waterfall.mermaid** | Visual waterfall: 175 leads → 123 contacted → 68 qualified → 44 apps → 22 stips → 12 offers → 9 accepted → 8 funded = $36K revenue |
 
 ---
 
@@ -426,32 +351,16 @@ All tables use UUID primary keys and have RLS enabled. Key existing tables:
 
 ---
 
-## BUILD PLAN
+## WHAT TO BUILD NEXT (Prioritized)
 
-The master build plan is at **`/plan_goals.md`** — it contains the full database schema (14 new tables), 10 agent teams with task lists, API key requirements, LendSaaS competitive audit, and 5-phase build sequencing with an 8-week parallel work map. Start any build session by reading that file.
-
----
-
-## KEY REFERENCE DOCUMENTS
-
-All strategy documents are in `/research/platform_reqs/`:
-
-| Document | Contents |
-|----------|---------|
-| `V2_MFunding_Claude_Code_Context.md` | Master business context (source for this CLAUDE.md) |
-| `V2_MFunding_Brokerage_Playbook.md` | Live transfer vendor list, funder tiers, Google Ads keywords, referral plan, compliance, 90-day launch plan |
-| `V2_MFunding_Campaign_Strategy.md` | 5 Google Ads campaigns with keywords, ad copy, Spanish-language, negative keywords, projections |
-| `V2_MFunding_Funnel_FollowUp_CRM.md` | 9-stage funnel metrics, 12 KPIs, 6 follow-up sequences with scripts, GHL setup guide |
-| `V2_MFunding_Landing_Page.html` | Production-ready HTML landing page (navy/green/gold design, lead form, testimonials) |
-| `V2_Sales_Funnel_Diagram.mermaid` | Visual flowchart: lead acquisition → qualification → conversion → funding → recovery |
-| `V2_Follow_Up_Decision_Tree.mermaid` | Decision tree: 5 branches for why leads go cold → each leads to its own sequence |
-| `V2_Funnel_Metrics_Waterfall.mermaid` | Waterfall: 175 leads → 8 funded = $36K revenue |
-| `v2_MCA_Brokerage_Master_Summary.md` | Complete operating plan for the MCA brokerage |
-| `Product Requirements Document.md` | Full PRD v1.1 — 11 modules (Plaid, eSignature, Portals, Underwriting, Collections, Syndication) |
-| `mFunding SaaS Platform_ Comprehensive User Journeys & Daily Workflows.md` | Daily workflows for every persona (Sub-ISO Admin, Closer, Merchant, Underwriter, Super Admin) |
-| `mFunding SaaS Platform_ Google Workspace Integration Specification.md` | Gmail, Calendar, Drive, Sheets, Docs, Meet, People API integration specs |
-| `mFunding SaaS Platform_ Claude Code Agent Team Architecture.md` | Manus AI agent architecture (reference only — we use our own 10-team structure in plan_goals.md) |
+1. **React application portal (apply.mfunding.com)** with Plaid Link integration — this is the competitive advantage that replaces manual bank statement collection. Should be designed to handle multiple product types (MCA, term loans, LOC, SBA, equipment financing) with product-specific stip requirements and disclosure flows. Start with MCA flow, add others as funder relationships expand.
+2. **GHL Snapshot template** — pre-built MCA brokerage workflows for Sub-ISO deployment
+3. **City-specific landing pages** on GHL — clone from template, update city name/tag/URL
+4. **Spanish-language landing page** at funding.mfunding.com/financiamiento
+5. **React main site (mfunding.com)** — brand hub, SEO content, "Apply Now" redirect to GHL
+6. **Sub-ISO recruitment funnel** on GHL with Stripe payment integration
+7. **Reporting dashboard** — custom analytics beyond GHL built-in (cost per funded deal by market/source)
 
 ---
 
-*This context document is loaded at the start of every Claude Code session involving MFunding development. It provides the complete business logic, terminology, architecture, and strategic rationale needed to make informed implementation decisions.*
+*This context document should be loaded at the start of every Claude Code session involving MFunding development. It provides the complete business logic, terminology, architecture, and strategic rationale needed to make informed implementation decisions.*

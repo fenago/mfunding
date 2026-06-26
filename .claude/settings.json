@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(systemctl is-active *)",
+      "mcp__claude_ai_Firecrawl__firecrawl_search",
+      "mcp__mcp-server-firecrawl__firecrawl_search",
+      "mcp__mcp-server-firecrawl__firecrawl_scrape",
+      "mcp__apify__get-dataset-items",
+      "mcp__puppeteer__puppeteer_screenshot",
+      "mcp__supabase__get_logs",
+      "mcp__digitalocean__droplet-list"
+    ]
+  }
+}

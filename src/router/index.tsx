@@ -13,6 +13,7 @@ import RealEstateHubPage from "../pages/real-estate/RealEstateHubPage.tsx";
 import RealEstateDetailPage from "../pages/real-estate/RealEstateDetailPage.tsx";
 import AboutPage from "../pages/AboutPage.tsx";
 import ContactPage from "../pages/ContactPage.tsx";
+import OptinPage from "../pages/OptinPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
@@ -38,6 +39,7 @@ import LenderPerformancePage from "../pages/admin/analytics/LenderPerformancePag
 import MarketPerformancePage from "../pages/admin/analytics/MarketPerformancePage.tsx";
 import LeadSourceROIPage from "../pages/admin/analytics/LeadSourceROIPage.tsx";
 import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
+import IntegrationsPage from "../pages/admin/settings/IntegrationsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
@@ -107,6 +109,10 @@ const router = createBrowserRouter([
       {
         path: "/contact",
         element: <ContactPage />,
+      },
+      {
+        path: "/optin",
+        element: <OptinPage />,
       },
       // Auth Protected routes
       {
@@ -317,6 +323,10 @@ const router = createBrowserRouter([
                   {
                     index: true,
                     element: <AdminSettingsPage />,
+                  },
+                  {
+                    path: "integrations",
+                    element: <IntegrationsPage />,
                   },
                 ],
               },
