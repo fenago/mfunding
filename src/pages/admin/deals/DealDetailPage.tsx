@@ -27,6 +27,7 @@ import InteractionTimeline from "../../../components/shared/InteractionTimeline"
 import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
 import BankAnalysisCard from "../../../components/shared/BankAnalysisCard";
 import UnderwritingCard from "../../../components/shared/UnderwritingCard";
+import OfferComparison from "../../../components/shared/OfferComparison";
 import PipelineFlow from "../../../components/shared/PipelineFlow";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
@@ -130,6 +131,17 @@ export default function DealDetailPage() {
       fetchDeal();
     } catch {
       console.error("Failed to submit to all funders");
+    }
+  };
+
+  const handleAcceptOffer = async (sub: DealSubmissionWithLender) => {
+    if (!id) return;
+    try {
+      await updateSubmission(sub.id, { status: "offer_accepted" });
+      await updateDealStatus(id, "offer_accepted");
+      fetchDeal();
+    } catch {
+      console.error("Failed to accept offer");
     }
   };
 
@@ -522,6 +534,9 @@ export default function DealDetailPage() {
               Submit to Funder
             </button>
           </div>
+
+          {/* Side-by-side offer comparison (only when offers exist) */}
+          <OfferComparison submissions={submissions} onAccept={handleAcceptOffer} />
 
           {/* Existing Submissions */}
           {submissions.length === 0 ? (
