@@ -9,7 +9,7 @@
 
 You build **two** pipelines in GHL. A deal lives in exactly one, by product line.
 
-### `MFunding MCA Pipeline` — standard business funding (MCA, term, SBA, LOC, equipment) — 12 stages
+### `MFunding MCA Pipeline` — standard business funding (MCA, term, SBA, LOC, equipment) — 13 stages
 | # | Stage (exact name) | Deal status |
 |---|---|---|
 | 1 | New Lead | `new` |
@@ -24,8 +24,12 @@ You build **two** pipelines in GHL. A deal lives in exactly one, by product line
 | 10 | Offer Accepted | `offer_accepted` |
 | 11 | Funded | `funded` |
 | 12 | Renewal Eligible | `renewal_eligible` |
+| 13 | Nurture / Re-engage | `nurture` |
 
-**Off-pipeline outcomes (mark the opportunity Lost, don't make them forward stages):** `declined` (no fundable offer, or merchant passed), `dead` (unresponsive/lost).
+**Won / Lost are GHL opportunity STATUSES — not stages.** Every opportunity has a stage *and* a status (Open / Won / Lost):
+- **Funded (stage 11)** → also set opportunity **status = Won**.
+- **Nurture / Re-engage (stage 13)** holds the **recoverable losses** — funders declined, merchant declined, or went dark — opportunity stays **Open** and is actively worked by reactivation. Build this as a real, visible column; it's where most non-funded deals live.
+- **Truly dead** → set opportunity **status = Lost** + a reason; they leave the board (no stage). Reasons: `opted_out` (STOP/DNC), `prohibited_industry`, or exhausted reactivation.
 
 > ⚠️ The MCA stage names must be **exact** — our `ghl-sync` maps a deal's status to the GHL stage by name. Wrong names → opportunities land in stage 1.
 
@@ -177,7 +181,10 @@ Merchant accepted. Generate/collect the funder agreement; confirm funding detail
 ### 12) Renewal Eligible
 Paydown triggers (our app pushes `Paydown %`): **40%** "may qualify for more capital"; **60%** call+SMS renewal offer; **75%** "best time to renew"; **100%** direct call. New application re-enters at **Application Sent**.
 
-**Standalone — Sequence F (Mass Reactivation):** monthly blast to `dead`/`nurture` tags, 3 rotating templates → re-enters at **New Lead**.
+### 13) Nurture / Re-engage
+The home for **recoverable losses** — deals where funders declined, the merchant declined, or they went dark, but it's worth keeping warm. Opportunity stays **Open**. Worked by **Sequence F (monthly reactivation)** + UCC/renewal triggers; a merchant who re-engages moves **back to New Lead** (or the relevant stage) as a fresh deal. Exhausted after ~2–3 dead cycles, or on opt-out → set status **Lost** with a reason (leaves the board). This is the largest non-funded bucket — make it a real, worked column, not a dumping ground.
+
+**Standalone — Sequence F (Mass Reactivation):** monthly blast to the **Nurture / Re-engage** column (tags `nurture`/`dead`-recoverable), 3 rotating templates, **excluding any contact with Do Not Contact = true** → re-enters at **New Lead**.
 
 ---
 
@@ -272,7 +279,11 @@ Positions (number), Total Daily/Weekly Debits (number).
 STEP 2 — BUILD TWO PIPELINES
 "MFunding MCA Pipeline", stages in order, named EXACTLY:
   New Lead, Contacted, Qualifying, Application Sent, Docs Collected, Bank Statements,
-  Submitted to Funders, Offer Received, Offer Presented, Offer Accepted, Funded, Renewal Eligible
+  Submitted to Funders, Offer Received, Offer Presented, Offer Accepted, Funded, Renewal Eligible,
+  Nurture / Re-engage
+  (Note: Funded = set opportunity status WON. Recoverable losses go to the Nurture / Re-engage
+  stage, status OPEN. Truly-dead deals = set opportunity status LOST with a reason; do NOT make
+  Won/Lost their own stages.)
 "MFunding VCF Pipeline", stages in order:
   New Lead (Distressed), Hardship Consultation, Positions & Balances Analysis,
   Strategy / Proposal, Agreement Sent, Submitted to VCF, Restructure Executed, Servicing / Monitoring

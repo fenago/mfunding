@@ -11,6 +11,7 @@ export type DealStatus =
   | "offer_accepted"
   | "funded"
   | "renewal_eligible"
+  | "nurture"
   | "declined"
   | "dead";
 
@@ -209,6 +210,7 @@ export const DEAL_STATUS_CONFIG: Record<DealStatus, { label: string; color: stri
   offer_accepted: { label: "Offer Accepted", color: "text-lime-700 dark:text-lime-300", bgColor: "bg-lime-100 dark:bg-lime-900" },
   funded: { label: "Funded", color: "text-green-700 dark:text-green-300", bgColor: "bg-green-100 dark:bg-green-900" },
   renewal_eligible: { label: "Renewal Eligible", color: "text-teal-700 dark:text-teal-300", bgColor: "bg-teal-100 dark:bg-teal-900" },
+  nurture: { label: "Nurture / Re-engage", color: "text-violet-700 dark:text-violet-300", bgColor: "bg-violet-100 dark:bg-violet-900" },
   declined: { label: "Declined", color: "text-red-700 dark:text-red-300", bgColor: "bg-red-100 dark:bg-red-900" },
   dead: { label: "Dead", color: "text-gray-500 dark:text-gray-500", bgColor: "bg-gray-100 dark:bg-gray-800" },
 };

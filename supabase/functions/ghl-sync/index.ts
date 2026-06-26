@@ -33,6 +33,7 @@ const STAGE_BY_STATUS: Record<string, string> = {
   offer_accepted: "Offer Accepted",
   funded: "Funded",
   renewal_eligible: "Renewal Eligible",
+  nurture: "Nurture / Re-engage",
 };
 
 function json(body: unknown, status = 200) {
@@ -144,19 +145,25 @@ Deno.serve(async (req) => {
         const names = new Set(p.stages.map((s) => s.name.toLowerCase()));
         return names.has("new lead") && names.has("funded");
       }) ?? pl.data.pipelines[0];
-      const wantStage = (STAGE_BY_STATUS[d.status] ?? "New Lead").toLowerCase();
+
+      // Won / Lost are GHL opportunity STATUSES, not stages: funded => won,
+      // declined/dead => lost (removed from the active board). Everything else is open.
+      const isWon = d.status === "funded";
+      const isLost = d.status === "declined" || d.status === "dead";
+      const oppStatus: "open" | "won" | "lost" = isWon ? "won" : isLost ? "lost" : "open";
+
+      // Resolve a stage. Lost statuses have no forward stage — park them in
+      // "Nurture / Re-engage" (or the first stage) since the Lost status is what
+      // actually pulls them off the board.
+      const wantStage = (STAGE_BY_STATUS[d.status] ?? "Nurture / Re-engage").toLowerCase();
       const stage = pipeline.stages.find((s) => s.name.toLowerCase() === wantStage) ?? pipeline.stages[0];
 
       const name = cust?.business_name || `${cust?.first_name ?? ""} ${cust?.last_name ?? ""}`.trim() || `Deal ${id.slice(0, 8)}`;
-      const oppFields = {
-        pipelineId: pipeline.id, pipelineStageId: stage.id, contactId,
-        name, monetaryValue: d.amount_requested ?? undefined,
-      };
 
       let oppId = d.ghl_opportunity_id as string | null;
       const r = oppId
-        ? await updateOpportunity(cfg, oppId, { pipelineStageId: stage.id, monetaryValue: d.amount_requested ?? undefined })
-        : await createOpportunity(cfg, oppFields);
+        ? await updateOpportunity(cfg, oppId, { pipelineStageId: stage.id, status: oppStatus, monetaryValue: d.amount_requested ?? undefined })
+        : await createOpportunity(cfg, { pipelineId: pipeline.id, pipelineStageId: stage.id, contactId, name, status: oppStatus, monetaryValue: d.amount_requested ?? undefined });
       if (!r.ok) return json({ error: `GHL opportunity ${oppId ? "update" : "create"} failed (${r.status}): ${r.error}` }, 502);
       oppId = oppId ?? r.data?.opportunity?.id ?? null;
 

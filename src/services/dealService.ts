@@ -26,6 +26,7 @@ const STATUS_TIMESTAMP_MAP: Partial<Record<DealStatus, string>> = {
   offer_presented: "offer_presented_at",
   offer_accepted: "offer_accepted_at",
   funded: "funded_at",
+  nurture: "nurture_at",
   declined: "declined_at",
 };
 

@@ -30,6 +30,7 @@ export const MCA_PIPELINE: PipelineDef = {
     { key: "offer_accepted", label: "Accepted", blurb: "You accepted your offer." },
     { key: "funded", label: "Funded", blurb: "Capital deposited!" },
     { key: "renewal_eligible", label: "Renewal", blurb: "Eligible for more capital." },
+    { key: "nurture", label: "Nurture / Re-engage", blurb: "We'll keep working to find you funding." },
   ],
 };
 

@@ -29,6 +29,7 @@ const STATUS_BY_STAGE: Record<string, string> = {
   "offer accepted": "offer_accepted",
   "funded": "funded",
   "renewal eligible": "renewal_eligible",
+  "nurture / re-engage": "nurture",
 };
 
 function json(body: unknown, status = 200) {
