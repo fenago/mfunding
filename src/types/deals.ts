@@ -4,9 +4,11 @@ export type DealStatus =
   | "qualifying"
   | "application_sent"
   | "docs_collected"
+  | "bank_statements"
   | "submitted_to_funder"
   | "offer_received"
   | "offer_presented"
+  | "offer_accepted"
   | "funded"
   | "renewal_eligible"
   | "declined"
@@ -186,9 +188,11 @@ export const DEAL_STAGES: { key: DealStatus; label: string }[] = [
   { key: "qualifying", label: "Qualifying" },
   { key: "application_sent", label: "App Sent" },
   { key: "docs_collected", label: "Docs Collected" },
-  { key: "submitted_to_funder", label: "Submitted" },
+  { key: "bank_statements", label: "Bank Statements" },
+  { key: "submitted_to_funder", label: "Submitted to Funders" },
   { key: "offer_received", label: "Offer Received" },
   { key: "offer_presented", label: "Offer Presented" },
+  { key: "offer_accepted", label: "Offer Accepted" },
   { key: "funded", label: "Funded" },
 ];
 
@@ -198,9 +202,11 @@ export const DEAL_STATUS_CONFIG: Record<DealStatus, { label: string; color: stri
   qualifying: { label: "Qualifying", color: "text-indigo-700 dark:text-indigo-300", bgColor: "bg-indigo-100 dark:bg-indigo-900" },
   application_sent: { label: "App Sent", color: "text-purple-700 dark:text-purple-300", bgColor: "bg-purple-100 dark:bg-purple-900" },
   docs_collected: { label: "Docs Collected", color: "text-cyan-700 dark:text-cyan-300", bgColor: "bg-cyan-100 dark:bg-cyan-900" },
-  submitted_to_funder: { label: "Submitted", color: "text-yellow-700 dark:text-yellow-300", bgColor: "bg-yellow-100 dark:bg-yellow-900" },
+  bank_statements: { label: "Bank Statements", color: "text-sky-700 dark:text-sky-300", bgColor: "bg-sky-100 dark:bg-sky-900" },
+  submitted_to_funder: { label: "Submitted to Funders", color: "text-yellow-700 dark:text-yellow-300", bgColor: "bg-yellow-100 dark:bg-yellow-900" },
   offer_received: { label: "Offer Received", color: "text-orange-700 dark:text-orange-300", bgColor: "bg-orange-100 dark:bg-orange-900" },
   offer_presented: { label: "Offer Presented", color: "text-amber-700 dark:text-amber-300", bgColor: "bg-amber-100 dark:bg-amber-900" },
+  offer_accepted: { label: "Offer Accepted", color: "text-lime-700 dark:text-lime-300", bgColor: "bg-lime-100 dark:bg-lime-900" },
   funded: { label: "Funded", color: "text-green-700 dark:text-green-300", bgColor: "bg-green-100 dark:bg-green-900" },
   renewal_eligible: { label: "Renewal Eligible", color: "text-teal-700 dark:text-teal-300", bgColor: "bg-teal-100 dark:bg-teal-900" },
   declined: { label: "Declined", color: "text-red-700 dark:text-red-300", bgColor: "bg-red-100 dark:bg-red-900" },

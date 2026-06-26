@@ -12,7 +12,8 @@ export interface GHLStatus {
 
 const REQUIRED_STAGES = [
   "New Lead", "Contacted", "Qualifying", "Application Sent", "Docs Collected",
-  "Submitted to Funder", "Offer Received", "Offer Presented", "Funded",
+  "Bank Statements", "Submitted to Funders", "Offer Received", "Offer Presented",
+  "Offer Accepted", "Funded",
 ];
 
 /** Test the GHL connection by listing pipelines through the edge function. */

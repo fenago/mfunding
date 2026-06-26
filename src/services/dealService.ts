@@ -20,9 +20,11 @@ const STATUS_TIMESTAMP_MAP: Partial<Record<DealStatus, string>> = {
   qualifying: "qualified_at",
   application_sent: "application_sent_at",
   docs_collected: "docs_collected_at",
+  bank_statements: "bank_statements_at",
   submitted_to_funder: "submitted_at",
   offer_received: "offer_received_at",
   offer_presented: "offer_presented_at",
+  offer_accepted: "offer_accepted_at",
   funded: "funded_at",
   declined: "declined_at",
 };

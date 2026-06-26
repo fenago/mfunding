@@ -18,7 +18,6 @@ import { getDealById, updateDealStatus, submitToFunder, updateSubmission } from 
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
 import type { DealWithCustomer, DealSubmissionWithLender, DealStatus, SubmissionStatus } from "../../../types/deals";
 import {
-  DEAL_STAGES,
   DEAL_STATUS_CONFIG,
   DEAL_TYPE_CONFIG,
   MARKET_CONFIG,
@@ -27,6 +26,7 @@ import {
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
 import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
 import BankAnalysisCard from "../../../components/shared/BankAnalysisCard";
+import PipelineFlow from "../../../components/shared/PipelineFlow";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 // Required stip document types for a deal
@@ -163,8 +163,6 @@ export default function DealDetailPage() {
   const typeConfig = DEAL_TYPE_CONFIG[deal.deal_type];
   const marketConfig = deal.market ? MARKET_CONFIG[deal.market] : null;
 
-  // Determine current stage index for the stepper
-  const currentStageIndex = DEAL_STAGES.findIndex((s) => s.key === deal.status);
   const isTerminal = ["declined", "dead", "renewal_eligible"].includes(deal.status);
 
   // Offers that have amounts (for comparison table)
@@ -227,54 +225,12 @@ export default function DealDetailPage() {
       {/* Stage Progression Timeline */}
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700 mb-6">
         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-4">Deal Progress</h3>
-        <div className="flex items-center justify-between">
-          {DEAL_STAGES.map((stage, index) => {
-            const isCompleted = !isTerminal && index < currentStageIndex;
-            const isCurrent = stage.key === deal.status;
-
-            return (
-              <div key={stage.key} className="flex items-center flex-1 last:flex-none">
-                <div className="flex flex-col items-center">
-                  <button
-                    onClick={() => handleStatusChange(stage.key)}
-                    className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${
-                      isCurrent
-                        ? "bg-ocean-blue text-white ring-4 ring-blue-100 dark:ring-blue-900"
-                        : isCompleted
-                        ? "bg-green-500 text-white"
-                        : "bg-gray-200 dark:bg-gray-600 text-gray-500 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-500"
-                    }`}
-                    title={`Move to: ${stage.label}`}
-                  >
-                    {isCompleted ? (
-                      <CheckCircleSolid className="w-5 h-5" />
-                    ) : (
-                      index + 1
-                    )}
-                  </button>
-                  <span
-                    className={`mt-2 text-xs text-center whitespace-nowrap ${
-                      isCurrent
-                        ? "font-semibold text-ocean-blue"
-                        : isCompleted
-                        ? "text-green-600"
-                        : "text-gray-400"
-                    }`}
-                  >
-                    {stage.label}
-                  </span>
-                </div>
-                {index < DEAL_STAGES.length - 1 && (
-                  <div
-                    className={`flex-1 h-0.5 mx-2 mt-[-1rem] ${
-                      isCompleted ? "bg-green-500" : "bg-gray-200 dark:bg-gray-600"
-                    }`}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <PipelineFlow
+          pipeline="mca"
+          currentKey={deal.status}
+          onStageClick={(k) => handleStatusChange(k as DealStatus)}
+          terminal={isTerminal}
+        />
         {isTerminal && (
           <div className="mt-4 flex items-center gap-2">
             <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>

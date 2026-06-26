@@ -6,6 +6,7 @@ import Footer from "../components/landing/Footer";
 import ScrollToTop from "../components/ui/ScrollToTop";
 import supabase from "../supabase";
 import { PLAID_ENABLED } from "../config";
+import PipelineFlow from "../components/shared/PipelineFlow";
 
 const BUSINESS_TYPES = ["Retail", "Restaurant", "Construction", "Trucking", "Healthcare", "Auto", "Services", "Other"];
 const TIB_OPTIONS = ["6-12 months", "1-2 years", "2-5 years", "5+ years"];
@@ -73,6 +74,10 @@ export default function ApplyPage() {
               Thanks, {form.contact_first_name}. A funding specialist will reach out shortly to review your options and
               request your most recent business bank statements. No upfront fees, and checking your options has no impact on your credit.
             </p>
+            <div className="mt-8 text-left">
+              <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3 text-center">Here’s what happens next</p>
+              <PipelineFlow pipeline="mca" currentKey="new" />
+            </div>
             <Link to="/" className="inline-block mt-6 text-ocean-blue hover:underline">← Back to home</Link>
           </div>
         ) : (

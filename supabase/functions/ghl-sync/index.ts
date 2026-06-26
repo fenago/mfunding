@@ -26,9 +26,11 @@ const STAGE_BY_STATUS: Record<string, string> = {
   qualifying: "Qualifying",
   application_sent: "Application Sent",
   docs_collected: "Docs Collected",
-  submitted_to_funder: "Submitted to Funder",
+  bank_statements: "Bank Statements",
+  submitted_to_funder: "Submitted to Funders",
   offer_received: "Offer Received",
   offer_presented: "Offer Presented",
+  offer_accepted: "Offer Accepted",
   funded: "Funded",
   renewal_eligible: "Renewal Eligible",
 };
