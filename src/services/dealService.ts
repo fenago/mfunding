@@ -301,6 +301,35 @@ export async function submitToFunder(
   return submission as DealSubmission;
 }
 
+/** Submit one deal to several funders at once (3–5 in parallel) and advance the
+ * deal to "Submitted to Funders". Skips lenders already submitted. */
+export async function submitToMultipleFunders(
+  dealId: string,
+  lenderIds: string[],
+  notes?: string,
+): Promise<DealSubmission[]> {
+  if (lenderIds.length === 0) return [];
+  const rows = lenderIds.map((lender_id) => ({
+    deal_id: dealId,
+    lender_id,
+    status: "submitted" as const,
+    submitted_at: new Date().toISOString(),
+    notes: notes || null,
+  }));
+  const { data, error } = await supabase.from("deal_submissions").insert(rows).select();
+  if (error) {
+    console.error("Error submitting to multiple funders:", error);
+    throw error;
+  }
+  // Advance the deal stage (also auto-syncs the GHL opportunity). Best-effort.
+  try {
+    await updateDealStatus(dealId, "submitted_to_funder");
+  } catch (e) {
+    console.error("Failed to advance deal to submitted_to_funder:", e);
+  }
+  return (data || []) as DealSubmission[];
+}
+
 export async function updateSubmission(
   id: string,
   data: Partial<Pick<

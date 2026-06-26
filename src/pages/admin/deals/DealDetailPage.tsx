@@ -14,7 +14,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import supabase from "../../../supabase";
-import { getDealById, updateDealStatus, submitToFunder, updateSubmission } from "../../../services/dealService";
+import { getDealById, updateDealStatus, submitToFunder, submitToMultipleFunders, updateSubmission } from "../../../services/dealService";
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
 import type { DealWithCustomer, DealSubmissionWithLender, DealStatus, SubmissionStatus } from "../../../types/deals";
 import {
@@ -113,6 +113,23 @@ export default function DealDetailPage() {
       fetchDeal();
     } catch {
       console.error("Failed to submit to funder");
+    }
+  };
+
+  const handleSubmitToAll = async () => {
+    if (!id) return;
+    const pending = matchingLenders.filter(
+      (l) => !submissions.some((s) => s.lender_id === l.id && !["withdrawn", "declined", "offer_declined"].includes(s.status))
+    );
+    if (pending.length === 0) return;
+    try {
+      await submitToMultipleFunders(id, pending.map((l) => l.id), submitNotes);
+      setShowSubmitModal(false);
+      setSubmittingLenderId(null);
+      setSubmitNotes("");
+      fetchDeal();
+    } catch {
+      console.error("Failed to submit to all funders");
     }
   };
 
@@ -725,6 +742,15 @@ export default function DealDetailPage() {
                     className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
                   >
                     Cancel
+                  </button>
+                  <button
+                    onClick={handleSubmitToAll}
+                    disabled={matchingLenders.length === 0}
+                    className="px-4 py-2 text-sm font-medium text-ocean-blue border border-ocean-blue rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Submit this deal to all matched funders at once"
+                  >
+                    <PaperAirplaneIcon className="w-4 h-4" />
+                    Submit to all {matchingLenders.length} matches
                   </button>
                   <button
                     onClick={handleSubmitToFunder}
