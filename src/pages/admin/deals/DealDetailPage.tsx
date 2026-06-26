@@ -26,6 +26,7 @@ import {
 } from "../../../types/deals";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
 import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
+import BankAnalysisCard from "../../../components/shared/BankAnalysisCard";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 // Required stip document types for a deal
@@ -313,6 +314,8 @@ export default function DealDetailPage() {
       {/* Tab: Overview */}
       {activeTab === "overview" && (
         <div className="grid md:grid-cols-2 gap-6">
+          {/* Bank Analysis (manual entry; Plaid optional) */}
+          <BankAnalysisCard dealId={deal.id} customerId={deal.customer_id} />
           {/* Deal Info */}
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
             <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Deal Details</h3>

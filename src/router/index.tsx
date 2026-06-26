@@ -14,6 +14,7 @@ import RealEstateDetailPage from "../pages/real-estate/RealEstateDetailPage.tsx"
 import AboutPage from "../pages/AboutPage.tsx";
 import ContactPage from "../pages/ContactPage.tsx";
 import OptinPage from "../pages/OptinPage.tsx";
+import ApplyPage from "../pages/ApplyPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
@@ -113,6 +114,10 @@ const router = createBrowserRouter([
       {
         path: "/optin",
         element: <OptinPage />,
+      },
+      {
+        path: "/apply",
+        element: <ApplyPage />,
       },
       // Auth Protected routes
       {
