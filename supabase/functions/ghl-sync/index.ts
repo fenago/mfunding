@@ -136,7 +136,12 @@ Deno.serve(async (req) => {
           warning: "No GHL pipeline found — create the 9-stage pipeline in GHL, then re-sync to attach an opportunity.",
         });
       }
-      const pipeline = pl.data.pipelines[0]; // single master pipeline for MFunding
+      // Pick the MCA pipeline by stage-name match — there may also be a VCF
+      // pipeline, so don't blindly take pipelines[0].
+      const pipeline = pl.data.pipelines.find((p) => {
+        const names = new Set(p.stages.map((s) => s.name.toLowerCase()));
+        return names.has("new lead") && names.has("funded");
+      }) ?? pl.data.pipelines[0];
       const wantStage = (STAGE_BY_STATUS[d.status] ?? "New Lead").toLowerCase();
       const stage = pipeline.stages.find((s) => s.name.toLowerCase() === wantStage) ?? pipeline.stages[0];
 
