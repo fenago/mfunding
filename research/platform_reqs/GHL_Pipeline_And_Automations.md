@@ -66,22 +66,21 @@ So: *funder* accept/decline = per-submission (many per deal); *merchant* accept/
 
 ---
 
-# Funnel reality — MOST deals die (design for it, not against it)
+# Funnel expectations & outcomes
 
-At an 8–14% close rate, **~86–92% of every deal never funds.** Loss is the *dominant* outcome — the normal case — not an exception to bolt on. The waterfall sheds volume at every stage, heaviest early. Roughly where deals die, most → least:
+**Target: ~20–30% of deals fund.** That's the goal — a healthy funnel, not a leaky one. The deals that don't fund won't vanish into a black box; they fall into three predictable buckets we plan for and work deliberately:
 
-1. **Never reached / not qualified** (New Lead → Qualifying) — the biggest die-off by far.
-2. **Won't provide docs / bank statements** (the #1 mid-funnel leak).
-3. **Funders decline** — often *all* of them.
-4. **Merchant declines** the offer.
+- **All funders decline** — no fundable offer from anyone.
+- **Merchant declines** — a funder offered, the merchant passed.
+- **Merchant goes dark** — stops responding somewhere in the process.
 
-So the pipeline is **not a conveyor belt to "Funded"** — it's a **sorting machine** that pushes the few forward and routes the many into the right bucket. The automation's real work is the losers:
+Design for roughly **1 in 4 funding**, with the other ~3 in 4 handled on purpose:
 
-- The **loss/nurture pool is the single largest segment of the database** — bigger than the active pipeline. It's an asset, not garbage: the reactivation engine (Sequence F) + UCC/renewal triggers turn it into ongoing **~$0-cost volume** (3–5% re-engage per month).
-- **Every loss is tagged** (`lost_reason`) so the **funnel waterfall + loss-reason breakdown are the primary KPIs** — they show exactly where the leak is and what to fix.
-- **Suppress the truly dead** (opt-out/DNC, prohibited industry) so you never pay to message a corpse.
+- Every non-funded deal is tagged with a `lost_reason`, so the **funnel waterfall + loss-reason breakdown** show where deals fall out and why — that's how you push the funded rate toward 30%.
+- **Recoverable** losses (funders-declined, merchant-declined, went-dark) → reactivation (Sequence F) + UCC/renewal triggers → cheap repeat volume over time.
+- **Truly dead** (opted-out/DNC, prohibited industry) → suppress; don't keep paying to message them.
 
-Build the loss-handling machinery first-class — that's where most of the volume, and most of the recoverable money, lives.
+The branch/recovery logic below makes each of those three buckets a managed path, not a dead end.
 
 ---
 
