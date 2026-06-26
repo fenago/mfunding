@@ -66,6 +66,56 @@ So: *funder* accept/decline = per-submission (many per deal); *merchant* accept/
 
 ---
 
+# Branches, loops & recovery paths — every outcome (so nothing dead-ends silently)
+
+A deal at any stage has three kinds of outcome: **forward** (happy path), **stall** (no response → a nurture sequence), or **branch** (a specific negative that routes somewhere). No path is allowed to silently dead-end — every loss is tagged with a `lost_reason` and dropped into reactivation.
+
+| Stage | Forward | Stall (no response) | Branch (negative) → where it goes |
+|---|---|---|---|
+| New Lead | → Contacted | Sequence B (7d) | bad number/lead → `no_contact`, request vendor replacement (live transfer) |
+| Contacted | → Qualifying | Sequence B | not interested → Sequence C (soft-no) or `dead` |
+| Qualifying | → Application Sent | Sequence C | disqualified → `disqualified` **OR if over-stacked/distressed → route to VCF**; "not now" → Sequence C |
+| Application Sent | → Docs Collected | reminders → breakup | abandons app → `docs_not_provided` → nurture |
+| Docs Collected | → Bank Statements | reminders | won't provide stips → `docs_not_provided` |
+| Bank Statements | → Submitted to Funders | Sequence A (14d) → breakup | won't connect → `docs_not_provided`; **fails internal pre-qual** (NSFs/ADB/positions) → decline `bank_data_fail` **OR route to VCF if over-leveraged** |
+| Submitted to Funders | → Offer Received (≥1 offer) | escalate → call underwriters | **ALL decline → see Loop A below** |
+| Offer Received | → Offer Presented | — | only bad terms → negotiate / resubmit |
+| Offer Presented | → Offer Accepted | Sequence D | **merchant declines → see Loop B below** |
+| Offer Accepted | → Funded | contract reminders | funder rescinds / contract unsigned / final-UW decline → `funding_fell_through` → **back to Submitted to Funders** or Declined |
+| Funded | → Renewal Eligible | — | early default → no renewal; commission **clawback** |
+| Renewal Eligible | → new deal at Application Sent | quarterly check-in | doesn't renew → stay in nurture |
+
+### 🔁 Loop A — all funders decline / no offer
+1. **Auto-resubmit** to the next funder tier (B/C/D paper, specialty funders) → opportunity moves **back to Submitted to Funders** with a wider funder set + tag `resubmit:tier2`.
+2. Still no offer **and merchant is stacked/distressed** → **route to the VCF pipeline** (debt relief), set `lost_reason = routed_to_vcf`, create a VCF opportunity, notify the VCF team.
+3. Otherwise → **Declined** (`funders_declined_all`) → "we're exploring alternatives" SMS → **30/60-day nurture** → auto-resubmit when the profile improves (more revenue, fewer positions, time passes).
+
+### 🔁 Loop B — merchant declines the offer
+1. **Sequence D Day 0:** call to pinpoint the objection (cost / term / amount / payment / timing).
+2. Fixable by a different funder → **back to Submitted to Funders** (resubmit for better terms) → new Offer Received → Offer Presented.
+3. Wants smaller/different → present an **alternative offer** (stay in Offer Presented).
+4. "Not now" → **Sequence C** (soft-no, 90d).
+5. Ghosts → Sequence D 45-day re-engage → **Declined** (`merchant_declined`) → reactivation.
+
+### Cross-product routing → VCF
+A merchant is a VCF candidate (not an MCA candidate) whenever they're **over-leveraged with multiple active MCAs**. Detect + route at three points: **Qualifying** (they tell us), **Bank Statements** (we see 2+ MCA debits), or **all-funders-decline** (nobody will stack them further). Routing = create a VCF-pipeline opportunity + tag, set `Product Type = VCF`.
+
+### Terminal states — recoverable vs truly dead (some deals just die)
+Not everything loops forever. Two kinds of ending, each stamped with a `lost_reason`:
+
+**Recoverable loss (`declined`)** — circumstances can change, so these DO feed **Sequence F (monthly reactivation)** and can re-enter at **New Lead**. Reasons: `funders_declined_all`, `merchant_declined`, `docs_not_provided`, `bank_data_fail`, `offer_expired`, `funding_fell_through`, `no_contact`.
+
+**Truly dead (`dead`) — exits the funnel, NOT reactivated:**
+- `opted_out` — merchant texted **STOP** / revoked consent → set `customers.do_not_contact = true`, remove from EVERY sequence, suppress from all blasts. **TCPA: never message again** unless they re-opt-in.
+- `prohibited_industry` — cannabis / adult / firearms / fraud / defunct business → hard disqualify, never market to.
+- **Repeated non-engagement** — after ~2–3 reactivation cycles with zero response, archive the contact so we stop burning sends (and SMS cost) on a corpse.
+
+`do_not_contact` is a **hard gate**: Sequence F and every workflow must check it first and skip suppressed contacts. This isn't optional — it's the legal line.
+
+`lost_reason` codes: `no_contact`, `disqualified`, `docs_not_provided`, `bank_data_fail`, `funders_declined_all`, `merchant_declined`, `offer_expired`, `funding_fell_through`, `routed_to_vcf`, `opted_out`, `prohibited_industry`, `duplicate`, `other`.
+
+---
+
 # Custom fields to create first (Contact level)
 `Monthly Revenue` (number), `Time in Business Months` (number), `Industry` (text), `Lead Source` (dropdown), `Target Market` (dropdown), `Funding Amount Requested` (number), `Product Type` (dropdown: MCA / Term Loan / SBA / LOC / Equipment / VCF), `Paydown %` (number), `State` (text), `Plaid Connected` (checkbox), `Disclosure Acknowledged` (checkbox), `Active MCA Positions` (number — VCF), `Total Daily/Weekly Debits` (number — VCF).
 
@@ -230,7 +280,9 @@ G) Funded → Renewal — Funded: Day1 congrats SMS+email, Google review request
    ($100 gift card). Arm renewal reminders.
 H) Renewal Triggers — when Paydown % changes: 40 "may qualify for additional capital"; 60 call
    + renewal-offer SMS; 75 "best time to renew"; 100 direct-call task.
-I) Mass Reactivation — monthly, audience tagged "dead"/"nurture-*", rotate 3 templates.
+I) Mass Reactivation — monthly, audience tagged "dead"/"nurture-*", rotate 3 templates. EXCLUDE
+   any contact with Do Not Contact = true or DND on. After ~2-3 cycles with zero engagement,
+   tag "archived" and stop sending.
 
 STEP 4 — PER-FUNDER EMAIL SUBMISSION WORKFLOWS (all trigger on stage = Submitted to Funders,
 filtered by a per-funder tag; ONE per funder; submit to 3-5 in parallel). Each emails the deal
@@ -254,6 +306,26 @@ STEP 5 — VCF PIPELINE WORKFLOWS (relief tone, no guarantees)
     statements showing debits; reminders.
   - Submit to VCF — Submitted to VCF: email package to partnerprogram@valuecapitalfunding.com,
     same flow as Step 4.
+
+STEP 6 — RECOVERY & ROUTING WORKFLOWS (so no deal dead-ends)
+  - All-Funders-Declined — trigger: tag "all-declined" (set when every funder submission is
+    declined). Actions: resubmit to a tier-2/specialty funder set (move opportunity back to
+    Submitted to Funders, tag resubmit:tier2); if still no offer and tag "stacked", route to the
+    VCF pipeline; else move to Lost with reason "funders_declined_all" and start a 30/60-day
+    "exploring alternatives" nurture that resubmits later.
+  - Merchant-Declined (Sequence D) — trigger: tag "offer-declined". Day0 objection call task;
+    resubmit to other funders for better terms; Day1-3 present alternatives; Day7 one more;
+    Day14 breakup; Day45 re-engage. If "not now" add tag soft-no.
+  - Route-to-VCF — trigger: tag "route-to-vcf" OR Product Type = VCF (set at Qualifying, Bank
+    Statements when 2+ MCA positions, or after all-funders-declined). Create/move to the VCF
+    pipeline at New Lead (Distressed) and notify the VCF team.
+  - Funding-Fell-Through — trigger: tag "funding-failed" (funder rescinds / contract unsigned /
+    final-UW decline). Move back to Submitted to Funders to resubmit, or to Lost reason
+    "funding_fell_through".
+  - Opt-Out / DNC (TCPA) — trigger: inbound message contains STOP/UNSUBSCRIBE/REMOVE, or DND set.
+    Actions: set Do Not Contact = true, remove the contact from ALL workflows/sequences, move to
+    Lost reason "opted_out", and NEVER message again unless they explicitly re-opt-in. This gate
+    overrides every other workflow.
 
 All SMS include an opt-out line; respect TCPA/quiet hours. Keep MCA copy free of "loan".
 Confirm each pipeline and workflow is created and list their IDs.
