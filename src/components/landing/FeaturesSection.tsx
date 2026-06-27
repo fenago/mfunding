@@ -190,7 +190,7 @@ function FundingCard({ option, index }: { option: typeof fundingOptions[0]; inde
 
           {/* Learn more link */}
           <motion.a
-            href="#apply"
+            href="/apply"
             className="inline-flex items-center gap-2 mt-6 text-sm font-medium transition-colors"
             style={{ color: option.color }}
             whileHover={{ x: 5 }}
@@ -299,7 +299,7 @@ export default function FeaturesSection() {
           className="text-center mt-16"
         >
           <MagneticButton>
-            <a href="#apply">
+            <a href="/apply">
               <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="relative">
                 {/* Glow */}
                 <motion.div

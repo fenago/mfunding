@@ -209,7 +209,7 @@ export default function FAQSection() {
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <a
-              href="#apply"
+              href="/apply"
               className="btn-primary inline-flex items-center gap-2"
             >
               Get Your Free Quote

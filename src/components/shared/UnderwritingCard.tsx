@@ -6,6 +6,7 @@ import {
   type UWResult, type UWInputs, type UnderwritingAssessment,
 } from "../../services/underwritingService";
 import { updateDealStatus } from "../../services/dealService";
+import { syncDealToGHL } from "../../services/ghlService";
 import supabase from "../../supabase";
 import type { DealWithCustomer } from "../../types/deals";
 
@@ -59,8 +60,11 @@ export default function UnderwritingCard({ deal, onDecision }: Props) {
       const a = await saveAssessment({ dealId: deal.id, bankAnalysisId: bankId, result, decision });
       setSaved(a);
       if (decision === "declined") {
-        await updateDealStatus(deal.id, "declined"); // also syncs GHL -> Lost
+        await updateDealStatus(deal.id, "declined");
         await supabase.from("deals").update({ lost_reason: "bank_data_fail" }).eq("id", deal.id);
+        // Underwriting decline is a deliberate, app-authoritative outcome — explicitly
+        // push it to GHL (sets the opportunity Lost). Routine stage moves stay GHL-owned.
+        try { await syncDealToGHL(deal.id); } catch { /* best-effort */ }
       }
       onDecision?.();
     } finally {

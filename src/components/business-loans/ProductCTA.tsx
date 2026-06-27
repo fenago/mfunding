@@ -44,7 +44,7 @@ export default function ProductCTA({ productName }: ProductCTAProps) {
           transition={{ duration: 0.6, delay: 0.2 }}
         >
           <Link
-            to="/#apply"
+            to="/apply"
             className="inline-block bg-mint-green hover:bg-mint-green/90 text-midnight-blue font-bold text-lg px-10 py-4 rounded-xl transition-colors"
           >
             Apply for {productName}

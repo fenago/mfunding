@@ -1,145 +1,68 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
-import { CheckCircleIcon, LockClosedIcon } from "@heroicons/react/24/outline";
+import { useEffect } from "react";
+import { CheckCircleIcon } from "@heroicons/react/24/outline";
 import Navbar from "../components/landing/Navbar";
 import Footer from "../components/landing/Footer";
 import ScrollToTop from "../components/ui/ScrollToTop";
-import supabase from "../supabase";
-import { PLAID_ENABLED } from "../config";
-import PipelineFlow from "../components/shared/PipelineFlow";
 
-const BUSINESS_TYPES = ["Retail", "Restaurant", "Construction", "Trucking", "Healthcare", "Auto", "Services", "Other"];
-const TIB_OPTIONS = ["6-12 months", "1-2 years", "2-5 years", "5+ years"];
-const REVENUE_OPTIONS = ["$10k-$25k", "$25k-$50k", "$50k-$100k", "$100k+"];
+// MFunding "MCA Funding Application" — GoHighLevel form (MFunding.net sub-account).
+// Submissions flow straight into the CRM and (via the GHL "Form Submitted" workflow)
+// create a New Lead opportunity in the MFunding MCA Pipeline.
+const GHL_FORM_ID = "Ow1imQrxjJN9yfDUiBG3";
+const GHL_EMBED_SCRIPT = "https://link.msgsndr.com/js/form_embed.js";
 
-interface FormState {
-  business_name: string; contact_first_name: string; contact_last_name: string;
-  email: string; phone: string; funding_amount: string;
-  business_type: string; time_in_business: string; monthly_revenue: string; funding_purpose: string;
-}
-
-const EMPTY: FormState = {
-  business_name: "", contact_first_name: "", contact_last_name: "", email: "", phone: "",
-  funding_amount: "", business_type: "", time_in_business: "", monthly_revenue: "", funding_purpose: "",
-};
+const TRUST = [
+  "No upfront fees",
+  "Checking your options won't affect your credit",
+  "Funding typically in 24–48 hours",
+];
 
 export default function ApplyPage() {
-  const [form, setForm] = useState<FormState>(EMPTY);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function set<K extends keyof FormState>(k: K, v: string) { setForm((f) => ({ ...f, [k]: v })); }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setSubmitting(true);
-    try {
-      const { error } = await supabase.from("funding_applications").insert({
-        business_name: form.business_name,
-        contact_first_name: form.contact_first_name,
-        contact_last_name: form.contact_last_name,
-        email: form.email,
-        phone: form.phone,
-        funding_amount: parseInt(form.funding_amount.replace(/[^0-9]/g, ""), 10) || 0,
-        business_type: form.business_type,
-        time_in_business: form.time_in_business,
-        monthly_revenue: form.monthly_revenue,
-        funding_purpose: form.funding_purpose || null,
-        status: "pending",
-      });
-      if (error) throw error;
-      setSubmitted(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const inputCls =
-    "mt-1 w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-ocean-blue outline-none";
+  // Load GHL's form embed script once (handles iframe auto-resize).
+  useEffect(() => {
+    if (document.querySelector(`script[src="${GHL_EMBED_SCRIPT}"]`)) return;
+    const s = document.createElement("script");
+    s.src = GHL_EMBED_SCRIPT;
+    s.async = true;
+    document.body.appendChild(s);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
       <Navbar />
       <ScrollToTop />
-      <main className="flex-1 max-w-2xl w-full mx-auto px-4 py-12">
-        {submitted ? (
-          <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-10 text-center">
-            <CheckCircleIcon className="w-16 h-16 text-emerald-500 mx-auto mb-4" />
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Application received!</h1>
-            <p className="text-gray-600 dark:text-gray-300">
-              Thanks, {form.contact_first_name}. A funding specialist will reach out shortly to review your options and
-              request your most recent business bank statements. No upfront fees, and checking your options has no impact on your credit.
-            </p>
-            <div className="mt-8 text-left">
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3 text-center">Here’s what happens next</p>
-              <PipelineFlow pipeline="mca" currentKey="new" />
-            </div>
-            <Link to="/" className="inline-block mt-6 text-ocean-blue hover:underline">← Back to home</Link>
+      <main className="flex-1 w-full max-w-3xl mx-auto px-4 py-12">
+        <div className="mb-6 text-center">
+          <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-white">
+            Get the working capital your business needs
+          </h1>
+          <p className="text-gray-600 dark:text-gray-300 mt-2">
+            Takes about 3 minutes. A funding specialist will follow up the same day.
+          </p>
+          <div className="mt-4 flex flex-wrap justify-center gap-x-6 gap-y-2">
+            {TRUST.map((t) => (
+              <span key={t} className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300">
+                <CheckCircleIcon className="w-4 h-4 text-emerald-500" /> {t}
+              </span>
+            ))}
           </div>
-        ) : (
-          <>
-            <div className="mb-8 text-center">
-              <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Get the working capital your business needs</h1>
-              <p className="text-gray-600 dark:text-gray-300 mt-2">Fast funding — typically 24–48 hours. No upfront fees. Checking your options won’t affect your credit.</p>
-            </div>
+        </div>
 
-            <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
-              <div className="grid sm:grid-cols-2 gap-4">
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Business name *</span>
-                  <input required value={form.business_name} onChange={(e) => set("business_name", e.target.value)} className={inputCls} /></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Business type *</span>
-                  <select required value={form.business_type} onChange={(e) => set("business_type", e.target.value)} className={inputCls}>
-                    <option value="">Select…</option>{BUSINESS_TYPES.map((t) => <option key={t}>{t}</option>)}
-                  </select></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">First name *</span>
-                  <input required value={form.contact_first_name} onChange={(e) => set("contact_first_name", e.target.value)} className={inputCls} /></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Last name *</span>
-                  <input required value={form.contact_last_name} onChange={(e) => set("contact_last_name", e.target.value)} className={inputCls} /></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Email *</span>
-                  <input required type="email" value={form.email} onChange={(e) => set("email", e.target.value)} className={inputCls} /></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Phone *</span>
-                  <input required type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} className={inputCls} /></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Time in business *</span>
-                  <select required value={form.time_in_business} onChange={(e) => set("time_in_business", e.target.value)} className={inputCls}>
-                    <option value="">Select…</option>{TIB_OPTIONS.map((t) => <option key={t}>{t}</option>)}
-                  </select></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Monthly revenue *</span>
-                  <select required value={form.monthly_revenue} onChange={(e) => set("monthly_revenue", e.target.value)} className={inputCls}>
-                    <option value="">Select…</option>{REVENUE_OPTIONS.map((t) => <option key={t}>{t}</option>)}
-                  </select></label>
-                <label className="text-sm"><span className="text-gray-600 dark:text-gray-300">Funding amount needed *</span>
-                  <input required value={form.funding_amount} onChange={(e) => set("funding_amount", e.target.value)} placeholder="$50,000" className={inputCls} /></label>
-                <label className="text-sm sm:col-span-2"><span className="text-gray-600 dark:text-gray-300">What will you use it for?</span>
-                  <input value={form.funding_purpose} onChange={(e) => set("funding_purpose", e.target.value)} className={inputCls} /></label>
-              </div>
+        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-2 sm:p-4 shadow-sm">
+          <iframe
+            src={`https://api.leadconnectorhq.com/widget/form/${GHL_FORM_ID}`}
+            id={`inline-${GHL_FORM_ID}`}
+            title="MCA Funding Application"
+            data-form-id={GHL_FORM_ID}
+            data-form-name="MCA Funding Application"
+            data-layout-iframe-id={`inline-${GHL_FORM_ID}`}
+            data-height="1600"
+            style={{ width: "100%", minHeight: "1600px", border: "none", borderRadius: "8px" }}
+          />
+        </div>
 
-              {/* Bank verification step — manual by default; Plaid only if enabled */}
-              <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 bg-gray-50 dark:bg-gray-900/40">
-                <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
-                  <LockClosedIcon className="w-4 h-4" /> Bank verification
-                </div>
-                {PLAID_ENABLED ? (
-                  <p className="text-sm text-gray-500 mt-1">After you submit, you can connect your bank in ~60 seconds for the fastest approval — or send statements manually.</p>
-                ) : (
-                  <p className="text-sm text-gray-500 mt-1">After you submit, a specialist will request your 3 most recent business bank statements. Nothing to upload now.</p>
-                )}
-              </div>
-
-              {error && <p className="text-sm text-red-500">{error}</p>}
-              <button type="submit" disabled={submitting}
-                className="w-full py-3 rounded-lg bg-ocean-blue text-white font-semibold hover:opacity-90 disabled:opacity-60">
-                {submitting ? "Submitting…" : "Submit application"}
-              </button>
-              <p className="text-xs text-gray-400 text-center">
-                By submitting you agree to be contacted about funding options. This is not a loan application — MCA products are a purchase of future receivables.
-              </p>
-            </form>
-          </>
-        )}
+        <p className="text-xs text-gray-400 text-center mt-4">
+          This is not a loan application — MCA products are a purchase of future receivables.
+        </p>
       </main>
       <Footer />
     </div>

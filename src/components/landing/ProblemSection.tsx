@@ -169,7 +169,7 @@ function ProblemCard({ problem, index }: { problem: typeof problems[0]; index: n
             ))}
           </ul>
           <a
-            href="#apply"
+            href="/apply"
             className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-white text-gray-900 font-semibold rounded-lg hover:bg-gray-100 transition-colors text-sm"
           >
             Get Started

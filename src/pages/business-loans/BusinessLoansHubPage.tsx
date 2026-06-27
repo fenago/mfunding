@@ -162,7 +162,7 @@ export default function BusinessLoansHubPage() {
               transition={{ duration: 0.6, delay: 0.2 }}
             >
               <Link
-                to="/#apply"
+                to="/apply"
                 className="inline-flex items-center gap-2 bg-mint-green hover:bg-mint-green/90 text-midnight-blue font-bold text-lg px-10 py-4 rounded-xl transition-colors"
               >
                 Apply Now — Free & No Obligation

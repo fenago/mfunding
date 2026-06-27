@@ -103,7 +103,7 @@ export default function VideoSection() {
             transition={{ duration: 0.5, delay: 0.4 }}
             className="text-center mt-8"
           >
-            <a href="#apply" className="btn-primary">
+            <a href="/apply" className="btn-primary">
               Apply Now - It's Free
             </a>
           </motion.div>

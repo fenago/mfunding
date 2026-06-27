@@ -270,7 +270,7 @@ export default function HeroSection() {
               className="flex flex-col sm:flex-row gap-4 mb-8"
             >
               <MagneticButton>
-                <a href="#apply">
+                <a href="/apply">
                   <motion.div
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}

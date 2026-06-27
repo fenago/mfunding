@@ -391,7 +391,7 @@ export default function AboutPage() {
                   yours moving forward.
                 </p>
                 <Link
-                  to="/#apply"
+                  to="/apply"
                   className="inline-flex items-center gap-2 bg-ocean-blue text-white font-semibold px-6 py-3 rounded-xl hover:bg-ocean-blue/90 transition-colors"
                 >
                   Get Started Today
@@ -455,7 +455,7 @@ export default function AboutPage() {
                 and on their terms.
               </p>
               <Link
-                to="/#apply"
+                to="/apply"
                 className="inline-flex items-center gap-2 bg-mint-green text-midnight-blue font-bold px-8 py-4 rounded-xl hover:bg-mint-green/90 transition-colors text-lg"
               >
                 Apply Now

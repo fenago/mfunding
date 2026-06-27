@@ -122,7 +122,15 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   const stageName = String(o.stageName ?? o.pipelineStageName ?? evt.pipelineStageName ?? "").toLowerCase();
   const mapped = STATUS_BY_STAGE[stageName];
   const patch: Record<string, unknown> = {};
-  if (mapped && mapped !== deal.status) patch.status = mapped;
+  if (mapped && mapped !== deal.status) {
+    patch.status = mapped;
+    // GHL is the source of truth for the stage. When it moves a deal to Funded,
+    // stamp amount_funded + funded_at so the commission DB trigger fires.
+    if (mapped === "funded") {
+      if (o.monetaryValue != null) patch.amount_funded = o.monetaryValue;
+      patch.funded_at = new Date().toISOString();
+    }
+  }
   if (o.monetaryValue != null) patch.amount_requested = o.monetaryValue;
 
   if (Object.keys(patch).length) {

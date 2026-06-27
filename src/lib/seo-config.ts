@@ -167,7 +167,7 @@ export const ALT_TEXT_TEMPLATES = {
 
 // Internal linking strategy
 export const INTERNAL_LINKS = {
-  primaryCTA: '#apply',
+  primaryCTA: '/apply',
   calculator: '#calculator',
   features: '#features',
   howItWorks: '#how-it-works',
