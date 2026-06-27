@@ -155,6 +155,27 @@ export default function SolutionSection() {
               : your cash flow, your revenue, your fight. If your business is real, we'll find a way.
             </motion.p>
 
+            {/* Plain-English summary — one idea per line, easy to scan */}
+            <motion.ul
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ delay: 0.25 }}
+              className="space-y-3 mb-8"
+            >
+              {[
+                'It’s not a loan. It’s an advance on sales you’ve already got coming.',
+                'You get a lump sum now. You pay it back from future revenue.',
+                'Approval is based on your revenue, not your credit score.',
+                'Most decisions take hours. Funding takes 24–48 hours.',
+              ].map((line) => (
+                <li key={line} className="flex items-start gap-3">
+                  <CheckIcon className="w-5 h-5 text-mint-green flex-shrink-0 mt-0.5" />
+                  <span className="text-heading font-medium leading-snug">{line}</span>
+                </li>
+              ))}
+            </motion.ul>
+
             {/* UVP Callout with enhanced animation */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}

@@ -3,7 +3,9 @@ import HeroSection from '../components/landing/HeroSection';
 import ProblemSection from '../components/landing/ProblemSection';
 import SolutionSection from '../components/landing/SolutionSection';
 import FeaturesSection from '../components/landing/FeaturesSection';
+import RatesTermsSection from '../components/landing/RatesTermsSection';
 import CalculatorSection from '../components/landing/CalculatorSection';
+import TransparencySection from '../components/landing/TransparencySection';
 import CaseStudySection from '../components/landing/CaseStudySection';
 import HowItWorksSection from '../components/landing/HowItWorksSection';
 import SecuritySection from '../components/landing/SecuritySection';
@@ -32,7 +34,9 @@ const HomePage = () => {
         <ProblemSection />
         <SolutionSection />
         <FeaturesSection />
+        <RatesTermsSection />
         <CalculatorSection />
+        <TransparencySection />
         <CaseStudySection />
         <HowItWorksSection />
         <SecuritySection />

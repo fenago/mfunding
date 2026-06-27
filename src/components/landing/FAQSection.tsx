@@ -49,6 +49,31 @@ const faqs: FAQItem[] = [
     answer: "No collateral is required for merchant cash advances or business lines of credit. Your home, car, and personal assets are never at risk. For equipment financing, the equipment itself serves as collateral—but that's the only type of funding where any collateral is involved.",
     keywords: ["unsecured business funding", "no collateral business loan", "business funding without collateral"],
   },
+  {
+    question: "How much does a merchant cash advance cost?",
+    answer: "An MCA uses a fixed factor rate, typically between 1.1 and 1.5—not an interest rate. Example: a $20,000 advance at a 1.2 factor means you repay $24,000 total, so your cost is a fixed $4,000 fee. That number never changes and never compounds. You'll always see your full, total cost in writing before you sign. There are no upfront or hidden fees.",
+    keywords: ["merchant cash advance cost", "factor rate", "MCA fees", "total cost of MCA"],
+  },
+  {
+    question: "What is a factor rate, and how is it different from interest?",
+    answer: "A factor rate is a simple multiplier on the amount you receive. Multiply your advance by the factor rate to get your total payback—for example, $50,000 × 1.3 = $65,000. Unlike interest, it doesn't compound and doesn't change over time. Because the fee is fixed, paying off early won't reduce the total cost. We'll always walk you through the exact numbers up front.",
+    keywords: ["what is a factor rate", "factor rate vs interest", "MCA factor rate explained"],
+  },
+  {
+    question: "Is a merchant cash advance right for my business?",
+    answer: "It's a strong fit when you need capital fast, have steady revenue or card sales, and are covering a clear short-term need or opportunity—especially if a bank turned you down or can't move quickly enough. It costs more than a traditional bank loan and payments are frequent, so it's best for a defined purpose with a clear return. If a lower-cost option fits you better, we'll tell you—no pressure.",
+    keywords: ["is an MCA right for me", "when to use merchant cash advance", "MCA pros and cons"],
+  },
+  {
+    question: "What happens if I have a slow sales month?",
+    answer: "With a merchant cash advance, payments are tied to a percentage of your sales—so when business slows down, your payment amount adjusts down with it. If you're ever worried about an upcoming payment, reach out early and we'll work with you. We'd rather find a solution than see you stuck.",
+    keywords: ["MCA slow month", "flexible repayment", "merchant cash advance payments"],
+  },
+  {
+    question: "Can I get more capital later or renew?",
+    answer: "Yes. Many business owners come back for additional capital once they've paid down a portion of their advance—often around the halfway point. As you build a track record with us, renewals are typically faster and can come with more favorable terms.",
+    keywords: ["MCA renewal", "additional business funding", "renew merchant cash advance"],
+  },
 ];
 
 function FAQItem({ faq, isOpen, onClick, index }: {

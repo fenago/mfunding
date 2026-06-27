@@ -114,146 +114,69 @@ function AnimatedStat({ value, suffix, color }: { value: string; suffix: string;
   );
 }
 
-// Flip Card Component
-function FlipCard({ problem, index }: { problem: typeof problems[0]; index: number }) {
-  const [isFlipped, setIsFlipped] = useState(false);
-
+// Static Problem → Solution Card (no click required — the answer is right there)
+function ProblemCard({ problem, index }: { problem: typeof problems[0]; index: number }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 50 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true }}
       transition={{ duration: 0.6, delay: index * 0.15 }}
-      className="relative h-[420px] cursor-pointer group"
-      style={{ perspective: 1000 }}
-      onClick={() => setIsFlipped(!isFlipped)}
+      whileHover={{ y: -6 }}
+      className="group bg-white dark:bg-slate-800 rounded-2xl shadow-lg border border-gray-100 dark:border-slate-600 overflow-hidden flex flex-col"
     >
-      {/* Card container */}
-      <motion.div
-        className="relative w-full h-full"
-        animate={{ rotateY: isFlipped ? 180 : 0 }}
-        transition={{ duration: 0.6, type: 'spring', stiffness: 100 }}
-        style={{ transformStyle: 'preserve-3d' }}
+      {/* Problem (top) */}
+      <div className="p-8 pb-6 relative">
+        <motion.div
+          className="w-14 h-14 rounded-xl flex items-center justify-center mb-6"
+          style={{ backgroundColor: `${problem.color}15` }}
+          whileHover={{ scale: 1.1, rotate: 5 }}
+        >
+          <problem.icon className="w-7 h-7" style={{ color: problem.color }} />
+        </motion.div>
+
+        <h3 className="text-xl font-semibold text-heading mb-3">{problem.title}</h3>
+        <p className="text-body leading-relaxed mb-6">{problem.description}</p>
+
+        <div className="pt-5 border-t border-gray-200 dark:border-slate-600">
+          <AnimatedStat value={problem.stat} suffix={problem.statSuffix} color={problem.color} />
+          <p className="text-sm text-body mt-1">{problem.statLabel}</p>
+        </div>
+      </div>
+
+      {/* Solution (bottom) — always visible, no flip */}
+      <div
+        className="mt-auto p-8 pt-6 relative overflow-hidden"
+        style={{ background: `linear-gradient(135deg, ${problem.color} 0%, ${problem.color}dd 100%)` }}
       >
-        {/* Front of card */}
         <div
-          className="absolute inset-0 bg-white dark:bg-slate-800 rounded-2xl p-8 shadow-lg border border-gray-100 dark:border-slate-600 overflow-hidden"
-          style={{ backfaceVisibility: 'hidden' }}
-        >
-          {/* Animated gradient on hover */}
-          <motion.div
-            className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-2xl"
-            style={{
-              background: `linear-gradient(135deg, ${problem.color}10 0%, transparent 60%)`,
-            }}
-          />
-
-          <div className="relative z-10 h-full flex flex-col">
-            {/* Icon */}
-            <motion.div
-              className="w-14 h-14 rounded-xl flex items-center justify-center mb-6 relative overflow-hidden"
-              style={{ backgroundColor: `${problem.color}15` }}
-              whileHover={{ scale: 1.1, rotate: 5 }}
-            >
-              <problem.icon className="w-7 h-7" style={{ color: problem.color }} />
-            </motion.div>
-
-            {/* Title & Description */}
-            <h3 className="text-xl font-semibold text-heading mb-3">
-              {problem.title}
-            </h3>
-            <p className="text-body mb-6 leading-relaxed flex-1">
-              {problem.description}
-            </p>
-
-            {/* Stat */}
-            <div className="pt-6 border-t border-gray-200 dark:border-slate-600">
-              <div className="mb-2">
-                <AnimatedStat value={problem.stat} suffix={problem.statSuffix} color={problem.color} />
-              </div>
-              <p className="text-sm text-body">
-                {problem.statLabel}
-              </p>
-            </div>
-
-            {/* Click hint */}
-            <motion.div
-              className="absolute bottom-4 right-4 text-xs text-body flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-              animate={{ x: [0, 5, 0] }}
-              transition={{ duration: 1.5, repeat: Infinity }}
-            >
-              Click for solution
-              <ArrowRightIcon className="w-3 h-3" />
-            </motion.div>
-          </div>
-        </div>
-
-        {/* Back of card */}
-        <div
-          className="absolute inset-0 rounded-2xl p-8 overflow-hidden"
+          className="absolute inset-0 opacity-10"
           style={{
-            backfaceVisibility: 'hidden',
-            transform: 'rotateY(180deg)',
-            background: `linear-gradient(135deg, ${problem.color} 0%, ${problem.color}dd 100%)`,
+            backgroundImage: `radial-gradient(circle at center, white 1px, transparent 1px)`,
+            backgroundSize: '20px 20px',
           }}
-        >
-          {/* Pattern overlay */}
-          <div
-            className="absolute inset-0 opacity-10"
-            style={{
-              backgroundImage: `radial-gradient(circle at center, white 1px, transparent 1px)`,
-              backgroundSize: '20px 20px',
-            }}
-          />
-
-          <div className="relative z-10 h-full flex flex-col">
-            {/* Back title */}
-            <h3 className="text-2xl font-bold text-white mb-6">
-              {problem.backTitle}
-            </h3>
-
-            {/* Items list */}
-            <ul className="space-y-4 flex-1">
-              {problem.backItems.map((item, i) => (
-                <motion.li
-                  key={i}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={isFlipped ? { opacity: 1, x: 0 } : { opacity: 0, x: -20 }}
-                  transition={{ delay: 0.3 + i * 0.1 }}
-                  className="flex items-center gap-3 text-white"
-                >
-                  <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
-                    <CheckIcon className="w-4 h-4 text-white" />
-                  </div>
-                  <span>{item}</span>
-                </motion.li>
-              ))}
-            </ul>
-
-            {/* CTA */}
-            <motion.a
-              href="#apply"
-              className="inline-flex items-center justify-center gap-2 mt-4 px-6 py-3 bg-white text-gray-900 font-semibold rounded-lg hover:bg-gray-100 transition-colors"
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              Get Started
-              <ArrowRightIcon className="w-4 h-4" />
-            </motion.a>
-
-            {/* Click to flip back */}
-            <motion.div
-              className="absolute bottom-4 right-4 text-white/70 text-sm flex items-center gap-2"
-              animate={{ x: [0, -5, 0] }}
-              transition={{ duration: 1.5, repeat: Infinity }}
-            >
-              <ArrowRightIcon className="w-4 h-4 rotate-180" />
-              Click to go back
-            </motion.div>
-          </div>
+        />
+        <div className="relative z-10">
+          <h4 className="text-lg font-bold text-white mb-4">{problem.backTitle}</h4>
+          <ul className="space-y-2.5 mb-6">
+            {problem.backItems.map((item) => (
+              <li key={item} className="flex items-center gap-3 text-white">
+                <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+                  <CheckIcon className="w-3.5 h-3.5 text-white" />
+                </div>
+                <span className="text-sm">{item}</span>
+              </li>
+            ))}
+          </ul>
+          <a
+            href="#apply"
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-white text-gray-900 font-semibold rounded-lg hover:bg-gray-100 transition-colors text-sm"
+          >
+            Get Started
+            <ArrowRightIcon className="w-4 h-4" />
+          </a>
         </div>
-      </motion.div>
+      </div>
     </motion.div>
   );
 }
@@ -322,20 +245,12 @@ export default function ProblemSection() {
           >
             The sleepless nights. The worried looks from your family. The frustration of being treated like a number. We've seen it all—and we're here to change it.
           </motion.p>
-          <motion.p
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
-            viewport={{ once: true }}
-            className="text-sm text-mint-green font-medium"
-          >
-            Click any card to see how we help
-          </motion.p>
         </motion.div>
 
         {/* Problems Grid */}
-        <div className="grid md:grid-cols-3 gap-8">
+        <div className="grid md:grid-cols-3 gap-8 items-stretch">
           {problems.map((problem, index) => (
-            <FlipCard key={index} problem={problem} index={index} />
+            <ProblemCard key={index} problem={problem} index={index} />
           ))}
         </div>
       </div>

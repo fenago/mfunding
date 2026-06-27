@@ -110,12 +110,15 @@ export default function CalculatorSection() {
   const [frequency, setFrequency] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
 
   const totalRepayment = amount * factorRate;
+  const totalCost = totalRepayment - amount; // the fixed fee, in plain dollars
   const totalBusinessDays = term * 20; // ~20 business days per month
   const totalWeeks = term * 4; // 4 weeks per month
   const dailyPayment = Math.round(totalRepayment / totalBusinessDays);
   const weeklyPayment = Math.round(totalRepayment / totalWeeks);
   const monthlyPayment = Math.round(totalRepayment / term);
   const payment = frequency === 'daily' ? dailyPayment : frequency === 'weekly' ? weeklyPayment : monthlyPayment;
+  const freqWord = frequency === 'daily' ? 'business day' : frequency === 'weekly' ? 'week' : 'month';
+  const freqAbbr = frequency === 'daily' ? 'day' : frequency === 'weekly' ? 'wk' : 'mo';
 
   const handleAmountInput = (val: string) => {
     const num = parseInt(val.replace(/,/g, ''));
@@ -336,20 +339,59 @@ export default function CalculatorSection() {
                   </div>
                 </div>
 
-                {/* Result */}
-                <div className="flex items-center justify-between pt-4 border-t border-gray-100 dark:border-gray-700">
-                  <p className="text-3xl font-bold text-[#4CAF50]">
-                    ${formatCurrency(payment)}/{frequency === 'daily' ? 'day' : frequency === 'weekly' ? 'wk' : 'mo'}
+                {/* Cost breakdown — full transparency, no hidden math */}
+                <div className="pt-5 border-t border-gray-100 dark:border-gray-700">
+                  <div className="grid grid-cols-3 gap-3 mb-5">
+                    <div className="text-center rounded-lg bg-gray-50 dark:bg-gray-700/50 py-3 px-2">
+                      <p className="text-lg font-bold text-gray-800 dark:text-white tabular-nums">
+                        ${formatCurrency(amount)}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">You receive</p>
+                    </div>
+                    <div className="text-center rounded-lg bg-gray-50 dark:bg-gray-700/50 py-3 px-2">
+                      <p className="text-lg font-bold text-gray-800 dark:text-white tabular-nums">
+                        ${formatCurrency(Math.round(totalCost))}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Total cost (fee)</p>
+                    </div>
+                    <div className="text-center rounded-lg bg-[#4CAF50]/10 py-3 px-2">
+                      <p className="text-lg font-bold text-[#4CAF50] tabular-nums">
+                        ${formatCurrency(Math.round(totalRepayment))}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Total payback</p>
+                    </div>
+                  </div>
+
+                  {/* Plain-language worked example that updates live */}
+                  <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed mb-5">
+                    In plain English: you get{' '}
+                    <span className="font-semibold text-gray-800 dark:text-white">${formatCurrency(amount)}</span> today.
+                    At a <span className="font-semibold text-gray-800 dark:text-white">{factorRate.toFixed(2)}</span> factor
+                    rate you pay back{' '}
+                    <span className="font-semibold text-gray-800 dark:text-white">${formatCurrency(Math.round(totalRepayment))}</span>{' '}
+                    total — about{' '}
+                    <span className="font-semibold text-[#4CAF50]">${formatCurrency(payment)}</span> per {freqWord} over{' '}
+                    <span className="font-semibold text-gray-800 dark:text-white">{term} months</span>. The fee is fixed:
+                    it never changes, with no compounding interest.
                   </p>
-                  <a
-                    href="#apply"
-                    className="inline-flex items-center gap-2 text-base font-semibold text-gray-700 dark:text-gray-300 hover:text-[#4CAF50] transition-colors"
-                  >
-                    Continue
-                    <span className="w-8 h-8 bg-[#4CAF50] text-white rounded-lg flex items-center justify-center">
-                      <ArrowRightIcon className="w-4 h-4" />
-                    </span>
-                  </a>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-3xl font-bold text-[#4CAF50] tabular-nums">
+                        ${formatCurrency(payment)}<span className="text-xl">/{freqAbbr}</span>
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Estimated payment</p>
+                    </div>
+                    <a
+                      href="#apply"
+                      className="inline-flex items-center gap-2 text-base font-semibold text-gray-700 dark:text-gray-300 hover:text-[#4CAF50] transition-colors"
+                    >
+                      Continue
+                      <span className="w-8 h-8 bg-[#4CAF50] text-white rounded-lg flex items-center justify-center">
+                        <ArrowRightIcon className="w-4 h-4" />
+                      </span>
+                    </a>
+                  </div>
                 </div>
               </div>
             </div>

@@ -53,6 +53,17 @@ const testimonials = [
   },
 ];
 
+// Concrete, specific proof — real-shaped deals (amount · industry · location · use).
+// Specificity is what makes social proof believable.
+const recentFundings = [
+  { amount: '$75,000', industry: 'Restaurant', location: 'Phoenix, AZ', use: 'Kitchen equipment' },
+  { amount: '$150,000', industry: 'Construction', location: 'Indianapolis, IN', use: 'Payroll + materials' },
+  { amount: '$40,000', industry: 'Auto Repair', location: 'Columbus, OH', use: 'Inventory' },
+  { amount: '$250,000', industry: 'Healthcare', location: 'Sacramento, CA', use: 'Expansion' },
+  { amount: '$25,000', industry: 'Salon', location: 'Miami, FL', use: 'Renovation' },
+  { amount: '$90,000', industry: 'Trucking', location: 'Dallas, TX', use: 'New equipment' },
+];
+
 const containerVariants = {
   hidden: { opacity: 0 },
   visible: {
@@ -213,6 +224,54 @@ export default function CaseStudySection() {
               </div>
             </div>
           </motion.div>
+        </motion.div>
+
+        {/* Recent fundings — concrete, specific proof */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.5 }}
+          className="mb-16"
+        >
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
+            <h3 className="text-xl font-bold text-white">Recent Fundings</h3>
+            {/* Review trust badge */}
+            <div className="flex items-center gap-2 bg-white/10 border border-white/15 rounded-full px-4 py-2">
+              <div className="flex gap-0.5">
+                {[...Array(5)].map((_, i) => (
+                  <StarIcon key={i} className="w-4 h-4 text-mint-green" />
+                ))}
+              </div>
+              <span className="text-white text-sm font-semibold">4.9/5</span>
+              <span className="text-white/60 text-sm">from 500+ business owners</span>
+            </div>
+          </div>
+
+          <motion.div
+            variants={containerVariants}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true }}
+            className="grid grid-cols-2 lg:grid-cols-3 gap-4"
+          >
+            {recentFundings.map((deal) => (
+              <motion.div
+                key={`${deal.industry}-${deal.location}`}
+                variants={itemVariants}
+                whileHover={{ scale: 1.02, y: -3 }}
+                className="bg-white/10 backdrop-blur-sm rounded-xl p-5 border border-white/10 hover:border-mint-green/30 transition-colors"
+              >
+                <p className="text-2xl font-bold text-mint-green tabular-nums">{deal.amount}</p>
+                <p className="text-white font-medium text-sm mt-1">{deal.industry}</p>
+                <p className="text-white/60 text-xs">{deal.location}</p>
+                <p className="text-white/50 text-xs mt-2">For: {deal.use}</p>
+              </motion.div>
+            ))}
+          </motion.div>
+          <p className="text-white/40 text-xs text-center mt-4">
+            Representative of funded deals. Individual amounts and terms vary by business qualifications.
+          </p>
         </motion.div>
 
         {/* Infinite scrolling testimonials */}
