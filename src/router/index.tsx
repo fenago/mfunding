@@ -43,6 +43,7 @@ import LeadSourceROIPage from "../pages/admin/analytics/LeadSourceROIPage.tsx";
 import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
 import IntegrationsPage from "../pages/admin/settings/IntegrationsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
+import CompliancePage from "../pages/admin/CompliancePage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -324,6 +325,12 @@ const router = createBrowserRouter([
                     element: <BusinessModelCanvasPage />,
                   },
                 ],
+              },
+              // Compliance disclosures (super_admin only)
+              {
+                path: "compliance",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <CompliancePage /> }],
               },
               // Settings (super_admin only)
               {

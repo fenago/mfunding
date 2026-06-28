@@ -9,6 +9,8 @@ import {
 } from "@heroicons/react/24/outline";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
+import PipelineFlow from "../../components/shared/PipelineFlow";
+import { DEAL_STATUS_CONFIG } from "../../types/deals";
 
 interface ApplicationStep {
   id: number;
@@ -104,9 +106,43 @@ function getProgressPercentage(customerStatus: string): number {
   return progressMap[customerStatus] ?? 0;
 }
 
+interface PortalDeal {
+  id: string;
+  deal_number: string | null;
+  deal_type: string;
+  status: string;
+  amount_requested: number | null;
+}
+
+// Merchant-facing "what's happening / what we need" per deal stage.
+const NEXT_STEP: Record<string, string> = {
+  new: "We received your request — a specialist will reach out shortly.",
+  contacted: "We're in touch — let's confirm a few details.",
+  qualifying: "We're reviewing your business basics.",
+  application_sent: "Please complete your application.",
+  docs_collected: "Please upload your ID, voided check, and signed authorization.",
+  bank_statements: "Please connect your bank or upload your 3 most recent statements.",
+  submitted_to_funder: "Your file is with our funding partners — sit tight.",
+  offer_received: "Offers are coming in — we'll present the best options.",
+  offer_presented: "Review your offer(s) — let us know which works.",
+  offer_accepted: "Great! We're finalizing your funding.",
+  funded: "🎉 Funded! Watch for your deposit.",
+  renewal_eligible: "You may qualify for additional capital.",
+  new_distressed: "We received your request — a relief specialist will reach out.",
+  hardship_consult: "Let's review your current advances together.",
+  positions_analysis: "We're analyzing your positions and balances.",
+  strategy_proposal: "We're building your relief plan.",
+  agreement_sent: "Please review and sign your engagement.",
+  submitted_to_vcf: "Your file is being processed for restructuring.",
+  restructure_executed: "Your debt has been restructured.",
+  servicing: "We're here for ongoing support.",
+  nurture: "We'll keep working to find you options.",
+};
+
 export default function PortalDashboardPage() {
   const { session } = useSession();
   const [customer, setCustomer] = useState<CustomerData | null>(null);
+  const [deals, setDeals] = useState<PortalDeal[]>([]);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [pendingDocuments, setPendingDocuments] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -138,6 +174,14 @@ export default function PortalDashboardPage() {
         .eq("status", "pending");
 
       setPendingDocuments(docCount || 0);
+
+      // Fetch this merchant's deals (RLS lets a customer see their own).
+      const { data: dealData } = await supabase
+        .from("deals")
+        .select("id, deal_number, deal_type, status, amount_requested")
+        .eq("customer_id", customerData.id)
+        .order("created_at", { ascending: false });
+      setDeals((dealData || []) as PortalDeal[]);
     }
 
     // Fetch unread message count
@@ -180,6 +224,37 @@ export default function PortalDashboardPage() {
               : "Track your funding application status and manage your documents"}
         </p>
       </div>
+
+      {/* Your funding requests — live deal status with the pipeline visual */}
+      {deals.length > 0 && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Your funding requests</h2>
+          {deals.map((d) => {
+            const cfg = DEAL_STATUS_CONFIG[d.status as keyof typeof DEAL_STATUS_CONFIG];
+            return (
+              <div key={d.id} className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <span className="font-mono text-sm text-gray-900 dark:text-white">{d.deal_number || "Request"}</span>
+                    {d.amount_requested != null && (
+                      <span className="ml-2 text-sm text-gray-500">${d.amount_requested.toLocaleString()}</span>
+                    )}
+                  </div>
+                  {cfg && (
+                    <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full ${cfg.bgColor} ${cfg.color}`}>
+                      {cfg.label}
+                    </span>
+                  )}
+                </div>
+                <PipelineFlow pipeline={d.deal_type === "vcf" ? "vcf" : "mca"} currentKey={d.status} />
+                <p className="text-sm text-gray-600 dark:text-gray-300 mt-3">
+                  <span className="font-medium">Next:</span> {NEXT_STEP[d.status] ?? "We'll keep you posted."}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Funded Banner */}
       {isFunded && customer?.amount_funded && (
