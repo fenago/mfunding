@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   BarChart,
   Bar,
@@ -24,6 +24,7 @@ import KPICard from "../../../components/analytics/KPICard";
 import FunnelChart from "../../../components/analytics/FunnelChart";
 import type { DateRange } from "../../../types/analytics";
 import AnalyticsTabNav from "../../../components/analytics/AnalyticsTabNav";
+import { fetchLossReasonBreakdown, type LossReasonRow } from "../../../services/analyticsService";
 
 const TOOLTIP_STYLE = {
   backgroundColor: "#21262D",
@@ -44,6 +45,12 @@ export default function DealAnalyticsPage() {
     costPerDealByMarket,
     isLoading,
   } = useDealAnalytics(dateRange);
+
+  const [lossReasons, setLossReasons] = useState<LossReasonRow[]>([]);
+  useEffect(() => {
+    fetchLossReasonBreakdown(dateRange).then(setLossReasons).catch(() => setLossReasons([]));
+  }, [dateRange]);
+  const lossTotal = lossReasons.reduce((s, r) => s + r.count, 0);
 
   if (isLoading) {
     return (
@@ -137,6 +144,38 @@ export default function DealAnalyticsPage() {
           <FunnelChart data={dealFunnel.map((s) => ({ name: s.label, value: s.count, color: s.color }))} />
         ) : (
           <EmptyState message="No deal data yet. Deals will appear here as they flow through the pipeline." />
+        )}
+      </div>
+
+      {/* Loss Reasons — where deals fall out (recoverable vs dead) */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Why deals don't fund</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-5">
+          {lossTotal} non-funded deal{lossTotal === 1 ? "" : "s"} · 🟢 = recoverable (worked via reactivation), 🔴 = dead/suppressed
+        </p>
+        {lossReasons.length === 0 ? (
+          <EmptyState message="No lost deals yet. Loss reasons appear here as deals are marked declined, dead, or nurture." />
+        ) : (
+          <div className="space-y-3">
+            {lossReasons.map((r) => {
+              const pct = lossTotal > 0 ? Math.round((r.count / lossTotal) * 100) : 0;
+              return (
+                <div key={r.reason}>
+                  <div className="flex items-center justify-between text-sm mb-1">
+                    <span className="text-gray-900 dark:text-white font-medium">
+                      {r.recoverable ? "🟢" : "🔴"} {r.label}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      {r.count} ({pct}%) · ${Math.round(r.amount).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-gray-100 dark:bg-gray-700 overflow-hidden">
+                    <div className={`h-full ${r.recoverable ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 

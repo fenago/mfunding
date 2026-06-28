@@ -473,6 +473,64 @@ const PIPELINE_STAGE_LABELS: Record<string, string> = {
   total_lead_to_funded: "Total: Lead to Funded",
 };
 
+export interface LossReasonRow {
+  reason: string;
+  label: string;
+  count: number;
+  amount: number; // sum of amount_requested
+  recoverable: boolean;
+}
+
+const LOSS_REASON_LABELS: Record<string, string> = {
+  no_contact: "Never reached",
+  disqualified: "Disqualified",
+  docs_not_provided: "Docs not provided",
+  bank_data_fail: "Failed bank/underwriting",
+  funders_declined_all: "All funders declined",
+  merchant_declined: "Merchant declined offer",
+  offer_expired: "Offer expired",
+  funding_fell_through: "Funding fell through",
+  routed_to_vcf: "Routed to VCF",
+  opted_out: "Opted out (DNC)",
+  prohibited_industry: "Prohibited industry",
+  duplicate: "Duplicate",
+  other: "Other",
+  unspecified: "Unspecified",
+};
+// Recoverable losses (work them via reactivation) vs truly dead.
+const NON_RECOVERABLE = new Set(["opted_out", "prohibited_industry", "duplicate"]);
+
+/** Loss-reason breakdown for non-funded deals (declined / dead / nurture). */
+export async function fetchLossReasonBreakdown(dateRange?: DateRange): Promise<LossReasonRow[]> {
+  let query = supabase
+    .from("deals")
+    .select("lost_reason, amount_requested")
+    .in("status", ["declined", "dead", "nurture"]);
+  const filter0 = getDateRangeFilter(dateRange);
+  if (filter0) query = query.gte("created_at", filter0.start).lte("created_at", filter0.end);
+
+  const { data, error } = await query;
+  if (error) { console.error("Error fetching loss reasons:", error); return []; }
+
+  const map = new Map<string, { count: number; amount: number }>();
+  for (const d of data ?? []) {
+    const reason = (d.lost_reason as string) ?? "unspecified";
+    const e = map.get(reason) ?? { count: 0, amount: 0 };
+    e.count += 1;
+    e.amount += Number(d.amount_requested ?? 0);
+    map.set(reason, e);
+  }
+  return [...map.entries()]
+    .map(([reason, v]) => ({
+      reason,
+      label: LOSS_REASON_LABELS[reason] ?? reason,
+      count: v.count,
+      amount: v.amount,
+      recoverable: !NON_RECOVERABLE.has(reason),
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
 export async function fetchDealFunnelMetrics(dateRange?: DateRange): Promise<DealFunnelStage[]> {
   const filter = getDateRangeFilter(dateRange);
 
