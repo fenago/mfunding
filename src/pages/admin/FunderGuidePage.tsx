@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { BuildingLibraryIcon, EnvelopeIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import {
-  getFunderGuide, commissionLabel, productLabels, type FunderGuideRow,
+  getFunderGuide, getProspects, commissionLabel, productLabels,
+  type FunderGuideRow, type ProspectRow,
 } from "../../services/funderGuideService";
 
 // Static deal-routing cheat sheet (mirrors research/FUNDER_MASTER_REFERENCE.md §6).
@@ -28,9 +29,15 @@ function money(n: number | null) { return n == null ? "—" : `$${Number(n).toLo
 
 export default function FunderGuidePage() {
   const [rows, setRows] = useState<FunderGuideRow[]>([]);
+  const [prospects, setProspects] = useState<ProspectRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { getFunderGuide().then(setRows).catch(() => setRows([])).finally(() => setLoading(false)); }, []);
+  useEffect(() => { getProspects().then(setProspects).catch(() => setProspects([])); }, []);
+
+  const prospectProducts = (p: ProspectRow) =>
+    productLabels({ lender_types: p.lender_types, funding_products: null } as FunderGuideRow);
+  const hostname = (url: string | null) => { try { return url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch { return url ?? ""; } };
 
   const live = rows.filter((r) => r.status === "live_vendor");
   const pending = rows.filter((r) => r.status === "application_submitted");
@@ -95,6 +102,35 @@ export default function FunderGuidePage() {
           <section>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">🟡 Pending (ISO application submitted)</h2>
             <Table list={pending} />
+          </section>
+
+          <section>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">⚪ Prospects — apply pipeline ({prospects.length})</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">Identified but not yet applied to. Apply, then move to "application submitted" in <span className="text-ocean-blue">/admin/lenders</span>.</p>
+            <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-400 border-b border-gray-100 dark:border-gray-700">
+                    <th className="py-3 px-4">Funder</th><th className="py-3 px-4">Products</th>
+                    <th className="py-3 px-4">Website</th><th className="py-3 px-4">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {prospects.map((p) => (
+                    <tr key={p.id} className="border-b border-gray-50 dark:border-gray-800 align-top">
+                      <td className="py-2.5 px-4 font-medium text-gray-900 dark:text-white">{p.company_name}</td>
+                      <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300">{prospectProducts(p)}</td>
+                      <td className="py-2.5 px-4">
+                        {p.website
+                          ? <a href={p.website} target="_blank" rel="noopener" className="inline-flex items-center gap-1 text-ocean-blue hover:underline"><ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />{hostname(p.website)}</a>
+                          : <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="py-2.5 px-4 text-xs text-gray-500 max-w-md line-clamp-2">{p.notes}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </section>
         </>
       )}

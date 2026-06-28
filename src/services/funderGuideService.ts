@@ -7,6 +7,7 @@ export interface FunderGuideRow {
   id: string;
   company_name: string;
   status: string;
+  website: string | null;
   lender_types: string[] | null;
   funding_products: string[] | null;
   submission_email: string | null;
@@ -30,7 +31,7 @@ export async function getFunderGuide(): Promise<FunderGuideRow[]> {
   const { data, error } = await supabase
     .from("lenders")
     .select(`
-      id, company_name, status, lender_types, funding_products,
+      id, company_name, status, website, lender_types, funding_products,
       submission_email, submission_portal_url, submission_notes,
       commission_rate, commission_structure, commission_type,
       min_credit_score, min_monthly_revenue, min_time_in_business,
@@ -44,6 +45,25 @@ export async function getFunderGuide(): Promise<FunderGuideRow[]> {
   return ((data || []) as FunderGuideRow[]).sort((a, b) =>
     a.status === b.status ? 0 : a.status === "live_vendor" ? -1 : 1,
   );
+}
+
+export interface ProspectRow {
+  id: string;
+  company_name: string;
+  website: string | null;
+  lender_types: string[] | null;
+  notes: string | null;
+}
+
+/** Funders we've identified but not yet applied to (apply pipeline). */
+export async function getProspects(): Promise<ProspectRow[]> {
+  const { data, error } = await supabase
+    .from("lenders")
+    .select("id, company_name, website, lender_types, notes")
+    .eq("status", "potential")
+    .order("company_name", { ascending: true });
+  if (error) throw error;
+  return (data || []) as ProspectRow[];
 }
 
 /** Human commission string from the structured fields. */

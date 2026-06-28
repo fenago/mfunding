@@ -104,6 +104,33 @@
 
 ---
 
+## 4b. Prospects — apply pipeline (checklist)
+
+Funders identified but **not yet applied to**. Work these as a pipeline; check off as ISO applications go in, then move the record to `application_submitted` in `/admin/lenders`.
+
+- [ ] **Reliance Financial** ⭐ *warmest — explicitly recruiting brokers/ISOs* — MCA/RBF — funderintel.com/funderslist/reliance-financial
+- [ ] **CFG Merchant Solutions** — MCA — cfgmerchantsolutions.com
+- [ ] **Arcadia Servicing** — MCA — arcadiafunding.com
+- [ ] **Merchant Marketplace** — MCA marketplace — merchantmarketplace.com
+- [ ] **Instafunders** — working capital $25K–$500K — instafunders.io
+- [ ] **Liquidibee** — non-dilutive working capital — liquidibee.com
+- [ ] **Genuine Funding** — MCA — genuinefunding.com
+- [ ] **Lendini** — working capital / MCA — lendini.com
+- [ ] **SmartMCA** — MCA — smartmca.com
+- [ ] **Stafford Business Funding** — MCA — funderintel.com/funderslist/stafford-business-funding
+- [ ] **Viking Funding** — MCA — funderintel.com/funderslist/viking-funding
+- [ ] **True Advance Funding** — MCA — funderintel.com/funderslist/true-advance-funding
+- [ ] **501 Advance** — MCA — funderintel.com/funderslist/501-advance
+- [ ] **LendPathway** — MCA / working capital — lendpathway.com
+- [ ] **Intrepid Finance** — term loans / lines of credit — intrepidfinance.io
+- [ ] **1st Commercial Credit** — factoring / AR / PO / asset-based — 1stcommercialcredit.com
+- [ ] **EquityMax** — real estate hard money / private money (**adds RE capacity**) — equitymax.com/prequalify-now
+- [x] **MCashAdvance** — applied 2026-06-26 — broker page mcashadvance.com/about-us/for-brokers/ (`team@mcashadvance.com` / 855-433-8641)
+
+> The full prospect pipeline (incl. older leads like OnDeck, Rapid Finance, Pearl, Mulligan, etc.) lives in `/admin/lenders` filtered to **Potential**, and on the **Funder Guide** page.
+
+---
+
 ## 5. GoKapital product catalog (full detail)
 
 GoKapital is a **broker with 50+ private lenders** (so they cover scenarios our direct MCA funders won't). Submit every GoKapital scenario to **`deals@gokapital.com`**. Closing costs apply on real estate (disclosed upfront). No upfront application fees.
