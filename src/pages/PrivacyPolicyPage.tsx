@@ -1,10 +1,12 @@
 import { Link } from 'react-router-dom';
 import { ArrowLeftIcon } from '@heroicons/react/24/solid';
 import Logo from '../components/ui/Logo';
+import SEO from '../components/seo/SEO';
 
 export default function PrivacyPolicyPage() {
   return (
     <div className="min-h-screen bg-white dark:bg-midnight-blue">
+      <SEO title="Privacy Policy" description="Momentum Funding privacy policy — how we collect, use, and protect your information." />
       {/* Header */}
       <header className="bg-midnight-blue py-6">
         <div className="container-max flex items-center justify-between">

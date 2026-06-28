@@ -16,7 +16,7 @@
 **Foundation**
 - [x] `MFunding MCA Pipeline` — 13 stages (live)
 - [x] `MFunding VCF Pipeline` — 8 stages (live)
-- [x] Contact custom fields (created via API)
+- [x] **AUDITED Contact custom fields (13 required)** — June 28, 2026 via GHL API. Result: all 13 concepts present. Exact matches: Lead Source (dropdown), Target Market (dropdown), Funding Amount Requested (monetary), Product Type (dropdown: MCA/Term Loan/SBA/LOC/Equipment/VCF), Paydown % (number), Plaid Connected (checkbox), Disclosure Acknowledged (checkbox), Active MCA Positions (number), Total Daily Debit (monetary, = "Total Daily/Weekly Debits"), Months in Business (number, = "Time in Business Months"). Variants kept on purpose: **Monthly Revenue** & **Industry** exist as *dropdowns* (the intake forms write to them — changing to raw Number/Text would break the forms). **State**: NOT a custom field — handled by GHL's built-in standard `contact.state` field (no duplicate created). No new fields built.
 - [x] Form: **MCA Funding Application** (`Ow1imQrxjJN9yfDUiBG3`)
 - [x] Form: **Live Transfer Intake**
 - [x] Form: **Bank Statements & Documents Upload** (`vO16UFona1IkxuezRg0d`) — fields `mca_bank_statements` (max 6), `mca_stips_documents` (max 8). Share link: `https://link.vibereach.io/widget/form/vO16UFona1IkxuezRg0d`
@@ -30,7 +30,7 @@
 **Automations (PART 3)**
 - [x] **MCA 01 — Speed to Lead** (New Lead) — PUBLISHED (email → round-robin assign → call task)
 - [x] **Opt-Out / DNC** — handled **natively by GHL** for email-only: the email unsubscribe footer auto-sets DND-email and stops sends (and GHL auto-DNDs on SMS "STOP" if SMS is ever enabled). A custom keyword workflow isn't cleanly buildable — the "Customer Replied" trigger exposes no message-body filter, so it can't gate on STOP without DNC-tagging *every* reply. Decision: rely on native DND. (An inert Draft "MCA 00C" exists, unpublished.)
-- [ ] **MCA 02 — No-Answer Nurture**
+- [x] **MCA 02 — No-Answer Nurture** — PUBLISHED (trigger: Contact Tag "no-answer" added → email → wait 2 days → breakup email; closer/MCA 01 applies the tag when a lead can't be reached)
 - [x] **MCA 03 — Qualifying** — PUBLISHED (what's-next / qualification email)
 - [x] **MCA 04 — Application Sent** — PUBLISHED (finish-your-application nudge email)
 - [x] **MCA 05 — Docs Collected** — PUBLISHED (docs-received confirmation email)
@@ -38,10 +38,10 @@
 - [x] **MCA 07 — Submitted to Funders** → handled by the **`submit-to-funders` edge function** (Gap B), NOT a GHL workflow
 - [x] **MCA 08 — Offer Received** — PUBLISHED (customer "we have offers, specialist will call" email)
 - [x] **MCA 09 — Offer Presented** — PUBLISHED (offer-ready nudge email)
-- [ ] **MCA 10 — Offer Accepted** *(+ e-sign via GHL Documents)*
+- [x] **MCA 10 — Offer Accepted** — PUBLISHED (congrats + e-sign-coming email; signing via native GHL Documents)
 - [x] **MCA 11 — Funded** — PUBLISHED (congrats + review + $100 referral → call task)
 - [x] **MCA 12 — Renewal Eligible** — PUBLISHED (renewal-offer email → renewal call task)
-- [ ] **MCA 13 — Mass Reactivation**
+- [x] **MCA 13 — Mass Reactivation** — PUBLISHED (trigger: Contact Tag "reactivate" added → "new programs" re-engagement email; bulk-add the tag to dead leads monthly to blast)
 
 **Cross-cutting (recommend as CODE, not GHL)**
 - [x] **Gap B — funder submission**: `submit-to-funders` edge function DEPLOYED (v2, **sends via GHL** — no Resend/ESP). `dealService.submitToFunder/submitToMultipleFunders` call it → for each selected funder it upserts the funder as a GHL contact (tagged `funder`) and emails the deal-package summary through GHL conversations, records the submission, advances the stage. **No API key needed** (uses the GHL vault creds). Doc-attachments note: bank statements collected via the GHL upload form live in GHL, so it emails a deal summary + "full file on reply"; syncing docs into Supabase for attachments is a future enhancement.
@@ -60,10 +60,18 @@
   - [x] **VCF 06 — Submitted to VCF** PUBLISHED (merchant "file submitted, what's next" reassurance email) — note: funder-side email to VCF + GHL→app stage sync is task #13 (code)
   - [x] **VCF 07 — Restructure Executed** PUBLISHED (congrats + Google review + referral ask)
   - [x] **VCF 08 — Servicing & Monitoring** PUBLISHED (ongoing check-in / early-warning email) — ✅ ALL 8 VCF STAGE AUTOMATIONS PUBLISHED
-- [ ] **Submit-to-VCF** (Gap-B equivalent) → email package to `partnerprogram@valuecapitalfunding.com` (extend `submit-to-funders` or a small VCF action)
-- [ ] **VCF stage sync GHL→app** — `ghl-webhook` stage map is MCA-only; add VCF stage→status mapping so VCF opportunities mirror back
+- [x] **Submit-to-VCF** (Gap-B equivalent) — DONE by making `submit-to-funders` v3 **product-aware**: when `deal.deal_type === 'vcf'` it emails a debt-relief / restructuring file (active positions, total balance, daily/weekly debit, current funders, hardship) instead of MCA copy. Submit a VCF deal through the same `dealService.submitToMultipleFunders` path with Value Capital Funding's lender id (submission_email `partnerprogram@valuecapitalfunding.com`).
+- [x] **VCF stage sync GHL→app** — DONE: `ghl-webhook` `STATUS_BY_STAGE_ID` already maps all 8 VCF stage IDs (`new_distressed`→`servicing`) and the existing-deal mirror logic applies them, so VCF opportunities mirror back to `deals.status`.
 - [ ] **Compliance**: debt-relief disclosures differ from MCA — no guaranteed-results/savings claims; empathetic, careful language
 - [ ] **E-sign**: GHL native Documents & Contracts (no DocuSign) — templates + send-for-signature in MCA 10 / VCF Agreement Sent.
+
+**Documents & Contracts (Part B — added June 28, 2026)**
+- [ ] **Build all "Part B: Documents to Create" docs in GHL** (Documents & Contracts / template builder) using the source material in `/research/legal`. Draft each template, load it into GHL e-sign, then **wire each document into the correct workflow step** (e.g., state/product disclosure in MCA 04 Application Sent; funding agreement in MCA 10 Offer Accepted; VCF restructuring agreement in VCF 05 Agreement Sent). **Attorney review required before going live.**
+
+**Platform & Observability (React/Supabase app — added June 27, 2026)**
+- [ ] **Make the public site SEO-friendly** — per-route `<title>`/meta description/canonical/OG + Twitter tags (react-helmet or equivalent), semantic headings, `sitemap.xml` + `robots.txt`, JSON-LD structured data (Organization/FinancialService + FAQ where relevant), image alt text, fast LCP. Cover landing, `/about`, `/contact`, `/business-loans` (+ `:slug`), `/real-estate` (+ `:slug`), VCF relief page, and any city/SEO content pages.
+- [ ] **Integrate PostHog** — product analytics + funnel/session tracking on the React app: install `posthog-js`, init from an env var (`VITE_POSTHOG_KEY` / host), gate to production, capture pageviews on route change, identify authed users (admin/portal), and add events for key conversions (form submit, Apply Now click, portal doc upload). Keep PII out of event props per compliance.
+- [ ] **Integrate Sentry** — error monitoring on the React app (and optionally Supabase edge functions): install `@sentry/react`, init from `VITE_SENTRY_DSN` (prod only), wrap the router/error boundary, enable performance tracing + source maps in the build, scrub PII before send.
 
 ---
 

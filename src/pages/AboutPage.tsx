@@ -14,6 +14,7 @@ import {
 import Navbar from '../components/landing/Navbar';
 import Footer from '../components/landing/Footer';
 import ScrollToTop from '../components/ui/ScrollToTop';
+import SEO from '../components/seo/SEO';
 
 const values = [
   {
@@ -86,6 +87,7 @@ const team = [
 export default function AboutPage() {
   return (
     <>
+      <SEO title="About Momentum Funding" description="Momentum Funding helps small business owners get fast working capital when banks say no. Meet the team behind $180M+ in capital deployed to 2,500+ businesses." keywords="about momentum funding, business funding company, small business capital, MCA broker" />
       <Navbar />
       <ScrollToTop />
       <main>

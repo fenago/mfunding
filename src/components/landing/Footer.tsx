@@ -17,9 +17,10 @@ const footerLinks = {
     { name: 'Construction Loans', href: '/real-estate/construction-loans' },
   ],
   resources: [
+    { name: 'Guides & Articles', href: '/resources' },
+    { name: 'Funding Glossary', href: '/resources/glossary' },
     { name: 'How It Works', href: '/#how-it-works' },
     { name: 'MCA Debt Relief', href: '/debt-relief' },
-    { name: 'Success Stories', href: '/#case-study' },
     { name: 'Apply Now', href: '/#apply' },
   ],
   company: [

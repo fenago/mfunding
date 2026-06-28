@@ -5,6 +5,7 @@ import Navbar from "../components/landing/Navbar";
 import Footer from "../components/landing/Footer";
 import ScrollToTop from "../components/ui/ScrollToTop";
 import { listPublishedPosts, type BlogPost } from "../services/blogService";
+import SEO from "../components/seo/SEO";
 
 export default function ResourcesPage() {
   const [posts, setPosts] = useState<BlogPost[]>([]);
@@ -14,6 +15,11 @@ export default function ResourcesPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
+      <SEO
+        title="Business Funding Resources & Guides"
+        description="Guides on business funding, merchant cash advances, cash flow, and growth — from the Momentum Funding team. Learn how to qualify, compare options, and get funded fast."
+        keywords="business funding guides, merchant cash advance guide, business cash flow tips, how to get business funding"
+      />
       <Navbar />
       <ScrollToTop />
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-12">
@@ -32,7 +38,7 @@ export default function ResourcesPage() {
             {posts.map((p) => (
               <Link key={p.id} to={`/resources/${p.slug}`}
                 className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden hover:border-ocean-blue transition-colors">
-                {p.cover_image_url && <img src={p.cover_image_url} alt="" className="w-full h-40 object-cover" />}
+                {p.cover_image_url && <img src={p.cover_image_url} alt={p.title} loading="lazy" width={640} height={360} className="w-full h-40 object-cover" />}
                 <div className="p-5">
                   <span className="text-xs uppercase tracking-wide text-ocean-blue">{p.category}</span>
                   <h2 className="text-lg font-bold text-gray-900 dark:text-white mt-1">{p.title}</h2>

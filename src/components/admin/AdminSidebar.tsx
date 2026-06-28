@@ -27,6 +27,7 @@ import {
   DocumentMagnifyingGlassIcon,
   UserPlusIcon,
   ReceiptPercentIcon,
+  MapIcon,
   ArrowPathRoundedSquareIcon,
   BookOpenIcon,
 } from "@heroicons/react/24/outline";
@@ -62,6 +63,7 @@ const navItems: NavItem[] = [
   { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },
   { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: ["super_admin"] },
+  { name: "Pipeline Playbook", path: "/admin/pipeline-playbook", icon: MapIcon, roles: ["admin", "super_admin"] },
   { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: ["super_admin"] },
   { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: ["super_admin"] },
   { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: ["super_admin"] },

@@ -35,9 +35,15 @@ export const SessionProvider = ({ children }: Props) => {
     };
   }, [supabase]);
 
+  // During build-time prerendering / SSR there is no browser, so the auth
+  // listener never fires and isLoading would stay true forever — which would
+  // bake a loading spinner into every prerendered page. Render real content
+  // in that case (auth re-resolves on the client after hydration).
+  const isServer = typeof window === "undefined";
+
   return (
     <SessionContext.Provider value={{ session }}>
-      {isLoading ? <LoadingPage /> : children}
+      {isLoading && !isServer ? <LoadingPage /> : children}
     </SessionContext.Provider>
   );
 };

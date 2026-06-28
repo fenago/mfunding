@@ -1,72 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
-        xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9
-                            http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd">
-
-  <!-- Homepage - Highest Priority -->
-  <url>
-    <loc>https://momentumfunding.com/</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>1.0</priority>
-    <image:image>
-      <image:loc>https://momentumfunding.com/og-image.jpg</image:loc>
-      <image:title>Momentum Funding - Fast Business Funding</image:title>
-      <image:caption>Get business funding in 24-48 hours with 93% approval rate</image:caption>
-    </image:image>
-  </url>
-
-  <!-- Main Sections (anchor links, but important for SEO understanding) -->
-  <url>
-    <loc>https://momentumfunding.com/#features</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.9</priority>
-  </url>
-
-  <url>
-    <loc>https://momentumfunding.com/#how-it-works</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.9</priority>
-  </url>
-
-  <url>
-    <loc>https://momentumfunding.com/#apply</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.95</priority>
-  </url>
-
-  <url>
-    <loc>https://momentumfunding.com/#calculator</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-
-  <url>
-    <loc>https://momentumfunding.com/#faq</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-
-  <!-- Auth Pages -->
-  <url>
-    <loc>https://momentumfunding.com/signin</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-
-  <url>
-    <loc>https://momentumfunding.com/signup</loc>
-    <lastmod>2026-02-01</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
-  </url>
-
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://mfunding.net/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://mfunding.net/business-loans</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://mfunding.net/business-loans/merchant-cash-advance</loc><priority>0.9</priority></url>
+  <url><loc>https://mfunding.net/business-loans/equipment-financing</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/business-loans/startup-loans</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/business-loans/sba-loans</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/business-loans/term-loans</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/business-loans/line-of-credit</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/real-estate</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://mfunding.net/real-estate/hard-money-bridge</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/real-estate/rental-investment</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/real-estate/commercial-mortgage</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/real-estate/construction-loans</loc><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/debt-relief</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://mfunding.net/calculators/mca-debt-relief</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://mfunding.net/calculators/how-much-can-i-get</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://mfunding.net/calculators/advance-cost</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://mfunding.net/about</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://mfunding.net/contact</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://mfunding.net/partners</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://mfunding.net/resources</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://mfunding.net/resources/glossary</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://mfunding.net/privacy</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>
+  <url><loc>https://mfunding.net/terms</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>
 </urlset>

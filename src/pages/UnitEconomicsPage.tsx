@@ -14,6 +14,7 @@ import {
   PhoneIcon,
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
+import SEO from '../components/seo/SEO';
 
 // Format helpers
 const formatCurrency = (value: number) => {
@@ -500,6 +501,7 @@ export default function UnitEconomicsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      <SEO title="Unit Economics" description="Momentum Funding unit economics calculator." noIndex={true} />
       {/* Header */}
       <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-8 py-6">
         <div className="flex items-center justify-between">

@@ -5,8 +5,36 @@ import Navbar from '../../components/landing/Navbar';
 import Footer from '../../components/landing/Footer';
 import ProductCard from '../../components/business-loans/ProductCard';
 import ScrollToTop from '../../components/ui/ScrollToTop';
-import SEO from '../../components/seo/SEO';
+import SEO, { generateFAQSchema, generateBreadcrumbSchema } from '../../components/seo/SEO';
 import { getAllProducts } from '../../data/products';
+
+const HUB_FAQS = [
+  {
+    question: 'What types of business funding does Momentum Funding offer?',
+    answer:
+      'Momentum Funding offers six core products: merchant cash advances, business lines of credit, equipment financing, SBA 7(a) loans, business term loans, and startup loans. We match each business with the option that fits its revenue, time in business, and goals.',
+  },
+  {
+    question: 'How fast can I get business funding?',
+    answer:
+      'Most business owners are approved within hours and funded within 24 to 48 hours. Merchant cash advances and lines of credit are the fastest; SBA loans take longer because of additional underwriting, but offer lower costs and larger amounts.',
+  },
+  {
+    question: 'Can I qualify with bad credit?',
+    answer:
+      'Yes. For products like merchant cash advances we focus on your business revenue and cash flow rather than your personal credit score, so business owners with credit scores as low as 500 can qualify. Stronger credit unlocks lower-cost products like term loans and SBA loans.',
+  },
+  {
+    question: 'Is a merchant cash advance a loan?',
+    answer:
+      'No. A merchant cash advance is not a loan — it is the purchase of a portion of your future receivables. You receive working capital today and repay it as a percentage of your daily or weekly sales, so payments flex with your revenue.',
+  },
+  {
+    question: 'Will checking my options affect my credit score?',
+    answer:
+      'No. Checking your funding options uses a soft inquiry that does not impact your credit score. A hard pull only happens if you move forward with a formal funder submission, and we tell you before that happens.',
+  },
+];
 
 export default function BusinessLoansHubPage() {
   const products = getAllProducts();
@@ -17,6 +45,14 @@ export default function BusinessLoansHubPage() {
         title="Business Loans & Funding Options"
         description="Explore Momentum Funding's 6 business financing products: Merchant Cash Advance, Equipment Financing, Startup Loans, SBA 7(a) Loans, Term Loans, and Lines of Credit. Get funded in as little as 24 hours."
         keywords="business loans, merchant cash advance, equipment financing, SBA loans, business term loan, line of credit, small business funding, fast business loans"
+        canonical="https://mfunding.net/business-loans"
+        structuredData={[
+          generateBreadcrumbSchema([
+            { name: 'Home', url: 'https://mfunding.net/' },
+            { name: 'Business Loans', url: 'https://mfunding.net/business-loans' },
+          ]),
+          generateFAQSchema(HUB_FAQS),
+        ]}
       />
       <Navbar />
       <ScrollToTop />
@@ -122,6 +158,104 @@ export default function BusinessLoansHubPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
               {products.map((product, index) => (
                 <ProductCard key={product.slug} product={product} index={index} />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* SEO content + FAQ (answer-first for AEO / AI Overviews) */}
+        <section className="section-padding bg-gray-50 dark:bg-gray-950">
+          <div className="container-max max-w-4xl">
+            <h2 className="heading-2 text-gray-900 dark:text-white mb-6">
+              How to Choose the Right Business Funding
+            </h2>
+            <div className="prose dark:prose-invert max-w-none text-gray-600 dark:text-gray-300">
+              <p>
+                The best business funding depends on three things: how fast you need the capital, how
+                much you need, and the strength of your credit and revenue. If you need money the same
+                day and have steady card or bank deposits, a <Link to="/business-loans/merchant-cash-advance">merchant
+                cash advance</Link> or <Link to="/business-loans/line-of-credit">business line of credit</Link>{' '}
+                is usually fastest. If you want the lowest cost and can wait a few weeks, an{' '}
+                <Link to="/business-loans/sba-loans">SBA 7(a) loan</Link> or{' '}
+                <Link to="/business-loans/term-loans">business term loan</Link> is often the better fit.
+                To buy machinery, vehicles, or equipment, <Link to="/business-loans/equipment-financing">equipment
+                financing</Link> lets the equipment itself serve as collateral.
+              </p>
+              <p>
+                Momentum Funding is a funding marketplace, not a single lender. We submit your profile to
+                a network of funders and lenders, then present you the strongest offers — so you compare
+                real options instead of taking the first quote. There are no upfront fees; we are paid by
+                the funder when your deal closes. Already carrying advances and feeling the daily payments?
+                Our <Link to="/debt-relief">MCA debt relief</Link> program can help you restructure.
+              </p>
+            </div>
+
+            <h2 className="heading-2 text-gray-900 dark:text-white mt-14 mb-6">
+              Compare Business Funding Options
+            </h2>
+            <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-gray-100 dark:bg-gray-900 text-gray-700 dark:text-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">Product</th>
+                    <th className="px-4 py-3 font-semibold">Speed</th>
+                    <th className="px-4 py-3 font-semibold">Amount</th>
+                    <th className="px-4 py-3 font-semibold">Credit Needed</th>
+                    <th className="px-4 py-3 font-semibold">Best For</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 dark:divide-gray-800 text-gray-600 dark:text-gray-300">
+                  <tr>
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Merchant Cash Advance</td>
+                    <td className="px-4 py-3">Same day–48 hrs</td>
+                    <td className="px-4 py-3">$5K–$5M</td>
+                    <td className="px-4 py-3">None (revenue-based)</td>
+                    <td className="px-4 py-3">Fast cash, lower credit</td>
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Line of Credit</td>
+                    <td className="px-4 py-3">1–3 days</td>
+                    <td className="px-4 py-3">$10K–$1.25M</td>
+                    <td className="px-4 py-3">Fair+</td>
+                    <td className="px-4 py-3">Flexible, recurring needs</td>
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Equipment Financing</td>
+                    <td className="px-4 py-3">2–5 days</td>
+                    <td className="px-4 py-3">Up to $3M</td>
+                    <td className="px-4 py-3">Fair+</td>
+                    <td className="px-4 py-3">Buying equipment/vehicles</td>
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Term Loan</td>
+                    <td className="px-4 py-3">2–7 days</td>
+                    <td className="px-4 py-3">$25K–$500K</td>
+                    <td className="px-4 py-3">Good</td>
+                    <td className="px-4 py-3">Predictable growth capital</td>
+                  </tr>
+                  <tr>
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">SBA 7(a) Loan</td>
+                    <td className="px-4 py-3">2–6 weeks</td>
+                    <td className="px-4 py-3">Up to $5M</td>
+                    <td className="px-4 py-3">Good–Excellent</td>
+                    <td className="px-4 py-3">Lowest cost, largest amounts</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-3">
+              New to these terms? See the <Link to="/resources/glossary" className="text-ocean-blue hover:underline">business funding glossary</Link>.
+            </p>
+
+            <h2 className="heading-2 text-gray-900 dark:text-white mt-14 mb-6">
+              Frequently Asked Questions
+            </h2>
+            <div className="space-y-6">
+              {HUB_FAQS.map((f) => (
+                <div key={f.question} className="border-b border-gray-200 dark:border-gray-800 pb-5">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{f.question}</h3>
+                  <p className="mt-2 text-gray-600 dark:text-gray-300">{f.answer}</p>
+                </div>
               ))}
             </div>
           </div>

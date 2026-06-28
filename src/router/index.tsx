@@ -1,4 +1,5 @@
-import { createBrowserRouter } from "react-router-dom";
+import { lazy } from "react";
+import type { RouteObject } from "react-router-dom";
 import HomePage from "../pages/HomePage.tsx";
 import SignInPage from "../pages/auth/SignInPage.tsx";
 import SignUpPage from "../pages/auth/SignUpPage.tsx";
@@ -16,62 +17,68 @@ import ContactPage from "../pages/ContactPage.tsx";
 import OptinPage from "../pages/OptinPage.tsx";
 import ApplyPage from "../pages/ApplyPage.tsx";
 import VCFReliefPage from "../pages/VCFReliefPage.tsx";
+import VCFSavingsCalculatorPage from "../pages/calculators/VCFSavingsCalculatorPage.tsx";
+import MCAFundingCalculatorPage from "../pages/calculators/MCAFundingCalculatorPage.tsx";
+import MCACostCalculatorPage from "../pages/calculators/MCACostCalculatorPage.tsx";
+import CloserEarningsCalculatorPage from "../pages/calculators/CloserEarningsCalculatorPage.tsx";
 import PartnersPage from "../pages/PartnersPage.tsx";
 import ResourcesPage from "../pages/ResourcesPage.tsx";
 import ResourceDetailPage from "../pages/ResourceDetailPage.tsx";
+import GlossaryPage from "../pages/GlossaryPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
 import Providers from "../Providers.tsx";
 
 // Admin pages
-import AdminLayout from "../pages/admin/AdminLayout.tsx";
-import AdminDashboardPage from "../pages/admin/AdminDashboardPage.tsx";
-import KanbanBoardPage from "../pages/admin/KanbanBoardPage.tsx";
-import LendersListPage from "../pages/admin/lenders/LendersListPage.tsx";
-import LenderDetailPage from "../pages/admin/lenders/LenderDetailPage.tsx";
-import LenderResourcesPage from "../pages/admin/lenders/LenderResourcesPage.tsx";
-import CustomersListPage from "../pages/admin/customers/CustomersListPage.tsx";
-import CustomerDetailPage from "../pages/admin/customers/CustomerDetailPage.tsx";
-import MarketingPage from "../pages/admin/MarketingPage.tsx";
-import MarketingResourcesPage from "../pages/admin/marketing/MarketingResourcesPage.tsx";
-import VendorDetailPage from "../pages/admin/marketing/VendorDetailPage.tsx";
-import AnalyticsDashboardPage from "../pages/admin/analytics/AnalyticsDashboardPage.tsx";
-import RealTimeDashboardPage from "../pages/admin/analytics/RealTimeDashboardPage.tsx";
-import DealAnalyticsPage from "../pages/admin/analytics/DealAnalyticsPage.tsx";
-import CloserPerformancePage from "../pages/admin/analytics/CloserPerformancePage.tsx";
-import LenderPerformancePage from "../pages/admin/analytics/LenderPerformancePage.tsx";
-import MarketPerformancePage from "../pages/admin/analytics/MarketPerformancePage.tsx";
-import LeadSourceROIPage from "../pages/admin/analytics/LeadSourceROIPage.tsx";
-import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
-import IntegrationsPage from "../pages/admin/settings/IntegrationsPage.tsx";
-import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
-import CloserCompPage from "../pages/admin/CloserCompPage.tsx";
-import CompliancePage from "../pages/admin/CompliancePage.tsx";
-import RenewalsPage from "../pages/admin/RenewalsPage.tsx";
-import DocumentReviewPage from "../pages/admin/DocumentReviewPage.tsx";
-import LeadSourcesPage from "../pages/admin/LeadSourcesPage.tsx";
-import ReferralPartnersPage from "../pages/admin/ReferralPartnersPage.tsx";
-import SyncLogPage from "../pages/admin/SyncLogPage.tsx";
-import PlatformConfigPage from "../pages/admin/PlatformConfigPage.tsx";
-import SequencesPage from "../pages/admin/SequencesPage.tsx";
-import ResourcesAdminPage from "../pages/admin/ResourcesAdminPage.tsx";
-import DealListPage from "../pages/admin/deals/DealListPage.tsx";
-import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
+const AdminLayout = lazy(() => import("../pages/admin/AdminLayout.tsx"));
+const AdminDashboardPage = lazy(() => import("../pages/admin/AdminDashboardPage.tsx"));
+const KanbanBoardPage = lazy(() => import("../pages/admin/KanbanBoardPage.tsx"));
+const LendersListPage = lazy(() => import("../pages/admin/lenders/LendersListPage.tsx"));
+const LenderDetailPage = lazy(() => import("../pages/admin/lenders/LenderDetailPage.tsx"));
+const LenderResourcesPage = lazy(() => import("../pages/admin/lenders/LenderResourcesPage.tsx"));
+const CustomersListPage = lazy(() => import("../pages/admin/customers/CustomersListPage.tsx"));
+const CustomerDetailPage = lazy(() => import("../pages/admin/customers/CustomerDetailPage.tsx"));
+const MarketingPage = lazy(() => import("../pages/admin/MarketingPage.tsx"));
+const MarketingResourcesPage = lazy(() => import("../pages/admin/marketing/MarketingResourcesPage.tsx"));
+const VendorDetailPage = lazy(() => import("../pages/admin/marketing/VendorDetailPage.tsx"));
+const AnalyticsDashboardPage = lazy(() => import("../pages/admin/analytics/AnalyticsDashboardPage.tsx"));
+const RealTimeDashboardPage = lazy(() => import("../pages/admin/analytics/RealTimeDashboardPage.tsx"));
+const DealAnalyticsPage = lazy(() => import("../pages/admin/analytics/DealAnalyticsPage.tsx"));
+const CloserPerformancePage = lazy(() => import("../pages/admin/analytics/CloserPerformancePage.tsx"));
+const LenderPerformancePage = lazy(() => import("../pages/admin/analytics/LenderPerformancePage.tsx"));
+const MarketPerformancePage = lazy(() => import("../pages/admin/analytics/MarketPerformancePage.tsx"));
+const LeadSourceROIPage = lazy(() => import("../pages/admin/analytics/LeadSourceROIPage.tsx"));
+const AdminSettingsPage = lazy(() => import("../pages/admin/AdminSettingsPage.tsx"));
+const IntegrationsPage = lazy(() => import("../pages/admin/settings/IntegrationsPage.tsx"));
+const BusinessModelCanvasPage = lazy(() => import("../pages/admin/BusinessModelCanvasPage.tsx"));
+const CloserCompPage = lazy(() => import("../pages/admin/CloserCompPage.tsx"));
+const PipelinePlaybookPage = lazy(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
+const CompliancePage = lazy(() => import("../pages/admin/CompliancePage.tsx"));
+const RenewalsPage = lazy(() => import("../pages/admin/RenewalsPage.tsx"));
+const DocumentReviewPage = lazy(() => import("../pages/admin/DocumentReviewPage.tsx"));
+const LeadSourcesPage = lazy(() => import("../pages/admin/LeadSourcesPage.tsx"));
+const ReferralPartnersPage = lazy(() => import("../pages/admin/ReferralPartnersPage.tsx"));
+const SyncLogPage = lazy(() => import("../pages/admin/SyncLogPage.tsx"));
+const PlatformConfigPage = lazy(() => import("../pages/admin/PlatformConfigPage.tsx"));
+const SequencesPage = lazy(() => import("../pages/admin/SequencesPage.tsx"));
+const ResourcesAdminPage = lazy(() => import("../pages/admin/ResourcesAdminPage.tsx"));
+const DealListPage = lazy(() => import("../pages/admin/deals/DealListPage.tsx"));
+const DealDetailPage = lazy(() => import("../pages/admin/deals/DealDetailPage.tsx"));
 
 // Commission & Financial Engine pages
-import CloserListPage from "../pages/admin/closers/CloserListPage.tsx";
-import CloserDetailPage from "../pages/admin/closers/CloserDetailPage.tsx";
-import SubISOListPage from "../pages/admin/sub-isos/SubISOListPage.tsx";
-import CommissionDashboardPage from "../pages/admin/commissions/CommissionDashboardPage.tsx";
+const CloserListPage = lazy(() => import("../pages/admin/closers/CloserListPage.tsx"));
+const CloserDetailPage = lazy(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
+const SubISOListPage = lazy(() => import("../pages/admin/sub-isos/SubISOListPage.tsx"));
+const CommissionDashboardPage = lazy(() => import("../pages/admin/commissions/CommissionDashboardPage.tsx"));
 
 // Portal pages
-import PortalLayout from "../pages/portal/PortalLayout.tsx";
-import PortalDashboardPage from "../pages/portal/PortalDashboardPage.tsx";
-import PortalDocumentsPage from "../pages/portal/PortalDocumentsPage.tsx";
-import PortalInboxPage from "../pages/portal/PortalInboxPage.tsx";
+const PortalLayout = lazy(() => import("../pages/portal/PortalLayout.tsx"));
+const PortalDashboardPage = lazy(() => import("../pages/portal/PortalDashboardPage.tsx"));
+const PortalDocumentsPage = lazy(() => import("../pages/portal/PortalDocumentsPage.tsx"));
+const PortalInboxPage = lazy(() => import("../pages/portal/PortalInboxPage.tsx"));
 
-const router = createBrowserRouter([
+export const routes: RouteObject[] = [
   {
     path: "/",
     element: <Providers />,
@@ -138,12 +145,32 @@ const router = createBrowserRouter([
         element: <VCFReliefPage />,
       },
       {
+        path: "/calculators/mca-debt-relief",
+        element: <VCFSavingsCalculatorPage />,
+      },
+      {
+        path: "/calculators/how-much-can-i-get",
+        element: <MCAFundingCalculatorPage />,
+      },
+      {
+        path: "/calculators/advance-cost",
+        element: <MCACostCalculatorPage />,
+      },
+      {
+        path: "/careers/closer-earnings",
+        element: <CloserEarningsCalculatorPage />,
+      },
+      {
         path: "/partners",
         element: <PartnersPage />,
       },
       {
         path: "/resources",
         element: <ResourcesPage />,
+      },
+      {
+        path: "/resources/glossary",
+        element: <GlossaryPage />,
       },
       {
         path: "/resources/:slug",
@@ -345,6 +372,11 @@ const router = createBrowserRouter([
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <CloserCompPage /> }],
               },
+              // Pipeline Playbook (admin + super_admin) — onboarding
+              {
+                path: "pipeline-playbook",
+                element: <PipelinePlaybookPage />,
+              },
               // Business Model Canvas (super_admin only)
               {
                 path: "bmc",
@@ -431,6 +463,4 @@ const router = createBrowserRouter([
     path: "*",
     element: <NotFoundPage />,
   },
-]);
-
-export default router;
+];

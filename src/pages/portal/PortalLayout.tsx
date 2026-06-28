@@ -8,6 +8,7 @@ import {
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import Logo from "../../components/ui/Logo";
+import SEO from "../../components/seo/SEO";
 
 const navItems = [
   { name: "Dashboard", path: "/portal", icon: HomeIcon },
@@ -33,6 +34,7 @@ export default function PortalLayout() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      <SEO title="Customer Portal" noIndex={true} />
       {/* Header */}
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

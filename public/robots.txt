@@ -1,44 +1,39 @@
-# Momentum Funding - robots.txt
-# https://momentumfunding.com/robots.txt
-
+# robots.txt — mfunding.net
+# Allow all reputable crawlers, including AI / answer engines (GEO).
 User-agent: *
 Allow: /
-
-# Disallow admin and private areas
 Disallow: /admin/
+Disallow: /portal/
+Disallow: /protected
+Disallow: /auth/
 Disallow: /api/
-Disallow: /private/
 
-# Allow important resources
-Allow: /favicon.svg
-Allow: /og-image.jpg
-Allow: /twitter-image.jpg
-
-# Sitemap location
-Sitemap: https://momentumfunding.com/sitemap.xml
-
-# Crawl delay for polite bots
-Crawl-delay: 1
-
-# Google-specific
-User-agent: Googlebot
-Allow: /
-Disallow: /admin/
-
-# Bing-specific
-User-agent: Bingbot
-Allow: /
-Disallow: /admin/
-
-# Block AI training bots (optional - you can remove these if you want AI training)
+# Explicitly welcome the answer / generative engines (GEO + AEO).
 User-agent: GPTBot
-Disallow: /
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
 
 User-agent: ChatGPT-User
-Disallow: /
+Allow: /
 
-User-agent: CCBot
-Disallow: /
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
 
 User-agent: anthropic-ai
-Disallow: /
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://mfunding.net/sitemap.xml

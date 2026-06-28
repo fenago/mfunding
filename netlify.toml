@@ -2,6 +2,27 @@
   command = "npm run build"
   publish = "dist"
 
+# Canonical domain — 301 the placeholder/secondary domain to mfunding.net.
+# (If you later make momentumfunding.com primary, flip this rule.)
+[[redirects]]
+  from = "https://momentumfunding.com/*"
+  to = "https://mfunding.net/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "https://www.momentumfunding.com/*"
+  to = "https://mfunding.net/:splat"
+  status = 301
+  force = true
+
+# Normalize www → apex on the canonical domain.
+[[redirects]]
+  from = "https://www.mfunding.net/*"
+  to = "https://mfunding.net/:splat"
+  status = 301
+  force = true
+
 # SPA fallback - redirect all routes to index.html
 [[redirects]]
   from = "/*"

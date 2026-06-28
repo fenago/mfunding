@@ -1,7 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, Suspense } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { SessionProvider } from "./context/SessionContext";
 import { UserProfileProvider } from "./context/UserProfileContext";
+import Analytics from "./components/Analytics";
+import LoadingPage from "./pages/LoadingPage";
+import { ThemeProvider } from "./lib/theme-context";
 
 /** Scroll to hash element after navigation (e.g. /#apply) */
 function HashScrollHandler() {
@@ -22,12 +25,17 @@ function HashScrollHandler() {
 
 const Providers = () => {
   return (
-    <SessionProvider>
-      <UserProfileProvider>
-        <HashScrollHandler />
-        <Outlet />
-      </UserProfileProvider>
-    </SessionProvider>
+    <ThemeProvider>
+      <SessionProvider>
+        <UserProfileProvider>
+          <HashScrollHandler />
+          <Analytics />
+          <Suspense fallback={<LoadingPage />}>
+            <Outlet />
+          </Suspense>
+        </UserProfileProvider>
+      </SessionProvider>
+    </ThemeProvider>
   );
 };
 

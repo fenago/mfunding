@@ -13,6 +13,7 @@ import {
 import Navbar from "../components/landing/Navbar";
 import Footer from "../components/landing/Footer";
 import ScrollToTop from "../components/ui/ScrollToTop";
+import SEO from '../components/seo/SEO';
 import PipelineFlow from "../components/shared/PipelineFlow";
 import supabase from "../supabase";
 
@@ -109,6 +110,7 @@ export default function VCFReliefPage() {
 
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
+      <SEO title="MCA Debt Relief & Restructuring" description="Drowning in daily merchant cash advance payments? Momentum Funding helps small businesses restructure, consolidate, and reduce MCA debt. Free consultation, no upfront fees." keywords="MCA debt relief, merchant cash advance consolidation, restructure MCA, reduce daily payments, get out of MCA debt" />
       <Navbar />
       <ScrollToTop />
 

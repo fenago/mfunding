@@ -44,27 +44,59 @@ interface Lender { id: string; name: string | null; submission_email: string | n
 function buildEmail(deal: Record<string, unknown>, c: Record<string, unknown>, notes?: string) {
   const owner = [c.first_name, c.last_name].filter(Boolean).join(" ") || "—";
   const biz = (c.business_name as string) || "Unknown business";
-  const rows: Array<[string, string]> = [
-    ["Business", biz],
-    ["Owner", owner],
-    ["Industry", (c.industry as string) || (c.business_type as string) || "—"],
-    ["State", (c.address_state as string) || "—"],
-    ["EIN", (c.ein as string) || "—"],
-    ["Time in business", tib(c.time_in_business)],
-    ["Monthly revenue", money(c.monthly_revenue)],
-    ["Credit range", (c.credit_score_range as string) || "—"],
-    ["Amount requested", money(deal.amount_requested ?? c.amount_requested)],
-    ["Use of funds", (deal.use_of_funds as string) || (c.use_of_funds as string) || "—"],
-    ["Owner phone", (c.phone as string) || "—"],
-    ["Owner email", (c.email as string) || "—"],
-    ["Deal #", (deal.deal_number as string) || "—"],
-  ];
+  const isVcf = String(deal.deal_type ?? "").toLowerCase() === "vcf";
+
+  // Product-aware: MCA = funder submission (purchase of receivables, never "loan");
+  // VCF = debt-relief / restructuring file sent to the restructuring partner.
+  const rows: Array<[string, string]> = isVcf
+    ? [
+        ["Business", biz],
+        ["Owner", owner],
+        ["Industry", (c.industry as string) || (c.business_type as string) || "—"],
+        ["State", (c.address_state as string) || "—"],
+        ["EIN", (c.ein as string) || "—"],
+        ["Time in business", tib(c.time_in_business)],
+        ["Monthly revenue", money(c.monthly_revenue)],
+        ["Active positions", String(deal.vcf_active_positions ?? "—")],
+        ["Total balance", money(deal.vcf_total_balance)],
+        ["Daily/weekly debit", money(deal.vcf_daily_debit)],
+        ["Current funders", (deal.vcf_current_funders as string) || "—"],
+        ["Hardship", (deal.vcf_hardship_reason as string) || "—"],
+        ["Owner phone", (c.phone as string) || "—"],
+        ["Owner email", (c.email as string) || "—"],
+        ["Deal #", (deal.deal_number as string) || "—"],
+      ]
+    : [
+        ["Business", biz],
+        ["Owner", owner],
+        ["Industry", (c.industry as string) || (c.business_type as string) || "—"],
+        ["State", (c.address_state as string) || "—"],
+        ["EIN", (c.ein as string) || "—"],
+        ["Time in business", tib(c.time_in_business)],
+        ["Monthly revenue", money(c.monthly_revenue)],
+        ["Credit range", (c.credit_score_range as string) || "—"],
+        ["Amount requested", money(deal.amount_requested ?? c.amount_requested)],
+        ["Use of funds", (deal.use_of_funds as string) || (c.use_of_funds as string) || "—"],
+        ["Owner phone", (c.phone as string) || "—"],
+        ["Owner email", (c.email as string) || "—"],
+        ["Deal #", (deal.deal_number as string) || "—"],
+      ];
+
+  const intro = isVcf
+    ? "New debt-relief / restructuring file from MFunding for review."
+    : "New MCA submission from MFunding (ISO).";
+  const footer = isVcf
+    ? "This merchant is seeking restructuring of existing advances. Signed authorization, advance agreements, and bank statements are on file — reply and we'll send the complete package."
+    : "MCA = purchase of future receivables (not a loan). Bank statements and full stips are ready — reply and we'll send the complete file immediately.";
+  const introHtml = isVcf
+    ? `New <strong>debt-relief / restructuring file</strong> from <strong>MFunding</strong> for review.`
+    : `New <strong>MCA submission</strong> from <strong>MFunding</strong> (ISO).`;
 
   const textBody =
-    `New MCA submission from MFunding (ISO).\n\n` +
+    `${intro}\n\n` +
     rows.map(([k, v]) => `${k}: ${v}`).join("\n") +
     (notes ? `\n\nNotes: ${notes}` : "") +
-    `\n\nMCA = purchase of future receivables (not a loan). Bank statements and full stips are ready — reply and we'll send the complete file immediately.\n\n— MFunding Submissions`;
+    `\n\n${footer}\n\n— MFunding Submissions`;
 
   const htmlRows = rows
     .map(
@@ -74,13 +106,16 @@ function buildEmail(deal: Record<string, unknown>, c: Record<string, unknown>, n
     .join("");
   const htmlBody =
     `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:560px">` +
-    `<p style="margin:0 0 12px">New <strong>MCA submission</strong> from <strong>MFunding</strong> (ISO).</p>` +
+    `<p style="margin:0 0 12px">${introHtml}</p>` +
     `<table style="border-collapse:collapse;margin:0 0 12px">${htmlRows}</table>` +
     (notes ? `<p style="margin:0 0 12px"><strong>Notes:</strong> ${notes}</p>` : "") +
-    `<p style="margin:0 0 4px;color:#64748b;font-size:12px">MCA = purchase of future receivables (not a loan). Bank statements and full stips are ready — reply and we'll send the complete file immediately.</p>` +
+    `<p style="margin:0 0 4px;color:#64748b;font-size:12px">${footer}</p>` +
     `<p style="margin:8px 0 0">— MFunding Submissions</p></div>`;
 
-  const subject = `New MCA Submission — ${biz} — ${money(deal.amount_requested ?? c.amount_requested)}`;
+  const amount = money(deal.vcf_total_balance ?? deal.amount_requested ?? c.amount_requested);
+  const subject = isVcf
+    ? `New VCF Restructuring File — ${biz} — ${amount}`
+    : `New MCA Submission — ${biz} — ${money(deal.amount_requested ?? c.amount_requested)}`;
   return { subject, textBody, htmlBody };
 }
 
@@ -99,7 +134,7 @@ Deno.serve(async (req) => {
 
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id")
+    .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id, vcf_active_positions, vcf_total_balance, vcf_daily_debit, vcf_current_funders, vcf_hardship_reason")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 

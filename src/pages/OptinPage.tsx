@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import Navbar from '../components/landing/Navbar';
 import Footer from '../components/landing/Footer';
 import ScrollToTop from '../components/ui/ScrollToTop';
+import SEO from '../components/seo/SEO';
 import { ShimmerButton } from '../components/ui/shimmer-button';
 import { CheckCircleIcon } from '@heroicons/react/24/outline';
 import supabase from '../supabase';
@@ -54,6 +55,7 @@ export default function OptinPage() {
 
   return (
     <>
+      <SEO title="Get Funding Updates" description="Opt in for business funding updates from Momentum Funding." noIndex={true} />
       <Navbar />
       <ScrollToTop />
       <main className="min-h-screen py-24 bg-gray-50 dark:bg-gray-900">

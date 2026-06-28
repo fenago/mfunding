@@ -1,4 +1,5 @@
 import { Helmet } from 'react-helmet-async';
+import { useLocation } from 'react-router-dom';
 
 export interface SEOProps {
   title?: string;
@@ -19,8 +20,8 @@ const defaults = {
   defaultTitle: 'Fast Business Funding When Banks Say No | Momentum Funding',
   defaultDescription: 'Get $5K-$3M business funding in 24-48 hours. 93% approval rate. No collateral required. Merchant cash advance, business lines of credit & equipment financing.',
   defaultKeywords: 'small business funding, merchant cash advance, business line of credit, equipment financing, fast business loans, working capital',
-  siteUrl: 'https://momentumfunding.com',
-  defaultImage: 'https://momentumfunding.com/og-image.jpg',
+  siteUrl: 'https://mfunding.net',
+  defaultImage: 'https://mfunding.net/og-image.jpg',
   twitterHandle: '@momentumfunding',
 };
 
@@ -39,7 +40,12 @@ export default function SEO({
     ? defaults.titleTemplate.replace('%s', title)
     : defaults.defaultTitle;
 
-  const canonicalUrl = canonical || defaults.siteUrl;
+  // Always emit a self-referencing canonical. When one isn't passed explicitly,
+  // build it from the current route so every page gets a unique, correct canonical
+  // (works in the browser and during build-time prerendering via react-router).
+  const { pathname } = useLocation();
+  const path = pathname && pathname !== '/' ? pathname.replace(/\/$/, '') : '';
+  const canonicalUrl = canonical || `${defaults.siteUrl}${path || '/'}`;
 
   return (
     <Helmet>
@@ -47,7 +53,7 @@ export default function SEO({
       <title>{pageTitle}</title>
       <meta name="description" content={description} />
       <meta name="keywords" content={keywords} />
-      {canonical && <link rel="canonical" href={canonicalUrl} />}
+      <link rel="canonical" href={canonicalUrl} />
       {noIndex && <meta name="robots" content="noindex, nofollow" />}
 
       {/* Open Graph */}
@@ -55,6 +61,9 @@ export default function SEO({
       <meta property="og:title" content={pageTitle} />
       <meta property="og:description" content={description} />
       <meta property="og:image" content={ogImage} />
+      <meta property="og:image:width" content="1200" />
+      <meta property="og:image:height" content="630" />
+      <meta property="og:image:alt" content={pageTitle} />
       <meta property="og:url" content={canonicalUrl} />
       <meta property="og:site_name" content={defaults.siteName} />
 
@@ -141,10 +150,74 @@ export function generateArticleSchema(article: {
       name: 'Momentum Funding',
       logo: {
         '@type': 'ImageObject',
-        url: 'https://momentumfunding.com/logo.png',
+        url: 'https://mfunding.net/logo.png',
       },
     },
   };
+}
+
+// Utility: FAQPage schema from a list of Q&A pairs (AEO — wins "People Also Ask" + AI Overviews)
+export function generateFAQSchema(faqs: { question: string; answer: string }[]) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: faqs.map((f) => ({
+      '@type': 'Question',
+      name: f.question,
+      acceptedAnswer: { '@type': 'Answer', text: f.answer },
+    })),
+  };
+}
+
+// Utility: BreadcrumbList schema for nested pages
+export function generateBreadcrumbSchema(
+  crumbs: { name: string; url: string }[]
+) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: crumbs.map((c, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: c.name,
+      item: c.url,
+    })),
+  };
+}
+
+// Utility: product schema for funding products.
+// IMPORTANT (compliance): MCA is NOT a loan — use 'FinancialProduct' and avoid loan/interest
+// language. Actual loans (SBA, term, equipment, CRE) use 'LoanOrCredit'.
+export function generateProductSchema(product: {
+  name: string;
+  description: string;
+  url: string;
+  productType?: 'FinancialProduct' | 'LoanOrCredit';
+  amountMin?: number;
+  amountMax?: number;
+}) {
+  const base: Record<string, unknown> = {
+    '@context': 'https://schema.org',
+    '@type': product.productType || 'FinancialProduct',
+    name: product.name,
+    description: product.description,
+    url: product.url,
+    category: 'Business Funding',
+    provider: {
+      '@type': 'FinancialService',
+      name: 'Momentum Funding',
+      url: 'https://mfunding.net',
+    },
+  };
+  if (product.amountMin != null && product.amountMax != null) {
+    base.amount = {
+      '@type': 'MonetaryAmount',
+      currency: 'USD',
+      minValue: product.amountMin,
+      maxValue: product.amountMax,
+    };
+  }
+  return base;
 }
 
 // Utility function to generate local business schema

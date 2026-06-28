@@ -12,6 +12,7 @@ import {
 import Navbar from '../components/landing/Navbar';
 import Footer from '../components/landing/Footer';
 import ScrollToTop from '../components/ui/ScrollToTop';
+import SEO from '../components/seo/SEO';
 import { ShimmerButton } from '../components/ui/shimmer-button';
 import supabase from '../supabase';
 
@@ -91,6 +92,7 @@ export default function ContactPage() {
 
   return (
     <>
+      <SEO title="Contact Us — Talk to a Funding Advisor" description="Contact Momentum Funding to discuss business funding options. Call (786) 840-9404 or email info@mfunding.net. Mon–Fri, 9am–6pm EST. No upfront fees, no obligation." keywords="contact momentum funding, business funding advisor, talk to funding specialist" />
       <Navbar />
       <ScrollToTop />
       <main>
