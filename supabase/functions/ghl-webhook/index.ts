@@ -32,6 +32,27 @@ const STATUS_BY_STAGE: Record<string, string> = {
   "nurture / re-engage": "nurture",
 };
 
+// The MFunding MCA pipeline — we only auto-create deals for opportunities in THIS
+// pipeline (VCF has its own backend, not built yet).
+const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+
+// MCA stage id -> deal status (webhooks reliably include pipelineStageId).
+const STATUS_BY_STAGE_ID: Record<string, string> = {
+  "d60d563a-9904-423f-9a8e-0d0df0b12976": "new",
+  "bc68ac6f-d45d-4d56-b1c8-c10a7ec4fdf7": "contacted",
+  "27960f79-0b08-48ac-8fee-f4a9bf7748e3": "qualifying",
+  "2071ceb6-b0cf-4700-b57b-f8a3ef4b15bf": "application_sent",
+  "c49fa9f8-a155-4d14-a597-2b23fd937b32": "docs_collected",
+  "72d926b3-ee88-4ee5-8ca2-ddb7071b2fc5": "bank_statements",
+  "47d3f297-bf23-40a3-8e2b-48fa6c04e809": "submitted_to_funder",
+  "5881c6a8-a84a-4753-be7f-6b8cd3f7d5be": "offer_received",
+  "718d76bc-58c9-4913-a68d-e0345ed0b515": "offer_presented",
+  "7e3cfb93-8e6e-428c-be99-9dfc77f300e6": "offer_accepted",
+  "69995f02-4f20-41b9-8206-bbaaf7060c10": "funded",
+  "bfd0515e-7dfd-4527-8460-1edef442311a": "renewal_eligible",
+  "d4c4ce2d-75af-4766-82cf-c3ff56f0137b": "nurture",
+};
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -106,7 +127,7 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
     await log(db, "customer", existing.id, `ghl:${String(evt.type)}`, evt);
   } else {
     const { data: created } = await db.from("customers")
-      .insert({ ...patch, status: "lead", source: "ghl" }).select("id").maybeSingle();
+      .insert({ ...patch, status: "lead", source: "other" }).select("id").maybeSingle();
     if (created) await log(db, "customer", created.id, `ghl:${String(evt.type)}`, evt);
   }
 }
@@ -116,11 +137,63 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   const oppId = String(o.id ?? evt.opportunityId ?? evt.id ?? "");
   if (!oppId) return;
 
-  const { data: deal } = await db.from("deals").select("id,status").eq("ghl_opportunity_id", oppId).maybeSingle();
-  if (!deal) return; // opportunity not linked to a known deal
-
+  // Resolve the GHL stage -> our deal status (prefer stage id, fall back to name).
+  const stageId = String(o.pipelineStageId ?? o.stageId ?? evt.pipelineStageId ?? "");
   const stageName = String(o.stageName ?? o.pipelineStageName ?? evt.pipelineStageName ?? "").toLowerCase();
-  const mapped = STATUS_BY_STAGE[stageName];
+  const mapped = STATUS_BY_STAGE_ID[stageId] ?? STATUS_BY_STAGE[stageName] ?? null;
+
+  const { data: deal } = await db.from("deals").select("id,status,customer_id").eq("ghl_opportunity_id", oppId).maybeSingle();
+
+  // ── Gap A: create the deal if this opportunity isn't linked to one yet ──
+  if (!deal) {
+    const pipelineId = String(o.pipelineId ?? evt.pipelineId ?? "");
+    // Only auto-create for the MCA pipeline; VCF opps are handled separately (not yet built).
+    if (pipelineId && pipelineId !== MCA_PIPELINE_ID) return;
+
+    const contactId = String(
+      o.contactId ?? evt.contactId ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
+    );
+    if (!contactId) return; // can't tie a deal to a merchant without a contact
+
+    // Find the customer by ghl_contact_id; create a minimal one if missing
+    // (a ContactCreate/Update event will enrich it later).
+    let customerId: string | null = null;
+    const { data: cust } = await db.from("customers").select("id").eq("ghl_contact_id", contactId).maybeSingle();
+    if (cust) {
+      customerId = cust.id;
+    } else {
+      const c = (evt.contact ?? {}) as Record<string, unknown>;
+      const { data: created } = await db.from("customers").insert({
+        ghl_contact_id: contactId,
+        first_name: (c.firstName as string) ?? null,
+        last_name: (c.lastName as string) ?? null,
+        email: (c.email as string) ?? null,
+        phone: (c.phone as string) ?? null,
+        business_name: (c.companyName as string) ?? (o.name as string) ?? null,
+        status: "lead",
+        source: "other",
+      }).select("id").maybeSingle();
+      customerId = created?.id ?? null;
+    }
+    if (!customerId) return;
+
+    const status = mapped ?? "new";
+    const insert: Record<string, unknown> = {
+      customer_id: customerId,
+      deal_type: "mca",
+      status,
+      amount_requested: o.monetaryValue ?? null,
+      ghl_contact_id: contactId,
+      ghl_opportunity_id: oppId,
+      lead_source: "other",
+    };
+    if (status === "funded" && o.monetaryValue != null) insert.amount_funded = o.monetaryValue;
+    const { data: newDeal } = await db.from("deals").insert(insert).select("id").maybeSingle();
+    if (newDeal) await log(db, "deal", newDeal.id, `ghl:${String(evt.type)}:created`, { stage: mapped, evt });
+    return;
+  }
+
+  // ── Existing deal: mirror the stage change from GHL ──
   const patch: Record<string, unknown> = {};
   if (mapped && mapped !== deal.status) patch.status = mapped;
   if (o.monetaryValue != null) patch.amount_requested = o.monetaryValue;
