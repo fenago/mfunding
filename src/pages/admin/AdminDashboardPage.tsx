@@ -11,6 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
+import NeedsAttention from "../../components/admin/NeedsAttention";
 
 interface Stats {
   totalLenders: number;
@@ -204,6 +205,9 @@ export default function AdminDashboardPage() {
           );
         })}
       </div>
+
+      {/* Needs attention — operational queues */}
+      <NeedsAttention />
 
       {/* Quick Actions */}
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700">
