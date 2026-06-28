@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import supabase from "../supabase";
 import {
   WrenchScrewdriverIcon,
   LifebuoyIcon,
@@ -117,6 +119,24 @@ function Card({ tool }: { tool: ToolCard }) {
 }
 
 export default function FreeToolsPage() {
+  // Respect the admin enable/disable toggle (lead_tools). null = not loaded yet,
+  // so we show all by default and never hide everything on a fetch error.
+  const [enabledPaths, setEnabledPaths] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data, error } = await supabase.from("lead_tools").select("path, enabled");
+        if (error || !data) return;
+        setEnabledPaths(new Set(data.filter((t) => t.enabled).map((t) => t.path)));
+      } catch {
+        /* keep null = show all */
+      }
+    })();
+  }, []);
+  const show = (t: ToolCard) => enabledPaths === null || enabledPaths.has(t.to);
+  const calculators = CALCULATORS.filter(show);
+  const assessments = ASSESSMENTS.filter(show);
+
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
       <SEO
@@ -156,7 +176,7 @@ export default function FreeToolsPage() {
               <h2 className="text-2xl font-bold text-heading">Calculators</h2>
             </div>
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {CALCULATORS.map((t) => (
+              {calculators.map((t) => (
                 <Card key={t.to} tool={t} />
               ))}
             </div>
@@ -171,7 +191,7 @@ export default function FreeToolsPage() {
               <h2 className="text-2xl font-bold text-heading">Assessments</h2>
             </div>
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {ASSESSMENTS.map((t) => (
+              {assessments.map((t) => (
                 <Card key={t.to} tool={t} />
               ))}
             </div>

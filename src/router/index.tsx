@@ -62,6 +62,9 @@ const IntegrationsPage = lazy(() => import("../pages/admin/settings/Integrations
 const BusinessModelCanvasPage = lazy(() => import("../pages/admin/BusinessModelCanvasPage.tsx"));
 const CloserCompPage = lazy(() => import("../pages/admin/CloserCompPage.tsx"));
 const PipelinePlaybookPage = lazy(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
+const LeadToolsPage = lazy(() => import("../pages/admin/LeadToolsPage.tsx"));
+const LiveTransferROIPage = lazy(() => import("../pages/admin/LiveTransferROIPage.tsx"));
+const PortalEstimatesPage = lazy(() => import("../pages/portal/PortalEstimatesPage.tsx"));
 const CompliancePage = lazy(() => import("../pages/admin/CompliancePage.tsx"));
 const RenewalsPage = lazy(() => import("../pages/admin/RenewalsPage.tsx"));
 const DocumentReviewPage = lazy(() => import("../pages/admin/DocumentReviewPage.tsx"));
@@ -245,6 +248,10 @@ export const routes: RouteObject[] = [
                 element: <PortalDocumentsPage />,
               },
               {
+                path: "estimates",
+                element: <PortalEstimatesPage />,
+              },
+              {
                 path: "inbox",
                 element: <PortalInboxPage />,
               },
@@ -413,10 +420,21 @@ export const routes: RouteObject[] = [
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <CloserCompPage /> }],
               },
+              // Live Transfer ROI (super_admin only)
+              {
+                path: "live-transfer-roi",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <LiveTransferROIPage /> }],
+              },
               // Pipeline Playbook (admin + super_admin) — onboarding
               {
                 path: "pipeline-playbook",
                 element: <PipelinePlaybookPage />,
+              },
+              // Lead Tools management (operational — all staff)
+              {
+                path: "lead-tools",
+                element: <LeadToolsPage />,
               },
               // Business Model Canvas (super_admin only)
               {

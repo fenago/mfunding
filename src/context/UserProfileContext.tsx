@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import supabase from "../supabase";
 import { useSession } from "./SessionContext";
 
-export type UserRole = "user" | "admin" | "super_admin";
+export type UserRole = "user" | "closer" | "admin" | "super_admin";
 
 export interface UserProfile {
   id: string;
@@ -23,6 +23,9 @@ interface UserProfileContextType {
   isLoading: boolean;
   isAdmin: boolean;
   isSuperAdmin: boolean;
+  isCloser: boolean;
+  /** Any internal backend user: closer, admin, or super_admin. */
+  isStaff: boolean;
   refetchProfile: () => Promise<void>;
   updateProfile: (updates: Partial<UserProfile>) => Promise<{ error: Error | null }>;
 }
@@ -32,6 +35,8 @@ const UserProfileContext = createContext<UserProfileContextType>({
   isLoading: true,
   isAdmin: false,
   isSuperAdmin: false,
+  isCloser: false,
+  isStaff: false,
   refetchProfile: async () => {},
   updateProfile: async () => ({ error: null }),
 });
@@ -85,6 +90,8 @@ export const UserProfileProvider = ({ children }: Props) => {
 
   const isAdmin = profile?.role === "admin" || profile?.role === "super_admin";
   const isSuperAdmin = profile?.role === "super_admin";
+  const isCloser = profile?.role === "closer";
+  const isStaff = isCloser || isAdmin; // any internal backend user
 
   const updateProfile = async (updates: Partial<UserProfile>): Promise<{ error: Error | null }> => {
     if (!session?.user?.id) {
@@ -118,6 +125,8 @@ export const UserProfileProvider = ({ children }: Props) => {
         isLoading,
         isAdmin,
         isSuperAdmin,
+        isCloser,
+        isStaff,
         refetchProfile: fetchProfile,
         updateProfile,
       }}

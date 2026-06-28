@@ -3,6 +3,7 @@ import {
   HomeIcon,
   DocumentIcon,
   InboxIcon,
+  CalculatorIcon,
   ArrowLeftOnRectangleIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -13,6 +14,7 @@ import SEO from "../../components/seo/SEO";
 const navItems = [
   { name: "Dashboard", path: "/portal", icon: HomeIcon },
   { name: "Documents", path: "/portal/documents", icon: DocumentIcon },
+  { name: "My Estimates", path: "/portal/estimates", icon: CalculatorIcon },
   { name: "Inbox", path: "/portal/inbox", icon: InboxIcon },
 ];
 

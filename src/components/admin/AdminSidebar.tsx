@@ -30,47 +30,100 @@ import {
   MapIcon,
   ArrowPathRoundedSquareIcon,
   BookOpenIcon,
+  WrenchScrewdriverIcon,
+  PhoneArrowUpRightIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
 import Logo from "../ui/Logo";
 
+type NavRole = "closer" | "admin" | "super_admin";
+
 interface NavItem {
   name: string;
   path: string;
   icon: React.ComponentType<{ className?: string }>;
-  roles: ("admin" | "super_admin")[];
+  roles: NavRole[];
+}
+interface NavGroup {
+  title: string;
+  items: NavItem[];
 }
 
-const navItems: NavItem[] = [
-  { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: ["admin", "super_admin"] },
-  { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ["admin", "super_admin"] },
-  { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ["super_admin"] },
-  { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: ["admin", "super_admin"] },
-  { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: ["admin", "super_admin"] },
-  { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: ["admin", "super_admin"] },
-  { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: ["super_admin"] },
-  { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: ["super_admin"] },
-  { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: ["super_admin"] },
-  { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: ["admin", "super_admin"] },
-  { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: ["admin", "super_admin"] },
-  { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: ["admin", "super_admin"] },
-  { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
-  { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: ["super_admin"] },
-  { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: ["admin", "super_admin"] },
-  { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: ["super_admin"] },
-  { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: ["super_admin"] },
-  { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },
-  { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },
-  { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: ["super_admin"] },
-  { name: "Pipeline Playbook", path: "/admin/pipeline-playbook", icon: MapIcon, roles: ["admin", "super_admin"] },
-  { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: ["super_admin"] },
-  { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: ["super_admin"] },
-  { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: ["super_admin"] },
-  { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: ["super_admin"] },
-  { name: "Platform Config", path: "/admin/platform-config", icon: Cog6ToothIcon, roles: ["super_admin"] },
-  { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: ["super_admin"] },
+const OPS: NavRole[] = ["closer", "admin", "super_admin"]; // operational — all staff
+const SUPER: NavRole[] = ["super_admin"]; // owner-only: financials, config, network
+
+const navGroups: NavGroup[] = [
+  {
+    title: "Overview",
+    items: [
+      { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: OPS },
+      { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: OPS },
+    ],
+  },
+  {
+    title: "Pipeline",
+    items: [
+      { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
+      { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
+      { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: OPS },
+      { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
+    ],
+  },
+  {
+    title: "Lead Generation",
+    items: [
+      { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
+      { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
+      { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: OPS },
+      { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
+      { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Funder Network",
+    items: [
+      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: SUPER },
+      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
+      { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
+      { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Finance",
+    items: [
+      { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },
+      { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: SUPER },
+      { name: "Live Transfer ROI", path: "/admin/live-transfer-roi", icon: PhoneArrowUpRightIcon, roles: SUPER },
+      { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: SUPER },
+      { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Analytics",
+    items: [
+      { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: SUPER },
+      { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Training",
+    items: [
+      { name: "Pipeline Playbook", path: "/admin/pipeline-playbook", icon: MapIcon, roles: OPS },
+      { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
+    ],
+  },
+  {
+    title: "System",
+    items: [
+      { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: SUPER },
+      { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: SUPER },
+      { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: SUPER },
+      { name: "Platform Config", path: "/admin/platform-config", icon: Cog6ToothIcon, roles: SUPER },
+      { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: SUPER },
+    ],
+  },
 ];
 
 export default function AdminSidebar() {
@@ -79,7 +132,7 @@ export default function AdminSidebar() {
     return saved ? JSON.parse(saved) : false;
   });
   const location = useLocation();
-  const { profile, isSuperAdmin, isAdmin } = useUserProfile();
+  const { profile, isSuperAdmin } = useUserProfile();
   const { mode, cycleMode } = useTheme();
   const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
   const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
@@ -93,11 +146,8 @@ export default function AdminSidebar() {
     window.location.href = "/";
   };
 
-  const filteredNavItems = navItems.filter((item) => {
-    if (isSuperAdmin) return true;
-    if (isAdmin && item.roles.includes("admin")) return true;
-    return false;
-  });
+  const role = profile?.role as NavRole | undefined;
+  const canSee = (item: NavItem) => isSuperAdmin || (!!role && item.roles.includes(role));
 
   const isActive = (path: string) => {
     if (path === "/admin") {
@@ -140,29 +190,46 @@ export default function AdminSidebar() {
         </div>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
-        {filteredNavItems.map((item) => {
-          const Icon = item.icon;
-          const active = isActive(item.path);
+      {/* Navigation (role-aware, grouped) */}
+      <nav className="flex-1 py-3 px-2 overflow-y-auto">
+        {navGroups.map((group) => {
+          const items = group.items.filter(canSee);
+          if (items.length === 0) return null;
           return (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
-                active
-                  ? "bg-mint-green/10 text-mint-green dark:text-mint-green"
-                  : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white"
-              }`}
-              title={isCollapsed ? item.name : undefined}
-            >
-              <Icon className={`w-5 h-5 flex-shrink-0 ${active ? "text-mint-green" : ""}`} />
-              {!isCollapsed && (
-                <span className={`text-sm font-medium ${active ? "text-mint-green" : ""}`}>
-                  {item.name}
-                </span>
+            <div key={group.title} className="mb-2">
+              {!isCollapsed ? (
+                <p className="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                  {group.title}
+                </p>
+              ) : (
+                <div className="my-2 mx-2 border-t border-gray-100 dark:border-gray-700" />
               )}
-            </Link>
+              <div className="space-y-1">
+                {items.map((item) => {
+                  const Icon = item.icon;
+                  const active = isActive(item.path);
+                  return (
+                    <Link
+                      key={item.path}
+                      to={item.path}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
+                        active
+                          ? "bg-mint-green/10 text-mint-green dark:text-mint-green"
+                          : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white"
+                      }`}
+                      title={isCollapsed ? item.name : undefined}
+                    >
+                      <Icon className={`w-5 h-5 flex-shrink-0 ${active ? "text-mint-green" : ""}`} />
+                      {!isCollapsed && (
+                        <span className={`text-sm font-medium ${active ? "text-mint-green" : ""}`}>
+                          {item.name}
+                        </span>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
           );
         })}
       </nav>

@@ -5,7 +5,7 @@ import LoadingPage from "../pages/LoadingPage";
 
 const AdminProtectedRoute = () => {
   const { session } = useSession();
-  const { isAdmin, isLoading } = useUserProfile();
+  const { isStaff, isLoading } = useUserProfile();
   const location = useLocation();
 
   if (!session) {
@@ -16,7 +16,7 @@ const AdminProtectedRoute = () => {
     return <LoadingPage />;
   }
 
-  if (!isAdmin) {
+  if (!isStaff) {
     return <Navigate to="/" replace />;
   }
 
