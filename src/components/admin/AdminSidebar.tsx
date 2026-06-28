@@ -50,6 +50,7 @@ const navItems: NavItem[] = [
   { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: ["admin", "super_admin"] },
   { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: ["admin", "super_admin"] },
   { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
+  { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: ["super_admin"] },
   { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },

@@ -46,6 +46,7 @@ import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx"
 import CompliancePage from "../pages/admin/CompliancePage.tsx";
 import RenewalsPage from "../pages/admin/RenewalsPage.tsx";
 import DocumentReviewPage from "../pages/admin/DocumentReviewPage.tsx";
+import LeadSourcesPage from "../pages/admin/LeadSourcesPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -337,6 +338,12 @@ const router = createBrowserRouter([
               {
                 path: "documents",
                 element: <DocumentReviewPage />,
+              },
+              // Lead sources (super_admin only)
+              {
+                path: "lead-sources",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <LeadSourcesPage /> }],
               },
               // Compliance disclosures (super_admin only)
               {
