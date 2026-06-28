@@ -16,6 +16,7 @@ import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import supabase from "../../../supabase";
 import { getDealById, updateDealStatus, submitToFunder, submitToMultipleFunders, updateSubmission } from "../../../services/dealService";
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
+import { tagFundersForSubmission } from "../../../services/ghlService";
 import type { DealWithCustomer, DealSubmissionWithLender, DealStatus, SubmissionStatus } from "../../../types/deals";
 import {
   DEAL_STATUS_CONFIG,
@@ -108,6 +109,8 @@ export default function DealDetailPage() {
     if (!id || !submittingLenderId) return;
     try {
       await submitToFunder(id, submittingLenderId, submitNotes);
+      // Tag the GHL contact submit:<funder> so the funder's GHL email workflow fires.
+      await tagFundersForSubmission(id, [submittingLenderId]);
       setShowSubmitModal(false);
       setSubmittingLenderId(null);
       setSubmitNotes("");
@@ -124,7 +127,10 @@ export default function DealDetailPage() {
     );
     if (pending.length === 0) return;
     try {
-      await submitToMultipleFunders(id, pending.map((l) => l.id), submitNotes);
+      const lenderIds = pending.map((l) => l.id);
+      await submitToMultipleFunders(id, lenderIds, submitNotes);
+      // Tag the GHL contact submit:<funder> for each, firing their GHL email workflows.
+      await tagFundersForSubmission(id, lenderIds);
       setShowSubmitModal(false);
       setSubmittingLenderId(null);
       setSubmitNotes("");

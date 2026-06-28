@@ -16,7 +16,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig,
   upsertContact, createOpportunity, updateOpportunity, listPipelines,
-  listCustomFields, updateContactCustomFields, findFieldByName,
+  listCustomFields, updateContactCustomFields, findFieldByName, addContactTags,
 } from "../_shared/ghl.ts";
 
 // Deal status → GHL pipeline stage name (matched case-insensitively).
@@ -81,6 +81,34 @@ Deno.serve(async (req) => {
       if (!r.ok) return json({ error: `GHL custom-field update failed (${r.status}): ${r.error}` }, 502);
       await logActivity(db, "deal", dealId, "ghl_paydown_pushed", { paydown: d.paydown_percentage, field: field.name });
       return json({ ok: true, pushed: true, paydown: d.paydown_percentage });
+    }
+
+    // Tag the deal's GHL contact submit:<funder> for each funder we submitted to,
+    // which fires that funder's per-funder email workflow in GHL (Gap B — GHL sends).
+    if (body.action === "tag_funders") {
+      const dealId = body.id as string | undefined;
+      const lenderIds = (body.lender_ids as string[] | undefined) ?? [];
+      if (!dealId || lenderIds.length === 0) return json({ error: "id (deal) and lender_ids required" }, 400);
+
+      const { data: d, error } = await db
+        .from("deals")
+        .select("ghl_contact_id, customer:customers!customer_id(ghl_contact_id)")
+        .eq("id", dealId).single();
+      if (error || !d) return json({ error: `deal not found: ${error?.message}` }, 404);
+      const contactId = d.ghl_contact_id ?? d.customer?.ghl_contact_id ?? null;
+      if (!contactId) return json({ error: "deal has no linked GHL contact — sync the deal first" }, 422);
+
+      const { data: lenders } = await db.from("lenders").select("ghl_tag_slug").in("id", lenderIds);
+      const tags = (lenders ?? [])
+        .map((l: { ghl_tag_slug: string | null }) => l.ghl_tag_slug)
+        .filter(Boolean)
+        .map((slug: string) => `submit:${slug}`);
+      if (tags.length === 0) return json({ ok: true, tagged: [], warning: "No GHL tag slugs on those funders." });
+
+      const r = await addContactTags(cfg, contactId, tags);
+      if (!r.ok) return json({ error: `GHL tag failed (${r.status}): ${r.error}` }, 502);
+      await logActivity(db, "deal", dealId, "ghl_funder_tags_added", { tags });
+      return json({ ok: true, tagged: tags });
     }
 
     const { entity, id } = body as { entity?: string; id?: string };

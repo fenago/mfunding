@@ -35,6 +35,16 @@ export function syncDealToGHL(dealId: string): Promise<GhlSyncResult> {
   return invokeSync({ entity: "deal", id: dealId });
 }
 
+/** Tag the deal's GHL contact submit:<funder> for each funder, firing their GHL
+ * email workflows (Gap B — GHL sends the funder submissions). */
+export async function tagFundersForSubmission(dealId: string, lenderIds: string[]): Promise<{ ok: boolean; tagged?: string[]; warning?: string; error?: string }> {
+  const { data, error } = await supabase.functions.invoke("ghl-sync", {
+    body: { action: "tag_funders", id: dealId, lender_ids: lenderIds },
+  });
+  if (error) return { ok: false, error: error.message };
+  return data as { ok: boolean; tagged?: string[]; warning?: string };
+}
+
 /** Push a deal's paydown % to the GHL contact field (fires GHL renewal workflow). */
 export async function pushDealPaydownToGHL(dealId: string): Promise<GhlSyncResult & { pushed?: boolean }> {
   const { data, error } = await supabase.functions.invoke("ghl-sync", { body: { action: "paydown", id: dealId } });

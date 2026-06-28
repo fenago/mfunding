@@ -167,3 +167,12 @@ export function findFieldByName(fields: GhlCustomField[], term: string): GhlCust
   const t = term.toLowerCase();
   return fields.find((f) => (f.name ?? "").toLowerCase().includes(t));
 }
+
+// ---- Tags --------------------------------------------------------------------
+
+/** Add one or more tags to a contact (fires GHL "tag added" workflows). */
+export async function addContactTags(cfg: GhlConfig, contactId: string, tags: string[]) {
+  return await ghlFetch<{ tags: string[] }>(
+    cfg, "POST", `/contacts/${contactId}/tags`, { tags },
+  );
+}
