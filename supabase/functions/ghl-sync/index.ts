@@ -20,6 +20,10 @@ import {
 } from "../_shared/ghl.ts";
 
 // Deal status → GHL pipeline stage name (matched case-insensitively).
+// Known GHL pipeline IDs (5 pipelines exist; don't rely on order).
+const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+const VCF_PIPELINE_ID = "nsmH6jIeVA0SsZMMq4LC";
+
 const STAGE_BY_STATUS: Record<string, string> = {
   new: "New Lead",
   contacted: "Contacted",
@@ -176,18 +180,23 @@ Deno.serve(async (req) => {
           warning: "No GHL pipeline found — create the 9-stage pipeline in GHL, then re-sync to attach an opportunity.",
         });
       }
-      // Pick the right pipeline by deal type (MCA vs VCF) — match by stage names.
+      // Pick the right pipeline by deal type. Prefer the known pipeline ID
+      // (5 pipelines exist in the account, incl. an inactive Marketing one), and
+      // fall back to a stage-name match if the IDs ever change.
       const isVcf = d.deal_type === "vcf";
-      const pipeline = (isVcf
-        ? pl.data.pipelines.find((p) => {
-            const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
-            return n.has("new lead (distressed)") || n.has("servicing / monitoring");
-          })
-        : pl.data.pipelines.find((p) => {
-            const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
-            return n.has("new lead") && n.has("funded");
-          })
-      ) ?? pl.data.pipelines[0];
+      const wantId = isVcf ? VCF_PIPELINE_ID : MCA_PIPELINE_ID;
+      const pipeline =
+        pl.data.pipelines.find((p) => p.id === wantId) ??
+        (isVcf
+          ? pl.data.pipelines.find((p) => {
+              const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
+              return n.has("new lead (distressed)") || n.has("servicing / monitoring");
+            })
+          : pl.data.pipelines.find((p) => {
+              const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
+              return n.has("new lead") && n.has("funded");
+            })
+        ) ?? pl.data.pipelines[0];
 
       // Won / Lost are GHL opportunity STATUSES, not stages: funded => won,
       // declined/dead => lost (removed from the active board). Everything else is open.

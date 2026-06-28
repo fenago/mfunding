@@ -29,23 +29,40 @@
 
 **Automations (PART 3)**
 - [x] **MCA 01 — Speed to Lead** (New Lead) — PUBLISHED (email → round-robin assign → call task)
-- [ ] **Opt-Out / DNC gate** — IN PROGRESS (build first; overrides all)
+- [x] **Opt-Out / DNC** — handled **natively by GHL** for email-only: the email unsubscribe footer auto-sets DND-email and stops sends (and GHL auto-DNDs on SMS "STOP" if SMS is ever enabled). A custom keyword workflow isn't cleanly buildable — the "Customer Replied" trigger exposes no message-body filter, so it can't gate on STOP without DNC-tagging *every* reply. Decision: rely on native DND. (An inert Draft "MCA 00C" exists, unpublished.)
 - [ ] **MCA 02 — No-Answer Nurture**
-- [ ] **MCA 03 — Qualifying**
-- [ ] **MCA 04 — Application + Disclosure**
-- [ ] **MCA 05 — Docs Collected**
+- [x] **MCA 03 — Qualifying** — PUBLISHED (what's-next / qualification email)
+- [x] **MCA 04 — Application Sent** — PUBLISHED (finish-your-application nudge email)
+- [x] **MCA 05 — Docs Collected** — PUBLISHED (docs-received confirmation email)
 - [x] **MCA 06 — Bank Statements** — PUBLISHED (request w/ upload link → wait 2d → reminder → call task)
-- [ ] **MCA 07 — Submitted to Funders** *(Gap B — see note)*
+- [x] **MCA 07 — Submitted to Funders** → handled by the **`submit-to-funders` edge function** (Gap B), NOT a GHL workflow
 - [ ] **MCA 08 — Offer Received**
-- [ ] **MCA 09 — Offer Presented**
+- [x] **MCA 09 — Offer Presented** — PUBLISHED (offer-ready nudge email)
 - [ ] **MCA 10 — Offer Accepted** *(+ e-sign via GHL Documents)*
 - [x] **MCA 11 — Funded** — PUBLISHED (congrats + review + $100 referral → call task)
-- [ ] **MCA 12 — Renewal Eligible**
+- [x] **MCA 12 — Renewal Eligible** — PUBLISHED (renewal-offer email → renewal call task)
 - [ ] **MCA 13 — Mass Reactivation**
 
 **Cross-cutting (recommend as CODE, not GHL)**
-- [ ] **Gap B — funder submission**: best as an app edge function that emails the *selected* funders' `submission_email` on "Submit" (mirrors the Gap A fix). A GHL workflow would blast all funders blindly.
-- [ ] **VCF automations**: needs the VCF pipeline automations in GHL **and** a `vcf` deal_type + VCF statuses in the app DB/`ghl-sync` (MCA-only today).
+- [x] **Gap B — funder submission**: `submit-to-funders` edge function DEPLOYED (v2, **sends via GHL** — no Resend/ESP). `dealService.submitToFunder/submitToMultipleFunders` call it → for each selected funder it upserts the funder as a GHL contact (tagged `funder`) and emails the deal-package summary through GHL conversations, records the submission, advances the stage. **No API key needed** (uses the GHL vault creds). Doc-attachments note: bank statements collected via the GHL upload form live in GHL, so it emails a deal summary + "full file on reply"; syncing docs into Supabase for attachments is a future enhancement.
+**VCF (debt relief / consolidation) — separate product, status:**
+- [x] DB: `deals.deal_type` includes `vcf`; `status` has 8 VCF stages (`new_distressed`→`servicing`); `vcf_active_positions/total_balance/daily_debit/current_funders/hardship_reason` columns (migration `20260627_vcf_deal_type_and_stages.sql`)
+- [x] **`vcf-intake` edge function** DEPLOYED + tested end-to-end — creates customer + VCF deal + GHL contact + VCF-pipeline opportunity
+- [x] **`VCFReliefPage.tsx`** React intake form → `vcf-intake`
+- [x] GHL **VCF Pipeline** (8 stages) live; Value Capital tagged `vcf`
+- [x] **VCF Documents Upload** GHL form BUILT (`wVbM48NEwDi2SyCuVGE0`) — fields `vcf_existing_advance_agreements` (max 10), `vcf_bank_statements` (max 6). Link: `https://link.vibereach.io/widget/form/wVbM48NEwDi2SyCuVGE0`
+- **VCF stage automations** (8, email-only, empathetic debt-relief tone):
+  - [x] **VCF 01 — New Lead (Distressed)** PUBLISHED (empathetic intake email → urgent specialist call task)
+  - [ ] VCF 02 Hardship Consultation
+  - [ ] VCF 03 Positions & Balances Analysis (emails the VCF upload-form link)
+  - [ ] VCF 04 Strategy & Proposal
+  - [ ] VCF 05 Agreement Sent (+ e-sign)
+  - [ ] VCF 06 Submitted to VCF
+  - [ ] VCF 07 Restructure Executed
+  - [ ] VCF 08 Servicing & Monitoring
+- [ ] **Submit-to-VCF** (Gap-B equivalent) → email package to `partnerprogram@valuecapitalfunding.com` (extend `submit-to-funders` or a small VCF action)
+- [ ] **VCF stage sync GHL→app** — `ghl-webhook` stage map is MCA-only; add VCF stage→status mapping so VCF opportunities mirror back
+- [ ] **Compliance**: debt-relief disclosures differ from MCA — no guaranteed-results/savings claims; empathetic, careful language
 - [ ] **E-sign**: GHL native Documents & Contracts (no DocuSign) — templates + send-for-signature in MCA 10 / VCF Agreement Sent.
 
 ---

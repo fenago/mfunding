@@ -176,3 +176,22 @@ export async function addContactTags(cfg: GhlConfig, contactId: string, tags: st
     cfg, "POST", `/contacts/${contactId}/tags`, { tags },
   );
 }
+
+// ---- Email (send through GHL, not a 3rd-party ESP) ---------------------------
+
+/** Send an Email to a contact via GHL conversations. The contact must exist
+ * (use upsertContact first). GHL handles the sending domain/deliverability. */
+export async function sendEmailToContact(
+  cfg: GhlConfig,
+  contactId: string,
+  subject: string,
+  html: string,
+  opts?: { emailFrom?: string; text?: string },
+) {
+  const body: Record<string, unknown> = { type: "Email", contactId, subject, html };
+  if (opts?.text) body.message = opts.text;
+  if (opts?.emailFrom) body.emailFrom = opts.emailFrom;
+  return await ghlFetch<{ messageId?: string; conversationId?: string }>(
+    cfg, "POST", "/conversations/messages", body,
+  );
+}

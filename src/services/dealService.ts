@@ -281,24 +281,10 @@ export async function submitToFunder(
   lenderId: string,
   notes?: string
 ): Promise<DealSubmission> {
-  const { data: submission, error } = await supabase
-    .from("deal_submissions")
-    .insert({
-      deal_id: dealId,
-      lender_id: lenderId,
-      status: "submitted",
-      submitted_at: new Date().toISOString(),
-      notes: notes || null,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    console.error("Error submitting to funder:", error);
-    throw error;
-  }
-
-  return submission as DealSubmission;
+  const rows = await submitToMultipleFunders(dealId, [lenderId], notes);
+  const row = rows.find((r) => r.lender_id === lenderId) ?? rows[0];
+  if (!row) throw new Error("Submission was not recorded");
+  return row as DealSubmission;
 }
 
 /** Submit one deal to several funders at once (3–5 in parallel) and advance the
@@ -309,25 +295,30 @@ export async function submitToMultipleFunders(
   notes?: string,
 ): Promise<DealSubmission[]> {
   if (lenderIds.length === 0) return [];
-  const rows = lenderIds.map((lender_id) => ({
-    deal_id: dealId,
-    lender_id,
-    status: "submitted" as const,
-    submitted_at: new Date().toISOString(),
-    notes: notes || null,
-  }));
-  const { data, error } = await supabase.from("deal_submissions").insert(rows).select();
+  // Gap B: the edge function records each submission, EMAILS each funder's
+  // submission_email with the deal package summary, advances the deal to
+  // "submitted_to_funder", and logs the send. (Replaces the old insert-only flow.)
+  const { data, error } = await supabase.functions.invoke("submit-to-funders", {
+    body: { dealId, lenderIds, notes: notes || null },
+  });
   if (error) {
-    console.error("Error submitting to multiple funders:", error);
+    console.error("Error submitting to funders:", error);
     throw error;
   }
+  if (data?.warning) console.warn("submit-to-funders:", data.warning);
   // Advance the deal stage (also auto-syncs the GHL opportunity). Best-effort.
   try {
     await updateDealStatus(dealId, "submitted_to_funder");
   } catch (e) {
     console.error("Failed to advance deal to submitted_to_funder:", e);
   }
-  return (data || []) as DealSubmission[];
+  // Return the resulting submission rows for the UI.
+  const { data: submissionRows } = await supabase
+    .from("deal_submissions")
+    .select("*")
+    .eq("deal_id", dealId)
+    .in("lender_id", lenderIds);
+  return (submissionRows || []) as DealSubmission[];
 }
 
 export async function updateSubmission(
