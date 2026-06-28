@@ -19,7 +19,7 @@ const footerLinks = {
   resources: [
     { name: 'How It Works', href: '/#how-it-works' },
     { name: 'Success Stories', href: '/#case-study' },
-    { name: 'Apply Now', href: '/apply' },
+    { name: 'Apply Now', href: '/#apply' },
   ],
   company: [
     { name: 'About Us', href: '/about' },

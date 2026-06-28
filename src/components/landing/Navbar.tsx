@@ -140,7 +140,7 @@ export default function Navbar() {
             )}
             <motion.div whileHover={{ scale: 1.05, boxShadow: '0 0 20px rgba(0, 212, 157, 0.4)' }} whileTap={{ scale: 0.95 }}>
               <Link
-                to="/apply"
+                to="/#apply"
                 className="relative overflow-hidden inline-block bg-gradient-to-r from-mint-green to-teal text-midnight-blue font-semibold text-sm px-6 py-2.5 rounded-lg"
               >
                 <span className="relative z-10">Apply Now</span>
@@ -277,7 +277,7 @@ export default function Navbar() {
                 transition={{ delay: 0.5 }}
               >
                 <Link
-                  to="/apply"
+                  to="/#apply"
                   className="block bg-gradient-to-r from-mint-green to-teal text-midnight-blue font-semibold text-center py-3 px-4 rounded-lg mt-2"
                   onClick={() => setIsMobileMenuOpen(false)}
                 >

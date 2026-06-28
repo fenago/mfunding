@@ -408,7 +408,7 @@ export default function HowItWorksSection() {
             className="text-center mt-12"
           >
             <MagneticButton>
-              <a href="/apply">
+              <a href="#apply">
                 <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} className="relative">
                   <motion.div
                     className="absolute inset-0 bg-mint-green rounded-xl blur-xl opacity-30"

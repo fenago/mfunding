@@ -407,7 +407,7 @@ export default function CRECalculator({ defaultProduct }: CRECalculatorProps) {
                   </p>
 
                   <Link
-                    to="/apply"
+                    to="/#apply"
                     className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold transition-opacity hover:opacity-90"
                     style={{ backgroundColor: product.color }}
                   >

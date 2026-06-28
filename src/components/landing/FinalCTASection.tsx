@@ -267,7 +267,7 @@ export default function FinalCTASection() {
             className="mb-10"
           >
             <MagneticButton strength={0.15}>
-              <a href="/apply">
+              <a href="#apply">
                 <motion.div
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.98 }}

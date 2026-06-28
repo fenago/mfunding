@@ -193,7 +193,7 @@ export default function ContactPage() {
                     Skip the wait. Apply in 5 minutes and get funding options within 24 hours.
                   </p>
                   <Link
-                    to="/apply"
+                    to="/#apply"
                     className="inline-flex items-center gap-2 bg-mint-green text-midnight-blue font-bold px-5 py-2.5 rounded-lg hover:bg-mint-green/90 transition-colors text-sm"
                   >
                     Apply Now

@@ -445,7 +445,7 @@ export default function LoanCalculator({ defaultProduct }: LoanCalculatorProps) 
                     </p>
                   </div>
                   <Link
-                    to="/apply"
+                    to="/#apply"
                     className="inline-flex items-center gap-2 text-base font-semibold text-gray-700 dark:text-gray-300 hover:text-[#4CAF50] transition-colors"
                   >
                     Apply Now
