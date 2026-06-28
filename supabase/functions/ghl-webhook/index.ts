@@ -96,13 +96,33 @@ Deno.serve(async (req) => {
       await handleOpportunity(db, evt);
     } else {
       // Acknowledge unhandled events so GHL doesn't retry forever.
+      await logEvent(db, evt, type, "ignored", "unhandled event type");
       return json({ ok: true, ignored: type || "unknown" });
     }
+    await logEvent(db, evt, type, "processed", null);
     return json({ ok: true, type });
   } catch (e) {
-    return json({ ok: false, type, error: String(e instanceof Error ? e.message : e) }, 500);
+    const msg = String(e instanceof Error ? e.message : e);
+    await logEvent(db, evt, type, "error", msg);
+    return json({ ok: false, type, error: msg }, 500);
   }
 });
+
+// Best-effort inbound event log (observability for Gap A/B). Never throws.
+async function logEvent(db: DB, evt: Record<string, unknown>, type: string, outcome: string, detail: string | null) {
+  try {
+    const c = (evt.contact ?? {}) as Record<string, unknown>;
+    const o = (evt.opportunity ?? {}) as Record<string, unknown>;
+    await db.from("ghl_webhook_events").insert({
+      event_type: type || null,
+      ghl_contact_id: (c.id ?? evt.contactId ?? o.contactId ?? null) as string | null,
+      ghl_opportunity_id: (o.id ?? evt.opportunityId ?? evt.id ?? null) as string | null,
+      outcome,
+      detail,
+      payload: evt,
+    });
+  } catch { /* best-effort */ }
+}
 
 type DB = ReturnType<typeof serviceClient>;
 

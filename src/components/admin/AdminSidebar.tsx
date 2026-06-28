@@ -59,6 +59,7 @@ const navItems: NavItem[] = [
   { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: ["super_admin"] },
   { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: ["super_admin"] },
   { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: ["super_admin"] },
+  { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: ["super_admin"] },
 ];
 

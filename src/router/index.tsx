@@ -48,6 +48,7 @@ import RenewalsPage from "../pages/admin/RenewalsPage.tsx";
 import DocumentReviewPage from "../pages/admin/DocumentReviewPage.tsx";
 import LeadSourcesPage from "../pages/admin/LeadSourcesPage.tsx";
 import ReferralPartnersPage from "../pages/admin/ReferralPartnersPage.tsx";
+import SyncLogPage from "../pages/admin/SyncLogPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -356,6 +357,12 @@ const router = createBrowserRouter([
                 path: "compliance",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <CompliancePage /> }],
+              },
+              // GHL sync log (super_admin only)
+              {
+                path: "sync-log",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <SyncLogPage /> }],
               },
               // Settings (super_admin only)
               {
