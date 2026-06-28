@@ -45,6 +45,7 @@ import IntegrationsPage from "../pages/admin/settings/IntegrationsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
 import CompliancePage from "../pages/admin/CompliancePage.tsx";
 import RenewalsPage from "../pages/admin/RenewalsPage.tsx";
+import DocumentReviewPage from "../pages/admin/DocumentReviewPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -331,6 +332,11 @@ const router = createBrowserRouter([
               {
                 path: "renewals",
                 element: <RenewalsPage />,
+              },
+              // Document review (admin + super_admin)
+              {
+                path: "documents",
+                element: <DocumentReviewPage />,
               },
               // Compliance disclosures (super_admin only)
               {

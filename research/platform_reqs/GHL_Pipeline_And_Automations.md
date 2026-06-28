@@ -53,7 +53,7 @@
 - [x] **VCF Documents Upload** GHL form BUILT (`wVbM48NEwDi2SyCuVGE0`) — fields `vcf_existing_advance_agreements` (max 10), `vcf_bank_statements` (max 6). Link: `https://link.vibereach.io/widget/form/wVbM48NEwDi2SyCuVGE0`
 - **VCF stage automations** (8, email-only, empathetic debt-relief tone):
   - [x] **VCF 01 — New Lead (Distressed)** PUBLISHED (empathetic intake email → urgent specialist call task)
-  - [ ] VCF 02 Hardship Consultation
+  - [x] **VCF 02 — Hardship Consultation** PUBLISHED (empathetic what-to-expect email)
   - [x] **VCF 03 — Positions & Balances Analysis** PUBLISHED (emails the VCF upload-form link for agreements + bank statements)
   - [ ] VCF 04 Strategy & Proposal
   - [ ] VCF 05 Agreement Sent (+ e-sign)
