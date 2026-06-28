@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ShieldCheckIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import { getBankAnalysisForDeal } from "../../services/bankAnalysisService";
 import {
-  scoreDeal, saveAssessment, getAssessmentForDeal,
+  scoreDeal, saveAssessment, getAssessmentForDeal, getActiveScorecard,
   type UWResult, type UWInputs, type UnderwritingAssessment,
 } from "../../services/underwritingService";
 import { updateDealStatus } from "../../services/dealService";
@@ -30,9 +30,10 @@ export default function UnderwritingCard({ deal, onDecision }: Props) {
 
   useEffect(() => {
     (async () => {
-      const [bank, prior] = await Promise.all([
+      const [bank, prior, scorecard] = await Promise.all([
         getBankAnalysisForDeal(deal.id).catch(() => null),
         getAssessmentForDeal(deal.id).catch(() => null),
+        getActiveScorecard().catch(() => undefined),
       ]);
       setHasBank(!!bank);
       setBankId(bank?.id ?? null);
@@ -46,7 +47,7 @@ export default function UnderwritingCard({ deal, onDecision }: Props) {
         time_in_business: c?.time_in_business ?? null,
         credit_score_range: (c as { credit_score_range?: string } | undefined)?.credit_score_range ?? null,
       };
-      setResult(scoreDeal(inputs));
+      setResult(scoreDeal(inputs, scorecard));
       setSaved(prior);
       setLoading(false);
     })();

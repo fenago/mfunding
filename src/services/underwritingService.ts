@@ -27,8 +27,32 @@ function parseCredit(range?: string | null): number | null {
   return m ? parseInt(m[0], 10) : null;
 }
 
-/** Weighted scorecard. Start at 100, deduct for risk factors. Tune freely. */
-export function scoreDeal(i: UWInputs): UWResult {
+/** Tunable scorecard weights/thresholds. Editable at /admin/platform-config. */
+export interface ScorecardConfig {
+  nsf_per: number; nsf_max: number; nsf_flag_at: number;
+  neg_per: number; neg_max: number; neg_flag_at: number;
+  pos_per: number; pos_max: number; pos_flag_at: number;
+  adb_low1: number; adb_low1_deduct: number; adb_low2: number; adb_low2_deduct: number;
+  rev_min: number; rev_deduct: number;
+  tib_min: number; tib_deduct: number; tib_flag_at: number;
+  credit_min: number; credit_deduct: number;
+  approve_at: number; review_at: number;
+}
+
+// Defaults reproduce the original hardcoded scorecard exactly.
+export const DEFAULT_SCORECARD: ScorecardConfig = {
+  nsf_per: 5, nsf_max: 25, nsf_flag_at: 3,
+  neg_per: 3, neg_max: 20, neg_flag_at: 5,
+  pos_per: 10, pos_max: 30, pos_flag_at: 3,
+  adb_low1: 2500, adb_low1_deduct: 25, adb_low2: 5000, adb_low2_deduct: 15,
+  rev_min: 15000, rev_deduct: 20,
+  tib_min: 12, tib_deduct: 10, tib_flag_at: 6,
+  credit_min: 550, credit_deduct: 10,
+  approve_at: 70, review_at: 45,
+};
+
+/** Weighted scorecard. Start at 100, deduct for risk factors. */
+export function scoreDeal(i: UWInputs, c: ScorecardConfig = DEFAULT_SCORECARD): UWResult {
   let score = 100;
   const flags: string[] = [];
   const breakdown: UWFactor[] = [];
@@ -38,32 +62,57 @@ export function scoreDeal(i: UWInputs): UWResult {
   };
 
   const nsf = i.nsf_count ?? 0;
-  if (nsf > 0) { deduct("NSFs", Math.min(nsf * 5, 25), `${nsf} NSF(s)`); if (nsf >= 3) flags.push(`${nsf} NSFs`); }
+  if (nsf > 0) { deduct("NSFs", Math.min(nsf * c.nsf_per, c.nsf_max), `${nsf} NSF(s)`); if (nsf >= c.nsf_flag_at) flags.push(`${nsf} NSFs`); }
 
   const neg = i.negative_days ?? 0;
-  if (neg > 0) { deduct("Negative days", Math.min(neg * 3, 20), `${neg} negative day(s)`); if (neg >= 5) flags.push(`${neg} negative days`); }
+  if (neg > 0) { deduct("Negative days", Math.min(neg * c.neg_per, c.neg_max), `${neg} negative day(s)`); if (neg >= c.neg_flag_at) flags.push(`${neg} negative days`); }
 
   const pos = i.existing_mca_positions ?? 0;
-  if (pos > 0) { deduct("Existing MCA positions", Math.min(pos * 10, 30), `${pos} active position(s)`); if (pos >= 3) flags.push(`Stacked: ${pos} positions`); }
+  if (pos > 0) { deduct("Existing MCA positions", Math.min(pos * c.pos_per, c.pos_max), `${pos} active position(s)`); if (pos >= c.pos_flag_at) flags.push(`Stacked: ${pos} positions`); }
 
   const adb = i.average_daily_balance ?? null;
   if (adb !== null) {
-    if (adb < 2500) { deduct("Low ADB", 25, `ADB $${adb.toLocaleString()}`); flags.push("ADB under $2.5k"); }
-    else if (adb < 5000) { deduct("Low ADB", 15, `ADB $${adb.toLocaleString()}`); flags.push("ADB under $5k"); }
+    if (adb < c.adb_low1) { deduct("Low ADB", c.adb_low1_deduct, `ADB $${adb.toLocaleString()}`); flags.push(`ADB under $${(c.adb_low1 / 1000).toLocaleString()}k`); }
+    else if (adb < c.adb_low2) { deduct("Low ADB", c.adb_low2_deduct, `ADB $${adb.toLocaleString()}`); flags.push(`ADB under $${(c.adb_low2 / 1000).toLocaleString()}k`); }
   }
 
   const rev = i.avg_monthly_revenue ?? null;
-  if (rev !== null && rev < 15000) { deduct("Low revenue", 20, `$${rev.toLocaleString()}/mo`); flags.push("Revenue under $15k/mo"); }
+  if (rev !== null && rev < c.rev_min) { deduct("Low revenue", c.rev_deduct, `$${rev.toLocaleString()}/mo`); flags.push(`Revenue under $${(c.rev_min / 1000).toLocaleString()}k/mo`); }
 
   const tib = i.time_in_business ?? null;
-  if (tib !== null && tib < 12) { deduct("Time in business", 10, `${tib} months`); if (tib < 6) flags.push("Under 6 months in business"); }
+  if (tib !== null && tib < c.tib_min) { deduct("Time in business", c.tib_deduct, `${tib} months`); if (tib < c.tib_flag_at) flags.push(`Under ${c.tib_flag_at} months in business`); }
 
   const credit = parseCredit(i.credit_score_range);
-  if (credit !== null && credit < 550) { deduct("Low credit", 10, i.credit_score_range ?? ""); flags.push("Credit under 550"); }
+  if (credit !== null && credit < c.credit_min) { deduct("Low credit", c.credit_deduct, i.credit_score_range ?? ""); flags.push(`Credit under ${c.credit_min}`); }
 
   score = Math.max(0, Math.round(score));
-  const recommendation = score >= 70 ? "approve" : score >= 45 ? "review" : "decline";
+  const recommendation = score >= c.approve_at ? "approve" : score >= c.review_at ? "review" : "decline";
   return { score, recommendation, flags, breakdown };
+}
+
+/** The active scorecard config (falls back to DEFAULT_SCORECARD). */
+export async function getActiveScorecard(): Promise<ScorecardConfig> {
+  const { data } = await supabase
+    .from("underwriting_scorecards")
+    .select("config")
+    .eq("is_active", true)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return { ...DEFAULT_SCORECARD, ...((data?.config as Partial<ScorecardConfig>) ?? {}) };
+}
+
+/** Upsert the active scorecard config (single active row). */
+export async function saveScorecard(config: ScorecardConfig): Promise<void> {
+  const { data: existing } = await supabase
+    .from("underwriting_scorecards").select("id").eq("is_active", true).limit(1).maybeSingle();
+  if (existing) {
+    const { error } = await supabase.from("underwriting_scorecards").update({ config }).eq("id", existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from("underwriting_scorecards").insert({ name: "Default", config, is_active: true });
+    if (error) throw error;
+  }
 }
 
 export interface UnderwritingAssessment {
