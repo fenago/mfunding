@@ -47,6 +47,7 @@ const navItems: NavItem[] = [
   { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: ["admin", "super_admin"] },
   { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ["admin", "super_admin"] },
   { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ["super_admin"] },
+  { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: ["admin", "super_admin"] },
   { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: ["admin", "super_admin"] },
   { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: ["admin", "super_admin"] },
   { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: ["super_admin"] },

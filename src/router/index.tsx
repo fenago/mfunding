@@ -63,6 +63,7 @@ const SyncLogPage = lazy(() => import("../pages/admin/SyncLogPage.tsx"));
 const PlatformConfigPage = lazy(() => import("../pages/admin/PlatformConfigPage.tsx"));
 const SequencesPage = lazy(() => import("../pages/admin/SequencesPage.tsx"));
 const ResourcesAdminPage = lazy(() => import("../pages/admin/ResourcesAdminPage.tsx"));
+const FunderGuidePage = lazy(() => import("../pages/admin/FunderGuidePage.tsx"));
 const DealListPage = lazy(() => import("../pages/admin/deals/DealListPage.tsx"));
 const DealDetailPage = lazy(() => import("../pages/admin/deals/DealDetailPage.tsx"));
 
@@ -402,6 +403,11 @@ export const routes: RouteObject[] = [
               {
                 path: "sequences",
                 element: <SequencesPage />,
+              },
+              // Funder submission guide (admin + super_admin)
+              {
+                path: "funder-guide",
+                element: <FunderGuidePage />,
               },
               // Resources / blog admin (super_admin only)
               {

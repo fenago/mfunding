@@ -25,6 +25,7 @@
 | **Mantis Funding** | 🟡 | MCA | *TBD* — contact Anthony Pata `a.pata@mantisfunding.com` / (561) 593-8317 | — |
 | **CapitaWize** | 🟡 | MCA | `info@capitawize.com` · apply `capitawize.com/apply` | — |
 | **Fantastic Funding** | 🟡 | MCA, Term | `subs@fantastic-funding.com` | — |
+| **MCashAdvance** | 🟡 | MCA | *TBD on approval* · apply `mcashadvance.com/apply-business` | App + 3–6 mo statements |
 
 ---
 
@@ -79,6 +80,7 @@
 - **Use when:** a lead is a startup / pre-revenue and doesn't fit MCA criteria.
 
 ### 🟢 Value Capital Funding (VCF) — the VCF product line (debt relief)
+- **Three solutions** (per valuecapitalfunding.com/partner-program): **(1) FDIC bank-rate Term Loans**, **(2) Lines of Credit**, **(3) MCA Debt Restructuring.** Founded 2025; Boca Raton, FL. Partner program is open to commercial loan brokers, accountants, credit-repair pros, and business consultants. Public MCA debt calculator: `valuecapitalfunding.com/mca-debt-calculator/` (good lead-gen tool to share).
 - **Submit ALL case files to:** `partnerprogram@valuecapitalfunding.com`. **Commission 3–7%.** Replies on DR files in 1–2 hours.
 - **Two programs:**
   - **FDIC Bank Term Loan (refinance MCAs into one affordable loan):** (1) VCF 1-page Working Capital Application, (2) client's full **Experian** report (one PDF), (3) **6** most recent business bank statements (each month a separate PDF, all pages), (4) completed Business Debt Schedule, (5) most recent business tax return, (6) owner DL front+back, (7) voided business check / routing+account (title matches app), (8) if refinancing MCAs, all MCA contracts.
@@ -98,6 +100,7 @@
 | **Mantis Funding** | MCA | Anthony Pata reached out (BD Coordinator) — **book the intro call**: `a.pata@mantisfunding.com`, (561) 593-8317. |
 | **CapitaWize** | MCA | Applied 2026-06-26. `info@capitawize.com` / (786) 744-5705; apply `capitawize.com/apply`; ISO agreement via Adobe e-sign. |
 | **Fantastic Funding** | MCA, Term | Applied 2026-06-26. Direct funder, 100% ISO-driven, fast approvals. Deals → `subs@fantastic-funding.com`, (385) 386-3612, Salt Lake City UT. |
+| **MCashAdvance** | MCA | Applied 2026-06-26. **Direct MCA provider.** Advance **$5K–$900K**, factor **1.1–1.5**, holdback 10–25%, repay 3–18 mo, same-day approval / 1–3 day funding. Criteria: **$8,000+/mo revenue (or $7,500/mo card sales), 6+ mo in business, 500+ FICO**, 3–6 mo statements, soft pull only. Apply: `mcashadvance.com/apply-business`. **Confirm ISO submission email + commission on approval.** |
 
 ---
 
@@ -133,6 +136,26 @@ GoKapital is a **broker with 50+ private lenders** (so they cover scenarios our 
 **Docs for pre-approval:** 1003 real estate loan application + 3 months bank statements + purchase agreement (if buying) / recent mortgage statement (refi) + recent credit report + appraisal (if available). Rental adds rent roll; construction adds investment history, schedule of real estate owned, scope of work/use of funds, plans & permits.
 
 **Property types:** single-family, multifamily, condos, townhouses, offices, industrial/warehouse, mixed-use, retail. **Won't lend on:** primary residences, land (raw), mobile homes, or too-rural areas. International not available. No-credit-check options exist. Real-estate submit also → `deals@gokapital.com`; broker line `broker@gokapital.com`.
+
+---
+
+## 5c. Commission / points — what we typically earn
+
+**Our internal economics (CLAUDE.md):** avg new MCA deal ≈ **8 points** ($4,000 on $50K); renewals ≈ 6 points. Closer splits: 50% company-lead / 70% self-gen / 35% renewal. Use these per-funder figures to know the gross before split.
+
+| Funder | Product | Commission we earn | Confirmed? |
+|---|---|---|---|
+| **Corfin Group** | MCA | **up to 12 points** | ✓ our records |
+| **Reliant Funding** | MCA | **~10 points** (LCF high-risk billed separately) | ✓ our records |
+| **GoKapital** | MCA / RBF | **~6 points** | ✓ our records |
+| **GoKapital** | Term / SBA / Equipment / Real Estate | **~1–3% of loan** (varies by product/lender) | ~ typical, confirm |
+| **Value Capital Funding** | Debt relief (FDIC term / restructuring) | **3–7%** of funded/restructured amount | ✓ our records |
+| **United Capital Source** | MCA / LOC / SBA | **~8–12 points** (MCA) | ~ typical, confirm w/ Colleen |
+| **Funderial** | MCA / LOC | points | ⚠️ confirm w/ rep |
+| **Guidant Financial** | Startup / 401k rollover | **flat referral fee per funded client** (not points) | ⚠️ confirm exact $ |
+| **Greenbox / Kapitus / Lionsford / Mantis / CapitaWize / Fantastic** | MCA | **MCA ISO typically 8–15 points** | ~ industry-typical, confirm on approval |
+
+> **Note:** MCA "points" = % of the funded amount paid by the funder (e.g., 10 points on a $50K advance = $5,000). Term/SBA/real-estate deals usually pay a smaller % but on much larger principal. Always confirm the exact commission grid in each funder's ISO agreement.
 
 ---
 
