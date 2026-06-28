@@ -56,8 +56,8 @@
   - [x] **VCF 02 — Hardship Consultation** PUBLISHED (empathetic what-to-expect email)
   - [x] **VCF 03 — Positions & Balances Analysis** PUBLISHED (emails the VCF upload-form link for agreements + bank statements)
   - [x] **VCF 04 — Strategy & Proposal** PUBLISHED (plan-ready review email)
-  - [ ] VCF 05 Agreement Sent (+ e-sign)
-  - [ ] VCF 06 Submitted to VCF
+  - [x] **VCF 05 — Agreement Sent** PUBLISHED (review-and-sign email; signing via native GHL Documents & Contracts)
+  - [x] **VCF 06 — Submitted to VCF** PUBLISHED (merchant "file submitted, what's next" reassurance email) — note: funder-side email to VCF + GHL→app stage sync is task #13 (code)
   - [ ] VCF 07 Restructure Executed
   - [ ] VCF 08 Servicing & Monitoring
 - [ ] **Submit-to-VCF** (Gap-B equivalent) → email package to `partnerprogram@valuecapitalfunding.com` (extend `submit-to-funders` or a small VCF action)

@@ -1,15 +1,23 @@
 import { useEffect, useState } from "react";
-import { ShieldExclamationIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
-import { listDisclosures, updateDisclosure, type Disclosure } from "../../services/complianceService";
+import { ShieldExclamationIcon, CheckCircleIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import {
+  listDisclosures, updateDisclosure, getDisclosureExposure,
+  type Disclosure, type DisclosureExposure,
+} from "../../services/complianceService";
 
 export default function CompliancePage() {
   const [rows, setRows] = useState<Disclosure[]>([]);
+  const [exposure, setExposure] = useState<DisclosureExposure[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ title: string; body: string }>({ title: "", body: "" });
   const [savingId, setSavingId] = useState<string | null>(null);
 
   useEffect(() => { listDisclosures().then(setRows).catch(() => {}).finally(() => setLoading(false)); }, []);
+  useEffect(() => { getDisclosureExposure().then(setExposure).catch(() => {}); }, []);
+
+  // Alert when open deals sit in a state whose disclosure isn't finalized.
+  const alerts = exposure.filter((e) => e.open_deals > 0 && !e.finalized);
 
   function startEdit(d: Disclosure) {
     setEditing(d.id);
@@ -45,6 +53,27 @@ export default function CompliancePage() {
           Replace each <code>TODO</code> with the real legal language for that state.
         </p>
       </div>
+
+      {/* Missing-disclosure alerts — open deals in states without finalized text */}
+      {alerts.length > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <ExclamationTriangleIcon className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+            <h2 className="font-semibold text-amber-800 dark:text-amber-200">Disclosure gaps on open deals</h2>
+          </div>
+          <p className="text-sm text-amber-700 dark:text-amber-300 mb-3">
+            These states have open deals but the disclosure text isn't finalized — finalize before any offer is presented.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {alerts.map((a) => (
+              <span key={a.state} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-gray-800 border border-amber-300 dark:border-amber-700 text-sm">
+                <strong className="text-gray-900 dark:text-white">{a.state_name}</strong>
+                <span className="text-amber-700 dark:text-amber-300">{a.open_deals} open</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-sm text-gray-400">Loading…</p>

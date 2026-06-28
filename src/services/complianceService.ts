@@ -39,6 +39,44 @@ export async function getDisclosure(state: string, productType = "all"): Promise
   return (data as Disclosure) ?? null;
 }
 
+export interface DisclosureExposure {
+  state: string;
+  state_name: string;
+  open_deals: number;
+  is_active: boolean;
+  finalized: boolean; // attorney text in place (not a TODO/template)
+}
+
+// Deal statuses that no longer need a fresh disclosure decision.
+const TERMINAL = ["declined", "dead", "funded", "renewal_eligible", "restructure_executed", "servicing"];
+
+/** Compliance exposure: open deals in disclosure-law states, flagged by whether
+ * that state's disclosure content is finalized (vs still a TODO/template). */
+export async function getDisclosureExposure(): Promise<DisclosureExposure[]> {
+  const disclosures = await listDisclosures();
+
+  const { data: deals } = await supabase
+    .from("deals")
+    .select("id, status, customer:customers!customer_id ( address_state )")
+    .not("status", "in", `(${TERMINAL.join(",")})`);
+
+  // Count open deals per state (match 2-letter code or full name, case-insensitive).
+  const counts = new Map<string, number>();
+  for (const d of (deals ?? []) as unknown[]) {
+    const cust = (d as { customer?: { address_state?: string | null } | { address_state?: string | null }[] }).customer;
+    const c = Array.isArray(cust) ? cust[0] : cust;
+    const raw = (c?.address_state ?? "").trim().toLowerCase();
+    if (!raw) continue;
+    counts.set(raw, (counts.get(raw) ?? 0) + 1);
+  }
+
+  return disclosures.map((d) => {
+    const open = (counts.get(d.state.toLowerCase()) ?? 0) + (counts.get(d.state_name.toLowerCase()) ?? 0);
+    const finalized = d.is_active && !d.body.trim().startsWith("TODO") && !d.body.includes("TEMPLATE ONLY");
+    return { state: d.state, state_name: d.state_name, open_deals: open, is_active: d.is_active, finalized };
+  });
+}
+
 export async function updateDisclosure(
   id: string,
   patch: Partial<Pick<Disclosure, "title" | "body" | "is_active">>,

@@ -203,6 +203,163 @@ function ComparisonRow({
   );
 }
 
+// ============================================================================
+// Marketing Channel ROI Calculator — "if I put $X into channel Y, what do I get?"
+// Defaults seeded from the 2026 GTM research (research/Momentum_GTM_Strategy_2026.md)
+// ============================================================================
+interface Channel {
+  name: string;
+  costPerUnit: number; // $ per transfer / lead / record
+  unitLabel: string; // "transfer" | "lead" | "record"
+  closeRate: number; // % of units that become a funded deal/file
+  revPerDeal: number; // $ the company nets per funded deal/file
+  note?: string;
+}
+
+const DEFAULT_CHANNELS: Channel[] = [
+  { name: 'Live Transfers', costPerUnit: 75, unitLabel: 'transfer', closeRate: 8, revPerDeal: 4000, note: 'Primary MCA origination. Underwrite 3% floor.' },
+  { name: 'Google Ads (search)', costPerUnit: 200, unitLabel: 'lead', closeRate: 10, revPerDeal: 4000, note: 'CPL $100–300; MCA CPCs $15–45.' },
+  { name: 'Meta Retargeting', costPerUnit: 30, unitLabel: 'lead', closeRate: 6, revPerDeal: 4000, note: 'Your own lists only (Special Ad Category).' },
+  { name: 'Aged Leads + Nurture', costPerUnit: 1, unitLabel: 'lead', closeRate: 2, revPerDeal: 4000, note: 'Cheap volume; labor-heavy via GHL.' },
+  { name: 'UCC Cold Dial (MCA)', costPerUnit: 0.175, unitLabel: 'record', closeRate: 1, revPerDeal: 4000, note: 'Proven borrowers; stacking/renewals.' },
+  { name: 'VCF Debt Relief (stacked UCC)', costPerUnit: 0.4, unitLabel: 'record', closeRate: 0.4, revPerDeal: 10000, note: 'Big ticket. ⚠ Commission paid over the repayment term, not upfront.' },
+];
+
+function ChannelROICalculator() {
+  const [budget, setBudget] = useState(3000);
+  const [channels, setChannels] = useState<Channel[]>(DEFAULT_CHANNELS);
+
+  const update = (i: number, field: keyof Channel, value: number) => {
+    setChannels((prev) => prev.map((c, idx) => (idx === i ? { ...c, [field]: value } : c)));
+  };
+
+  const rows = channels.map((c) => {
+    const units = c.costPerUnit > 0 ? budget / c.costPerUnit : 0;
+    const funded = units * (c.closeRate / 100);
+    const revenue = funded * c.revPerDeal;
+    const profit = revenue - budget;
+    const cpfd = funded > 0 ? budget / funded : Infinity;
+    const roi = budget > 0 ? revenue / budget : 0;
+    return { c, units, funded, revenue, profit, cpfd, roi };
+  });
+
+  const bestRoi = Math.max(...rows.map((r) => r.roi));
+
+  const numInput =
+    'w-20 px-2 py-1 text-sm text-right rounded-md border border-gray-200 bg-gray-50 focus:bg-white focus:border-mint-green outline-none';
+
+  return (
+    <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 mb-8">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-5">
+        <div>
+          <h2 className="text-lg font-semibold text-midnight-blue flex items-center gap-2">
+            <ChartBarIcon className="w-5 h-5 text-mint-green" />
+            Marketing Channel ROI — "What does $X buy me?"
+          </h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Edit any assumption (cost, close %, $/deal). Defaults from the 2026 GTM research.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 bg-mint-green/10 rounded-xl px-4 py-3">
+          <span className="text-sm font-medium text-gray-600">Budget per channel</span>
+          <span className="text-lg font-bold text-mint-green">$</span>
+          <input
+            type="number"
+            value={budget}
+            min={0}
+            step={500}
+            onChange={(e) => setBudget(Math.max(0, Number(e.target.value)))}
+            className="w-28 px-3 py-1.5 text-lg font-bold text-mint-green bg-white border border-mint-green/30 rounded-lg outline-none"
+          />
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500 border-b border-gray-200">
+              <th className="py-2 pr-3 font-semibold">Channel</th>
+              <th className="py-2 px-2 font-semibold text-right">Cost / unit</th>
+              <th className="py-2 px-2 font-semibold text-right">Units</th>
+              <th className="py-2 px-2 font-semibold text-right">Close %</th>
+              <th className="py-2 px-2 font-semibold text-right">$ / deal</th>
+              <th className="py-2 px-2 font-semibold text-right">Funded</th>
+              <th className="py-2 px-2 font-semibold text-right">Revenue</th>
+              <th className="py-2 px-2 font-semibold text-right">Profit</th>
+              <th className="py-2 px-2 font-semibold text-right">Cost/deal</th>
+              <th className="py-2 pl-2 font-semibold text-right">ROI</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ c, units, funded, revenue, profit, cpfd, roi }, i) => (
+              <tr
+                key={c.name}
+                className={`border-b border-gray-100 ${roi === bestRoi && roi > 0 ? 'bg-mint-green/5' : ''}`}
+              >
+                <td className="py-3 pr-3">
+                  <p className="font-semibold text-gray-800">{c.name}</p>
+                  {c.note && <p className="text-xs text-gray-400 max-w-[200px]">{c.note}</p>}
+                </td>
+                <td className="py-3 px-2 text-right">
+                  <input
+                    type="number"
+                    value={c.costPerUnit}
+                    min={0}
+                    step={c.costPerUnit < 5 ? 0.025 : 5}
+                    onChange={(e) => update(i, 'costPerUnit', Math.max(0, Number(e.target.value)))}
+                    className={numInput}
+                  />
+                  <span className="block text-[10px] text-gray-400">/{c.unitLabel}</span>
+                </td>
+                <td className="py-3 px-2 text-right tabular-nums text-gray-600">
+                  {units >= 1000 ? `${(units / 1000).toFixed(1)}K` : Math.round(units).toLocaleString()}
+                </td>
+                <td className="py-3 px-2 text-right">
+                  <input
+                    type="number"
+                    value={c.closeRate}
+                    min={0}
+                    step={0.1}
+                    onChange={(e) => update(i, 'closeRate', Math.max(0, Number(e.target.value)))}
+                    className={numInput.replace('w-20', 'w-16')}
+                  />
+                </td>
+                <td className="py-3 px-2 text-right">
+                  <input
+                    type="number"
+                    value={c.revPerDeal}
+                    min={0}
+                    step={500}
+                    onChange={(e) => update(i, 'revPerDeal', Math.max(0, Number(e.target.value)))}
+                    className={numInput.replace('w-20', 'w-24')}
+                  />
+                </td>
+                <td className="py-3 px-2 text-right tabular-nums font-medium text-gray-800">{funded.toFixed(1)}</td>
+                <td className="py-3 px-2 text-right tabular-nums font-semibold text-ocean-blue">{formatCurrency(revenue)}</td>
+                <td className={`py-3 px-2 text-right tabular-nums font-semibold ${profit >= 0 ? 'text-mint-green' : 'text-red-500'}`}>
+                  {profit >= 0 ? '+' : ''}{formatCurrency(profit)}
+                </td>
+                <td className="py-3 px-2 text-right tabular-nums text-gray-600">
+                  {Number.isFinite(cpfd) ? formatCurrency(cpfd) : '—'}
+                </td>
+                <td className={`py-3 pl-2 text-right tabular-nums font-bold ${roi >= 1 ? 'text-mint-green' : 'text-red-500'}`}>
+                  {roi.toFixed(1)}×
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-gray-500">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-mint-green/40 inline-block" /> Highest ROI channel</span>
+        <span>Cost/deal target &lt; $1,500 (Golden Ratio)</span>
+        <span className="text-amber-600">⚠ VCF commission is back-loaded over the repayment term — revenue here is <em>booked</em>, not month-1 cash.</span>
+      </div>
+    </div>
+  );
+}
+
 export default function UnitEconomicsPage() {
   // Input state
   const [costPerLead, setCostPerLead] = useState(150);
@@ -363,6 +520,10 @@ export default function UnitEconomicsPage() {
       </div>
 
       <div className="p-8">
+        {/* Marketing channel ROI (multi-channel) */}
+        <ChannelROICalculator />
+
+        {/* Single-deal economics (sales rep vs you close) */}
         <div className="grid lg:grid-cols-3 gap-8">
           {/* Left Column - Inputs */}
           <div className="lg:col-span-1 space-y-6">
