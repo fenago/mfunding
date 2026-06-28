@@ -25,6 +25,7 @@ import {
   ShieldExclamationIcon,
   ArrowPathIcon,
   DocumentMagnifyingGlassIcon,
+  UserPlusIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
@@ -51,6 +52,7 @@ const navItems: NavItem[] = [
   { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: ["admin", "super_admin"] },
   { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
   { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: ["super_admin"] },
+  { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: ["admin", "super_admin"] },
   { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: ["super_admin"] },
   { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },

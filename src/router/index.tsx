@@ -47,6 +47,7 @@ import CompliancePage from "../pages/admin/CompliancePage.tsx";
 import RenewalsPage from "../pages/admin/RenewalsPage.tsx";
 import DocumentReviewPage from "../pages/admin/DocumentReviewPage.tsx";
 import LeadSourcesPage from "../pages/admin/LeadSourcesPage.tsx";
+import ReferralPartnersPage from "../pages/admin/ReferralPartnersPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -344,6 +345,11 @@ const router = createBrowserRouter([
                 path: "lead-sources",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <LeadSourcesPage /> }],
+              },
+              // Referral partners (admin + super_admin)
+              {
+                path: "referrals",
+                element: <ReferralPartnersPage />,
               },
               // Compliance disclosures (super_admin only)
               {
