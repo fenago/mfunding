@@ -54,9 +54,9 @@ MCA Closer (1099 independent contractor sales rep working under MFunding)
 | Average deal size | $50,000 |
 | Commission on new deals | 8 points (8% of funded amount) = $4,000 |
 | Commission on renewals | 6 points = $3,000 |
-| Closer split (company leads) | 50% → closer gets $2,000, MFunding keeps $2,000 |
-| Closer split (self-generated leads) | 70% → closer gets $2,800, MFunding keeps $1,200 |
-| Renewal specialist split | 35% → specialist gets $1,050, MFunding keeps $1,950 |
+| Closer split (company leads) | 40% → closer gets $1,600, MFunding keeps $2,400 (escalates to 45% at $250K+/mo, 50% at $500K+/mo) |
+| Closer split (self-generated leads) | 65% → closer gets $2,600, MFunding keeps $1,400 |
+| Renewal split | 30% → closer/specialist gets $1,200, MFunding keeps $2,800 |
 | Sub-ISO override | MFunding keeps 2 points ($1,000), Sub-ISO keeps 6 points ($3,000) |
 | Renewal rate | ~45-60% of merchants seek additional capital within 6 months |
 

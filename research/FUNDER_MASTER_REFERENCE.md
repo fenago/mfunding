@@ -168,7 +168,7 @@ GoKapital is a **broker with 50+ private lenders** (so they cover scenarios our 
 
 ## 5c. Commission / points — what we typically earn
 
-**Our internal economics (CLAUDE.md):** avg new MCA deal ≈ **8 points** ($4,000 on $50K); renewals ≈ 6 points. Closer splits: 50% company-lead / 70% self-gen / 35% renewal. Use these per-funder figures to know the gross before split.
+**This table is the GROSS commission MFunding earns from the funder** (before any closer split). The closer's share is set separately in the **Closer Comp Offer Sheet** (`/admin/closer-comp`): **40% company-lead · 65% self-generated · 30% renewal**, with escalators (45% at $250K+/mo, 50% at $500K+/mo). *Example:* $50K advance at 8 points = **$4,000 gross** → on a company lead the closer earns $1,600, MFunding keeps $2,400.
 
 | Funder | Product | Commission we earn | Confirmed? |
 |---|---|---|---|
