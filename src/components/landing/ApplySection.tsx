@@ -72,27 +72,32 @@ export default function ApplySection() {
     setIsSubmitting(true);
     setError(null);
 
-    const { error: submitError } = await supabase
-      .from('funding_applications')
-      .insert({
+    // Route through mca-intake so the lead lands in GHL (contact + MCA-pipeline
+    // opportunity at New Lead) and fires Speed-to-Lead — not just an admin DB row.
+    const { data, error: submitError } = await supabase.functions.invoke('mca-intake', {
+      body: {
         business_name: formData.businessName,
-        ein: formData.ein || null,
         contact_first_name: formData.contactFirstName,
         contact_last_name: formData.contactLastName,
         email: formData.email,
         phone: formData.phone,
-        funding_amount: formData.fundingAmount,
-        business_type: formData.businessType,
-        time_in_business: formData.timeInBusiness,
-        monthly_revenue: formData.monthlyRevenue,
-        funding_purpose: formData.fundingPurpose || null,
-      });
+        amount_requested: formData.fundingAmount,
+        use_of_funds: formData.fundingPurpose || 'Working capital',
+        lead_source: 'website_apply',
+        lead_source_detail: [
+          formData.businessType && `Industry: ${formData.businessType}`,
+          formData.timeInBusiness && `TIB: ${formData.timeInBusiness}`,
+          formData.monthlyRevenue && `Rev: ${formData.monthlyRevenue}`,
+          formData.ein && `EIN: ${formData.ein}`,
+        ].filter(Boolean).join(' · ') || null,
+      },
+    });
 
     setIsSubmitting(false);
 
-    if (submitError) {
+    if (submitError || (data as { error?: string })?.error) {
       setError('Something went wrong. Please try again.');
-      console.error(submitError);
+      console.error(submitError || (data as { error?: string })?.error);
       return;
     }
 
