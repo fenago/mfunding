@@ -55,7 +55,7 @@
   - [x] **VCF 01 — New Lead (Distressed)** PUBLISHED (empathetic intake email → urgent specialist call task)
   - [x] **VCF 02 — Hardship Consultation** PUBLISHED (empathetic what-to-expect email)
   - [x] **VCF 03 — Positions & Balances Analysis** PUBLISHED (emails the VCF upload-form link for agreements + bank statements)
-  - [ ] VCF 04 Strategy & Proposal
+  - [x] **VCF 04 — Strategy & Proposal** PUBLISHED (plan-ready review email)
   - [ ] VCF 05 Agreement Sent (+ e-sign)
   - [ ] VCF 06 Submitted to VCF
   - [ ] VCF 07 Restructure Executed

@@ -332,6 +332,14 @@ All tables use UUID primary keys and have RLS enabled. Key existing tables:
 - **activity_log** — Polymorphic audit trail across entities
 - **company_documents** — Internal company documents
 - **documents / document_chunks / document_embeddings** — AI/RAG document system
+- **lead_sources** — Lead-source cost/ROI tracking (managed at `/admin/lead-sources`)
+- **referral_partners** — Referral partner program (CPAs, bookkeepers, vendors)
+- **compliance_disclosures** — State-specific disclosure templates (9 enacted states)
+- **ghl_webhook_events** — Inbound GHL webhook event log (observability)
+
+> **Deals carry two product lines:** `deal_type` includes `vcf` (debt relief) alongside `mca` et al.
+> VCF deals use 8 VCF stages (`new_distressed` … `servicing`) + `vcf_*` fields and route to the
+> **VCF GHL pipeline** (`nsmH6jIeVA0SsZMMq4LC`); MCA deals use the MCA pipeline (`bG9ZEh4eP9x60E1CyaMx`).
 
 ---
 
@@ -342,23 +350,32 @@ All tables use UUID primary keys and have RLS enabled. Key existing tables:
 - `/about`, `/contact`, `/privacy`, `/terms`
 - `/business-loans`, `/business-loans/:slug`
 - `/real-estate`, `/real-estate/:slug`
+- `/apply` — MCA application (embeds the GHL form)
+- `/debt-relief` — VCF debt-relief intake (React form → `vcf-intake` edge function)
 - `/auth/sign-in`, `/auth/sign-up`
 
 ### Customer Portal (authenticated)
-- `/portal/` — Dashboard
+- `/portal/` — Dashboard (now shows the merchant's deals with the live pipeline + next step)
 - `/portal/documents` — Document management
 - `/portal/inbox` — Messaging
 
 ### Admin (admin + super_admin)
-- `/admin/` — Dashboard
+- `/admin/` — Dashboard (with a "Needs attention" widget)
 - `/admin/todos` — Kanban board
 - `/admin/customers`, `/admin/customers/:id`
+- `/admin/deals`, `/admin/deals/:id`
+- `/admin/renewals` — Renewal monitoring (paydown % + push to GHL)
+- `/admin/documents` — Document review queue
+- `/admin/referrals` — Referral partner program
 - `/admin/analytics`, `/admin/analytics/realtime`
 
 ### Super Admin only
 - `/admin/lenders`, `/admin/lenders/:id`, `/admin/lenders/resources`
 - `/admin/marketing`, `/admin/marketing/:id`, `/admin/marketing/resources`
-- `/admin/unit-economics`, `/admin/bmc`, `/admin/settings`
+- `/admin/lead-sources` — Lead source cost/ROI management
+- `/admin/compliance` — State disclosure templates
+- `/admin/sync-log` — Inbound GHL webhook event log
+- `/admin/unit-economics`, `/admin/bmc`, `/admin/settings`, `/admin/settings/integrations`
 
 ---
 
