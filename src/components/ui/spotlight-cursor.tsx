@@ -1,7 +1,26 @@
 'use client';
 
-import { useRef, useEffect, HTMLAttributes } from 'react';
+import { useRef, useEffect, useState, HTMLAttributes } from 'react';
 import { cn } from '@/lib/utils';
+
+/**
+ * True only on devices with a real mouse / fine pointer. On touch devices
+ * (phones, tablets) the spotlight is useless (it follows the mouse) and a
+ * full-viewport animated canvas can interfere with taps in iOS Safari — so we
+ * skip rendering it entirely there.
+ */
+function useFinePointer() {
+  const [fine, setFine] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(hover: hover) and (pointer: fine)');
+    setFine(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setFine(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return fine;
+}
 
 interface SpotlightConfig {
   radius?: number;
@@ -101,6 +120,10 @@ export function SpotlightCursor({
   };
 
   const canvasRef = useSpotlightEffect(spotlightConfig);
+  const finePointer = useFinePointer();
+
+  // Don't render on touch / coarse-pointer devices (mobile, tablets).
+  if (!finePointer) return null;
 
   return (
     <canvas
