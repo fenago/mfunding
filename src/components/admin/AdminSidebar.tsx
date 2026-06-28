@@ -27,6 +27,7 @@ import {
   DocumentMagnifyingGlassIcon,
   UserPlusIcon,
   ReceiptPercentIcon,
+  ArrowPathRoundedSquareIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
@@ -51,6 +52,7 @@ const navItems: NavItem[] = [
   { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: ["super_admin"] },
   { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: ["admin", "super_admin"] },
   { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: ["admin", "super_admin"] },
+  { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: ["admin", "super_admin"] },
   { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
   { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: ["admin", "super_admin"] },

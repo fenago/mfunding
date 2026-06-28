@@ -51,6 +51,7 @@ import LeadSourcesPage from "../pages/admin/LeadSourcesPage.tsx";
 import ReferralPartnersPage from "../pages/admin/ReferralPartnersPage.tsx";
 import SyncLogPage from "../pages/admin/SyncLogPage.tsx";
 import PlatformConfigPage from "../pages/admin/PlatformConfigPage.tsx";
+import SequencesPage from "../pages/admin/SequencesPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -348,6 +349,11 @@ const router = createBrowserRouter([
               {
                 path: "documents",
                 element: <DocumentReviewPage />,
+              },
+              // Follow-up sequence tracking (admin + super_admin)
+              {
+                path: "sequences",
+                element: <SequencesPage />,
               },
               // Lead sources (super_admin only)
               {
