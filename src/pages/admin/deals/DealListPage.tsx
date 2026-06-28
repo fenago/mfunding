@@ -6,9 +6,11 @@ import {
   FunnelIcon,
   CurrencyDollarIcon,
   DocumentTextIcon,
+  ArrowDownTrayIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import { getAllDeals, getDealStats } from "../../../services/dealService";
+import { exportToCsv } from "../../../lib/csv";
 import type { DealWithCustomer, DealFilters, DealStatus, DealType, Market } from "../../../types/deals";
 import {
   DEAL_STATUS_CONFIG,
@@ -88,13 +90,32 @@ export default function DealListPage() {
             Manage funding deals from lead to close
           </p>
         </div>
-        <button
-          onClick={() => setIsCreateModalOpen(true)}
-          className="btn-primary flex items-center gap-2"
-        >
-          <PlusIcon className="w-5 h-5" />
-          New Deal
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportToCsv(`deals-${new Date().toISOString().slice(0, 10)}`, deals.map((d) => ({
+              deal_number: d.deal_number ?? "",
+              business: d.customer?.business_name ?? "",
+              contact: `${d.customer?.first_name ?? ""} ${d.customer?.last_name ?? ""}`.trim(),
+              deal_type: d.deal_type,
+              status: d.status,
+              market: d.market ?? "",
+              amount_requested: d.amount_requested ?? "",
+              amount_funded: d.amount_funded ?? "",
+              created_at: d.created_at,
+            })))}
+            disabled={deals.length === 0}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            <ArrowDownTrayIcon className="w-4 h-4" /> Export CSV
+          </button>
+          <button
+            onClick={() => setIsCreateModalOpen(true)}
+            className="btn-primary flex items-center gap-2"
+          >
+            <PlusIcon className="w-5 h-5" />
+            New Deal
+          </button>
+        </div>
       </div>
 
       {/* Stats Cards */}

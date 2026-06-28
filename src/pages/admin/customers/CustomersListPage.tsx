@@ -6,9 +6,11 @@ import {
   UsersIcon,
   PhoneIcon,
   EnvelopeIcon,
+  ArrowDownTrayIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import CustomerEditModal from "../../../components/customers/CustomerEditModal";
+import { exportToCsv } from "../../../lib/csv";
 
 type CustomerStatus = "lead" | "contacted" | "application_submitted" | "in_review" | "approved" | "funded" | "renewed" | "declined" | "follow_up";
 
@@ -130,13 +132,30 @@ export default function CustomersListPage() {
             Manage your leads and customers
           </p>
         </div>
-        <button
-          onClick={() => setIsAddModalOpen(true)}
-          className="btn-primary flex items-center gap-2"
-        >
-          <PlusIcon className="w-5 h-5" />
-          Add Customer
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportToCsv(`customers-${new Date().toISOString().slice(0, 10)}`, filteredCustomers.map((c) => ({
+              first_name: c.first_name ?? "",
+              last_name: c.last_name ?? "",
+              business_name: c.business_name ?? "",
+              email: c.email ?? "",
+              phone: c.phone ?? "",
+              status: c.status,
+              source: c.source ?? "",
+            })))}
+            disabled={filteredCustomers.length === 0}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            <ArrowDownTrayIcon className="w-4 h-4" /> Export CSV
+          </button>
+          <button
+            onClick={() => setIsAddModalOpen(true)}
+            className="btn-primary flex items-center gap-2"
+          >
+            <PlusIcon className="w-5 h-5" />
+            Add Customer
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
