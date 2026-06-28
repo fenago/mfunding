@@ -34,6 +34,15 @@ const STAGE_BY_STATUS: Record<string, string> = {
   funded: "Funded",
   renewal_eligible: "Renewal Eligible",
   nurture: "Nurture / Re-engage",
+  // VCF pipeline stages
+  new_distressed: "New Lead (Distressed)",
+  hardship_consult: "Hardship Consultation",
+  positions_analysis: "Positions & Balances Analysis",
+  strategy_proposal: "Strategy / Proposal",
+  agreement_sent: "Agreement Sent",
+  submitted_to_vcf: "Submitted to VCF",
+  restructure_executed: "Restructure Executed",
+  servicing: "Servicing / Monitoring",
 };
 
 function json(body: unknown, status = 200) {
@@ -167,12 +176,18 @@ Deno.serve(async (req) => {
           warning: "No GHL pipeline found — create the 9-stage pipeline in GHL, then re-sync to attach an opportunity.",
         });
       }
-      // Pick the MCA pipeline by stage-name match — there may also be a VCF
-      // pipeline, so don't blindly take pipelines[0].
-      const pipeline = pl.data.pipelines.find((p) => {
-        const names = new Set(p.stages.map((s) => s.name.toLowerCase()));
-        return names.has("new lead") && names.has("funded");
-      }) ?? pl.data.pipelines[0];
+      // Pick the right pipeline by deal type (MCA vs VCF) — match by stage names.
+      const isVcf = d.deal_type === "vcf";
+      const pipeline = (isVcf
+        ? pl.data.pipelines.find((p) => {
+            const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
+            return n.has("new lead (distressed)") || n.has("servicing / monitoring");
+          })
+        : pl.data.pipelines.find((p) => {
+            const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
+            return n.has("new lead") && n.has("funded");
+          })
+      ) ?? pl.data.pipelines[0];
 
       // Won / Lost are GHL opportunity STATUSES, not stages: funded => won,
       // declined/dead => lost (removed from the active board). Everything else is open.

@@ -262,7 +262,7 @@ export default function DealDetailPage() {
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700 mb-6">
         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-4">Deal Progress</h3>
         <PipelineFlow
-          pipeline="mca"
+          pipeline={deal.deal_type === "vcf" ? "vcf" : "mca"}
           currentKey={deal.status}
           onStageClick={(k) => handleStatusChange(k as DealStatus)}
           terminal={isTerminal}

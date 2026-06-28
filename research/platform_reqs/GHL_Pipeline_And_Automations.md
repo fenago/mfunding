@@ -11,6 +11,45 @@
 
 ---
 
+# ✅ BUILD STATUS — live checklist (updated June 27, 2026)
+
+**Foundation**
+- [x] `MFunding MCA Pipeline` — 13 stages (live)
+- [x] `MFunding VCF Pipeline` — 8 stages (live)
+- [x] Contact custom fields (created via API)
+- [x] Form: **MCA Funding Application** (`Ow1imQrxjJN9yfDUiBG3`)
+- [x] Form: **Live Transfer Intake**
+- [x] Form: **Bank Statements & Documents Upload** (`vO16UFona1IkxuezRg0d`) — fields `mca_bank_statements` (max 6), `mca_stips_documents` (max 8). Share link: `https://link.vibereach.io/widget/form/vO16UFona1IkxuezRg0d`
+
+**Lead intake → app wiring**
+- [x] **MCA 00 — Web Form Intake** → New Lead (PUBLISHED) + **Webhook** to Supabase
+- [x] **MCA 00B — Live Transfer Intake** → Qualifying (PUBLISHED) + **Webhook** to Supabase
+- [x] **Gap A** — `ghl-webhook` edge function now CREATES deals (deployed, v8). Webhook URL: `.../functions/v1/ghl-webhook?secret=…`
+- [ ] **TEST**: confirm a real form submission creates a *deal* (not just a customer); if not, add native Settings→Webhooks OpportunityCreate subscription
+
+**Automations (PART 3)**
+- [x] **MCA 01 — Speed to Lead** (New Lead) — PUBLISHED (email → round-robin assign → call task)
+- [ ] **Opt-Out / DNC gate** — IN PROGRESS (build first; overrides all)
+- [ ] **MCA 02 — No-Answer Nurture**
+- [ ] **MCA 03 — Qualifying**
+- [ ] **MCA 04 — Application + Disclosure**
+- [ ] **MCA 05 — Docs Collected**
+- [x] **MCA 06 — Bank Statements** — PUBLISHED (request w/ upload link → wait 2d → reminder → call task)
+- [ ] **MCA 07 — Submitted to Funders** *(Gap B — see note)*
+- [ ] **MCA 08 — Offer Received**
+- [ ] **MCA 09 — Offer Presented**
+- [ ] **MCA 10 — Offer Accepted** *(+ e-sign via GHL Documents)*
+- [x] **MCA 11 — Funded** — PUBLISHED (congrats + review + $100 referral → call task)
+- [ ] **MCA 12 — Renewal Eligible**
+- [ ] **MCA 13 — Mass Reactivation**
+
+**Cross-cutting (recommend as CODE, not GHL)**
+- [ ] **Gap B — funder submission**: best as an app edge function that emails the *selected* funders' `submission_email` on "Submit" (mirrors the Gap A fix). A GHL workflow would blast all funders blindly.
+- [ ] **VCF automations**: needs the VCF pipeline automations in GHL **and** a `vcf` deal_type + VCF statuses in the app DB/`ghl-sync` (MCA-only today).
+- [ ] **E-sign**: GHL native Documents & Contracts (no DocuSign) — templates + send-for-signature in MCA 10 / VCF Agreement Sent.
+
+---
+
 # PART 1 — Create the two pipelines
 
 In GHL: **Opportunities → Pipelines → + Create Pipeline.**

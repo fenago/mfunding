@@ -11,6 +11,16 @@ export type DealStatus =
   | "offer_accepted"
   | "funded"
   | "renewal_eligible"
+  // VCF (debt relief) stages
+  | "new_distressed"
+  | "hardship_consult"
+  | "positions_analysis"
+  | "strategy_proposal"
+  | "agreement_sent"
+  | "submitted_to_vcf"
+  | "restructure_executed"
+  | "servicing"
+  // shared outcomes
   | "nurture"
   | "declined"
   | "dead";
@@ -20,7 +30,8 @@ export type DealType =
   | "term_loan"
   | "line_of_credit"
   | "sba"
-  | "equipment_financing";
+  | "equipment_financing"
+  | "vcf";
 
 export type SubmissionStatus =
   | "pending"
@@ -210,6 +221,15 @@ export const DEAL_STATUS_CONFIG: Record<DealStatus, { label: string; color: stri
   offer_accepted: { label: "Offer Accepted", color: "text-lime-700 dark:text-lime-300", bgColor: "bg-lime-100 dark:bg-lime-900" },
   funded: { label: "Funded", color: "text-green-700 dark:text-green-300", bgColor: "bg-green-100 dark:bg-green-900" },
   renewal_eligible: { label: "Renewal Eligible", color: "text-teal-700 dark:text-teal-300", bgColor: "bg-teal-100 dark:bg-teal-900" },
+  // VCF (debt relief) stages
+  new_distressed: { label: "New Lead (Distressed)", color: "text-gray-700 dark:text-gray-300", bgColor: "bg-gray-100 dark:bg-gray-700" },
+  hardship_consult: { label: "Hardship Consultation", color: "text-blue-700 dark:text-blue-300", bgColor: "bg-blue-100 dark:bg-blue-900" },
+  positions_analysis: { label: "Positions & Balances", color: "text-indigo-700 dark:text-indigo-300", bgColor: "bg-indigo-100 dark:bg-indigo-900" },
+  strategy_proposal: { label: "Strategy / Proposal", color: "text-purple-700 dark:text-purple-300", bgColor: "bg-purple-100 dark:bg-purple-900" },
+  agreement_sent: { label: "Agreement Sent", color: "text-amber-700 dark:text-amber-300", bgColor: "bg-amber-100 dark:bg-amber-900" },
+  submitted_to_vcf: { label: "Submitted to VCF", color: "text-yellow-700 dark:text-yellow-300", bgColor: "bg-yellow-100 dark:bg-yellow-900" },
+  restructure_executed: { label: "Restructure Executed", color: "text-green-700 dark:text-green-300", bgColor: "bg-green-100 dark:bg-green-900" },
+  servicing: { label: "Servicing / Monitoring", color: "text-teal-700 dark:text-teal-300", bgColor: "bg-teal-100 dark:bg-teal-900" },
   nurture: { label: "Nurture / Re-engage", color: "text-violet-700 dark:text-violet-300", bgColor: "bg-violet-100 dark:bg-violet-900" },
   declined: { label: "Declined", color: "text-red-700 dark:text-red-300", bgColor: "bg-red-100 dark:bg-red-900" },
   dead: { label: "Dead", color: "text-gray-500 dark:text-gray-500", bgColor: "bg-gray-100 dark:bg-gray-800" },
@@ -221,6 +241,7 @@ export const DEAL_TYPE_CONFIG: Record<DealType, { label: string; shortLabel: str
   line_of_credit: { label: "Line of Credit", shortLabel: "LOC" },
   sba: { label: "SBA Loan", shortLabel: "SBA" },
   equipment_financing: { label: "Equipment Financing", shortLabel: "Equipment" },
+  vcf: { label: "VCF Debt Relief", shortLabel: "VCF" },
 };
 
 export const MARKET_CONFIG: Record<Market, { label: string }> = {

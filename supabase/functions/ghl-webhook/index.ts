@@ -32,12 +32,13 @@ const STATUS_BY_STAGE: Record<string, string> = {
   "nurture / re-engage": "nurture",
 };
 
-// The MFunding MCA pipeline — we only auto-create deals for opportunities in THIS
-// pipeline (VCF has its own backend, not built yet).
+// We auto-create deals for opportunities in these two pipelines.
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+const VCF_PIPELINE_ID = "nsmH6jIeVA0SsZMMq4LC";
 
-// MCA stage id -> deal status (webhooks reliably include pipelineStageId).
+// Stage id -> deal status (webhooks reliably include pipelineStageId).
 const STATUS_BY_STAGE_ID: Record<string, string> = {
+  // MCA pipeline
   "d60d563a-9904-423f-9a8e-0d0df0b12976": "new",
   "bc68ac6f-d45d-4d56-b1c8-c10a7ec4fdf7": "contacted",
   "27960f79-0b08-48ac-8fee-f4a9bf7748e3": "qualifying",
@@ -51,6 +52,15 @@ const STATUS_BY_STAGE_ID: Record<string, string> = {
   "69995f02-4f20-41b9-8206-bbaaf7060c10": "funded",
   "bfd0515e-7dfd-4527-8460-1edef442311a": "renewal_eligible",
   "d4c4ce2d-75af-4766-82cf-c3ff56f0137b": "nurture",
+  // VCF pipeline
+  "625e5afd-94a9-455c-b1bd-d712cad4cb17": "new_distressed",
+  "bcdd76ef-f798-4d14-8606-4087edaa6d42": "hardship_consult",
+  "a1c7e1c8-2404-4a81-bf70-0bd21837fd33": "positions_analysis",
+  "36ccf48f-c0a4-4264-bc42-066803ec6b75": "strategy_proposal",
+  "046a711e-2303-4aa1-84e5-c32dac68d72b": "agreement_sent",
+  "6ad1513c-08e1-4e60-99c5-7809da5a6d99": "submitted_to_vcf",
+  "a46a57f5-b75c-4ae7-8705-98979db4bb53": "restructure_executed",
+  "5e684647-324c-4f31-90aa-59d9ca6a596c": "servicing",
 };
 
 function json(body: unknown, status = 200) {
@@ -147,8 +157,9 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   // ── Gap A: create the deal if this opportunity isn't linked to one yet ──
   if (!deal) {
     const pipelineId = String(o.pipelineId ?? evt.pipelineId ?? "");
-    // Only auto-create for the MCA pipeline; VCF opps are handled separately (not yet built).
-    if (pipelineId && pipelineId !== MCA_PIPELINE_ID) return;
+    // Auto-create for the MCA and VCF pipelines; ignore anything else.
+    const dealType = pipelineId === VCF_PIPELINE_ID ? "vcf" : pipelineId === MCA_PIPELINE_ID ? "mca" : null;
+    if (!dealType) return;
 
     const contactId = String(
       o.contactId ?? evt.contactId ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
@@ -177,15 +188,15 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     }
     if (!customerId) return;
 
-    const status = mapped ?? "new";
+    const status = mapped ?? (dealType === "vcf" ? "new_distressed" : "new");
     const insert: Record<string, unknown> = {
       customer_id: customerId,
-      deal_type: "mca",
+      deal_type: dealType,
       status,
       amount_requested: o.monetaryValue ?? null,
       ghl_contact_id: contactId,
       ghl_opportunity_id: oppId,
-      lead_source: "other",
+      lead_source: "ghl_other",
     };
     if (status === "funded" && o.monetaryValue != null) insert.amount_funded = o.monetaryValue;
     const { data: newDeal } = await db.from("deals").insert(insert).select("id").maybeSingle();
