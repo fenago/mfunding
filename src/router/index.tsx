@@ -15,6 +15,7 @@ import AboutPage from "../pages/AboutPage.tsx";
 import ContactPage from "../pages/ContactPage.tsx";
 import OptinPage from "../pages/OptinPage.tsx";
 import ApplyPage from "../pages/ApplyPage.tsx";
+import VCFReliefPage from "../pages/VCFReliefPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
@@ -118,6 +119,10 @@ const router = createBrowserRouter([
       {
         path: "/apply",
         element: <ApplyPage />,
+      },
+      {
+        path: "/debt-relief",
+        element: <VCFReliefPage />,
       },
       // Auth Protected routes
       {
