@@ -17,6 +17,7 @@ const footerLinks = {
     { name: 'Construction Loans', href: '/real-estate/construction-loans' },
   ],
   resources: [
+    { name: 'Free Tools & Calculators', href: '/tools' },
     { name: 'Guides & Articles', href: '/resources' },
     { name: 'Funding Glossary', href: '/resources/glossary' },
     { name: 'How It Works', href: '/#how-it-works' },

@@ -21,6 +21,14 @@ import VCFSavingsCalculatorPage from "../pages/calculators/VCFSavingsCalculatorP
 import MCAFundingCalculatorPage from "../pages/calculators/MCAFundingCalculatorPage.tsx";
 import MCACostCalculatorPage from "../pages/calculators/MCACostCalculatorPage.tsx";
 import CloserEarningsCalculatorPage from "../pages/calculators/CloserEarningsCalculatorPage.tsx";
+import FundingReadinessScorePage from "../pages/assessments/FundingReadinessScorePage.tsx";
+import FundingMatcherPage from "../pages/assessments/FundingMatcherPage.tsx";
+import FundingAffordabilityPage from "../pages/assessments/FundingAffordabilityPage.tsx";
+import MCADebtStressTestPage from "../pages/assessments/MCADebtStressTestPage.tsx";
+import ReliefQualifierPage from "../pages/assessments/ReliefQualifierPage.tsx";
+import BusinessHealthScorecardPage from "../pages/assessments/BusinessHealthScorecardPage.tsx";
+import CashFlowGapAnalyzerPage from "../pages/assessments/CashFlowGapAnalyzerPage.tsx";
+import FreeToolsPage from "../pages/FreeToolsPage.tsx";
 import PartnersPage from "../pages/PartnersPage.tsx";
 import ResourcesPage from "../pages/ResourcesPage.tsx";
 import ResourceDetailPage from "../pages/ResourceDetailPage.tsx";
@@ -160,6 +168,38 @@ export const routes: RouteObject[] = [
       {
         path: "/careers/closer-earnings",
         element: <CloserEarningsCalculatorPage />,
+      },
+      {
+        path: "/assessments/funding-readiness-score",
+        element: <FundingReadinessScorePage />,
+      },
+      {
+        path: "/assessments/find-your-funding",
+        element: <FundingMatcherPage />,
+      },
+      {
+        path: "/assessments/how-much-can-you-handle",
+        element: <FundingAffordabilityPage />,
+      },
+      {
+        path: "/assessments/mca-debt-stress-test",
+        element: <MCADebtStressTestPage />,
+      },
+      {
+        path: "/assessments/do-you-qualify-for-relief",
+        element: <ReliefQualifierPage />,
+      },
+      {
+        path: "/assessments/business-health-scorecard",
+        element: <BusinessHealthScorecardPage />,
+      },
+      {
+        path: "/assessments/cash-flow-gap-analyzer",
+        element: <CashFlowGapAnalyzerPage />,
+      },
+      {
+        path: "/tools",
+        element: <FreeToolsPage />,
       },
       {
         path: "/partners",
