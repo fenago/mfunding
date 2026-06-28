@@ -23,6 +23,7 @@ import {
   BanknotesIcon,
   ArrowsRightLeftIcon,
   ShieldExclamationIcon,
+  ArrowPathIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
@@ -45,6 +46,7 @@ const navItems: NavItem[] = [
   { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: ["super_admin"] },
   { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: ["super_admin"] },
   { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: ["super_admin"] },
+  { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: ["admin", "super_admin"] },
   { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: ["super_admin"] },
   { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: ["super_admin"] },
   { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },

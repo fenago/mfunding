@@ -44,6 +44,7 @@ import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
 import IntegrationsPage from "../pages/admin/settings/IntegrationsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
 import CompliancePage from "../pages/admin/CompliancePage.tsx";
+import RenewalsPage from "../pages/admin/RenewalsPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -325,6 +326,11 @@ const router = createBrowserRouter([
                     element: <BusinessModelCanvasPage />,
                   },
                 ],
+              },
+              // Renewals (admin + super_admin)
+              {
+                path: "renewals",
+                element: <RenewalsPage />,
               },
               // Compliance disclosures (super_admin only)
               {
