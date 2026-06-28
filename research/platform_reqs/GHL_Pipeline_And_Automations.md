@@ -36,7 +36,7 @@
 - [x] **MCA 05 — Docs Collected** — PUBLISHED (docs-received confirmation email)
 - [x] **MCA 06 — Bank Statements** — PUBLISHED (request w/ upload link → wait 2d → reminder → call task)
 - [x] **MCA 07 — Submitted to Funders** → handled by the **`submit-to-funders` edge function** (Gap B), NOT a GHL workflow
-- [ ] **MCA 08 — Offer Received**
+- [x] **MCA 08 — Offer Received** — PUBLISHED (customer "we have offers, specialist will call" email)
 - [x] **MCA 09 — Offer Presented** — PUBLISHED (offer-ready nudge email)
 - [ ] **MCA 10 — Offer Accepted** *(+ e-sign via GHL Documents)*
 - [x] **MCA 11 — Funded** — PUBLISHED (congrats + review + $100 referral → call task)
@@ -64,6 +64,109 @@
 - [ ] **VCF stage sync GHL→app** — `ghl-webhook` stage map is MCA-only; add VCF stage→status mapping so VCF opportunities mirror back
 - [ ] **Compliance**: debt-relief disclosures differ from MCA — no guaranteed-results/savings claims; empathetic, careful language
 - [ ] **E-sign**: GHL native Documents & Contracts (no DocuSign) — templates + send-for-signature in MCA 10 / VCF Agreement Sent.
+
+---
+
+# 🆕 NEW WORKSTREAMS — Lead-Gen Calculators · Documents · Pipeline Playbook
+### Added June 27, 2026 · with a clear **CODE vs MANUAL** split for each
+
+**TL;DR on code vs manual:**
+| Workstream | Buildable in code | Needs manual work |
+|---|---|---|
+| **Lead-gen calculators** | ~90% (the pages, math, gated capture, GHL push) | Ad setup, formula/assumption sign-off, compliance review |
+| **Documents** | ~80% (draft every template + load to e-sign) | **Attorney review (required)**, state disclosure language, signatures, VCF rate card |
+| **Animated pipeline playbook** | ~100% (admin page, animations, content) | Just your review of stage content/SLAs |
+
+---
+
+## A) Lead-Gen Calculators (run ads → "find out how much you can save/get")
+
+**What they are:** standalone calculator landing pages. The *result* is the bait; the *phone/email* is the catch (result gated behind contact capture → GHL → fires the right pipeline automation).
+
+**Planned calculators**
+- 🔥 **VCF — "How much can you lower your daily payments?"** (inputs: # positions, total balance, daily/weekly payment → estimated new payment + monthly savings). → creates a **VCF Pipeline / New Lead (Distressed)** opportunity.
+- **MCA — "How much working capital can you get?"** (monthly revenue → advance range 50–150%). → **MCA Pipeline / New Lead**.
+- **MCA cost calculator** (factor rate → total payback + daily/weekly payment) — standalone, gated version of the homepage one.
+- **Recruiting — "How much can you earn as a closer?"** (public version of the comp calculator) → recruiting lead.
+
+**CODE (we build it):**
+- The React calculator pages + math + result UI (reuse existing calculator/slider components).
+- The **gated contact-capture form** ("enter your number to see your estimate").
+- **Push the lead to GHL** — reuse the existing `ghl-webhook` edge function + form-intake wiring (already live) so the lead lands as a deal in the right pipeline and triggers Speed-to-Lead / VCF Distressed Intake automations.
+- Routing logic (VCF calc → VCF pipeline; MCA calc → MCA pipeline).
+
+**MANUAL (you / GHL):**
+- Build the **ad campaigns** (Google/Meta) pointing at the calculator URLs + write ad copy (⚠ Meta restricts MCA/short-term-lending ads — see GTM report).
+- Sign off on the **savings/qualification formulas** and assumptions used (so claims are defensible).
+- **Compliance review** of result-page claims (no guaranteed savings/approval for VCF; never "loan" for MCA).
+- Add any **new GHL custom fields** the calculators capture (e.g., "Estimated Savings") if you want them on the contact record.
+
+**Status**
+- [ ] VCF "how much can you save" calculator (CODE) — *highest-ROI lead magnet*
+- [ ] MCA "how much can you get" calculator (CODE)
+- [ ] MCA cost calculator — standalone gated (CODE)
+- [ ] Closer-earnings recruiting calculator (CODE)
+- [ ] Ad campaigns + copy pointing at the above (MANUAL)
+
+---
+
+## B) Documents to Create
+
+Grouped by purpose. **⚠ Every legal document below is a working draft for your attorney to review — not legal advice.**
+
+**B1. Bringing on closers (1099)**
+- [ ] Independent Contractor Commission Agreement + **Schedule A** (rates) — *have v2; CODE can tailor*
+- [ ] Closer Comp Offer Sheet — ✅ **DONE** (`/admin/closer-comp` + `research/Momentum_Closer_Comp_Offer_Sheet.md`)
+- [ ] W-9 (standard IRS form — MANUAL collect) · Direct-deposit form (CODE draft)
+- [ ] Confidentiality / NDA (CODE draft → attorney)
+- [ ] TCPA & compliance acknowledgment + script-adherence sign-off (CODE draft)
+- [ ] Code of conduct / "Do's & Don'ts" — never say "loan", disclosure rules (CODE draft)
+- [ ] Clawback policy acknowledgment (CODE draft)
+- [ ] Onboarding checklist + training SOP (CODE draft)
+
+**B2. MCA deal / merchant-facing**
+- [ ] Merchant application / intake — *live as GHL form (`Ow1imQrxjJN9yfDUiBG3`)*
+- [ ] Bank-statement & soft-pull authorization + Plaid consent (CODE draft → attorney)
+- [ ] Broker fee disclosure ("paid by funder, no upfront fees") (CODE draft → attorney)
+- [ ] **State commercial-financing disclosures** (CA, NY, VA, UT, FL, CT, GA, KS, TX, MO) — **MANUAL/attorney** (state-specific statutory language; do NOT free-draft)
+- [ ] TCPA opt-in / consent language (CODE draft → attorney)
+- [ ] Funder submission cover sheet / package template (CODE)
+- [ ] Offer presentation / side-by-side comparison sheet (CODE — ties to Offer Received automation)
+- [ ] ISO / funder agreements — **MANUAL** (each funder provides their paper; you sign)
+
+**B3. VCF debt relief**
+- [ ] **VCF white-label / partner agreement + rate card** — **MANUAL** (get from Value Capital Funding in writing)
+- [ ] Client intake / hardship form — *live as GHL form (`wVbM48NEwDi2SyCuVGE0`) + `VCFReliefPage`*
+- [ ] Debt-relief disclosures: "no upfront fees", "not a law firm" disclaimer, claim-substantiation (CODE draft → attorney)
+- [ ] Referral / non-circumvention terms defining your commission (CODE draft → attorney)
+- [ ] TCPA consent for distressed-merchant outreach (CODE draft)
+- [ ] VCF own-book call scripts — ✅ **DONE** (`research/VCF_Debt_Relief_Call_Scripts.md`)
+
+**B4. Company foundational**
+- [ ] Sub-ISO Partner Agreement — *have v2*
+- [ ] Master compliance policy (TCPA + DNC + litigator-scrub SOP) (CODE draft → attorney)
+- [ ] E&O insurance — **MANUAL** (purchase) · Data-handling/security policy (CODE draft)
+
+**CODE vs MANUAL summary for docs:** we can **draft ~80%** as ready-to-edit templates and load the signable ones into **GHL Documents & Contracts** (native e-sign, already the chosen tool — see MCA 10 / VCF Agreement Sent). What we **cannot** do: give legal advice, generate authoritative **state statutory disclosure** language, sign/execute, buy insurance, or produce VCF's actual rate card.
+
+---
+
+## C) Animated Pipeline Playbook (backend onboarding)
+
+**What it is:** an admin page that shows new closers/staff exactly how deals flow — **animated, stage-by-stage**, for both the **MCA 13-stage** and **VCF 8-stage** pipelines, with *what happens, who owns it, the SLA, and what advances it* at each stage.
+
+**CODE (we build — ~100%):**
+- New admin route `/admin/pipeline-playbook` (super_admin/admin), sidebar nav.
+- Animated stage flow — **reuse the existing `PipelineFlow` component + `data/pipelines.ts`** (already powers the VCF page).
+- Per-stage detail cards (action, owner, SLA, exit criteria) sourced from this doc's stage definitions + the automations.
+- Optional: a toggle between MCA and VCF pipelines; highlight the current "#1 leak" (Bank Statements) and the recovery/routing branches.
+
+**MANUAL (you):**
+- Review/approve the per-stage content and **SLAs** (e.g., <60-sec speed-to-lead, 14-day bank-statement chase).
+- Optional: record a short Loom walkthrough to embed.
+
+**Status**
+- [ ] Build `/admin/pipeline-playbook` animated page (CODE)
 
 ---
 

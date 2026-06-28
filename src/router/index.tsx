@@ -16,6 +16,9 @@ import ContactPage from "../pages/ContactPage.tsx";
 import OptinPage from "../pages/OptinPage.tsx";
 import ApplyPage from "../pages/ApplyPage.tsx";
 import VCFReliefPage from "../pages/VCFReliefPage.tsx";
+import PartnersPage from "../pages/PartnersPage.tsx";
+import ResourcesPage from "../pages/ResourcesPage.tsx";
+import ResourceDetailPage from "../pages/ResourceDetailPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
@@ -52,6 +55,7 @@ import ReferralPartnersPage from "../pages/admin/ReferralPartnersPage.tsx";
 import SyncLogPage from "../pages/admin/SyncLogPage.tsx";
 import PlatformConfigPage from "../pages/admin/PlatformConfigPage.tsx";
 import SequencesPage from "../pages/admin/SequencesPage.tsx";
+import ResourcesAdminPage from "../pages/admin/ResourcesAdminPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -132,6 +136,18 @@ const router = createBrowserRouter([
       {
         path: "/debt-relief",
         element: <VCFReliefPage />,
+      },
+      {
+        path: "/partners",
+        element: <PartnersPage />,
+      },
+      {
+        path: "/resources",
+        element: <ResourcesPage />,
+      },
+      {
+        path: "/resources/:slug",
+        element: <ResourceDetailPage />,
       },
       // Auth Protected routes
       {
@@ -354,6 +370,12 @@ const router = createBrowserRouter([
               {
                 path: "sequences",
                 element: <SequencesPage />,
+              },
+              // Resources / blog admin (super_admin only)
+              {
+                path: "resources",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <ResourcesAdminPage /> }],
               },
               // Lead sources (super_admin only)
               {
