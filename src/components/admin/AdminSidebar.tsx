@@ -26,6 +26,7 @@ import {
   ArrowPathIcon,
   DocumentMagnifyingGlassIcon,
   UserPlusIcon,
+  ReceiptPercentIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
@@ -56,10 +57,12 @@ const navItems: NavItem[] = [
   { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: ["super_admin"] },
   { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: ["super_admin"] },
   { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: ["super_admin"] },
+  { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: ["super_admin"] },
   { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: ["super_admin"] },
   { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: ["super_admin"] },
   { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: ["super_admin"] },
   { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: ["super_admin"] },
+  { name: "Platform Config", path: "/admin/platform-config", icon: Cog6ToothIcon, roles: ["super_admin"] },
   { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: ["super_admin"] },
 ];
 

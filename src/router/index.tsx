@@ -43,12 +43,14 @@ import LeadSourceROIPage from "../pages/admin/analytics/LeadSourceROIPage.tsx";
 import AdminSettingsPage from "../pages/admin/AdminSettingsPage.tsx";
 import IntegrationsPage from "../pages/admin/settings/IntegrationsPage.tsx";
 import BusinessModelCanvasPage from "../pages/admin/BusinessModelCanvasPage.tsx";
+import CloserCompPage from "../pages/admin/CloserCompPage.tsx";
 import CompliancePage from "../pages/admin/CompliancePage.tsx";
 import RenewalsPage from "../pages/admin/RenewalsPage.tsx";
 import DocumentReviewPage from "../pages/admin/DocumentReviewPage.tsx";
 import LeadSourcesPage from "../pages/admin/LeadSourcesPage.tsx";
 import ReferralPartnersPage from "../pages/admin/ReferralPartnersPage.tsx";
 import SyncLogPage from "../pages/admin/SyncLogPage.tsx";
+import PlatformConfigPage from "../pages/admin/PlatformConfigPage.tsx";
 import DealListPage from "../pages/admin/deals/DealListPage.tsx";
 import DealDetailPage from "../pages/admin/deals/DealDetailPage.tsx";
 
@@ -320,6 +322,12 @@ const router = createBrowserRouter([
                   },
                 ],
               },
+              // Closer Comp Plan (super_admin only)
+              {
+                path: "closer-comp",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <CloserCompPage /> }],
+              },
               // Business Model Canvas (super_admin only)
               {
                 path: "bmc",
@@ -363,6 +371,12 @@ const router = createBrowserRouter([
                 path: "sync-log",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <SyncLogPage /> }],
+              },
+              // Platform config (super_admin only)
+              {
+                path: "platform-config",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <PlatformConfigPage /> }],
               },
               // Settings (super_admin only)
               {
