@@ -1,11 +1,13 @@
 import type { UserRole } from "../context/UserProfileContext";
 
-// What each role can see, mirroring the admin sidebar (OPS vs SUPER) plus the
-// customer portal. Used by the Users page "What each role can see" reference.
-// closer and admin currently share the same operational access; super_admin adds
-// the owner-only screens; user (merchant) only gets the customer portal.
+// What each role can see, mirroring the admin sidebar (OPS / ADMIN / SUPER) plus
+// the customer portal. Used by the Users page "What each role can see" reference.
+// closer and admin share the operational pipeline (OPS); admin adds the funder
+// network management screens (ADMIN); super_admin adds the owner-only screens
+// (finances, analytics, config); user (merchant) only gets the customer portal.
 
 const OPS: UserRole[] = ["closer", "admin", "super_admin"];
+const ADMIN: UserRole[] = ["admin", "super_admin"]; // managers — not closers
 const SUPER: UserRole[] = ["super_admin"];
 const MERCHANT: UserRole[] = ["user"];
 
@@ -21,7 +23,7 @@ export interface AccessGroup {
 export const ROLE_LABELS: { role: UserRole; label: string; blurb: string }[] = [
   { role: "user", label: "User (Merchant)", blurb: "Your customers. Apply for funding and use the customer portal — no admin access." },
   { role: "closer", label: "Closer", blurb: "1099 sales reps. Full operational pipeline access; no finances, network, or settings." },
-  { role: "admin", label: "Admin", blurb: "Staff. Same operational access as closers (no owner-only finances/config)." },
+  { role: "admin", label: "Admin", blurb: "Staff/managers. Full operational pipeline plus the funder network (Lenders, Funder Guide) — no owner-only finances, analytics, or config." },
   { role: "super_admin", label: "Super Admin", blurb: "Owner (you). Everything, including finances, network, analytics, config, and user management." },
 ];
 
@@ -64,8 +66,8 @@ export const ACCESS_GROUPS: AccessGroup[] = [
   {
     title: "Funder Network",
     items: [
-      { name: "Lenders", roles: SUPER },
-      { name: "Funder Guide", roles: OPS },
+      { name: "Lenders", roles: ADMIN },
+      { name: "Funder Guide", roles: ADMIN },
       { name: "Closers", roles: SUPER },
       { name: "Sub-ISOs", roles: SUPER },
     ],

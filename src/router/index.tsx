@@ -57,6 +57,7 @@ import GlossaryPage from "../pages/GlossaryPage.tsx";
 import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
+import AdminOnlyProtectedRoute from "./AdminOnlyProtectedRoute.tsx";
 import Providers from "../Providers.tsx";
 
 // Admin pages
@@ -303,10 +304,10 @@ export const routes: RouteObject[] = [
                 path: "todos",
                 element: <KanbanBoardPage />,
               },
-              // Lenders (super_admin only)
+              // Lenders (admin + super_admin — admins manage the funder network)
               {
                 path: "lenders",
-                element: <SuperAdminProtectedRoute />,
+                element: <AdminOnlyProtectedRoute />,
                 children: [
                   {
                     index: true,

@@ -52,6 +52,7 @@ interface NavGroup {
 }
 
 const OPS: NavRole[] = ["closer", "admin", "super_admin"]; // operational — all staff
+const ADMIN: NavRole[] = ["admin", "super_admin"]; // managers — not closers
 const SUPER: NavRole[] = ["super_admin"]; // owner-only: financials, config, network
 
 const navGroups: NavGroup[] = [
@@ -100,8 +101,8 @@ const navGroups: NavGroup[] = [
   {
     title: "Funder Network",
     items: [
-      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: SUPER },
-      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
+      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: ADMIN },
       { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
       { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
     ],
