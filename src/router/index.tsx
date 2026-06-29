@@ -71,6 +71,8 @@ const CustomerDetailPage = lazyWithReload(() => import("../pages/admin/customers
 const MarketingPage = lazyWithReload(() => import("../pages/admin/MarketingPage.tsx"));
 const MarketingResourcesPage = lazyWithReload(() => import("../pages/admin/marketing/MarketingResourcesPage.tsx"));
 const VendorDetailPage = lazyWithReload(() => import("../pages/admin/marketing/VendorDetailPage.tsx"));
+const LiveTransferLeadsPage = lazyWithReload(() => import("../pages/admin/marketing/LiveTransferLeadsPage.tsx"));
+const LeadListsPage = lazyWithReload(() => import("../pages/admin/marketing/LeadListsPage.tsx"));
 const AnalyticsDashboardPage = lazyWithReload(() => import("../pages/admin/analytics/AnalyticsDashboardPage.tsx"));
 const RealTimeDashboardPage = lazyWithReload(() => import("../pages/admin/analytics/RealTimeDashboardPage.tsx"));
 const DealAnalyticsPage = lazyWithReload(() => import("../pages/admin/analytics/DealAnalyticsPage.tsx"));
@@ -403,6 +405,14 @@ export const routes: RouteObject[] = [
                   {
                     path: "resources",
                     element: <MarketingResourcesPage />,
+                  },
+                  {
+                    path: "live-transfers",
+                    element: <LiveTransferLeadsPage />,
+                  },
+                  {
+                    path: "lead-lists",
+                    element: <LeadListsPage />,
                   },
                   {
                     path: ":id",

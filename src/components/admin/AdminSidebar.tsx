@@ -80,6 +80,8 @@ const navGroups: NavGroup[] = [
       { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
       { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
       { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
+      { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
+      { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
     ],
   },
   {
