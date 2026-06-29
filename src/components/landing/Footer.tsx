@@ -53,6 +53,16 @@ export default function Footer() {
             <p className="text-white/60 text-sm">
               Fast, simple funding for the businesses that keep America running.
             </p>
+
+            {/* Contact */}
+            <div className="mt-5 space-y-1.5 text-sm">
+              <a href="tel:+17868409404" className="block text-white/60 hover:text-white transition-colors">
+                (786) 840-9404
+              </a>
+              <a href="mailto:sales@send.mfunding.net" className="block text-white/60 hover:text-white transition-colors">
+                sales@send.mfunding.net
+              </a>
+            </div>
           </div>
 
           {/* Business Loans */}

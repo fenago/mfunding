@@ -27,8 +27,8 @@ const contactInfo = [
   {
     icon: EnvelopeIcon,
     label: 'Email',
-    value: 'info@mfunding.net',
-    href: 'mailto:info@mfunding.net',
+    value: 'sales@send.mfunding.net',
+    href: 'mailto:sales@send.mfunding.net',
     description: 'We respond within 24 hours',
   },
   {
@@ -92,7 +92,7 @@ export default function ContactPage() {
 
   return (
     <>
-      <SEO title="Contact Us — Talk to a Funding Advisor" description="Contact Momentum Funding to discuss business funding options. Call (786) 840-9404 or email info@mfunding.net. Mon–Fri, 9am–6pm EST. No upfront fees, no obligation." keywords="contact momentum funding, business funding advisor, talk to funding specialist" />
+      <SEO title="Contact Us — Talk to a Funding Advisor" description="Contact Momentum Funding to discuss business funding options. Call (786) 840-9404 or email sales@send.mfunding.net. Mon–Fri, 9am–6pm EST. No upfront fees, no obligation." keywords="contact momentum funding, business funding advisor, talk to funding specialist" />
       <Navbar />
       <ScrollToTop />
       <main>

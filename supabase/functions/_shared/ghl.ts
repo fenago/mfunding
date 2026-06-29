@@ -195,3 +195,49 @@ export async function sendEmailToContact(
     cfg, "POST", "/conversations/messages", body,
   );
 }
+
+// ---- Comms page helpers (contact search + thread history) --------------------
+
+export interface SearchContactsArgs {
+  query?: string;
+  pageLimit?: number;
+  /** Cursor from a prior page: the `searchAfter` array of the last contact. */
+  startAfter?: unknown[];
+}
+
+/**
+ * Search the location's contacts via POST /contacts/search. Returns the GHL
+ * payload ({ contacts, total }). Each contact carries its own `searchAfter`
+ * cursor; pass the last one back as `startAfter` to page forward.
+ */
+export async function searchContacts(cfg: GhlConfig, args: SearchContactsArgs = {}) {
+  const { query, pageLimit = 20, startAfter } = args;
+  const body: Record<string, unknown> = { locationId: cfg.locationId, pageLimit };
+  if (query) body.query = query;
+  if (startAfter && Array.isArray(startAfter) && startAfter.length > 0) body.searchAfter = startAfter;
+  return await ghlFetch<{ contacts: Array<Record<string, unknown>>; total: number }>(
+    cfg, "POST", "/contacts/search", body,
+  );
+}
+
+/**
+ * Pull a contact's email/message history: find their first conversation, then
+ * load its messages. Returns { conversationId, messages } — empty when the
+ * contact has no conversation yet (never been emailed/texted).
+ */
+export async function getContactThread(cfg: GhlConfig, contactId: string) {
+  const convs = await ghlFetch<{ conversations: Array<{ id: string }> }>(
+    cfg, "GET", `/conversations/search?locationId=${cfg.locationId}&contactId=${contactId}`,
+  );
+  const conversationId = convs.data?.conversations?.[0]?.id;
+  if (!conversationId) {
+    return { ok: convs.ok, status: convs.status, conversationId: null, messages: [], error: convs.error };
+  }
+  // GHL nests the array as { messages: { messages: [...] } }; flatten defensively.
+  const msgs = await ghlFetch<{ messages?: { messages?: unknown[] } | unknown[] }>(
+    cfg, "GET", `/conversations/${conversationId}/messages`,
+  );
+  const raw = msgs.data?.messages as { messages?: unknown[] } | unknown[] | undefined;
+  const messages = Array.isArray(raw) ? raw : (raw?.messages ?? []);
+  return { ok: msgs.ok, status: msgs.status, conversationId, messages, error: msgs.error };
+}
