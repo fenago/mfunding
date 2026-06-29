@@ -27,7 +27,7 @@ export default function StickyApplyCTA() {
           className="fixed bottom-6 right-6 z-50 lg:bottom-8 lg:right-8"
         >
           <motion.a
-            href="#apply"
+            href="/apply"
             className="group flex items-center gap-3 bg-gradient-to-r from-mint-green to-teal text-midnight-blue font-bold px-6 py-4 rounded-full shadow-2xl hover:shadow-mint-green/30"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}

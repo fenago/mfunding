@@ -383,7 +383,7 @@ export default function CalculatorSection() {
                       <p className="text-xs text-gray-500 dark:text-gray-400">Estimated payment</p>
                     </div>
                     <a
-                      href="#apply"
+                      href="/apply"
                       className="inline-flex items-center gap-2 text-base font-semibold text-gray-700 dark:text-gray-300 hover:text-[#4CAF50] transition-colors"
                     >
                       Continue

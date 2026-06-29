@@ -22,7 +22,7 @@ const footerLinks = {
     { name: 'Funding Glossary', href: '/resources/glossary' },
     { name: 'How It Works', href: '/#how-it-works' },
     { name: 'MCA Debt Relief', href: '/debt-relief' },
-    { name: 'Apply Now', href: '/#apply' },
+    { name: 'Apply Now', href: '/apply' },
   ],
   company: [
     { name: 'About Us', href: '/about' },

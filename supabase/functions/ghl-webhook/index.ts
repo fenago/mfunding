@@ -88,12 +88,20 @@ Deno.serve(async (req) => {
   let evt: Record<string, unknown>;
   try { evt = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
 
-  const type = String(evt.type ?? evt.eventType ?? "");
+  // GHL delivers two shapes:
+  //  1) Native event webhooks: { type: "OpportunityCreate", opportunity: {...}, contact: {...} }
+  //  2) Workflow "Webhook" action: flat snake_case fields (id, pipeline_id, pipleline_stage,
+  //     contact_id, lead_value, first_name, ...) with our key/value pairs nested under `customData`.
+  // Support both. Prefer an explicit type; otherwise infer from the payload shape.
+  const cd = (evt.customData ?? {}) as Record<string, unknown>;
+  const type = String(evt.type ?? evt.eventType ?? cd.type ?? "");
+  const looksLikeOpportunity = !!(evt.pipeline_id || evt.opportunity_name || evt.opportunity || cd.opportunityId);
+  const looksLikeContact = !!(evt.contact_id || evt.contactId || evt.contact);
   try {
-    if (type.startsWith("Contact")) {
-      await handleContact(db, evt);
-    } else if (type.startsWith("Opportunity")) {
+    if (type.startsWith("Opportunity") || (!type && looksLikeOpportunity)) {
       await handleOpportunity(db, evt);
+    } else if (type.startsWith("Contact") || (!type && looksLikeContact)) {
+      await handleContact(db, evt);
     } else {
       // Acknowledge unhandled events so GHL doesn't retry forever.
       await logEvent(db, evt, type, "ignored", "unhandled event type");
@@ -113,10 +121,11 @@ async function logEvent(db: DB, evt: Record<string, unknown>, type: string, outc
   try {
     const c = (evt.contact ?? {}) as Record<string, unknown>;
     const o = (evt.opportunity ?? {}) as Record<string, unknown>;
+    const cd = (evt.customData ?? {}) as Record<string, unknown>;
     await db.from("ghl_webhook_events").insert({
       event_type: type || null,
-      ghl_contact_id: (c.id ?? evt.contactId ?? o.contactId ?? null) as string | null,
-      ghl_opportunity_id: (o.id ?? evt.opportunityId ?? evt.id ?? null) as string | null,
+      ghl_contact_id: (c.id ?? evt.contactId ?? evt.contact_id ?? cd.contactId ?? o.contactId ?? null) as string | null,
+      ghl_opportunity_id: (o.id ?? evt.opportunityId ?? cd.opportunityId ?? (evt.pipeline_id ? evt.id : null) ?? null) as string | null,
       outcome,
       detail,
       payload: evt,
@@ -128,16 +137,18 @@ type DB = ReturnType<typeof serviceClient>;
 
 async function handleContact(db: DB, evt: Record<string, unknown>) {
   const c = (evt.contact ?? evt) as Record<string, unknown>;
-  const ghlId = String(c.id ?? evt.contactId ?? "");
-  const email = (c.email as string) ?? null;
+  const cd = (evt.customData ?? {}) as Record<string, unknown>;
+  // Contact id: native (contact.id / contactId) or flat workflow payload (contact_id / customData.contactId).
+  const ghlId = String(evt.contactId ?? cd.contactId ?? evt.contact_id ?? c.id ?? "");
+  const email = (c.email ?? evt.email ?? null) as string | null;
   if (!ghlId && !email) return;
 
   const patch = {
-    first_name: (c.firstName as string) ?? undefined,
-    last_name: (c.lastName as string) ?? undefined,
+    first_name: (c.firstName ?? evt.first_name ?? undefined) as string | undefined,
+    last_name: (c.lastName ?? evt.last_name ?? undefined) as string | undefined,
     email: email ?? undefined,
-    phone: (c.phone as string) ?? undefined,
-    business_name: (c.companyName as string) ?? undefined,
+    phone: (c.phone ?? evt.phone ?? undefined) as string | undefined,
+    business_name: (c.companyName ?? evt.company_name ?? undefined) as string | undefined,
     ghl_contact_id: ghlId || undefined,
   };
 
@@ -164,30 +175,38 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
 
 async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   const o = (evt.opportunity ?? evt) as Record<string, unknown>;
-  const oppId = String(o.id ?? evt.opportunityId ?? evt.id ?? "");
+  const cd = (evt.customData ?? {}) as Record<string, unknown>;
+  // Opportunity id: native (o.id) or flat workflow payload (evt.id / customData.opportunityId).
+  const oppId = String(o.id ?? evt.opportunityId ?? cd.opportunityId ?? evt.id ?? "");
   if (!oppId) return;
 
-  // Resolve the GHL stage -> our deal status (prefer stage id, fall back to name).
+  // Resolve the GHL stage -> our deal status. Prefer stage id (native), then stage NAME
+  // (the workflow webhook only sends the name, under GHL's misspelled key "pipleline_stage").
   const stageId = String(o.pipelineStageId ?? o.stageId ?? evt.pipelineStageId ?? "");
-  const stageName = String(o.stageName ?? o.pipelineStageName ?? evt.pipelineStageName ?? "").toLowerCase();
+  const stageName = String(
+    o.stageName ?? o.pipelineStageName ?? evt.pipelineStageName ?? evt.pipleline_stage ?? evt.pipeline_stage ?? "",
+  ).toLowerCase().trim();
   const mapped = STATUS_BY_STAGE_ID[stageId] ?? STATUS_BY_STAGE[stageName] ?? null;
+
+  // Monetary value: native (monetaryValue) or flat (lead_value).
+  const monetary = (o.monetaryValue ?? evt.lead_value ?? null) as number | null;
 
   const { data: deal } = await db.from("deals").select("id,status,customer_id").eq("ghl_opportunity_id", oppId).maybeSingle();
 
   // ── Gap A: create the deal if this opportunity isn't linked to one yet ──
   if (!deal) {
-    const pipelineId = String(o.pipelineId ?? evt.pipelineId ?? "");
+    const pipelineId = String(o.pipelineId ?? evt.pipelineId ?? evt.pipeline_id ?? "");
     // Auto-create for the MCA and VCF pipelines; ignore anything else.
     const dealType = pipelineId === VCF_PIPELINE_ID ? "vcf" : pipelineId === MCA_PIPELINE_ID ? "mca" : null;
     if (!dealType) return;
 
     const contactId = String(
-      o.contactId ?? evt.contactId ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
+      o.contactId ?? evt.contactId ?? cd.contactId ?? evt.contact_id ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
     );
     if (!contactId) return; // can't tie a deal to a merchant without a contact
 
     // Find the customer by ghl_contact_id; create a minimal one if missing
-    // (a ContactCreate/Update event will enrich it later).
+    // (a Contact event will enrich it later).
     let customerId: string | null = null;
     const { data: cust } = await db.from("customers").select("id").eq("ghl_contact_id", contactId).maybeSingle();
     if (cust) {
@@ -196,11 +215,11 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       const c = (evt.contact ?? {}) as Record<string, unknown>;
       const { data: created } = await db.from("customers").insert({
         ghl_contact_id: contactId,
-        first_name: (c.firstName as string) ?? null,
-        last_name: (c.lastName as string) ?? null,
-        email: (c.email as string) ?? null,
-        phone: (c.phone as string) ?? null,
-        business_name: (c.companyName as string) ?? (o.name as string) ?? null,
+        first_name: (c.firstName ?? evt.first_name ?? null) as string | null,
+        last_name: (c.lastName ?? evt.last_name ?? null) as string | null,
+        email: (c.email ?? evt.email ?? null) as string | null,
+        phone: (c.phone ?? evt.phone ?? null) as string | null,
+        business_name: (c.companyName ?? evt.company_name ?? o.name ?? evt.opportunity_name ?? null) as string | null,
         status: "lead",
         source: "other",
       }).select("id").maybeSingle();
@@ -213,26 +232,32 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       customer_id: customerId,
       deal_type: dealType,
       status,
-      amount_requested: o.monetaryValue ?? null,
+      amount_requested: monetary,
       ghl_contact_id: contactId,
       ghl_opportunity_id: oppId,
       lead_source: "ghl_other",
     };
-    if (status === "funded" && o.monetaryValue != null) insert.amount_funded = o.monetaryValue;
+    if (status === "funded" && monetary != null) insert.amount_funded = monetary;
     const { data: newDeal } = await db.from("deals").insert(insert).select("id").maybeSingle();
-    if (newDeal) await log(db, "deal", newDeal.id, `ghl:${String(evt.type)}:created`, { stage: mapped, evt });
+    if (newDeal) await log(db, "deal", newDeal.id, `ghl:${evtTypeLabel(evt)}:created`, { stage: mapped, evt });
     return;
   }
 
   // ── Existing deal: mirror the stage change from GHL ──
   const patch: Record<string, unknown> = {};
   if (mapped && mapped !== deal.status) patch.status = mapped;
-  if (o.monetaryValue != null) patch.amount_requested = o.monetaryValue;
+  if (monetary != null) patch.amount_requested = monetary;
 
   if (Object.keys(patch).length) {
     await db.from("deals").update(patch).eq("id", deal.id);
-    await log(db, "deal", deal.id, `ghl:${String(evt.type)}`, { from: deal.status, to: patch.status, evt });
+    await log(db, "deal", deal.id, `ghl:${evtTypeLabel(evt)}`, { from: deal.status, to: patch.status, evt });
   }
+}
+
+// Best-effort event-type label for activity logging (native type or workflow customData.type).
+function evtTypeLabel(evt: Record<string, unknown>): string {
+  const cd = (evt.customData ?? {}) as Record<string, unknown>;
+  return String(evt.type ?? evt.eventType ?? cd.type ?? "opportunity");
 }
 
 async function log(db: DB, entityType: string, entityId: string, action: string, meta: unknown) {

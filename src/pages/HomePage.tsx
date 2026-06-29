@@ -10,7 +10,6 @@ import CaseStudySection from '../components/landing/CaseStudySection';
 import HowItWorksSection from '../components/landing/HowItWorksSection';
 import SecuritySection from '../components/landing/SecuritySection';
 import FAQSection from '../components/landing/FAQSection';
-import ApplySection from '../components/landing/ApplySection';
 import Footer from '../components/landing/Footer';
 import { SpotlightCursor } from '../components/ui/spotlight-cursor';
 import StickyApplyCTA from '../components/ui/StickyApplyCTA';
@@ -41,7 +40,6 @@ const HomePage = () => {
         <HowItWorksSection />
         <SecuritySection />
         <FAQSection />
-        <ApplySection />
       </main>
       <Footer />
     </>
