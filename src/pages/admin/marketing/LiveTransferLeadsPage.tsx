@@ -26,6 +26,7 @@ interface LiveTransferVendor {
   score: number | null;
   reputation: string | null;
   score_breakdown: Record<string, number> | null;
+  reputation_score: number | null;
 }
 
 // Scoring rubric (max points per factor) — keep in sync with the DB scoring.
@@ -76,7 +77,7 @@ export default function LiveTransferLeadsPage() {
       const { data, error } = await supabase
         .from("marketing_vendors")
         .select(
-          "id, vendor_name, website, cost_per_lead, exclusivity, return_policy, ghl_integration, buyer_requirements, minimum_order, lead_types, rank, score, reputation, score_breakdown"
+          "id, vendor_name, website, cost_per_lead, exclusivity, return_policy, ghl_integration, buyer_requirements, minimum_order, lead_types, rank, score, reputation, score_breakdown, reputation_score"
         )
         .in("status", ["testing", "active"])
         .contains("lead_types", ["live_transfer"])

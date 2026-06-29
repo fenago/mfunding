@@ -82,6 +82,7 @@ const navGroups: NavGroup[] = [
       { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
       { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
+      { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
     ],
   },
   {
