@@ -2,7 +2,7 @@
 // generate revenue. Content distilled from the MFunding funnel/follow-up docs,
 // the brokerage playbook, and the VCF call scripts.
 //
-// Channel note: outreach/follow-up is EMAIL + PHONE only right now (no SMS/text).
+// Channel note: outreach and follow-up are EMAIL + PHONE only right now.
 // Each step lists the exact app screen to use, the pipeline stage it maps to,
 // and the GHL automation that supports it.
 
@@ -29,6 +29,8 @@ export interface Playbook {
   pipeline: "mca" | "vcf";
   revenue: string;
   entry: string;
+  /** The screen the closer keeps open and types into for this whole flow. */
+  workFrom: { screen: string; route: string; appNote: string };
   steps: PlaybookStep[];
 }
 
@@ -41,21 +43,27 @@ export const PLAYBOOKS: Playbook[] = [
     pipeline: "mca",
     revenue: "≈ $4,000 avg commission per funded deal (8 pts on $50K)",
     entry: "Inbound: merchant submits the form at /apply (creates a deal at stage New)",
+    workFrom: {
+      screen: "Open the deal record and work from it the whole call",
+      route: "/admin/deals",
+      appNote:
+        "The merchant fills out the application themselves — you email them a link that opens /apply. You do NOT fill it for them. You live on the deal page (Admin → Deals → click the deal): move the status, collect stips, submit to funders, and log every call here.",
+    },
     steps: [
       {
         n: 1,
-        title: "New lead lands — claim it",
+        title: "Open the deal — this is your workspace",
         stageKey: "new",
         automation: "MCA 01 — Speed to Lead",
         sla: "First touch < 5 min",
         tone: "speed",
         do: [
-          "The form auto-creates the deal and fires the auto-response email + round-robin assignment.",
-          "Open Admin → Deals (/admin/deals). The new deal shows at stage New, sorted to the top.",
-          "Click the deal to open it (/admin/deals/:id). Confirm you're the assigned closer (Closer field on the right info panel).",
-          "Tag the source: on the deal page set Lead Source = Website and pick the Campaign (Campaign dropdown in the info panel) so it counts toward ROI in Admin → Campaigns.",
+          "The form already created the deal and fired the auto-response email + round-robin assignment.",
+          "Go to Admin → Deals (/admin/deals). The new deal is at stage New, sorted to the top — click it to open the deal page (/admin/deals/:id). Keep this page open for the whole call.",
+          "Confirm you're the assigned closer (Closer field, right info panel).",
+          "Set Lead Source = Website and pick the Campaign (Campaign dropdown in the info panel) so it counts toward ROI in Admin → Campaigns.",
         ],
-        route: { to: "/admin/deals", label: "Admin → Deals" },
+        route: { to: "/admin/deals", label: "Admin → Deals → open the deal" },
         note: "Speed matters: every minute of delay costs ~10% contact rate on web leads. Call within 5 minutes.",
       },
       {
@@ -66,7 +74,7 @@ export const PLAYBOOKS: Playbook[] = [
         sla: "65%+ contact rate; same day",
         do: [
           "Call the merchant (phone on the deal's customer panel; click-to-call or the Customer record at /admin/customers/:id).",
-          "If no answer: send the intro email (no texting) and log the attempt.",
+          "If no answer: send the intro email and log the attempt.",
           "On the deal page (/admin/deals/:id) move Status → Contacted using the stage stepper at the top of the deal.",
           "Log what happened in the Activity tab (Add interaction) so the next person has context.",
         ],
@@ -100,7 +108,7 @@ export const PLAYBOOKS: Playbook[] = [
         automation: "MCA 04 — Application + Disclosure",
         sla: "Same day; submit target < 24h",
         do: [
-          "Email the application link + the state-specific compliance disclosure (no SMS).",
+          "Email the merchant the application link + the state-specific compliance disclosure. They complete it on their own at /apply.",
           "On the deal page move Status → Application Sent. The automation sends the email reminders at +4h and Day 1.",
         ],
         say: "Based on what you told me, you look like a solid fit. I'm emailing you a 3-minute application plus a secure link to connect your bank so we can verify revenue. Want me to stay on while you start it?",
@@ -184,17 +192,25 @@ export const PLAYBOOKS: Playbook[] = [
     pipeline: "mca",
     revenue: "≈ $4,000 avg commission per funded deal · lead cost $50–$100/transfer",
     entry: "Vendor transfers a live call (Lead Tycoons, Synergy, Exclusive, MCA Leads Pro, Master MCA)",
+    workFrom: {
+      screen: "Admin → Deals → New Deal — open it the second you pick up",
+      route: "/admin/deals",
+      appNote:
+        "There's no deal yet — you create it live. The instant the transfer connects, open Admin → Deals → New Deal and type the merchant's info in as you talk. Keep that deal page open for the rest of the call. The merchant finishes the full application on their own via the link you email (it opens /apply).",
+    },
     steps: [
       {
         n: 1,
-        title: "Transfer connects (0–60s)",
+        title: "Pick up AND open New Deal (0–15s)",
         stageKey: "new",
         sla: "First touch < 60 seconds — you're already on the call",
         tone: "speed",
         do: [
-          "Pick up energized. The merchant is LIVE and expecting you — treat it like you called them.",
-          "Confirm you're speaking with the owner of the business before you invest the pitch.",
+          "Pick up energized — the merchant is LIVE and expecting you; treat it like you called them.",
+          "Immediately open Admin → Deals → click New Deal. Start typing their info into this form AS YOU TALK — don't wait until after the call.",
+          "Confirm you're speaking with the owner before you invest the pitch.",
         ],
+        route: { to: "/admin/deals", label: "Admin → Deals → New Deal" },
         say: "Hi, is this [First Name]? This is [Closer] with Momentum Funding — I see you're looking for working capital. Quick question: are you the owner of [Business Name]?",
       },
       {
@@ -218,18 +234,17 @@ export const PLAYBOOKS: Playbook[] = [
       },
       {
         n: 4,
-        title: "Log it immediately — create the deal",
+        title: "Finish + save the deal you opened in step 1",
         stageKey: "contacted",
         automation: "MCA 02 — No Answer Nurture (fires if no app in 2h)",
-        sla: "Right after the call",
+        sla: "Before you hang up / right after",
         do: [
-          "Go to Admin → Deals (/admin/deals) → click New Deal (top-right).",
-          "In the create form: pick/add the Customer, Product Type = MCA, set Amount, Market, and assign yourself as Closer.",
+          "Complete the New Deal form you opened: pick/add the Customer, Product Type = MCA, Amount, Market, assign yourself as Closer.",
           "Set Lead Source = Live Transfer and choose the Campaign (e.g. '$3,000 Live Leads — June') so this transfer counts against that spend.",
           "Save — the deal opens at stage New. Move Status → Contacted (you already spoke live).",
           "Email the application link now and log the call in the Activity tab.",
         ],
-        route: { to: "/admin/deals", label: "Admin → Deals → New Deal" },
+        route: { to: "/admin/deals", label: "Deal page → set Contacted" },
         note: "Tagging the Campaign here is what makes the cost-per-funded math work in Admin → Campaigns.",
       },
       {
@@ -252,6 +267,12 @@ export const PLAYBOOKS: Playbook[] = [
     pipeline: "vcf",
     revenue: "Up to 7% of restructured debt · ≈ $14,960 avg comp per file · recurring 12–24 mo",
     entry: "Inbound at /debt-relief, OR own-book outreach to declined / stacked / struggling merchants",
+    workFrom: {
+      screen: "The VCF deal record (or create one from the customer)",
+      route: "/admin/deals",
+      appNote:
+        "Work from the deal page: log the consult in the Activity tab, record positions/balances/daily debit on the VCF fields, and advance the status. Inbound merchants from /debt-relief arrive as VCF deals automatically; for own-book outreach, create the deal from the customer in Admin → Customers. The merchant uploads their agreements + statements via the secure link you email.",
+    },
     steps: [
       {
         n: 1,
@@ -272,7 +293,7 @@ export const PLAYBOOKS: Playbook[] = [
         stageKey: "hardship_consult",
         automation: "VCF 02 — Hardship Consultation",
         do: [
-          "Call (or email first to book a time — no texting). Open with empathy, not a pitch.",
+          "Call, or email first to book a time. Open with empathy, not a pitch.",
           "On the deal page move Status → Hardship Review and log the call in the Activity tab.",
         ],
         say: "Hey [First Name], it's [Closer] from Momentum — we spoke a while back about working capital. I'm not calling to sell an advance. A lot of folks who got a 'no' are already carrying advances eating their cash flow, and I now help owners get those payments DOWN. Are you making any daily or weekly payments on advances right now?",
@@ -317,7 +338,7 @@ export const PLAYBOOKS: Playbook[] = [
         automation: "VCF 03 — Positions & Balances Analysis",
         sla: "Chase 14 days by email",
         do: [
-          "Email the secure upload link (no texting). Collect every current MCA agreement + 2–3 months of statements showing the debits.",
+          "Email the secure upload link. Collect every current MCA agreement + 2–3 months of statements showing the debits.",
           "Track what's in via the deal's Documents tab / Admin → Doc Review; move Status → Positions Analysis. Tally every position, balance, and daily/weekly debit.",
         ],
         collect: ["Every current MCA agreement", "2–3 months bank statements showing the debits", "Hardship note (optional)"],

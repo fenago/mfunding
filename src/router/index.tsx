@@ -1,6 +1,27 @@
-import { lazy } from "react";
+import { lazy, type ComponentType } from "react";
 import type { RouteObject } from "react-router-dom";
 import HomePage from "../pages/HomePage.tsx";
+
+// After a new deploy, chunk filenames change. A tab opened before the deploy
+// will request an old hashed chunk that no longer exists ("Failed to fetch
+// dynamically imported module"). Reload once to pick up the fresh index.html;
+// the timestamp guard prevents an infinite reload loop if it's a real failure.
+function lazyWithReload<T extends { default: ComponentType<unknown> }>(
+  factory: () => Promise<T>
+) {
+  return lazy(() =>
+    factory().catch((err: unknown) => {
+      const KEY = "mf_chunk_reload_ts";
+      const last = Number(sessionStorage.getItem(KEY) || 0);
+      if (Date.now() - last > 10000) {
+        sessionStorage.setItem(KEY, String(Date.now()));
+        window.location.reload();
+        return new Promise<T>(() => {}); // never resolves; the page reloads
+      }
+      throw err;
+    })
+  );
+}
 import SignInPage from "../pages/auth/SignInPage.tsx";
 import SignUpPage from "../pages/auth/SignUpPage.tsx";
 import ProtectedPage from "../pages/ProtectedPage.tsx";
@@ -39,60 +60,60 @@ import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
 import Providers from "../Providers.tsx";
 
 // Admin pages
-const AdminLayout = lazy(() => import("../pages/admin/AdminLayout.tsx"));
-const AdminDashboardPage = lazy(() => import("../pages/admin/AdminDashboardPage.tsx"));
-const KanbanBoardPage = lazy(() => import("../pages/admin/KanbanBoardPage.tsx"));
-const LendersListPage = lazy(() => import("../pages/admin/lenders/LendersListPage.tsx"));
-const LenderDetailPage = lazy(() => import("../pages/admin/lenders/LenderDetailPage.tsx"));
-const LenderResourcesPage = lazy(() => import("../pages/admin/lenders/LenderResourcesPage.tsx"));
-const CustomersListPage = lazy(() => import("../pages/admin/customers/CustomersListPage.tsx"));
-const CustomerDetailPage = lazy(() => import("../pages/admin/customers/CustomerDetailPage.tsx"));
-const MarketingPage = lazy(() => import("../pages/admin/MarketingPage.tsx"));
-const MarketingResourcesPage = lazy(() => import("../pages/admin/marketing/MarketingResourcesPage.tsx"));
-const VendorDetailPage = lazy(() => import("../pages/admin/marketing/VendorDetailPage.tsx"));
-const AnalyticsDashboardPage = lazy(() => import("../pages/admin/analytics/AnalyticsDashboardPage.tsx"));
-const RealTimeDashboardPage = lazy(() => import("../pages/admin/analytics/RealTimeDashboardPage.tsx"));
-const DealAnalyticsPage = lazy(() => import("../pages/admin/analytics/DealAnalyticsPage.tsx"));
-const CloserPerformancePage = lazy(() => import("../pages/admin/analytics/CloserPerformancePage.tsx"));
-const LenderPerformancePage = lazy(() => import("../pages/admin/analytics/LenderPerformancePage.tsx"));
-const MarketPerformancePage = lazy(() => import("../pages/admin/analytics/MarketPerformancePage.tsx"));
-const LeadSourceROIPage = lazy(() => import("../pages/admin/analytics/LeadSourceROIPage.tsx"));
-const AdminSettingsPage = lazy(() => import("../pages/admin/AdminSettingsPage.tsx"));
-const IntegrationsPage = lazy(() => import("../pages/admin/settings/IntegrationsPage.tsx"));
-const BusinessModelCanvasPage = lazy(() => import("../pages/admin/BusinessModelCanvasPage.tsx"));
-const CloserCompPage = lazy(() => import("../pages/admin/CloserCompPage.tsx"));
-const PipelinePlaybookPage = lazy(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
-const PlaybooksPage = lazy(() => import("../pages/admin/PlaybooksPage.tsx"));
-const CampaignsPage = lazy(() => import("../pages/admin/CampaignsPage.tsx"));
-const UnitEconomicsVCFPage = lazy(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
-const LeadToolsPage = lazy(() => import("../pages/admin/LeadToolsPage.tsx"));
-const LiveTransferROIPage = lazy(() => import("../pages/admin/LiveTransferROIPage.tsx"));
-const PortalEstimatesPage = lazy(() => import("../pages/portal/PortalEstimatesPage.tsx"));
-const CompliancePage = lazy(() => import("../pages/admin/CompliancePage.tsx"));
-const RenewalsPage = lazy(() => import("../pages/admin/RenewalsPage.tsx"));
-const DocumentReviewPage = lazy(() => import("../pages/admin/DocumentReviewPage.tsx"));
-const LeadSourcesPage = lazy(() => import("../pages/admin/LeadSourcesPage.tsx"));
-const ReferralPartnersPage = lazy(() => import("../pages/admin/ReferralPartnersPage.tsx"));
-const SyncLogPage = lazy(() => import("../pages/admin/SyncLogPage.tsx"));
-const PlatformConfigPage = lazy(() => import("../pages/admin/PlatformConfigPage.tsx"));
-const UsersPage = lazy(() => import("../pages/admin/UsersPage.tsx"));
-const SequencesPage = lazy(() => import("../pages/admin/SequencesPage.tsx"));
-const ResourcesAdminPage = lazy(() => import("../pages/admin/ResourcesAdminPage.tsx"));
-const FunderGuidePage = lazy(() => import("../pages/admin/FunderGuidePage.tsx"));
-const DealListPage = lazy(() => import("../pages/admin/deals/DealListPage.tsx"));
-const DealDetailPage = lazy(() => import("../pages/admin/deals/DealDetailPage.tsx"));
+const AdminLayout = lazyWithReload(() => import("../pages/admin/AdminLayout.tsx"));
+const AdminDashboardPage = lazyWithReload(() => import("../pages/admin/AdminDashboardPage.tsx"));
+const KanbanBoardPage = lazyWithReload(() => import("../pages/admin/KanbanBoardPage.tsx"));
+const LendersListPage = lazyWithReload(() => import("../pages/admin/lenders/LendersListPage.tsx"));
+const LenderDetailPage = lazyWithReload(() => import("../pages/admin/lenders/LenderDetailPage.tsx"));
+const LenderResourcesPage = lazyWithReload(() => import("../pages/admin/lenders/LenderResourcesPage.tsx"));
+const CustomersListPage = lazyWithReload(() => import("../pages/admin/customers/CustomersListPage.tsx"));
+const CustomerDetailPage = lazyWithReload(() => import("../pages/admin/customers/CustomerDetailPage.tsx"));
+const MarketingPage = lazyWithReload(() => import("../pages/admin/MarketingPage.tsx"));
+const MarketingResourcesPage = lazyWithReload(() => import("../pages/admin/marketing/MarketingResourcesPage.tsx"));
+const VendorDetailPage = lazyWithReload(() => import("../pages/admin/marketing/VendorDetailPage.tsx"));
+const AnalyticsDashboardPage = lazyWithReload(() => import("../pages/admin/analytics/AnalyticsDashboardPage.tsx"));
+const RealTimeDashboardPage = lazyWithReload(() => import("../pages/admin/analytics/RealTimeDashboardPage.tsx"));
+const DealAnalyticsPage = lazyWithReload(() => import("../pages/admin/analytics/DealAnalyticsPage.tsx"));
+const CloserPerformancePage = lazyWithReload(() => import("../pages/admin/analytics/CloserPerformancePage.tsx"));
+const LenderPerformancePage = lazyWithReload(() => import("../pages/admin/analytics/LenderPerformancePage.tsx"));
+const MarketPerformancePage = lazyWithReload(() => import("../pages/admin/analytics/MarketPerformancePage.tsx"));
+const LeadSourceROIPage = lazyWithReload(() => import("../pages/admin/analytics/LeadSourceROIPage.tsx"));
+const AdminSettingsPage = lazyWithReload(() => import("../pages/admin/AdminSettingsPage.tsx"));
+const IntegrationsPage = lazyWithReload(() => import("../pages/admin/settings/IntegrationsPage.tsx"));
+const BusinessModelCanvasPage = lazyWithReload(() => import("../pages/admin/BusinessModelCanvasPage.tsx"));
+const CloserCompPage = lazyWithReload(() => import("../pages/admin/CloserCompPage.tsx"));
+const PipelinePlaybookPage = lazyWithReload(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
+const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.tsx"));
+const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
+const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
+const LeadToolsPage = lazyWithReload(() => import("../pages/admin/LeadToolsPage.tsx"));
+const LiveTransferROIPage = lazyWithReload(() => import("../pages/admin/LiveTransferROIPage.tsx"));
+const PortalEstimatesPage = lazyWithReload(() => import("../pages/portal/PortalEstimatesPage.tsx"));
+const CompliancePage = lazyWithReload(() => import("../pages/admin/CompliancePage.tsx"));
+const RenewalsPage = lazyWithReload(() => import("../pages/admin/RenewalsPage.tsx"));
+const DocumentReviewPage = lazyWithReload(() => import("../pages/admin/DocumentReviewPage.tsx"));
+const LeadSourcesPage = lazyWithReload(() => import("../pages/admin/LeadSourcesPage.tsx"));
+const ReferralPartnersPage = lazyWithReload(() => import("../pages/admin/ReferralPartnersPage.tsx"));
+const SyncLogPage = lazyWithReload(() => import("../pages/admin/SyncLogPage.tsx"));
+const PlatformConfigPage = lazyWithReload(() => import("../pages/admin/PlatformConfigPage.tsx"));
+const UsersPage = lazyWithReload(() => import("../pages/admin/UsersPage.tsx"));
+const SequencesPage = lazyWithReload(() => import("../pages/admin/SequencesPage.tsx"));
+const ResourcesAdminPage = lazyWithReload(() => import("../pages/admin/ResourcesAdminPage.tsx"));
+const FunderGuidePage = lazyWithReload(() => import("../pages/admin/FunderGuidePage.tsx"));
+const DealListPage = lazyWithReload(() => import("../pages/admin/deals/DealListPage.tsx"));
+const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDetailPage.tsx"));
 
 // Commission & Financial Engine pages
-const CloserListPage = lazy(() => import("../pages/admin/closers/CloserListPage.tsx"));
-const CloserDetailPage = lazy(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
-const SubISOListPage = lazy(() => import("../pages/admin/sub-isos/SubISOListPage.tsx"));
-const CommissionDashboardPage = lazy(() => import("../pages/admin/commissions/CommissionDashboardPage.tsx"));
+const CloserListPage = lazyWithReload(() => import("../pages/admin/closers/CloserListPage.tsx"));
+const CloserDetailPage = lazyWithReload(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
+const SubISOListPage = lazyWithReload(() => import("../pages/admin/sub-isos/SubISOListPage.tsx"));
+const CommissionDashboardPage = lazyWithReload(() => import("../pages/admin/commissions/CommissionDashboardPage.tsx"));
 
 // Portal pages
-const PortalLayout = lazy(() => import("../pages/portal/PortalLayout.tsx"));
-const PortalDashboardPage = lazy(() => import("../pages/portal/PortalDashboardPage.tsx"));
-const PortalDocumentsPage = lazy(() => import("../pages/portal/PortalDocumentsPage.tsx"));
-const PortalInboxPage = lazy(() => import("../pages/portal/PortalInboxPage.tsx"));
+const PortalLayout = lazyWithReload(() => import("../pages/portal/PortalLayout.tsx"));
+const PortalDashboardPage = lazyWithReload(() => import("../pages/portal/PortalDashboardPage.tsx"));
+const PortalDocumentsPage = lazyWithReload(() => import("../pages/portal/PortalDocumentsPage.tsx"));
+const PortalInboxPage = lazyWithReload(() => import("../pages/portal/PortalInboxPage.tsx"));
 
 export const routes: RouteObject[] = [
   {

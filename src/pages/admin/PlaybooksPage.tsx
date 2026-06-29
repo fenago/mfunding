@@ -12,6 +12,7 @@ import {
   ArrowsRightLeftIcon,
   Squares2X2Icon,
   SparklesIcon,
+  ComputerDesktopIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, type Playbook, type PlaybookStep } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE } from "../../data/pipelines";
@@ -73,11 +74,31 @@ export default function PlaybooksPage() {
 
       {/* Steps */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
-        <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-5">
+        <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-4">
           <span className="font-semibold text-gray-700 dark:text-gray-200">{active.name}</span>
           <ArrowRightIcon className="w-4 h-4" />
           <span>{active.entry}</span>
         </div>
+
+        {/* Grounding: the screen the closer keeps open for this whole flow */}
+        <div className="mb-6 rounded-xl border-2 border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <ComputerDesktopIcon className="w-5 h-5 text-ocean-blue" />
+              <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                Work this from: {active.workFrom.screen}
+              </span>
+            </div>
+            <Link
+              to={active.workFrom.route}
+              className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-ocean-blue text-white text-sm font-semibold hover:opacity-90"
+            >
+              Open the page <ArrowRightIcon className="w-4 h-4" />
+            </Link>
+          </div>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{active.workFrom.appNote}</p>
+        </div>
+
         <ol className="relative space-y-4">
           {active.steps.map((s, i) => (
             <StepCard
