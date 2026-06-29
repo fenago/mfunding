@@ -36,6 +36,8 @@ interface MarketingVendor {
   exclusivity: string | null;
   lead_generation_method: string | null;
   volume_available: string | null;
+  buyer_requirements: string | null;
+  ghl_integration: string | null;
   industries_served: string[] | null;
   additional_services: string[] | null;
 }
@@ -288,9 +290,21 @@ export default function VendorDetailPage() {
                     </div>
                   )}
                   {vendor.return_policy && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Return Policy</span>
-                      <span className="text-gray-900 dark:text-white">{vendor.return_policy}</span>
+                    <div className="flex justify-between gap-4">
+                      <span className="text-gray-500 flex-shrink-0">Guarantee / Billing Protection</span>
+                      <span className="text-gray-900 dark:text-white text-right">{vendor.return_policy}</span>
+                    </div>
+                  )}
+                  {vendor.buyer_requirements && (
+                    <div className="flex justify-between gap-4">
+                      <span className="text-gray-500 flex-shrink-0">Buyer Requirements</span>
+                      <span className="text-gray-900 dark:text-white text-right">{vendor.buyer_requirements}</span>
+                    </div>
+                  )}
+                  {vendor.ghl_integration && (
+                    <div className="flex justify-between gap-4">
+                      <span className="text-gray-500 flex-shrink-0">GHL / CRM Integration</span>
+                      <span className="text-gray-900 dark:text-white text-right">{vendor.ghl_integration}</span>
                     </div>
                   )}
                 </div>
