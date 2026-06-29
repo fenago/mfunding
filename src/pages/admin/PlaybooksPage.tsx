@@ -13,12 +13,18 @@ import {
   Squares2X2Icon,
   SparklesIcon,
   ComputerDesktopIcon,
+  CheckCircleIcon,
+  UserCircleIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
-import { PLAYBOOKS, type Playbook, type PlaybookStep } from "../../data/playbooks";
-import { MCA_PIPELINE, VCF_PIPELINE } from "../../data/pipelines";
+import { PLAYBOOKS, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
+import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
-import { getDealStats, getAllDeals } from "../../services/dealService";
-import type { DealWithCustomer, DealStatus } from "../../types/deals";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus } from "../../services/dealService";
+import { useActivityLog } from "../../hooks/useActivityLog";
+import supabase from "../../supabase";
+import type { DealWithCustomer, DealStatus, Deal } from "../../types/deals";
+import { DEAL_STATUS_CONFIG } from "../../types/deals";
 
 const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
   mca: Object.fromEntries(MCA_PIPELINE.stages.map((s) => [s.key, s.label])),
@@ -32,8 +38,88 @@ const toneStyles: Record<string, { ring: string; chip: string; label: string; ic
   speed: { ring: "border-blue-300 dark:border-blue-800", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Speed", icon: BoltIcon },
 };
 
+const TERMINAL = ["nurture", "declined", "dead"];
+const pipelineOf = (dealType: string): "mca" | "vcf" => (dealType === "vcf" ? "vcf" : "mca");
+const dealName = (d: DealWithCustomer) =>
+  d.customer?.business_name ||
+  [d.customer?.first_name, d.customer?.last_name].filter(Boolean).join(" ") ||
+  d.deal_number ||
+  "Lead";
+
 export default function PlaybooksPage() {
   const [active, setActive] = useState<Playbook>(PLAYBOOKS[0]);
+  const [deal, setDeal] = useState<DealWithCustomer | null>(null);
+  const [busyStep, setBusyStep] = useState<number | null>(null);
+  const { addActivity } = useActivityLog("customer", deal?.customer_id);
+
+  // The deal is "live" in this playbook only when its pipeline matches the open tab.
+  const dealMatchesPlaybook = !!deal && pipelineOf(deal.deal_type) === active.pipeline;
+  const order = PIPELINES[active.pipeline].stages.map((s) => s.key);
+  const currentIdx = deal ? order.indexOf(deal.status) : -1;
+
+  async function refreshDeal(id: string) {
+    const res = await getDealById(id);
+    if (res) setDeal(res.deal);
+  }
+
+  // Persist a step's structured fields + checklist + note, log it, and advance
+  // the stage — everything in one click, without leaving the page.
+  async function completeStep(
+    step: PlaybookStep,
+    values: Record<string, string>,
+    note: string,
+    outcome: string,
+    checked: string[],
+  ) {
+    if (!deal) return;
+    setBusyStep(step.n);
+    try {
+      const custUpdates: Record<string, unknown> = {};
+      const dealUpdates: Record<string, unknown> = {};
+      for (const f of step.fields ?? []) {
+        const raw = (values[f.key] ?? "").trim();
+        if (raw === "") continue;
+        const v = f.kind === "number" || f.kind === "money" ? Number(raw) : raw;
+        (f.target === "customer" ? custUpdates : dealUpdates)[f.column] = v;
+      }
+      if (Object.keys(custUpdates).length) {
+        await supabase.from("customers").update(custUpdates).eq("id", deal.customer_id);
+      }
+      if (Object.keys(dealUpdates).length) {
+        await supabase.from("deals").update(dealUpdates).eq("id", deal.id);
+      }
+
+      // Log it to the deal's activity feed (the same feed the deal page shows).
+      const parts: string[] = [];
+      if (note.trim()) parts.push(note.trim());
+      if (checked.length) parts.push(`Collected: ${checked.join(", ")}`);
+      const changed = (step.fields ?? [])
+        .filter((f) => (values[f.key] ?? "").trim() !== "")
+        .map((f) => `${f.label}: ${values[f.key]}`);
+      if (changed.length) parts.push(changed.join(" · "));
+      if (parts.length) {
+        await addActivity({
+          interaction_type: outcome || "note",
+          subject: `Playbook · ${step.title}`,
+          content: parts.join("\n"),
+        });
+      }
+
+      // Advance the stage (forward only) — this also syncs GHL and, on Funded,
+      // auto-creates the commission.
+      if (step.stageKey) {
+        const tgt = order.indexOf(step.stageKey);
+        if (tgt > currentIdx) await updateDealStatus(deal.id, step.stageKey as DealStatus);
+      }
+
+      await refreshDeal(deal.id);
+    } catch (e) {
+      console.error("completeStep failed:", e);
+      alert(e instanceof Error ? e.message : "Could not save this step. Please try again.");
+    } finally {
+      setBusyStep(null);
+    }
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -42,7 +128,8 @@ export default function PlaybooksPage() {
           <MapIcon className="w-6 h-6 text-ocean-blue" /> Revenue Playbooks
         </h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          The 3 flows that make money — exactly what to do, what to say, and where to click, step by step.
+          Pick a flow, start or load a lead, then just fill in each step as you talk — the page saves the data, logs the
+          call, advances the stage, and updates GoHighLevel for you.
         </p>
       </div>
 
@@ -81,39 +168,55 @@ export default function PlaybooksPage() {
           <span>{active.entry}</span>
         </div>
 
-        {/* Grounding: the screen the closer keeps open for this whole flow */}
-        <div className="mb-6 rounded-xl border-2 border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <ComputerDesktopIcon className="w-5 h-5 text-ocean-blue" />
-              <span className="text-sm font-semibold text-gray-900 dark:text-white">
-                Work this from: {active.workFrom.screen}
-              </span>
-            </div>
-            <Link
-              to={active.workFrom.route}
-              className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-ocean-blue text-white text-sm font-semibold hover:opacity-90"
-            >
-              Open the page <ArrowRightIcon className="w-4 h-4" />
-            </Link>
+        {/* Who you're working — capture a new lead, load one, or the pinned context */}
+        {dealMatchesPlaybook && deal ? (
+          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} />
+        ) : (
+          <div className="mb-6 space-y-3">
+            {deal && !dealMatchesPlaybook && (
+              <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-200 flex items-center justify-between gap-3">
+                <span>
+                  You're working <b>{dealName(deal)}</b> (a {pipelineOf(deal.deal_type).toUpperCase()} deal) — switch to
+                  the {pipelineOf(deal.deal_type).toUpperCase()} playbook to log against it.
+                </span>
+                <button onClick={() => setDeal(null)} className="shrink-0 underline">Clear</button>
+              </div>
+            )}
+            <PlaybookCapture key={active.id} playbook={active} onCreated={(d: Deal) => refreshDeal(d.id)} />
+            <ResumePicker pipeline={active.pipeline} onPick={(d) => setDeal(d)} />
+          </div>
+        )}
+
+        {/* Grounding note (reference) */}
+        <div className="mb-6 rounded-xl border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-4">
+          <div className="flex items-center gap-2">
+            <ComputerDesktopIcon className="w-5 h-5 text-ocean-blue" />
+            <span className="text-sm font-semibold text-gray-900 dark:text-white">{active.workFrom.screen}</span>
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{active.workFrom.appNote}</p>
         </div>
 
-        {/* Inline capture — create the lead/deal right here without leaving the playbook */}
-        <div className="mb-6">
-          <PlaybookCapture key={active.id} playbook={active} />
-        </div>
-
         <ol className="relative space-y-4">
-          {active.steps.map((s, i) => (
-            <StepCard
-              key={s.n}
-              step={s}
-              last={i === active.steps.length - 1}
-              stageLabel={s.stageKey ? STAGE_LABELS[active.pipeline][s.stageKey] : undefined}
-            />
-          ))}
+          {active.steps.map((s, i) => {
+            const stageIdx = s.stageKey ? order.indexOf(s.stageKey) : -1;
+            const done = dealMatchesPlaybook && stageIdx >= 0 && stageIdx <= currentIdx;
+            const current =
+              dealMatchesPlaybook && stageIdx >= 0 && stageIdx === currentIdx + 1;
+            return (
+              <StepCard
+                key={s.n}
+                step={s}
+                last={i === active.steps.length - 1}
+                stageLabel={s.stageKey ? STAGE_LABELS[active.pipeline][s.stageKey] : undefined}
+                interactive={dealMatchesPlaybook}
+                deal={dealMatchesPlaybook ? deal : null}
+                done={done}
+                current={current}
+                busy={busyStep === s.n}
+                onComplete={completeStep}
+              />
+            );
+          })}
         </ol>
       </div>
 
@@ -123,18 +226,192 @@ export default function PlaybooksPage() {
   );
 }
 
-function StepCard({ step, last, stageLabel }: { step: PlaybookStep; last: boolean; stageLabel?: string }) {
+// ───────────────────────── Deal context bar ─────────────────────────
+
+function DealContextBar({ deal, pipeline, onClear }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void }) {
+  const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
+  const idx = stages.findIndex((s) => s.key === deal.status);
+  const cfg = DEAL_STATUS_CONFIG[deal.status];
+  return (
+    <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <UserCircleIcon className="w-9 h-9 text-emerald-600 dark:text-emerald-400" />
+          <div>
+            <p className="font-semibold text-gray-900 dark:text-white">{dealName(deal)}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {[deal.customer?.phone, deal.customer?.email].filter(Boolean).join(" · ") || "No contact info yet"}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${cfg?.bgColor} ${cfg?.color}`}>
+            {cfg?.label ?? deal.status}
+            {idx >= 0 ? ` · ${idx + 1}/${stages.length}` : ""}
+          </span>
+          <Link
+            to={`/admin/deals/${deal.id}`}
+            className="text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-white dark:hover:bg-gray-700"
+          >
+            Full deal page
+          </Link>
+          <button
+            onClick={onClear}
+            title="Work a different lead"
+            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-white dark:hover:bg-gray-700"
+          >
+            <XMarkIcon className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+        You're working this lead. Fill in each step below — it saves to the deal, logs the call, and advances the stage.
+      </p>
+    </div>
+  );
+}
+
+// ───────────────────────── Resume picker ─────────────────────────
+
+function ResumePicker({ pipeline, onPick }: { pipeline: "mca" | "vcf"; onPick: (d: DealWithCustomer) => void }) {
+  const [deals, setDeals] = useState<DealWithCustomer[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open || deals.length) return;
+    setLoading(true);
+    getAllDeals({ deal_type: pipeline === "vcf" ? "vcf" : "mca" })
+      .then((d) => setDeals(d.filter((x) => !TERMINAL.includes(x.status) && x.status !== "funded" && x.status !== "restructure_executed")))
+      .catch(() => setDeals([]))
+      .finally(() => setLoading(false));
+  }, [open, pipeline, deals.length]);
+
+  // refetch when the pipeline changes
+  useEffect(() => {
+    setDeals([]);
+    setOpen(false);
+  }, [pipeline]);
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-200 flex items-center justify-between"
+      >
+        <span>…or resume an in-progress {pipeline.toUpperCase()} lead</span>
+        <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <div className="px-4 pb-4">
+          {loading ? (
+            <p className="text-sm text-gray-400">Loading…</p>
+          ) : deals.length === 0 ? (
+            <p className="text-sm text-gray-400">No in-progress {pipeline.toUpperCase()} leads right now.</p>
+          ) : (
+            <ul className="max-h-64 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
+              {deals.map((d) => {
+                const cfg = DEAL_STATUS_CONFIG[d.status];
+                return (
+                  <li key={d.id}>
+                    <button
+                      onClick={() => onPick(d)}
+                      className="w-full flex items-center justify-between gap-2 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded px-2"
+                    >
+                      <span className="text-sm text-gray-700 dark:text-gray-200 truncate">{dealName(d)}</span>
+                      <span className={`text-[11px] shrink-0 px-2 py-0.5 rounded-full ${cfg?.bgColor} ${cfg?.color}`}>{cfg?.label ?? d.status}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ───────────────────────── Step card (interactive) ─────────────────────────
+
+function fieldInitial(f: StepField, deal: DealWithCustomer | null): string {
+  if (!deal) return "";
+  const src: Record<string, unknown> =
+    f.target === "customer" ? ((deal.customer ?? {}) as Record<string, unknown>) : (deal as unknown as Record<string, unknown>);
+  const v = src[f.column];
+  return v === null || v === undefined ? "" : String(v);
+}
+
+function StepCard({
+  step,
+  last,
+  stageLabel,
+  interactive,
+  deal,
+  done,
+  current,
+  busy,
+  onComplete,
+}: {
+  step: PlaybookStep;
+  last: boolean;
+  stageLabel?: string;
+  interactive: boolean;
+  deal: DealWithCustomer | null;
+  done: boolean;
+  current: boolean;
+  busy: boolean;
+  onComplete: (step: PlaybookStep, values: Record<string, string>, note: string, outcome: string, checked: string[]) => void;
+}) {
   const tone = step.tone ? toneStyles[step.tone] : null;
+
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [note, setNote] = useState("");
+  const [outcome, setOutcome] = useState("call");
+  const [checked, setChecked] = useState<string[]>([]);
+
+  // Prefill structured fields from the loaded deal so captured data shows
+  // through; also clear the per-touch note/checklist after a save (the deal's
+  // updated_at changes when we advance it).
+  useEffect(() => {
+    if (deal && step.fields) {
+      setValues(Object.fromEntries(step.fields.map((f) => [f.key, fieldInitial(f, deal)])));
+    }
+    setNote("");
+    setChecked([]);
+  }, [deal?.id, deal?.updated_at, step.fields]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hasInputs = interactive && (!!step.fields?.length || !!step.collect?.length || !!step.stageKey);
+
+  const circle = done
+    ? "bg-emerald-500"
+    : current
+      ? "bg-ocean-blue ring-4 ring-ocean-blue/20"
+      : "bg-ocean-blue";
+
   return (
     <li className="relative pl-12">
-      {/* connector */}
       {!last && <span className="absolute left-[18px] top-9 bottom-[-16px] w-px bg-gray-200 dark:bg-gray-700" />}
-      <span className="absolute left-0 top-0 flex items-center justify-center w-9 h-9 rounded-full bg-ocean-blue text-white text-sm font-bold">
-        {step.n}
+      <span className={`absolute left-0 top-0 flex items-center justify-center w-9 h-9 rounded-full text-white text-sm font-bold ${circle}`}>
+        {done ? <CheckCircleIcon className="w-5 h-5" /> : step.n}
       </span>
-      <div className={`rounded-lg border ${tone ? tone.ring : "border-gray-200 dark:border-gray-700"} bg-gray-50 dark:bg-gray-900 p-4`}>
+      <div
+        className={`rounded-lg border ${
+          current ? "border-ocean-blue ring-1 ring-ocean-blue/30" : tone ? tone.ring : "border-gray-200 dark:border-gray-700"
+        } bg-gray-50 dark:bg-gray-900 p-4`}
+      >
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="font-semibold text-gray-900 dark:text-white">{step.title}</h3>
+          {done && (
+            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+              <CheckCircleIcon className="w-3 h-3" /> Done
+            </span>
+          )}
+          {current && !done && (
+            <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue">
+              You're here
+            </span>
+          )}
           {tone && (
             <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${tone.chip}`}>
               <tone.icon className="w-3 h-3" /> {tone.label}
@@ -147,7 +424,6 @@ function StepCard({ step, last, stageLabel }: { step: PlaybookStep; last: boolea
           )}
         </div>
 
-        {/* pipeline stage + supporting automation for context */}
         {(stageLabel || step.automation) && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {stageLabel && (
@@ -176,23 +452,121 @@ function StepCard({ step, last, stageLabel }: { step: PlaybookStep; last: boolea
           </div>
         )}
 
-        {step.collect && step.collect.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            <DocumentCheckIcon className="w-4 h-4 text-gray-400" />
-            {step.collect.map((c) => (
-              <span key={c} className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200">
-                {c}
-              </span>
-            ))}
-          </div>
-        )}
-
         {step.note && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{step.note}</p>}
 
-        {step.route && (
-          <Link to={step.route.to} className="mt-3 inline-flex items-center gap-1 text-sm text-ocean-blue hover:underline">
-            {step.route.label} <ArrowRightIcon className="w-3.5 h-3.5" />
-          </Link>
+        {/* ───── Interactive work area (only when a matching deal is loaded) ───── */}
+        {hasInputs ? (
+          <div className="mt-4 rounded-lg border border-dashed border-ocean-blue/40 bg-white dark:bg-gray-800 p-3 space-y-3">
+            {/* Structured fields */}
+            {step.fields?.length ? (
+              <div className="grid sm:grid-cols-2 gap-3">
+                {step.fields.map((f) => (
+                  <div key={f.key}>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      {f.label}
+                    </label>
+                    <input
+                      className="input-field w-full"
+                      type={f.kind === "number" || f.kind === "money" ? "number" : "text"}
+                      value={values[f.key] ?? ""}
+                      onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                      placeholder={f.placeholder}
+                    />
+                    {f.hint && <p className="mt-1 text-[11px] text-gray-400">{f.hint}</p>}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Stips / info checklist */}
+            {step.collect?.length ? (
+              <div>
+                <p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1 flex items-center gap-1">
+                  <DocumentCheckIcon className="w-4 h-4 text-gray-400" /> Check off what you collected
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {step.collect.map((c) => {
+                    const on = checked.includes(c);
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setChecked((arr) => (on ? arr.filter((x) => x !== c) : [...arr, c]))}
+                        className={`text-[11px] px-2 py-1 rounded-full border transition-colors ${
+                          on
+                            ? "bg-emerald-100 border-emerald-300 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                            : "bg-gray-100 dark:bg-gray-700 border-transparent text-gray-700 dark:text-gray-200"
+                        }`}
+                      >
+                        {on ? "✓ " : ""}
+                        {c}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Call / note log */}
+            <div className="grid sm:grid-cols-[1fr_auto] gap-2 items-end">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Log the call / note</label>
+                <textarea
+                  className="input-field w-full h-16"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="What happened on this touch? (optional)"
+                />
+              </div>
+              <select
+                className="input-field"
+                value={outcome}
+                onChange={(e) => setOutcome(e.target.value)}
+                title="Touch type"
+              >
+                <option value="call">Call</option>
+                <option value="email">Email</option>
+                <option value="sms">SMS</option>
+                <option value="note">Note</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] text-gray-400">
+                {step.stageKey && !done
+                  ? `Saves the info, logs it, and moves the deal to “${stageLabel}”.`
+                  : "Saves the info and logs it to the deal."}
+              </p>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onComplete(step, values, note, outcome, checked)}
+                className={`text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed ${
+                  done ? "border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200" : "bg-ocean-blue text-white hover:opacity-90"
+                }`}
+              >
+                {busy ? "Saving…" : done ? "Update this step" : step.stageKey ? `Save & mark ${stageLabel} done` : "Save & log"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {step.collect && step.collect.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <DocumentCheckIcon className="w-4 h-4 text-gray-400" />
+                {step.collect.map((c) => (
+                  <span key={c} className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200">
+                    {c}
+                  </span>
+                ))}
+              </div>
+            )}
+            {step.route && (
+              <Link to={step.route.to} className="mt-3 inline-flex items-center gap-1 text-sm text-ocean-blue hover:underline">
+                {step.route.label} <ArrowRightIcon className="w-3.5 h-3.5" />
+              </Link>
+            )}
+          </>
         )}
       </div>
     </li>
@@ -200,8 +574,6 @@ function StepCard({ step, last, stageLabel }: { step: PlaybookStep; last: boolea
 }
 
 // ───────────────────────── Live funnel (real deals) ─────────────────────────
-
-const TERMINAL = ["nurture", "declined", "dead"];
 
 function FunnelBoard() {
   const [pipe, setPipe] = useState<"mca" | "vcf">("mca");

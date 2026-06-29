@@ -57,7 +57,15 @@ const emptyForm = {
   notes: "",
 };
 
-export default function PlaybookCapture({ playbook }: { playbook: Playbook }) {
+export default function PlaybookCapture({
+  playbook,
+  onCreated,
+}: {
+  playbook: Playbook;
+  /** When provided, the parent takes over after creation (loads the deal into
+   * the guided workspace) and this component does NOT show its own success card. */
+  onCreated?: (deal: Deal) => void;
+}) {
   const isVcf = playbook.pipeline === "vcf";
   const defaults = PLAYBOOK_DEFAULTS[playbook.id];
 
@@ -178,11 +186,17 @@ export default function PlaybookCapture({ playbook }: { playbook: Playbook }) {
       };
 
       const deal = await createDeal(data);
-      setSaved(deal);
-      // Clear the inputs so the next lead starts fresh, but keep the panel open.
+      // Clear the inputs so the next lead starts fresh.
       setForm({ ...emptyForm, lead_source: defaults.leadSource });
       setExistingId("");
       setCustomerSearch("");
+      if (onCreated) {
+        // Parent loads the deal into the guided workspace — no success card here.
+        setSaving(false);
+        onCreated(deal);
+        return;
+      }
+      setSaved(deal);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save the lead. Please try again.");
     }

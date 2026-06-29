@@ -8,6 +8,19 @@
 
 export type StepTone = "leak" | "win" | "branch" | "speed";
 
+// A structured input the employee fills in AT this step. The value is persisted
+// to the named column on either the customer or the deal — so the playbook is
+// the only screen they ever touch.
+export interface StepField {
+  key: string;
+  label: string;
+  kind: "text" | "number" | "money" | "textarea";
+  target: "customer" | "deal";
+  column: string;
+  placeholder?: string;
+  hint?: string;
+}
+
 export interface PlaybookStep {
   n: number;
   title: string;
@@ -17,10 +30,28 @@ export interface PlaybookStep {
   do: string[]; // what the closer does — with exact app locations
   say?: string; // verbatim script (email/phone)
   collect?: string[]; // docs / info to gather
+  fields?: StepField[]; // structured inputs captured inline at this step
   route?: { to: string; label: string }; // primary screen for this step
   tone?: StepTone;
   note?: string;
 }
+
+// Shared field sets so MCA flows capture the same qualifiers.
+const MCA_QUALIFY_FIELDS: StepField[] = [
+  { key: "monthly_revenue", label: "Monthly revenue ($)", kind: "money", target: "customer", column: "monthly_revenue", placeholder: "25000" },
+  { key: "time_in_business", label: "Time in business (months)", kind: "number", target: "customer", column: "time_in_business", placeholder: "18" },
+  { key: "amount_requested", label: "Amount requested ($)", kind: "money", target: "deal", column: "amount_requested", placeholder: "50000" },
+  { key: "industry", label: "Industry", kind: "text", target: "customer", column: "industry", placeholder: "Construction, retail…" },
+  { key: "use_of_funds", label: "Use of funds", kind: "text", target: "deal", column: "use_of_funds", placeholder: "Working capital, payroll, inventory…" },
+];
+
+const VCF_QUALIFY_FIELDS: StepField[] = [
+  { key: "vcf_active_positions", label: "# of active positions", kind: "number", target: "deal", column: "vcf_active_positions", placeholder: "3" },
+  { key: "vcf_total_balance", label: "Total MCA balance ($)", kind: "money", target: "deal", column: "vcf_total_balance", placeholder: "85000" },
+  { key: "vcf_daily_debit", label: "Combined daily/weekly debit ($)", kind: "money", target: "deal", column: "vcf_daily_debit", placeholder: "1200" },
+  { key: "vcf_current_funders", label: "Current funders", kind: "text", target: "deal", column: "vcf_current_funders", placeholder: "Funder A, Funder B…" },
+  { key: "vcf_hardship_reason", label: "Hardship reason", kind: "text", target: "deal", column: "vcf_hardship_reason", placeholder: "Slow season, big debit, payroll…" },
+];
 
 export interface Playbook {
   id: "website" | "live-transfer" | "vcf";
@@ -99,6 +130,7 @@ export const PLAYBOOKS: Playbook[] = [
           "Industry (no cannabis / adult / firearms / nonprofit)",
           "Existing advances? (≥2 → route to VCF)",
         ],
+        fields: MCA_QUALIFY_FIELDS,
         tone: "branch",
       },
       {
@@ -178,6 +210,9 @@ export const PLAYBOOKS: Playbook[] = [
           "The Day-1 congrats + Google review + referral-ask email fires automatically.",
           "Renewal triggers arm off Paydown %. Watch them in Admin → Renewals (/admin/renewals).",
         ],
+        fields: [
+          { key: "amount_funded", label: "Amount funded ($)", kind: "money", target: "deal", column: "amount_funded", placeholder: "50000", hint: "Saving this + marking Funded auto-creates the commission." },
+        ],
         route: { to: "/admin/renewals", label: "Admin → Renewals" },
         say: "Congrats [First Name]! The capital should be in your account. If you know any owners who need capital, I'll send you a $100 gift card for every funded referral.",
       },
@@ -221,6 +256,7 @@ export const PLAYBOOKS: Playbook[] = [
         do: ["Rapid-fire, conversational. Listen for disqualifiers (exit politely if they fail)."],
         say: "How long have you been running [Business Name]? … Ballpark monthly revenue? … And what would the capital go toward — payroll, inventory, cash flow?",
         collect: ["6+ months in business", "$15K+/mo revenue", "Use of funds", "Not a prohibited industry"],
+        fields: MCA_QUALIFY_FIELDS,
         note: "Under 6 months or under $15K/mo → exit politely and tag soft-no (it routes to nurture).",
         tone: "branch",
       },
@@ -309,6 +345,7 @@ export const PLAYBOOKS: Playbook[] = [
         ],
         say: "How many advances/positions are you carrying? … Total balance across all of them? … Combined daily or weekly payment? … Who are the funders? … What's making it hardest right now — slow season, a big debit, payroll?",
         collect: ["# of positions", "Total balance ($50K+ qualifies)", "Combined daily/weekly debit", "Funder names", "Hardship reason"],
+        fields: VCF_QUALIFY_FIELDS,
         tone: "branch",
       },
       {
