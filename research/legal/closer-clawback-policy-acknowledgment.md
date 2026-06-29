@@ -11,7 +11,7 @@ This Acknowledgment explains how commission clawbacks work and is incorporated i
 Company is paid commission by funders/lenders **after** a deal funds. Funders reverse that commission if a deal goes bad early — most commonly a **default, rescission, NSF/non-performance, or merchant fraud within the funder's clawback window** (often the first payments or first 30–90 days; the exact window is set by each funder). When the funder reverses Company's commission, the portion already paid to Contractor must be returned.
 
 ## 2. What Gets Clawed Back
-If a funder reverses or reduces commission on a deal Contractor was paid on, Contractor's corresponding share is subject to clawback in the **same proportion** as Contractor's original split. Example: Contractor earned $1,600 (40% of a $4,000 pool); funder claws back 100% → Contractor owes $1,600; funder claws back 50% → Contractor owes $800.
+If a funder reverses or reduces commission on a deal Contractor was paid on, Contractor's corresponding share is subject to clawback in the **same proportion** as Contractor's original split. Example: Contractor earned $1,400 (35% of a $4,000 pool); funder claws back 100% → Contractor owes $1,400; funder claws back 50% → Contractor owes $700.
 
 ## 3. How It's Recovered
 At Company's election, clawed-back amounts are recovered by any combination of:

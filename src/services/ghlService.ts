@@ -35,6 +35,18 @@ export function syncDealToGHL(dealId: string): Promise<GhlSyncResult> {
   return invokeSync({ entity: "deal", id: dealId });
 }
 
+/** Push a lender/funder into GHL as a Business + contact(s) (incl. its people);
+ * persists lenders.ghl_business_id + ghl_contact_id. Reachable from the Comms page. */
+export function syncFunderToGHL(lenderId: string): Promise<GhlSyncResult & { ghl_business_id?: string | null; people_synced?: number }> {
+  return invokeSync({ entity: "lender", id: lenderId }) as Promise<GhlSyncResult & { ghl_business_id?: string | null; people_synced?: number }>;
+}
+
+/** Push a marketing/lead vendor into GHL as a Business + contact;
+ * persists marketing_vendors.ghl_business_id + ghl_contact_id. */
+export function syncVendorToGHL(vendorId: string): Promise<GhlSyncResult & { ghl_business_id?: string | null }> {
+  return invokeSync({ entity: "vendor", id: vendorId }) as Promise<GhlSyncResult & { ghl_business_id?: string | null }>;
+}
+
 /** Tag the deal's GHL contact submit:<funder> for each funder, firing their GHL
  * email workflows (Gap B — GHL sends the funder submissions). */
 export async function tagFundersForSubmission(dealId: string, lenderIds: string[]): Promise<{ ok: boolean; tagged?: string[]; warning?: string; error?: string }> {

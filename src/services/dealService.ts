@@ -233,14 +233,24 @@ export async function autoCreateCommissionForFundedDeal(deal: Deal): Promise<Com
     .limit(1);
   if (existing && existing.length > 0) return null;
 
+  // Load the closer record so we can apply THIS closer's individual splits
+  // (set per-closer in Admin → Closers), falling back to the platform defaults.
   let closerId: string | null = null;
+  let closerSplits: { company: number; self: number; renewal: number } | null = null;
   if (deal.assigned_closer_id) {
     const { data: closer } = await supabase
       .from("closers")
-      .select("id")
+      .select("id, company_lead_split, self_gen_split, renewal_split")
       .eq("user_id", deal.assigned_closer_id)
       .maybeSingle();
-    if (closer) closerId = closer.id;
+    if (closer) {
+      closerId = closer.id;
+      closerSplits = {
+        company: Number(closer.company_lead_split),
+        self: Number(closer.self_gen_split),
+        renewal: Number(closer.renewal_split),
+      };
+    }
   }
 
   const isRenewal = !!deal.is_renewal;
@@ -253,10 +263,20 @@ export async function autoCreateCommissionForFundedDeal(deal: Deal): Promise<Com
       ? "self_generated"
       : "company";
 
+  // Resolve the closer's own rate for this lead source (per-closer override).
+  const closerSplitPercentage = closerSplits
+    ? leadSource === "renewal"
+      ? closerSplits.renewal
+      : leadSource === "self_generated"
+        ? closerSplits.self
+        : closerSplits.company
+    : undefined;
+
   const calc = calculateCommission({
     amountFunded: deal.amount_funded,
     commissionPoints,
     closerId,
+    closerSplitPercentage,
     leadSource,
     isRenewal,
   });

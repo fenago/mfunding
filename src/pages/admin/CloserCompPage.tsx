@@ -43,7 +43,7 @@ export default function CloserCompPage() {
   const [dealSize, setDealSize] = useState(50000);
   const [points, setPoints] = useState(8); // company commission points
   // Splits
-  const [companyLeadSplit, setCompanyLeadSplit] = useState(40); // % to closer on company leads
+  const [companyLeadSplit, setCompanyLeadSplit] = useState(35); // % to closer on company leads (Momentum default)
   const [selfGenSplit, setSelfGenSplit] = useState(65); // % to closer on self-gen
   // Volume
   const [companyDeals, setCompanyDeals] = useState(6);
@@ -92,7 +92,7 @@ export default function CloserCompPage() {
           what="Your closer comp plan + an interactive payout calculator."
           value="Set splits/draws that attract closers while protecting your margin."
           howToUse="Slide splits, deal size, volume, and draw to see take-home vs what you keep."
-          howToRead="40% company-lead split is the competitive baseline; 35% is a startup floor."
+          howToRead="35% company-lead split is the Momentum default; you can set a different rate per closer in Admin → Closers."
         />
 
         {/* ============ CALCULATOR ============ */}
@@ -171,12 +171,12 @@ export default function CloserCompPage() {
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex items-start gap-3">
               <ExclamationTriangleIcon className="w-6 h-6 text-amber-500 flex-shrink-0" />
               <div className="text-sm text-amber-800">
-                <p className="font-semibold mb-1">Is 35% a good starting split?</p>
+                <p className="font-semibold mb-1">35% is Momentum's standard company-lead split</p>
                 <p>
-                  On <strong>company-provided leads</strong>, 35% is on the <em>low</em> end (industry standard is 30–50%, with
-                  40–50% typical to attract closers who can actually close MCA). 35% works as a <strong>startup floor</strong> if
-                  you pair it with a draw and escalators — but 40% is the more competitive sweet spot. Never use 35% for
-                  <strong> self-generated</strong> deals (those should be 60–70%). Slide the values above to see the trade-off.
+                  On <strong>company-provided leads</strong> the industry runs 30–50%. We start every closer at
+                  <strong> 35%</strong> — paired with a ramp-up draw and renewal upside — and you can raise an individual
+                  closer's rate in <strong>Admin → Closers</strong> as they prove out. Keep <strong>self-generated</strong>
+                  deals higher (60–70%); never use 35% there. Slide the values above to model the trade-off.
                 </p>
               </div>
             </div>
@@ -197,10 +197,10 @@ export default function CloserCompPage() {
           <Section title="How You Get Paid">
             <ul className="list-disc pl-5 space-y-1.5">
               <li><strong>Commission-only, 1099.</strong> No cap. You earn a share of the commission on every deal you fund.</li>
-              <li><strong>Company-provided leads:</strong> <strong>40%</strong> of the deal commission to you.</li>
+              <li><strong>Company-provided leads:</strong> <strong>35%</strong> of the deal commission to you.</li>
               <li><strong>Self-generated leads:</strong> <strong>65%</strong> of the deal commission to you.</li>
               <li><strong>Renewals</strong> on your funded book: <strong>30%</strong> (or routed to a renewals specialist).</li>
-              <li>Example: $50K advance, 8-point commission = $4,000. Company lead → <strong>you earn $1,600</strong>. Self-gen → <strong>you earn $2,600</strong>.</li>
+              <li>Example: $50K advance, 8-point commission = $4,000. Company lead → <strong>you earn $1,400</strong>. Self-gen → <strong>you earn $2,600</strong>.</li>
             </ul>
           </Section>
 

@@ -54,7 +54,7 @@ MCA Closer (1099 independent contractor sales rep working under MFunding)
 | Average deal size | $50,000 |
 | Commission on new deals | 8 points (8% of funded amount) = $4,000 |
 | Commission on renewals | 6 points = $3,000 |
-| Closer split (company leads) | 40% → closer gets $1,600, MFunding keeps $2,400 (escalates to 45% at $250K+/mo, 50% at $500K+/mo) |
+| Closer split (company leads) | 35% default → closer gets $1,400, MFunding keeps $2,600 (rate is set per closer in Admin → Closers) |
 | Closer split (self-generated leads) | 65% → closer gets $2,600, MFunding keeps $1,400 |
 | Renewal split | 30% → closer/specialist gets $1,200, MFunding keeps $2,800 |
 | Sub-ISO override | MFunding keeps 2 points ($1,000), Sub-ISO keeps 6 points ($3,000) |
@@ -396,7 +396,7 @@ All tables use UUID primary keys and have RLS enabled. Key existing tables:
 
 ### 1. Independent Contractor Commission Agreement (v2_MCA_Commission_Agreement.docx)
 - For 1099 MCA closers working under MFunding
-- Schedule A: Fill-in rates for company-lead commission (rec: 40–50%), self-gen commission (rec: 60–70%), renewal commission (rec: 30–40%), optional draw against commission (rec: $2,500/mo for 90 days)
+- Schedule A: Fill-in rates for company-lead commission (default 35%, set per closer), self-gen commission (rec: 60–70%), renewal commission (rec: 30–40%), optional draw against commission (rec: $2,500/mo for 90 days)
 - Covers: scope of services, payment terms (5 biz days after funder pays), clawback provision, independent contractor status, non-solicitation (12 months), non-circumvention (12 months), confidentiality, TCPA/regulatory compliance, MCA-as-receivables-not-loans language
 
 ### 2. Sub-ISO Partner Agreement (v2_Sub_ISO_Partner_Agreement.docx)

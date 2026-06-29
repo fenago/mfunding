@@ -396,7 +396,8 @@ export default function CloserListPage() {
               </div>
 
               <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
-                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Commission Splits</h3>
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Commission Splits</h3>
+                <p className="text-xs text-gray-400 mb-3">Set per closer. New closers default to 35% on company leads — override here anytime.</p>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Company Lead %</label>

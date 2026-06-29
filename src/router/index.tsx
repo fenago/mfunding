@@ -104,6 +104,7 @@ const UsersPage = lazyWithReload(() => import("../pages/admin/UsersPage.tsx"));
 const SequencesPage = lazyWithReload(() => import("../pages/admin/SequencesPage.tsx"));
 const ResourcesAdminPage = lazyWithReload(() => import("../pages/admin/ResourcesAdminPage.tsx"));
 const FunderGuidePage = lazyWithReload(() => import("../pages/admin/FunderGuidePage.tsx"));
+const CommsPage = lazyWithReload(() => import("../pages/admin/CommsPage.tsx"));
 const DealListPage = lazyWithReload(() => import("../pages/admin/deals/DealListPage.tsx"));
 const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDetailPage.tsx"));
 
@@ -535,6 +536,11 @@ export const routes: RouteObject[] = [
               {
                 path: "funder-guide",
                 element: <FunderGuidePage />,
+              },
+              // Comms — contact search + email via GHL (all staff)
+              {
+                path: "comms",
+                element: <CommsPage />,
               },
               // Resources / blog admin (super_admin only)
               {

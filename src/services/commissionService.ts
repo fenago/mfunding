@@ -39,7 +39,7 @@ export interface CommissionCalculation {
  * Economics from CLAUDE.md:
  * - New deals: 8 points (8% of funded amount) = $4,000 on $50K
  * - Renewals: 6 points = $3,000 on $50K
- * - Company leads: 40% closer split (escalates to 45% at $250K+/mo, 50% at $500K+/mo)
+ * - Company leads: 35% closer split by default; overridable per closer (closers.company_lead_split)
  * - Self-gen leads: 65% closer split
  * - Renewal: 30% split
  * - Sub-ISO: MFunding keeps 2 points override, Sub-ISO keeps 6

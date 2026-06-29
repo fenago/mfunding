@@ -8,10 +8,10 @@ Close inbound and transferred merchant leads for working-capital and business-fu
 
 ## How You Get Paid
 - **Commission-only, 1099. No cap.** You earn a share of the commission on every deal you fund.
-- **Company-provided leads → 40% to you.**
+- **Company-provided leads → 35% to you.**
 - **Self-generated leads → 65% to you.**
 - **Renewals on your funded book → 30%** (or routed to a renewals specialist).
-- **Example:** $50K advance, 8-point commission = $4,000. Company lead → **you earn $1,600**. Self-gen → **you earn $2,600**.
+- **Example:** $50K advance, 8-point commission = $4,000. Company lead → **you earn $1,400**. Self-gen → **you earn $2,600**.
 
 ## Ramp-Up Draw (optional)
 Recoverable **draw up to $2,500/month for your first 90 days**. A draw is an advance against future commissions — recovered from what you earn, not a salary. Out-earn it (you will) and there's nothing to recover.
@@ -39,5 +39,5 @@ If a merchant defaults within the funder's clawback window (typically the first 
 1099 independent contractor · commission-only + optional draw · non-solicitation & non-circumvention (12 months) · confidentiality · TCPA/regulatory compliance required · full terms in the signed Independent Contractor Commission Agreement (Schedule A sets exact rates).
 
 ---
-### On the 35% question
-On **company-provided leads**, 35% is on the **low end** (industry standard 30–50%; 40–50% typical to attract closers who can actually close MCA). It works as a **startup floor** *if* paired with a draw + escalators — but **40% is the more competitive sweet spot**, which is why this sheet uses 40%. Never use 35% on **self-generated** deals (those should be 60–70%).
+### On the 35% company-lead split
+On **company-provided leads** the industry runs 30–50%. Momentum starts every closer at **35%**, paired with a ramp-up draw and renewal upside. The rate is set **per closer** (Admin → Closers), so you can raise a proven closer's split anytime. Keep **self-generated** deals higher (60–70%) — never 35% there.

@@ -20,11 +20,11 @@
 ## 2. Commission Splits
 | Deal type | Contractor share of Commission Pool | Company retains |
 |---|---|---|
-| Company-Provided Lead | **[COMMISSION %] (recommended 40%)** | balance |
+| Company-Provided Lead | **[COMMISSION %] (default 35%)** | balance |
 | Self-Generated Lead | **[COMMISSION %] (recommended 65%)** | balance |
 | Renewal on Contractor's funded book | **[COMMISSION %] (recommended 30%)** | balance |
 
-**Worked example (Company lead, 40%):** $50,000 advance × 8 points = $4,000 pool → Contractor $1,600, Company $2,400.
+**Worked example (Company lead, 35%):** $50,000 advance × 8 points = $4,000 pool → Contractor $1,400, Company $2,600.
 **Worked example (Self-gen, 65%):** $4,000 pool → Contractor $2,600, Company $1,400.
 
 > Renewals may instead be routed to a dedicated renewals specialist at Company's discretion, in which case the originating Contractor receives **[RENEWAL OVERRIDE % — e.g., 0–10%]**.

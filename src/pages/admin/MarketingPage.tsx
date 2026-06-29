@@ -8,6 +8,8 @@ import {
   CurrencyDollarIcon,
   BookOpenIcon,
   ArrowTopRightOnSquareIcon,
+  PhoneIcon,
+  EnvelopeIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import VendorEditModal from "../../components/marketing/VendorEditModal";
@@ -315,6 +317,32 @@ export default function MarketingPage() {
                           <GlobeAltIcon className="w-4 h-4" />
                           <span className="truncate">{vendor.website.replace(/^https?:\/\//, "")}</span>
                           <ArrowTopRightOnSquareIcon className="w-3 h-3 flex-shrink-0" />
+                        </div>
+                      )}
+
+                      {/* Contact — phone + email */}
+                      {(vendor.contact_phone || vendor.contact_email) && (
+                        <div className="space-y-1 mb-2">
+                          {vendor.contact_phone && (
+                            <a
+                              href={`tel:${vendor.contact_phone}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 hover:text-ocean-blue"
+                            >
+                              <PhoneIcon className="w-4 h-4 flex-shrink-0" />
+                              <span className="truncate">{vendor.contact_phone}</span>
+                            </a>
+                          )}
+                          {vendor.contact_email && (
+                            <a
+                              href={`mailto:${vendor.contact_email}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 hover:text-ocean-blue"
+                            >
+                              <EnvelopeIcon className="w-4 h-4 flex-shrink-0" />
+                              <span className="truncate">{vendor.contact_email}</span>
+                            </a>
+                          )}
                         </div>
                       )}
 

@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import supabase from "../../../supabase";
+import { syncVendorToGHL } from "../../../services/ghlService";
 import PageGuide from "../../../components/admin/PageGuide";
 
 /* ---- design tokens (shared with the calculator for continuity) ---- */
@@ -163,9 +164,11 @@ export default function VendorScorecardPage() {
         if (v.dbId) {
           await supabase.from("marketing_vendors").update(payload).eq("id", v.dbId);
         } else {
-          await supabase.from("marketing_vendors").insert({
+          const { data: inserted } = await supabase.from("marketing_vendors").insert({
             ...payload, status: "testing", lead_types: ["live_transfer"],
-          });
+          }).select("id").single();
+          // New vendor → push into GHL/VibeReach. Best-effort.
+          if (inserted?.id) void syncVendorToGHL(inserted.id).catch((e) => console.warn("GHL vendor sync failed:", e));
         }
       }
       setSavedMsg("Saved — scores & ranks updated.");

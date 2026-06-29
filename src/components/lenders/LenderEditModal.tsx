@@ -5,6 +5,7 @@ import {
   SparklesIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { syncFunderToGHL } from "../../services/ghlService";
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
 type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
@@ -329,13 +330,18 @@ export default function LenderEditModal({
         notes: formData.notes || null,
       };
 
+      let lenderId: string | null = lender?.id ?? null;
       if (lender) {
         const { error } = await supabase.from("lenders").update(payload).eq("id", lender.id);
         if (error) throw error;
       } else {
-        const { error } = await supabase.from("lenders").insert(payload);
+        const { data: inserted, error } = await supabase.from("lenders").insert(payload).select("id").single();
         if (error) throw error;
+        lenderId = inserted?.id ?? null;
       }
+
+      // Auto-sync into GHL/VibeReach (Business + contact). Best-effort — never block the save.
+      if (lenderId) void syncFunderToGHL(lenderId).catch((e) => console.warn("GHL funder sync failed:", e));
 
       onSave();
       onClose();

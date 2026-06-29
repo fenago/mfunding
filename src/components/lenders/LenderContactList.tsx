@@ -9,6 +9,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { syncFunderToGHL } from "../../services/ghlService";
 import ConfirmModal from "../shared/ConfirmModal";
 
 interface Contact {
@@ -141,6 +142,9 @@ export default function LenderContactList({
           })
           .eq("id", lenderId);
       }
+
+      // Push this person into GHL/VibeReach under the funder's Business. Best-effort.
+      void syncFunderToGHL(lenderId).catch((e) => console.warn("GHL funder sync failed:", e));
 
       onUpdate();
       handleCloseForm();

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { XMarkIcon, SparklesIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { syncVendorToGHL } from "../../services/ghlService";
 import InteractionTimeline from "../shared/InteractionTimeline";
 import { useActivityLog } from "../../hooks/useActivityLog";
 
@@ -280,6 +281,7 @@ export default function VendorEditModal({
         additional_services: formData.additional_services.length > 0 ? formData.additional_services : null,
       };
 
+      let vendorId: string | null = vendor?.id ?? null;
       if (vendor) {
         const { error } = await supabase
           .from("marketing_vendors")
@@ -288,10 +290,18 @@ export default function VendorEditModal({
 
         if (error) throw error;
       } else {
-        const { error } = await supabase.from("marketing_vendors").insert(payload);
+        const { data: inserted, error } = await supabase
+          .from("marketing_vendors")
+          .insert(payload)
+          .select("id")
+          .single();
 
         if (error) throw error;
+        vendorId = inserted?.id ?? null;
       }
+
+      // Auto-sync into GHL/VibeReach (Business + contact). Best-effort — never block the save.
+      if (vendorId) void syncVendorToGHL(vendorId).catch((e) => console.warn("GHL vendor sync failed:", e));
 
       onSave();
       onClose();

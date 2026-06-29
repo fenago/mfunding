@@ -17,7 +17,43 @@ import {
   corsHeaders, serviceClient, getGhlConfig,
   upsertContact, createOpportunity, updateOpportunity, listPipelines,
   listCustomFields, updateContactCustomFields, findFieldByName, addContactTags,
+  createBusiness, linkContactToBusiness,
 } from "../_shared/ghl.ts";
+
+// ---- Funder / vendor → Business + Contact(s) helpers -------------------------
+
+// Status → GHL tag so the Comms page can filter (lender vs vendor, active vs prospect).
+function lenderStatusTag(s: string | null): string {
+  switch (s) {
+    case "live_vendor": case "approved": return "funder-active";
+    case "application_submitted": return "funder-pending";
+    case "inactive": case "rejected": return "funder-inactive";
+    default: return "funder-prospect";
+  }
+}
+function vendorStatusTag(s: string | null): string {
+  switch (s) {
+    case "active": return "vendor-active";
+    case "testing": return "vendor-testing";
+    case "discontinued": return "vendor-inactive";
+    default: return "vendor-prospect";
+  }
+}
+
+/** Pull the first usable phone out of a messy string and return E.164 (US default), or null. */
+function toE164(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const m = String(raw).match(/\+?\d[\d\s().-]{6,}/);
+  if (!m) return null;
+  let d = m[0].replace(/[^\d+]/g, "");
+  if (d.startsWith("+")) return d;
+  d = d.replace(/\D/g, "");
+  if (d.length === 10) return `+1${d}`;
+  if (d.length === 11 && d.startsWith("1")) return `+${d}`;
+  return d ? `+${d}` : null;
+}
+
+interface JsonPerson { name?: string; email?: string; phone?: string; title?: string }
 
 // Deal status → GHL pipeline stage name (matched case-insensitively).
 // Known GHL pipeline IDs (5 pipelines exist; don't rely on order).
@@ -231,6 +267,93 @@ Deno.serve(async (req) => {
 
       await logActivity(db, "deal", id, "ghl_opportunity_synced", { ghl_opportunity_id: oppId, stage: stage.name });
       return json({ ok: true, ghl_contact_id: contactId, ghl_opportunity_id: oppId, stage: stage.name });
+    }
+
+    // ---- LENDER (funder) → BUSINESS + CONTACTS -------------------------------
+    if (entity === "lender") {
+      const { data: l, error } = await db.from("lenders").select("*").eq("id", id).single();
+      if (error || !l) return json({ error: `lender not found: ${error?.message}` }, 404);
+
+      // 1) Business (group all this funder's people under it).
+      let businessId: string | null = l.ghl_business_id ?? null;
+      if (!businessId) {
+        const b = await createBusiness(cfg, { name: l.company_name, website: l.website });
+        businessId = b.data?.business?.id ?? null;
+        if (businessId) await db.from("lenders").update({ ghl_business_id: businessId }).eq("id", id);
+      }
+
+      const baseTags = ["lender", "funder-network", "mfunding-import", lenderStatusTag(l.status)];
+
+      // 2) Primary contact (keeps the company phone).
+      const primaryEmail = l.primary_contact_email ?? l.submission_email ?? null;
+      const primaryPhone = toE164(l.primary_contact_phone);
+      let contactId: string | null = l.ghl_contact_id ?? null;
+      if (primaryEmail || primaryPhone) {
+        const cr = await upsertContact(cfg, {
+          name: l.primary_contact_name ?? l.company_name,
+          email: primaryEmail, phone: primaryPhone,
+          companyName: l.company_name, website: l.website,
+          source: "MFunding network", tags: baseTags,
+        });
+        if (cr.ok) {
+          contactId = cr.data?.contact?.id ?? contactId;
+          if (contactId && businessId) await linkContactToBusiness(cfg, contactId, businessId);
+          if (contactId) await db.from("lenders").update({ ghl_contact_id: contactId }).eq("id", id);
+        }
+      }
+
+      // 3) Extra people from contacts[] — email-keyed; never reuse the company
+      //    phone across people (GHL dedupes by phone and would merge them).
+      const people = (Array.isArray(l.contacts) ? l.contacts : []) as JsonPerson[];
+      let extra = 0;
+      for (const p of people) {
+        const pEmail = p.email?.trim() || null;
+        const pPhone = pEmail ? null : toE164(p.phone); // phone only when no email
+        if (!pEmail && !pPhone) continue;
+        if (pEmail && primaryEmail && pEmail.toLowerCase() === primaryEmail.toLowerCase()) continue;
+        const pr = await upsertContact(cfg, {
+          name: p.name ?? l.company_name, email: pEmail, phone: pPhone,
+          companyName: l.company_name, website: l.website,
+          source: "MFunding network", tags: baseTags,
+        });
+        const pid = pr.data?.contact?.id;
+        if (pid && businessId) { await linkContactToBusiness(cfg, pid, businessId); extra++; }
+      }
+
+      await logActivity(db, "lender", id, "ghl_business_synced", { businessId, contactId, extra });
+      return json({ ok: true, ghl_business_id: businessId, ghl_contact_id: contactId, people_synced: extra });
+    }
+
+    // ---- MARKETING VENDOR (lead source) → BUSINESS + CONTACT -----------------
+    if (entity === "vendor") {
+      const { data: v, error } = await db.from("marketing_vendors").select("*").eq("id", id).single();
+      if (error || !v) return json({ error: `vendor not found: ${error?.message}` }, 404);
+
+      let businessId: string | null = v.ghl_business_id ?? null;
+      if (!businessId) {
+        const b = await createBusiness(cfg, { name: v.vendor_name, website: v.website });
+        businessId = b.data?.business?.id ?? null;
+        if (businessId) await db.from("marketing_vendors").update({ ghl_business_id: businessId }).eq("id", id);
+      }
+
+      const email = v.contact_email ?? null;
+      const phone = toE164(v.contact_phone);
+      let contactId: string | null = v.ghl_contact_id ?? null;
+      if (email || phone) {
+        const cr = await upsertContact(cfg, {
+          name: v.contact_name ?? v.vendor_name,
+          email, phone, companyName: v.vendor_name, website: v.website,
+          source: "MFunding network", tags: ["lead-vendor", "marketing-vendor", "mfunding-import", vendorStatusTag(v.status)],
+        });
+        if (cr.ok) {
+          contactId = cr.data?.contact?.id ?? contactId;
+          if (contactId && businessId) await linkContactToBusiness(cfg, contactId, businessId);
+          if (contactId) await db.from("marketing_vendors").update({ ghl_contact_id: contactId }).eq("id", id);
+        }
+      }
+
+      await logActivity(db, "marketing_vendor", id, "ghl_business_synced", { businessId, contactId });
+      return json({ ok: true, ghl_business_id: businessId, ghl_contact_id: contactId });
     }
 
     return json({ error: `unknown entity: ${entity}` }, 400);

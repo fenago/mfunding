@@ -83,9 +83,11 @@ export async function ghlFetch<T = unknown>(
 export interface ContactInput {
   firstName?: string | null;
   lastName?: string | null;
+  name?: string | null;
   email?: string | null;
   phone?: string | null;
   companyName?: string | null;
+  website?: string | null;
   address1?: string | null;
   city?: string | null;
   state?: string | null;
@@ -108,6 +110,33 @@ export async function upsertContact(cfg: GhlConfig, input: ContactInput) {
 
 export async function getContact(cfg: GhlConfig, contactId: string) {
   return await ghlFetch<{ contact: Record<string, unknown> }>(cfg, "GET", `/contacts/${contactId}`);
+}
+
+// ---- Business (company) helpers — groups contacts into a business hierarchy --
+
+export interface BusinessInput {
+  name: string;
+  website?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+}
+
+/** Create a GHL Business (company) that contacts can be grouped under. */
+export async function createBusiness(cfg: GhlConfig, input: BusinessInput) {
+  const payload: Record<string, unknown> = { locationId: cfg.locationId };
+  for (const [k, v] of Object.entries(input)) {
+    if (v !== null && v !== undefined && v !== "") payload[k] = v;
+  }
+  return await ghlFetch<{ business: { id: string } }>(cfg, "POST", "/businesses/", payload);
+}
+
+/** Link a contact to a business (so it shows under that business in GHL/VibeReach).
+ * Note: businessId is rejected on /contacts/upsert, so it must be set via this PUT. */
+export async function linkContactToBusiness(cfg: GhlConfig, contactId: string, businessId: string) {
+  return await ghlFetch<{ contact: { id: string } }>(cfg, "PUT", `/contacts/${contactId}`, { businessId });
 }
 
 // ---- Opportunity helpers -----------------------------------------------------

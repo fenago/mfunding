@@ -32,6 +32,7 @@ import {
   BookOpenIcon,
   WrenchScrewdriverIcon,
   PhoneArrowUpRightIcon,
+  ChatBubbleLeftRightIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useTheme } from "../../lib/theme-context";
@@ -71,6 +72,7 @@ const navGroups: NavGroup[] = [
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: OPS },
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
+      { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
     ],
   },
   {
