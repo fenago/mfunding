@@ -196,7 +196,7 @@ export const PLAYBOOKS: Playbook[] = [
       screen: "Admin → Deals → New Deal — open it the second you pick up",
       route: "/admin/deals",
       appNote:
-        "There's no deal yet — you create it live. The instant the transfer connects, open Admin → Deals → New Deal and type the merchant's info in as you talk. Keep that deal page open for the rest of the call. The merchant finishes the full application on their own via the link you email (it opens /apply).",
+        "There's no customer yet — you create one live. Open Admin → Deals → New Deal, switch the customer toggle to “+ New customer”, and type their name, business, phone and email as you talk. Saving creates the lead + the deal AND pushes the contact into GoHighLevel (fires Speed-to-Lead) — no dead end. The merchant finishes the full application on their own via the link you email (it opens /apply).",
     },
     steps: [
       {
@@ -207,7 +207,8 @@ export const PLAYBOOKS: Playbook[] = [
         tone: "speed",
         do: [
           "Pick up energized — the merchant is LIVE and expecting you; treat it like you called them.",
-          "Immediately open Admin → Deals → click New Deal. Start typing their info into this form AS YOU TALK — don't wait until after the call.",
+          "Immediately open Admin → Deals → click New Deal, and switch the customer toggle to “+ New customer” (they're not in the system yet).",
+          "Type their first name, business, phone and email into the new-customer fields AS YOU TALK — don't wait until after the call.",
           "Confirm you're speaking with the owner before you invest the pitch.",
         ],
         route: { to: "/admin/deals", label: "Admin → Deals → New Deal" },
@@ -239,9 +240,9 @@ export const PLAYBOOKS: Playbook[] = [
         automation: "MCA 02 — No Answer Nurture (fires if no app in 2h)",
         sla: "Before you hang up / right after",
         do: [
-          "Complete the New Deal form you opened: pick/add the Customer, Product Type = MCA, Amount, Market, assign yourself as Closer.",
+          "Finish the New Deal form: Product Type = MCA, Amount, Market, assign yourself as Closer.",
           "Set Lead Source = Live Transfer and choose the Campaign (e.g. '$3,000 Live Leads — June') so this transfer counts against that spend.",
-          "Save — the deal opens at stage New. Move Status → Contacted (you already spoke live).",
+          "Save — this creates the customer + deal and pushes the contact to GoHighLevel. The deal opens at stage New; move Status → Contacted (you already spoke live).",
           "Email the application link now and log the call in the Activity tab.",
         ],
         route: { to: "/admin/deals", label: "Deal page → set Contacted" },

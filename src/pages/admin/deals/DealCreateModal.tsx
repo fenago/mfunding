@@ -32,6 +32,14 @@ export default function DealCreateModal({
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [customerMode, setCustomerMode] = useState<"existing" | "new">("existing");
+  const [newCustomer, setNewCustomer] = useState({
+    first_name: "",
+    last_name: "",
+    business_name: "",
+    email: "",
+    phone: "",
+  });
 
   const [formData, setFormData] = useState<{
     customer_id: string;
@@ -102,15 +110,44 @@ export default function DealCreateModal({
     e.preventDefault();
     setError(null);
 
-    if (!formData.customer_id) {
-      setError("Please select a customer");
-      return;
-    }
-
     setIsSaving(true);
     try {
+      // Resolve the customer: pick an existing one, or create a brand-new lead
+      // inline (the live-transfer case where the merchant isn't in the system yet).
+      let customerId = formData.customer_id;
+      if (customerMode === "new") {
+        if (!newCustomer.first_name.trim() || !newCustomer.phone.trim()) {
+          setError("New customer needs at least a first name and a phone number.");
+          setIsSaving(false);
+          return;
+        }
+        const { data: created, error: cErr } = await supabase
+          .from("customers")
+          .insert({
+            first_name: newCustomer.first_name.trim(),
+            last_name: newCustomer.last_name.trim() || null,
+            business_name: newCustomer.business_name.trim() || null,
+            email: newCustomer.email.trim() || null,
+            phone: newCustomer.phone.trim(),
+            status: "lead",
+            source: "other",
+          })
+          .select("id")
+          .single();
+        if (cErr || !created) {
+          setError(`Could not create customer: ${cErr?.message ?? "unknown error"}`);
+          setIsSaving(false);
+          return;
+        }
+        customerId = created.id;
+      } else if (!customerId) {
+        setError("Please select a customer, or switch to “New customer”.");
+        setIsSaving(false);
+        return;
+      }
+
       const data: CreateDealData = {
-        customer_id: formData.customer_id,
+        customer_id: customerId,
         deal_type: formData.deal_type,
         amount_requested: formData.amount_requested ? parseFloat(formData.amount_requested) : undefined,
         use_of_funds: formData.use_of_funds || undefined,
@@ -142,6 +179,8 @@ export default function DealCreateModal({
         is_renewal: false,
         notes: "",
       });
+      setNewCustomer({ first_name: "", last_name: "", business_name: "", email: "", phone: "" });
+      setCustomerMode("existing");
     } catch {
       setError("Failed to create deal. Please try again.");
     }
@@ -174,32 +213,93 @@ export default function DealCreateModal({
             </div>
           )}
 
-          {/* Customer Selection */}
+          {/* Customer — pick existing or add a brand-new lead (live transfer) */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Customer *
-            </label>
-            <input
-              type="text"
-              placeholder="Search customers..."
-              value={customerSearch}
-              onChange={(e) => setCustomerSearch(e.target.value)}
-              className="input-field w-full mb-2"
-            />
-            <select
-              value={formData.customer_id}
-              onChange={(e) => setFormData((f) => ({ ...f, customer_id: e.target.value }))}
-              className="input-field w-full"
-              required
-            >
-              <option value="">Select a customer</option>
-              {filteredCustomers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.first_name} {c.last_name}
-                  {c.business_name ? ` - ${c.business_name}` : ""}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Customer *</label>
+              <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
+                <button
+                  type="button"
+                  onClick={() => setCustomerMode("existing")}
+                  className={`px-3 py-1 ${customerMode === "existing" ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300"}`}
+                >
+                  Existing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomerMode("new")}
+                  className={`px-3 py-1 ${customerMode === "new" ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300"}`}
+                >
+                  + New customer
+                </button>
+              </div>
+            </div>
+
+            {customerMode === "existing" ? (
+              <>
+                <input
+                  type="text"
+                  placeholder="Search customers..."
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  className="input-field w-full mb-2"
+                />
+                <select
+                  value={formData.customer_id}
+                  onChange={(e) => setFormData((f) => ({ ...f, customer_id: e.target.value }))}
+                  className="input-field w-full"
+                >
+                  <option value="">Select a customer</option>
+                  {filteredCustomers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.first_name} {c.last_name}
+                      {c.business_name ? ` - ${c.business_name}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-3">
+                <input
+                  type="text"
+                  placeholder="First name *"
+                  value={newCustomer.first_name}
+                  onChange={(e) => setNewCustomer((c) => ({ ...c, first_name: e.target.value }))}
+                  className="input-field w-full"
+                />
+                <input
+                  type="text"
+                  placeholder="Last name"
+                  value={newCustomer.last_name}
+                  onChange={(e) => setNewCustomer((c) => ({ ...c, last_name: e.target.value }))}
+                  className="input-field w-full"
+                />
+                <input
+                  type="text"
+                  placeholder="Business name"
+                  value={newCustomer.business_name}
+                  onChange={(e) => setNewCustomer((c) => ({ ...c, business_name: e.target.value }))}
+                  className="input-field w-full col-span-2"
+                />
+                <input
+                  type="tel"
+                  placeholder="Phone *"
+                  value={newCustomer.phone}
+                  onChange={(e) => setNewCustomer((c) => ({ ...c, phone: e.target.value }))}
+                  className="input-field w-full"
+                />
+                <input
+                  type="email"
+                  placeholder="Email (recommended)"
+                  value={newCustomer.email}
+                  onChange={(e) => setNewCustomer((c) => ({ ...c, email: e.target.value }))}
+                  className="input-field w-full"
+                />
+                <p className="col-span-2 text-xs text-gray-400">
+                  Creates the lead, the deal, and pushes the contact into GoHighLevel (fires Speed-to-Lead).
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">

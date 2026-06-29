@@ -147,6 +147,11 @@ export async function createDeal(data: CreateDealData): Promise<Deal> {
     throw error;
   }
 
+  // Push the new deal into GoHighLevel (contact + opportunity at its stage) so
+  // admin-created leads land in GHL and fire Speed-to-Lead — same as the public
+  // intake. Best-effort: never block deal creation if GHL is unavailable.
+  void syncDealToGHL((deal as Deal).id).catch((e) => console.warn("GHL sync (createDeal) failed:", e));
+
   return deal as Deal;
 }
 
