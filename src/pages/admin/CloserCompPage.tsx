@@ -8,6 +8,7 @@ import {
   CalculatorIcon,
   ArrowTrendingUpIcon,
 } from '@heroicons/react/24/outline';
+import PageGuide from '../../components/admin/PageGuide';
 
 const fmt = (v: number) =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(v);
@@ -85,6 +86,15 @@ export default function CloserCompPage() {
       </div>
 
       <div className="p-8 space-y-8">
+        <PageGuide
+          title="Closer Compensation"
+          storageKey="closer-comp"
+          what="Your closer comp plan + an interactive payout calculator."
+          value="Set splits/draws that attract closers while protecting your margin."
+          howToUse="Slide splits, deal size, volume, and draw to see take-home vs what you keep."
+          howToRead="40% company-lead split is the competitive baseline; 35% is a startup floor."
+        />
+
         {/* ============ CALCULATOR ============ */}
         <div className="grid lg:grid-cols-3 gap-8">
           {/* Inputs */}

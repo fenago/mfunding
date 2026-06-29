@@ -10,6 +10,7 @@ import {
   CheckBadgeIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import PageGuide from "../../../components/admin/PageGuide";
 
 interface LiveTransferVendor {
   id: string;
@@ -141,6 +142,22 @@ export default function LiveTransferLeadsPage() {
       </div>
 
       <div className="p-8 space-y-6">
+        <PageGuide
+          title="Live Transfer Leads"
+          storageKey="live-transfer-leads"
+          what="Ranked live-transfer vendors with per-vendor unit economics."
+          value="Live transfers are your most expensive, highest-intent leads — this tells you which to buy and what ROI to expect."
+          howToUse={[
+            "Set your Spend and Commission-per-deal at the top.",
+            "Read each vendor's 5/10/15/20% close table.",
+            "Edit the rank to set your buying priority; quote-only vendors take an estimated $/lead.",
+          ]}
+          howToRead={[
+            "Green profit = positive at that close rate.",
+            "Aim for cost-per-funded-deal under $1,500.",
+          ]}
+        />
+
         {/* Global controls */}
         <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-200 dark:border-gray-700 flex flex-wrap gap-6 items-end">
           <div>

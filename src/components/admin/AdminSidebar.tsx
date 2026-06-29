@@ -58,9 +58,9 @@ const navGroups: NavGroup[] = [
   {
     title: "Overview",
     items: [
-      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: OPS },
       { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: OPS },
+      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
     ],
   },
   {
@@ -75,24 +75,15 @@ const navGroups: NavGroup[] = [
   {
     title: "Lead Generation",
     items: [
-      { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
-      { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
-      { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: OPS },
-      { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
-      { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
-      { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
+      { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
       { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
-      { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
       { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
-    ],
-  },
-  {
-    title: "Funder Network",
-    items: [
-      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: SUPER },
-      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
-      { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
-      { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
+      { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
+      { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
+      { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
+      { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
+      { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
+      { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: OPS },
     ],
   },
   {
@@ -104,6 +95,15 @@ const navGroups: NavGroup[] = [
       { name: "Live Transfer ROI", path: "/admin/live-transfer-roi", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: SUPER },
       { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Funder Network",
+    items: [
+      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: SUPER },
+      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
+      { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
+      { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
     ],
   },
   {

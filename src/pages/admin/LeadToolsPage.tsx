@@ -10,6 +10,7 @@ import {
   UsersIcon,
 } from '@heroicons/react/24/outline';
 import supabase from '../../supabase';
+import PageGuide from '../../components/admin/PageGuide';
 
 // ----------------------------------------------------------------------------
 // Types
@@ -366,6 +367,18 @@ export default function LeadToolsPage() {
       </div>
 
       <div className="p-8 space-y-8 max-w-4xl">
+        <PageGuide
+          title="Lead Tools"
+          storageKey="lead-tools"
+          what="Manage the public calculators & assessments that capture leads."
+          value="Turn tools on/off, grab their ad URLs, and see how many leads each produces."
+          howToUse={[
+            "Copy a tool's link to point an ad at it.",
+            "Toggle a tool off to hide it from the public hub.",
+          ]}
+          howToRead="Lead counts are approximate (matched from CRM lead source)."
+        />
+
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
             {error}

@@ -11,6 +11,8 @@ import {
 import supabase from "../../../supabase";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
 import VendorEditModal from "../../../components/marketing/VendorEditModal";
+import DocumentUploader from "../../../components/shared/DocumentUploader";
+import DocumentList from "../../../components/shared/DocumentList";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 interface MarketingVendor {
@@ -40,6 +42,16 @@ interface MarketingVendor {
   ghl_integration: string | null;
   industries_served: string[] | null;
   additional_services: string[] | null;
+}
+
+interface VendorDocument {
+  id: string;
+  document_type: string;
+  filename: string;
+  storage_path: string;
+  file_size: number;
+  status: string;
+  created_at: string;
 }
 
 interface LinkedLead {
@@ -79,8 +91,10 @@ export default function VendorDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [vendor, setVendor] = useState<MarketingVendor | null>(null);
   const [linkedLeads, setLinkedLeads] = useState<LinkedLead[]>([]);
+  const [documents, setDocuments] = useState<VendorDocument[]>([]);
+  const [documentType, setDocumentType] = useState("agreement");
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "pricing" | "activity" | "leads" | "analytics">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "pricing" | "documents" | "activity" | "leads" | "analytics">("overview");
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const { activities, isLoading: isLoadingActivities, addActivity } = useActivityLog("marketing_vendor", id);
 
@@ -111,8 +125,41 @@ export default function VendorDetailPage() {
     setIsLoading(false);
   };
 
+  const fetchDocuments = async () => {
+    if (!id) return;
+    const { data, error } = await supabase
+      .from("vendor_documents")
+      .select("*")
+      .eq("vendor_id", id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching documents:", error);
+    } else {
+      setDocuments(data || []);
+    }
+  };
+
+  const handleDocumentUploadComplete = () => {
+    fetchDocuments();
+  };
+
+  const handleDocumentDelete = async (docId: string) => {
+    const { error } = await supabase
+      .from("vendor_documents")
+      .delete()
+      .eq("id", docId);
+
+    if (error) {
+      console.error("Error deleting document:", error);
+    } else {
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    }
+  };
+
   useEffect(() => {
     fetchVendor();
+    fetchDocuments();
   }, [id]);
 
   if (isLoading) {
@@ -147,6 +194,7 @@ export default function VendorDetailPage() {
   const tabs = [
     { id: "overview", label: "Overview" },
     { id: "pricing", label: "Products & Pricing" },
+    { id: "documents", label: `Documents (${documents.length})` },
     { id: "activity", label: `Activity Log (${activities.length})` },
     { id: "leads", label: `Linked Leads (${linkedLeads.length})` },
     { id: "analytics", label: "Analytics" },
@@ -352,6 +400,51 @@ export default function VendorDetailPage() {
           ) : (
             <div className="text-center py-8 text-gray-400">No products configured</div>
           )}
+        </div>
+      )}
+
+      {activeTab === "documents" && (
+        <div className="space-y-6">
+          {/* Upload Section */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Upload Document</h3>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Document Type
+              </label>
+              <select
+                value={documentType}
+                onChange={(e) => setDocumentType(e.target.value)}
+                className="input-field w-48"
+              >
+                <option value="agreement">Agreement</option>
+                <option value="rate_sheet">Rate Sheet</option>
+                <option value="contract">Contract</option>
+                <option value="w9">W-9</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <DocumentUploader
+              entityType="vendor"
+              entityId={vendor.id}
+              bucket="vendor-documents"
+              documentType={documentType}
+              onUploadComplete={handleDocumentUploadComplete}
+              onError={(error) => alert(error)}
+            />
+          </div>
+
+          {/* Documents List */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Documents</h3>
+            <DocumentList
+              documents={documents}
+              bucket="vendor-documents"
+              onDelete={handleDocumentDelete}
+              canDelete={true}
+              showStatus={true}
+            />
+          </div>
         </div>
       )}
 

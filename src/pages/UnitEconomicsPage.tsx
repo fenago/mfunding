@@ -15,6 +15,7 @@ import {
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import SEO from '../components/seo/SEO';
+import PageGuide from '../components/admin/PageGuide';
 
 // Format helpers
 const formatCurrency = (value: number) => {
@@ -522,6 +523,18 @@ export default function UnitEconomicsPage() {
       </div>
 
       <div className="p-8">
+        <PageGuide
+          title="Unit Economics"
+          storageKey="unit-economics"
+          what="Model profitability across marketing channels and per deal."
+          value="See which channels clear the Golden Ratio (cost-per-funded-deal < $1,500)."
+          howToUse={[
+            "Adjust the channel ROI inputs and the deal-level sliders.",
+            "Compare 'with sales rep' vs 'you close'.",
+          ]}
+          howToRead="Green = profitable; mind the back-loaded VCF note."
+        />
+
         {/* Marketing channel ROI (multi-channel) */}
         <ChannelROICalculator />
 

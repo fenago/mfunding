@@ -7,6 +7,7 @@ import {
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import PageGuide from "../../../components/admin/PageGuide";
 
 interface ListPricingEntry {
   type?: string;
@@ -89,6 +90,21 @@ export default function LeadListsPage() {
       </div>
 
       <div className="p-8 space-y-6">
+        <PageGuide
+          title="Lead Lists & Data"
+          storageKey="lead-lists"
+          what="Vendors that sell data lists — aged, UCC, email, trigger, B2B — for cold outreach and nurture."
+          value="Cheap, high-volume fuel for dialing/SMS/email campaigns when you can't afford live transfers."
+          howToUse={[
+            "Compare each vendor's list types and per-record pricing.",
+            "Start with UCC/aged for the best intent-to-cost ratio.",
+          ]}
+          howToRead={[
+            "Prices are per record/lead.",
+            "Always TCPA/DNC-scrub before outreach; never call an MCA a 'loan'.",
+          ]}
+        />
+
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4 text-sm">
             {error}

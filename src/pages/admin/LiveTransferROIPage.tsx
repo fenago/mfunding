@@ -12,6 +12,7 @@ import {
   ChartBarIcon,
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
+import PageGuide from '../../components/admin/PageGuide';
 
 const fmt = (v: number) =>
   new Intl.NumberFormat('en-US', {
@@ -215,6 +216,18 @@ export default function LiveTransferROIPage() {
       </div>
 
       <div className="p-8">
+        <PageGuide
+          title="Live Transfer ROI"
+          storageKey="lt-roi"
+          what="A focused calculator for MCA live-transfer unit economics."
+          value="Model whether a vendor/price is profitable before you spend."
+          howToUse={[
+            "Enter budget, cost/transfer, close rate, and commission.",
+            "Compare the 3/5/8/12% scenarios.",
+          ]}
+          howToRead="Underwrite to a ~3% close floor; watch cost-per-funded-deal."
+        />
+
         <div className="grid lg:grid-cols-3 gap-8">
           {/* Inputs */}
           <div className="lg:col-span-1 space-y-4">

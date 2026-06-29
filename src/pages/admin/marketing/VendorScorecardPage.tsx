@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import supabase from "../../../supabase";
+import PageGuide from "../../../components/admin/PageGuide";
 
 /* ---- design tokens (shared with the calculator for continuity) ---- */
 const C = {
@@ -226,6 +227,23 @@ export default function VendorScorecardPage() {
           <div className="eyebrow">MFunding · Vendor Vetting</div>
           <h1>Live-Lead Vendor Scorecard</h1>
           <p className="sub">Score each vendor on what actually matters before you spend. Crypto/wire/Zelle-only auto-drops to the bottom — no recourse is a dealbreaker, not a discount.</p>
+
+          <div style={{ marginTop: 16 }}>
+            <PageGuide
+              title="Vendor Scorecard"
+              storageKey="vendor-scorecard"
+              what="An interactive tool to score and rank lead vendors on what actually matters."
+              value="Turns gut feel into a defensible, repeatable ranking you can update as you learn."
+              howToUse={[
+                "Score each vendor 0–5 per criterion; tune the weights to your priorities.",
+                "Add new vendors and click Save to persist scores + ranks.",
+              ]}
+              howToRead={[
+                "Crypto/wire/Zelle-only auto-drop to the bottom (no recourse).",
+                "Higher score = test first; the tier tag tells you the action.",
+              ]}
+            />
+          </div>
 
           {loading ? (
             <div className="card">Loading vendors…</div>

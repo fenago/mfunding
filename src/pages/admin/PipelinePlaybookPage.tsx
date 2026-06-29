@@ -18,6 +18,7 @@ import {
 } from '@heroicons/react/24/outline';
 import PipelineFlow from '../../components/shared/PipelineFlow';
 import { PIPELINES, type PipelineDef } from '../../data/pipelines';
+import PageGuide from '../../components/admin/PageGuide';
 
 /* ------------------------------------------------------------------ */
 /* Owner taxonomy — who advances the deal at each stage               */
@@ -415,6 +416,15 @@ export default function PipelinePlaybookPage() {
       </div>
 
       <div className="p-8 space-y-8">
+        <PageGuide
+          title="Pipeline Playbook"
+          storageKey="pipeline-playbook"
+          what="An onboarding map of every deal stage for MCA and VCF."
+          value="New closers/staff learn exactly what happens at each stage and who owns it."
+          howToUse="Toggle MCA vs VCF; click a stage or use the walkthrough."
+          howToRead="Bank Statements is the #1 leak; watch the recovery/routing branches."
+        />
+
         {/* Pipeline toggle */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex rounded-xl bg-gray-100 dark:bg-gray-800 p-1 border border-gray-200 dark:border-gray-700">

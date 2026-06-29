@@ -11,6 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import VendorEditModal from "../../components/marketing/VendorEditModal";
+import PageGuide from "../../components/admin/PageGuide";
 
 type VendorStatus = "researching" | "testing" | "active" | "paused" | "discontinued";
 
@@ -175,6 +176,22 @@ export default function MarketingPage() {
           </button>
         </div>
       </div>
+
+      <PageGuide
+        title="Marketing Vendors"
+        storageKey="marketing-vendors"
+        what="Your vetted lead-vendor roster — who you can buy live transfers and data from."
+        value="Pick the best vendor for your budget and avoid junk/no-recourse vendors that waste spend."
+        howToUse={[
+          "Vendors are grouped by status and ordered by our priority ranking.",
+          "Click a card to see full pricing, guarantees, and contacts.",
+          "Move winners to Active; pause/discontinue the rest.",
+        ]}
+        howToRead={[
+          "The big number is the 0–100 vendor score (green = strong).",
+          "The chip is the rank; $/lead and 🔒 exclusivity / 🛡 guarantee show at a glance.",
+        ]}
+      />
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-6">

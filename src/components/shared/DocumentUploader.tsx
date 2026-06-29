@@ -4,7 +4,7 @@ import supabase from "../../supabase";
 import { useSession } from "../../context/SessionContext";
 
 interface DocumentUploaderProps {
-  entityType: "lender" | "customer" | "company";
+  entityType: "lender" | "customer" | "company" | "vendor";
   entityId: string;
   bucket: string;
   onUploadComplete: (document: UploadedDocument) => void;
@@ -143,7 +143,9 @@ export default function DocumentUploader({
         ? "lender_documents"
         : entityType === "customer"
           ? "customer_documents"
-          : "company_documents";
+          : entityType === "vendor"
+            ? "vendor_documents"
+            : "company_documents";
 
       // Build the insert payload based on entity type
       const insertPayload: Record<string, unknown> = {
@@ -160,6 +162,8 @@ export default function DocumentUploader({
         insertPayload.lender_id = entityId;
       } else if (entityType === "customer") {
         insertPayload.customer_id = entityId;
+      } else if (entityType === "vendor") {
+        insertPayload.vendor_id = entityId;
       }
 
       const { data, error: dbError } = await supabase
