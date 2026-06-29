@@ -28,7 +28,7 @@ export default function CloserEarningsCalculatorPage() {
   // Calculator inputs
   const [dealsPerMonth, setDealsPerMonth] = useState(6);
   const [avgDealSize, setAvgDealSize] = useState(50000);
-  const [splitPct, setSplitPct] = useState(50);
+  const [splitPct, setSplitPct] = useState(35);
 
   // Contact-capture / gating
   const [form, setForm] = useState<ContactForm>(EMPTY_CONTACT);
