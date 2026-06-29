@@ -57,6 +57,9 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
   if (filters?.assigned_closer_id) {
     query = query.eq("assigned_closer_id", filters.assigned_closer_id);
   }
+  if (filters?.campaign_id) {
+    query = query.eq("campaign_id", filters.campaign_id);
+  }
   if (filters?.date_from) {
     query = query.gte("created_at", filters.date_from);
   }

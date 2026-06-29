@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import { createDeal } from "../../../services/dealService";
+import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import type { DealType, Market, CreateDealData } from "../../../types/deals";
 import { DEAL_TYPE_CONFIG, MARKET_CONFIG } from "../../../types/deals";
 
@@ -28,6 +29,7 @@ export default function DealCreateModal({
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerSearch, setCustomerSearch] = useState("");
   const [closers, setClosers] = useState<{ id: string; first_name: string | null; last_name: string | null }[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,6 +41,7 @@ export default function DealCreateModal({
     urgency: string;
     lead_source: string;
     lead_source_detail: string;
+    campaign_id: string;
     market: Market | "";
     assigned_closer_id: string;
     is_renewal: boolean;
@@ -51,6 +54,7 @@ export default function DealCreateModal({
     urgency: "",
     lead_source: "",
     lead_source_detail: "",
+    campaign_id: "",
     market: "",
     assigned_closer_id: "",
     is_renewal: false,
@@ -61,6 +65,7 @@ export default function DealCreateModal({
     if (isOpen) {
       fetchCustomers();
       fetchClosers();
+      listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
       if (preselectedCustomerId) {
         setFormData((f) => ({ ...f, customer_id: preselectedCustomerId }));
       }
@@ -112,6 +117,7 @@ export default function DealCreateModal({
         urgency: formData.urgency || undefined,
         lead_source: formData.lead_source || undefined,
         lead_source_detail: formData.lead_source_detail || undefined,
+        campaign_id: formData.campaign_id || null,
         market: formData.market || undefined,
         assigned_closer_id: formData.assigned_closer_id || undefined,
         is_renewal: formData.is_renewal,
@@ -130,6 +136,7 @@ export default function DealCreateModal({
         urgency: "",
         lead_source: "",
         lead_source_detail: "",
+        campaign_id: "",
         market: "",
         assigned_closer_id: "",
         is_renewal: false,
@@ -295,6 +302,27 @@ export default function DealCreateModal({
               </select>
             </div>
 
+            {/* Campaign */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Campaign
+              </label>
+              <select
+                value={formData.campaign_id}
+                onChange={(e) => setFormData((f) => ({ ...f, campaign_id: e.target.value }))}
+                className="input-field w-full"
+              >
+                <option value="">No campaign</option>
+                {campaigns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             {/* Urgency */}
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">

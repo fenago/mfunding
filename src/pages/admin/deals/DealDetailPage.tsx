@@ -14,7 +14,8 @@ import {
 } from "@heroicons/react/24/outline";
 import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import supabase from "../../../supabase";
-import { getDealById, updateDealStatus, submitToFunder, submitToMultipleFunders, updateSubmission } from "../../../services/dealService";
+import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission } from "../../../services/dealService";
+import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
 import { tagFundersForSubmission } from "../../../services/ghlService";
 import type { DealWithCustomer, DealSubmissionWithLender, DealStatus, SubmissionStatus } from "../../../types/deals";
@@ -44,6 +45,7 @@ const REQUIRED_STIPS = [
 export default function DealDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [deal, setDeal] = useState<DealWithCustomer | null>(null);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [submissions, setSubmissions] = useState<DealSubmissionWithLender[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"overview" | "submissions" | "documents" | "activity" | "notes">("overview");
@@ -58,6 +60,20 @@ export default function DealDetailPage() {
   useEffect(() => {
     if (id) fetchDeal();
   }, [id]);
+
+  useEffect(() => {
+    listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
+  }, []);
+
+  const handleCampaignChange = async (campaignId: string) => {
+    if (!id) return;
+    setDeal((prev) => (prev ? { ...prev, campaign_id: campaignId || null } : prev));
+    try {
+      await updateDeal(id, { campaign_id: campaignId || null });
+    } catch {
+      fetchDeal();
+    }
+  };
 
   useEffect(() => {
     if (deal?.customer_id) fetchDocuments();
@@ -341,6 +357,21 @@ export default function DealDetailPage() {
               <div className="flex justify-between">
                 <span className="text-gray-500">Lead Source:</span>
                 <span className="text-gray-900 dark:text-white">{deal.lead_source?.replace(/_/g, " ") || "-"}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Campaign:</span>
+                <select
+                  value={deal.campaign_id ?? ""}
+                  onChange={(e) => handleCampaignChange(e.target.value)}
+                  className="text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white px-2 py-1 max-w-[55%]"
+                >
+                  <option value="">No campaign</option>
+                  {campaigns.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-500">Use of Funds:</span>

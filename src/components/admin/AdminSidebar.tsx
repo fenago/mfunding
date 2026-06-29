@@ -77,6 +77,7 @@ const navGroups: NavGroup[] = [
       { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
       { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
       { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: OPS },
+      { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
       { name: "Marketing", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
       { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
     ],

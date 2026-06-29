@@ -1,18 +1,23 @@
 // Revenue Playbooks — step-by-step closer instructions for the 3 flows that
 // generate revenue. Content distilled from the MFunding funnel/follow-up docs,
 // the brokerage playbook, and the VCF call scripts.
+//
+// Channel note: outreach/follow-up is EMAIL + PHONE only right now (no SMS/text).
+// Each step lists the exact app screen to use, the pipeline stage it maps to,
+// and the GHL automation that supports it.
 
 export type StepTone = "leak" | "win" | "branch" | "speed";
 
 export interface PlaybookStep {
   n: number;
   title: string;
-  stageKey?: string; // maps to a pipeline stage (for the funnel)
+  stageKey?: string; // maps to a pipeline stage (label shown from the pipeline def)
+  automation?: string; // supporting GHL workflow
   sla?: string;
-  do: string[]; // what the closer does
-  say?: string; // verbatim script
+  do: string[]; // what the closer does — with exact app locations
+  say?: string; // verbatim script (email/phone)
   collect?: string[]; // docs / info to gather
-  route?: { to: string; label: string }; // where to do it in the app
+  route?: { to: string; label: string }; // primary screen for this step
   tone?: StepTone;
   note?: string;
 }
@@ -35,37 +40,48 @@ export const PLAYBOOKS: Playbook[] = [
     tagline: "A merchant fills out the form on the site. Turn it into a funded MCA deal.",
     pipeline: "mca",
     revenue: "≈ $4,000 avg commission per funded deal (8 pts on $50K)",
-    entry: "Inbound: merchant submits the form at /apply",
+    entry: "Inbound: merchant submits the form at /apply (creates a deal at stage New)",
     steps: [
       {
         n: 1,
-        title: "New lead lands",
+        title: "New lead lands — claim it",
         stageKey: "new",
+        automation: "MCA 01 — Speed to Lead",
         sla: "First touch < 5 min",
         tone: "speed",
         do: [
-          "Merchant submits the application form on the website.",
-          "Speed-to-Lead fires: auto-response + round-robin assignment + a 'call in 5 min' task.",
-          "Open the deal and claim it.",
+          "The form auto-creates the deal and fires the auto-response email + round-robin assignment.",
+          "Open Admin → Deals (/admin/deals). The new deal shows at stage New, sorted to the top.",
+          "Click the deal to open it (/admin/deals/:id). Confirm you're the assigned closer (Closer field on the right info panel).",
+          "Tag the source: on the deal page set Lead Source = Website and pick the Campaign (Campaign dropdown in the info panel) so it counts toward ROI in Admin → Campaigns.",
         ],
-        route: { to: "/admin/deals", label: "Deals pipeline" },
-        note: "Every minute of delay costs ~10% contact rate on web leads. Call within 5 minutes.",
+        route: { to: "/admin/deals", label: "Admin → Deals" },
+        note: "Speed matters: every minute of delay costs ~10% contact rate on web leads. Call within 5 minutes.",
       },
       {
         n: 2,
-        title: "First contact",
+        title: "First contact — call, then log it",
         stageKey: "contacted",
-        sla: "65%+ contact rate",
-        do: ["Call immediately. If no answer, text + voicemail and start Sequence B.", "Confirm they own the business and it's a good time."],
+        automation: "MCA 02 — No Answer Nurture (fires if they go dark)",
+        sla: "65%+ contact rate; same day",
+        do: [
+          "Call the merchant (phone on the deal's customer panel; click-to-call or the Customer record at /admin/customers/:id).",
+          "If no answer: send the intro email (no texting) and log the attempt.",
+          "On the deal page (/admin/deals/:id) move Status → Contacted using the stage stepper at the top of the deal.",
+          "Log what happened in the Activity tab (Add interaction) so the next person has context.",
+        ],
         say: "Hi [First Name], it's [Closer] from Momentum Funding — you just requested working capital for [Business Name]. I'm not here to sell you anything, just to understand your situation and see if we're a fit. Do you have 5 minutes?",
-        route: { to: "/admin/deals", label: "Log the call on the deal" },
+        route: { to: "/admin/deals", label: "Open the deal → set Contacted" },
       },
       {
         n: 3,
         title: "Qualify (BANT-F)",
         stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
         do: [
-          "Run the 5-question checklist. If they're carrying ≥2 active advances or struggling → tag route-to-vcf and switch to the VCF playbook.",
+          "On the call, run the 5-question checklist.",
+          "On the deal page move Status → Qualifying and record revenue / time-in-business / amount on the Customer record (/admin/customers/:id).",
+          "If they're carrying ≥2 active advances or clearly struggling: add the tag route-to-vcf on the deal and switch to the VCF playbook.",
         ],
         say: "Let me ask five quick questions so I can find the right options. How long have you been in business? Roughly what's your monthly revenue? How much are you looking for, and what for? And — are you currently making any daily or weekly payments on other advances?",
         collect: [
@@ -79,54 +95,82 @@ export const PLAYBOOKS: Playbook[] = [
       },
       {
         n: 4,
-        title: "Send the application",
+        title: "Send the application (by email)",
         stageKey: "application_sent",
-        sla: "Same day",
-        do: ["Text + email the app link with the state-specific disclosure.", "Reminders at +4h and Day 1."],
-        say: "Based on what you told me, you look like a solid fit. I'm texting you a 3-minute application plus a secure link to connect your bank so we can verify revenue. Want me to walk you through it now?",
+        automation: "MCA 04 — Application + Disclosure",
+        sla: "Same day; submit target < 24h",
+        do: [
+          "Email the application link + the state-specific compliance disclosure (no SMS).",
+          "On the deal page move Status → Application Sent. The automation sends the email reminders at +4h and Day 1.",
+        ],
+        say: "Based on what you told me, you look like a solid fit. I'm emailing you a 3-minute application plus a secure link to connect your bank so we can verify revenue. Want me to stay on while you start it?",
       },
       {
         n: 5,
         title: "Collect docs + bank statements",
         stageKey: "bank_statements",
-        sla: "14-day chase (Sequence A) — stop the instant statements arrive",
+        automation: "MCA 06 — Bank Statements (Sequence A) ⭐",
+        sla: "14-day email chase — stop the instant statements arrive",
         tone: "leak",
-        do: ["Get the 4 stips + 3 months of bank statements (Plaid preferred — 60 seconds).", "Run the Day 0/1/2/4/7/10/14 chase until docs are in."],
+        do: [
+          "Get the 4 stips + 3 months of bank statements (Plaid is fastest; manual upload otherwise).",
+          "Review what's in via Admin → Doc Review (/admin/documents) and the deal's Documents tab.",
+          "Move Status → Docs Collected, then → Bank Statements as items arrive. The Sequence A email cadence chases anything missing.",
+        ],
         collect: ["Signed application", "Owner photo ID", "Voided business check", "Credit/ACH authorization", "3 months bank statements (or Plaid)"],
-        say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Just connect your bank in 60 seconds → [Plaid Link], or text me photos of your last 3 statements.",
+        say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Connect your bank in 60 seconds with the secure link in my email, or reply with photos of your last 3 statements.",
+        route: { to: "/admin/documents", label: "Admin → Doc Review" },
         note: "#1 FUNNEL LEAK — only ~50–60% of apps survive this. Plaid = 60s vs. days for manual.",
       },
       {
         n: 6,
         title: "Submit to 3–5 funders",
         stageKey: "submitted_to_funder",
+        automation: "MCA 07 — Submission Orchestrator (submit-to-funders fn)",
         sla: "5-day SLA per funder",
-        do: ["Match deal to 3–5 funders (A/B/C paper).", "Package signed app + statements + stips and submit in parallel.", "If all decline → resubmit to tier-2 / route to VCF if stacked."],
-        route: { to: "/admin/deals", label: "Submit from the deal" },
-        say: "Great news — I've sent your file to our top funding partners. They usually respond in 24–48 hours and I'll call you the moment offers come in.",
+        do: [
+          "Open the deal → Submissions tab. Review the matched lenders (auto-scored) and pick 3–5.",
+          "Click Submit to send the package (signed app + statements + stips) to all of them at once; Status moves to Submitted to Funders.",
+          "If all decline → resubmit to the tier-2 / specialty set, or route to VCF if stacked.",
+        ],
+        route: { to: "/admin/deals", label: "Deal → Submissions tab" },
+        say: "Great news — I've sent your file to our top funding partners. They usually respond in 24–48 hours and I'll email you the moment offers come in.",
       },
       {
         n: 7,
         title: "Present offers (always 2+)",
         stageKey: "offer_presented",
+        automation: "MCA 09 — Offer Presented",
         sla: "70–80% acceptance",
-        do: ["Collect every offer (amount, factor, term, payment).", "Present 2+ side-by-side and frame to cash flow."],
+        do: [
+          "Log each funder offer on the Submissions tab (amount, factor, term, payment) as they arrive; Status → Offer Received.",
+          "Email the best 2+ offers side-by-side and walk the merchant through them on a call; Status → Offer Presented.",
+        ],
         say: "I've got two options. Option A is more capital with slightly higher payments; Option B is lower payments. Which feels better for your weekly cash flow?",
       },
       {
         n: 8,
         title: "Accept + e-sign",
         stageKey: "offer_accepted",
-        do: ["Send the funder agreement for e-signature.", "Reminders at +4h, Day 1, Day 2.", "Ops coordinates funding."],
+        automation: "MCA 10 — Offer Accepted",
+        do: [
+          "Mark the chosen offer Accepted on the Submissions tab; Status → Offer Accepted.",
+          "Send the funder agreement for e-signature; the automation emails reminders at +4h, Day 1, Day 2. Ops coordinates funding.",
+        ],
         say: "Perfect — I'm emailing the contract now. Quick e-signature, about 2 minutes. Once you sign, the funder finalizes and you should see funds by [date].",
       },
       {
         n: 9,
         title: "Funded → renewal pipeline",
         stageKey: "funded",
+        automation: "MCA 11 — Funded → Renewal",
         tone: "win",
-        do: ["Confirm deposit. Commission auto-calculates.", "Day-1 congrats + Google review + $100 referral ask.", "Arm renewal triggers at 40/60/75/100% paydown."],
-        route: { to: "/admin/renewals", label: "Renewals monitor" },
+        do: [
+          "When the funder confirms the deposit, move Status → Funded. Commission auto-calculates (see Admin → Commissions).",
+          "The Day-1 congrats + Google review + referral-ask email fires automatically.",
+          "Renewal triggers arm off Paydown %. Watch them in Admin → Renewals (/admin/renewals).",
+        ],
+        route: { to: "/admin/renewals", label: "Admin → Renewals" },
         say: "Congrats [First Name]! The capital should be in your account. If you know any owners who need capital, I'll send you a $100 gift card for every funded referral.",
       },
     ],
@@ -147,37 +191,55 @@ export const PLAYBOOKS: Playbook[] = [
         stageKey: "new",
         sla: "First touch < 60 seconds — you're already on the call",
         tone: "speed",
-        do: ["Pick up energized. The merchant is LIVE and expecting you.", "Treat it like you called them — warm, not pushy."],
+        do: [
+          "Pick up energized. The merchant is LIVE and expecting you — treat it like you called them.",
+          "Confirm you're speaking with the owner of the business before you invest the pitch.",
+        ],
         say: "Hi, is this [First Name]? This is [Closer] with Momentum Funding — I see you're looking for working capital. Quick question: are you the owner of [Business Name]?",
       },
       {
         n: 2,
         title: "Qualify in 3 quick questions (next 30s)",
         stageKey: "contacted",
-        do: ["Rapid-fire, conversational. Listen for disqualifiers."],
+        do: ["Rapid-fire, conversational. Listen for disqualifiers (exit politely if they fail)."],
         say: "How long have you been running [Business Name]? … Ballpark monthly revenue? … And what would the capital go toward — payroll, inventory, cash flow?",
         collect: ["6+ months in business", "$15K+/mo revenue", "Use of funds", "Not a prohibited industry"],
-        note: "Under 6 months or under $15K/mo → exit politely and tag soft_no / nurture.",
+        note: "Under 6 months or under $15K/mo → exit politely and tag soft-no (it routes to nurture).",
         tone: "branch",
       },
       {
         n: 3,
-        title: "The ask (45s)",
-        do: ["Lock the next step: text the application link while on the call.", "Confirm their cell number out loud."],
-        say: "Based on what you've told me, you likely qualify. I'm going to text you a 3-minute application right now — no cost, zero credit impact. What's the best cell? … Texting it now from Momentum. Open it when you can and I'll follow up tomorrow.",
+        title: "The ask — email the application",
+        do: [
+          "Lock the next step: tell them you're emailing the application right now while you're on the call.",
+          "Confirm the best email address out loud and that they can open it today.",
+        ],
+        say: "Based on what you've told me, you likely qualify. I'm going to email you a 3-minute application right now — no cost, zero credit impact. What's the best email? … Sending it now from Momentum. Open it when you can and I'll follow up tomorrow.",
       },
       {
         n: 4,
-        title: "Log it immediately",
+        title: "Log it immediately — create the deal",
         stageKey: "contacted",
-        do: ["Create/advance the deal: status contacted, lead_source live_transfer, vendor name.", "Send the app link within 60 seconds.", "If no app by +2h → start Sequence B (No-Answer 7-day)."],
-        route: { to: "/admin/deals", label: "Create the deal" },
+        automation: "MCA 02 — No Answer Nurture (fires if no app in 2h)",
+        sla: "Right after the call",
+        do: [
+          "Go to Admin → Deals (/admin/deals) → click New Deal (top-right).",
+          "In the create form: pick/add the Customer, Product Type = MCA, set Amount, Market, and assign yourself as Closer.",
+          "Set Lead Source = Live Transfer and choose the Campaign (e.g. '$3,000 Live Leads — June') so this transfer counts against that spend.",
+          "Save — the deal opens at stage New. Move Status → Contacted (you already spoke live).",
+          "Email the application link now and log the call in the Activity tab.",
+        ],
+        route: { to: "/admin/deals", label: "Admin → Deals → New Deal" },
+        note: "Tagging the Campaign here is what makes the cost-per-funded math work in Admin → Campaigns.",
       },
       {
         n: 5,
         title: "Then follow the Website Lead flow",
-        do: ["From here it's the same MCA path: qualify → application → docs (Sequence A) → submit → offers → funded.", "Open the Website Lead playbook for steps 3–9."],
-        note: "A live transfer just gets you to 'contacted' faster — the rest of the pipeline is identical.",
+        do: [
+          "From here it's the same MCA path: Qualifying → Application Sent → Docs/Bank Statements → Submit → Offers → Funded.",
+          "Open the Website Lead playbook (tab above) for steps 3–9 with the exact screens.",
+        ],
+        note: "A live transfer just reaches 'Contacted' faster — the rest of the pipeline and automations are identical.",
       },
     ],
   },
@@ -195,25 +257,34 @@ export const PLAYBOOKS: Playbook[] = [
         n: 1,
         title: "Identify the distressed merchant",
         stageKey: "new_distressed",
+        automation: "VCF 01 — New Lead (Distressed)",
         do: [
-          "Best source is your own CRM: declined MCA applicants, funded merchants now stacked, anyone who went cold because payments got tight.",
-          "Also: UCC filing data (merchants with active MCAs).",
+          "Best source is your own book: Admin → Customers (/admin/customers) — filter for declined MCA applicants and funded merchants who are stacked or went cold.",
+          "Inbound: merchants from the /debt-relief form land as VCF deals at stage New Lead.",
+          "Open the deal (/admin/deals/:id), confirm deal type is VCF, and tag the Campaign/source.",
         ],
-        route: { to: "/admin/customers", label: "Mine the customer list" },
+        route: { to: "/admin/customers", label: "Admin → Customers" },
         note: "Warm, zero-cost, highest-converting VCF channel. Never name 'Value Capital Funding' — it's white-label.",
       },
       {
         n: 2,
         title: "Outreach call",
         stageKey: "hardship_consult",
-        do: ["Open with empathy, not a pitch. Find out if they're carrying daily/weekly payments."],
+        automation: "VCF 02 — Hardship Consultation",
+        do: [
+          "Call (or email first to book a time — no texting). Open with empathy, not a pitch.",
+          "On the deal page move Status → Hardship Review and log the call in the Activity tab.",
+        ],
         say: "Hey [First Name], it's [Closer] from Momentum — we spoke a while back about working capital. I'm not calling to sell an advance. A lot of folks who got a 'no' are already carrying advances eating their cash flow, and I now help owners get those payments DOWN. Are you making any daily or weekly payments on advances right now?",
       },
       {
         n: 3,
         title: "Qualify (5 questions)",
         stageKey: "hardship_consult",
-        do: ["Get the stacking picture. Qualified = $50K+ total MCA/business debt, multiple positions or clear hardship, decision-maker."],
+        do: [
+          "Get the stacking picture. Qualified = $50K+ total MCA/business debt, multiple positions or clear hardship, decision-maker.",
+          "Record the numbers on the deal's VCF fields (active positions, total balance, daily debit, current funders, hardship reason).",
+        ],
         say: "How many advances/positions are you carrying? … Total balance across all of them? … Combined daily or weekly payment? … Who are the funders? … What's making it hardest right now — slow season, a big debit, payroll?",
         collect: ["# of positions", "Total balance ($50K+ qualifies)", "Combined daily/weekly debit", "Funder names", "Hardship reason"],
         tone: "branch",
@@ -222,7 +293,11 @@ export const PLAYBOOKS: Playbook[] = [
         n: 4,
         title: "The pitch",
         stageKey: "strategy_proposal",
-        do: ["Explain simply: attorney-led team renegotiates existing advances → one lower payment (often 50–75% less). Optional FDIC bank loan refi. No upfront fees."],
+        automation: "VCF 04 — Strategy & Proposal",
+        do: [
+          "Explain simply: attorney-led team renegotiates existing advances → one lower payment (often 50–75% less). Optional FDIC bank loan refi. No upfront fees.",
+          "On the deal page move Status → Strategy once they agree to see a plan.",
+        ],
         say: "You're a strong fit. An attorney-led team renegotiates what you owe with your funders, so instead of crushing daily debits you get one manageable payment — many clients see it drop 50 to 75%. No upfront fees, free review, no obligation. I just need a few documents to build your custom plan, usually within 24 hours. Want me to start today?",
       },
       {
@@ -239,16 +314,25 @@ export const PLAYBOOKS: Playbook[] = [
         n: 6,
         title: "Collect the positions",
         stageKey: "positions_analysis",
-        sla: "Chase 14 days (Sequence A style)",
-        do: ["Text the secure upload link immediately.", "Tally every active position, balance, and daily/weekly debit."],
+        automation: "VCF 03 — Positions & Balances Analysis",
+        sla: "Chase 14 days by email",
+        do: [
+          "Email the secure upload link (no texting). Collect every current MCA agreement + 2–3 months of statements showing the debits.",
+          "Track what's in via the deal's Documents tab / Admin → Doc Review; move Status → Positions Analysis. Tally every position, balance, and daily/weekly debit.",
+        ],
         collect: ["Every current MCA agreement", "2–3 months bank statements showing the debits", "Hardship note (optional)"],
-        say: "I'll text you a secure link right now to upload your last few statements and advance agreements. A specialist will call within 24 hours with your plan. Best number for that text?",
+        say: "I'll email you a secure link right now to upload your last few statements and advance agreements. A specialist will call within 24 hours with your plan. What's the best email for that link?",
+        route: { to: "/admin/documents", label: "Admin → Doc Review" },
       },
       {
         n: 7,
         title: "Agreement + submit to VCF",
         stageKey: "submitted_to_vcf",
-        do: ["Send the engagement agreement for e-signature (reminders +4h/Day1/Day2).", "Submit the file to the VCF partner. The attorney team does all closing — you just refer."],
+        automation: "VCF 05 — Agreement Sent · VCF 06 — Submitted to VCF",
+        do: [
+          "Send the engagement agreement for e-signature; reminders email at +4h/Day 1/Day 2. Move Status → Agreement.",
+          "Submit the file to the VCF partner and move Status → Submitted to VCF. The attorney team does all closing — you just refer.",
+        ],
         route: { to: "/admin/deals", label: "Advance the VCF deal" },
         note: "All closings are done-for-you by the attorney-led team. Your job ends at a clean submission.",
       },
@@ -256,8 +340,12 @@ export const PLAYBOOKS: Playbook[] = [
         n: 8,
         title: "Restructured → servicing",
         stageKey: "restructure_executed",
+        automation: "VCF 07 — Restructure Executed · VCF 08 — Servicing & Monitoring",
         tone: "win",
-        do: ["Positions consolidated; payment restructured. Congrats + review + referral ask.", "Quarterly check-ins; watch for when they're healthy enough for new funding."],
+        do: [
+          "When VCF confirms execution, move Status → Restructured. The congrats + review + referral-ask email fires.",
+          "Move to Servicing for ongoing check-ins; watch for when they're healthy enough for new funding.",
+        ],
         say: "[First Name], your positions are restructured and your payment is way down. When cash flow is healthy again, I'm here to help you grow. Know any owners in the same spot? I can help them too.",
         note: "Recurring commission pays weekly/monthly over the 12–24 month program — keep the relationship warm.",
       },

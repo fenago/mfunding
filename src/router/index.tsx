@@ -63,6 +63,7 @@ const BusinessModelCanvasPage = lazy(() => import("../pages/admin/BusinessModelC
 const CloserCompPage = lazy(() => import("../pages/admin/CloserCompPage.tsx"));
 const PipelinePlaybookPage = lazy(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
 const PlaybooksPage = lazy(() => import("../pages/admin/PlaybooksPage.tsx"));
+const CampaignsPage = lazy(() => import("../pages/admin/CampaignsPage.tsx"));
 const UnitEconomicsVCFPage = lazy(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
 const LeadToolsPage = lazy(() => import("../pages/admin/LeadToolsPage.tsx"));
 const LiveTransferROIPage = lazy(() => import("../pages/admin/LiveTransferROIPage.tsx"));
@@ -342,6 +343,12 @@ export const routes: RouteObject[] = [
                     element: <CommissionDashboardPage />,
                   },
                 ],
+              },
+              // Campaigns — spend & ROI tracking (super_admin only)
+              {
+                path: "campaigns",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <CampaignsPage /> }],
               },
               // Users & roles (super_admin only)
               {

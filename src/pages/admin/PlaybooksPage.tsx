@@ -10,11 +10,18 @@ import {
   TrophyIcon,
   BoltIcon,
   ArrowsRightLeftIcon,
+  Squares2X2Icon,
+  SparklesIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, type Playbook, type PlaybookStep } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE } from "../../data/pipelines";
 import { getDealStats, getAllDeals } from "../../services/dealService";
 import type { DealWithCustomer, DealStatus } from "../../types/deals";
+
+const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
+  mca: Object.fromEntries(MCA_PIPELINE.stages.map((s) => [s.key, s.label])),
+  vcf: Object.fromEntries(VCF_PIPELINE.stages.map((s) => [s.key, s.label])),
+};
 
 const toneStyles: Record<string, { ring: string; chip: string; label: string; icon: React.ComponentType<{ className?: string }> }> = {
   leak: { ring: "border-red-300 dark:border-red-800", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "Biggest leak", icon: ExclamationTriangleIcon },
@@ -73,7 +80,12 @@ export default function PlaybooksPage() {
         </div>
         <ol className="relative space-y-4">
           {active.steps.map((s, i) => (
-            <StepCard key={s.n} step={s} last={i === active.steps.length - 1} />
+            <StepCard
+              key={s.n}
+              step={s}
+              last={i === active.steps.length - 1}
+              stageLabel={s.stageKey ? STAGE_LABELS[active.pipeline][s.stageKey] : undefined}
+            />
           ))}
         </ol>
       </div>
@@ -84,7 +96,7 @@ export default function PlaybooksPage() {
   );
 }
 
-function StepCard({ step, last }: { step: PlaybookStep; last: boolean }) {
+function StepCard({ step, last, stageLabel }: { step: PlaybookStep; last: boolean; stageLabel?: string }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
   return (
     <li className="relative pl-12">
@@ -107,6 +119,22 @@ function StepCard({ step, last }: { step: PlaybookStep; last: boolean }) {
             </span>
           )}
         </div>
+
+        {/* pipeline stage + supporting automation for context */}
+        {(stageLabel || step.automation) && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {stageLabel && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue">
+                <Squares2X2Icon className="w-3 h-3" /> Stage: {stageLabel}
+              </span>
+            )}
+            {step.automation && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-teal/10 text-teal dark:text-teal-300">
+                <SparklesIcon className="w-3 h-3" /> {step.automation}
+              </span>
+            )}
+          </div>
+        )}
 
         <ul className="mt-2 space-y-1 text-sm text-gray-700 dark:text-gray-300 list-disc pl-5">
           {step.do.map((d, idx) => (

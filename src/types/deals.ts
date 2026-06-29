@@ -78,6 +78,7 @@ export interface Deal {
   assigned_closer_id: string | null;
   lead_source: string | null;
   lead_source_detail: string | null;
+  campaign_id: string | null;
   market: Market | null;
   // Renewal
   is_renewal: boolean;
@@ -157,6 +158,7 @@ export interface CreateDealData {
   urgency?: string;
   lead_source?: string;
   lead_source_detail?: string;
+  campaign_id?: string | null;
   market?: Market;
   assigned_closer_id?: string;
   is_renewal?: boolean;
@@ -175,6 +177,7 @@ export interface UpdateDealData {
   assigned_closer_id?: string | null;
   lead_source?: string;
   lead_source_detail?: string;
+  campaign_id?: string | null;
   market?: Market;
   is_renewal?: boolean;
   paydown_percentage?: number;
@@ -188,6 +191,7 @@ export interface DealFilters {
   market?: Market;
   deal_type?: DealType;
   assigned_closer_id?: string;
+  campaign_id?: string;
   search?: string;
   date_from?: string;
   date_to?: string;
