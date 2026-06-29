@@ -47,6 +47,8 @@ interface MarketingVendor {
   volume_available: string | null;
   industries_served: string[] | null;
   additional_services: string[] | null;
+  rank: number | null;
+  score: number | null;
 }
 
 const STATUS_CONFIG: Record<VendorStatus, { label: string; color: string; borderColor: string; priority: number }> = {
@@ -109,6 +111,10 @@ export default function MarketingPage() {
       const priorityA = STATUS_CONFIG[a.status]?.priority || 99;
       const priorityB = STATUS_CONFIG[b.status]?.priority || 99;
       if (priorityA !== priorityB) return priorityA - priorityB;
+      // Within a status group, order by our priority rank (nulls last), then name
+      const ra = a.rank ?? Number.POSITIVE_INFINITY;
+      const rb = b.rank ?? Number.POSITIVE_INFINITY;
+      if (ra !== rb) return ra - rb;
       return a.vendor_name.localeCompare(b.vendor_name);
     });
 
@@ -253,10 +259,32 @@ export default function MarketingPage() {
                       onClick={() => navigate(`/admin/marketing/${vendor.id}`)}
                       className={`bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 border-l-4 ${statusConfig.borderColor} hover:shadow-lg hover:border-ocean-blue/30 transition-all cursor-pointer`}
                     >
-                      <div className="flex items-start justify-between mb-3">
-                        <h3 className="font-semibold text-gray-900 dark:text-white">
-                          {vendor.vendor_name}
-                        </h3>
+                      <div className="flex items-start justify-between gap-2 mb-3">
+                        <div className="flex items-start gap-2 min-w-0">
+                          {vendor.rank != null && (
+                            <span className="flex-shrink-0 mt-0.5 w-6 h-6 rounded-full bg-midnight-blue text-white text-xs font-bold flex items-center justify-center">
+                              {vendor.rank}
+                            </span>
+                          )}
+                          <h3 className="font-semibold text-gray-900 dark:text-white truncate">
+                            {vendor.vendor_name}
+                          </h3>
+                        </div>
+                        {vendor.score != null && (
+                          <span
+                            className={`flex-shrink-0 px-2.5 py-1 rounded-lg text-base font-extrabold leading-none ${
+                              Number(vendor.score) >= 70
+                                ? "bg-mint-green/15 text-mint-green"
+                                : Number(vendor.score) >= 55
+                                ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                                : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                            }`}
+                            title="Vendor score — see Vendor Scorecard"
+                          >
+                            {Number(vendor.score)}
+                            <span className="text-[10px] font-semibold align-top">/100</span>
+                          </span>
+                        )}
                       </div>
 
                       {vendor.website && (
@@ -273,12 +301,25 @@ export default function MarketingPage() {
                         </div>
                       )}
 
-                      {vendor.cost_per_lead && (
-                        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 mb-3">
-                          <CurrencyDollarIcon className="w-4 h-4 text-mint-green" />
-                          <span className="font-medium">${vendor.cost_per_lead}/lead</span>
+                      {/* Key facts */}
+                      <div className="space-y-1.5 mb-1">
+                        <div className="flex items-center gap-2 text-sm">
+                          <CurrencyDollarIcon className="w-4 h-4 text-mint-green flex-shrink-0" />
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {vendor.cost_per_lead != null ? `$${vendor.cost_per_lead}/lead` : "Quote only"}
+                          </span>
                         </div>
-                      )}
+                        {vendor.exclusivity && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate" title={vendor.exclusivity}>
+                            🔒 {vendor.exclusivity}
+                          </p>
+                        )}
+                        {vendor.return_policy && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate" title={vendor.return_policy}>
+                            🛡 {vendor.return_policy}
+                          </p>
+                        )}
+                      </div>
 
                       {/* Metrics */}
                       <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
