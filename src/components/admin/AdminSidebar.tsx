@@ -58,6 +58,7 @@ const navGroups: NavGroup[] = [
   {
     title: "Overview",
     items: [
+      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: OPS },
       { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: OPS },
     ],
@@ -115,7 +116,6 @@ const navGroups: NavGroup[] = [
   {
     title: "Training",
     items: [
-      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Pipeline Playbook", path: "/admin/pipeline-playbook", icon: MapIcon, roles: OPS },
       { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
     ],

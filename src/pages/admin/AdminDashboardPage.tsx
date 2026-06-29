@@ -8,6 +8,8 @@ import {
   ArrowTrendingUpIcon,
   ChartBarSquareIcon,
   SignalIcon,
+  MapIcon,
+  ArrowRightIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
@@ -162,7 +164,7 @@ export default function AdminDashboardPage() {
 
   return (
     <div className="p-6">
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
           Dashboard
         </h1>
@@ -170,6 +172,29 @@ export default function AdminDashboardPage() {
           Welcome to the mFunding admin portal
         </p>
       </div>
+
+      {/* Start here — the money workflows */}
+      <Link
+        to="/admin/playbooks"
+        className="group mb-8 flex items-center justify-between gap-4 rounded-2xl p-5 text-white shadow-sm transition-shadow hover:shadow-md"
+        style={{ background: "linear-gradient(135deg, #0A2342 0%, #0C516E 55%, #007EA7 100%)" }}
+      >
+        <div className="flex items-center gap-4">
+          <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-white/15">
+            <MapIcon className="h-6 w-6" />
+          </span>
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-mint-green">Start here</p>
+            <h2 className="text-lg font-bold">Revenue Playbooks</h2>
+            <p className="text-sm text-white/70">
+              Exactly what to do, what to say, and where to click for the 3 flows that make money — Website Lead, Live Transfer, and VCF.
+            </p>
+          </div>
+        </div>
+        <span className="hidden sm:inline-flex items-center gap-1 rounded-lg bg-white/15 px-4 py-2 text-sm font-semibold group-hover:bg-white/25">
+          Open <ArrowRightIcon className="h-4 w-4" />
+        </span>
+      </Link>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
