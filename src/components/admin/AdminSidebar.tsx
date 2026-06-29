@@ -102,7 +102,7 @@ const navGroups: NavGroup[] = [
     title: "Funder Network",
     items: [
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
-      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
       { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
       { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
     ],
