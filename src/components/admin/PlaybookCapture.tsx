@@ -31,25 +31,16 @@ const PLAYBOOK_DEFAULTS: Record<
   vcf: { leadSource: "referral", startStatus: "new_distressed", isLiveTransfer: false },
 };
 
+// Only what's needed to START the lead: who they are + attribution. The
+// qualifier questions (revenue, amount, time-in-business, VCF positions, etc.)
+// are captured INLINE at the step where the closer asks them — no scrolling.
 const emptyForm = {
   first_name: "",
   last_name: "",
   business_name: "",
   phone: "",
   email: "",
-  // MCA qualifiers
-  monthly_revenue: "",
-  time_in_business: "",
-  amount_requested: "",
-  use_of_funds: "",
-  industry: "",
-  // VCF qualifiers
-  vcf_active_positions: "",
-  vcf_total_balance: "",
-  vcf_daily_debit: "",
-  vcf_current_funders: "",
-  vcf_hardship_reason: "",
-  // shared
+  // routing / attribution (set once)
   market: "" as Market | "",
   lead_source: "",
   campaign_id: "",
@@ -107,7 +98,6 @@ export default function PlaybookCapture({
   }, []);
 
   const set = (k: keyof typeof emptyForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
-  const num = (v: string) => (v.trim() === "" ? undefined : parseFloat(v));
 
   const filteredCustomers = customers.filter((c) => {
     if (!customerSearch) return true;
@@ -140,11 +130,6 @@ export default function PlaybookCapture({
             business_name: form.business_name.trim() || null,
             email: form.email.trim() || null,
             phone: form.phone.trim(),
-            monthly_revenue: num(form.monthly_revenue) ?? null,
-            time_in_business: num(form.time_in_business) ?? null,
-            industry: form.industry.trim() || null,
-            amount_requested: num(form.amount_requested) ?? null,
-            use_of_funds: form.use_of_funds.trim() || null,
             status: "lead",
             source: "other",
             is_live_transfer: defaults.isLiveTransfer,
@@ -163,26 +148,17 @@ export default function PlaybookCapture({
         return;
       }
 
+      // Create the deal with just identity + attribution. The qualifier numbers
+      // (amount, revenue, VCF balances…) are saved inline at the Qualify step.
       const data: CreateDealData = {
         customer_id: customerId,
         deal_type: isVcf ? "vcf" : "mca",
         status: defaults.startStatus,
-        amount_requested: isVcf ? num(form.vcf_total_balance) : num(form.amount_requested),
-        use_of_funds: form.use_of_funds.trim() || undefined,
         lead_source: form.lead_source || undefined,
         campaign_id: form.campaign_id || null,
         market: form.market || undefined,
         assigned_closer_id: form.assigned_closer_id || undefined,
         notes: form.notes.trim() || undefined,
-        ...(isVcf
-          ? {
-              vcf_active_positions: num(form.vcf_active_positions),
-              vcf_total_balance: num(form.vcf_total_balance),
-              vcf_daily_debit: num(form.vcf_daily_debit),
-              vcf_current_funders: form.vcf_current_funders.trim() || undefined,
-              vcf_hardship_reason: form.vcf_hardship_reason.trim() || undefined,
-            }
-          : {}),
       };
 
       const deal = await createDeal(data);
@@ -212,7 +188,7 @@ export default function PlaybookCapture({
         <span className="flex items-center gap-2">
           <UserPlusIcon className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
           <span className="font-semibold text-gray-900 dark:text-white">
-            Capture this lead — without leaving the playbook
+            Start the lead — name &amp; phone is all you need
           </span>
         </span>
         <span className="flex items-center gap-2">
@@ -257,8 +233,9 @@ export default function PlaybookCapture({
           ) : (
             <form onSubmit={handleSave} className="space-y-4">
               <p className="text-sm text-gray-600 dark:text-gray-300">
-                Fill this in <span className="font-medium">as you talk</span>. Saving creates the {isVcf ? "VCF" : "MCA"}{" "}
-                deal and pushes the contact into GoHighLevel — you never have to switch screens.
+                Just get them into the system: Saving creates the {isVcf ? "VCF" : "MCA"} deal and pushes the contact into
+                GoHighLevel. Then work the steps below — <span className="font-medium">each question you ask has its
+                own field right there</span>, so you capture answers without scrolling back up.
               </p>
 
               {error && (
@@ -328,44 +305,10 @@ export default function PlaybookCapture({
                 </div>
               )}
 
-              {/* Qualifiers — MCA vs VCF */}
-              {!isVcf ? (
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <Field label="Monthly revenue ($)">
-                    <input className="input-field w-full" type="number" min="0" value={form.monthly_revenue} onChange={(e) => set("monthly_revenue", e.target.value)} placeholder="25000" />
-                  </Field>
-                  <Field label="Time in business (months)">
-                    <input className="input-field w-full" type="number" min="0" value={form.time_in_business} onChange={(e) => set("time_in_business", e.target.value)} placeholder="18" />
-                  </Field>
-                  <Field label="Amount requested ($)">
-                    <input className="input-field w-full" type="number" min="0" value={form.amount_requested} onChange={(e) => set("amount_requested", e.target.value)} placeholder="50000" />
-                  </Field>
-                  <Field label="Industry">
-                    <input className="input-field w-full" value={form.industry} onChange={(e) => set("industry", e.target.value)} placeholder="Construction, retail…" />
-                  </Field>
-                  <Field label="Use of funds" full>
-                    <input className="input-field w-full" value={form.use_of_funds} onChange={(e) => set("use_of_funds", e.target.value)} placeholder="Working capital, payroll, inventory…" />
-                  </Field>
-                </div>
-              ) : (
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <Field label="# of active positions">
-                    <input className="input-field w-full" type="number" min="0" value={form.vcf_active_positions} onChange={(e) => set("vcf_active_positions", e.target.value)} placeholder="3" />
-                  </Field>
-                  <Field label="Total MCA balance ($)">
-                    <input className="input-field w-full" type="number" min="0" value={form.vcf_total_balance} onChange={(e) => set("vcf_total_balance", e.target.value)} placeholder="85000" />
-                  </Field>
-                  <Field label="Combined daily/weekly debit ($)">
-                    <input className="input-field w-full" type="number" min="0" value={form.vcf_daily_debit} onChange={(e) => set("vcf_daily_debit", e.target.value)} placeholder="1200" />
-                  </Field>
-                  <Field label="Current funders">
-                    <input className="input-field w-full" value={form.vcf_current_funders} onChange={(e) => set("vcf_current_funders", e.target.value)} placeholder="Funder A, Funder B…" />
-                  </Field>
-                  <Field label="Hardship reason" full>
-                    <input className="input-field w-full" value={form.vcf_hardship_reason} onChange={(e) => set("vcf_hardship_reason", e.target.value)} placeholder="Slow season, big debit, payroll crunch…" />
-                  </Field>
-                </div>
-              )}
+              {/* Qualifiers are captured inline at the Qualify step — not here. */}
+              <p className="text-xs text-gray-500 dark:text-gray-400 rounded-md bg-white/60 dark:bg-gray-800/60 border border-dashed border-gray-300 dark:border-gray-600 px-3 py-2">
+                Name + phone is all you need to start. You'll capture {isVcf ? "positions, balances and daily debit" : "revenue, amount requested and time-in-business"} right inside the <span className="font-medium">Qualify</span> step below — as you ask each question, so you're never scrolling back up here.
+              </p>
 
               {/* Routing */}
               <div className="grid sm:grid-cols-2 gap-3">
