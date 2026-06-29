@@ -16,6 +16,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, type Playbook, type PlaybookStep } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE } from "../../data/pipelines";
+import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import { getDealStats, getAllDeals } from "../../services/dealService";
 import type { DealWithCustomer, DealStatus } from "../../types/deals";
 
@@ -97,6 +98,11 @@ export default function PlaybooksPage() {
             </Link>
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{active.workFrom.appNote}</p>
+        </div>
+
+        {/* Inline capture — create the lead/deal right here without leaving the playbook */}
+        <div className="mb-6">
+          <PlaybookCapture key={active.id} playbook={active} />
         </div>
 
         <ol className="relative space-y-4">

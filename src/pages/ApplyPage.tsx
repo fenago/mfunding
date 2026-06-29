@@ -37,20 +37,30 @@ export default function ApplyPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const { error } = await supabase.from("funding_applications").insert({
-        business_name: form.business_name,
-        contact_first_name: form.contact_first_name,
-        contact_last_name: form.contact_last_name,
-        email: form.email,
-        phone: form.phone,
-        funding_amount: parseInt(form.funding_amount.replace(/[^0-9]/g, ""), 10) || 0,
-        business_type: form.business_type,
-        time_in_business: form.time_in_business,
-        monthly_revenue: form.monthly_revenue,
-        funding_purpose: form.funding_purpose || null,
-        status: "pending",
+      // Route through mca-intake so the lead lands in GHL (contact + MCA-pipeline
+      // opportunity at New Lead) and fires Speed-to-Lead — same path as the homepage
+      // ApplySection. Previously this inserted into funding_applications, which nothing
+      // consumed, so /apply leads never reached the CRM or pipeline.
+      const { data, error } = await supabase.functions.invoke("mca-intake", {
+        body: {
+          business_name: form.business_name,
+          contact_first_name: form.contact_first_name,
+          contact_last_name: form.contact_last_name,
+          email: form.email,
+          phone: form.phone,
+          amount_requested: form.funding_amount,
+          use_of_funds: form.funding_purpose || "Working capital",
+          lead_source: "website_apply",
+          lead_source_detail: [
+            form.business_type && `Industry: ${form.business_type}`,
+            form.time_in_business && `TIB: ${form.time_in_business}`,
+            form.monthly_revenue && `Rev: ${form.monthly_revenue}`,
+          ].filter(Boolean).join(" · ") || null,
+        },
       });
-      if (error) throw error;
+      if (error || (data as { error?: string })?.error) {
+        throw new Error((data as { error?: string })?.error || error?.message || "Something went wrong.");
+      }
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");

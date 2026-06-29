@@ -153,6 +153,7 @@ export interface DealSubmissionWithLender extends DealSubmission {
 export interface CreateDealData {
   customer_id: string;
   deal_type: DealType;
+  status?: DealStatus;
   amount_requested?: number;
   use_of_funds?: string;
   urgency?: string;
@@ -165,6 +166,12 @@ export interface CreateDealData {
   original_deal_id?: string;
   notes?: string;
   tags?: string[];
+  // VCF (debt relief) intake fields — captured at lead time from the playbook
+  vcf_active_positions?: number;
+  vcf_total_balance?: number;
+  vcf_daily_debit?: number;
+  vcf_current_funders?: string;
+  vcf_hardship_reason?: string;
 }
 
 export interface UpdateDealData {

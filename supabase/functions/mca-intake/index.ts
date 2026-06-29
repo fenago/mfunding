@@ -75,11 +75,17 @@ Deno.serve(async (req) => {
       await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customerId);
       await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", deal.id);
       const pl = await listPipelines(cfg);
-      // MCA pipeline = has a plain "new lead" stage (VCF's is "new lead (distressed)")
-      const mca = pl.data?.pipelines?.find((p) => {
-        const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
-        return n.has("new lead") && (n.has("funded") || n.has("renewal eligible"));
-      });
+      // Use the canonical "MFunding MCA Pipeline" by id (same id the ghl-webhook
+      // inbound sync keys off, so stage changes round-trip). Fall back to a heuristic
+      // that uniquely identifies it via the "renewal eligible" stage — needed because
+      // several other MCA-like pipelines (incl. an INACTIVE MCA-Restructure one) also
+      // have "new lead" + "funded" and would otherwise win.
+      const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+      const mca = pl.data?.pipelines?.find((p) => p.id === MCA_PIPELINE_ID)
+        ?? pl.data?.pipelines?.find((p) => {
+          const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
+          return n.has("new lead") && n.has("renewal eligible");
+        });
       const stage = mca?.stages.find((s) => s.name.toLowerCase() === "new lead") ?? mca?.stages[0];
       if (mca && stage) {
         const opp = await createOpportunity(cfg, {
