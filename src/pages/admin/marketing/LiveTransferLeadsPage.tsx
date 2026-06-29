@@ -23,7 +23,20 @@ interface LiveTransferVendor {
   minimum_order: string | null;
   lead_types: string[] | null;
   rank: number | null;
+  score: number | null;
+  reputation: string | null;
+  score_breakdown: Record<string, number> | null;
 }
+
+// Scoring rubric (max points per factor) — keep in sync with the DB scoring.
+const SCORE_FACTORS: { key: string; label: string; max: number }[] = [
+  { key: "reputation", label: "Reputation & corroboration", max: 30 },
+  { key: "risk_billing", label: "Risk / billing protection", max: 20 },
+  { key: "cost_value", label: "Cost / value", max: 16 },
+  { key: "exclusivity", label: "Exclusivity", max: 12 },
+  { key: "transparency", label: "Transparency", max: 12 },
+  { key: "ghl_fit", label: "GHL / CRM fit", max: 10 },
+];
 
 const fmt = (v: number) =>
   new Intl.NumberFormat("en-US", {
@@ -63,7 +76,7 @@ export default function LiveTransferLeadsPage() {
       const { data, error } = await supabase
         .from("marketing_vendors")
         .select(
-          "id, vendor_name, website, cost_per_lead, exclusivity, return_policy, ghl_integration, buyer_requirements, minimum_order, lead_types, rank"
+          "id, vendor_name, website, cost_per_lead, exclusivity, return_policy, ghl_integration, buyer_requirements, minimum_order, lead_types, rank, score, reputation, score_breakdown"
         )
         .in("status", ["testing", "active"])
         .contains("lead_types", ["live_transfer"])
@@ -256,6 +269,20 @@ export default function LiveTransferLeadsPage() {
                         >
                           {v.vendor_name}
                         </Link>
+                        {v.score != null && (
+                          <span
+                            className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                              Number(v.score) >= 70
+                                ? "bg-mint-green/15 text-mint-green"
+                                : Number(v.score) >= 55
+                                ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                                : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                            }`}
+                            title="Weighted score: reputation 30 / risk-billing 20 / exclusivity 12 / cost-value 16 / GHL 10 / transparency 12"
+                          >
+                            Score {Number(v.score)}/100
+                          </span>
+                        )}
                         {v.website && (
                           <a
                             href={
@@ -289,6 +316,45 @@ export default function LiveTransferLeadsPage() {
                           {v.buyer_requirements || "—"}
                         </Detail>
                       </div>
+
+                      {v.score_breakdown && (
+                        <div className="mt-3 rounded-lg bg-gray-50 dark:bg-gray-900/40 border border-gray-100 dark:border-gray-700 p-3">
+                          <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-2">
+                            Why this score — {Number(v.score)}/100
+                          </p>
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-2">
+                            {SCORE_FACTORS.map((f) => {
+                              const pts = v.score_breakdown?.[f.key] ?? 0;
+                              const pct = Math.min(100, Math.round((pts / f.max) * 100));
+                              return (
+                                <div key={f.key}>
+                                  <div className="flex justify-between text-[11px] text-gray-600 dark:text-gray-300">
+                                    <span>{f.label}</span>
+                                    <span className="font-semibold">{pts}/{f.max}</span>
+                                  </div>
+                                  <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 mt-0.5 overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full ${pct >= 60 ? "bg-mint-green" : pct >= 35 ? "bg-amber-400" : "bg-red-400"}`}
+                                      style={{ width: `${pct}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {v.reputation && (
+                        <div className="mt-3 rounded-lg bg-gray-50 dark:bg-gray-900/40 border border-gray-100 dark:border-gray-700 p-3">
+                          <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+                            Reputation &amp; corroboration
+                          </p>
+                          <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                            {v.reputation}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
