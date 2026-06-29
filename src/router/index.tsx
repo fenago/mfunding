@@ -62,6 +62,8 @@ const IntegrationsPage = lazy(() => import("../pages/admin/settings/Integrations
 const BusinessModelCanvasPage = lazy(() => import("../pages/admin/BusinessModelCanvasPage.tsx"));
 const CloserCompPage = lazy(() => import("../pages/admin/CloserCompPage.tsx"));
 const PipelinePlaybookPage = lazy(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
+const PlaybooksPage = lazy(() => import("../pages/admin/PlaybooksPage.tsx"));
+const UnitEconomicsVCFPage = lazy(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
 const LeadToolsPage = lazy(() => import("../pages/admin/LeadToolsPage.tsx"));
 const LiveTransferROIPage = lazy(() => import("../pages/admin/LiveTransferROIPage.tsx"));
 const PortalEstimatesPage = lazy(() => import("../pages/portal/PortalEstimatesPage.tsx"));
@@ -72,6 +74,7 @@ const LeadSourcesPage = lazy(() => import("../pages/admin/LeadSourcesPage.tsx"))
 const ReferralPartnersPage = lazy(() => import("../pages/admin/ReferralPartnersPage.tsx"));
 const SyncLogPage = lazy(() => import("../pages/admin/SyncLogPage.tsx"));
 const PlatformConfigPage = lazy(() => import("../pages/admin/PlatformConfigPage.tsx"));
+const UsersPage = lazy(() => import("../pages/admin/UsersPage.tsx"));
 const SequencesPage = lazy(() => import("../pages/admin/SequencesPage.tsx"));
 const ResourcesAdminPage = lazy(() => import("../pages/admin/ResourcesAdminPage.tsx"));
 const FunderGuidePage = lazy(() => import("../pages/admin/FunderGuidePage.tsx"));
@@ -340,6 +343,17 @@ export const routes: RouteObject[] = [
                   },
                 ],
               },
+              // Users & roles (super_admin only)
+              {
+                path: "users",
+                element: <SuperAdminProtectedRoute />,
+                children: [
+                  {
+                    index: true,
+                    element: <UsersPage />,
+                  },
+                ],
+              },
               // Customers (admin+)
               {
                 path: "customers",
@@ -403,7 +417,7 @@ export const routes: RouteObject[] = [
                   },
                 ],
               },
-              // Unit Economics (super_admin only)
+              // Unit Economics — MCA (super_admin only)
               {
                 path: "unit-economics",
                 element: <SuperAdminProtectedRoute />,
@@ -413,6 +427,12 @@ export const routes: RouteObject[] = [
                     element: <UnitEconomicsPage />,
                   },
                 ],
+              },
+              // Unit Economics — VCF (super_admin only)
+              {
+                path: "unit-economics-vcf",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <UnitEconomicsVCFPage /> }],
               },
               // Closer Comp Plan (super_admin only)
               {
@@ -430,6 +450,11 @@ export const routes: RouteObject[] = [
               {
                 path: "pipeline-playbook",
                 element: <PipelinePlaybookPage />,
+              },
+              // Revenue Playbooks (all staff) — the 3 money flows, step by step
+              {
+                path: "playbooks",
+                element: <PlaybooksPage />,
               },
               // Lead Tools management (operational — all staff)
               {

@@ -5,6 +5,7 @@ import { UserProfileProvider } from "./context/UserProfileContext";
 import Analytics from "./components/Analytics";
 import LoadingPage from "./pages/LoadingPage";
 import { ThemeProvider } from "./lib/theme-context";
+import ImpersonationBanner from "./components/admin/ImpersonationBanner";
 
 /** Scroll to hash element after navigation (e.g. /#apply) */
 function HashScrollHandler() {
@@ -30,6 +31,7 @@ const Providers = () => {
         <UserProfileProvider>
           <HashScrollHandler />
           <Analytics />
+          <ImpersonationBanner />
           <Suspense fallback={<LoadingPage />}>
             <Outlet />
           </Suspense>

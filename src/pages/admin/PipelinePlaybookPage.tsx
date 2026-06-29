@@ -254,8 +254,64 @@ const VCF_DETAILS: Record<string, StageDetail> = {
   },
 };
 
-const DETAILS: Record<'mca' | 'vcf', Record<string, StageDetail>> = {
-  mca: MCA_DETAILS,
+/* ------------------------------------------------------------------ */
+/* MCA entry differs by lead source — web form vs. live transfer.      */
+/* Only the first two stages (New, Contacted) change; the rest of the  */
+/* MCA pipeline is identical.                                          */
+/* ------------------------------------------------------------------ */
+const MCA_WEB_ENTRY: Record<string, StageDetail> = {
+  new: {
+    whatHappens:
+      'A merchant submits the application/quote form on the website. Speed-to-Lead fires instantly: auto-response email (SMS optional), round-robin assignment to the closer pool, and a "call in 5 minutes" task. Missed-call text-back is armed.',
+    owners: ['automation', 'closer'],
+    sla: 'First touch < 5 minutes. Every minute of delay costs ~10% contact rate on web leads.',
+    advances: 'Closer reaches the merchant (call answered or reply) → moves to Contacted.',
+    automation: 'MCA 01 — Speed to Lead (Web)',
+    callout: { tone: 'branch', text: 'No reply in 2h → tag "no-answer" → 7-day No-Answer Nurture (Sequence B).' },
+  },
+  contacted: {
+    whatHappens:
+      'First live conversation — an OUTBOUND call from the closer. Confirm the merchant owns the business, set expectations ("I\'m not here to sell you anything, just to understand your situation"), and begin/book the qualification call.',
+    owners: ['closer'],
+    sla: 'Same day as the form submit; book qualification immediately.',
+    advances: 'Qualification conversation begins → moves to Qualifying.',
+    automation: 'MCA 02 — No Answer Nurture (if they went dark)',
+    callout: { tone: 'recover', text: 'Goes dark here → breakup sequence → Nurture / Re-engage (recoverable, not dead).' },
+  },
+};
+
+const MCA_TRANSFER_ENTRY: Record<string, StageDetail> = {
+  new: {
+    whatHappens:
+      'A pre-qualified LIVE call is transferred to the closer from a lead vendor (Lead Tycoons $55–85, Synergy, Exclusive, MCA Leads Pro $75–100, Master MCA). The merchant is already on the phone expecting you — you have ~60 seconds to make an impression.',
+    owners: ['closer'],
+    sla: 'First touch < 60 seconds — you are on the call. Pick up energized; treat it like you called them.',
+    advances: 'The live conversation begins → moves to Contacted (same call).',
+    automation: 'Live transfer (vendor) — log the deal immediately',
+    callout: { tone: 'branch', text: 'You pay $50–$100 per transfer — speed + a tight script protect that spend. Disqualifiers (<6 mo, <$15K/mo, prohibited industry) → exit politely, tag "soft-no".' },
+  },
+  contacted: {
+    whatHappens:
+      'Happens LIVE on the same transferred call. Run the 60-second script: confirm they own [Business Name], ask the 3 quick qualifiers (time in business, monthly revenue, use of funds), then text the application link BEFORE hanging up and confirm their cell out loud. Log the deal as Contacted with lead_source = live_transfer and the vendor name.',
+    owners: ['closer'],
+    sla: 'All on the transfer call. App link texted within 60 seconds of the call.',
+    advances: 'App link sent + qualifiers captured → moves to Qualifying.',
+    automation: 'MCA 02 — No Answer Nurture (if no app in 2h)',
+    callout: { tone: 'recover', text: 'No app started by +2h → 7-day No-Answer Nurture (Sequence B). Goes dark → breakup → Nurture.' },
+  },
+};
+
+type TabId = 'mca_web' | 'mca_transfer' | 'vcf';
+
+const PIPELINE_FOR: Record<TabId, 'mca' | 'vcf'> = {
+  mca_web: 'mca',
+  mca_transfer: 'mca',
+  vcf: 'vcf',
+};
+
+const DETAILS: Record<TabId, Record<string, StageDetail>> = {
+  mca_web: { ...MCA_DETAILS, ...MCA_WEB_ENTRY },
+  mca_transfer: { ...MCA_DETAILS, ...MCA_TRANSFER_ENTRY },
   vcf: VCF_DETAILS,
 };
 
@@ -299,12 +355,12 @@ function Callout({ tone, text }: { tone: keyof typeof CALLOUT_META; text: string
 /* Page                                                               */
 /* ------------------------------------------------------------------ */
 export default function PipelinePlaybookPage() {
-  const [tab, setTab] = useState<'mca' | 'vcf'>('mca');
+  const [tab, setTab] = useState<TabId>('mca_web');
   const [stageIndex, setStageIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const def: PipelineDef = PIPELINES[tab];
+  const def: PipelineDef = PIPELINES[PIPELINE_FOR[tab]];
   const stages = def.stages;
   const stage = stages[stageIndex];
   const detail = DETAILS[tab][stage.key];
@@ -363,7 +419,8 @@ export default function PipelinePlaybookPage() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex rounded-xl bg-gray-100 dark:bg-gray-800 p-1 border border-gray-200 dark:border-gray-700">
             {([
-              { id: 'mca', label: 'MCA Pipeline', sub: '13 stages · standard funding' },
+              { id: 'mca_web', label: 'MCA · Web Form', sub: '13 stages · inbound form' },
+              { id: 'mca_transfer', label: 'MCA · Live Transfer', sub: '13 stages · live phone' },
               { id: 'vcf', label: 'VCF Pipeline', sub: '8 stages · debt relief' },
             ] as const).map((t) => (
               <button

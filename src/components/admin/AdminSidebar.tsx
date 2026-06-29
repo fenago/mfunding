@@ -94,7 +94,8 @@ const navGroups: NavGroup[] = [
     title: "Finance",
     items: [
       { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },
-      { name: "Unit Economics", path: "/admin/unit-economics", icon: CalculatorIcon, roles: SUPER },
+      { name: "Unit Economics (MCA)", path: "/admin/unit-economics", icon: CalculatorIcon, roles: SUPER },
+      { name: "Unit Economics (VCF)", path: "/admin/unit-economics-vcf", icon: CalculatorIcon, roles: SUPER },
       { name: "Live Transfer ROI", path: "/admin/live-transfer-roi", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: SUPER },
       { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: SUPER },
@@ -110,6 +111,7 @@ const navGroups: NavGroup[] = [
   {
     title: "Training",
     items: [
+      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Pipeline Playbook", path: "/admin/pipeline-playbook", icon: MapIcon, roles: OPS },
       { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
     ],
@@ -117,6 +119,7 @@ const navGroups: NavGroup[] = [
   {
     title: "System",
     items: [
+      { name: "Users", path: "/admin/users", icon: UsersIcon, roles: SUPER },
       { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: SUPER },
       { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: SUPER },
       { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: SUPER },

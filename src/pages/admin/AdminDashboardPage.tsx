@@ -236,6 +236,15 @@ export default function AdminDashboardPage() {
           {isSuperAdmin && (
             <>
               <Link
+                to="/admin/users"
+                className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+              >
+                <UsersIcon className="w-5 h-5 text-emerald-500" />
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
+                  Manage Users
+                </span>
+              </Link>
+              <Link
                 to="/admin/lenders"
                 className="flex items-center gap-3 p-4 rounded-lg bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
               >
