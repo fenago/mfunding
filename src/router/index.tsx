@@ -89,6 +89,7 @@ const CloserCompPage = lazyWithReload(() => import("../pages/admin/CloserCompPag
 const PipelinePlaybookPage = lazyWithReload(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
 const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
+const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
 const LeadToolsPage = lazyWithReload(() => import("../pages/admin/LeadToolsPage.tsx"));
 const LiveTransferROIPage = lazyWithReload(() => import("../pages/admin/LiveTransferROIPage.tsx"));
@@ -375,6 +376,12 @@ export const routes: RouteObject[] = [
                 path: "campaigns",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <CampaignsPage /> }],
+              },
+              // Lead-buying budget calculator (super_admin only)
+              {
+                path: "lead-budget",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <LeadBudgetCalculatorPage /> }],
               },
               // Users & roles (super_admin only)
               {

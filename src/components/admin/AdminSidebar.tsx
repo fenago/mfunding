@@ -88,6 +88,7 @@ const navGroups: NavGroup[] = [
     title: "Marketing & Outreach",
     items: [
       { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
+      { name: "Budget Planner", path: "/admin/lead-budget", icon: CalculatorIcon, roles: SUPER },
       { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
       { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
       { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: OPS },
