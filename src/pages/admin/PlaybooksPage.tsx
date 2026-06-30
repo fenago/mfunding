@@ -16,6 +16,7 @@ import {
   CheckCircleIcon,
   UserCircleIcon,
   XMarkIcon,
+  LockClosedIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
@@ -381,7 +382,11 @@ function StepCard({
     setChecked([]);
   }, [deal?.id, deal?.updated_at, step.fields]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasInputs = interactive && (!!step.fields?.length || !!step.collect?.length || !!step.stageKey);
+  // Show the capture fields whenever the step HAS them — even before a lead is
+  // started — so the closer can see where each answer goes. The box also appears
+  // for stage-only steps once a lead is live (so they can advance the stage).
+  const hasCapture = !!step.fields?.length || !!step.collect?.length;
+  const showBox = hasCapture || (interactive && !!step.stageKey);
 
   const circle = done
     ? "bg-emerald-500"
@@ -454,10 +459,17 @@ function StepCard({
 
         {step.note && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{step.note}</p>}
 
-        {/* ───── Interactive work area (only when a matching deal is loaded) ───── */}
-        {hasInputs ? (
-          <div className="mt-4 rounded-lg border border-dashed border-ocean-blue/40 bg-white dark:bg-gray-800 p-3 space-y-3">
-            {/* Structured fields */}
+        {/* ───── Capture area — the fields live HERE, at the step where you ask ───── */}
+        {showBox ? (
+          <div className={`mt-4 rounded-lg border border-dashed p-3 space-y-3 ${interactive ? "border-ocean-blue/40 bg-white dark:bg-gray-800" : "border-gray-300 dark:border-gray-700 bg-gray-100/70 dark:bg-gray-800/40"}`}>
+            {!interactive && (
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+                <LockClosedIcon className="w-3.5 h-3.5 shrink-0" />
+                Start the lead at the top (name + phone) — then type each answer right here as you ask, and saving logs the call and advances the stage.
+              </p>
+            )}
+
+            {/* Structured fields — visible always; editable once a lead is live */}
             {step.fields?.length ? (
               <div className="grid sm:grid-cols-2 gap-3">
                 {step.fields.map((f) => (
@@ -466,11 +478,12 @@ function StepCard({
                       {f.label}
                     </label>
                     <input
-                      className="input-field w-full"
+                      className="input-field w-full disabled:opacity-60 disabled:cursor-not-allowed"
                       type={f.kind === "number" || f.kind === "money" ? "number" : "text"}
                       value={values[f.key] ?? ""}
                       onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
                       placeholder={f.placeholder}
+                      disabled={!interactive}
                     />
                     {f.hint && <p className="mt-1 text-[11px] text-gray-400">{f.hint}</p>}
                   </div>
@@ -491,8 +504,9 @@ function StepCard({
                       <button
                         key={c}
                         type="button"
+                        disabled={!interactive}
                         onClick={() => setChecked((arr) => (on ? arr.filter((x) => x !== c) : [...arr, c]))}
-                        className={`text-[11px] px-2 py-1 rounded-full border transition-colors ${
+                        className={`text-[11px] px-2 py-1 rounded-full border transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
                           on
                             ? "bg-emerald-100 border-emerald-300 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                             : "bg-gray-100 dark:bg-gray-700 border-transparent text-gray-700 dark:text-gray-200"
@@ -507,66 +521,58 @@ function StepCard({
               </div>
             ) : null}
 
-            {/* Call / note log */}
-            <div className="grid sm:grid-cols-[1fr_auto] gap-2 items-end">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Log the call / note</label>
-                <textarea
-                  className="input-field w-full h-16"
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  placeholder="What happened on this touch? (optional)"
-                />
-              </div>
-              <select
-                className="input-field"
-                value={outcome}
-                onChange={(e) => setOutcome(e.target.value)}
-                title="Touch type"
-              >
-                <option value="call">Call</option>
-                <option value="email">Email</option>
-                <option value="sms">SMS</option>
-                <option value="note">Note</option>
-              </select>
-            </div>
+            {/* Log + save — only once a live lead is loaded */}
+            {interactive && (
+              <>
+                <div className="grid sm:grid-cols-[1fr_auto] gap-2 items-end">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Log the call / note</label>
+                    <textarea
+                      className="input-field w-full h-16"
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder="What happened on this touch? (optional)"
+                    />
+                  </div>
+                  <select
+                    className="input-field"
+                    value={outcome}
+                    onChange={(e) => setOutcome(e.target.value)}
+                    title="Touch type"
+                  >
+                    <option value="call">Call</option>
+                    <option value="email">Email</option>
+                    <option value="note">Note</option>
+                  </select>
+                </div>
 
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] text-gray-400">
-                {step.stageKey && !done
-                  ? `Saves the info, logs it, and moves the deal to “${stageLabel}”.`
-                  : "Saves the info and logs it to the deal."}
-              </p>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => onComplete(step, values, note, outcome, checked)}
-                className={`text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed ${
-                  done ? "border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200" : "bg-ocean-blue text-white hover:opacity-90"
-                }`}
-              >
-                {busy ? "Saving…" : done ? "Update this step" : step.stageKey ? `Save & mark ${stageLabel} done` : "Save & log"}
-              </button>
-            </div>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-gray-400">
+                    {step.stageKey && !done
+                      ? `Saves the info, logs it, and moves the deal to “${stageLabel}”.`
+                      : "Saves the info and logs it to the deal."}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onComplete(step, values, note, outcome, checked)}
+                    className={`text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed ${
+                      done ? "border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200" : "bg-ocean-blue text-white hover:opacity-90"
+                    }`}
+                  >
+                    {busy ? "Saving…" : done ? "Update this step" : step.stageKey ? `Save & mark ${stageLabel} done` : "Save & log"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-        ) : (
-          <>
-            {step.collect && step.collect.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                <DocumentCheckIcon className="w-4 h-4 text-gray-400" />
-                {step.collect.map((c) => (
-                  <span key={c} className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200">
-                    {c}
-                  </span>
-                ))}
-              </div>
-            )}
-            {step.route && (
-              <Link to={step.route.to} className="mt-3 inline-flex items-center gap-1 text-sm text-ocean-blue hover:underline">
-                {step.route.label} <ArrowRightIcon className="w-3.5 h-3.5" />
-              </Link>
-            )}
-          </>
+        ) : null}
+
+        {/* Reference link to the screen for this step — always available */}
+        {step.route && (
+          <Link to={step.route.to} className="mt-3 inline-flex items-center gap-1 text-sm text-ocean-blue hover:underline">
+            {step.route.label} <ArrowRightIcon className="w-3.5 h-3.5" />
+          </Link>
         )}
       </div>
     </li>
