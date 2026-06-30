@@ -304,7 +304,8 @@ export const routes: RouteObject[] = [
               },
               {
                 path: "todos",
-                element: <KanbanBoardPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <KanbanBoardPage /> }],
               },
               // Lenders (admin + super_admin — admins manage the funder network)
               {
@@ -564,7 +565,8 @@ export const routes: RouteObject[] = [
               // Referral partners (admin + super_admin)
               {
                 path: "referrals",
-                element: <ReferralPartnersPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <ReferralPartnersPage /> }],
               },
               // Compliance disclosures (super_admin only)
               {

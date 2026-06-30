@@ -61,7 +61,7 @@ const navGroups: NavGroup[] = [
     title: "Home",
     items: [
       { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: OPS },
-      { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: OPS },
+      { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
     ],
   },
   {
@@ -91,7 +91,7 @@ const navGroups: NavGroup[] = [
       { name: "Budget Planner", path: "/admin/lead-budget", icon: CalculatorIcon, roles: SUPER },
       { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
       { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
-      { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: OPS },
+      { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: ADMIN },
     ],
   },
   {

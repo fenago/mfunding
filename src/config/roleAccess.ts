@@ -41,7 +41,7 @@ export const ACCESS_GROUPS: AccessGroup[] = [
     title: "Home",
     items: [
       { name: "Admin Dashboard", roles: OPS },
-      { name: "Launch Board (Tasks)", roles: OPS },
+      { name: "Launch Board (Tasks)", roles: ADMIN },
     ],
   },
   {
@@ -70,7 +70,7 @@ export const ACCESS_GROUPS: AccessGroup[] = [
       { name: "Campaigns", roles: SUPER },
       { name: "Sequences", roles: OPS },
       { name: "Lead Tools", roles: OPS },
-      { name: "Referrals", roles: OPS },
+      { name: "Referrals", roles: ADMIN },
     ],
   },
   {
