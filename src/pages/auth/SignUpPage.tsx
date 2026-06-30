@@ -45,7 +45,7 @@ const SignUpPage = () => {
       <form className="w-full max-w-md flex flex-col gap-4 card p-8" onSubmit={handleSubmit}>
         <h1 className="heading-3 text-midnight-blue text-center mb-2">Sign Up</h1>
         <p className="text-center text-body-sm text-text-secondary mb-2">
-          Demo app, please don't use your real email or password
+          Create your account to track your application and manage your documents.
         </p>
         <input
           className="input-field"
