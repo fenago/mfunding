@@ -92,6 +92,7 @@ const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
 const LeadToolsPage = lazyWithReload(() => import("../pages/admin/LeadToolsPage.tsx"));
+const LeadPartnerPage = lazyWithReload(() => import("../pages/admin/LeadPartnerPage.tsx"));
 const LiveTransferROIPage = lazyWithReload(() => import("../pages/admin/LiveTransferROIPage.tsx"));
 const PortalEstimatesPage = lazyWithReload(() => import("../pages/portal/PortalEstimatesPage.tsx"));
 const CompliancePage = lazyWithReload(() => import("../pages/admin/CompliancePage.tsx"));
@@ -513,6 +514,12 @@ export const routes: RouteObject[] = [
               {
                 path: "lead-tools",
                 element: <LeadToolsPage />,
+              },
+              // Synergy — primary lead partner (super_admin only)
+              {
+                path: "lead-partner",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <LeadPartnerPage /> }],
               },
               // Business Model Canvas (super_admin only)
               {

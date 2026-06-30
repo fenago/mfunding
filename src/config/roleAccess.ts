@@ -57,6 +57,7 @@ export const ACCESS_GROUPS: AccessGroup[] = [
   {
     title: "Lead Sourcing",
     items: [
+      { name: "Lead Partner (Synergy)", roles: SUPER },
       { name: "Marketing Vendors", roles: SUPER },
       { name: "Vendor Scorecard", roles: SUPER },
       { name: "Live Transfer Leads", roles: SUPER },
