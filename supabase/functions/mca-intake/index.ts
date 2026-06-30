@@ -52,51 +52,83 @@ Deno.serve(async (req) => {
     customerId = c.id;
   }
 
-  // 2) MCA deal at "new" (New Lead)
-  const { data: deal, error: dErr } = await db.from("deals").insert({
-    customer_id: customerId,
-    deal_type: "mca",
-    status: "new",
-    lead_source: String(body.lead_source ?? "mca_web"),
-    lead_source_detail: (body.lead_source_detail as string) || null,
-    amount_requested: num(body.amount_requested),
-    use_of_funds: (body.use_of_funds as string) || null,
-  }).select("id").single();
-  if (dErr) return json({ error: `could not create deal: ${dErr.message}` }, 500);
+  // 2) MCA deal — DEDUPE (audit #15): reuse the customer's existing OPEN MCA deal
+  // instead of creating a duplicate (and a duplicate GHL opportunity) on repeat
+  // submissions. "Open" = not in a terminal stage.
+  let dealId: string;
+  let dealGhlContactId: string | null = null;
+  const { data: openDeal } = await db.from("deals")
+    .select("id, ghl_contact_id")
+    .eq("customer_id", customerId).eq("deal_type", "mca")
+    .not("status", "in", "(funded,declined,dead,nurture)")
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
 
-  // 3) Best-effort: create GHL contact + MCA opportunity (never fail the intake on this)
-  try {
-    const cfg = await getGhlConfig(db);
-    const cr = await upsertContact(cfg, {
-      firstName, lastName, email, phone, companyName: business, source: "MCA Web",
-    });
-    const contactId = cr.data?.contact?.id;
-    if (contactId) {
-      await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customerId);
-      await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", deal.id);
-      const pl = await listPipelines(cfg);
-      // Use the canonical "MFunding MCA Pipeline" by id (same id the ghl-webhook
-      // inbound sync keys off, so stage changes round-trip). Fall back to a heuristic
-      // that uniquely identifies it via the "renewal eligible" stage — needed because
-      // several other MCA-like pipelines (incl. an INACTIVE MCA-Restructure one) also
-      // have "new lead" + "funded" and would otherwise win.
-      const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
-      const mca = pl.data?.pipelines?.find((p) => p.id === MCA_PIPELINE_ID)
-        ?? pl.data?.pipelines?.find((p) => {
-          const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
-          return n.has("new lead") && n.has("renewal eligible");
-        });
-      const stage = mca?.stages.find((s) => s.name.toLowerCase() === "new lead") ?? mca?.stages[0];
-      if (mca && stage) {
-        const opp = await createOpportunity(cfg, {
-          pipelineId: mca.id, pipelineStageId: stage.id, contactId,
-          name: business || `${firstName} ${lastName}`.trim(),
-        });
-        const oppId = opp.data?.opportunity?.id;
-        if (oppId) await db.from("deals").update({ ghl_opportunity_id: oppId }).eq("id", deal.id);
+  if (openDeal) {
+    dealId = openDeal.id;
+    dealGhlContactId = openDeal.ghl_contact_id ?? null;
+    // Backfill amount / use-of-funds if this submission has them.
+    const patch: Record<string, unknown> = {};
+    const amt = num(body.amount_requested);
+    if (amt != null) patch.amount_requested = amt;
+    if (body.use_of_funds) patch.use_of_funds = body.use_of_funds as string;
+    if (Object.keys(patch).length) await db.from("deals").update(patch).eq("id", dealId);
+  } else {
+    const { data: deal, error: dErr } = await db.from("deals").insert({
+      customer_id: customerId,
+      deal_type: "mca",
+      status: "new",
+      lead_source: String(body.lead_source ?? "mca_web"),
+      lead_source_detail: (body.lead_source_detail as string) || null,
+      amount_requested: num(body.amount_requested),
+      use_of_funds: (body.use_of_funds as string) || null,
+    }).select("id").single();
+    if (dErr) return json({ error: `could not create deal: ${dErr.message}` }, 500);
+    dealId = deal.id;
+  }
+
+  // 3) GHL sync — skip if the deal is already in GHL (no duplicate opportunity).
+  // Failures are SURFACED, not swallowed (audit #8): we log + return a warning, and
+  // the deal is left with ghl_contact_id IS NULL so a reconciliation job can re-push.
+  let ghlSynced = !!dealGhlContactId;
+  let ghlWarning: string | undefined;
+  if (!ghlSynced) {
+    try {
+      const cfg = await getGhlConfig(db);
+      const cr = await upsertContact(cfg, {
+        firstName, lastName, email, phone, companyName: business, source: "MCA Web",
+      });
+      const contactId = cr.data?.contact?.id;
+      if (!contactId) {
+        ghlWarning = cr.error || "GHL upsert returned no contact id";
+      } else {
+        await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customerId);
+        await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
+        const pl = await listPipelines(cfg);
+        // Canonical "MFunding MCA Pipeline" by id (same id ghl-webhook keys off, so
+        // stage changes round-trip). Fallback heuristic uses the unique "renewal
+        // eligible" stage so the INACTIVE MCA-Restructure pipeline doesn't win.
+        const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+        const mca = pl.data?.pipelines?.find((p) => p.id === MCA_PIPELINE_ID)
+          ?? pl.data?.pipelines?.find((p) => {
+            const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
+            return n.has("new lead") && n.has("renewal eligible");
+          });
+        const stage = mca?.stages.find((s) => s.name.toLowerCase() === "new lead") ?? mca?.stages[0];
+        if (mca && stage) {
+          const opp = await createOpportunity(cfg, {
+            pipelineId: mca.id, pipelineStageId: stage.id, contactId,
+            name: business || `${firstName} ${lastName}`.trim(),
+          });
+          const oppId = opp.data?.opportunity?.id;
+          if (oppId) await db.from("deals").update({ ghl_opportunity_id: oppId }).eq("id", dealId);
+        }
+        ghlSynced = true;
       }
+    } catch (e) {
+      ghlWarning = e instanceof Error ? e.message : String(e);
     }
-  } catch (_e) { /* GHL sync is best-effort */ }
+    if (!ghlSynced) console.error("mca-intake: GHL sync failed", { dealId, ghlWarning });
+  }
 
-  return json({ ok: true, deal_id: deal.id });
+  return json({ ok: true, deal_id: dealId, ghl_synced: ghlSynced, ghl_warning: ghlWarning });
 });

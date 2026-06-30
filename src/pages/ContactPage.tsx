@@ -71,20 +71,26 @@ export default function ContactPage() {
     setIsSubmitting(true);
     setError(null);
 
-    const { error: submitError } = await supabase.from('contact_submissions').insert({
-      name: formData.name,
-      email: formData.email,
-      phone: formData.phone || null,
-      subject: formData.subject,
-      message: formData.message,
+    // Route through the contact-intake function: it records the message AND pushes
+    // the inquiry into GHL. We only show success if the message was actually saved.
+    const { data, error: submitError } = await supabase.functions.invoke('contact-intake', {
+      body: {
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone || null,
+        subject: formData.subject,
+        message: formData.message,
+      },
     });
 
     setIsSubmitting(false);
 
-    if (submitError) {
-      // If table doesn't exist yet, still show success to the user
-      // so the page works even before the migration is run
-      console.error('Contact form submission error:', submitError);
+    if (submitError || !data?.ok) {
+      console.error('Contact form submission error:', submitError || data);
+      setError(
+        "Sorry — we couldn't send your message. Please call us at (786) 840-9404 or email sales@send.mfunding.net."
+      );
+      return;
     }
 
     setIsSubmitted(true);

@@ -51,46 +51,79 @@ Deno.serve(async (req) => {
     customerId = c.id;
   }
 
-  // 2) VCF deal
-  const { data: deal, error: dErr } = await db.from("deals").insert({
-    customer_id: customerId,
-    deal_type: "vcf",
-    status: "new_distressed",
-    lead_source: "vcf_web",
-    vcf_active_positions: num(body.active_positions),
-    vcf_total_balance: num(body.total_balance),
-    vcf_daily_debit: num(body.daily_debit),
-    vcf_current_funders: (body.current_funders as string) || null,
-    vcf_hardship_reason: (body.hardship_reason as string) || null,
-  }).select("id").single();
-  if (dErr) return json({ error: `could not create deal: ${dErr.message}` }, 500);
+  // 2) VCF deal — DEDUPE (audit #15): reuse the customer's existing OPEN VCF deal
+  // rather than creating a duplicate (+ duplicate GHL opportunity) on resubmit.
+  let dealId: string;
+  let dealGhlContactId: string | null = null;
+  const { data: openDeal } = await db.from("deals")
+    .select("id, ghl_contact_id")
+    .eq("customer_id", customerId).eq("deal_type", "vcf")
+    .not("status", "in", "(restructure_executed,servicing,declined,dead,nurture)")
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
 
-  // 3) Best-effort: create GHL contact + VCF opportunity (never fail the intake on this)
-  try {
-    const cfg = await getGhlConfig(db);
-    const cr = await upsertContact(cfg, {
-      firstName, lastName, email, phone, companyName: business, source: "VCF Web",
-    });
-    const contactId = cr.data?.contact?.id;
-    if (contactId) {
-      await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customerId);
-      await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", deal.id);
-      const pl = await listPipelines(cfg);
-      const vcf = pl.data?.pipelines?.find((p) => {
-        const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
-        return n.has("new lead (distressed)") || n.has("servicing / monitoring");
+  if (openDeal) {
+    dealId = openDeal.id;
+    dealGhlContactId = openDeal.ghl_contact_id ?? null;
+    // Backfill VCF position details if this submission provides them.
+    const patch: Record<string, unknown> = {};
+    const ap = num(body.active_positions); if (ap != null) patch.vcf_active_positions = ap;
+    const tb = num(body.total_balance); if (tb != null) patch.vcf_total_balance = tb;
+    const dd = num(body.daily_debit); if (dd != null) patch.vcf_daily_debit = dd;
+    if (body.current_funders) patch.vcf_current_funders = body.current_funders as string;
+    if (body.hardship_reason) patch.vcf_hardship_reason = body.hardship_reason as string;
+    if (Object.keys(patch).length) await db.from("deals").update(patch).eq("id", dealId);
+  } else {
+    const { data: deal, error: dErr } = await db.from("deals").insert({
+      customer_id: customerId,
+      deal_type: "vcf",
+      status: "new_distressed",
+      lead_source: "vcf_web",
+      vcf_active_positions: num(body.active_positions),
+      vcf_total_balance: num(body.total_balance),
+      vcf_daily_debit: num(body.daily_debit),
+      vcf_current_funders: (body.current_funders as string) || null,
+      vcf_hardship_reason: (body.hardship_reason as string) || null,
+    }).select("id").single();
+    if (dErr) return json({ error: `could not create deal: ${dErr.message}` }, 500);
+    dealId = deal.id;
+  }
+
+  // 3) GHL sync — skip if already in GHL; SURFACE failures instead of swallowing (#8).
+  let ghlSynced = !!dealGhlContactId;
+  let ghlWarning: string | undefined;
+  if (!ghlSynced) {
+    try {
+      const cfg = await getGhlConfig(db);
+      const cr = await upsertContact(cfg, {
+        firstName, lastName, email, phone, companyName: business, source: "VCF Web",
       });
-      const stage = vcf?.stages.find((s) => s.name.toLowerCase() === "new lead (distressed)") ?? vcf?.stages[0];
-      if (vcf && stage) {
-        const opp = await createOpportunity(cfg, {
-          pipelineId: vcf.id, pipelineStageId: stage.id, contactId,
-          name: business || `${firstName} ${lastName}`.trim(),
+      const contactId = cr.data?.contact?.id;
+      if (!contactId) {
+        ghlWarning = cr.error || "GHL upsert returned no contact id";
+      } else {
+        await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customerId);
+        await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
+        const pl = await listPipelines(cfg);
+        const vcf = pl.data?.pipelines?.find((p) => {
+          const n = new Set(p.stages.map((s) => s.name.toLowerCase()));
+          return n.has("new lead (distressed)") || n.has("servicing / monitoring");
         });
-        const oppId = opp.data?.opportunity?.id;
-        if (oppId) await db.from("deals").update({ ghl_opportunity_id: oppId }).eq("id", deal.id);
+        const stage = vcf?.stages.find((s) => s.name.toLowerCase() === "new lead (distressed)") ?? vcf?.stages[0];
+        if (vcf && stage) {
+          const opp = await createOpportunity(cfg, {
+            pipelineId: vcf.id, pipelineStageId: stage.id, contactId,
+            name: business || `${firstName} ${lastName}`.trim(),
+          });
+          const oppId = opp.data?.opportunity?.id;
+          if (oppId) await db.from("deals").update({ ghl_opportunity_id: oppId }).eq("id", dealId);
+        }
+        ghlSynced = true;
       }
+    } catch (e) {
+      ghlWarning = e instanceof Error ? e.message : String(e);
     }
-  } catch (_e) { /* GHL sync is best-effort */ }
+    if (!ghlSynced) console.error("vcf-intake: GHL sync failed", { dealId, ghlWarning });
+  }
 
-  return json({ ok: true, deal_id: deal.id });
+  return json({ ok: true, deal_id: dealId, ghl_synced: ghlSynced, ghl_warning: ghlWarning });
 });

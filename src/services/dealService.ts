@@ -168,7 +168,20 @@ export async function updateDeal(id: string, data: UpdateDealData): Promise<Deal
     throw error;
   }
 
-  return deal as Deal;
+  const d = deal as Deal;
+  // Gap #6: a deal can be marked Funded BEFORE amount_funded is known. When the
+  // amount is filled in later via an edit, make sure the commission gets created.
+  // autoCreateCommissionForFundedDeal is idempotent (no-ops if one already exists),
+  // so it's safe to call here as well as from updateDealStatus(funded).
+  if (d.status === "funded" && d.amount_funded && d.amount_funded > 0) {
+    try {
+      await autoCreateCommissionForFundedDeal(d);
+    } catch (e) {
+      console.error("Auto commission creation (updateDeal) failed:", e);
+    }
+  }
+
+  return d;
 }
 
 export async function updateDealStatus(id: string, newStatus: DealStatus): Promise<Deal> {

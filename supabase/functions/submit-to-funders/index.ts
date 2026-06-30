@@ -132,11 +132,32 @@ Deno.serve(async (req) => {
 
   const db = serviceClient();
 
+  // --- Authn/Authz (#2): this function emails full merchant PII to funders, so the
+  // caller MUST be signed-in staff. Closers may only submit their OWN deals. We do
+  // this in code (not just dashboard verify_jwt) so it can't be bypassed. ---
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const token = authHeader.replace(/^Bearer\s+/i, "");
+  if (!token) return json({ error: "Missing authorization" }, 401);
+  const { data: userData, error: userErr } = await db.auth.getUser(token);
+  const caller = userData?.user;
+  if (userErr || !caller) return json({ error: "Invalid session" }, 401);
+  const { data: callerProfile } = await db.from("profiles").select("role").eq("id", caller.id).single();
+  const callerRole = callerProfile?.role as string | undefined;
+  if (!callerRole || !["closer", "admin", "super_admin"].includes(callerRole)) {
+    return json({ error: "Forbidden — staff only" }, 403);
+  }
+
   const { data: deal, error: dErr } = await db
     .from("deals")
     .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id, vcf_active_positions, vcf_total_balance, vcf_daily_debit, vcf_current_funders, vcf_hardship_reason")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
+
+  // A closer can only submit a deal assigned to / created by them.
+  if (callerRole === "closer") {
+    const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+    if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+  }
 
   const { data: customer } = await db.from("customers").select("*").eq("id", deal.customer_id).maybeSingle();
   const c = (customer ?? {}) as Record<string, unknown>;
