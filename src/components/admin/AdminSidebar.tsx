@@ -58,11 +58,10 @@ const SUPER: NavRole[] = ["super_admin"]; // owner-only: financials, config, net
 
 const navGroups: NavGroup[] = [
   {
-    title: "Overview",
+    title: "Home",
     items: [
       { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: OPS },
       { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: OPS },
-      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
     ],
   },
   {
@@ -76,17 +75,36 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    title: "Lead Generation",
+    title: "Lead Sourcing",
     items: [
       { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
-      { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
+      { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
-      { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
+      { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Marketing & Outreach",
+    items: [
       { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
       { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
-      { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
+      { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
       { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: OPS },
+    ],
+  },
+  {
+    title: "Team & Partners",
+    items: [
+      { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
+      { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Funder Network",
+    items: [
+      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
     ],
   },
   {
@@ -101,24 +119,16 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    title: "Funder Network",
-    items: [
-      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
-      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
-      { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
-      { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
-    ],
-  },
-  {
-    title: "Analytics",
+    title: "Insights",
     items: [
       { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: SUPER },
       { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: SUPER },
     ],
   },
   {
-    title: "Training",
+    title: "Playbooks & Training",
     items: [
+      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Pipeline Playbook", path: "/admin/pipeline-playbook", icon: MapIcon, roles: OPS },
       { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
     ],

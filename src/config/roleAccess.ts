@@ -38,7 +38,7 @@ export const ACCESS_GROUPS: AccessGroup[] = [
     ],
   },
   {
-    title: "Overview",
+    title: "Home",
     items: [
       { name: "Admin Dashboard", roles: OPS },
       { name: "Launch Board (Tasks)", roles: OPS },
@@ -51,16 +51,33 @@ export const ACCESS_GROUPS: AccessGroup[] = [
       { name: "Deals", roles: OPS },
       { name: "Renewals", roles: OPS },
       { name: "Doc Review", roles: OPS },
+      { name: "Comms", roles: OPS },
     ],
   },
   {
-    title: "Lead Generation",
+    title: "Lead Sourcing",
     items: [
-      { name: "Lead Tools", roles: OPS },
-      { name: "Sequences", roles: OPS },
-      { name: "Referrals", roles: OPS },
-      { name: "Marketing", roles: SUPER },
+      { name: "Marketing Vendors", roles: SUPER },
+      { name: "Vendor Scorecard", roles: SUPER },
+      { name: "Live Transfer Leads", roles: SUPER },
+      { name: "Lead Lists & Data", roles: SUPER },
       { name: "Lead Sources", roles: SUPER },
+    ],
+  },
+  {
+    title: "Marketing & Outreach",
+    items: [
+      { name: "Campaigns", roles: SUPER },
+      { name: "Sequences", roles: OPS },
+      { name: "Lead Tools", roles: OPS },
+      { name: "Referrals", roles: OPS },
+    ],
+  },
+  {
+    title: "Team & Partners",
+    items: [
+      { name: "Closers", roles: SUPER },
+      { name: "Sub-ISOs", roles: SUPER },
     ],
   },
   {
@@ -68,30 +85,30 @@ export const ACCESS_GROUPS: AccessGroup[] = [
     items: [
       { name: "Lenders", roles: ADMIN },
       { name: "Funder Guide", roles: OPS },
-      { name: "Closers", roles: SUPER },
-      { name: "Sub-ISOs", roles: SUPER },
     ],
   },
   {
     title: "Finance",
     items: [
       { name: "Commissions", roles: SUPER },
-      { name: "Unit Economics", roles: SUPER },
+      { name: "Unit Economics (MCA)", roles: SUPER },
+      { name: "Unit Economics (VCF)", roles: SUPER },
       { name: "Live Transfer ROI", roles: SUPER },
       { name: "Closer Comp", roles: SUPER },
       { name: "Business Model", roles: SUPER },
     ],
   },
   {
-    title: "Analytics",
+    title: "Insights",
     items: [
       { name: "Analytics", roles: SUPER },
       { name: "Real-Time", roles: SUPER },
     ],
   },
   {
-    title: "Training",
+    title: "Playbooks & Training",
     items: [
+      { name: "Revenue Playbooks", roles: OPS },
       { name: "Pipeline Playbook", roles: OPS },
       { name: "Resources / Articles", roles: OPS },
     ],
