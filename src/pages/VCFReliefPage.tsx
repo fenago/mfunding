@@ -16,6 +16,8 @@ import ScrollToTop from "../components/ui/ScrollToTop";
 import SEO from '../components/seo/SEO';
 import PipelineFlow from "../components/shared/PipelineFlow";
 import supabase from "../supabase";
+import TcpaConsent from "../components/ui/TcpaConsent";
+import { recordConsent } from "../lib/consent";
 
 interface FormState {
   business_name: string; contact_first_name: string; contact_last_name: string;
@@ -31,12 +33,13 @@ const EMPTY: FormState = {
 // Trust badges — drawn from our debt-relief partner's real track record.
 const TRUST = ["No upfront fees", "30+ years of experience", "$100M+ debt restructured", "Answers within 24 hours"];
 
-// Headline proof points.
+// Headline proof points. These reflect our debt-relief partner's historical
+// results — framed as ranges/typicals (never guarantees). See disclaimer below.
 const STATS = [
-  { value: "50–75%", label: "Typical payment reduction" },
-  { value: "$100M+", label: "Business debt resolved" },
+  { value: "up to 50–75%", label: "Typical payment reduction*" },
+  { value: "$100M+", label: "Business debt resolved to date" },
   { value: "30+ yrs", label: "Industry experience" },
-  { value: "90%", label: "Restructuring applicants accepted" },
+  { value: "Most", label: "Qualified applicants accepted*" },
 ];
 
 // Two flagship, white-labeled programs — what we actually offer.
@@ -48,10 +51,10 @@ const PROGRAMS = [
     blurb:
       "An attorney-led team renegotiates your existing advances directly with your funders — turning crushing daily debits into one realistic payment, with no new borrowing.",
     points: [
-      "Lower your payments by 50–75%, often within days",
+      "Many clients lower payments by 50–75% (results vary)",
       "No minimum credit score and no collateral required",
       "Built for $50,000+ in total business debt",
-      "90% of applicants are accepted into the program",
+      "Most qualified applicants are accepted into the program",
       "No upfront, out-of-pocket fees",
       "Often no negative impact to business or personal credit",
     ],
@@ -87,15 +90,21 @@ export default function VCFReliefPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [consent, setConsent] = useState(false);
 
   function set<K extends keyof FormState>(k: K, v: string) { setForm((f) => ({ ...f, [k]: v })); }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!consent) { setError("Please provide consent to be contacted to continue."); return; }
     setError(null);
     setSubmitting(true);
+    await recordConsent({
+      name: `${form.contact_first_name} ${form.contact_last_name}`.trim(),
+      email: form.email, phone: form.phone, source: "vcf-relief", page: "/debt-relief",
+    });
     try {
-      const { data, error } = await supabase.functions.invoke("vcf-intake", { body: form });
+      const { data, error } = await supabase.functions.invoke("vcf-intake", { body: { ...form, tcpa_consent: true } });
       if (error) throw new Error(error.message);
       if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error);
       setSubmitted(true);
@@ -160,6 +169,11 @@ export default function VCFReliefPage() {
                 </div>
               ))}
             </div>
+            <p className="text-white/50 text-xs mt-6 max-w-3xl mx-auto text-center leading-relaxed">
+              *Figures reflect our debt-relief partner's historical results and are not a guarantee.
+              Outcomes depend on your situation; not all businesses qualify, and results vary. This is
+              not legal, tax, or financial advice.
+            </p>
           </div>
         </section>
 
@@ -277,8 +291,10 @@ export default function VCFReliefPage() {
                       <textarea value={form.hardship_reason} onChange={(e) => set("hardship_reason", e.target.value)} className={`${inputCls} h-20`} /></label>
                   </div>
 
+                  <TcpaConsent checked={consent} onChange={setConsent} />
+
                   {error && <p className="text-sm text-red-500">{error}</p>}
-                  <button type="submit" disabled={submitting}
+                  <button type="submit" disabled={submitting || !consent}
                     className="w-full py-3 rounded-lg bg-ocean-blue text-white font-semibold hover:opacity-90 disabled:opacity-60">
                     {submitting ? "Submitting…" : "Get my free relief review"}
                   </button>

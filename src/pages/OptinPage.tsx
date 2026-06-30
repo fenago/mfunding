@@ -8,6 +8,8 @@ import SEO from '../components/seo/SEO';
 import { ShimmerButton } from '../components/ui/shimmer-button';
 import { CheckCircleIcon } from '@heroicons/react/24/outline';
 import supabase from '../supabase';
+import TcpaConsent from '../components/ui/TcpaConsent';
+import { recordConsent } from '../lib/consent';
 
 export default function OptinPage() {
   const [formData, setFormData] = useState({
@@ -35,21 +37,33 @@ export default function OptinPage() {
     setIsSubmitting(true);
     setError(null);
 
-    // Save to database, maybe a specific optins table or contact_submissions
-    const { error: submitError } = await supabase.from('contact_submissions').insert({
-      name: formData.name,
-      email: formData.email,
-      phone: formData.phone,
-      subject: 'Communication Opt-In',
-      message: 'User opted in to SMS and phone communication.',
+    // Persist the express-written consent (durable proof).
+    await recordConsent({
+      name: formData.name, email: formData.email, phone: formData.phone,
+      source: "optin", page: "/optin",
+    });
+
+    // Route through contact-intake so the opt-in becomes a real GHL contact tagged
+    // for SMS consent — i.e. it actually REACHES the SMS automation (audit #13).
+    const { data, error: submitError } = await supabase.functions.invoke('contact-intake', {
+      body: {
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone,
+        subject: 'Communication Opt-In',
+        message: 'User opted in to SMS and phone communication.',
+        tcpa_consent: true,
+      },
     });
 
     setIsSubmitting(false);
 
-    if (submitError) {
-      console.error('Opt-in submission error:', submitError);
+    if (submitError || !data?.ok) {
+      console.error('Opt-in submission error:', submitError || data);
+      setError("Sorry — we couldn't complete your opt-in. Please try again or call (786) 840-9404.");
+      return;
     }
-    
+
     setIsSubmitted(true);
   };
 
@@ -146,24 +160,8 @@ export default function OptinPage() {
                     </div>
                   </div>
 
-                  <div className="bg-gray-50 dark:bg-gray-700/50 p-6 rounded-xl border border-gray-100 dark:border-gray-700 mt-6 md:mt-8">
-                    <label className="flex items-start gap-4 cursor-pointer group">
-                      <div className="flex-shrink-0 mt-1">
-                        <input
-                          type="checkbox"
-                          required
-                          checked={agreedToSms}
-                          onChange={(e) => setAgreedToSms(e.target.checked)}
-                          className="w-5 h-5 rounded border-gray-300 text-ocean-blue focus:ring-ocean-blue cursor-pointer"
-                        />
-                      </div>
-                      <div className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
-                        <strong className="block text-sm mb-1 text-gray-900 dark:text-white font-semibold">
-                          Communication Consent (TCPA Compliant)
-                        </strong>
-                        By checking this box and clicking "Subscribe", I provide my express written consent for mFunding or its representatives to contact me at the phone number provided above via phone calls, SMS/text messages, and pre-recorded or artificial voice messages regarding funding options and related marketing, using an automated telephone dialing system. I understand that my consent is not a condition of purchasing any goods or services, and I can opt-out at any time by replying STOP to any text. Message and data rates may apply. For more information, please review our <Link to="/privacy" className="text-ocean-blue hover:underline">Privacy Policy</Link> and <Link to="/terms" className="text-ocean-blue hover:underline">Terms of Service</Link>.
-                      </div>
-                    </label>
+                  <div className="mt-6 md:mt-8">
+                    <TcpaConsent checked={agreedToSms} onChange={setAgreedToSms} />
                   </div>
 
                   {error && (

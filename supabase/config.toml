@@ -1,0 +1,57 @@
+# Supabase project config — version-controlled so edge-function auth (verify_jwt)
+# is no longer dashboard-only and invisible (audit #20). These mirror the live
+# settings; deploying via the CLI will keep them in sync.
+project_id = "ehibjeonqpqskhcvizow"
+
+# ---- Edge function auth (verify_jwt) ----------------------------------------
+# PUBLIC functions (verify_jwt = false): called from public forms / webhooks.
+# They implement their own validation; intake fns are write-only via service role.
+[functions.mca-intake]
+verify_jwt = false
+
+[functions.vcf-intake]
+verify_jwt = false
+
+[functions.contact-intake]
+verify_jwt = false
+
+[functions.partner-signup]
+verify_jwt = false
+
+[functions.ghl-webhook]
+verify_jwt = false   # secret-checked inbound webhook (see audit #3 — harden separately)
+
+[functions.process-document]
+verify_jwt = false
+
+[functions.process-document-upload]
+verify_jwt = false
+
+[functions.rag-chat]
+verify_jwt = false
+
+[functions.rag-chat-pgvector]
+verify_jwt = false
+
+[functions.gemini-chat]
+verify_jwt = false
+
+[functions.scan-lender-website]
+verify_jwt = false
+
+[functions.scan-vendor-website]
+verify_jwt = false
+
+# PRIVILEGED functions (verify_jwt = true): require a signed-in user. The most
+# sensitive (admin-users, submit-to-funders) ALSO enforce role checks in code.
+[functions.admin-users]
+verify_jwt = true
+
+[functions.submit-to-funders]
+verify_jwt = true
+
+[functions.ghl-sync]
+verify_jwt = true
+
+[functions.ghl-comms]
+verify_jwt = true

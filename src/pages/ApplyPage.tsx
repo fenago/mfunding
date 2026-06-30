@@ -8,6 +8,8 @@ import SEO from '../components/seo/SEO';
 import supabase from "../supabase";
 import { PLAID_ENABLED } from "../config";
 import PipelineFlow from "../components/shared/PipelineFlow";
+import TcpaConsent from "../components/ui/TcpaConsent";
+import { recordConsent } from "../lib/consent";
 
 const BUSINESS_TYPES = ["Retail", "Restaurant", "Construction", "Trucking", "Healthcare", "Auto", "Services", "Other"];
 const TIB_OPTIONS = ["6-12 months", "1-2 years", "2-5 years", "5+ years"];
@@ -29,13 +31,20 @@ export default function ApplyPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [consent, setConsent] = useState(false);
 
   function set<K extends keyof FormState>(k: K, v: string) { setForm((f) => ({ ...f, [k]: v })); }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!consent) { setError("Please provide consent to be contacted to continue."); return; }
     setError(null);
     setSubmitting(true);
+    // Record TCPA express-written consent (durable proof) before submitting.
+    await recordConsent({
+      name: `${form.contact_first_name} ${form.contact_last_name}`.trim(),
+      email: form.email, phone: form.phone, source: "apply", page: "/apply",
+    });
     try {
       // Route through mca-intake so the lead lands in GHL (contact + MCA-pipeline
       // opportunity at New Lead) and fires Speed-to-Lead — same path as the homepage
@@ -51,6 +60,7 @@ export default function ApplyPage() {
           amount_requested: form.funding_amount,
           use_of_funds: form.funding_purpose || "Working capital",
           lead_source: "website_apply",
+          tcpa_consent: true,
           lead_source_detail: [
             form.business_type && `Industry: ${form.business_type}`,
             form.time_in_business && `TIB: ${form.time_in_business}`,
@@ -141,13 +151,15 @@ export default function ApplyPage() {
                 )}
               </div>
 
+              <TcpaConsent checked={consent} onChange={setConsent} />
+
               {error && <p className="text-sm text-red-500">{error}</p>}
-              <button type="submit" disabled={submitting}
+              <button type="submit" disabled={submitting || !consent}
                 className="w-full py-3 rounded-lg bg-ocean-blue text-white font-semibold hover:opacity-90 disabled:opacity-60">
                 {submitting ? "Submitting…" : "Submit application"}
               </button>
               <p className="text-xs text-gray-400 text-center">
-                By submitting you agree to be contacted about funding options. This is not a loan application — MCA products are a purchase of future receivables.
+                This is not a loan application — MCA products are a purchase of future receivables.
               </p>
             </form>
           </>

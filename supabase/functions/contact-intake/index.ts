@@ -25,6 +25,7 @@ Deno.serve(async (req) => {
   const phone = String(body.phone ?? "").trim();
   const subject = String(body.subject ?? "").trim();
   const message = String(body.message ?? "").trim();
+  const tcpaConsent = body.tcpa_consent === true;
   if (!name || !email || !message) {
     return json({ ok: false, error: "name, email, and message are required" }, 400);
   }
@@ -58,8 +59,12 @@ Deno.serve(async (req) => {
     const contactId = cr.data?.contact?.id;
     if (contactId) {
       ghlSynced = true;
-      // Tag with the subject so the team can triage from GHL.
-      if (subject) { try { await addContactTags(cfg, contactId, [`topic:${subject}`.slice(0, 60)]); } catch { /* non-fatal */ } }
+      // Tag the GHL contact so the team can triage and so SMS-consent automations
+      // only fire for people who actually opted in (audit #13).
+      const tags: string[] = [];
+      if (subject) tags.push(`topic:${subject}`.slice(0, 60));
+      if (tcpaConsent) tags.push("sms-consent");
+      if (tags.length) { try { await addContactTags(cfg, contactId, tags); } catch { /* non-fatal */ } }
     } else {
       ghlWarning = cr.error || "GHL upsert returned no contact id";
     }
