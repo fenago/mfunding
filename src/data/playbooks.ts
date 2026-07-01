@@ -141,11 +141,11 @@ export const PLAYBOOKS: Playbook[] = [
         sla: "Same day; submit target < 24h",
         do: [
           "Move Status → Application Sent on the deal page. THAT is the send — it pushes the stage to GHL and fires the MCA 04 workflow. There is NO separate 'send email' button.",
-          "MCA 04 auto-sends the merchant three things: (1) the application link (/apply), (2) two e-sign documents from GHL Documents & Contracts — 'MCA — Broker Compensation Disclosure' and 'MCA — Bank Verification & Credit Authorization' (merge fields pre-fill their name/business; they review + e-sign in one click), and (3) the secure bank-statements link (Plaid, or the 'Bank Statements & Documents Upload' form).",
+          "MCA 04 auto-sends the merchant: (1) the Merchant Funding Application to complete + e-sign — your full application (all 7 sections) in GHL Documents & Contracts; this is the exact document funders accept, and they fill the fields and sign in one flow; (2) the Broker Compensation Disclosure to e-sign; and (3) a secure link to the 'Bank Statements & Documents Upload' form for their last 4 months of statements, photo ID, and voided check.",
           "Confirm it went out on the deal's Activity / Conversations tab. Reminders auto-fire at +4h and Day 1 until they sign + submit.",
         ],
-        say: "Based on what you told me, you look like a solid fit. I'm emailing you a 3-minute application plus two quick e-signatures and a secure link to connect your bank so we can verify revenue. Want me to stay on while you start it?",
-        note: "The e-sign docs come back automatically into GHL (signed copy attaches to their contact). Bank statements are NOT e-signed — they come back via Plaid or the upload form (see step 5).",
+        say: "Based on what you told me, you look like a solid fit. I'm emailing you the funding application to complete and e-sign, a quick disclosure, and a secure link to upload your last few months of bank statements. Want me to stay on while you start it?",
+        note: "The signed application + disclosure come back automatically into GHL (signed PDFs attach to their contact). Bank statements / ID / voided check are NOT e-signed — they come back via the upload form (see step 5).",
       },
       {
         n: 5,
@@ -155,14 +155,14 @@ export const PLAYBOOKS: Playbook[] = [
         sla: "14-day email chase — stop the instant statements arrive",
         tone: "leak",
         do: [
-          "Get the 4 stips + 3 months of bank statements (Plaid is fastest; manual upload otherwise).",
+          "Get the stips + last 4 months of bank statements via the secure 'Bank Statements & Documents Upload' link.",
           "Review what's in via Admin → Doc Review (/admin/documents) and the deal's Documents tab.",
           "Move Status → Docs Collected, then → Bank Statements as items arrive. The Sequence A email cadence chases anything missing.",
         ],
-        collect: ["Broker disclosure (e-signed)", "Bank & credit authorization (e-signed)", "Owner photo ID", "Voided business check", "3 months bank statements (Plaid or upload)"],
-        say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Connect your bank in 60 seconds with the secure link in my email, or reply with photos of your last 3 statements.",
+        collect: ["Merchant Funding Application (completed + e-signed)", "Broker Compensation Disclosure (e-signed)", "Owner photo ID", "Voided business check", "Proof of business ownership", "Last 4 months bank statements (upload)"],
+        say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Upload your last 4 statements with the secure link in my email, or reply with photos.",
         route: { to: "/admin/documents", label: "Admin → Doc Review" },
-        note: "TWO RAILS for docs coming back: (1) the e-sign forms (disclosure + authorization) return automatically via GHL Documents & Contracts — signed copy attaches to the contact. (2) Bank statements + ID + voided check are NOT e-signed — they arrive via Plaid (60-sec bank connect) or the GHL 'Bank Statements & Documents Upload' form. Both land in the deal's Documents tab / Doc Review. #1 FUNNEL LEAK — Plaid = 60s vs. days for manual.",
+        note: "TWO RAILS for docs coming back: (1) the Merchant Funding Application + Broker Compensation Disclosure return automatically e-signed via GHL Documents & Contracts — signed PDFs attach to the contact. (2) Bank statements + ID + voided check + proof of ownership are NOT e-signed — they arrive via the GHL 'Bank Statements & Documents Upload' form. Both land in the deal's Documents tab / Doc Review. #1 FUNNEL LEAK — chase these fast.",
       },
       {
         n: 6,
