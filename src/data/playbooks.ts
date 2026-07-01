@@ -78,7 +78,7 @@ export const PLAYBOOKS: Playbook[] = [
       screen: "Open the deal record and work from it the whole call",
       route: "/admin/deals",
       appNote:
-        "The merchant fills out the application themselves — you email them a link that opens /apply. You do NOT fill it for them. You live on the deal page (Admin → Deals → click the deal): move the status, collect stips, submit to funders, and log every call here.",
+        "You live on the deal page (Admin → Deals → click the deal): move the status, collect stips, submit to funders, log every call. KEY: moving a status is what FIRES that stage's email/automation in GHL — there are NO separate 'send email' buttons, and every send is logged in the deal's Activity / Conversations tab so you can confirm it went out. The merchant fills the application themselves at /apply — you never fill it for them.",
     },
     steps: [
       {
@@ -140,8 +140,8 @@ export const PLAYBOOKS: Playbook[] = [
         automation: "MCA 04 — Application + Disclosure",
         sla: "Same day; submit target < 24h",
         do: [
-          "Email the merchant the application link + the state-specific compliance disclosure. They complete it on their own at /apply.",
-          "On the deal page move Status → Application Sent. The automation sends the email reminders at +4h and Day 1.",
+          "Move Status → Application Sent on the deal page. THAT is the send — it auto-pushes the stage to GHL, which fires the MCA 04 workflow that emails the merchant the application link + the state-specific compliance disclosure. There is NO separate 'send email' button, and you do NOT fill the app for them — they complete it themselves at /apply.",
+          "Confirm it actually went out on the deal's Activity / Conversations tab (you'll see the outbound email logged). Reminders auto-fire at +4h and Day 1 until they submit.",
         ],
         say: "Based on what you told me, you look like a solid fit. I'm emailing you a 3-minute application plus a secure link to connect your bank so we can verify revenue. Want me to stay on while you start it?",
       },
