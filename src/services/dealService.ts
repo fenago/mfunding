@@ -11,7 +11,7 @@ import type {
 } from "../types/deals";
 import { calculateCommission, createCommission } from "./commissionService";
 import { syncDealToGHL } from "./ghlService";
-import { COMMISSION_DEFAULTS } from "../types/commissions";
+import { COMMISSION_DEFAULTS, expectedCommissionInPlay } from "../types/commissions";
 import type { CommissionLeadSource, Commission } from "../types/commissions";
 
 // Stage → timestamp column mapping
@@ -406,10 +406,11 @@ export async function getDealStats(): Promise<{
   byStatus: Record<string, number>;
   totalPipeline: number;
   totalFunded: number;
+  commissionInPlay: number;
 }> {
   const { data, error } = await supabase
     .from("deals")
-    .select("status, amount_requested, amount_funded");
+    .select("status, amount_requested, amount_funded, is_renewal");
 
   if (error) {
     console.error("Error fetching deal stats:", error);
@@ -420,11 +421,14 @@ export async function getDealStats(): Promise<{
   const byStatus: Record<string, number> = {};
   let totalPipeline = 0;
   let totalFunded = 0;
+  let commissionInPlay = 0;
 
   for (const deal of deals) {
     byStatus[deal.status] = (byStatus[deal.status] || 0) + 1;
     if (!["funded", "declined", "dead"].includes(deal.status)) {
       totalPipeline += deal.amount_requested || 0;
+      // Potential gross commission on this open application (amount × points).
+      commissionInPlay += expectedCommissionInPlay(deal.amount_requested, !!deal.is_renewal);
     }
     if (deal.status === "funded") {
       totalFunded += deal.amount_funded || 0;
@@ -436,5 +440,6 @@ export async function getDealStats(): Promise<{
     byStatus,
     totalPipeline,
     totalFunded,
+    commissionInPlay,
   };
 }

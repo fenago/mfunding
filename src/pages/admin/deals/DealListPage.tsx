@@ -18,12 +18,13 @@ import {
   MARKET_CONFIG,
 } from "../../../types/deals";
 import DealCreateModal from "./DealCreateModal";
+import { expectedCommissionInPlay } from "../../../types/commissions";
 
 export default function DealListPage() {
   const [deals, setDeals] = useState<DealWithCustomer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filters, setFilters] = useState<DealFilters>({});
-  const [stats, setStats] = useState<{ total: number; byStatus: Record<string, number>; totalPipeline: number; totalFunded: number } | null>(null);
+  const [stats, setStats] = useState<{ total: number; byStatus: Record<string, number>; totalPipeline: number; totalFunded: number; commissionInPlay: number } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [closers, setClosers] = useState<{ id: string; first_name: string | null; last_name: string | null }[]>([]);
 
@@ -128,6 +129,9 @@ export default function DealListPage() {
           <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
             <p className="text-sm text-gray-500 dark:text-gray-400">Pipeline Value</p>
             <p className="text-2xl font-bold text-ocean-blue">${stats.totalPipeline.toLocaleString()}</p>
+            <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">
+              ≈ ${Math.round(stats.commissionInPlay).toLocaleString()} commission in play
+            </p>
           </div>
           <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
             <p className="text-sm text-gray-500 dark:text-gray-400">Total Funded</p>
@@ -316,11 +320,15 @@ export default function DealListPage() {
                             ? `${deal.amount_requested.toLocaleString()}`
                             : "-"}
                         </div>
-                        {deal.amount_funded && (
+                        {deal.amount_funded ? (
                           <div className="text-xs text-green-600">
                             Funded: ${deal.amount_funded.toLocaleString()}
                           </div>
-                        )}
+                        ) : deal.amount_requested && !["declined", "dead"].includes(deal.status) ? (
+                          <div className="text-xs text-emerald-600 dark:text-emerald-400" title="Potential gross commission (amount × points)">
+                            ≈ ${Math.round(expectedCommissionInPlay(deal.amount_requested, deal.is_renewal)).toLocaleString()} in play
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
                         {marketConfig?.label || "-"}

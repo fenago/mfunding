@@ -51,6 +51,17 @@ export const COMMISSION_DEFAULTS = {
   SUB_ISO_KEEPS_POINTS: 6,
 } as const;
 
+/**
+ * Expected GROSS commission "in play" on a deal — what MFunding would earn from
+ * the funder if it funds at the requested amount. amount × points (8 new / 6 renewal).
+ * Used to tag potential revenue on applications before anything is funded.
+ */
+export function expectedCommissionInPlay(amountRequested: number | null | undefined, isRenewal = false): number {
+  if (!amountRequested || amountRequested <= 0) return 0;
+  const points = isRenewal ? COMMISSION_DEFAULTS.RENEWAL_POINTS : COMMISSION_DEFAULTS.NEW_DEAL_POINTS;
+  return (amountRequested * points) / 100;
+}
+
 export interface Closer {
   id: string;
   user_id: string | null;

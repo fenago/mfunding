@@ -26,6 +26,7 @@ import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import type { DealWithCustomer, DealStatus, Deal } from "../../types/deals";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
+import { expectedCommissionInPlay } from "../../types/commissions";
 
 const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
   mca: Object.fromEntries(MCA_PIPELINE.stages.map((s) => [s.key, s.label])),
@@ -246,6 +247,12 @@ function DealContextBar({ deal, pipeline, onClear }: { deal: DealWithCustomer; p
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {deal.amount_requested ? (
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+              title="Potential gross commission at the requested amount (amount × points)">
+              ≈ ${Math.round(expectedCommissionInPlay(deal.amount_requested, deal.is_renewal)).toLocaleString()} in play
+            </span>
+          ) : null}
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${cfg?.bgColor} ${cfg?.color}`}>
             {cfg?.label ?? deal.status}
             {idx >= 0 ? ` · ${idx + 1}/${stages.length}` : ""}
