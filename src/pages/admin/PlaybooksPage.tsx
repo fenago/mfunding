@@ -21,6 +21,7 @@ import {
 import { PLAYBOOKS, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
+import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
@@ -62,6 +63,20 @@ export default function PlaybooksPage() {
   async function refreshDeal(id: string) {
     const res = await getDealById(id);
     if (res) setDeal(res.deal);
+  }
+
+  // Click a pipeline stage to move the lead there — updates the deal + syncs GHL,
+  // which fires that stage's automation (e.g. Application Sent → MCA 04 sends the docs).
+  async function advanceDeal(stageKey: string) {
+    if (!deal || stageKey === deal.status) return;
+    const label = STAGE_LABELS[active.pipeline][stageKey] ?? stageKey;
+    if (!window.confirm(`Move ${dealName(deal)} to "${label}"?\n\nThis updates the deal and fires the GoHighLevel automation for that stage.`)) return;
+    try {
+      await updateDealStatus(deal.id, stageKey as DealStatus);
+      await refreshDeal(deal.id);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not move the deal. Please try again.");
+    }
   }
 
   // Persist a step's structured fields + checklist + note, log it, and advance
@@ -172,7 +187,7 @@ export default function PlaybooksPage() {
 
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
         {dealMatchesPlaybook && deal ? (
-          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} />
+          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} />
         ) : (
           <div className="mb-6 space-y-3">
             {deal && !dealMatchesPlaybook && (
@@ -230,10 +245,11 @@ export default function PlaybooksPage() {
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, onClear }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void }) {
+function DealContextBar({ deal, pipeline, onClear, onAdvance }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void }) {
   const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
   const idx = stages.findIndex((s) => s.key === deal.status);
   const cfg = DEAL_STATUS_CONFIG[deal.status];
+  const terminal = TERMINAL.includes(deal.status);
   return (
     <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -272,8 +288,17 @@ function DealContextBar({ deal, pipeline, onClear }: { deal: DealWithCustomer; p
           </button>
         </div>
       </div>
+      {/* Animated pipeline — shows where the lead is; click a stage to move it there (fires the GHL automation). */}
+      <div className="mt-4 rounded-lg bg-white/70 dark:bg-gray-800/60 border border-emerald-200 dark:border-emerald-800 px-3 py-3">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Where this lead is in the pipeline</span>
+          <span className="text-[11px] text-gray-400">Click a stage to move the lead → it fires that stage's automation</span>
+        </div>
+        <PipelineFlow pipeline={pipeline} currentKey={deal.status} onStageClick={onAdvance} terminal={terminal} />
+      </div>
       <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
-        You're working this lead. Fill in each step below — it saves to the deal, logs the call, and advances the stage.
+        You're working this lead. Fill in each step below — it saves to the deal, logs the call, and advances the stage. Or
+        click a stage above to jump the lead there.
       </p>
     </div>
   );
