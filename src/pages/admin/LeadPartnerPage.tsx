@@ -203,16 +203,19 @@ export default function LeadPartnerPage() {
                 <Slider label="Quantity" value={qty} min={10} max={2000} step={10} onChange={setQty} suffix=" leads" />
               </>
             ) : (
-              <Slider
-                label="Quantity"
-                value={qty}
-                min={product.unit === "record" ? 1000 : 5}
-                max={product.unit === "record" ? 300000 : 300}
-                step={product.unit === "record" ? 1000 : 5}
-                onChange={setQty}
-                suffix={product.unit === "record" ? " records" : " leads"}
-                hint={priceTierHint(product)}
-              />
+              <>
+                <Slider
+                  label="Quantity"
+                  value={qty}
+                  min={product.unit === "record" ? 1000 : 5}
+                  max={product.unit === "record" ? 300000 : 300}
+                  step={product.unit === "record" ? 1000 : 5}
+                  onChange={setQty}
+                  suffix={product.unit === "record" ? " records" : " leads"}
+                  hint={priceTierHint(product)}
+                />
+                <TierLadder product={product} qty={qty} onJump={setQty} />
+              </>
             )}
 
             <Slider label="Lead → funded rate" value={fundRate} min={0.05} max={20} step={0.05} onChange={setFundRate} suffix="%" hint="Your assumption — tune to your real numbers" decimals />
@@ -340,6 +343,58 @@ function Bar({ label, value, max, color, fmt }: { label: string; value: number; 
         <motion.div className={`h-full ${color} rounded`} initial={false} animate={{ width: `${pct}%` }} transition={{ type: "spring", stiffness: 120, damping: 20 }} />
       </div>
       <span className="w-20 shrink-0 text-right text-sm font-semibold tabular-nums text-gray-900 dark:text-white">{fmt(value)}</span>
+    </div>
+  );
+}
+
+// Shows the volume price ladder with the ACTIVE tier highlighted + a nudge to the
+// next discount tier — makes the quantity-based scaling explicit in the calculator.
+function TierLadder({ product, qty, onJump }: { product: LeadProduct; qty: number; onJump: (n: number) => void }) {
+  if (!product.volume || product.volume.length < 2) return null;
+  const breaks = product.volume;
+  const base = breaks[0].price;
+  const activeIdx = breaks.reduce((acc, b, i) => (qty >= b.min ? i : acc), 0);
+  const current = breaks[activeIdx].price;
+  const next = breaks[activeIdx + 1];
+  const savePct = base > 0 ? Math.round((1 - current / base) * 100) : 0;
+  const unit = product.unit === "record" ? "record" : "lead";
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-semibold text-gray-600 dark:text-gray-400">Volume pricing</p>
+        {savePct > 0 && (
+          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+            {savePct}% off base
+          </span>
+        )}
+      </div>
+      <div className="space-y-1">
+        {breaks.map((b, i) => {
+          const on = i === activeIdx;
+          const label = b.min === 1 ? `1+` : `${b.min.toLocaleString()}+`;
+          return (
+            <button
+              key={b.min}
+              onClick={() => onJump(Math.max(b.min, product.unit === "record" ? 1000 : 5))}
+              className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-sm transition-colors ${
+                on ? "bg-ocean-blue text-white font-semibold"
+                   : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              }`}
+            >
+              <span>{label} {unit}s</span>
+              <span className="tabular-nums">{usdc(b.price)}/{unit}{on ? "  ◄ you" : ""}</span>
+            </button>
+          );
+        })}
+      </div>
+      {next ? (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+          Order <button onClick={() => onJump(next.min)} className="text-ocean-blue font-medium hover:underline">{next.min.toLocaleString()}+</button>{" "}
+          to drop to <strong>{usdc(next.price)}/{unit}</strong> ({Math.round((1 - next.price / current) * 100)}% cheaper).
+        </p>
+      ) : (
+        <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-2">You're at the best volume price. 🎉</p>
+      )}
     </div>
   );
 }
