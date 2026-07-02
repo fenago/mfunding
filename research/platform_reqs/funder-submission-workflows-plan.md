@@ -150,13 +150,62 @@ On `/admin/lenders/:id` add a **"Submission recipe"** card:
 
 | Phase | What | Size |
 |---|---|---|
-| **1** | Migration (`funder_submission_profiles` + `deal_submissions` columns) + seed defaults | S |
-| **2** | Engine v2: recipes, merge rendering, doc links, stips guard, idempotency, `sent_payload` audit | M |
-| **3** | Step 6 `FunderPicker` (checkboxes → submit → live results) reusing the matcher | M |
-| **4** | Portal flow (steps checklist + Mark submitted) | S |
-| **5** | Admin recipe editor + send-test-to-myself | M |
-| **6** | Real file attachments via GHL (vs links) — needs size-limit testing per funder | S/M |
+| **1** ✅ | Migration (`funder_submission_profiles` + `deal_submissions` columns) + seed defaults | S |
+| **2** ✅ | Engine v2: recipes, merge rendering, doc links, stips guard, idempotency, `sent_payload` audit | M |
+| **3** ✅ | Step 6 `FunderPicker` (checkboxes → submit → live results) reusing the matcher | M |
+| **4** ✅ | Portal flow (steps checklist + Mark submitted) | S |
+| **5** ✅ | Admin recipe editor + send-test-to-myself | M |
+| **6** ⬜ | Real file attachments via GHL (vs links) — needs size-limit testing per funder | S/M |
 | Later | offer-parsing from funder reply emails into `deal_submissions`; per-funder SLA nudges (5-day chase); auto-resubmit tier-2 on all-decline | — |
+
+---
+
+## ✅ Implementation notes (Phases 1–5 shipped 2026-07-02)
+
+**Shipped:** Phases 1–5. Migration `20260702_funder_submission_profiles.sql` applied
+to `ehibjeonqpqskhcvizow` (15 default email recipes seeded for lenders with a
+`submission_email`). Engine `submit-to-funders` redeployed as v2. New UI:
+`src/components/admin/FunderPicker.tsx` (playbook Step 6) and
+`src/components/lenders/FunderRecipeCard.tsx` (admin lender detail page).
+
+**Deviations from this plan (reality won):**
+1. **`lenders.name` does not exist — the column is `company_name`.** v1 selected a
+   non-existent `name`; v2 selects `company_name` everywhere. (The FunderPicker and
+   engine both use `company_name`.)
+2. **Doc slugs are the real `customer_document_type` enum values, not the plan's
+   illustrative names.** Canonical slugs: `application, bank_statement, id,
+   voided_check, credit_authorization, business_license, personal_guarantee,
+   tax_return, other`. This makes the stips-guard match exact against
+   `customer_documents.document_type` instead of a lossy mapping. `signed_application`
+   → `application`, `photo_id` → `id`, `proof_of_ownership` → `business_license`,
+   `processing_statements` → (no enum; use `bank_statement`/`other`).
+3. **`deal_submissions.status` keeps only existing `SubmissionStatus` values** so the
+   UI's `SUBMISSION_STATUS_CONFIG` record never throws on an unknown key. The plan's
+   new lifecycle strings (`queued/send_failed/portal_pending/portal_confirmed`) are
+   NOT written to `status`; instead: successful email → `status='submitted'`; failed
+   send → `status='pending'` + `error` populated; portal → `status='pending'` +
+   `submission_method='portal'`, and "Mark submitted" sets `status='submitted'` +
+   `portal_confirmed_at`. The rich per-funder lifecycle (sent / send_failed /
+   portal_pending / blocked / already_submitted) is returned in the engine's
+   `results` array and rendered live by the FunderPicker, so nothing is lost.
+4. **CC emails** are captured on the recipe and stored in `sent_payload` for audit,
+   but the GHL conversations email helper sends to a single contact — CC is not yet
+   actually delivered (folds into Phase 6 alongside real attachments).
+5. **Portal "Mark submitted"** updates `deal_submissions` directly from the browser,
+   which works under the admin RLS (`Admins manage deal_submissions`). Closers have
+   SELECT-only on `deal_submissions` by policy, so a closer clicking Mark-submitted
+   would be blocked — acceptable since the playbook is an admin/super tool; route it
+   through the engine if closers need it later.
+6. **`test_email`** is a boolean override (not the literal address): the engine forces
+   the recipient to the logged-in admin's own email and never writes
+   `deal_submissions`, guaranteeing no funder is ever contacted during QA.
+7. `attachment_mode` is always effectively `links` (Phase 6 out of scope); recipes may
+   store `attachments`/`both` but the engine sends links and records a note in
+   `sent_payload`.
+
+**Remaining for Phase 6:** real file attachments through the GHL attachments API
+(with per-funder size-limit testing) and actual CC delivery; everything else in
+Phases 1–5 is live.
 
 Order matters: after Phase 2–3 the closer already gets the one-click fan-out with the generic format everywhere; recipes then tighten funder-by-funder as you collect each funder's exact requirements into their profile row (that intake = a VA task, one funder at a time, using each funder's ISO agreement/submission guidelines).
 
