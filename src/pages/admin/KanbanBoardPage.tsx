@@ -111,6 +111,39 @@ const PRIORITIES: { value: TaskPriority; label: string; color: string }[] = [
   { value: "urgent", label: "Urgent", color: "bg-red-500" },
 ];
 
+// A teammate who can be assigned a task (admins, super admins, employees, and closers).
+interface AssignableUser {
+  id: string;
+  name: string;
+  role: string;
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function AssigneeChip({ name }: { name: string | null }) {
+  if (!name) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] text-gray-400" title="Unassigned">
+        <span className="w-4 h-4 rounded-full border border-dashed border-gray-300 dark:border-gray-600" />
+        Unassigned
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-gray-600 dark:text-gray-300" title={name}>
+      <span className="w-4 h-4 rounded-full bg-ocean-blue/15 text-ocean-blue flex items-center justify-center text-[8px] font-semibold">
+        {initials(name)}
+      </span>
+      <span className="truncate max-w-[90px]">{name}</span>
+    </span>
+  );
+}
+
 // Droppable Column Component
 function DroppableColumn({
   column,
@@ -118,6 +151,7 @@ function DroppableColumn({
   onEdit,
   onDelete,
   onViewDetails,
+  assigneeMap,
   isMobileSelected = false,
 }: {
   column: { id: TaskStatus; title: string; color: string };
@@ -125,6 +159,7 @@ function DroppableColumn({
   onEdit: (task: Task) => void;
   onDelete: (id: string) => void;
   onViewDetails: (task: Task) => void;
+  assigneeMap: Record<string, string>;
   isMobileSelected?: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({
@@ -163,6 +198,7 @@ function DroppableColumn({
               onEdit={onEdit}
               onDelete={onDelete}
               onViewDetails={onViewDetails}
+              assigneeName={task.assigned_to ? assigneeMap[task.assigned_to] ?? null : null}
             />
           ))}
         </SortableContext>
@@ -186,11 +222,13 @@ function SortableTaskCard({
   onEdit,
   onDelete,
   onViewDetails,
+  assigneeName,
 }: {
   task: Task;
   onEdit: (task: Task) => void;
   onDelete: (id: string) => void;
   onViewDetails: (task: Task) => void;
+  assigneeName: string | null;
 }) {
   const {
     attributes,
@@ -284,6 +322,11 @@ function SortableTaskCard({
               {new Date(task.due_date).toLocaleDateString()}
             </span>
           )}
+        </div>
+
+        {/* Assignee */}
+        <div className="mt-1.5">
+          <AssigneeChip name={assigneeName} />
         </div>
       </div>
 
@@ -559,6 +602,7 @@ function TaskEditModal({
   onSave,
   phases,
   categories,
+  assignees,
 }: {
   task: Task | null;
   isOpen: boolean;
@@ -566,6 +610,7 @@ function TaskEditModal({
   onSave: (task: Partial<Task>) => void;
   phases: Phase[];
   categories: Category[];
+  assignees: AssignableUser[];
 }) {
   const [formData, setFormData] = useState<Partial<Task>>({
     title: "",
@@ -578,6 +623,7 @@ function TaskEditModal({
     notes: "",
     estimated_hours: null,
     due_date: null,
+    assigned_to: null,
   });
 
   useEffect(() => {
@@ -593,6 +639,7 @@ function TaskEditModal({
         notes: task.notes || "",
         estimated_hours: task.estimated_hours,
         due_date: task.due_date,
+        assigned_to: task.assigned_to,
       });
     } else {
       setFormData({
@@ -606,6 +653,7 @@ function TaskEditModal({
         notes: "",
         estimated_hours: null,
         due_date: null,
+        assigned_to: null,
       });
     }
   }, [task, isOpen]);
@@ -702,6 +750,19 @@ function TaskEditModal({
               </select>
             </div>
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assignee</label>
+            <select
+              value={formData.assigned_to || ""}
+              onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value || null })}
+              className="input-field"
+            >
+              <option value="">Unassigned</option>
+              {assignees.map((u) => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Est. Hours</label>
@@ -762,12 +823,16 @@ function TaskDetailModal({
   onClose,
   onEdit,
   session,
+  assignees,
+  onAssign,
 }: {
   task: Task | null;
   isOpen: boolean;
   onClose: () => void;
   onEdit: (task: Task) => void;
   session: any;
+  assignees: AssignableUser[];
+  onAssign: (taskId: string, assignedTo: string | null) => void;
 }) {
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [activity, setActivity] = useState<TaskActivity[]>([]);
@@ -869,6 +934,19 @@ function TaskDetailModal({
         <div className="flex-1 overflow-y-auto p-4">
           {activeTab === "details" && (
             <div className="space-y-4">
+              <div>
+                <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assignee</h3>
+                <select
+                  value={task.assigned_to || ""}
+                  onChange={(e) => onAssign(task.id, e.target.value || null)}
+                  className="input-field max-w-xs"
+                >
+                  <option value="">Unassigned</option>
+                  {assignees.map((u) => (
+                    <option key={u.id} value={u.id}>{u.name}</option>
+                  ))}
+                </select>
+              </div>
               {task.description && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</h3>
@@ -969,9 +1047,11 @@ function TaskDetailModal({
 export default function KanbanBoardPage() {
   const { session } = useSession();
   const { profile, isSuperAdmin } = useUserProfile();
+  const currentUserId = session?.user?.id ?? null;
   const [tasks, setTasks] = useState<Task[]>([]);
   const [phases, setPhases] = useState<Phase[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [assignees, setAssignees] = useState<AssignableUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -985,6 +1065,7 @@ export default function KanbanBoardPage() {
   const [filterPhase, setFilterPhase] = useState<string>("");
   const [filterCategory, setFilterCategory] = useState<string>("");
   const [filterPriority, setFilterPriority] = useState<string>("");
+  const [filterAssignee, setFilterAssignee] = useState<"all" | "mine" | "unassigned">("all");
   const [showFilters, setShowFilters] = useState(false);
 
   // Mobile column selector
@@ -1010,9 +1091,19 @@ export default function KanbanBoardPage() {
     setCategories(data || []);
   };
 
+  const fetchAssignees = async () => {
+    const { data } = await supabase.rpc("list_assignable_users");
+    setAssignees((data as AssignableUser[]) || []);
+  };
+
   useEffect(() => {
-    Promise.all([fetchTasks(), fetchPhases(), fetchCategories()]).then(() => setIsLoading(false));
+    Promise.all([fetchTasks(), fetchPhases(), fetchCategories(), fetchAssignees()]).then(() => setIsLoading(false));
   }, []);
+
+  const assigneeMap = useMemo(
+    () => Object.fromEntries(assignees.map((u) => [u.id, u.name])) as Record<string, string>,
+    [assignees]
+  );
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
@@ -1020,9 +1111,11 @@ export default function KanbanBoardPage() {
       if (filterPhase && task.phase !== filterPhase) return false;
       if (filterCategory && task.category !== filterCategory) return false;
       if (filterPriority && task.priority !== filterPriority) return false;
+      if (filterAssignee === "mine" && task.assigned_to !== currentUserId) return false;
+      if (filterAssignee === "unassigned" && task.assigned_to) return false;
       return true;
     });
-  }, [tasks, searchQuery, filterPhase, filterCategory, filterPriority]);
+  }, [tasks, searchQuery, filterPhase, filterCategory, filterPriority, filterAssignee, currentUserId]);
 
   const tasksByStatus = useMemo(() => {
     const grouped: Record<TaskStatus, Task[]> = { backlog: [], todo: [], in_progress: [], review: [], done: [] };
@@ -1121,8 +1214,18 @@ export default function KanbanBoardPage() {
     setTasks((prev) => prev.filter((t) => t.id !== id));
   };
 
-  const clearFilters = () => { setSearchQuery(""); setFilterPhase(""); setFilterCategory(""); setFilterPriority(""); };
-  const hasActiveFilters = searchQuery || filterPhase || filterCategory || filterPriority;
+  const handleAssign = async (taskId: string, assignedTo: string | null) => {
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assigned_to: assignedTo } : t)));
+    const { error } = await supabase.from("kanban_tasks").update({ assigned_to: assignedTo }).eq("id", taskId);
+    if (error) {
+      // Revert on failure (e.g. RLS blocked the update).
+      await fetchTasks();
+      alert("Could not update the assignee. You may not have permission to edit this task.");
+    }
+  };
+
+  const clearFilters = () => { setSearchQuery(""); setFilterPhase(""); setFilterCategory(""); setFilterPriority(""); setFilterAssignee("all"); };
+  const hasActiveFilters = searchQuery || filterPhase || filterCategory || filterPriority || filterAssignee !== "all";
 
   if (isLoading) {
     return (
@@ -1141,7 +1244,7 @@ export default function KanbanBoardPage() {
           <div className="flex items-center justify-between mb-2 md:mb-3">
             <div className="flex items-center gap-2 md:gap-4">
               <Link to="/" className="text-xs md:text-sm text-gray-500 hover:text-gray-700">&larr;</Link>
-              <h1 className="text-base md:text-xl font-semibold text-midnight-blue dark:text-white">Launch Board</h1>
+              <h1 className="text-base md:text-xl font-semibold text-midnight-blue dark:text-white">Task Board</h1>
             </div>
             <div className="flex items-center gap-2 md:gap-3">
               {isSuperAdmin && (
@@ -1167,6 +1270,26 @@ export default function KanbanBoardPage() {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="input-field pl-7 md:pl-9 py-1 md:py-1.5 text-xs md:text-sm w-full"
               />
+            </div>
+            {/* Assignee scope: All / Mine / Unassigned */}
+            <div className="flex items-center rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs md:text-sm">
+              {([
+                { key: "all", label: "All" },
+                { key: "mine", label: "Mine" },
+                { key: "unassigned", label: "Unassigned" },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setFilterAssignee(opt.key)}
+                  className={`px-2 md:px-3 py-1 md:py-1.5 ${
+                    filterAssignee === opt.key
+                      ? "bg-ocean-blue text-white"
+                      : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
             </div>
             <button
               onClick={() => setShowFilters(!showFilters)}
@@ -1254,6 +1377,7 @@ export default function KanbanBoardPage() {
                 onEdit={(task) => { setEditingTask(task); setIsDetailModalOpen(false); setIsEditModalOpen(true); }}
                 onDelete={handleDeleteTask}
                 onViewDetails={(task) => { setViewingTask(task); setIsDetailModalOpen(true); }}
+                assigneeMap={assigneeMap}
                 isMobileSelected={mobileColumn === column.id}
               />
             ))}
@@ -1271,13 +1395,16 @@ export default function KanbanBoardPage() {
         onSave={handleSaveTask}
         phases={phases}
         categories={categories}
+        assignees={assignees}
       />
       <TaskDetailModal
-        task={viewingTask}
+        task={viewingTask ? tasks.find((t) => t.id === viewingTask.id) ?? viewingTask : null}
         isOpen={isDetailModalOpen}
         onClose={() => { setIsDetailModalOpen(false); setViewingTask(null); }}
         onEdit={(task) => { setEditingTask(task); setIsDetailModalOpen(false); setIsEditModalOpen(true); }}
         session={session}
+        assignees={assignees}
+        onAssign={handleAssign}
       />
       <SettingsModal
         isOpen={isSettingsOpen}
