@@ -80,12 +80,12 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
     sla: "Same day; submit target < 24h",
     cta: "Send the docs (moves to Application Sent)",
     do: [
-      "FIRST, while they're on the phone: fill the application FOR them. Open their GHL contact (button below) and type the app fields — SSN, DOB, driver's license, home address, bank details — as they read them to you. Those fields pre-fill the document, so all they do is tap to sign.",
-      "Then hit the button below — THAT is the send. It moves the deal to Application Sent, pushes it to GHL, and MCA 04 emails the merchant everything. Nothing else to click.",
+      "Hit the button below — THAT is the send. It moves the deal to Application Sent, pushes it to GHL, and MCA 04 emails the merchant everything. Nothing else to click.",
       "MCA 04 auto-sends the merchant: (1) the Merchant Funding Application to complete + e-sign — your full application (all 7 sections) in GHL Documents & Contracts; this is the exact document funders accept, and they fill the fields and sign in one flow; (2) the Broker Compensation Disclosure to e-sign; and (3) a secure link to the 'Bank Statements & Documents Upload' form for their last 4 months of statements, photo ID, and voided check.",
+      "OPTIONAL white-glove: want the app to arrive pre-filled? BEFORE you hit send, open their GHL contact (button below) and type the app fields — SSN, DOB, driver's license, home address, bank — as they read them to you. Then send, and all they do is tap to sign.",
       "Confirm it went out on the deal's Activity / Conversations tab. Reminders auto-fire at +4h and Day 1 until they sign + submit.",
     ],
-    say: "Based on what you told me, you look like a solid fit. While I have you, let me take down a few details so your application arrives already filled out — then all you do is tap to sign. … Perfect, it's on its way along with a quick disclosure and a secure upload link. If you can snap photos of your ID and a voided check right now, we're 90% done — the bank statements you can upload tonight from the same link; it keeps working and each upload just adds on.",
+    say: "Based on what you told me, you look like a solid fit. I'm emailing you the funding application to complete and e-sign, a quick disclosure, and a secure link to upload your documents. Let's knock out the e-signature right now while I'm on with you — it takes about three minutes — and if you can snap photos of your ID and a voided check, we're 90% done. The bank statements you can upload tonight from the same link; it keeps working and each upload just adds on.",
     note: "The signed application + disclosure come back automatically into GHL (signed PDFs attach to their contact). Bank statements / ID / voided check are NOT e-signed — they come back via the upload form (see step 5).",
   },
   {

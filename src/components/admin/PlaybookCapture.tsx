@@ -93,13 +93,32 @@ export default function PlaybookCapture({
       .eq("status", "active")
       .order("first_name", { ascending: true })
       .then(({ data }) => setClosers(data || []));
+    // Default list = most recent customers (the ones a closer is most likely
+    // to be working). Search hits the SERVER — works at thousands of leads.
     supabase
       .from("customers")
       .select("id, first_name, last_name, business_name")
-      .order("first_name", { ascending: true })
-      .limit(200)
+      .order("created_at", { ascending: false })
+      .limit(8)
       .then(({ data }) => setCustomers(data || []));
   }, []);
+
+  // Debounced server-side customer search across name + business.
+  useEffect(() => {
+    const s = customerSearch.trim().replace(/[,()]/g, " ");
+    const t = setTimeout(async () => {
+      let q = supabase
+        .from("customers")
+        .select("id, first_name, last_name, business_name")
+        .limit(8);
+      q = s
+        ? q.or(`first_name.ilike.%${s}%,last_name.ilike.%${s}%,business_name.ilike.%${s}%`)
+        : q.order("created_at", { ascending: false });
+      const { data } = await q;
+      setCustomers(data || []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [customerSearch]);
 
   const set = (k: keyof typeof emptyForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -112,18 +131,32 @@ export default function PlaybookCapture({
     setError(null);
     setPicking(customerId);
     try {
-      const { data } = await supabase
+      // Look for an OPEN deal specifically — NOT just the latest deal. (Bug:
+      // a customer whose newest deal was dead/declined but who still had an
+      // older open deal got a duplicate created instead of a resume.)
+      const { data: openData, error: openErr } = await supabase
         .from("deals")
         .select("*")
         .eq("customer_id", customerId)
         .eq("deal_type", isVcf ? "vcf" : "mca")
+        .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
         .order("created_at", { ascending: false })
         .limit(1);
-      const last = (data?.[0] as Deal | undefined) ?? null;
-      if (last && !CLOSED_STATUSES.includes(last.status)) {
-        onCreated?.(last); // resume the open deal
+      if (openErr) throw openErr; // never fall through to create on a failed lookup
+      const open = (openData?.[0] as Deal | undefined) ?? null;
+      if (open) {
+        onCreated?.(open); // resume the open deal
         return;
       }
+      // No open deal → new deal, carrying attribution from their latest (closed) one.
+      const { data: lastData } = await supabase
+        .from("deals")
+        .select("lead_source, campaign_id, market, assigned_closer_id")
+        .eq("customer_id", customerId)
+        .eq("deal_type", isVcf ? "vcf" : "mca")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const last = lastData?.[0] as Partial<Deal> | undefined;
       const deal = await createDeal({
         customer_id: customerId,
         deal_type: isVcf ? "vcf" : "mca",
@@ -141,14 +174,8 @@ export default function PlaybookCapture({
     }
   }
 
-  const filteredCustomers = customers.filter((c) => {
-    if (!customerSearch) return true;
-    const s = customerSearch.toLowerCase();
-    return (
-      `${c.first_name} ${c.last_name ?? ""}`.toLowerCase().includes(s) ||
-      (c.business_name || "").toLowerCase().includes(s)
-    );
-  });
+  // Search is server-side now — the list is already filtered.
+  const filteredCustomers = customers;
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -335,9 +362,10 @@ export default function PlaybookCapture({
                 <div>
                   <input
                     type="text"
-                    placeholder="Search customers…"
+                    placeholder="Search all customers by name or business…"
                     value={customerSearch}
                     onChange={(e) => setCustomerSearch(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
                     className="input-field w-full mb-2"
                     autoFocus
                   />

@@ -437,6 +437,14 @@ function StepCard({
   const [outcome, setOutcome] = useState("call");
   const [checked, setChecked] = useState<string[]>([]);
 
+  // Accordion: completed steps fold up so the closer lands on the live one.
+  // Click the title row to peek at a folded step. Everything stays expanded
+  // when no lead is loaded (reference reading).
+  const [openCard, setOpenCard] = useState(true);
+  useEffect(() => {
+    setOpenCard(!interactive || !done || current);
+  }, [interactive, done, current, deal?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Prefill structured fields + the saved "collected" chips from the loaded
   // deal so captured data shows through. The note clears after each save (it's
   // a per-touch log); the checklist persists (it's collected-state, not a log).
@@ -471,7 +479,12 @@ function StepCard({
           current ? "border-ocean-blue ring-1 ring-ocean-blue/30" : tone ? tone.ring : "border-gray-200 dark:border-gray-700"
         } bg-gray-50 dark:bg-gray-900 p-4`}
       >
-        <div className="flex flex-wrap items-center gap-2">
+        <div
+          className="flex flex-wrap items-center gap-2 cursor-pointer select-none"
+          onClick={() => setOpenCard((o) => !o)}
+          title={openCard ? "Collapse this step" : "Expand this step"}
+        >
+          <ArrowRightIcon className={`w-3.5 h-3.5 text-gray-400 transition-transform ${openCard ? "rotate-90" : ""}`} />
           <h3 className="font-semibold text-gray-900 dark:text-white">{step.title}</h3>
           {done && (
             <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
@@ -495,6 +508,7 @@ function StepCard({
           )}
         </div>
 
+        {openCard && (<>
         {(stageLabel || step.automation) && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {stageLabel && (
@@ -529,18 +543,18 @@ function StepCard({
         {step.stageKey === "application_sent" && interactive && !done && (
           <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-3 text-xs text-amber-800 dark:text-amber-200">
             <p>
-              <span className="font-semibold">📝 Fill the application FOR them (do this first):</span> while they're on
-              the phone, enter the app fields — SSN, DOB, driver's license, home address, bank details — as they read
-              them to you. Those fields pre-fill the document, so all they do is <b>tap to sign</b>. <b>Then</b> hit Send
-              below.
+              <span className="font-semibold">Optional white-glove:</span> want the app to arrive pre-filled? Before you
+              hit Send, enter the app fields (SSN, DOB, driver's license, home address, bank) on their contact as they
+              read them to you — then all they do is <b>tap to sign</b>. Otherwise just hit Send and they fill it
+              themselves.
             </p>
             {deal?.ghl_contact_id && (
               <a
                 href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${deal.ghl_contact_id}`}
                 target="_blank" rel="noreferrer"
-                className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-white font-semibold hover:opacity-90"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-ocean-blue px-3 py-1.5 text-ocean-blue font-semibold hover:bg-ocean-blue/10"
               >
-                Fill the application — open their contact ↗
+                Pre-fill it — open their contact ↗
               </a>
             )}
           </div>
@@ -687,6 +701,7 @@ function StepCard({
             {step.route.label} <ArrowRightIcon className="w-3.5 h-3.5" />
           </Link>
         )}
+        </>)}
       </div>
     </li>
   );
