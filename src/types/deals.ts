@@ -69,6 +69,9 @@ export interface Deal {
   qualified_at: string | null;
   application_sent_at: string | null;
   docs_collected_at: string | null;
+  bank_statements_at: string | null;
+  offer_accepted_at: string | null;
+  nurture_at: string | null;
   submitted_at: string | null;
   offer_received_at: string | null;
   offer_presented_at: string | null;

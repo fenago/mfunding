@@ -42,6 +42,25 @@ const toneStyles: Record<string, { ring: string; chip: string; label: string; ic
 };
 
 const TERMINAL = ["nurture", "declined", "dead"];
+
+// Stage → the deal timestamp column stamped when the deal reached that stage
+// (written by updateDealStatus). Lets each step show WHEN it was completed —
+// e.g. step 4's "Done · Jul 1, 10:47 PM" is the moment the docs went out.
+const STAGE_DONE_AT: Record<string, keyof Deal> = {
+  contacted: "contacted_at",
+  qualifying: "qualified_at",
+  application_sent: "application_sent_at",
+  docs_collected: "docs_collected_at",
+  bank_statements: "bank_statements_at",
+  submitted_to_funder: "submitted_at",
+  offer_received: "offer_received_at",
+  offer_presented: "offer_presented_at",
+  offer_accepted: "offer_accepted_at",
+  funded: "funded_at",
+};
+const GHL_LOCATION = "t7NmVR4WCy927j4Zon4b";
+const fmtWhen = (iso: string) =>
+  new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const pipelineOf = (dealType: string): "mca" | "vcf" => (dealType === "vcf" ? "vcf" : "mca");
 const dealName = (d: DealWithCustomer) =>
   d.customer?.business_name ||
@@ -409,6 +428,10 @@ function StepCard({
 }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
 
+  // When did the deal reach this step's stage? (e.g. when the docs were sent)
+  const tsCol = step.stageKey ? STAGE_DONE_AT[step.stageKey] : undefined;
+  const doneAt = deal && tsCol ? (deal[tsCol] as string | null) : null;
+
   const [values, setValues] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
   const [outcome, setOutcome] = useState("call");
@@ -452,7 +475,7 @@ function StepCard({
           <h3 className="font-semibold text-gray-900 dark:text-white">{step.title}</h3>
           {done && (
             <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-              <CheckCircleIcon className="w-3 h-3" /> Done
+              <CheckCircleIcon className="w-3 h-3" /> Done{doneAt ? ` · ${fmtWhen(doneAt)}` : ""}
             </span>
           )}
           {current && !done && (
@@ -501,6 +524,32 @@ function StepCard({
         )}
 
         {step.note && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{step.note}</p>}
+
+        {/* Docs receipt — when the send-docs step fired, show when + where to view them */}
+        {step.stageKey === "application_sent" && done && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs">
+            <span className="font-medium text-emerald-700 dark:text-emerald-300">
+              📨 Docs sent{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — application + disclosure + upload link
+            </span>
+            {deal?.ghl_contact_id ? (
+              <a
+                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${deal.ghl_contact_id}`}
+                target="_blank" rel="noreferrer"
+                className="text-ocean-blue hover:underline font-medium"
+              >
+                View the docs on their GHL contact ↗
+              </a>
+            ) : (
+              <a
+                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/payments/proposals-estimates`}
+                target="_blank" rel="noreferrer"
+                className="text-ocean-blue hover:underline font-medium"
+              >
+                View in GHL → Documents &amp; Contracts ↗
+              </a>
+            )}
+          </div>
+        )}
 
         {/* ───── Capture area — the fields live HERE, at the step where you ask ───── */}
         {showBox ? (
