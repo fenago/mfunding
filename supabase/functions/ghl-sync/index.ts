@@ -173,6 +173,11 @@ function docPrefillFields(cust: any, deal?: any) {
   add("business_name", cust?.business_name);
   add("months_in_business", cust?.time_in_business);
   add("funding_amount_requested", deal?.amount_requested);
+  // TEXT twins — GHL documents can only LINK text-type fields, so the doc
+  // prefill reads these (the money/number originals stay for forms/AI).
+  add("amount_requested_doc", deal?.amount_requested != null ? String(deal.amount_requested) : null);
+  add("avg_monthly_revenue_doc", cust?.monthly_revenue != null ? String(cust.monthly_revenue) : null);
+  add("annual_gross_revenue_doc", cust?.annual_revenue != null ? String(cust.annual_revenue) : null);
   return out;
 }
 
