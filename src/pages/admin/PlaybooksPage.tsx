@@ -21,6 +21,7 @@ import {
 import { PLAYBOOKS, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
+import FunderPicker from "../../components/admin/FunderPicker";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
@@ -635,6 +636,12 @@ function StepCard({
               </a>
             )}
           </div>
+        )}
+
+        {/* Funder fan-out — check the funders, hit Submit, each gets your package
+            in their own recipe format. Stage advance stays on the step button. */}
+        {step.stageKey === "submitted_to_funder" && interactive && deal && (
+          <FunderPicker deal={deal} />
         )}
 
         {/* ───── Capture area — the fields live HERE, at the step where you ask ───── */}
