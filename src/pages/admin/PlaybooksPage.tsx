@@ -324,11 +324,15 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
                 {d.signed ? "Signed" : d.status}
               </span>
               {d.updatedAt && <span className="text-gray-400">· {fmtWhen(d.updatedAt)}</span>}
-              {d.url && (
-                <a href={d.url} target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline">
-                  View {d.signed ? "signed doc" : "doc"} ↗
-                </a>
-              )}
+              {/* The doc's own link is the SIGNER's (permission-bound to the merchant) —
+                  staff view the signed copy in the GHL dashboard instead. */}
+              <a
+                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/payments/proposals-estimates`}
+                target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline"
+                title={d.signed ? "Opens GHL → Documents & Contracts → Completed tab" : "Opens GHL → Documents & Contracts"}
+              >
+                View in GHL{d.signed ? " (Completed tab)" : ""} ↗
+              </a>
             </div>
           ))}
           {uploads.length > 0 && (
