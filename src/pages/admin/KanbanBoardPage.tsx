@@ -603,6 +603,7 @@ function TaskEditModal({
   phases,
   categories,
   assignees,
+  canUseBacklog,
 }: {
   task: Task | null;
   isOpen: boolean;
@@ -611,11 +612,15 @@ function TaskEditModal({
   phases: Phase[];
   categories: Category[];
   assignees: AssignableUser[];
+  canUseBacklog: boolean;
 }) {
+  // Backlog is an admin/super_admin-only status.
+  const statusColumns = canUseBacklog ? COLUMNS : COLUMNS.filter((c) => c.id !== "backlog");
+  const defaultStatus: TaskStatus = canUseBacklog ? "backlog" : "todo";
   const [formData, setFormData] = useState<Partial<Task>>({
     title: "",
     description: "",
-    status: "backlog",
+    status: defaultStatus,
     priority: "medium",
     category: "",
     phase: "",
@@ -704,7 +709,7 @@ function TaskEditModal({
                 onChange={(e) => setFormData({ ...formData, status: e.target.value as TaskStatus })}
                 className="input-field"
               >
-                {COLUMNS.map((col) => (
+                {statusColumns.map((col) => (
                   <option key={col.id} value={col.id}>{col.title}</option>
                 ))}
               </select>
@@ -1048,6 +1053,13 @@ export default function KanbanBoardPage() {
   const { session } = useSession();
   const { profile, isSuperAdmin } = useUserProfile();
   const currentUserId = session?.user?.id ?? null;
+  // The Backlog column is admin/super_admin only — employees don't get it even
+  // though they otherwise share admin's access (isAdmin is true for them).
+  const canUseBacklog = profile?.role === "admin" || profile?.role === "super_admin";
+  const visibleColumns = useMemo(
+    () => (canUseBacklog ? COLUMNS : COLUMNS.filter((c) => c.id !== "backlog")),
+    [canUseBacklog]
+  );
   const [tasks, setTasks] = useState<Task[]>([]);
   const [phases, setPhases] = useState<Phase[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -1069,7 +1081,12 @@ export default function KanbanBoardPage() {
   const [showFilters, setShowFilters] = useState(false);
 
   // Mobile column selector
-  const [mobileColumn, setMobileColumn] = useState<TaskStatus>("backlog");
+  const [mobileColumn, setMobileColumn] = useState<TaskStatus>("todo");
+
+  // Keep the mobile selection on a column the user is actually allowed to see.
+  useEffect(() => {
+    if (!canUseBacklog && mobileColumn === "backlog") setMobileColumn("todo");
+  }, [canUseBacklog, mobileColumn]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -1113,9 +1130,10 @@ export default function KanbanBoardPage() {
       if (filterPriority && task.priority !== filterPriority) return false;
       if (filterAssignee === "mine" && task.assigned_to !== currentUserId) return false;
       if (filterAssignee === "unassigned" && task.assigned_to) return false;
+      if (!canUseBacklog && task.status === "backlog") return false;
       return true;
     });
-  }, [tasks, searchQuery, filterPhase, filterCategory, filterPriority, filterAssignee, currentUserId]);
+  }, [tasks, searchQuery, filterPhase, filterCategory, filterPriority, filterAssignee, currentUserId, canUseBacklog]);
 
   const tasksByStatus = useMemo(() => {
     const grouped: Record<TaskStatus, Task[]> = { backlog: [], todo: [], in_progress: [], review: [], done: [] };
@@ -1334,7 +1352,7 @@ export default function KanbanBoardPage() {
 
           {/* Mobile Column Selector - only visible on mobile */}
           <div className="flex md:hidden mt-2 overflow-x-auto gap-1 pb-1" style={{ scrollbarWidth: 'none' }}>
-            {COLUMNS.map((col) => (
+            {visibleColumns.map((col) => (
               <button
                 key={col.id}
                 onClick={() => setMobileColumn(col.id)}
@@ -1369,7 +1387,7 @@ export default function KanbanBoardPage() {
           onDragEnd={handleDragEnd}
         >
           <div className="flex gap-3 overflow-x-auto pb-4 h-full md:flex" style={{ scrollbarWidth: 'thin' }}>
-            {COLUMNS.map((column) => (
+            {visibleColumns.map((column) => (
               <DroppableColumn
                 key={column.id}
                 column={column}
@@ -1396,6 +1414,7 @@ export default function KanbanBoardPage() {
         phases={phases}
         categories={categories}
         assignees={assignees}
+        canUseBacklog={canUseBacklog}
       />
       <TaskDetailModal
         task={viewingTask ? tasks.find((t) => t.id === viewingTask.id) ?? viewingTask : null}

@@ -95,4 +95,5 @@ both via MCP **and** as committed files (as done this session).
 20260630030346  tcpa_consents_log
 20260702000001  add_employee_role
 20260702000002  employee_role_helpers_and_policies
+20260702000003  kanban_backlog_admin_only
 ```
