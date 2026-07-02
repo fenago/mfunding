@@ -53,6 +53,7 @@ export default function CloserListPage() {
     company_lead_split: COMMISSION_DEFAULTS.COMPANY_LEAD_SPLIT,
     self_gen_split: COMMISSION_DEFAULTS.SELF_GEN_SPLIT,
     renewal_split: COMMISSION_DEFAULTS.RENEWAL_SPLIT,
+    renewals_enabled: false,
     status: "active",
     markets: [],
     max_leads_per_month: 50,
@@ -97,6 +98,7 @@ export default function CloserListPage() {
       company_lead_split: COMMISSION_DEFAULTS.COMPANY_LEAD_SPLIT,
       self_gen_split: COMMISSION_DEFAULTS.SELF_GEN_SPLIT,
       renewal_split: COMMISSION_DEFAULTS.RENEWAL_SPLIT,
+      renewals_enabled: false,
       status: "active",
       markets: [],
       max_leads_per_month: 50,
@@ -115,6 +117,7 @@ export default function CloserListPage() {
       company_lead_split: closer.company_lead_split,
       self_gen_split: closer.self_gen_split,
       renewal_split: closer.renewal_split,
+      renewals_enabled: closer.renewals_enabled,
       draw_amount: closer.draw_amount,
       status: closer.status,
       start_date: closer.start_date,
@@ -308,7 +311,14 @@ export default function CloserListPage() {
                       {formatPercent(closer.close_rate)}
                     </td>
                     <td className="px-4 py-3 text-right text-gray-500 dark:text-gray-400 text-sm">
-                      {closer.company_lead_split}%/{closer.self_gen_split}%
+                      <div className="flex items-center justify-end gap-2">
+                        {closer.renewals_enabled && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" title="Renewals enabled">
+                            ↻ Renewals
+                          </span>
+                        )}
+                        <span>{closer.company_lead_split}%/{closer.self_gen_split}%</span>
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -431,8 +441,20 @@ export default function CloserListPage() {
                       min="0"
                       max="100"
                     />
+                    <label className="mt-2 flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.renewals_enabled}
+                        onChange={(e) => setFormData({ ...formData, renewals_enabled: e.target.checked })}
+                        className="rounded border-gray-300 dark:border-gray-600 text-ocean-blue focus:ring-ocean-blue"
+                      />
+                      <span className="text-xs text-gray-600 dark:text-gray-300">Renewals enabled</span>
+                    </label>
                   </div>
                 </div>
+                <p className="text-xs text-gray-400 mt-2">
+                  When off, this closer can't see the Renewals page or the renewal option in their commission calculator.
+                </p>
               </div>
 
               <div>

@@ -30,6 +30,7 @@ import type { DealWithCustomer, DealStatus, Deal } from "../../types/deals";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commissions";
 import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits";
+import { useUserProfile } from "../../context/UserProfileContext";
 import { CalculatorIcon } from "@heroicons/react/24/outline";
 
 const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
@@ -76,7 +77,11 @@ export default function PlaybooksPage() {
   const [deal, setDeal] = useState<DealWithCustomer | null>(null);
   const [busyStep, setBusyStep] = useState<number | null>(null);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
-  const { splits, hasCloser } = useCloserSplits();
+  const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
+  const { isSuperAdmin } = useUserProfile();
+  // Renewals are gated per closer: super_admin always, a closer by their flag,
+  // anyone without a closer row keeps default access.
+  const canRenew = isSuperAdmin || !hasCloser || renewalsEnabled;
 
   // The deal is "live" in this playbook only when its pipeline matches the open tab.
   const dealMatchesPlaybook = !!deal && pipelineOf(deal.deal_type) === active.pipeline;
@@ -210,7 +215,7 @@ export default function PlaybooksPage() {
       </div>
 
       {/* My commission calculator */}
-      <CommissionCalculator splits={splits} hasCloser={hasCloser} />
+      <CommissionCalculator splits={splits} hasCloser={hasCloser} canRenew={canRenew} />
 
       {/* Steps */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
@@ -444,11 +449,17 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, splits, hasCloser 
 // Compact "what do I make on this deal?" calculator for the signed-in closer.
 // Uses their own splits (or default 30/65/30 when they have no closers row).
 
-function CommissionCalculator({ splits, hasCloser }: { splits: CloserSplits; hasCloser: boolean }) {
+function CommissionCalculator({ splits, hasCloser, canRenew }: { splits: CloserSplits; hasCloser: boolean; canRenew: boolean }) {
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState<number>(COMMISSION_DEFAULTS.AVERAGE_DEAL_SIZE);
   const [isRenewal, setIsRenewal] = useState(false);
   const [selfGen, setSelfGen] = useState(false);
+
+  // Closers without the renewals flag never work renewals — force New and hide
+  // the Renewal option entirely.
+  useEffect(() => {
+    if (!canRenew && isRenewal) setIsRenewal(false);
+  }, [canRenew, isRenewal]);
 
   const points = isRenewal ? COMMISSION_DEFAULTS.RENEWAL_POINTS : COMMISSION_DEFAULTS.NEW_DEAL_POINTS;
   const gross = expectedCommissionInPlay(amount, isRenewal);
@@ -500,7 +511,7 @@ function CommissionCalculator({ splits, hasCloser }: { splits: CloserSplits; has
               </div>
             </div>
 
-            {/* Deal kind */}
+            {/* Deal kind — Renewal option hidden for closers without the renewals flag */}
             <div>
               <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Deal kind</label>
               <div className="inline-flex w-full rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-sm">
@@ -511,13 +522,15 @@ function CommissionCalculator({ splits, hasCloser }: { splits: CloserSplits; has
                 >
                   New · {COMMISSION_DEFAULTS.NEW_DEAL_POINTS} pts
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setIsRenewal(true)}
-                  className={`flex-1 px-3 py-2 ${isRenewal ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
-                >
-                  Renewal · {COMMISSION_DEFAULTS.RENEWAL_POINTS} pts
-                </button>
+                {canRenew && (
+                  <button
+                    type="button"
+                    onClick={() => setIsRenewal(true)}
+                    className={`flex-1 px-3 py-2 ${isRenewal ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                  >
+                    Renewal · {COMMISSION_DEFAULTS.RENEWAL_POINTS} pts
+                  </button>
+                )}
               </div>
             </div>
 

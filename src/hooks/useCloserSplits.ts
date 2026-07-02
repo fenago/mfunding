@@ -22,6 +22,8 @@ interface UseCloserSplitsResult {
   splits: CloserSplits;
   /** True once we've confirmed the user has a matching `closers` row. */
   hasCloser: boolean;
+  /** The closer's per-user renewals gate. Meaningful only when hasCloser is true. */
+  renewalsEnabled: boolean;
   loading: boolean;
 }
 
@@ -34,6 +36,7 @@ export function useCloserSplits(): UseCloserSplitsResult {
   const { effectiveUserId } = useUserProfile();
   const [splits, setSplits] = useState<CloserSplits>(DEFAULT_CLOSER_SPLITS);
   const [hasCloser, setHasCloser] = useState(false);
+  const [renewalsEnabled, setRenewalsEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -43,6 +46,7 @@ export function useCloserSplits(): UseCloserSplitsResult {
         if (!cancelled) {
           setSplits(DEFAULT_CLOSER_SPLITS);
           setHasCloser(false);
+          setRenewalsEnabled(false);
           setLoading(false);
         }
         return;
@@ -50,7 +54,7 @@ export function useCloserSplits(): UseCloserSplitsResult {
       setLoading(true);
       const { data } = await supabase
         .from("closers")
-        .select("company_lead_split, self_gen_split, renewal_split")
+        .select("company_lead_split, self_gen_split, renewal_split, renewals_enabled")
         .eq("user_id", effectiveUserId)
         .maybeSingle();
       if (cancelled) return;
@@ -61,9 +65,11 @@ export function useCloserSplits(): UseCloserSplitsResult {
           renewal_split: data.renewal_split,
         });
         setHasCloser(true);
+        setRenewalsEnabled(!!data.renewals_enabled);
       } else {
         setSplits(DEFAULT_CLOSER_SPLITS);
         setHasCloser(false);
+        setRenewalsEnabled(false);
       }
       setLoading(false);
     }
@@ -73,5 +79,24 @@ export function useCloserSplits(): UseCloserSplitsResult {
     };
   }, [effectiveUserId]);
 
-  return { splits, hasCloser, loading };
+  return { splits, hasCloser, renewalsEnabled, loading };
+}
+
+interface UseRenewalsAccessResult {
+  /** Whether the signed-in user may see renewals (nav, route, calculator option). */
+  canSeeRenewals: boolean;
+  loading: boolean;
+}
+
+/**
+ * Precedence for renewals visibility:
+ *   super_admin  → always sees renewals
+ *   has closer   → gated by their closers.renewals_enabled flag
+ *   no closer    → keeps existing access (e.g. a plain admin)
+ */
+export function useRenewalsAccess(): UseRenewalsAccessResult {
+  const { isSuperAdmin } = useUserProfile();
+  const { hasCloser, renewalsEnabled, loading } = useCloserSplits();
+  const canSeeRenewals = isSuperAdmin || !hasCloser || renewalsEnabled;
+  return { canSeeRenewals, loading };
 }

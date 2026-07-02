@@ -72,6 +72,7 @@ export interface Closer {
   company_lead_split: number;
   self_gen_split: number;
   renewal_split: number;
+  renewals_enabled: boolean;
   draw_amount: number | null;
   draw_start_date: string | null;
   draw_end_date: string | null;
@@ -97,6 +98,7 @@ export interface CloserFormData {
   company_lead_split: number;
   self_gen_split: number;
   renewal_split: number;
+  renewals_enabled: boolean;
   draw_amount?: number | null;
   draw_start_date?: string | null;
   draw_end_date?: string | null;

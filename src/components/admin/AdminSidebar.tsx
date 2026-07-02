@@ -35,6 +35,7 @@ import {
   ChatBubbleLeftRightIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
+import { useRenewalsAccess } from "../../hooks/useCloserSplits";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
 import Logo from "../ui/Logo";
@@ -155,6 +156,7 @@ export default function AdminSidebar() {
   });
   const location = useLocation();
   const { profile, isSuperAdmin } = useUserProfile();
+  const { canSeeRenewals, loading: renewalsLoading } = useRenewalsAccess();
   const { mode, cycleMode } = useTheme();
   const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
   const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
@@ -169,7 +171,16 @@ export default function AdminSidebar() {
   };
 
   const role = profile?.role as NavRole | undefined;
-  const canSee = (item: NavItem) => isSuperAdmin || (!!role && item.roles.includes(role));
+  const canSee = (item: NavItem) => {
+    if (!(isSuperAdmin || (!!role && item.roles.includes(role)))) return false;
+    // Renewals is additionally gated per closer (closers.renewals_enabled).
+    // super_admin always passes; for everyone else defer until the flag loads
+    // so a gated closer never sees the link flash in and out.
+    if (item.path === "/admin/renewals" && !isSuperAdmin) {
+      return !renewalsLoading && canSeeRenewals;
+    }
+    return true;
+  };
 
   const isActive = (path: string) => {
     if (path === "/admin") {

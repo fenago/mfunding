@@ -166,6 +166,18 @@ export default function CloserDetailPage() {
               <span className="text-sm text-gray-500 dark:text-gray-400">Renewal Split</span>
               <span className="text-sm font-medium text-gray-900 dark:text-white">{closer.renewal_split}%</span>
             </div>
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-500 dark:text-gray-400">Renewals</span>
+              <span
+                className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                  closer.renewals_enabled
+                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                    : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
+                }`}
+              >
+                {closer.renewals_enabled ? "Enabled" : "Disabled"}
+              </span>
+            </div>
             {closer.draw_amount && (
               <>
                 <div className="border-t border-gray-200 dark:border-gray-700 pt-3 flex justify-between">

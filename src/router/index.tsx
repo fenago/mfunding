@@ -58,6 +58,7 @@ import AuthProtectedRoute from "./AuthProtectedRoute.tsx";
 import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
 import AdminOnlyProtectedRoute from "./AdminOnlyProtectedRoute.tsx";
+import RenewalsProtectedRoute from "./RenewalsProtectedRoute.tsx";
 import Providers from "../Providers.tsx";
 
 // Admin pages
@@ -532,10 +533,11 @@ export const routes: RouteObject[] = [
                   },
                 ],
               },
-              // Renewals (admin + super_admin)
+              // Renewals — staff, gated per closer by closers.renewals_enabled
               {
                 path: "renewals",
-                element: <RenewalsPage />,
+                element: <RenewalsProtectedRoute />,
+                children: [{ index: true, element: <RenewalsPage /> }],
               },
               // Document review (admin + super_admin)
               {
