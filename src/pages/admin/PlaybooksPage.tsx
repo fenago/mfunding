@@ -106,6 +106,7 @@ export default function PlaybooksPage() {
     note: string,
     outcome: string,
     checked: string[],
+    advance = true, // false = "Save note" only: log the touch, DON'T move the stage
   ) {
     if (!deal) return;
     setBusyStep(step.n);
@@ -150,8 +151,8 @@ export default function PlaybooksPage() {
       }
 
       // Advance the stage (forward only) — this also syncs GHL and, on Funded,
-      // auto-creates the commission.
-      if (step.stageKey) {
+      // auto-creates the commission. Skipped for "Save note"-only touches.
+      if (advance && step.stageKey) {
         const tgt = order.indexOf(step.stageKey);
         if (tgt > currentIdx) await updateDealStatus(deal.id, step.stageKey as DealStatus);
       }
@@ -424,7 +425,7 @@ function StepCard({
   done: boolean;
   current: boolean;
   busy: boolean;
-  onComplete: (step: PlaybookStep, values: Record<string, string>, note: string, outcome: string, checked: string[]) => void;
+  onComplete: (step: PlaybookStep, values: Record<string, string>, note: string, outcome: string, checked: string[], advance?: boolean) => void;
 }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
 
@@ -726,19 +727,32 @@ function StepCard({
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-[11px] text-gray-400">
                     {step.stageKey && !done
-                      ? `Saves the info, logs it, and moves the deal to “${stageLabel}”.`
+                      ? `Save note = log only. “${step.cta ? step.cta : `Mark ${stageLabel} done`}” moves the deal + fires the automation.`
                       : "Saves the info and logs it to the deal."}
                   </p>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onComplete(step, values, note, outcome, checked)}
-                    className={`text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed ${
-                      done ? "border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200" : "bg-ocean-blue text-white hover:opacity-90"
-                    }`}
-                  >
-                    {busy ? "Saving…" : done ? "Update this step" : step.cta ?? (step.stageKey ? `Save & mark ${stageLabel} done` : "Save & log")}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {/* Log-only save — for touches that shouldn't move the deal */}
+                    {step.stageKey && !done && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onComplete(step, values, note, outcome, checked, false)}
+                        className="text-sm font-semibold px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {busy ? "Saving…" : "Save note"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onComplete(step, values, note, outcome, checked, !done)}
+                      className={`text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed ${
+                        done ? "border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200" : "bg-ocean-blue text-white hover:opacity-90"
+                      }`}
+                    >
+                      {busy ? "Saving…" : done ? "Update this step" : step.cta ?? (step.stageKey ? `Mark ${stageLabel} done` : "Save & log")}
+                    </button>
+                  </div>
                 </div>
               </>
             )}
