@@ -34,6 +34,10 @@ const PLAYBOOK_DEFAULTS: Record<
 // Only what's needed to START the lead: who they are + attribution. The
 // qualifier questions (revenue, amount, time-in-business, VCF positions, etc.)
 // are captured INLINE at the step where the closer asks them — no scrolling.
+// Statuses where a deal is finished — a new deal for the same customer is
+// legitimate (renewal / comeback). Anything else counts as an open deal.
+const CLOSED_STATUSES = ["funded", "declined", "dead", "nurture", "renewal_eligible", "restructure_executed", "servicing"];
+
 const emptyForm = {
   first_name: "",
   last_name: "",
@@ -99,6 +103,40 @@ export default function PlaybookCapture({
 
   const set = (k: keyof typeof emptyForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
+  // Selecting an existing customer pre-populates immediately:
+  //  - if they have an OPEN deal of this type, load it straight into the guided
+  //    workspace (context bar + step fields fill in — no extra click), and
+  //  - otherwise prefill this form's attribution from their most recent deal.
+  useEffect(() => {
+    if (mode !== "existing" || !existingId) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("deals")
+        .select("*")
+        .eq("customer_id", existingId)
+        .eq("deal_type", isVcf ? "vcf" : "mca")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (cancelled || !data || data.length === 0) return;
+      const last = data[0] as Deal;
+      if (!CLOSED_STATUSES.includes(last.status) && onCreated) {
+        onCreated(last); // open deal → resume it right away
+        return;
+      }
+      // Closed history → carry their attribution forward for the new deal.
+      setForm((f) => ({
+        ...f,
+        market: (last.market as Market) || f.market,
+        lead_source: last.lead_source || f.lead_source,
+        campaign_id: last.campaign_id || "",
+        assigned_closer_id: last.assigned_closer_id || "",
+        notes: f.notes,
+      }));
+    })();
+    return () => { cancelled = true; };
+  }, [existingId, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const filteredCustomers = customers.filter((c) => {
     if (!customerSearch) return true;
     const s = customerSearch.toLowerCase();
@@ -153,13 +191,12 @@ export default function PlaybookCapture({
       // bug — one click on an existing customer minted a second open deal and a
       // second GHL opportunity). Closed deals (funded/declined/dead) don't count:
       // a fresh deal there is correct (e.g. a renewal or a comeback).
-      const CLOSED = ["funded", "declined", "dead", "nurture", "renewal_eligible", "restructure_executed", "servicing"];
       const { data: openDeals } = await supabase
         .from("deals")
         .select("*")
         .eq("customer_id", customerId)
         .eq("deal_type", isVcf ? "vcf" : "mca")
-        .not("status", "in", `(${CLOSED.join(",")})`)
+        .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
         .order("created_at", { ascending: false })
         .limit(1);
       if (openDeals && openDeals.length > 0) {
@@ -389,7 +426,7 @@ export default function PlaybookCapture({
                   Tagging the campaign here is what makes the cost-per-funded math work.
                 </p>
                 <button type="submit" disabled={saving} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
-                  {saving ? "Saving…" : isVcf ? "Save VCF lead" : "Save lead"}
+                  {saving ? "Saving…" : mode === "existing" ? "Update lead" : isVcf ? "Save VCF lead" : "Save lead"}
                 </button>
               </div>
             </form>
