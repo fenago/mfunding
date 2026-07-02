@@ -177,6 +177,8 @@ function docPrefillFields(cust: any, deal?: any) {
   add("owner_full_name", [cust?.first_name, cust?.last_name].filter(Boolean).join(" ") || null);
   add("owner_cell_phone", cust?.phone);
   add("owner_email", cust?.email);
+  add("industry_doc", cust?.industry);
+  add("use_of_funds_doc", deal?.use_of_funds);
   add("months_in_business", cust?.time_in_business);
   add("funding_amount_requested", deal?.amount_requested);
   // TEXT twins — GHL documents can only LINK text-type fields, so the doc
