@@ -1,0 +1,84 @@
+// ghl-docs-status — live "docs back from the merchant" status for the playbook.
+//
+// Given a GHL contact id, returns:
+//  - documents: every Documents & Contracts doc where this contact is a recipient
+//    (name, status, signed?, when) — so the playbook can show "Application ✅ signed"
+//  - uploads: files sitting on the contact's FILE_UPLOAD custom fields (from the
+//    Bank Statements & Documents Upload form), with friendly field names.
+//
+// Read-only; invoked from the app (authenticated staff).
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact } from "../_shared/ghl.ts";
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  try {
+    const { ghl_contact_id } = await req.json().catch(() => ({}));
+    if (!ghl_contact_id) return json({ error: "ghl_contact_id is required" }, 400);
+
+    const db = serviceClient();
+    const cfg = await getGhlConfig(db);
+
+    // 1) E-sign documents for this contact.
+    const docsRes = await ghlFetch<{ documents?: Record<string, unknown>[] }>(
+      cfg, "GET", `/proposals/document?locationId=${cfg.locationId}&limit=20`,
+    );
+    const documentsError = docsRes.ok ? null : `docs list failed (${docsRes.status}): ${docsRes.error ?? ""}`;
+    const documents = (docsRes.data?.documents ?? [])
+      .filter((d) => {
+        const recips = (d.recipients as Record<string, unknown>[] | undefined) ?? [];
+        return recips.some((r) => r.id === ghl_contact_id);
+      })
+      .map((d) => {
+        const r = ((d.recipients as Record<string, unknown>[]) ?? [])[0] ?? {};
+        const id = (d._id ?? d.id) as string | undefined;
+        return {
+          name: d.name ?? "Document",
+          status: d.status ?? "sent",
+          signed: r.hasCompleted === true,
+          updatedAt: d.updatedAt ?? null,
+          // Public viewer link — for completed docs this shows the signed version.
+          url: id ? `https://link.vibereach.io/documents/v1/${id}` : null,
+        };
+      });
+
+    // 2) Uploaded files on the contact's FILE_UPLOAD custom fields.
+    //    Map field ids → names so the panel shows "Business Bank Statements…".
+    const fieldsRes = await ghlFetch<{ customFields?: { id: string; name: string; dataType: string }[] }>(
+      cfg, "GET", `/locations/${cfg.locationId}/customFields`,
+    );
+    const fileFieldNames = new Map(
+      (fieldsRes.data?.customFields ?? [])
+        .filter((f) => f.dataType === "FILE_UPLOAD")
+        .map((f) => [f.id, f.name]),
+    );
+
+    const contactRes = await getContact(cfg, ghl_contact_id);
+    const cf = ((contactRes.data?.contact as Record<string, unknown> | undefined)?.customFields ??
+      []) as { id: string; value: unknown }[];
+    const uploads: { field: string; files: { name: string; url: string | null }[] }[] = [];
+    for (const f of cf) {
+      if (!fileFieldNames.has(f.id) || !f.value || typeof f.value !== "object") continue;
+      const files = Object.values(f.value as Record<string, Record<string, unknown>>).map((v) => {
+        const meta = (v?.meta ?? {}) as Record<string, unknown>;
+        return {
+          name: String(meta.originalname ?? "file"),
+          url: typeof v?.url === "string" ? (v.url as string) : null,
+        };
+      });
+      if (files.length) uploads.push({ field: fileFieldNames.get(f.id)!, files });
+    }
+
+    return json({ ok: true, documents, uploads, documents_error: documentsError });
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);
+  }
+});

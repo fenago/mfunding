@@ -273,6 +273,92 @@ export default function PlaybooksPage() {
   );
 }
 
+// ───────────────────── Docs back from the merchant ─────────────────────
+// Live e-sign + upload status pulled from GHL (ghl-docs-status function):
+// what's signed (with view links + timestamps) and what files they uploaded.
+function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [docs, setDocs] = useState<{ name: string; status: string; signed: boolean; updatedAt: string | null; url: string | null }[]>([]);
+  const [uploads, setUploads] = useState<{ field: string; files: { name: string; url: string | null }[] }[]>([]);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("ghl-docs-status", {
+        body: { ghl_contact_id: ghlContactId },
+      });
+      if (error || data?.error) throw new Error(data?.error || error?.message);
+      setDocs(data?.documents ?? []);
+      setUploads(data?.uploads ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load doc status");
+    }
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, [ghlContactId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fileCount = uploads.reduce((n, u) => n + u.files.length, 0);
+
+  return (
+    <div className="mt-3 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-gray-700 dark:text-gray-200 flex items-center gap-1.5">
+          <DocumentCheckIcon className="w-4 h-4 text-ocean-blue" /> Docs back from the merchant
+        </span>
+        <button type="button" onClick={load} className="text-[11px] text-ocean-blue hover:underline">↻ Refresh</button>
+      </div>
+      {loading ? (
+        <p className="text-xs text-gray-400">Checking GHL…</p>
+      ) : error ? (
+        <p className="text-xs text-red-500">{error}</p>
+      ) : (
+        <div className="space-y-2">
+          {docs.length === 0 && <p className="text-xs text-gray-400">No documents sent yet.</p>}
+          {docs.map((d, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
+              <span>{d.signed ? "✅" : "⏳"}</span>
+              <span className="font-medium text-gray-800 dark:text-gray-100">{d.name}</span>
+              <span className={d.signed ? "text-emerald-600 font-semibold" : "text-amber-600"}>
+                {d.signed ? "Signed" : d.status}
+              </span>
+              {d.updatedAt && <span className="text-gray-400">· {fmtWhen(d.updatedAt)}</span>}
+              {d.url && (
+                <a href={d.url} target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline">
+                  View {d.signed ? "signed doc" : "doc"} ↗
+                </a>
+              )}
+            </div>
+          ))}
+          {uploads.length > 0 && (
+            <div className="pt-2 border-t border-gray-100 dark:border-gray-700">
+              <p className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
+                📎 Uploaded files ({fileCount})
+              </p>
+              {uploads.map((u, i) => (
+                <div key={i} className="text-xs mb-1">
+                  <span className="text-gray-500">{u.field}:</span>{" "}
+                  {u.files.map((f, j) => (
+                    <span key={j}>
+                      {j > 0 && " · "}
+                      {f.url ? (
+                        <a href={f.url} target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline">{f.name}</a>
+                      ) : (
+                        <span className="text-gray-700 dark:text-gray-200">{f.name}</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ───────────────────────── Deal context bar ─────────────────────────
 
 function DealContextBar({ deal, pipeline, onClear, onAdvance }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void }) {
@@ -610,6 +696,11 @@ function StepCard({
               </a>
             )}
           </div>
+        )}
+
+        {/* Live doc status — what's signed + what they uploaded, straight from GHL */}
+        {(step.stageKey === "application_sent" || step.stageKey === "bank_statements") && interactive && deal?.ghl_contact_id && (
+          <DocsBackPanel ghlContactId={deal.ghl_contact_id} />
         )}
 
         {/* Docs receipt — when the send-docs step fired, show when + where to view them */}
