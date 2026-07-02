@@ -108,7 +108,11 @@ Deno.serve(async (req) => {
     //    at least one criteria/submission field to reason about.
     const selectCols = ["id", "company_name", "status", ...LENDER_FIELDS].join(", ");
     const { data: lendersRaw, error: lErr } = await db
-      .from("lenders").select(selectCols);
+      .from("lenders").select(selectCols)
+      // Only funders we actually have a relationship with — matches the Step 6
+      // picker's filter (getMatchingLenders), so the AI never recommends a
+      // funder the closer can't submit to.
+      .in("status", ["live_vendor", "approved"]);
     if (lErr) return json({ error: `could not load lenders: ${lErr.message}` }, 502);
     const lenders = ((lendersRaw ?? []) as Lender[])
       .filter((l) => l.company_name && LENDER_FIELDS.some((f) => has(l[f])));
