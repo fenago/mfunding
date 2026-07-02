@@ -379,34 +379,50 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
             </div>
 
             {(aiSummary || aiRecs.length > 0) && (
-              <div className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 p-3 space-y-2">
-                {aiSummary && <p className="text-[12px] text-gray-700 dark:text-gray-200">{aiSummary}</p>}
-                {aiRecs.map((r) => {
-                  const fit = FIT_STYLE[r.fit];
-                  const checkable = isSelectable(r.lender_id);
-                  return (
-                    <div key={r.lender_id} className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-medium text-gray-900 dark:text-white">{r.lender_name}</span>
-                        <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${fit.cls}`}>{fit.label}</span>
-                        {r.fit === "strong" && checkable && <span className="text-[10px] text-emerald-600">auto-selected</span>}
-                        {!checkable && <span className="text-[10px] text-gray-400">not selectable yet</span>}
-                      </div>
-                      {r.reasons.length > 0 && (
-                        <ul className="mt-1 list-disc pl-4 text-[11px] text-gray-600 dark:text-gray-300 space-y-0.5">
-                          {r.reasons.map((s, i) => <li key={i}>{s}</li>)}
-                        </ul>
-                      )}
-                      {r.watch_outs.length > 0 && (
-                        <ul className="mt-1 list-disc pl-4 text-[11px] text-amber-600 dark:text-amber-400 space-y-0.5">
-                          {r.watch_outs.map((s, i) => <li key={i}>⚠ {s}</li>)}
-                        </ul>
-                      )}
-                    </div>
-                  );
-                })}
-                <p className="text-[10px] text-gray-400">AI suggestion only — review each funder's criteria before submitting. Strong fits are pre-checked below.</p>
-              </div>
+              <details className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5">
+                {/* Accordion, closed by default — the checkbox list below already
+                    reflects the AI (strong fits pre-checked); open for the why. */}
+                <summary className="cursor-pointer select-none px-3 py-2 text-[12px] font-semibold text-ocean-blue">
+                  ✨ AI analysis — {aiRecs.length} funder{aiRecs.length === 1 ? "" : "s"} ranked
+                  {aiRecs.some((r) => r.fit === "strong" && isSelectable(r.lender_id)) ? " · strong fits pre-checked below" : ""} (click to expand)
+                </summary>
+                <div className="px-3 pb-3 space-y-2">
+                  {aiSummary && <p className="text-[12px] text-gray-700 dark:text-gray-200">{aiSummary}</p>}
+                  {aiRecs.map((r) => {
+                    const fit = FIT_STYLE[r.fit];
+                    const checkable = isSelectable(r.lender_id);
+                    // Say WHY a recommended funder can't be checked right now.
+                    const blockReason = checkable ? null
+                      : isAlreadyOut(r.lender_id) ? "already submitted"
+                      : missingStipsOf(r.lender_id).length ? `blocked — missing: ${missingStipsOf(r.lender_id).map(docLabel).join(", ")}`
+                      : methodOf(r.lender_id) === "none" ? "no submission email/portal on file"
+                      : "not in the match list below";
+                    return (
+                      <details key={r.lender_id} className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm">
+                        <summary className="cursor-pointer select-none px-3 py-2 flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-gray-900 dark:text-white">{r.lender_name}</span>
+                          <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${fit.cls}`}>{fit.label}</span>
+                          {r.fit === "strong" && checkable && <span className="text-[10px] text-emerald-600">auto-selected</span>}
+                          {blockReason && <span className="text-[10px] text-amber-600">{blockReason}</span>}
+                        </summary>
+                        <div className="px-3 pb-2">
+                          {r.reasons.length > 0 && (
+                            <ul className="mt-1 list-disc pl-4 text-[11px] text-gray-600 dark:text-gray-300 space-y-0.5">
+                              {r.reasons.map((s, i) => <li key={i}>{s}</li>)}
+                            </ul>
+                          )}
+                          {r.watch_outs.length > 0 && (
+                            <ul className="mt-1 list-disc pl-4 text-[11px] text-amber-600 dark:text-amber-400 space-y-0.5">
+                              {r.watch_outs.map((s, i) => <li key={i}>⚠ {s}</li>)}
+                            </ul>
+                          )}
+                        </div>
+                      </details>
+                    );
+                  })}
+                  <p className="text-[10px] text-gray-400">AI suggestion only — review each funder's criteria before submitting. Strong fits are pre-checked below.</p>
+                </div>
+              </details>
             )}
           </div>
 
