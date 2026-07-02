@@ -115,6 +115,51 @@ export async function getContact(cfg: GhlConfig, contactId: string) {
   return await ghlFetch<{ contact: Record<string, unknown> }>(cfg, "GET", `/contacts/${contactId}`);
 }
 
+// ---- FILE_UPLOAD custom fields (merchant-uploaded docs live GHL-side) ---------
+
+export interface GhlUploadedFile { name: string; url: string | null }
+export interface GhlUploadField { field: string; files: GhlUploadedFile[] }
+
+/**
+ * Enumerate the files sitting on a contact's FILE_UPLOAD custom fields (e.g. the
+ * "Bank Statements & Documents Upload" form). Returns one entry per populated
+ * FILE_UPLOAD field with its friendly name and each file's original name + a
+ * download URL. The URLs are public leadconnectorhq.com/documents/download/{id}
+ * links (they 307-redirect to a short-lived signed GCS URL), so they can be
+ * handed to a funder or fetched server-side without an auth header.
+ */
+export async function listContactFileUploads(
+  cfg: GhlConfig,
+  contactId: string,
+): Promise<GhlUploadField[]> {
+  const fieldsRes = await ghlFetch<{ customFields?: { id: string; name: string; dataType: string }[] }>(
+    cfg, "GET", `/locations/${cfg.locationId}/customFields`,
+  );
+  const fileFieldNames = new Map(
+    (fieldsRes.data?.customFields ?? [])
+      .filter((f) => f.dataType === "FILE_UPLOAD")
+      .map((f) => [f.id, f.name]),
+  );
+
+  const contactRes = await getContact(cfg, contactId);
+  const cf = ((contactRes.data?.contact as Record<string, unknown> | undefined)?.customFields ??
+    []) as { id: string; value: unknown }[];
+
+  const out: GhlUploadField[] = [];
+  for (const f of cf) {
+    if (!fileFieldNames.has(f.id) || !f.value || typeof f.value !== "object") continue;
+    const files = Object.values(f.value as Record<string, Record<string, unknown>>).map((v) => {
+      const meta = (v?.meta ?? {}) as Record<string, unknown>;
+      return {
+        name: String(meta.originalname ?? "file"),
+        url: typeof v?.url === "string" ? (v.url as string) : null,
+      };
+    });
+    if (files.length) out.push({ field: fileFieldNames.get(f.id)!, files });
+  }
+  return out;
+}
+
 // ---- Business (company) helpers — groups contacts into a business hierarchy --
 
 export interface BusinessInput {

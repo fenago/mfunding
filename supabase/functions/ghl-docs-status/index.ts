@@ -9,7 +9,7 @@
 // Read-only; invoked from the app (authenticated staff).
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact } from "../_shared/ghl.ts";
+import { corsHeaders, serviceClient, getGhlConfig, ghlFetch, listContactFileUploads } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -50,32 +50,9 @@ Deno.serve(async (req) => {
         };
       });
 
-    // 2) Uploaded files on the contact's FILE_UPLOAD custom fields.
-    //    Map field ids → names so the panel shows "Business Bank Statements…".
-    const fieldsRes = await ghlFetch<{ customFields?: { id: string; name: string; dataType: string }[] }>(
-      cfg, "GET", `/locations/${cfg.locationId}/customFields`,
-    );
-    const fileFieldNames = new Map(
-      (fieldsRes.data?.customFields ?? [])
-        .filter((f) => f.dataType === "FILE_UPLOAD")
-        .map((f) => [f.id, f.name]),
-    );
-
-    const contactRes = await getContact(cfg, ghl_contact_id);
-    const cf = ((contactRes.data?.contact as Record<string, unknown> | undefined)?.customFields ??
-      []) as { id: string; value: unknown }[];
-    const uploads: { field: string; files: { name: string; url: string | null }[] }[] = [];
-    for (const f of cf) {
-      if (!fileFieldNames.has(f.id) || !f.value || typeof f.value !== "object") continue;
-      const files = Object.values(f.value as Record<string, Record<string, unknown>>).map((v) => {
-        const meta = (v?.meta ?? {}) as Record<string, unknown>;
-        return {
-          name: String(meta.originalname ?? "file"),
-          url: typeof v?.url === "string" ? (v.url as string) : null,
-        };
-      });
-      if (files.length) uploads.push({ field: fileFieldNames.get(f.id)!, files });
-    }
+    // 2) Uploaded files on the contact's FILE_UPLOAD custom fields (friendly
+    //    field names → files). Shared with submit-to-funders so both rails agree.
+    const uploads = await listContactFileUploads(cfg, ghl_contact_id);
 
     return json({ ok: true, documents, uploads, documents_error: documentsError });
   } catch (e) {

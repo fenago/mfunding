@@ -22,6 +22,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
+  listContactFileUploads,
 } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
@@ -249,7 +250,7 @@ Deno.serve(async (req) => {
   const dealId = payload.dealId!;
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id, vcf_active_positions, vcf_total_balance, vcf_daily_debit, vcf_current_funders, vcf_hardship_reason")
+    .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id, ghl_contact_id, vcf_active_positions, vcf_total_balance, vcf_daily_debit, vcf_current_funders, vcf_hardship_reason")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
@@ -272,6 +273,30 @@ Deno.serve(async (req) => {
     arr.push(d);
     docsByType.set(d.document_type, arr);
   }
+
+  // --- Merchant docs uploaded GHL-side. Bank statements and stips usually come
+  // in through the GHL upload form and live on the contact's FILE_UPLOAD custom
+  // fields, NOT Supabase storage. Fetch them once (contact-level, same for every
+  // funder) and split into bank vs. other-stips. The leadconnectorhq download
+  // URLs are public (307 → short-lived signed GCS link), so we hand them to the
+  // funder directly — no server-side proxy needed. ---
+  const ghlBank: Array<{ name: string; url: string }> = [];
+  const ghlStips: Array<{ name: string; url: string }> = [];
+  const ghlContactId = (deal.ghl_contact_id as string | null) ?? (c.ghl_contact_id as string | null) ?? null;
+  if (ghlContactId && cfg) {
+    try {
+      for (const f of await listContactFileUploads(cfg, ghlContactId)) {
+        const bucket = /bank/i.test(f.field) ? ghlBank : ghlStips;
+        for (const file of f.files) if (file.url) bucket.push({ name: file.name, url: file.url });
+      }
+    } catch { /* best-effort — Supabase docs still attach if GHL peek fails */ }
+  }
+  // GHL uploads count toward the stips guard too (mirrors the FunderPicker's
+  // package check): a bank field satisfies bank_statement; any other stip field
+  // satisfies id / voided_check (the upload form can't tag the exact type).
+  const ghlPresentTypes = new Set<string>();
+  if (ghlBank.length) ghlPresentTypes.add("bank_statement");
+  if (ghlStips.length) { ghlPresentTypes.add("id"); ghlPresentTypes.add("voided_check"); }
 
   const results: Array<Record<string, unknown>> = [];
 
@@ -296,7 +321,7 @@ Deno.serve(async (req) => {
 
     // --- Stips guard: every required stip must be on file before we send. ---
     const requiredStips = recipe?.required_stips ?? [];
-    const missing = requiredStips.filter((slug) => !(docsByType.get(slug)?.length));
+    const missing = requiredStips.filter((slug) => !(docsByType.get(slug)?.length) && !ghlPresentTypes.has(slug));
     if (missing.length > 0) {
       results.push({ lenderId, name, method, status: "blocked", blocked: missing, blockedLabels: missing.map(docLabel) });
       continue;
@@ -306,6 +331,7 @@ Deno.serve(async (req) => {
     const attachSlugs = recipe?.attach_docs?.length ? recipe.attach_docs : ["application", "bank_statement"];
     const docLinkLines: string[] = [];
     const docLinkHtml: string[] = [];
+    let appLinkCount = 0; // app-side signed-application copies actually linked
     for (const slug of attachSlugs) {
       const list = docsByType.get(slug) ?? [];
       for (const d of list) {
@@ -315,8 +341,38 @@ Deno.serve(async (req) => {
         const label = `${docLabel(slug)}${d.filename ? ` (${d.filename})` : ""}`;
         docLinkLines.push(`${label} — ${url}`);
         docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
+        if (slug === "application") appLinkCount++;
       }
     }
+
+    // Merge in the GHL-side merchant uploads, grouped and labelled. Only include
+    // a group the recipe actually asked for: bank statements when the recipe
+    // wants bank_statement, the stips bundle when it wants any non-bank stip.
+    const wantsBank = attachSlugs.includes("bank_statement");
+    const wantsStips = attachSlugs.some((s) => !["application", "signed_application", "bank_statement"].includes(s));
+    const pushGroup = (heading: string, files: Array<{ name: string; url: string }>) => {
+      if (!files.length) return;
+      docLinkLines.push(`${heading} (${files.length}):`);
+      for (const f of files) docLinkLines.push(`  ${f.name} — ${f.url}`);
+      docLinkHtml.push(
+        `<li>${esc(heading)} (${files.length}):<ul style="margin:2px 0">` +
+        files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a></li>`).join("") + `</ul></li>`,
+      );
+    };
+    if (wantsBank) pushGroup("Bank statements", ghlBank);
+    if (wantsStips) pushGroup("Stips documents", ghlStips);
+
+    // Signed application PDFs live in GHL Documents & Contracts (e-sign), which is
+    // API scope-blocked — we cannot fetch them. If the recipe wants the signed
+    // application and no app-side copy exists, say so honestly and warn the closer.
+    let docsWarning: string | undefined;
+    const wantsApp = attachSlugs.some((s) => s === "application" || s === "signed_application");
+    if (wantsApp && appLinkCount === 0) {
+      docLinkLines.push("Signed application: attached separately / available on request");
+      docLinkHtml.push(`<li>Signed application: attached separately / available on request</li>`);
+      docsWarning = "signed application not auto-attached — forward it from GHL";
+    }
+
     const docLinksText = docLinkLines.length ? docLinkLines.join("\n") : "(documents will be sent on request)";
 
     // Portal-only funders: no funder email — return the guided portal flow.
@@ -343,7 +399,7 @@ Deno.serve(async (req) => {
     const sentPayload: Record<string, unknown> = {
       method, to, cc, subject, body: bodyText,
       docLinks: docLinkLines, attachSlugs, attachment_mode: recipe?.attachment_mode ?? "links",
-      usedRecipe: !!recipe, renderedAt: nowIso,
+      docsWarning, usedRecipe: !!recipe, renderedAt: nowIso,
       // links mode only in this phase; note if a recipe asked for real attachments.
       note: (recipe?.attachment_mode && recipe.attachment_mode !== "links")
         ? "attachment_mode requested files but engine sent secure links (Phase 6 pending)"
@@ -360,6 +416,7 @@ Deno.serve(async (req) => {
       results.push({
         lenderId, name, method, status: "portal_pending", submissionId,
         portal: { url: portalUrl, steps: recipe?.portal_steps ?? [], hint: recipe?.portal_credentials_hint ?? null },
+        warning: docsWarning,
       });
       await logActivity(db, dealId, lenderId, name, { portal: true, portalUrl, subject });
       continue;
@@ -404,7 +461,7 @@ Deno.serve(async (req) => {
     results.push({
       lenderId, name, method, submissionId,
       status: emailSent ? "sent" : "send_failed",
-      to, error: emailError, portal: portalOut,
+      to, error: emailError, portal: portalOut, warning: docsWarning,
     });
   }
 

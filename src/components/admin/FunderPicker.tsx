@@ -51,6 +51,7 @@ interface FunderResult {
   status: "sent" | "send_failed" | "portal_pending" | "portal_confirmed" | "blocked" | "already_submitted";
   to?: string;
   error?: string;
+  warning?: string;
   blocked?: string[];
   blockedLabels?: string[];
   portal?: { url: string | null; steps: string[]; hint: string | null };
@@ -477,6 +478,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                     )}
                   </div>
                   {r.error && <p className="text-[11px] text-red-500 mt-0.5">{r.error}</p>}
+                  {r.warning && <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">⚠ {r.warning}</p>}
                   {r.status === "blocked" && (
                     <p className="text-[11px] text-amber-600 mt-0.5">missing: {(r.blockedLabels ?? r.blocked ?? []).join(", ")}</p>
                   )}

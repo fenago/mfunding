@@ -155,6 +155,7 @@ On `/admin/lenders/:id` add a **"Submission recipe"** card:
 | **3** ✅ | Step 6 `FunderPicker` (checkboxes → submit → live results) reusing the matcher | M |
 | **4** ✅ | Portal flow (steps checklist + Mark submitted) | S |
 | **5** ✅ | Admin recipe editor + send-test-to-myself | M |
+| **6a** ✅ | Merge GHL-side merchant docs (FILE_UPLOAD custom fields) into `doc_links` | S |
 | **6** ⬜ | Real file attachments via GHL (vs links) — needs size-limit testing per funder | S/M |
 | Later | offer-parsing from funder reply emails into `deal_submissions`; per-funder SLA nudges (5-day chase); auto-resubmit tier-2 on all-decline | — |
 
@@ -206,6 +207,59 @@ to `ehibjeonqpqskhcvizow` (15 default email recipes seeded for lenders with a
 **Remaining for Phase 6:** real file attachments through the GHL attachments API
 (with per-funder size-limit testing) and actual CC delivery; everything else in
 Phases 1–5 is live.
+
+---
+
+## ✅ Phase 6a — GHL-side docs merged into submissions (shipped 2026-07-02)
+
+The docs a merchant sends back usually land **GHL-side**, not in Supabase storage:
+bank statements + stips sit on the contact's `FILE_UPLOAD` custom fields (from the
+upload form), and signed e-sign PDFs live in GHL Documents & Contracts. v2 only
+linked Supabase-storage docs, so a merchant who uploaded through GHL produced an
+empty Documents section. Fixed:
+
+1. **New shared helper `listContactFileUploads(cfg, contactId)`** in
+   `supabase/functions/_shared/ghl.ts` — enumerates a contact's `FILE_UPLOAD`
+   fields (custom-field id→name map, then `contact.customFields` values with
+   `meta.originalname` + `url`). `ghl-docs-status` was refactored to call it (same
+   output shape, no more duplicated logic), and `submit-to-funders` calls it once
+   per submit (contact-level, same for every funder).
+
+2. **GHL download URLs are PUBLIC — linked directly, no proxy.** Verified against a
+   real contact: `GET services.leadconnectorhq.com/documents/download/{id}` with
+   **no auth header** returns `307` → a short-lived (600s) signed
+   `storage.googleapis.com` URL; following it yields `200` + the real PDF bytes
+   (`%PDF-1.5`, byte size matches the field meta). The leadconnector URL itself is
+   durable (re-issues a fresh signed redirect on each hit), so a funder clicking it
+   within the email's lifetime always resolves. Because it needs no auth, we place
+   it straight into the email body alongside the Supabase secure links — the
+   server-side download-and-re-upload fallback was NOT needed.
+
+3. **Grouping/gating:** GHL files split by field name — `/bank/i` → **"Bank
+   statements"** group, everything else → **"Stips documents"** group. A group is
+   included only when the recipe's `attach_docs` asks for it (`bank_statement` →
+   bank group; any non-bank stip slug → stips group). Rendered as a labelled block,
+   e.g. `Bank statements (4):\n  April Statement.pdf — <url>`. The stips guard now
+   also counts GHL uploads (bank field ⇒ `bank_statement`; other field ⇒ `id` +
+   `voided_check`), mirroring the FunderPicker package check so the UI and engine
+   agree on what's "on file" (the upload form can't tag exact types — closers verify
+   visually).
+
+4. **Signed application (scope-blocked) handled honestly:** e-sign PDFs in GHL
+   Documents & Contracts cannot be fetched via API. If a recipe wants the signed
+   application and no app-side copy exists in `customer_documents`, the engine adds
+   `Signed application: attached separately / available on request` to `doc_links`
+   AND returns a per-funder `warning` ("signed application not auto-attached —
+   forward it from GHL"). The FunderPicker renders that warning under the funder's
+   result row (amber). Stored in `sent_payload.docsWarning` for audit.
+
+**Caveats:** (a) CC delivery + real attachments still Phase 6. (b) The stips bundle
+is untyped — a single non-bank upload marks both `id` and `voided_check` present, so
+a funder requiring a specific stip may pass the guard on a different file; closers
+confirm in the Docs-back panel. (c) Live end-to-end (an actual funder-format email
+with GHL links) is exercised only in NORMAL mode against a real deal with a
+`ghl_contact_id`; the admin "Send test to myself" QA path uses sample `doc_links`
+and does not hit the GHL merge, so verify the merge on the next real submit.
 
 Order matters: after Phase 2–3 the closer already gets the one-click fan-out with the generic format everywhere; recipes then tighten funder-by-funder as you collect each funder's exact requirements into their profile row (that intake = a VA task, one funder at a time, using each funder's ISO agreement/submission guidelines).
 
