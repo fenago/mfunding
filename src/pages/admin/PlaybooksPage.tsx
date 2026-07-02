@@ -681,8 +681,10 @@ function StepCard({
   const [outcome, setOutcome] = useState("call");
   const [checked, setChecked] = useState<string[]>([]);
 
-  // Tiny jargon popover ("What's BANT-F?") — toggled from the title row.
-  const [showExplain, setShowExplain] = useState(false);
+  // Tiny jargon popovers ("What's BANT-F?", sizing rules) — toggled from the
+  // title row; a step can carry several.
+  const explains = step.explain ? (Array.isArray(step.explain) ? step.explain : [step.explain]) : [];
+  const [showExplain, setShowExplain] = useState<number | null>(null);
 
   // Accordion: completed steps fold up so the closer lands on the live one.
   // Click the title row to peek at a folded step. Everything stays expanded
@@ -733,16 +735,17 @@ function StepCard({
         >
           <ArrowRightIcon className={`w-3.5 h-3.5 text-gray-400 transition-transform ${openCard ? "rotate-90" : ""}`} />
           <h3 className="font-semibold text-gray-900 dark:text-white">{step.title}</h3>
-          {step.explain && (
+          {explains.map((ex, i) => (
             <button
+              key={i}
               type="button"
-              onClick={(e) => { e.stopPropagation(); setShowExplain((s) => !s); }}
-              className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-ocean-blue/40 text-ocean-blue hover:bg-ocean-blue/10"
-              title={step.explain.label}
+              onClick={(e) => { e.stopPropagation(); setShowExplain((s) => (s === i ? null : i)); }}
+              className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${showExplain === i ? "bg-ocean-blue text-white border-ocean-blue" : "border-ocean-blue/40 text-ocean-blue hover:bg-ocean-blue/10"}`}
+              title={ex.label}
             >
-              ⓘ {step.explain.label}
+              ⓘ {ex.label}
             </button>
-          )}
+          ))}
           {done && (
             <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
               <CheckCircleIcon className="w-3 h-3" /> Done{doneAt ? ` · ${fmtWhen(doneAt)}` : ""}
@@ -766,14 +769,14 @@ function StepCard({
         </div>
 
         {/* Jargon popover — renders even when the card is folded */}
-        {step.explain && showExplain && (
+        {showExplain !== null && explains[showExplain] && (
           <div className="mt-3 rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-3">
-            {step.explain.intro && (
-              <p className="text-xs font-medium text-gray-700 dark:text-gray-200 mb-2">{step.explain.intro}</p>
+            {explains[showExplain].intro && (
+              <p className="text-xs font-medium text-gray-700 dark:text-gray-200 mb-2">{explains[showExplain].intro}</p>
             )}
             <table className="w-full text-xs">
               <tbody>
-                {step.explain.rows.map(([term, means, q], i) => (
+                {explains[showExplain].rows.map(([term, means, q], i) => (
                   <tr key={i} className="align-top border-t border-ocean-blue/10 first:border-t-0">
                     <td className="py-1.5 pr-3 font-semibold text-ocean-blue whitespace-nowrap">{term}</td>
                     <td className="py-1.5 pr-3 text-gray-700 dark:text-gray-200">{means}</td>

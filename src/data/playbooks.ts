@@ -21,6 +21,29 @@ export interface StepField {
   hint?: string;
 }
 
+export interface PlaybookExplain {
+  label: string;
+  intro?: string;
+  rows: [string, string, string][];
+}
+
+// Industry sizing heuristic — surfaced as a drop-down wherever the closer
+// captures the amount or presents offers, so expectations get set correctly.
+export const APPROVAL_SIZING_EXPLAIN: PlaybookExplain = {
+  label: "How much will they approve?",
+  intro:
+    "Rule of thumb: a clean FIRST-position MCA approves ≈ 70–110% of average monthly revenue — funders compute that average themselves from the 3–4 months of statements. Set the merchant's expectation at about one month of revenue.",
+  rows: [
+    ["⬇ Existing positions", "The biggest cut — each open advance eats repayment capacity", "2+ open positions → maybe 30–50% of monthly, or a decline (route to VCF)"],
+    ["⬇ Weak banking", "Low daily balances, NSFs, lumpy/declining deposits shrink offers", "Funders read the statements harder than the revenue number"],
+    ["⬇ C/D paper", "Short time-in-business, rough credit, risky industry", "Expect 50–70% of monthly revenue"],
+    ["⛓ The real constraint", "Funders size the PAYMENT, not the amount", "The daily/weekly pull must stay ~8–15% of monthly revenue"],
+    ["⬆ Strong file", "Consistent deposits + healthy balances (A/B paper)", "Can clear 100%+ of monthly"],
+    ["⬆ Renewals", "Proven repayment history unlocks bigger rounds", "1.2–1.5× monthly at 40–60% paydown — the renewal pipeline's whole play"],
+    ["🗣 Say it out loud", "“Funders typically approve around one month's revenue.”", "A $16K offer on $18K/mo then lands as a win, not a letdown"],
+  ],
+};
+
 export interface PlaybookStep {
   n: number;
   title: string;
@@ -40,9 +63,9 @@ export interface PlaybookStep {
   /** Collapsible how-to for rare-but-important maneuvers (rendered as a
    * fold-out so it doesn't clutter the happy path). */
   howto?: { title: string; steps: string[]; warn?: string };
-  /** Tiny "what does this mean?" popover next to the title — for jargon like
-   * BANT-F. rows = [letter/term, meaning, the question you ask]. */
-  explain?: { label: string; intro?: string; rows: [string, string, string][] };
+  /** Tiny "what does this mean?" popovers next to the title — for jargon like
+   * BANT-F or sizing rules. rows = [term, meaning, detail/question]. */
+  explain?: PlaybookExplain | PlaybookExplain[];
 }
 
 // Shared field sets so MCA flows capture the same qualifiers.
@@ -140,6 +163,7 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
     stageKey: "offer_presented",
     automation: "MCA 09 — Offer Presented",
     sla: "70–80% acceptance",
+    explain: APPROVAL_SIZING_EXPLAIN,
     do: [
       "Log each funder offer on the Submissions tab (amount, factor, term, payment) as they arrive; Status → Offer Received.",
       "Email the best 2+ offers side-by-side and walk the merchant through them on a call; Status → Offer Presented.",
@@ -226,7 +250,7 @@ export const PLAYBOOKS: Playbook[] = [
       {
         n: 3,
         title: "Qualify (BANT-F)",
-        explain: {
+        explain: [{
           label: "What's BANT-F?",
           intro: "The 5 qualification checks — run them before you invest the pitch:",
           rows: [
@@ -236,7 +260,7 @@ export const PLAYBOOKS: Playbook[] = [
             ["T — Timeline", "How urgent is it?", "“How soon do you need the funding?”"],
             ["F — Fundability", "Can a funder approve them?", "6+ months in business · industry not prohibited · existing advances (≥2 → route to VCF)"],
           ],
-        },
+        }, APPROVAL_SIZING_EXPLAIN],
         stageKey: "qualifying",
         automation: "MCA 03 — Qualifying",
         do: [
@@ -300,6 +324,7 @@ export const PLAYBOOKS: Playbook[] = [
         say: "How long have you been running [Business Name]? … Ballpark monthly revenue? … And what would the capital go toward — payroll, inventory, cash flow?",
         collect: ["6+ months in business", "$15K+/mo revenue", "Use of funds", "Not a prohibited industry"],
         fields: MCA_QUALIFY_FIELDS,
+        explain: APPROVAL_SIZING_EXPLAIN,
         note: "Under 6 months or under $15K/mo → exit politely and tag soft-no (it routes to nurture).",
         tone: "branch",
       },
