@@ -103,39 +103,43 @@ export default function PlaybookCapture({
 
   const set = (k: keyof typeof emptyForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
-  // Selecting an existing customer pre-populates immediately:
-  //  - if they have an OPEN deal of this type, load it straight into the guided
-  //    workspace (context bar + step fields fill in — no extra click), and
-  //  - otherwise prefill this form's attribution from their most recent deal.
-  useEffect(() => {
-    if (mode !== "existing" || !existingId) return;
-    let cancelled = false;
-    (async () => {
+  // ONE CLICK on an existing customer does the right thing immediately:
+  //  - open deal of this type → load it into the guided workspace (resume), or
+  //  - only closed history / brand new → create a fresh deal (carrying their
+  //    last market/source/campaign/closer forward) and load that.
+  const [picking, setPicking] = useState<string | null>(null);
+  async function pickCustomer(customerId: string) {
+    setError(null);
+    setPicking(customerId);
+    try {
       const { data } = await supabase
         .from("deals")
         .select("*")
-        .eq("customer_id", existingId)
+        .eq("customer_id", customerId)
         .eq("deal_type", isVcf ? "vcf" : "mca")
         .order("created_at", { ascending: false })
         .limit(1);
-      if (cancelled || !data || data.length === 0) return;
-      const last = data[0] as Deal;
-      if (!CLOSED_STATUSES.includes(last.status) && onCreated) {
-        onCreated(last); // open deal → resume it right away
+      const last = (data?.[0] as Deal | undefined) ?? null;
+      if (last && !CLOSED_STATUSES.includes(last.status)) {
+        onCreated?.(last); // resume the open deal
         return;
       }
-      // Closed history → carry their attribution forward for the new deal.
-      setForm((f) => ({
-        ...f,
-        market: (last.market as Market) || f.market,
-        lead_source: last.lead_source || f.lead_source,
-        campaign_id: last.campaign_id || "",
-        assigned_closer_id: last.assigned_closer_id || "",
-        notes: f.notes,
-      }));
-    })();
-    return () => { cancelled = true; };
-  }, [existingId, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+      const deal = await createDeal({
+        customer_id: customerId,
+        deal_type: isVcf ? "vcf" : "mca",
+        status: defaults.startStatus,
+        lead_source: last?.lead_source || defaults.leadSource,
+        campaign_id: last?.campaign_id || null,
+        market: (last?.market as Market) || undefined,
+        assigned_closer_id: last?.assigned_closer_id || undefined,
+      });
+      onCreated?.(deal);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load that customer. Please try again.");
+    } finally {
+      setPicking(null);
+    }
+  }
 
   const filteredCustomers = customers.filter((c) => {
     if (!customerSearch) return true;
@@ -335,20 +339,34 @@ export default function PlaybookCapture({
                     value={customerSearch}
                     onChange={(e) => setCustomerSearch(e.target.value)}
                     className="input-field w-full mb-2"
+                    autoFocus
                   />
-                  <select
-                    value={existingId}
-                    onChange={(e) => setExistingId(e.target.value)}
-                    className="input-field w-full"
-                  >
-                    <option value="">Select a customer</option>
-                    {filteredCustomers.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.first_name} {c.last_name}
-                        {c.business_name ? ` — ${c.business_name}` : ""}
-                      </option>
+                  <div className="rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700 overflow-hidden bg-white dark:bg-gray-800">
+                    {filteredCustomers.slice(0, 8).map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        disabled={picking !== null}
+                        onClick={() => pickCustomer(c.id)}
+                        className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left text-sm hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-60"
+                      >
+                        <span className="text-gray-900 dark:text-white">
+                          {c.first_name} {c.last_name}
+                          {c.business_name ? <span className="text-gray-500"> — {c.business_name}</span> : null}
+                        </span>
+                        <span className="shrink-0 inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue">
+                          {picking === c.id ? "Loading…" : "Work this lead"} <ArrowRightIcon className="w-3.5 h-3.5" />
+                        </span>
+                      </button>
                     ))}
-                  </select>
+                    {filteredCustomers.length === 0 && (
+                      <p className="px-3 py-3 text-sm text-gray-500">No customers match — switch to “+ New lead”.</p>
+                    )}
+                  </div>
+                  <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                    One click does it: their open deal loads right here — or, if their last deal closed, a fresh one starts
+                    with their market / source / closer carried over.
+                  </p>
                 </div>
               ) : (
                 <div className="grid sm:grid-cols-2 gap-3">
@@ -370,6 +388,7 @@ export default function PlaybookCapture({
                 </div>
               )}
 
+              {mode === "new" && (<>
               {/* Qualifiers are captured inline at the Qualify step — not here. */}
               <p className="text-xs text-gray-500 dark:text-gray-400 rounded-md bg-white/60 dark:bg-gray-800/60 border border-dashed border-gray-300 dark:border-gray-600 px-3 py-2">
                 Name + phone is all you need to start. You'll capture {isVcf ? "positions, balances and daily debit" : "revenue, amount requested and time-in-business"} right inside the <span className="font-medium">Qualify</span> step below — as you ask each question, so you're never scrolling back up here.
@@ -426,9 +445,10 @@ export default function PlaybookCapture({
                   Tagging the campaign here is what makes the cost-per-funded math work.
                 </p>
                 <button type="submit" disabled={saving} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
-                  {saving ? "Saving…" : mode === "existing" ? "Update lead" : isVcf ? "Save VCF lead" : "Save lead"}
+                  {saving ? "Saving…" : isVcf ? "Save VCF lead" : "Save lead"}
                 </button>
               </div>
+              </>)}
             </form>
           )}
         </div>

@@ -527,21 +527,22 @@ function StepCard({
 
         {/* White-glove option — fill the app FOR them BEFORE sending, so it arrives signature-only */}
         {step.stageKey === "application_sent" && interactive && !done && (
-          <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-            <span className="font-semibold">White-glove option:</span> filling the app <em>for</em> them while they're on
-            the phone? {deal?.ghl_contact_id ? (
+          <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-3 text-xs text-amber-800 dark:text-amber-200">
+            <p>
+              <span className="font-semibold">📝 Fill the application FOR them (do this first):</span> while they're on
+              the phone, enter the app fields — SSN, DOB, driver's license, home address, bank details — as they read
+              them to you. Those fields pre-fill the document, so all they do is <b>tap to sign</b>. <b>Then</b> hit Send
+              below.
+            </p>
+            {deal?.ghl_contact_id && (
               <a
                 href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${deal.ghl_contact_id}`}
-                target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline font-medium"
+                target="_blank" rel="noreferrer"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-white font-semibold hover:opacity-90"
               >
-                Open their GHL contact ↗
+                Fill the application — open their contact ↗
               </a>
-            ) : (
-              <span className="font-medium">open their GHL contact</span>
-            )}{" "}
-            and enter the application fields (SSN, DOB, driver's license, home address, bank details) as they read them to
-            you — <span className="font-semibold">then</span> hit Send below. The application arrives pre-filled and all
-            they do is review + sign.
+            )}
           </div>
         )}
 

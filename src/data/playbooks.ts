@@ -68,6 +68,99 @@ export interface Playbook {
   steps: PlaybookStep[];
 }
 
+// Steps 4–9 of the MCA close — SHARED by the Website Lead and Live Transfer
+// playbooks (a live transfer just reaches Qualifying faster; the close is
+// identical). One source of truth so both flows always match.
+const MCA_CLOSE_STEPS: PlaybookStep[] = [
+  {
+    n: 4,
+    title: "Send the application + e-sign docs",
+    stageKey: "application_sent",
+    automation: "MCA 04 — Application + Disclosure",
+    sla: "Same day; submit target < 24h",
+    cta: "Send the docs (moves to Application Sent)",
+    do: [
+      "FIRST, while they're on the phone: fill the application FOR them. Open their GHL contact (button below) and type the app fields — SSN, DOB, driver's license, home address, bank details — as they read them to you. Those fields pre-fill the document, so all they do is tap to sign.",
+      "Then hit the button below — THAT is the send. It moves the deal to Application Sent, pushes it to GHL, and MCA 04 emails the merchant everything. Nothing else to click.",
+      "MCA 04 auto-sends the merchant: (1) the Merchant Funding Application to complete + e-sign — your full application (all 7 sections) in GHL Documents & Contracts; this is the exact document funders accept, and they fill the fields and sign in one flow; (2) the Broker Compensation Disclosure to e-sign; and (3) a secure link to the 'Bank Statements & Documents Upload' form for their last 4 months of statements, photo ID, and voided check.",
+      "Confirm it went out on the deal's Activity / Conversations tab. Reminders auto-fire at +4h and Day 1 until they sign + submit.",
+    ],
+    say: "Based on what you told me, you look like a solid fit. While I have you, let me take down a few details so your application arrives already filled out — then all you do is tap to sign. … Perfect, it's on its way along with a quick disclosure and a secure upload link. If you can snap photos of your ID and a voided check right now, we're 90% done — the bank statements you can upload tonight from the same link; it keeps working and each upload just adds on.",
+    note: "The signed application + disclosure come back automatically into GHL (signed PDFs attach to their contact). Bank statements / ID / voided check are NOT e-signed — they come back via the upload form (see step 5).",
+  },
+  {
+    n: 5,
+    title: "Collect docs + bank statements",
+    stageKey: "bank_statements",
+    automation: "MCA 06 — Bank Statements (Sequence A) ⭐",
+    sla: "14-day email chase — stop the instant statements arrive",
+    tone: "leak",
+    do: [
+      "Get the stips + last 4 months of bank statements via the secure 'Bank Statements & Documents Upload' link.",
+      "Review what's in via Admin → Doc Review (/admin/documents) and the deal's Documents tab.",
+      "Move Status → Docs Collected, then → Bank Statements as items arrive. The Sequence A email cadence chases anything missing.",
+    ],
+    collect: ["Merchant Funding Application (completed + e-signed)", "Broker Compensation Disclosure (e-signed)", "Owner photo ID", "Voided business check", "Proof of business ownership", "Last 4 months bank statements (upload)"],
+    say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Upload your last 4 statements with the secure link in my email, or reply with photos.",
+    route: { to: "/admin/documents", label: "Admin → Doc Review" },
+    note: "TWO RAILS for docs coming back: (1) the Merchant Funding Application + Broker Compensation Disclosure return automatically e-signed via GHL Documents & Contracts — signed PDFs attach to the contact. (2) Bank statements + ID + voided check + proof of ownership arrive via the GHL 'Bank Statements & Documents Upload' form. PARTIAL IS FINE: the upload link keeps working and every new submission ADDS files to the same contact — get the e-sign + ID + voided check while they're on the phone, and Sequence A chases whatever's still missing. #1 FUNNEL LEAK — chase fast.",
+  },
+  {
+    n: 6,
+    title: "Submit to 3–5 funders",
+    stageKey: "submitted_to_funder",
+    automation: "MCA 07 — Submission Orchestrator (submit-to-funders fn)",
+    sla: "5-day SLA per funder",
+    do: [
+      "Open the deal → Submissions tab. Review the matched lenders (auto-scored) and pick 3–5.",
+      "Click Submit to send the package (signed app + statements + stips) to all of them at once; Status moves to Submitted to Funders.",
+      "If all decline → resubmit to the tier-2 / specialty set, or route to VCF if stacked.",
+    ],
+    route: { to: "/admin/deals", label: "Deal → Submissions tab" },
+    say: "Great news — I've sent your file to our top funding partners. They usually respond in 24–48 hours and I'll email you the moment offers come in.",
+  },
+  {
+    n: 7,
+    title: "Present offers (always 2+)",
+    stageKey: "offer_presented",
+    automation: "MCA 09 — Offer Presented",
+    sla: "70–80% acceptance",
+    do: [
+      "Log each funder offer on the Submissions tab (amount, factor, term, payment) as they arrive; Status → Offer Received.",
+      "Email the best 2+ offers side-by-side and walk the merchant through them on a call; Status → Offer Presented.",
+    ],
+    say: "I've got two options. Option A is more capital with slightly higher payments; Option B is lower payments. Which feels better for your weekly cash flow?",
+  },
+  {
+    n: 8,
+    title: "Accept + e-sign",
+    stageKey: "offer_accepted",
+    automation: "MCA 10 — Offer Accepted",
+    do: [
+      "Mark the chosen offer Accepted on the Submissions tab; Status → Offer Accepted.",
+      "Send the funder agreement for e-signature; the automation emails reminders at +4h, Day 1, Day 2. Ops coordinates funding.",
+    ],
+    say: "Perfect — I'm emailing the contract now. Quick e-signature, about 2 minutes. Once you sign, the funder finalizes and you should see funds by [date].",
+  },
+  {
+    n: 9,
+    title: "Funded → renewal pipeline",
+    stageKey: "funded",
+    automation: "MCA 11 — Funded → Renewal",
+    tone: "win",
+    do: [
+      "When the funder confirms the deposit, move Status → Funded. Commission auto-calculates (see Admin → Commissions).",
+      "The Day-1 congrats + Google review + referral-ask email fires automatically.",
+      "Renewal triggers arm off Paydown %. Watch them in Admin → Renewals (/admin/renewals).",
+    ],
+    fields: [
+      { key: "amount_funded", label: "Amount funded ($)", kind: "money", target: "deal", column: "amount_funded", placeholder: "50000", hint: "Saving this + marking Funded auto-creates the commission." },
+    ],
+    route: { to: "/admin/renewals", label: "Admin → Renewals" },
+    say: "Congrats [First Name]! The capital should be in your account. If you know any owners who need capital, I'll send you a $100 gift card for every funded referral.",
+  },
+];
+
 export const PLAYBOOKS: Playbook[] = [
   // ─────────────────────────────────────────── WEBSITE LEAD ───────────────────────────────────────────
   {
@@ -136,92 +229,7 @@ export const PLAYBOOKS: Playbook[] = [
         fields: MCA_QUALIFY_FIELDS,
         tone: "branch",
       },
-      {
-        n: 4,
-        title: "Send the application + e-sign docs",
-        stageKey: "application_sent",
-        automation: "MCA 04 — Application + Disclosure",
-        sla: "Same day; submit target < 24h",
-        cta: "Send the docs (moves to Application Sent)",
-        do: [
-          "Hit the button below — THAT is the send. It moves the deal to Application Sent, pushes it to GHL, and MCA 04 emails the merchant everything. Nothing else to click.",
-          "MCA 04 auto-sends the merchant: (1) the Merchant Funding Application to complete + e-sign — your full application (all 7 sections) in GHL Documents & Contracts; this is the exact document funders accept, and they fill the fields and sign in one flow; (2) the Broker Compensation Disclosure to e-sign; and (3) a secure link to the 'Bank Statements & Documents Upload' form for their last 4 months of statements, photo ID, and voided check.",
-          "Confirm it went out on the deal's Activity / Conversations tab. Reminders auto-fire at +4h and Day 1 until they sign + submit.",
-        ],
-        say: "Based on what you told me, you look like a solid fit. I'm emailing you the funding application to complete and e-sign, a quick disclosure, and a secure link to upload your documents. Let's knock out the e-signature right now while I'm on with you — it takes about three minutes — and if you can snap photos of your ID and a voided check, we're 90% done. The bank statements you can upload tonight from the same link; it keeps working and each upload just adds on.",
-        note: "The signed application + disclosure come back automatically into GHL (signed PDFs attach to their contact). Bank statements / ID / voided check are NOT e-signed — they come back via the upload form (see step 5).",
-      },
-      {
-        n: 5,
-        title: "Collect docs + bank statements",
-        stageKey: "bank_statements",
-        automation: "MCA 06 — Bank Statements (Sequence A) ⭐",
-        sla: "14-day email chase — stop the instant statements arrive",
-        tone: "leak",
-        do: [
-          "Get the stips + last 4 months of bank statements via the secure 'Bank Statements & Documents Upload' link.",
-          "Review what's in via Admin → Doc Review (/admin/documents) and the deal's Documents tab.",
-          "Move Status → Docs Collected, then → Bank Statements as items arrive. The Sequence A email cadence chases anything missing.",
-        ],
-        collect: ["Merchant Funding Application (completed + e-signed)", "Broker Compensation Disclosure (e-signed)", "Owner photo ID", "Voided business check", "Proof of business ownership", "Last 4 months bank statements (upload)"],
-        say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Upload your last 4 statements with the secure link in my email, or reply with photos.",
-        route: { to: "/admin/documents", label: "Admin → Doc Review" },
-        note: "TWO RAILS for docs coming back: (1) the Merchant Funding Application + Broker Compensation Disclosure return automatically e-signed via GHL Documents & Contracts — signed PDFs attach to the contact. (2) Bank statements + ID + voided check + proof of ownership arrive via the GHL 'Bank Statements & Documents Upload' form. PARTIAL IS FINE: the upload link keeps working and every new submission ADDS files to the same contact — get the e-sign + ID + voided check while they're on the phone, and Sequence A chases whatever's still missing. #1 FUNNEL LEAK — chase fast.",
-      },
-      {
-        n: 6,
-        title: "Submit to 3–5 funders",
-        stageKey: "submitted_to_funder",
-        automation: "MCA 07 — Submission Orchestrator (submit-to-funders fn)",
-        sla: "5-day SLA per funder",
-        do: [
-          "Open the deal → Submissions tab. Review the matched lenders (auto-scored) and pick 3–5.",
-          "Click Submit to send the package (signed app + statements + stips) to all of them at once; Status moves to Submitted to Funders.",
-          "If all decline → resubmit to the tier-2 / specialty set, or route to VCF if stacked.",
-        ],
-        route: { to: "/admin/deals", label: "Deal → Submissions tab" },
-        say: "Great news — I've sent your file to our top funding partners. They usually respond in 24–48 hours and I'll email you the moment offers come in.",
-      },
-      {
-        n: 7,
-        title: "Present offers (always 2+)",
-        stageKey: "offer_presented",
-        automation: "MCA 09 — Offer Presented",
-        sla: "70–80% acceptance",
-        do: [
-          "Log each funder offer on the Submissions tab (amount, factor, term, payment) as they arrive; Status → Offer Received.",
-          "Email the best 2+ offers side-by-side and walk the merchant through them on a call; Status → Offer Presented.",
-        ],
-        say: "I've got two options. Option A is more capital with slightly higher payments; Option B is lower payments. Which feels better for your weekly cash flow?",
-      },
-      {
-        n: 8,
-        title: "Accept + e-sign",
-        stageKey: "offer_accepted",
-        automation: "MCA 10 — Offer Accepted",
-        do: [
-          "Mark the chosen offer Accepted on the Submissions tab; Status → Offer Accepted.",
-          "Send the funder agreement for e-signature; the automation emails reminders at +4h, Day 1, Day 2. Ops coordinates funding.",
-        ],
-        say: "Perfect — I'm emailing the contract now. Quick e-signature, about 2 minutes. Once you sign, the funder finalizes and you should see funds by [date].",
-      },
-      {
-        n: 9,
-        title: "Funded → renewal pipeline",
-        stageKey: "funded",
-        automation: "MCA 11 — Funded → Renewal",
-        tone: "win",
-        do: [
-          "When the funder confirms the deposit, move Status → Funded. Commission auto-calculates (see Admin → Commissions).",
-          "The Day-1 congrats + Google review + referral-ask email fires automatically.",
-          "Renewal triggers arm off Paydown %. Watch them in Admin → Renewals (/admin/renewals).",
-        ],
-        fields: [
-          { key: "amount_funded", label: "Amount funded ($)", kind: "money", target: "deal", column: "amount_funded", placeholder: "50000", hint: "Saving this + marking Funded auto-creates the commission." },
-        ],
-        route: { to: "/admin/renewals", label: "Admin → Renewals" },
-        say: "Congrats [First Name]! The capital should be in your account. If you know any owners who need capital, I'll send you a $100 gift card for every funded referral.",
-      },
+      ...MCA_CLOSE_STEPS,
     ],
   },
 
@@ -234,32 +242,35 @@ export const PLAYBOOKS: Playbook[] = [
     revenue: "≈ $4,000 avg commission per funded deal · lead cost $50–$100/transfer",
     entry: "Vendor transfers a live call (Lead Tycoons, Synergy, Exclusive, MCA Leads Pro, Master MCA)",
     workFrom: {
-      screen: "Admin → Deals → New Deal — open it the second you pick up",
-      route: "/admin/deals",
+      screen: "THIS page — start the lead in the green box the second you pick up",
+      route: "/admin/playbooks",
       appNote:
-        "There's no customer yet — you create one live. Open Admin → Deals → New Deal, switch the customer toggle to “+ New customer”, and type their name, business, phone and email as you talk. Saving creates the lead + the deal AND pushes the contact into GoHighLevel (fires Speed-to-Lead) — no dead end. The merchant finishes the full application on their own via the link you email (it opens /apply).",
+        "There's no customer yet — you create one live, right here. Type their first name + phone into the capture box at the top AS YOU TALK and hit Save lead: that creates the customer + the MCA deal AND pushes the contact into GoHighLevel (fires Speed-to-Lead). Then just work the steps below — the qualify answers, the doc send, everything happens on this page.",
     },
     steps: [
       {
         n: 1,
-        title: "Pick up AND open New Deal (0–15s)",
+        title: "Pick up AND start the lead above (0–15s)",
         stageKey: "new",
         sla: "First touch < 60 seconds — you're already on the call",
         tone: "speed",
         do: [
           "Pick up energized — the merchant is LIVE and expecting you; treat it like you called them.",
-          "Immediately open Admin → Deals → click New Deal, and switch the customer toggle to “+ New customer” (they're not in the system yet).",
-          "Type their first name, business, phone and email into the new-customer fields AS YOU TALK — don't wait until after the call.",
+          "In the green capture box at the top of this page: type their first name + phone AS YOU TALK, set Lead Source = Live Transfer and pick the Campaign (e.g. '$3,000 Live Leads — June'), assign yourself as Closer, and hit Save lead.",
+          "That one save creates the customer + deal and pushes them into GoHighLevel — the steps below light up and you work everything from here.",
           "Confirm you're speaking with the owner before you invest the pitch.",
         ],
-        route: { to: "/admin/deals", label: "Admin → Deals → New Deal" },
         say: "Hi, is this [First Name]? This is [Closer] with Momentum Funding — I see you're looking for working capital. Quick question: are you the owner of [Business Name]?",
+        note: "Tagging the Campaign at save is what makes the cost-per-funded math work in Admin → Campaigns.",
       },
       {
         n: 2,
         title: "Qualify in 3 quick questions (next 30s)",
         stageKey: "contacted",
-        do: ["Rapid-fire, conversational. Listen for disqualifiers (exit politely if they fail)."],
+        do: [
+          "Rapid-fire, conversational — type each answer into the fields below as they say it. Listen for disqualifiers (exit politely if they fail).",
+          "Saving this step logs the call and marks them Contacted (you spoke live).",
+        ],
         say: "How long have you been running [Business Name]? … Ballpark monthly revenue? … And what would the capital go toward — payroll, inventory, cash flow?",
         collect: ["6+ months in business", "$15K+/mo revenue", "Use of funds", "Not a prohibited industry"],
         fields: MCA_QUALIFY_FIELDS,
@@ -268,37 +279,16 @@ export const PLAYBOOKS: Playbook[] = [
       },
       {
         n: 3,
-        title: "The ask — email the application",
+        title: "Lock it in — mark them Qualifying",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
         do: [
-          "Lock the next step: tell them you're emailing the application right now while you're on the call.",
-          "Confirm the best email address out loud and that they can open it today.",
+          "They passed the 3 questions — save this step to move them to Qualifying while you set up the send.",
+          "Tell them what's coming next so the emails don't surprise them: the application to e-sign + a secure upload link.",
         ],
-        say: "Based on what you've told me, you likely qualify. I'm going to email you a 3-minute application right now — no cost, zero credit impact. What's the best email? … Sending it now from Momentum. Open it when you can and I'll follow up tomorrow.",
+        say: "Based on what you've told me, you qualify. Stay with me two more minutes — I'm going to take down a few details and send your application over so it arrives already filled out. All you'll do is tap to sign.",
       },
-      {
-        n: 4,
-        title: "Finish + save the deal you opened in step 1",
-        stageKey: "contacted",
-        automation: "MCA 02 — No Answer Nurture (fires if no app in 2h)",
-        sla: "Before you hang up / right after",
-        do: [
-          "Finish the New Deal form: Product Type = MCA, Amount, Market, assign yourself as Closer.",
-          "Set Lead Source = Live Transfer and choose the Campaign (e.g. '$3,000 Live Leads — June') so this transfer counts against that spend.",
-          "Save — this creates the customer + deal and pushes the contact to GoHighLevel. The deal opens at stage New; move Status → Contacted (you already spoke live).",
-          "Email the application link now and log the call in the Activity tab.",
-        ],
-        route: { to: "/admin/deals", label: "Deal page → set Contacted" },
-        note: "Tagging the Campaign here is what makes the cost-per-funded math work in Admin → Campaigns.",
-      },
-      {
-        n: 5,
-        title: "Then follow the Website Lead flow",
-        do: [
-          "From here it's the same MCA path: Qualifying → Application Sent → Docs/Bank Statements → Submit → Offers → Funded.",
-          "Open the Website Lead playbook (tab above) for steps 3–9 with the exact screens.",
-        ],
-        note: "A live transfer just reaches 'Contacted' faster — the rest of the pipeline and automations are identical.",
-      },
+      ...MCA_CLOSE_STEPS,
     ],
   },
 
