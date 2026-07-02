@@ -28,7 +28,9 @@ import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import type { DealWithCustomer, DealStatus, Deal } from "../../types/deals";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
-import { expectedCommissionInPlay } from "../../types/commissions";
+import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commissions";
+import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits";
+import { CalculatorIcon } from "@heroicons/react/24/outline";
 
 const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
   mca: Object.fromEntries(MCA_PIPELINE.stages.map((s) => [s.key, s.label])),
@@ -74,6 +76,7 @@ export default function PlaybooksPage() {
   const [deal, setDeal] = useState<DealWithCustomer | null>(null);
   const [busyStep, setBusyStep] = useState<number | null>(null);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
+  const { splits, hasCloser } = useCloserSplits();
 
   // The deal is "live" in this playbook only when its pipeline matches the open tab.
   const dealMatchesPlaybook = !!deal && pipelineOf(deal.deal_type) === active.pipeline;
@@ -206,6 +209,9 @@ export default function PlaybooksPage() {
         })}
       </div>
 
+      {/* My commission calculator */}
+      <CommissionCalculator splits={splits} hasCloser={hasCloser} />
+
       {/* Steps */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
         <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-4">
@@ -216,7 +222,7 @@ export default function PlaybooksPage() {
 
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
         {dealMatchesPlaybook && deal ? (
-          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} />
+          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} splits={splits} hasCloser={hasCloser} />
         ) : (
           <div className="mb-6 space-y-3">
             {deal && !dealMatchesPlaybook && (
@@ -365,11 +371,14 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, onClear, onAdvance }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void }) {
+function DealContextBar({ deal, pipeline, onClear, onAdvance, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; splits: CloserSplits; hasCloser: boolean }) {
   const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
   const idx = stages.findIndex((s) => s.key === deal.status);
   const cfg = DEAL_STATUS_CONFIG[deal.status];
   const terminal = TERMINAL.includes(deal.status);
+  const inPlay = expectedCommissionInPlay(deal.amount_requested, deal.is_renewal);
+  // Company-lead split is the assumed default here (lead-source-aware later).
+  const myCut = inPlay * (splits.company_lead_split / 100);
   return (
     <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -384,10 +393,17 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance }: { deal: DealWith
         </div>
         <div className="flex items-center gap-2">
           {deal.amount_requested ? (
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-              title="Potential gross commission at the requested amount (amount × points)">
-              ≈ ${Math.round(expectedCommissionInPlay(deal.amount_requested, deal.is_renewal)).toLocaleString()} in play
-            </span>
+            <>
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                title="Potential gross commission at the requested amount (amount × points)">
+                ≈ ${Math.round(inPlay).toLocaleString()} in play
+              </span>
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white dark:bg-emerald-600"
+                title={`Your cut at your ${splits.company_lead_split}% company-lead split${hasCloser ? "" : " (default rate)"}`}>
+                your cut ≈ ${Math.round(myCut).toLocaleString()}
+                <span className="ml-1 font-normal opacity-90">· {splits.company_lead_split}% company-lead split</span>
+              </span>
+            </>
           ) : null}
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${cfg?.bgColor} ${cfg?.color}`}>
             {cfg?.label ?? deal.status}
@@ -420,6 +436,142 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance }: { deal: DealWith
         You're working this lead. Fill in each step below — it saves to the deal, logs the call, and advances the stage. Or
         click a stage above to jump the lead there.
       </p>
+    </div>
+  );
+}
+
+// ───────────────────────── Commission calculator ─────────────────────────
+// Compact "what do I make on this deal?" calculator for the signed-in closer.
+// Uses their own splits (or default 30/65/30 when they have no closers row).
+
+function CommissionCalculator({ splits, hasCloser }: { splits: CloserSplits; hasCloser: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState<number>(COMMISSION_DEFAULTS.AVERAGE_DEAL_SIZE);
+  const [isRenewal, setIsRenewal] = useState(false);
+  const [selfGen, setSelfGen] = useState(false);
+
+  const points = isRenewal ? COMMISSION_DEFAULTS.RENEWAL_POINTS : COMMISSION_DEFAULTS.NEW_DEAL_POINTS;
+  const gross = expectedCommissionInPlay(amount, isRenewal);
+  // Renewals always use the renewal split; new deals use company vs. self-gen.
+  const splitPct = isRenewal
+    ? splits.renewal_split
+    : selfGen
+      ? splits.self_gen_split
+      : splits.company_lead_split;
+  const myCut = gross * (splitPct / 100);
+  const house = gross - myCut;
+
+  const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-5 py-3 flex items-center justify-between text-left"
+      >
+        <span className="flex items-center gap-2 font-semibold text-gray-900 dark:text-white">
+          <CalculatorIcon className="w-5 h-5 text-emerald-600" /> 💰 My commission calculator
+        </span>
+        <span className="flex items-center gap-2">
+          {!hasCloser && (
+            <span className="text-[10px] uppercase px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+              default rates
+            </span>
+          )}
+          <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-90" : ""}`} />
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 space-y-4">
+          <div className="grid gap-4 sm:grid-cols-3">
+            {/* Funded amount */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Funded amount</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={amount}
+                  onChange={(e) => setAmount(Math.max(0, Number(e.target.value)))}
+                  className="input-field w-full pl-6"
+                />
+              </div>
+            </div>
+
+            {/* Deal kind */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Deal kind</label>
+              <div className="inline-flex w-full rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-sm">
+                <button
+                  type="button"
+                  onClick={() => setIsRenewal(false)}
+                  className={`flex-1 px-3 py-2 ${!isRenewal ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                >
+                  New · {COMMISSION_DEFAULTS.NEW_DEAL_POINTS} pts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsRenewal(true)}
+                  className={`flex-1 px-3 py-2 ${isRenewal ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                >
+                  Renewal · {COMMISSION_DEFAULTS.RENEWAL_POINTS} pts
+                </button>
+              </div>
+            </div>
+
+            {/* Lead type */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                Lead type {isRenewal && <span className="text-gray-400">(renewal split)</span>}
+              </label>
+              <div className={`inline-flex w-full rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-sm ${isRenewal ? "opacity-50 pointer-events-none" : ""}`}>
+                <button
+                  type="button"
+                  onClick={() => setSelfGen(false)}
+                  className={`flex-1 px-3 py-2 ${!selfGen ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                >
+                  Company lead
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelfGen(true)}
+                  className={`flex-1 px-3 py-2 ${selfGen ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                >
+                  Self-generated
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Output */}
+          <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-900/15 p-4">
+            <div className="grid gap-4 sm:grid-cols-3 items-end">
+              <div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Gross commission</p>
+                <p className="text-lg font-semibold text-gray-900 dark:text-white">{money(gross)}</p>
+                <p className="text-[11px] text-gray-400">{money(amount)} × {points} pts</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">My cut</p>
+                <p className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">{money(myCut)}</p>
+                <p className="text-[11px] text-gray-400">at your {splitPct}% split{hasCloser ? "" : " (default)"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">House keeps</p>
+                <p className="text-lg font-semibold text-gray-700 dark:text-gray-200">{money(house)}</p>
+                <p className="text-[11px] text-gray-400">{100 - splitPct}% of gross</p>
+              </div>
+            </div>
+          </div>
+          <p className="text-[11px] text-gray-400">
+            {hasCloser
+              ? "Uses your personal splits from Admin → Closers."
+              : "You have no closer profile yet — showing default rates (30% company-lead, 65% self-gen, 30% renewal)."}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
