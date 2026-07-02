@@ -67,6 +67,7 @@ export default function LeadPartnerPage() {
   const [weeks, setWeeks] = useState(4);
   const [fundRate, setFundRate] = useState(product.defaultFundRate);
   const [avgCommission, setAvgCommission] = useState(4000);
+  const [closerSplit, setCloserSplit] = useState(30); // % of commission paid to the closer
 
   // Reset per-product defaults when switching products.
   useEffect(() => {
@@ -93,15 +94,17 @@ export default function LeadPartnerPage() {
       spend = unitPrice * qty;
     }
     const funded = units * (fundRate / 100);
-    const revenue = funded * avgCommission;
+    const grossRevenue = funded * avgCommission;        // total commission from funders
+    const closerPay = grossRevenue * (closerSplit / 100); // paid out to the closer
+    const revenue = grossRevenue - closerPay;             // net to house after closer split
     const profit = revenue - spend;
     const costPerFunded = funded > 0 ? spend / funded : 0;
     const roi = spend > 0 ? (profit / spend) * 100 : 0;
-    return { spend, units, unitPrice, funded, revenue, profit, costPerFunded, roi };
-  }, [product, qty, ageIdx, hoursWeek, weeks, fundRate, avgCommission]);
+    return { spend, units, unitPrice, funded, grossRevenue, closerPay, revenue, profit, costPerFunded, roi };
+  }, [product, qty, ageIdx, hoursWeek, weeks, fundRate, avgCommission, closerSplit]);
 
   const profitable = calc.costPerFunded > 0 && calc.costPerFunded < 1500;
-  const maxBar = Math.max(calc.spend, calc.revenue, 1);
+  const maxBar = Math.max(calc.spend, calc.grossRevenue, 1);
 
   const tiers: Array<"1" | "2" | "3" | "service"> = ["1", "2", "3", "service"];
 
@@ -121,7 +124,7 @@ export default function LeadPartnerPage() {
         storageKey="lead-partner"
         what="The full Synergy lead catalog (3 tiers + telemarketing) with live pricing, plus a unit-economics calculator."
         value="Decide which lead type to buy and how much, knowing your cost-per-funded-deal before you spend a dollar."
-        howToUse={["Pick a lead type", "Set quantity / age / hours", "Tune your fund rate + avg commission", "Read the cost-per-funded deal"]}
+        howToUse={["Pick a lead type", "Set quantity / age / hours", "Tune your fund rate, avg commission + closer split", "Read the net-to-house profit + cost-per-funded deal"]}
         howToRead="Green = profitable (cost per funded under the $1,500 golden ratio). Red = you'd lose money at that fund rate."
       />
 
@@ -220,6 +223,11 @@ export default function LeadPartnerPage() {
 
             <Slider label="Lead → funded rate" value={fundRate} min={0.05} max={20} step={0.05} onChange={setFundRate} suffix="%" hint="Your assumption — tune to your real numbers" decimals />
             <Slider label="Avg commission / funded deal" value={avgCommission} min={1000} max={15000} step={250} onChange={setAvgCommission} suffix="" money hint="8 pts on a $50K advance ≈ $4,000" />
+            <Slider
+              label="Closer split — % of commission paid to the closer"
+              value={closerSplit} min={0} max={70} step={5} onChange={setCloserSplit} suffix="%"
+              hint={`Company-lead default 35% (self-gen 65%). Closer earns ≈ ${usd(calc.closerPay)} · house keeps ${100 - closerSplit}%.`}
+            />
           </div>
 
           {/* Output */}
@@ -229,14 +237,18 @@ export default function LeadPartnerPage() {
               <Metric label={product.pricing === "hourly" ? "Cost / transfer" : "Cost / lead"} value={calc.unitPrice} fmt={(n) => (n < 1 ? usdc(n) : usd(n))} />
               <Metric label={product.pricing === "hourly" ? "Transfers" : product.unit === "record" ? "Records" : "Leads"} value={calc.units} fmt={(n) => Math.round(n).toLocaleString()} />
               <Metric label="Funded deals" value={calc.funded} fmt={(n) => n.toFixed(n < 10 ? 1 : 0)} tone="accent" />
-              <Metric label="Revenue" value={calc.revenue} fmt={usd} tone="good" />
-              <Metric label="Profit" value={calc.profit} fmt={usd} tone={calc.profit >= 0 ? "good" : "bad"} />
+              <Metric label="Gross commission" value={calc.grossRevenue} fmt={usd} sub="before closer split" />
+              <Metric label="Net to house" value={calc.revenue} fmt={usd} tone="good" sub={`after ${closerSplit}% closer split`} />
+              <Metric label="Closer earns" value={calc.closerPay} fmt={usd} sub={`${closerSplit}% of gross`} />
+              <Metric label="Profit (net)" value={calc.profit} fmt={usd} tone={calc.profit >= 0 ? "good" : "bad"} sub="net to house − spend" />
             </div>
 
             {/* Spend vs revenue bars */}
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-2">
               <Bar label="Spend" value={calc.spend} max={maxBar} color="bg-ocean-blue" fmt={usd} />
-              <Bar label="Revenue" value={calc.revenue} max={maxBar} color="bg-emerald-500" fmt={usd} />
+              <Bar label="Gross" value={calc.grossRevenue} max={maxBar} color="bg-emerald-300" fmt={usd} />
+              <Bar label="Closer" value={calc.closerPay} max={maxBar} color="bg-amber-400" fmt={usd} />
+              <Bar label="Net" value={calc.revenue} max={maxBar} color="bg-emerald-500" fmt={usd} />
             </div>
 
             {/* Golden ratio verdict */}
