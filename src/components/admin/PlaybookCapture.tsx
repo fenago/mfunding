@@ -148,6 +148,34 @@ export default function PlaybookCapture({
         return;
       }
 
+      // Dedupe guard: if this customer already has an OPEN deal of this type,
+      // resume it instead of creating a duplicate (duplicate deals were a real
+      // bug — one click on an existing customer minted a second open deal and a
+      // second GHL opportunity). Closed deals (funded/declined/dead) don't count:
+      // a fresh deal there is correct (e.g. a renewal or a comeback).
+      const CLOSED = ["funded", "declined", "dead", "nurture", "renewal_eligible", "restructure_executed", "servicing"];
+      const { data: openDeals } = await supabase
+        .from("deals")
+        .select("*")
+        .eq("customer_id", customerId)
+        .eq("deal_type", isVcf ? "vcf" : "mca")
+        .not("status", "in", `(${CLOSED.join(",")})`)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (openDeals && openDeals.length > 0) {
+        const existing = openDeals[0] as Deal;
+        setForm({ ...emptyForm, lead_source: defaults.leadSource });
+        setExistingId("");
+        setCustomerSearch("");
+        setSaving(false);
+        if (onCreated) {
+          onCreated(existing); // parent loads the open deal — work continues where it left off
+          return;
+        }
+        setSaved(existing);
+        return;
+      }
+
       // Create the deal with just identity + attribution. The qualifier numbers
       // (amount, revenue, VCF balances…) are saved inline at the Qualify step.
       const data: CreateDealData = {
