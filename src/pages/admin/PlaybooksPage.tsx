@@ -525,6 +525,26 @@ function StepCard({
 
         {step.note && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{step.note}</p>}
 
+        {/* White-glove option — fill the app FOR them BEFORE sending, so it arrives signature-only */}
+        {step.stageKey === "application_sent" && interactive && !done && (
+          <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+            <span className="font-semibold">White-glove option:</span> filling the app <em>for</em> them while they're on
+            the phone? {deal?.ghl_contact_id ? (
+              <a
+                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${deal.ghl_contact_id}`}
+                target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline font-medium"
+              >
+                Open their GHL contact ↗
+              </a>
+            ) : (
+              <span className="font-medium">open their GHL contact</span>
+            )}{" "}
+            and enter the application fields (SSN, DOB, driver's license, home address, bank details) as they read them to
+            you — <span className="font-semibold">then</span> hit Send below. The application arrives pre-filled and all
+            they do is review + sign.
+          </div>
+        )}
+
         {/* Docs receipt — when the send-docs step fired, show when + where to view them */}
         {step.stageKey === "application_sent" && done && (
           <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs">
