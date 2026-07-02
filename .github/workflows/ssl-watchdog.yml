@@ -1,0 +1,59 @@
+# SSL watchdog for mfunding.net.
+#
+# Why: Netlify's Let's Encrypt auto-renewal silently failed in April 2026
+# ("mfunding.net doesn't appear to be served by Netlify" — a stale DNS check),
+# never retried, and the cert expired on Jul 1 2026, taking the live site down
+# with ERR_CERT_COMMON_NAME_INVALID. This job makes that impossible to repeat:
+#
+#  1. Every day it checks how many days the LIVE cert has left.
+#  2. If < 21 days, it calls Netlify's renew endpoint (needs NETLIFY_AUTH_TOKEN).
+#  3. If < 7 days (renewals failing), the job FAILS — GitHub emails the repo owner.
+#
+# Secret required: NETLIFY_AUTH_TOKEN (a Netlify personal access token).
+
+name: SSL watchdog (mfunding.net)
+
+on:
+  schedule:
+    - cron: "17 9 * * *" # daily 09:17 UTC
+  workflow_dispatch: {}
+
+jobs:
+  check-and-renew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check live cert expiry
+        id: cert
+        run: |
+          set -euo pipefail
+          END=$(echo | openssl s_client -connect mfunding.net:443 -servername mfunding.net 2>/dev/null \
+            | openssl x509 -noout -enddate | cut -d= -f2)
+          END_TS=$(date -d "$END" +%s)
+          NOW_TS=$(date +%s)
+          DAYS=$(( (END_TS - NOW_TS) / 86400 ))
+          echo "Cert expires: $END ($DAYS days left)"
+          echo "days=$DAYS" >> "$GITHUB_OUTPUT"
+
+      - name: Renew via Netlify if < 21 days
+        if: ${{ fromJSON(steps.cert.outputs.days) < 21 }}
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          SITE_ID: 0b9c02e3-0b23-4b80-8889-c01005c3c8cc
+        run: |
+          set -euo pipefail
+          echo "Fewer than 21 days left — triggering Netlify renewal…"
+          curl -sS -X POST "https://api.netlify.com/api/v1/sites/$SITE_ID/ssl/renew" \
+            -H "Authorization: Bearer $NETLIFY_AUTH_TOKEN" | tee /tmp/renew.json
+          # Surface the renewal error message, if Netlify reports one.
+          python3 - <<'PY'
+          import json
+          d = json.load(open("/tmp/renew.json"))
+          err = d.get("renewal_error_message")
+          print("state:", d.get("state"), "| expires:", d.get("expires_at"), "| error:", err)
+          PY
+
+      - name: FAIL loudly if < 7 days (renewals not working)
+        if: ${{ fromJSON(steps.cert.outputs.days) < 7 }}
+        run: |
+          echo "::error::mfunding.net cert has < 7 days left and renewals are not landing. Fix in Netlify → Domain management → HTTPS."
+          exit 1
