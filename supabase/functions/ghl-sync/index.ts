@@ -171,6 +171,7 @@ function docPrefillFields(cust: any, deal?: any) {
     if (v !== null && v !== undefined && v !== "") out.push({ key, field_value: v });
   };
   add("business_name", cust?.business_name);
+  add("business_address", cust?.address_street);
   add("months_in_business", cust?.time_in_business);
   add("funding_amount_requested", deal?.amount_requested);
   // TEXT twins — GHL documents can only LINK text-type fields, so the doc
