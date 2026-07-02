@@ -99,6 +99,14 @@ export default function PlaybooksPage() {
         const v = f.kind === "number" || f.kind === "money" ? Number(raw) : raw;
         (f.target === "customer" ? custUpdates : dealUpdates)[f.column] = v;
       }
+      // Persist the "collected" chips so they stay checked when the closer
+      // comes back to this deal (they used to reset after every save).
+      if (step.collect?.length) {
+        dealUpdates.playbook_checklist = {
+          ...(deal.playbook_checklist ?? {}),
+          [`${active.id}:${step.n}`]: checked,
+        };
+      }
       if (Object.keys(custUpdates).length) {
         await supabase.from("customers").update(custUpdates).eq("id", deal.customer_id);
       }
@@ -227,6 +235,7 @@ export default function PlaybooksPage() {
                 stageLabel={s.stageKey ? STAGE_LABELS[active.pipeline][s.stageKey] : undefined}
                 interactive={dealMatchesPlaybook}
                 deal={dealMatchesPlaybook ? deal : null}
+                checklistKey={`${active.id}:${s.n}`}
                 done={done}
                 current={current}
                 busy={busyStep === s.n}
@@ -381,6 +390,7 @@ function StepCard({
   stageLabel,
   interactive,
   deal,
+  checklistKey,
   done,
   current,
   busy,
@@ -391,6 +401,7 @@ function StepCard({
   stageLabel?: string;
   interactive: boolean;
   deal: DealWithCustomer | null;
+  checklistKey: string;
   done: boolean;
   current: boolean;
   busy: boolean;
@@ -403,16 +414,16 @@ function StepCard({
   const [outcome, setOutcome] = useState("call");
   const [checked, setChecked] = useState<string[]>([]);
 
-  // Prefill structured fields from the loaded deal so captured data shows
-  // through; also clear the per-touch note/checklist after a save (the deal's
-  // updated_at changes when we advance it).
+  // Prefill structured fields + the saved "collected" chips from the loaded
+  // deal so captured data shows through. The note clears after each save (it's
+  // a per-touch log); the checklist persists (it's collected-state, not a log).
   useEffect(() => {
     if (deal && step.fields) {
       setValues(Object.fromEntries(step.fields.map((f) => [f.key, fieldInitial(f, deal)])));
     }
     setNote("");
-    setChecked([]);
-  }, [deal?.id, deal?.updated_at, step.fields]); // eslint-disable-line react-hooks/exhaustive-deps
+    setChecked(deal?.playbook_checklist?.[checklistKey] ?? []);
+  }, [deal?.id, deal?.updated_at, step.fields, checklistKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Show the capture fields whenever the step HAS them — even before a lead is
   // started — so the closer can see where each answer goes. The box also appears

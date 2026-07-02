@@ -91,6 +91,8 @@ export interface Deal {
   ghl_opportunity_id: string | null;
   //
   notes: string | null;
+  /** Playbook "collected" chips, keyed "<playbookId>:<stepN>" → checked labels. */
+  playbook_checklist: Record<string, string[]> | null;
   tags: string[];
   created_by: string | null;
   created_at: string;
