@@ -14,6 +14,7 @@ import {
   ArrowPathIcon,
   EnvelopeIcon,
   GlobeAltIcon,
+  SparklesIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { getMatchingLenders } from "../../services/lenderMatchingService";
@@ -32,6 +33,15 @@ interface ProfileMeta {
   method: Exclude<Method, "none">;
   required_stips: string[];
   to_email: string | null;
+}
+
+type Fit = "strong" | "possible" | "poor";
+interface AiRec {
+  lender_id: string;
+  lender_name: string;
+  fit: Fit;
+  reasons: string[];
+  watch_outs: string[];
 }
 
 interface FunderResult {
@@ -62,6 +72,12 @@ const docLabel = (s: string) => DOC_LABELS[s] ?? s.replace(/_/g, " ");
 // The core package the checklist surfaces (customer_document_type enum values).
 const CORE_STIPS = ["application", "bank_statement", "id", "voided_check"];
 
+const FIT_STYLE: Record<Fit, { label: string; cls: string }> = {
+  strong: { label: "STRONG FIT", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  possible: { label: "POSSIBLE", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+  poor: { label: "POOR FIT", cls: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" },
+};
+
 function methodBadge(m: Method) {
   if (m === "portal") return { label: "PORTAL", icon: GlobeAltIcon, cls: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300" };
   if (m === "email_and_portal") return { label: "email + portal", icon: EnvelopeIcon, cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" };
@@ -82,6 +98,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const [showMisfits, setShowMisfits] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [payloadOpen, setPayloadOpen] = useState<Record<string, unknown | null>>({});
+  // AI funder recommendations (analyst short-list rendered above the checkboxes).
+  const [aiRecs, setAiRecs] = useState<AiRec[]>([]);
+  const [aiSummary, setAiSummary] = useState<string>("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiRan, setAiRan] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -192,6 +214,39 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     }
   }
 
+  // A lender the closer can actually check right now: it's in the scored list,
+  // has a destination, isn't missing stips, and hasn't already gone out.
+  function isSelectable(lenderId: string): boolean {
+    if (!matches.some((m) => m.id === lenderId)) return false;
+    return methodOf(lenderId) !== "none" && missingStipsOf(lenderId).length === 0 && !isAlreadyOut(lenderId);
+  }
+
+  async function recommend() {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("recommend-lenders", {
+        body: { deal_id: deal.id },
+      });
+      if (fnErr) throw fnErr;
+      if (data?.error) throw new Error(data.error);
+      const recs = (data?.recommendations ?? []) as AiRec[];
+      setAiSummary(typeof data?.summary === "string" ? data.summary : "");
+      setAiRecs(recs);
+      setAiRan(true);
+      // Auto-check the strong fits that are actually selectable right now.
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const r of recs) if (r.fit === "strong" && isSelectable(r.lender_id)) next.add(r.lender_id);
+        return next;
+      });
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "AI recommendation failed");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
   async function markPortalSubmitted(r: FunderResult) {
     if (!r.submissionId) return;
     const nowIso = new Date().toISOString();
@@ -281,6 +336,53 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                 {docsPresent.has(s) ? "✓" : "○"} {docLabel(s)}
               </span>
             ))}
+          </div>
+
+          {/* AI recommendation short-list (renders above the checkbox list) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={recommend}
+                disabled={aiLoading}
+                className="text-sm font-semibold px-3 py-1.5 rounded-lg border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+              >
+                {aiLoading ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <SparklesIcon className="w-4 h-4" />}
+                {aiLoading ? "Analyzing funders…" : aiRan ? "AI: re-run recommendations" : "AI: recommend lenders"}
+              </button>
+              {aiError && <span className="text-[11px] text-red-600 dark:text-red-400 text-right flex-1">{aiError}</span>}
+            </div>
+
+            {(aiSummary || aiRecs.length > 0) && (
+              <div className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 p-3 space-y-2">
+                {aiSummary && <p className="text-[12px] text-gray-700 dark:text-gray-200">{aiSummary}</p>}
+                {aiRecs.map((r) => {
+                  const fit = FIT_STYLE[r.fit];
+                  const checkable = isSelectable(r.lender_id);
+                  return (
+                    <div key={r.lender_id} className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium text-gray-900 dark:text-white">{r.lender_name}</span>
+                        <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${fit.cls}`}>{fit.label}</span>
+                        {r.fit === "strong" && checkable && <span className="text-[10px] text-emerald-600">auto-selected</span>}
+                        {!checkable && <span className="text-[10px] text-gray-400">not selectable yet</span>}
+                      </div>
+                      {r.reasons.length > 0 && (
+                        <ul className="mt-1 list-disc pl-4 text-[11px] text-gray-600 dark:text-gray-300 space-y-0.5">
+                          {r.reasons.map((s, i) => <li key={i}>{s}</li>)}
+                        </ul>
+                      )}
+                      {r.watch_outs.length > 0 && (
+                        <ul className="mt-1 list-disc pl-4 text-[11px] text-amber-600 dark:text-amber-400 space-y-0.5">
+                          {r.watch_outs.map((s, i) => <li key={i}>⚠ {s}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })}
+                <p className="text-[10px] text-gray-400">AI suggestion only — review each funder's criteria before submitting. Strong fits are pre-checked below.</p>
+              </div>
+            )}
           </div>
 
           {/* Funder checkboxes */}
