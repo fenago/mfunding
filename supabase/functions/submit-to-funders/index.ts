@@ -1,21 +1,25 @@
-// submit-to-funders — Gap B: actually SEND the deal to the selected funders.
+// submit-to-funders v2 — send each funder the deal package IN THAT FUNDER'S FORMAT.
 //
-// The app records submissions in `deal_submissions`, but historically nothing
-// emailed the funders. This function closes that gap: given a deal and a list of
-// lender ids, it composes a submission email and sends it to each funder's
-// `submission_email` THROUGH GHL (no third-party ESP — MFunding uses GHL for all
-// email). Each funder is upserted as a GHL contact (tagged "funder") and emailed
-// via the GHL conversations API. It records/updates the `deal_submissions` row,
-// logs to `activity_log`, and the caller advances the deal stage.
+// v1 emailed every funder ONE generic email and attached nothing. v2 runs a
+// per-funder "recipe" (funder_submission_profiles): the funder's submission
+// email, subject convention, required body fields (merge tokens), which docs to
+// include (as secure expiring links), and a required-stips guard. Portal-only
+// funders get a guided portal flow instead of an email. One engine, one row per
+// deal × lender, full audit in sent_payload.
 //
-// Invoked from the app (admin) via supabase.functions.invoke("submit-to-funders").
-// verify_jwt = true (only authenticated staff can submit deals).
+// Recipes are DATA (edited in the admin UI), not 39 hand-built GHL workflows.
+// When a lender has no recipe yet, a generic email template is the fallback so
+// nothing breaks — same behavior as v1.
 //
-// Compliance: MCA is a purchase of future receivables, not a loan. This is a
-// B2B ISO→funder submission, so funder-facing copy uses standard deal terminology
-// but never calls the MCA a "loan".
+// Invoked from the app (playbook Step 6 FunderPicker, deal Submissions tab, and
+// the admin recipe editor's "Send test to myself") via
+// supabase.functions.invoke("submit-to-funders"). verify_jwt = true.
+//
+// Compliance: MCA = purchase of future receivables, not a loan. Funder-facing
+// copy lives in the recipe templates so this is enforceable per funder.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
 } from "../_shared/ghl.ts";
@@ -26,6 +30,9 @@ function json(body: unknown, status = 200) {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
+
+const DOC_BUCKET = "customer-documents";
+const SIGNED_URL_TTL = 72 * 60 * 60; // 72h expiring links (PII safety)
 
 const money = (n: unknown) =>
   n == null || n === "" ? "—" : `$${Number(n).toLocaleString("en-US")}`;
@@ -39,121 +46,213 @@ const tib = (months: unknown) => {
   return r ? `${y} yr ${r} mo` : `${y} yr`;
 };
 
-interface Lender { id: string; name: string | null; submission_email: string | null; submission_portal_url: string | null }
+const esc = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function buildEmail(deal: Record<string, unknown>, c: Record<string, unknown>, notes?: string) {
-  const owner = [c.first_name, c.last_name].filter(Boolean).join(" ") || "—";
-  const biz = (c.business_name as string) || "Unknown business";
-  const isVcf = String(deal.deal_type ?? "").toLowerCase() === "vcf";
+// Human labels for the doc slugs (which ARE customer_document_type enum values).
+const DOC_LABELS: Record<string, string> = {
+  application: "Signed application",
+  bank_statement: "Bank statements",
+  id: "Photo ID",
+  voided_check: "Voided check",
+  credit_authorization: "Credit authorization",
+  business_license: "Business license / proof of ownership",
+  personal_guarantee: "Personal guarantee",
+  tax_return: "Tax return",
+  other: "Other",
+};
+const docLabel = (slug: string) => DOC_LABELS[slug] ?? slug.replace(/_/g, " ");
 
-  // Product-aware: MCA = funder submission (purchase of receivables, never "loan");
-  // VCF = debt-relief / restructuring file sent to the restructuring partner.
-  const rows: Array<[string, string]> = isVcf
-    ? [
-        ["Business", biz],
-        ["Owner", owner],
-        ["Industry", (c.industry as string) || (c.business_type as string) || "—"],
-        ["State", (c.address_state as string) || "—"],
-        ["EIN", (c.ein as string) || "—"],
-        ["Time in business", tib(c.time_in_business)],
-        ["Monthly revenue", money(c.monthly_revenue)],
-        ["Active positions", String(deal.vcf_active_positions ?? "—")],
-        ["Total balance", money(deal.vcf_total_balance)],
-        ["Daily/weekly debit", money(deal.vcf_daily_debit)],
-        ["Current funders", (deal.vcf_current_funders as string) || "—"],
-        ["Hardship", (deal.vcf_hardship_reason as string) || "—"],
-        ["Owner phone", (c.phone as string) || "—"],
-        ["Owner email", (c.email as string) || "—"],
-        ["Deal #", (deal.deal_number as string) || "—"],
-      ]
-    : [
-        ["Business", biz],
-        ["Owner", owner],
-        ["Industry", (c.industry as string) || (c.business_type as string) || "—"],
-        ["State", (c.address_state as string) || "—"],
-        ["EIN", (c.ein as string) || "—"],
-        ["Time in business", tib(c.time_in_business)],
-        ["Monthly revenue", money(c.monthly_revenue)],
-        ["Credit range", (c.credit_score_range as string) || "—"],
-        ["Amount requested", money(deal.amount_requested ?? c.amount_requested)],
-        ["Use of funds", (deal.use_of_funds as string) || (c.use_of_funds as string) || "—"],
-        ["Owner phone", (c.phone as string) || "—"],
-        ["Owner email", (c.email as string) || "—"],
-        ["Deal #", (deal.deal_number as string) || "—"],
-      ];
-
-  const intro = isVcf
-    ? "New debt-relief / restructuring file from MFunding for review."
-    : "New MCA submission from MFunding (ISO).";
-  const footer = isVcf
-    ? "This merchant is seeking restructuring of existing advances. Signed authorization, advance agreements, and bank statements are on file — reply and we'll send the complete package."
-    : "MCA = purchase of future receivables (not a loan). Bank statements and full stips are ready — reply and we'll send the complete file immediately.";
-  const introHtml = isVcf
-    ? `New <strong>debt-relief / restructuring file</strong> from <strong>MFunding</strong> for review.`
-    : `New <strong>MCA submission</strong> from <strong>MFunding</strong> (ISO).`;
-
-  const textBody =
-    `${intro}\n\n` +
-    rows.map(([k, v]) => `${k}: ${v}`).join("\n") +
-    (notes ? `\n\nNotes: ${notes}` : "") +
-    `\n\n${footer}\n\n— MFunding Submissions`;
-
-  const htmlRows = rows
-    .map(
-      ([k, v]) =>
-        `<tr><td style="padding:4px 12px 4px 0;color:#64748b;white-space:nowrap">${k}</td><td style="padding:4px 0;color:#0f172a;font-weight:600">${v}</td></tr>`,
-    )
-    .join("");
-  const htmlBody =
-    `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:560px">` +
-    `<p style="margin:0 0 12px">${introHtml}</p>` +
-    `<table style="border-collapse:collapse;margin:0 0 12px">${htmlRows}</table>` +
-    (notes ? `<p style="margin:0 0 12px"><strong>Notes:</strong> ${notes}</p>` : "") +
-    `<p style="margin:0 0 4px;color:#64748b;font-size:12px">${footer}</p>` +
-    `<p style="margin:8px 0 0">— MFunding Submissions</p></div>`;
-
-  const amount = money(deal.vcf_total_balance ?? deal.amount_requested ?? c.amount_requested);
-  const subject = isVcf
-    ? `New VCF Restructuring File — ${biz} — ${amount}`
-    : `New MCA Submission — ${biz} — ${money(deal.amount_requested ?? c.amount_requested)}`;
-  return { subject, textBody, htmlBody };
+interface Recipe {
+  lender_id: string;
+  method: "email" | "portal" | "email_and_portal";
+  to_email: string | null;
+  cc_emails: string[] | null;
+  subject_template: string | null;
+  body_template: string | null;
+  attach_docs: string[];
+  attachment_mode: "links" | "attachments" | "both";
+  max_statement_months: number | null;
+  portal_url: string | null;
+  portal_steps: string[] | null;
+  portal_credentials_hint: string | null;
+  required_stips: string[];
+  special_instructions: string | null;
+  active: boolean;
 }
+
+const GENERIC_SUBJECT =
+  "New MCA Submission — {{business_name}} — {{amount_requested}} — ISO: Momentum Funding";
+const GENERIC_BODY =
+  `New submission from Momentum Funding (ISO) for your review.\n\n` +
+  `Business: {{business_name}}\nOwner: {{owner_name}}\nIndustry: {{industry}}\n` +
+  `State: {{state}}\nEIN: {{ein}}\nTime in business: {{time_in_business}}\n` +
+  `Monthly revenue: {{monthly_revenue}}\nAmount requested: {{amount_requested}}\n` +
+  `Use of funds: {{use_of_funds}}\nOwner phone: {{owner_phone}}\nOwner email: {{owner_email}}\n` +
+  `Deal #: {{deal_number}}\n\nDocuments:\n{{doc_links}}\n\n` +
+  `This is a purchase of future receivables (MCA) — not a loan. Reply with any questions.\n` +
+  `— {{closer_name}}, Momentum Funding Submissions`;
+
+/** Build the flat merge-token map from a deal + its customer + the closer. */
+function buildTokens(
+  deal: Record<string, unknown>,
+  c: Record<string, unknown>,
+  closer: { name: string; email: string },
+): Record<string, string> {
+  const owner = [c.first_name, c.last_name].filter(Boolean).join(" ") || "—";
+  return {
+    business_name: (c.business_name as string) || "Unknown business",
+    dba: (c.business_name as string) || "—",
+    owner_name: owner,
+    owner_email: (c.email as string) || "—",
+    owner_phone: (c.phone as string) || "—",
+    ein: (c.ein as string) || "—",
+    amount_requested: money(deal.amount_requested ?? c.amount_requested),
+    monthly_revenue: money(c.monthly_revenue),
+    time_in_business: tib(c.time_in_business),
+    industry: (c.industry as string) || (c.business_type as string) || "—",
+    use_of_funds: (deal.use_of_funds as string) || (c.use_of_funds as string) || "—",
+    state: (c.address_state as string) || "—",
+    positions: String(deal.vcf_active_positions ?? "—"),
+    deal_number: (deal.deal_number as string) || "—",
+    closer_name: closer.name || "Momentum Funding",
+    closer_email: closer.email || "—",
+    doc_links: "", // filled per-lender (depends on the recipe's attach_docs)
+  };
+}
+
+/** Render {{token}} placeholders. Unknown tokens are left blank. */
+function render(tpl: string, tokens: Record<string, string>): string {
+  return tpl.replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_m, k) => tokens[k] ?? "");
+}
+
+interface DocRow { document_type: string; filename: string | null; storage_path: string; status: string }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let payload: { dealId?: string; lenderIds?: string[]; notes?: string };
+  let payload: {
+    dealId?: string;
+    lenderIds?: string[];
+    notes?: string;
+    resubmit?: boolean;
+    /** When true, this is a recipe QA send: the engine renders each lender's
+     * recipe against a SAMPLE deal and emails ONLY the logged-in admin. It never
+     * emails a real funder and never writes deal_submissions. */
+    test_email?: boolean;
+  };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
-  const dealId = payload.dealId;
   const lenderIds = (payload.lenderIds ?? []).filter(Boolean);
   const notes = payload.notes;
-  if (!dealId || lenderIds.length === 0) return json({ error: "dealId and lenderIds are required" }, 400);
+  const resubmit = !!payload.resubmit;
+  const testMode = !!payload.test_email;
+  if (lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
+  if (!testMode && !payload.dealId) return json({ error: "dealId is required" }, 400);
 
   const db = serviceClient();
 
-  // --- Authn/Authz (#2): this function emails full merchant PII to funders, so the
-  // caller MUST be signed-in staff. Closers may only submit their OWN deals. We do
-  // this in code (not just dashboard verify_jwt) so it can't be bypassed. ---
+  // --- Authn/Authz: this function emails full merchant PII to funders, so the
+  // caller MUST be signed-in staff. Closers may only submit their OWN deals. ---
   const authHeader = req.headers.get("Authorization") ?? "";
   const token = authHeader.replace(/^Bearer\s+/i, "");
   if (!token) return json({ error: "Missing authorization" }, 401);
   const { data: userData, error: userErr } = await db.auth.getUser(token);
   const caller = userData?.user;
   if (userErr || !caller) return json({ error: "Invalid session" }, 401);
-  const { data: callerProfile } = await db.from("profiles").select("role").eq("id", caller.id).single();
+  const { data: callerProfile } = await db
+    .from("profiles").select("role, first_name, last_name").eq("id", caller.id).single();
   const callerRole = callerProfile?.role as string | undefined;
   if (!callerRole || !["closer", "admin", "super_admin"].includes(callerRole)) {
     return json({ error: "Forbidden — staff only" }, 403);
   }
+  // Recipe test sends are an admin QA tool — closers don't get them.
+  if (testMode && !["admin", "super_admin"].includes(callerRole)) {
+    return json({ error: "Forbidden — recipe test is admin-only" }, 403);
+  }
+  const closer = {
+    name: [callerProfile?.first_name, callerProfile?.last_name].filter(Boolean).join(" ").trim(),
+    email: caller.email ?? "",
+  };
 
+  // Load the recipes for the selected lenders (may be empty → generic fallback).
+  const { data: profileRows } = await db
+    .from("funder_submission_profiles").select("*").in("lender_id", lenderIds);
+  const recipeByLender = new Map<string, Recipe>(
+    (profileRows ?? []).map((r) => [r.lender_id as string, r as Recipe]),
+  );
+
+  // Load the funders (names + email/portal fallbacks).
+  const { data: lenders } = await db
+    .from("lenders")
+    .select("id, company_name, submission_email, submission_portal_url")
+    .in("id", lenderIds);
+  const lenderById = new Map<string, Record<string, unknown>>(
+    (lenders ?? []).map((l) => [l.id as string, l as Record<string, unknown>]),
+  );
+
+  // GHL is the email transport. Load creds once.
+  let cfg: Awaited<ReturnType<typeof getGhlConfig>> | null = null;
+  let ghlError: string | undefined;
+  try { cfg = await getGhlConfig(db); } catch (e) { ghlError = e instanceof Error ? e.message : String(e); }
+
+  const nowIso = new Date().toISOString();
+
+  // ---------- TEST MODE: render recipes against a sample deal, email the admin ----------
+  if (testMode) {
+    const sampleDeal: Record<string, unknown> = {
+      deal_number: "TEST-0000", deal_type: "mca", amount_requested: 50000,
+      use_of_funds: "Working capital / inventory", vcf_active_positions: 1,
+    };
+    const sampleCustomer: Record<string, unknown> = {
+      first_name: "Sample", last_name: "Merchant", business_name: "Acme Test LLC",
+      email: "merchant@example.com", phone: "(555) 010-0000", ein: "12-3456789",
+      industry: "Construction", address_state: "IN", time_in_business: 26,
+      monthly_revenue: 60000, business_type: "Construction", use_of_funds: "Working capital",
+    };
+    const results: Array<Record<string, unknown>> = [];
+    for (const lenderId of lenderIds) {
+      const lender = lenderById.get(lenderId);
+      const recipe = recipeByLender.get(lenderId);
+      const tokens = buildTokens(sampleDeal, sampleCustomer, closer);
+      tokens.doc_links = "(sample) Signed application — https://example.com/signed-app\n(sample) Bank statements — https://example.com/bank-statements";
+      const subject = "[TEST] " + render(recipe?.subject_template || GENERIC_SUBJECT, tokens);
+      const bodyText = render(recipe?.body_template || GENERIC_BODY, tokens) +
+        `\n\n———\nThis is a RECIPE TEST for ${String(lender?.company_name ?? "this funder")}. No funder was contacted.`;
+      const htmlBody = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
+
+      let emailSent = false;
+      let emailError: string | undefined;
+      const to = closer.email; // FORCED to the logged-in admin — never a funder.
+      if (!to) emailError = "your account has no email address";
+      else if (!cfg) emailError = `GHL not configured: ${ghlError ?? "missing credentials"}`;
+      else {
+        const cr = await upsertContact(cfg, { email: to, firstName: closer.name || "Admin", tags: ["staff"], source: "Recipe Test" });
+        const contactId = cr.data?.contact?.id;
+        if (!contactId) emailError = `GHL upsert failed: ${cr.error ?? "no contact id"}`;
+        else {
+          const sr = await sendEmailToContact(cfg, contactId, subject, htmlBody, { text: bodyText });
+          emailSent = sr.ok;
+          if (!sr.ok) emailError = `GHL send failed: ${sr.error}`;
+        }
+      }
+      results.push({
+        lenderId, name: lender?.company_name, method: recipe?.method ?? "email",
+        status: emailSent ? "sent" : "send_failed", to, error: emailError,
+        usedRecipe: !!recipe, subject,
+      });
+    }
+    return json({ ok: true, test: true, sentTo: closer.email, results });
+  }
+
+  // ---------- NORMAL MODE ----------
+  const dealId = payload.dealId!;
   const { data: deal, error: dErr } = await db
     .from("deals")
     .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id, vcf_active_positions, vcf_total_balance, vcf_daily_debit, vcf_current_funders, vcf_hardship_reason")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
-  // A closer can only submit a deal assigned to / created by them.
   if (callerRole === "closer") {
     const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
     if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
@@ -162,88 +261,199 @@ Deno.serve(async (req) => {
   const { data: customer } = await db.from("customers").select("*").eq("id", deal.customer_id).maybeSingle();
   const c = (customer ?? {}) as Record<string, unknown>;
 
-  const { data: lenders } = await db
-    .from("lenders")
-    .select("id, name, submission_email, submission_portal_url")
-    .in("id", lenderIds);
-  const lenderList = (lenders ?? []) as Lender[];
+  // All docs on file for this deal's customer, grouped by type.
+  const { data: docRows } = await db
+    .from("customer_documents")
+    .select("document_type, filename, storage_path, status")
+    .eq("customer_id", deal.customer_id);
+  const docsByType = new Map<string, DocRow[]>();
+  for (const d of (docRows ?? []) as DocRow[]) {
+    const arr = docsByType.get(d.document_type) ?? [];
+    arr.push(d);
+    docsByType.set(d.document_type, arr);
+  }
 
-  const { subject, htmlBody, textBody } = buildEmail(deal as Record<string, unknown>, c, notes);
-
-  // GHL is the email transport. Load creds once; if missing, submissions are still
-  // recorded and we report it (never break the submit flow).
-  let cfg: Awaited<ReturnType<typeof getGhlConfig>> | null = null;
-  let ghlError: string | undefined;
-  try { cfg = await getGhlConfig(db); } catch (e) { ghlError = e instanceof Error ? e.message : String(e); }
-
-  const nowIso = new Date().toISOString();
   const results: Array<Record<string, unknown>> = [];
 
-  for (const lender of lenderList) {
-    // Record/refresh the submission row first (so it's logged even if email fails).
+  for (const lenderId of lenderIds) {
+    const lender = lenderById.get(lenderId) ?? { id: lenderId, company_name: "Funder" };
+    const name = (lender.company_name as string) ?? "Funder";
+    const recipe = recipeByLender.get(lenderId);
+    const method = recipe?.method ?? (lender.submission_email ? "email" : (lender.submission_portal_url ? "portal" : "email"));
+
+    // --- Idempotency: skip a lender that already has an active submission. ---
     const { data: existing } = await db.from("deal_submissions")
-      .select("id").eq("deal_id", dealId).eq("lender_id", lender.id).maybeSingle();
-    let submissionId = existing?.id as string | undefined;
-    if (submissionId) {
-      await db.from("deal_submissions").update({ status: "submitted", submitted_at: nowIso, notes: notes ?? null }).eq("id", submissionId);
-    } else {
-      const { data: ins } = await db.from("deal_submissions")
-        .insert({ deal_id: dealId, lender_id: lender.id, status: "submitted", submitted_at: nowIso, notes: notes ?? null })
-        .select("id").maybeSingle();
-      submissionId = ins?.id as string | undefined;
+      .select("id, status, submitted_at, portal_confirmed_at, error")
+      .eq("deal_id", dealId).eq("lender_id", lenderId).maybeSingle();
+    const existingActive = existing &&
+      existing.status !== "withdrawn" &&
+      !existing.error &&
+      (existing.submitted_at || existing.portal_confirmed_at);
+    if (existingActive && !resubmit) {
+      results.push({ lenderId, name, method, status: "already_submitted", submissionId: existing!.id });
+      continue;
     }
 
+    // --- Stips guard: every required stip must be on file before we send. ---
+    const requiredStips = recipe?.required_stips ?? [];
+    const missing = requiredStips.filter((slug) => !(docsByType.get(slug)?.length));
+    if (missing.length > 0) {
+      results.push({ lenderId, name, method, status: "blocked", blocked: missing, blockedLabels: missing.map(docLabel) });
+      continue;
+    }
+
+    // --- Gather docs as expiring signed links (Phase 6 real attachments = later). ---
+    const attachSlugs = recipe?.attach_docs?.length ? recipe.attach_docs : ["application", "bank_statement"];
+    const docLinkLines: string[] = [];
+    const docLinkHtml: string[] = [];
+    for (const slug of attachSlugs) {
+      const list = docsByType.get(slug) ?? [];
+      for (const d of list) {
+        const { data: signed } = await db.storage.from(DOC_BUCKET).createSignedUrl(d.storage_path, SIGNED_URL_TTL);
+        const url = signed?.signedUrl;
+        if (!url) continue;
+        const label = `${docLabel(slug)}${d.filename ? ` (${d.filename})` : ""}`;
+        docLinkLines.push(`${label} — ${url}`);
+        docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
+      }
+    }
+    const docLinksText = docLinkLines.length ? docLinkLines.join("\n") : "(documents will be sent on request)";
+
+    // Portal-only funders: no funder email — return the guided portal flow.
+    const isPortalOnly = method === "portal";
+
+    // --- Render the recipe (subject + body) ---
+    const tokens = buildTokens(deal as Record<string, unknown>, c, closer);
+    tokens.doc_links = docLinksText;
+    const subject = render(recipe?.subject_template || GENERIC_SUBJECT, tokens);
+    let bodyText = render(recipe?.body_template || GENERIC_BODY, tokens);
+    if (recipe?.special_instructions) bodyText += `\n\n${recipe.special_instructions}`;
+    if (notes) bodyText += `\n\nNotes: ${notes}`;
+    const bodyHtml =
+      `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px">` +
+      `<div style="white-space:pre-wrap">${esc(render(recipe?.body_template || GENERIC_BODY, tokens))}</div>` +
+      (docLinkHtml.length ? `<ul style="margin:8px 0">${docLinkHtml.join("")}</ul>` : "") +
+      (recipe?.special_instructions ? `<p style="margin:8px 0;color:#334155">${esc(recipe.special_instructions)}</p>` : "") +
+      (notes ? `<p style="margin:8px 0"><strong>Notes:</strong> ${esc(notes)}</p>` : "") +
+      `</div>`;
+
+    const to = recipe?.to_email || (lender.submission_email as string) || "";
+    const cc = recipe?.cc_emails ?? [];
+
+    const sentPayload: Record<string, unknown> = {
+      method, to, cc, subject, body: bodyText,
+      docLinks: docLinkLines, attachSlugs, attachment_mode: recipe?.attachment_mode ?? "links",
+      usedRecipe: !!recipe, renderedAt: nowIso,
+      // links mode only in this phase; note if a recipe asked for real attachments.
+      note: (recipe?.attachment_mode && recipe.attachment_mode !== "links")
+        ? "attachment_mode requested files but engine sent secure links (Phase 6 pending)"
+        : undefined,
+    };
+
+    // ---- PORTAL branch ----
+    if (isPortalOnly) {
+      const submissionId = await upsertSubmission(db, dealId, lenderId, {
+        status: "pending", submission_method: "portal",
+        sent_payload: sentPayload, notes: notes ?? null, error: null, submitted_at: null,
+      }, existing?.id as string | undefined, caller.id);
+      const portalUrl = recipe?.portal_url || (lender.submission_portal_url as string) || null;
+      results.push({
+        lenderId, name, method, status: "portal_pending", submissionId,
+        portal: { url: portalUrl, steps: recipe?.portal_steps ?? [], hint: recipe?.portal_credentials_hint ?? null },
+      });
+      await logActivity(db, dealId, lenderId, name, { portal: true, portalUrl, subject });
+      continue;
+    }
+
+    // ---- EMAIL branch (email or email_and_portal) ----
     let emailSent = false;
     let emailError: string | undefined;
-    const to = lender.submission_email ?? "";
     if (!to) {
-      emailError = "no submission_email on file for this funder";
+      emailError = "no submission email on file (set to_email on the recipe or submission_email on the funder)";
     } else if (!cfg) {
       emailError = `GHL not configured: ${ghlError ?? "missing credentials"}`;
     } else {
-      // Upsert the funder as a GHL contact (tagged "funder"), then email via GHL.
-      const cr = await upsertContact(cfg, {
-        email: to, firstName: lender.name ?? "Funder", tags: ["funder"], source: "Funder Submission",
-      });
+      const cr = await upsertContact(cfg, { email: to, firstName: name, tags: ["funder"], source: "Funder Submission" });
       const funderContactId = cr.data?.contact?.id;
-      if (!funderContactId) {
-        emailError = `GHL upsert failed: ${cr.error ?? "no contact id"}`;
-      } else {
-        const sr = await sendEmailToContact(cfg, funderContactId, subject, htmlBody, { text: textBody });
+      if (!funderContactId) emailError = `GHL upsert failed: ${cr.error ?? "no contact id"}`;
+      else {
+        const sr = await sendEmailToContact(cfg, funderContactId, subject, bodyHtml, { text: bodyText });
         emailSent = sr.ok;
         if (!sr.ok) emailError = `GHL send failed: ${sr.error}`;
       }
     }
 
-    // Annotate the row + activity log with the email outcome.
-    if (submissionId) {
-      const stamp = emailSent ? `Emailed ${to} via GHL ${nowIso}` : `Email NOT sent (${emailError})`;
-      await db.from("deal_submissions").update({ notes: [notes, stamp].filter(Boolean).join(" | ") }).eq("id", submissionId);
-    }
-    try {
-      await db.from("activity_log").insert({
-        entity_type: "deal", entity_id: dealId, interaction_type: "system",
-        subject: `submit-to-funder:${lender.name ?? lender.id}`,
-        content: JSON.stringify({ lenderId: lender.id, to, emailSent, emailError, via: "ghl", subject }),
-      });
-    } catch { /* best-effort */ }
+    // email_and_portal → email sent AND a portal flow is surfaced too.
+    const portalOut = method === "email_and_portal"
+      ? { url: recipe?.portal_url || (lender.submission_portal_url as string) || null, steps: recipe?.portal_steps ?? [], hint: recipe?.portal_credentials_hint ?? null }
+      : undefined;
 
-    results.push({ lenderId: lender.id, name: lender.name, to, emailSent, emailError, submissionId });
+    const submissionId = await upsertSubmission(db, dealId, lenderId, {
+      // Only ever write existing SubmissionStatus values into `status` so the UI
+      // config never breaks: 'submitted' on success, 'pending' when the send failed.
+      status: emailSent ? "submitted" : "pending",
+      submission_method: method === "email_and_portal" ? "email_and_portal" : "email",
+      sent_payload: sentPayload,
+      submitted_at: emailSent ? nowIso : null,
+      error: emailError ?? null,
+      notes: notes ?? null,
+    }, existing?.id as string | undefined, caller.id);
+
+    await logActivity(db, dealId, lenderId, name, { to, emailSent, emailError, subject });
+
+    results.push({
+      lenderId, name, method, submissionId,
+      status: emailSent ? "sent" : "send_failed",
+      to, error: emailError, portal: portalOut,
+    });
   }
 
-  // NOTE: the deal stage is advanced to "submitted_to_funder" by the caller
-  // (dealService.updateDealStatus), which also syncs the GHL opportunity.
-
-  const anySent = results.some((r) => r.emailSent);
+  const anySent = results.some((r) => r.status === "sent" || r.status === "portal_pending");
   return json({
     ok: true,
     dealId,
-    sentCount: results.filter((r) => r.emailSent).length,
     total: results.length,
+    sentCount: results.filter((r) => r.status === "sent").length,
     via: "ghl",
     warning: ghlError
       ? `GHL credentials unavailable (${ghlError}) — funders were NOT emailed; submissions are recorded.`
-      : anySent ? undefined : "No funder emails were sent (check each funder's submission_email).",
+      : anySent ? undefined : "No funder emails were sent — check each funder's recipe / submission email.",
     results,
   });
 });
+
+/** Insert or update the deal_submissions row; returns its id. */
+async function upsertSubmission(
+  db: SupabaseClient,
+  dealId: string,
+  lenderId: string,
+  fields: Record<string, unknown>,
+  existingId: string | undefined,
+  callerId: string,
+): Promise<string | undefined> {
+  if (existingId) {
+    await db.from("deal_submissions").update(fields).eq("id", existingId);
+    return existingId;
+  }
+  const { data: ins } = await db.from("deal_submissions")
+    .insert({ deal_id: dealId, lender_id: lenderId, submitted_by: callerId, ...fields })
+    .select("id").maybeSingle();
+  return ins?.id as string | undefined;
+}
+
+/** Best-effort activity_log entry (never breaks the submit flow). */
+async function logActivity(
+  db: SupabaseClient,
+  dealId: string,
+  lenderId: string,
+  name: string,
+  detail: Record<string, unknown>,
+) {
+  try {
+    await db.from("activity_log").insert({
+      entity_type: "deal", entity_id: dealId, interaction_type: "system",
+      subject: `submit-to-funder:${name}`,
+      content: JSON.stringify({ lenderId, via: "ghl", ...detail }),
+    });
+  } catch { /* best-effort */ }
+}
