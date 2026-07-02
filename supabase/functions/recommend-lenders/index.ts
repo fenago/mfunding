@@ -148,10 +148,14 @@ Deno.serve(async (req) => {
       "matching a merchant to the right funders in the ISO's network. " +
       "An MCA is a purchase of future receivables, NOT a loan — never call it a loan or use lending terms for MCA deals. " +
       "Rank funders by how well the merchant profile fits each funder's stated criteria " +
-      "(funding range, minimum time in business, minimum monthly revenue, minimum credit, " +
+      "(funding range, minimum time in business, minimum monthly revenue, " +
       "industry preferences/restrictions, state availability/restrictions, stacking policy, product type). " +
-      "Be honest and explicit about missing data (e.g. unknown credit score) — never invent facts, " +
-      "and factor missing data into the fit level and watch-outs. " +
+      "IMPORTANT — credit score weighting: MCA underwriting is revenue/cash-flow based; most MCA funders " +
+      "have NO credit minimum, and an unknown credit score is NORMAL at this stage. Never treat unknown credit " +
+      "as a global blocker, never make obtaining a credit score a general priority action, and never downgrade " +
+      "a funder's fit for unknown credit UNLESS that specific funder has a stated min_credit_score — mention " +
+      "credit only in that funder's own watch_outs. " +
+      "Be honest and explicit about other missing data — never invent facts. " +
       "Recommend 3 to 7 funders, best first. " +
       'A "strong" fit clearly meets the stated criteria; "possible" is plausible but has gaps or unknowns; ' +
       '"poor" is a likely mismatch (include only if few good options exist). ' +
