@@ -94,6 +94,9 @@ export interface ContactInput {
   postalCode?: string | null;
   tags?: string[];
   source?: string | null;
+  /** GHL custom fields by field key (e.g. "business_name") — these are what
+   * Documents & Contracts "linked fields" pre-fill from. */
+  customFields?: { key: string; field_value: unknown }[];
 }
 
 /**

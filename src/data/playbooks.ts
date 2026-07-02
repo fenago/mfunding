@@ -37,6 +37,9 @@ export interface PlaybookStep {
   /** Override for the save button label when the click DOES something big
    * (e.g. fires the doc send) — so the button says what actually happens. */
   cta?: string;
+  /** Collapsible how-to for rare-but-important maneuvers (rendered as a
+   * fold-out so it doesn't clutter the happy path). */
+  howto?: { title: string; steps: string[]; warn?: string };
 }
 
 // Shared field sets so MCA flows capture the same qualifiers.
@@ -87,6 +90,15 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
     ],
     say: "Based on what you told me, you look like a solid fit. I'm emailing you the funding application to complete and e-sign, a quick disclosure, and a secure link to upload your documents. Let's knock out the e-signature right now while I'm on with you — it takes about three minutes — and if you can snap photos of your ID and a voided check, we're 90% done. The bank statements you can upload tonight from the same link; it keeps working and each upload just adds on.",
     note: "The signed application + disclosure come back automatically into GHL (signed PDFs attach to their contact). Bank statements / ID / voided check are NOT e-signed — they come back via the upload form (see step 5).",
+    howto: {
+      title: "Need to fix or update a doc you already sent (not signed yet)?",
+      steps: [
+        "In GHL: Payments → Documents & Contracts → All Documents & Contracts → 'Waiting for others' tab → find their document.",
+        "Click the ⋮ menu → 'Move to Draft'. Now you can edit it — fix a value, pre-fill more fields, whatever.",
+        "Hit Send again — they get a fresh email with a new signing link.",
+      ],
+      warn: "The old link stops working the moment you move it to Draft — tell them to use the newest email. Don't use 'Mark as Completed' (that force-completes WITHOUT a signature). And note: updating contact fields does NOT change an already-sent doc — pre-fill freezes at send time, so re-send if you filled fields late.",
+    },
   },
   {
     n: 5,

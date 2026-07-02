@@ -160,6 +160,22 @@ Deno.serve(async (req) => {
       return json({ ok: true, tagged: tags });
     }
 
+
+// Custom fields the e-sign documents pre-fill from ("linked fields"). Only
+// fields we reliably store; option-list fields (industry, monthly revenue
+// ranges) are skipped so an unmatched value can't fail the upsert.
+// deno-lint-ignore no-explicit-any
+function docPrefillFields(cust: any, deal?: any) {
+  const out: { key: string; field_value: unknown }[] = [];
+  const add = (key: string, v: unknown) => {
+    if (v !== null && v !== undefined && v !== "") out.push({ key, field_value: v });
+  };
+  add("business_name", cust?.business_name);
+  add("months_in_business", cust?.time_in_business);
+  add("funding_amount_requested", deal?.amount_requested);
+  return out;
+}
+
     const { entity, id } = body as { entity?: string; id?: string };
     if (!entity || !id) return json({ error: "entity and id are required" }, 400);
 
@@ -174,6 +190,7 @@ Deno.serve(async (req) => {
         address1: c.address_street, city: c.address_city,
         state: c.address_state, postalCode: c.address_zip,
         source: c.source ?? "MFunding App", tags: c.tags ?? [],
+        customFields: docPrefillFields(c),
       });
       if (!r.ok) return json({ error: `GHL upsert failed (${r.status}): ${r.error}` }, 502);
 
@@ -194,15 +211,19 @@ Deno.serve(async (req) => {
 
       // 1) Ensure a contact exists.
       let contactId: string | null = d.ghl_contact_id ?? cust?.ghl_contact_id ?? null;
-      if (!contactId && cust) {
+      if (cust) {
+        // Always upsert: dedupes by email/phone AND refreshes the doc-prefill
+        // custom fields (business name, months in business, amount requested)
+        // so e-sign documents sent after this sync arrive pre-filled.
         const cr = await upsertContact(cfg, {
           firstName: cust.first_name, lastName: cust.last_name,
           email: cust.email, phone: cust.phone, companyName: cust.business_name,
           source: cust.source ?? "MFunding App",
+          customFields: docPrefillFields(cust, d),
         });
-        if (!cr.ok) return json({ error: `GHL contact upsert failed (${cr.status}): ${cr.error}` }, 502);
-        contactId = cr.data?.contact?.id ?? null;
-        if (contactId) await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", cust.id);
+        if (!cr.ok && !contactId) return json({ error: `GHL contact upsert failed (${cr.status}): ${cr.error}` }, 502);
+        contactId = cr.data?.contact?.id ?? contactId;
+        if (contactId && !cust.ghl_contact_id) await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", cust.id);
       }
       if (!contactId) return json({ error: "could not resolve a GHL contact for this deal" }, 422);
 
