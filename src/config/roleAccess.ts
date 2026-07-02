@@ -6,8 +6,9 @@ import type { UserRole } from "../context/UserProfileContext";
 // management (ADMIN); super_admin adds the owner-only screens (finances,
 // analytics, config); user (merchant) only gets the customer portal.
 
-const OPS: UserRole[] = ["closer", "admin", "super_admin"];
-const ADMIN: UserRole[] = ["admin", "super_admin"]; // managers — not closers
+// employee mirrors admin's route access (minus the super-admin-only screens).
+const OPS: UserRole[] = ["closer", "employee", "admin", "super_admin"];
+const ADMIN: UserRole[] = ["employee", "admin", "super_admin"]; // managers/staff — not closers
 const SUPER: UserRole[] = ["super_admin"];
 const MERCHANT: UserRole[] = ["user"];
 
@@ -23,6 +24,7 @@ export interface AccessGroup {
 export const ROLE_LABELS: { role: UserRole; label: string; blurb: string }[] = [
   { role: "user", label: "User (Merchant)", blurb: "Your customers. Apply for funding and use the customer portal — no admin access." },
   { role: "closer", label: "Closer", blurb: "1099 sales reps. Full operational pipeline access; no finances, network, or settings." },
+  { role: "employee", label: "Employee", blurb: "Internal staff. Same screens as Admin (pipeline, task board, referrals, lenders) — no owner-only finances, analytics, or config." },
   { role: "admin", label: "Admin", blurb: "Staff/managers. Full operational pipeline plus Lenders (add/manage funders) — no owner-only finances, analytics, or config." },
   { role: "super_admin", label: "Super Admin", blurb: "Owner (you). Everything, including finances, network, analytics, config, and user management." },
 ];
@@ -41,7 +43,7 @@ export const ACCESS_GROUPS: AccessGroup[] = [
     title: "Home",
     items: [
       { name: "Admin Dashboard", roles: OPS },
-      { name: "Launch Board (Tasks)", roles: ADMIN },
+      { name: "Task Board", roles: ADMIN },
     ],
   },
   {

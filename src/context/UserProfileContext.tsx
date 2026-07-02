@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import supabase from "../supabase";
 import { useSession } from "./SessionContext";
 
-export type UserRole = "user" | "closer" | "admin" | "super_admin";
+export type UserRole = "user" | "closer" | "employee" | "admin" | "super_admin";
 
 const PROFILE_COLS =
   "id, email, display_name, first_name, last_name, role, avatar_url, company_name, business_address, company_phone, ein";
@@ -135,7 +135,10 @@ export const UserProfileProvider = ({ children }: Props) => {
   const isImpersonating = !!impersonated && realProfile?.role === "super_admin";
   const profile = isImpersonating ? impersonated : realProfile;
 
-  const isAdmin = profile?.role === "admin" || profile?.role === "super_admin";
+  // Employees get the same app access as admins, minus the super-admin-only
+  // screens (which gate on isSuperAdmin). So employee is folded into isAdmin.
+  const isAdmin =
+    profile?.role === "admin" || profile?.role === "super_admin" || profile?.role === "employee";
   const isSuperAdmin = profile?.role === "super_admin";
   const isCloser = profile?.role === "closer";
   const isStaff = isCloser || isAdmin;

@@ -61,7 +61,7 @@ const navGroups: NavGroup[] = [
     title: "Home",
     items: [
       { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: OPS },
-      { name: "Launch Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
+      { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
     ],
   },
   {

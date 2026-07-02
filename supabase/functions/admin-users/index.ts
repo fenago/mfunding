@@ -35,7 +35,7 @@ function json(body: unknown, status = 200) {
   });
 }
 
-const VALID_ROLES = ["user", "closer", "admin", "super_admin"];
+const VALID_ROLES = ["user", "closer", "employee", "admin", "super_admin"];
 const PAUSE_DURATION = "876000h"; // ~100 years = effectively indefinite
 
 Deno.serve(async (req) => {

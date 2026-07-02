@@ -93,4 +93,6 @@ both via MCP **and** as committed files (as done this session).
 20260630020603  closer_rls_lockdown_and_funder_read
 20260630020756  closer_scoped_access_activity_docs_submissions
 20260630030346  tcpa_consents_log
+20260702000001  add_employee_role
+20260702000002  employee_role_helpers_and_policies
 ```

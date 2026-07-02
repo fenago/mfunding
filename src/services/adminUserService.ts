@@ -60,6 +60,7 @@ export const adminDeleteUser = (userId: string) => callAdmin("delete", { userId 
 export const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: "user", label: "User" },
   { value: "closer", label: "Closer" },
+  { value: "employee", label: "Employee" },
   { value: "admin", label: "Admin" },
   { value: "super_admin", label: "Super Admin" },
 ];

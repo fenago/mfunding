@@ -32,6 +32,7 @@ import { ACCESS_GROUPS, ROLE_LABELS } from "../../config/roleAccess";
 const ROLE_BADGE: Record<UserRole, string> = {
   user: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200",
   closer: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  employee: "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300",
   admin: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
   super_admin: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
 };
@@ -407,7 +408,7 @@ function RolePermissions({ onClose }: { onClose: () => void }) {
             {ACCESS_GROUPS.map((g) => (
               <Fragment key={g.title}>
                 <tr className="bg-gray-50 dark:bg-gray-900/50">
-                  <td colSpan={5} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  <td colSpan={roles.length + 1} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
                     {g.title}
                   </td>
                 </tr>
