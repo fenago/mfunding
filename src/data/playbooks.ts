@@ -148,7 +148,7 @@ export const PLAYBOOKS: Playbook[] = [
           "MCA 04 auto-sends the merchant: (1) the Merchant Funding Application to complete + e-sign — your full application (all 7 sections) in GHL Documents & Contracts; this is the exact document funders accept, and they fill the fields and sign in one flow; (2) the Broker Compensation Disclosure to e-sign; and (3) a secure link to the 'Bank Statements & Documents Upload' form for their last 4 months of statements, photo ID, and voided check.",
           "Confirm it went out on the deal's Activity / Conversations tab. Reminders auto-fire at +4h and Day 1 until they sign + submit.",
         ],
-        say: "Based on what you told me, you look like a solid fit. I'm emailing you the funding application to complete and e-sign, a quick disclosure, and a secure link to upload your last few months of bank statements. Want me to stay on while you start it?",
+        say: "Based on what you told me, you look like a solid fit. I'm emailing you the funding application to complete and e-sign, a quick disclosure, and a secure link to upload your documents. Let's knock out the e-signature right now while I'm on with you — it takes about three minutes — and if you can snap photos of your ID and a voided check, we're 90% done. The bank statements you can upload tonight from the same link; it keeps working and each upload just adds on.",
         note: "The signed application + disclosure come back automatically into GHL (signed PDFs attach to their contact). Bank statements / ID / voided check are NOT e-signed — they come back via the upload form (see step 5).",
       },
       {
@@ -166,7 +166,7 @@ export const PLAYBOOKS: Playbook[] = [
         collect: ["Merchant Funding Application (completed + e-signed)", "Broker Compensation Disclosure (e-signed)", "Owner photo ID", "Voided business check", "Proof of business ownership", "Last 4 months bank statements (upload)"],
         say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Upload your last 4 statements with the secure link in my email, or reply with photos.",
         route: { to: "/admin/documents", label: "Admin → Doc Review" },
-        note: "TWO RAILS for docs coming back: (1) the Merchant Funding Application + Broker Compensation Disclosure return automatically e-signed via GHL Documents & Contracts — signed PDFs attach to the contact. (2) Bank statements + ID + voided check + proof of ownership are NOT e-signed — they arrive via the GHL 'Bank Statements & Documents Upload' form. Both land in the deal's Documents tab / Doc Review. #1 FUNNEL LEAK — chase these fast.",
+        note: "TWO RAILS for docs coming back: (1) the Merchant Funding Application + Broker Compensation Disclosure return automatically e-signed via GHL Documents & Contracts — signed PDFs attach to the contact. (2) Bank statements + ID + voided check + proof of ownership arrive via the GHL 'Bank Statements & Documents Upload' form. PARTIAL IS FINE: the upload link keeps working and every new submission ADDS files to the same contact — get the e-sign + ID + voided check while they're on the phone, and Sequence A chases whatever's still missing. #1 FUNNEL LEAK — chase fast.",
       },
       {
         n: 6,
