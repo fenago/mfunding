@@ -69,7 +69,7 @@ export default function PlaybookCapture({
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerSearch, setCustomerSearch] = useState("");
   const [existingId, setExistingId] = useState("");
-  const [closers, setClosers] = useState<{ id: string; first_name: string | null; last_name: string | null }[]>([]);
+  const [closers, setClosers] = useState<{ id: string; user_id: string | null; first_name: string | null; last_name: string | null }[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [form, setForm] = useState({ ...emptyForm, lead_source: defaults.leadSource });
   const [saving, setSaving] = useState(false);
@@ -89,7 +89,7 @@ export default function PlaybookCapture({
     listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
     supabase
       .from("closers")
-      .select("id, first_name, last_name")
+      .select("id, user_id, first_name, last_name")
       .eq("status", "active")
       .order("first_name", { ascending: true })
       .then(({ data }) => setClosers(data || []));
@@ -457,8 +457,10 @@ export default function PlaybookCapture({
                 <Field label="Assigned closer">
                   <select className="input-field w-full" value={form.assigned_closer_id} onChange={(e) => set("assigned_closer_id", e.target.value)}>
                     <option value="">Unassigned</option>
-                    {closers.map((c) => (
-                      <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>
+                    {closers.filter((c) => c.user_id).map((c) => (
+                      // value MUST be the profile id (deals.assigned_closer_id → profiles.id);
+                      // sending closers.id was a FK violation that failed every assigned save.
+                      <option key={c.id} value={c.user_id!}>{c.first_name} {c.last_name}</option>
                     ))}
                   </select>
                 </Field>

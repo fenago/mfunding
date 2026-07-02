@@ -12,6 +12,7 @@ import type {
 import { calculateCommission, createCommission } from "./commissionService";
 import { syncDealToGHL } from "./ghlService";
 import { COMMISSION_DEFAULTS, expectedCommissionInPlay } from "../types/commissions";
+import { PIPELINES } from "../data/pipelines";
 import type { CommissionLeadSource, Commission } from "../types/commissions";
 
 // Stage → timestamp column mapping
@@ -185,6 +186,33 @@ export async function updateDeal(id: string, data: UpdateDealData): Promise<Deal
 }
 
 export async function updateDealStatus(id: string, newStatus: DealStatus): Promise<Deal> {
+  // ── Backward-move lock ────────────────────────────────────────────────
+  // Moving a deal BACKWARD (or reviving a closed deal into the pipeline)
+  // re-fires that stage's GHL automations at the merchant — a trainee doing
+  // it by accident emails a real customer. Forward moves and moves INTO a
+  // terminal state (declined / dead / nurture) are always allowed; anything
+  // else requires a super_admin.
+  {
+    const { data: cur } = await supabase.from("deals").select("status, deal_type").eq("id", id).single();
+    if (cur && cur.status !== newStatus) {
+      const order = PIPELINES[cur.deal_type === "vcf" ? "vcf" : "mca"].stages.map((s) => s.key);
+      const fromIdx = order.indexOf(cur.status);
+      const toIdx = order.indexOf(newStatus);
+      const backward = toIdx !== -1 && (fromIdx === -1 || toIdx < fromIdx);
+      if (backward) {
+        const { data: auth } = await supabase.auth.getUser();
+        const { data: prof } = auth?.user
+          ? await supabase.from("profiles").select("role").eq("id", auth.user.id).single()
+          : { data: null };
+        if (prof?.role !== "super_admin") {
+          throw new Error(
+            "Backward stage moves are locked — they re-send that stage's automated emails to the merchant. Ask a super admin if this deal really needs to move back.",
+          );
+        }
+      }
+    }
+  }
+
   const updateData: Record<string, unknown> = { status: newStatus };
 
   // Set the corresponding timestamp
