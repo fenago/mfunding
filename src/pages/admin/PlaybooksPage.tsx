@@ -603,7 +603,7 @@ function StepCard({
                       done ? "border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200" : "bg-ocean-blue text-white hover:opacity-90"
                     }`}
                   >
-                    {busy ? "Saving…" : done ? "Update this step" : step.stageKey ? `Save & mark ${stageLabel} done` : "Save & log"}
+                    {busy ? "Saving…" : done ? "Update this step" : step.cta ?? (step.stageKey ? `Save & mark ${stageLabel} done` : "Save & log")}
                   </button>
                 </div>
               </>

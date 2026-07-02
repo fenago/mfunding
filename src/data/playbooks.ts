@@ -34,6 +34,9 @@ export interface PlaybookStep {
   route?: { to: string; label: string }; // primary screen for this step
   tone?: StepTone;
   note?: string;
+  /** Override for the save button label when the click DOES something big
+   * (e.g. fires the doc send) — so the button says what actually happens. */
+  cta?: string;
 }
 
 // Shared field sets so MCA flows capture the same qualifiers.
@@ -139,8 +142,9 @@ export const PLAYBOOKS: Playbook[] = [
         stageKey: "application_sent",
         automation: "MCA 04 — Application + Disclosure",
         sla: "Same day; submit target < 24h",
+        cta: "Send the docs (moves to Application Sent)",
         do: [
-          "Move Status → Application Sent on the deal page. THAT is the send — it pushes the stage to GHL and fires the MCA 04 workflow. There is NO separate 'send email' button.",
+          "Hit the button below — THAT is the send. It moves the deal to Application Sent, pushes it to GHL, and MCA 04 emails the merchant everything. Nothing else to click.",
           "MCA 04 auto-sends the merchant: (1) the Merchant Funding Application to complete + e-sign — your full application (all 7 sections) in GHL Documents & Contracts; this is the exact document funders accept, and they fill the fields and sign in one flow; (2) the Broker Compensation Disclosure to e-sign; and (3) a secure link to the 'Bank Statements & Documents Upload' form for their last 4 months of statements, photo ID, and voided check.",
           "Confirm it went out on the deal's Activity / Conversations tab. Reminders auto-fire at +4h and Day 1 until they sign + submit.",
         ],
