@@ -40,6 +40,9 @@ export interface PlaybookStep {
   /** Collapsible how-to for rare-but-important maneuvers (rendered as a
    * fold-out so it doesn't clutter the happy path). */
   howto?: { title: string; steps: string[]; warn?: string };
+  /** Tiny "what does this mean?" popover next to the title — for jargon like
+   * BANT-F. rows = [letter/term, meaning, the question you ask]. */
+  explain?: { label: string; intro?: string; rows: [string, string, string][] };
 }
 
 // Shared field sets so MCA flows capture the same qualifiers.
@@ -223,6 +226,17 @@ export const PLAYBOOKS: Playbook[] = [
       {
         n: 3,
         title: "Qualify (BANT-F)",
+        explain: {
+          label: "What's BANT-F?",
+          intro: "The 5 qualification checks — run them before you invest the pitch:",
+          rows: [
+            ["B — Budget", "Can they support payments?", "“Roughly what's your monthly revenue?” ($15K+ min)"],
+            ["A — Authority", "Talking to the decision-maker?", "“Are you the owner?”"],
+            ["N — Need", "What's the money actually for?", "“How much are you looking for, and what for?”"],
+            ["T — Timeline", "How urgent is it?", "“How soon do you need the funding?”"],
+            ["F — Fundability", "Can a funder approve them?", "6+ months in business · industry not prohibited · existing advances (≥2 → route to VCF)"],
+          ],
+        },
         stageKey: "qualifying",
         automation: "MCA 03 — Qualifying",
         do: [
