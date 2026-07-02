@@ -136,7 +136,32 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           dmap[l.id] = { email: l.submission_email, portal: l.submission_portal_url };
         }
         setLenderDest(dmap);
-        setDocsPresent(new Set(((docRes.data ?? []) as { document_type: string }[]).map((d) => d.document_type)));
+        // Package check sees BOTH rails: app-side customer_documents AND the
+        // GHL side (signed e-sign docs + files from the upload form) — a signed
+        // application in GHL counts, statements uploaded to GHL count.
+        const present = new Set(((docRes.data ?? []) as { document_type: string }[]).map((d) => d.document_type));
+        if (deal.ghl_contact_id) {
+          try {
+            const { data: ghl } = await supabase.functions.invoke("ghl-docs-status", {
+              body: { ghl_contact_id: deal.ghl_contact_id },
+            });
+            for (const doc of (ghl?.documents ?? []) as { name?: string; signed?: boolean }[]) {
+              if (doc.signed && /application/i.test(doc.name ?? "")) present.add("application");
+            }
+            for (const u of (ghl?.uploads ?? []) as { field: string; files: unknown[] }[]) {
+              if (!u.files?.length) continue;
+              if (/bank/i.test(u.field)) present.add("bank_statement");
+              else {
+                // Stips uploads (ID / voided check / ownership) — the upload form
+                // can't tag types, so files here unlock both; closers verify
+                // visually in the Docs-back panel.
+                present.add("id");
+                present.add("voided_check");
+              }
+            }
+          } catch { /* GHL peek is best-effort; app docs still count */ }
+        }
+        if (!cancelled) setDocsPresent(present);
         const emap: Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean }> = {};
         for (const s of (subRes.data ?? []) as { id: string; lender_id: string; status: string; submission_method: string | null; error: string | null; portal_confirmed_at: string | null }[]) {
           emap[s.lender_id] = { status: s.status, method: s.submission_method, submissionId: s.id, hasError: !!s.error, portalConfirmed: !!s.portal_confirmed_at };
