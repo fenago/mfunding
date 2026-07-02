@@ -13,6 +13,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import LenderContactList from "../../../components/lenders/LenderContactList";
+import FunderRecipeCard from "../../../components/lenders/FunderRecipeCard";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
@@ -1190,6 +1191,9 @@ export default function LenderDetailPage() {
               />
             </div>
           </div>
+
+          {/* Per-funder submission recipe (executed by the submit-to-funders engine) */}
+          <FunderRecipeCard lenderId={lender.id} submissionEmail={lender.submission_email} />
         </div>
       )}
 
