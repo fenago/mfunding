@@ -83,7 +83,7 @@ Every entry links to its FunderIntel profile, which has a **"Request Intro"** bu
 
 > ✅ **Liveness audit complete (July 2026).** Every entry was verified via FireCrawl — real official site, phone, and broker/ISO apply URL are now in the **app** (Admin → Funder Directory), with a green/red/gray status dot per funder. Roughly **~1 in 6 of the FunderIntel appendix is dead or unverifiable.** Prune these:
 
-**❌ DEAD — do not pursue (no live site / bankrupt / parked / suspended):**
+**❌ DEAD — REMOVED from the app directory (no live site / bankrupt / parked / suspended):**
 Bow Apple Capital, Bridge Funding Capital, Capback, Fundura Capital (bankruptcy 2026), Infinity Capital Funding (MCA division sold 2020), Lendfi Corp (domain for-sale), Nulook Capital (bankrupt 2017), SPG Advance (suspended), SRS Capital Funds (bankrupt 2021), Silver Street Funding, Super Fast Cap, Upsize Capital, Zinch (not a real funder).
 
 **⚠️ UNVERIFIABLE — real company but no reachable official site (proceed with caution):**
