@@ -7,6 +7,8 @@ import {
   ArrowTopRightOnSquareIcon,
   CheckCircleIcon,
   PlusIcon,
+  TrashIcon,
+  ArrowUturnLeftIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import {
@@ -103,6 +105,21 @@ export default function FunderDirectoryPage() {
   const [pickStatus, setPickStatus] = useState<Record<string, string>>({});
   const [addState, setAddState] = useState<Record<string, AddState>>({});
   const [liveNames, setLiveNames] = useState<string[]>([]); // normalized lenders.company_name
+  const [hidden, setHidden] = useState<string[]>([]); // funder_directory_hidden.funder_name (junk removed)
+  const [showRemoved, setShowRemoved] = useState(false);
+  const [confirmHide, setConfirmHide] = useState<Record<string, boolean>>({});
+
+  // Removed (junk) funders — persisted so removals stick for everyone.
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .from("funder_directory_hidden")
+      .select("funder_name")
+      .then(({ data }) => {
+        if (alive && data) setHidden(data.map((r: { funder_name: string }) => r.funder_name));
+      });
+    return () => { alive = false; };
+  }, []);
 
   // Live check against the lenders table so anything already added shows "In system".
   useEffect(() => {
@@ -128,6 +145,7 @@ export default function FunderDirectoryPage() {
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return FUNDERS.filter((f) => {
+      if (showRemoved ? !hidden.includes(f.name) : hidden.includes(f.name)) return false;
       if (cat !== "all" && f.category !== cat) return false;
       if (onlyLowRev && !f.lowRev) return false;
       if (onlyWhiteLabel && !f.whiteLabel) return false;
@@ -142,7 +160,7 @@ export default function FunderDirectoryPage() {
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem, liveNames]);
+  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem, liveNames, hidden, showRemoved]);
 
   const deadCount = useMemo(() => FUNDERS.filter((f) => f.verified === "dead").length, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -205,6 +223,17 @@ export default function FunderDirectoryPage() {
     }
   }
 
+  async function handleHide(f: Funder) {
+    if (!confirmHide[f.name]) { setConfirmHide((s) => ({ ...s, [f.name]: true })); return; }
+    const { error } = await supabase.from("funder_directory_hidden").insert({ funder_name: f.name });
+    if (!error) setHidden((h) => (h.includes(f.name) ? h : [...h, f.name]));
+    setConfirmHide((s) => ({ ...s, [f.name]: false }));
+  }
+  async function handleRestore(f: Funder) {
+    const { error } = await supabase.from("funder_directory_hidden").delete().eq("funder_name", f.name);
+    if (!error) setHidden((h) => h.filter((n) => n !== f.name));
+  }
+
   const toggleCls = (on: boolean) =>
     `px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
       on ? "bg-ocean-blue text-white border-ocean-blue" : "border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:border-ocean-blue"
@@ -256,6 +285,7 @@ export default function FunderDirectoryPage() {
         <button className={toggleCls(onlyIso)} onClick={() => setOnlyIso((v) => !v)}>ISO program</button>
         <button className={toggleCls(hideDead)} onClick={() => setHideDead((v) => !v)}>Hide dead ({deadCount})</button>
         <button className={toggleCls(hideInSystem)} onClick={() => setHideInSystem((v) => !v)}>Hide in-system ({inSystemCount})</button>
+        <button className={toggleCls(showRemoved)} onClick={() => setShowRemoved((v) => !v)}>{showRemoved ? "Viewing removed" : "Removed"} ({hidden.length})</button>
         <span className="ml-auto text-sm text-gray-500">{rows.length} of {FUNDERS.length} funders</span>
       </div>
 
@@ -321,29 +351,50 @@ export default function FunderDirectoryPage() {
                     )}
                   </td>
                   <td className="py-3 px-4">
-                    {st?.status === "added" ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-mint-green">
-                        <CheckCircleIcon className="w-4 h-4" /> Added as {st.as}
-                      </span>
-                    ) : inSys ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
-                        <CheckCircleIcon className="w-4 h-4" /> In system
-                      </span>
+                    {showRemoved ? (
+                      <button
+                        onClick={() => handleRestore(f)}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-mint-green hover:underline"
+                      >
+                        <ArrowUturnLeftIcon className="w-4 h-4" /> Restore
+                      </button>
                     ) : (
-                      <div className="flex items-center gap-1 justify-end">
-                        <select
-                          value={pickStatus[f.name] || "potential"}
-                          onChange={(e) => setPickStatus((s) => ({ ...s, [f.name]: e.target.value }))}
-                          className="py-1 px-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-xs outline-none"
-                        >
-                          {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        </select>
+                      <div className="flex items-center gap-2 justify-end">
+                        {st?.status === "added" ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-mint-green">
+                            <CheckCircleIcon className="w-4 h-4" /> Added as {st.as}
+                          </span>
+                        ) : inSys ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
+                            <CheckCircleIcon className="w-4 h-4" /> In system
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <select
+                              value={pickStatus[f.name] || "potential"}
+                              onChange={(e) => setPickStatus((s) => ({ ...s, [f.name]: e.target.value }))}
+                              className="py-1 px-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 text-xs outline-none"
+                            >
+                              {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                            <button
+                              onClick={() => addToLenders(f)}
+                              disabled={st?.status === "adding"}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-ocean-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-60"
+                            >
+                              <PlusIcon className="w-3.5 h-3.5" />{st?.status === "adding" ? "Adding…" : "Add"}
+                            </button>
+                          </div>
+                        )}
                         <button
-                          onClick={() => addToLenders(f)}
-                          disabled={st?.status === "adding"}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-ocean-blue text-white text-xs font-semibold hover:opacity-90 disabled:opacity-60"
+                          onClick={() => handleHide(f)}
+                          onBlur={() => setConfirmHide((s) => ({ ...s, [f.name]: false }))}
+                          title="Remove from directory (junk)"
+                          className={`inline-flex items-center gap-1 px-1.5 py-1 rounded-md text-xs font-medium ${
+                            confirmHide[f.name] ? "bg-red-600 text-white" : "text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                          }`}
                         >
-                          <PlusIcon className="w-3.5 h-3.5" />{st?.status === "adding" ? "Adding…" : "Add"}
+                          <TrashIcon className="w-3.5 h-3.5" />{confirmHide[f.name] ? "Confirm" : ""}
                         </button>
                       </div>
                     )}
