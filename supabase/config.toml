@@ -58,3 +58,6 @@ verify_jwt = true
 
 [functions.recommend-lenders]
 verify_jwt = true
+
+[functions.poll-funder-replies]
+verify_jwt = false

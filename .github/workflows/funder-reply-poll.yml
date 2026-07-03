@@ -1,0 +1,30 @@
+# Funder reply poller — pull-based reply detection.
+#
+# Why: reply alerts were built push-first (GHL webhook → ghl-webhook fn), but
+# wiring the push requires a browser-only GHL workflow. This poller needs zero
+# GHL-side config: every 10 minutes it invokes poll-funder-replies, which scans
+# each funder's conversation for inbound email newer than our submission and
+# stamps response_at + emails the owner. Stamp-once semantics keep it safely
+# idempotent with the webhook path if that ever gets wired too.
+#
+# Secret required: FUNDER_POLL_SECRET (same shared secret as the GHL webhook).
+
+name: Funder reply poll
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll for funder replies
+        env:
+          SECRET: ${{ secrets.FUNDER_POLL_SECRET }}
+        run: |
+          set -euo pipefail
+          RES=$(curl -sS -X POST "https://ehibjeonqpqskhcvizow.supabase.co/functions/v1/poll-funder-replies?secret=$SECRET")
+          echo "$RES"
+          echo "$RES" | grep -q '"ok":true' || { echo "::error::poller failed"; exit 1; }
