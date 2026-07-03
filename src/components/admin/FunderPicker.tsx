@@ -335,7 +335,10 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     return "none";
   };
   const missingStipsOf = (lenderId: string): string[] =>
-    (profiles[lenderId]?.required_stips ?? []).filter((s) => !docsPresent.has(s));
+    // voided_check is NEVER a blocker — a bank-portal screenshot satisfies it,
+    // so it can't gate Submit even if a recipe lists it as required.
+    (profiles[lenderId]?.required_stips ?? [])
+      .filter((s) => s !== "voided_check" && !docsPresent.has(s));
 
   // An existing active (non-failed) submission means "already went out".
   const isAlreadyOut = (lenderId: string) => {
