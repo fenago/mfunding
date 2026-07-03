@@ -22,7 +22,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
-  listContactFileUploads,
+  listContactFileUploads, sendMarker,
 } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
@@ -385,7 +385,8 @@ Deno.serve(async (req) => {
       if (bcc.length) routingParts.push(`BCC: ${bcc.join(", ")}`);
       const routing = routingParts.length ? `[${routingParts.join(" · ")}] ` : "";
       const attachedStr = attachedNames.length ? ` [attached: ${attachedNames.join(", ")}]` : "";
-      const content = `[re: ${lender.company_name}] ${routing}${bodyText.slice(0, 500)}${attachedStr}`;
+      // Trailing marker lets poll-funder-replies phase 3 stamp [opened:…] later.
+      const content = `[re: ${lender.company_name}] ${routing}${bodyText.slice(0, 500)}${attachedStr}${sendMarker(sr.data)}`;
       await db.from("activity_log").insert({
         entity_type: "deal", entity_id: dealId, interaction_type: "email",
         subject: `funder:email — ${subject}`, content, logged_by: caller.id,

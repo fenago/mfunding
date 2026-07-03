@@ -323,6 +323,66 @@ async function runMerchantPhase(
   return { merchantReplies, merchantDetails };
 }
 
+// Phase 3 — flag email OPENS on the Step 7 trails. Every merchant/funder SEND we
+// logged carries a machine marker ([emsg:<email-record-id>] or [msg:<conversation-
+// message-id>]) pointing at its GHL email record; GHL tracks open/click state on
+// that record. Here we resolve each recently-sent, not-yet-flagged row and, when
+// GHL reports it 'opened' (or 'clicked'), append [opened:<iso>] to the activity_log
+// content so FunderResponsesBoard can render a "👀 Opened" chip. Best-effort per
+// row — one bad row must never stop the loop. Returns how many rows we newly flagged.
+async function harvestOpens(
+  db: SupabaseClient,
+  cfg: Awaited<ReturnType<typeof getGhlConfig>>,
+): Promise<number> {
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: rows } = await db.from("activity_log")
+    .select("id, content")
+    .eq("entity_type", "deal")
+    .or("subject.like.merchant:email%,subject.like.funder:email%")
+    .or("content.like.%[msg:%,content.like.%[emsg:%")
+    .not("content", "like", "%[opened:%")
+    .gt("created_at", since)
+    .limit(25);
+
+  let flagged = 0;
+  for (const row of (rows ?? []) as Array<{ id: string; content: string | null }>) {
+    try {
+      const content = String(row.content ?? "");
+      // Resolve the email-record id: [emsg:id] is one directly; [msg:id] is a
+      // conversation-message id whose email record is meta.email.messageIds (last).
+      let emailRecordId = "";
+      const emsg = content.match(/\[emsg:([^\]]+)\]/);
+      if (emsg) {
+        emailRecordId = emsg[1];
+      } else {
+        const msg = content.match(/\[msg:([^\]]+)\]/);
+        if (!msg) continue;
+        const mRes = await ghlFetch<{ message?: Record<string, unknown> } & Record<string, unknown>>(
+          cfg, "GET", `/conversations/messages/${msg[1]}`,
+        );
+        const m = (mRes.data?.message ?? mRes.data ?? {}) as Record<string, unknown>;
+        const ids = (m.meta as { email?: { messageIds?: string[] } } | undefined)?.email?.messageIds ?? [];
+        if (!ids.length) continue;
+        emailRecordId = String(ids[ids.length - 1]);
+      }
+      if (!emailRecordId) continue;
+
+      const eRes = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
+        cfg, "GET", `/conversations/messages/email/${emailRecordId}`,
+      );
+      const e = (eRes.data?.emailMessage ?? eRes.data ?? {}) as Record<string, unknown>;
+      const status = String(e.status ?? "").toLowerCase();
+      if (status !== "opened" && status !== "clicked") continue;
+
+      const { error: upErr } = await db.from("activity_log")
+        .update({ content: `${content} [opened:${new Date().toISOString()}]` })
+        .eq("id", row.id);
+      if (!upErr) flagged++;
+    } catch { /* best-effort per row — never break the loop */ }
+  }
+  return flagged;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const db = serviceClient();
@@ -342,7 +402,8 @@ Deno.serve(async (req) => {
     .is("response_at", null);
   if (!pending?.length) {
     const mp = await runMerchantPhase(db, cfg);
-    return json({ ok: true, checked: 0, replies: 0, merchant_replies: mp.merchantReplies, merchant_details: mp.merchantDetails });
+    const opensFlagged = await harvestOpens(db, cfg);
+    return json({ ok: true, checked: 0, replies: 0, merchant_replies: mp.merchantReplies, merchant_details: mp.merchantDetails, opens_flagged: opensFlagged });
   }
 
   const lenderIds = [...new Set(pending.map((p) => p.lender_id))];
@@ -479,8 +540,10 @@ Deno.serve(async (req) => {
   }
 
   const mp = await runMerchantPhase(db, cfg);
+  const opensFlagged = await harvestOpens(db, cfg);
   return json({
     ok: true, checked: (lenders ?? []).length, replies, details,
     merchant_replies: mp.merchantReplies, merchant_details: mp.merchantDetails,
+    opens_flagged: opensFlagged,
   });
 });

@@ -70,6 +70,17 @@ const ADHOC_MAX_BYTES = 20 * 1024 * 1024; // 20MB per file
 const money = (n: number | null | undefined) =>
   n == null ? "—" : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
+// "👀 Opened <Mon D, h:mm AM>" — shown on a sent trail entry once GHL reports the
+// recipient opened (or clicked) it (poll-funder-replies phase 3 stamps [opened:…]).
+function OpenedChip({ at }: { at: string | null }) {
+  if (!at) return null;
+  return (
+    <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-px text-[9px] font-semibold align-middle">
+      👀 Opened {new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+    </span>
+  );
+}
+
 // Compact "3h ago" / "2d ago".
 function relTime(iso: string | null): string {
   if (!iso) return "";
@@ -174,7 +185,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [msgCc, setMsgCc] = useState("");
   const [msgBcc, setMsgBcc] = useState("");
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" }[]>([]);
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply"; openedAt: string | null }[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
@@ -417,6 +428,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .order("created_at", { ascending: false }).limit(20);
     const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
+      // Pull the open-flag out first, then scrub EVERY machine marker
+      // ([opened:…], [msg:…], [emsg:…]) so none of them ever render in a snippet.
+      const openedM = snippet.match(/\[opened:([^\]]+)\]/);
+      const openedAt = openedM ? openedM[1] : null;
+      snippet = snippet.replace(/\s*\[(?:opened|msg|emsg):[^\]]+\]/g, "").trim();
       let re: string | null = null;
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
       if (m) { re = m[1] === "merchant" ? null : m[1]; snippet = snippet.slice(m[0].length); }
@@ -426,7 +442,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       return {
         at: r.created_at as string,
         subject: kind === "reply" ? "Merchant replied" : rawSubject.replace(/^(merchant|funder):email — /, ""),
-        snippet, re, kind,
+        snippet, re, kind, openedAt,
       };
     });
     // A reply belongs to whichever funder we messaged the merchant about last —
@@ -868,6 +884,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                           {isReply ? "Merchant REPLIED" : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {isFunder && <span className="ml-1 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 px-1 py-px text-[9px] font-semibold">to funder</span>}
                           {" · "}<span className={isReply ? "" : "font-medium text-gray-700 dark:text-gray-200"}>{isReply ? (m.snippet.split(":")[0] || m.subject) : m.subject}</span>
+                          <OpenedChip at={m.openedAt} />
                           {expandedMsg === key && (
                             <span className="block mt-1 whitespace-pre-wrap text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded p-1.5">{m.snippet}</span>
                           )}
@@ -908,6 +925,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                 {m.kind === "reply" && <span className="mr-0.5">↩</span>}
                 <span className={m.kind === "reply" ? "text-emerald-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                 {" · "}<span className="font-medium text-gray-800 dark:text-gray-100">{m.subject}</span>
+                <OpenedChip at={m.openedAt} />
                 {expandedMsg === `all-${m.at}`
                   ? <span className="block mt-1 whitespace-pre-wrap bg-white dark:bg-gray-800 rounded p-2 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200">{m.snippet}</span>
                   : (m.snippet && <span className="text-gray-400"> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>)}

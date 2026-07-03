@@ -15,6 +15,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
+  sendMarker,
 } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
@@ -125,7 +126,8 @@ Deno.serve(async (req) => {
       entity_id: dealId,
       interaction_type: "email",
       subject: `merchant:email — ${subject}`,
-      content: snippet,
+      // Marker lets poll-funder-replies phase 3 stamp [opened:…] on this row later.
+      content: snippet + sendMarker(sr.data),
       logged_by: caller.id,
     });
   } catch { /* best-effort */ }

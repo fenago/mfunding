@@ -281,6 +281,21 @@ export async function sendEmailToContact(
   );
 }
 
+/** Machine marker to append to an activity_log content string so the opens
+ * harvester (poll-funder-replies phase 3) can later resolve THIS send's GHL
+ * email record and stamp it opened. Prefers the email-record id (directly
+ * fetchable via /conversations/messages/email/{id}) over the conversation-
+ * message id (which must first be expanded to its email record). Returns "" when
+ * the send response carried neither — the row simply never gets an opened chip. */
+export function sendMarker(sendData: unknown): string {
+  const d = (sendData ?? {}) as Record<string, unknown>;
+  const emsg = typeof d.emailMessageId === "string" ? d.emailMessageId : "";
+  if (emsg) return ` [emsg:${emsg}]`;
+  const msg = typeof d.messageId === "string" ? d.messageId : "";
+  if (msg) return ` [msg:${msg}]`;
+  return "";
+}
+
 /** Latest email message id in the contact's conversation (or null). Use as
  * replyMessageId so outbound lands as a threaded reply in the recipient's inbox. */
 export async function latestEmailMessageId(cfg: GhlConfig, contactId: string): Promise<string | null> {
