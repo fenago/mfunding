@@ -403,7 +403,7 @@ async function logActivity(db: ReturnType<typeof serviceClient>, entityType: str
   try {
     await db.from("activity_log").insert({
       entity_type: entityType, entity_id: entityId,
-      interaction_type: "system", subject: action, content: JSON.stringify(meta),
+      interaction_type: "note", subject: action, content: JSON.stringify(meta),
     });
   } catch { /* activity_log is best-effort */ }
 }

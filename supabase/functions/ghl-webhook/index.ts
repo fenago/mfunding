@@ -430,7 +430,7 @@ async function log(db: DB, entityType: string, entityId: string, action: string,
   try {
     await db.from("activity_log").insert({
       entity_type: entityType, entity_id: entityId,
-      interaction_type: "system", subject: action, content: JSON.stringify(meta),
+      interaction_type: "note", subject: action, content: JSON.stringify(meta),
     });
   } catch { /* best-effort */ }
 }
