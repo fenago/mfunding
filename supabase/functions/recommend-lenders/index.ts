@@ -20,10 +20,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
-
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
-const DEFAULT_MODEL = "claude-sonnet-4-6";
+import { callLLM, resolveConfig } from "../_shared/llm.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -86,15 +83,16 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-    if (!apiKey) return json({ error: "ANTHROPIC_API_KEY not configured" }, 500);
-    const model = Deno.env.get("ANTHROPIC_MODEL") ?? DEFAULT_MODEL;
+    const db = serviceClient();
+
+    // Provider/model come from the pluggable LLM layer (task "recommend_lenders"),
+    // super-admin-switchable in Admin → Integrations → AI Provider. The model
+    // label is surfaced in the response and persisted with the recommendations.
+    const { model } = await resolveConfig(db, "recommend_lenders");
 
     const body = await req.json().catch(() => ({}));
     const dealId = (body?.deal_id ?? body?.dealId) as string | undefined;
     if (!dealId) return json({ error: "deal_id is required" }, 400);
-
-    const db = serviceClient();
 
     // 1) Deal + merchant.
     const { data: deal, error: dErr } = await db
@@ -175,35 +173,25 @@ Deno.serve(async (req) => {
       JSON.stringify(lenders.map(lenderForPrompt), null, 2) +
       `\n\nReturn the ranked JSON now.`;
 
-    // 4) Call Claude.
-    const aiRes = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        temperature: 0.2,
+    // 4) Call the active LLM provider (task "recommend_lenders"). callLLM
+    //    resolves provider/model from llm_settings, loads the key server-side,
+    //    dispatches to the right protocol, and returns assistant text with
+    //    ```json fences stripped. A provider/HTTP error throws a clear message.
+    let text: string;
+    try {
+      text = await callLLM(db, {
         system,
-        messages: [{ role: "user", content: user }],
-      }),
-    });
-
-    const aiJson = await aiRes.json().catch(() => null);
-    if (!aiRes.ok) {
-      const msg = aiJson?.error?.message ?? `Anthropic API error (${aiRes.status})`;
-      return json({ error: msg }, 502);
+        prompt: user,
+        maxTokens: 4096,
+        temperature: 0.2,
+        jsonMode: true,
+        task: "recommend_lenders",
+      });
+    } catch (e) {
+      return json({ error: String(e instanceof Error ? e.message : e) }, 502);
     }
 
-    // 5) Parse defensively — strip ```json fences, then extract the JSON object.
-    const rawText: string = (aiJson?.content ?? [])
-      .filter((b: { type?: string }) => b?.type === "text")
-      .map((b: { text?: string }) => b?.text ?? "")
-      .join("").trim();
-    const text = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    // 5) Parse defensively — extract the JSON object even if wrapped in prose.
 
     let parsed: { recommendations?: unknown; summary?: unknown } | null = null;
     try {
@@ -214,10 +202,6 @@ Deno.serve(async (req) => {
       if (start !== -1 && end > start) {
         try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
       }
-    }
-    // Surface truncation explicitly so the UI can say something useful.
-    if (!parsed && aiJson?.stop_reason === "max_tokens") {
-      return json({ error: "AI response was too long and got cut off — try again." }, 502);
     }
     if (!parsed || !Array.isArray(parsed.recommendations)) {
       return json({ error: "Could not parse AI response.", raw: text.slice(0, 500) }, 502);

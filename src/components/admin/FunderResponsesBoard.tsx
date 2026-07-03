@@ -31,7 +31,9 @@ import type { DealWithCustomer } from "../../types/deals";
 // No concrete "Bank Statements & Documents Upload" form URL is stored in the repo
 // or DB yet, so stip-request prefills use this placeholder — the closer swaps in
 // the real link (the body stays fully editable) before sending.
-const UPLOAD_LINK_PLACEHOLDER = "[UPLOAD LINK]";
+// GHL "Bank Statements & Documents Upload" form — the same secure upload
+// link the doc-collection sequences send to merchants.
+const UPLOAD_LINK_PLACEHOLDER = "https://api.leadconnectorhq.com/widget/form/vO16UFona1IkxuezRg0d";
 
 // AI response-type → badge label + color (mirrors the classifier's enum).
 const RESPONSE_TYPE_META: Record<string, { label: string; cls: string }> = {

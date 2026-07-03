@@ -6,6 +6,8 @@ import {
   getGHLStatus, getFollowUpSequences, getSyncCounts,
   type GHLStatus, type FollowUpSequenceRow, type SyncCounts,
 } from "../../../services/integrationService";
+import { useUserProfile } from "../../../context/UserProfileContext";
+import AIProviderPanel from "./AIProviderPanel";
 
 const WEBHOOK_URL = "https://ehibjeonqpqskhcvizow.supabase.co/functions/v1/ghl-webhook";
 const GHL_LOCATION = "t7NmVR4WCy927j4Zon4b (MFunding.net)";
@@ -32,6 +34,7 @@ export default function IntegrationsPage() {
   const [sequences, setSequences] = useState<FollowUpSequenceRow[]>([]);
   const [counts, setCounts] = useState<SyncCounts | null>(null);
   const [loading, setLoading] = useState(true);
+  const { isSuperAdmin } = useUserProfile();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -60,6 +63,9 @@ export default function IntegrationsPage() {
           <ArrowPathIcon className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Refresh
         </button>
       </div>
+
+      {/* AI provider (super_admin only) */}
+      {isSuperAdmin && <AIProviderPanel />}
 
       {/* GHL connection */}
       <Card title="GoHighLevel Connection"

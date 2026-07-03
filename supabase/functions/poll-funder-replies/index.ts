@@ -16,14 +16,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, ghlFetch, upsertContact, sendEmailToContact,
 } from "../_shared/ghl.ts";
+import { callLLM } from "../_shared/llm.ts";
+import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
-const CLASSIFY_MODEL = "claude-sonnet-4-6";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -45,9 +44,8 @@ interface ReplyClassification {
 // Ask Claude to structure a funder's reply so the closer sees what's needed
 // without opening GHL. Best-effort ONLY — every caller wraps this so a classify
 // failure can never block the stamp/alert. Returns null on any problem.
-async function classifyReply(replyText: string): Promise<ReplyClassification | null> {
-  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!apiKey || !replyText.trim()) return null;
+async function classifyReply(db: SupabaseClient, replyText: string): Promise<ReplyClassification | null> {
+  if (!replyText.trim()) return null;
 
   const system =
     "You classify a single email reply that an MCA/business-funding FUNDER sent back to an " +
@@ -64,28 +62,16 @@ async function classifyReply(replyText: string): Promise<ReplyClassification | n
     "summary is one plain sentence a closer can scan.";
 
   try {
-    const res = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify({
-        model: Deno.env.get("ANTHROPIC_MODEL") ?? CLASSIFY_MODEL,
-        max_tokens: 1024,
-        temperature: 0,
-        system,
-        messages: [{ role: "user", content: `Funder reply:\n"""\n${replyText}\n"""\n\nReturn the JSON now.` }],
-      }),
-    });
-    if (!res.ok) return null;
-    const aiJson = await res.json().catch(() => null);
-    const rawText: string = (aiJson?.content ?? [])
-      .filter((b: { type?: string }) => b?.type === "text")
-      .map((b: { text?: string }) => b?.text ?? "")
-      .join("").trim();
-    let text = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    // Provider-agnostic: routes through llm_settings (admin-switchable), with
+    // a per-task override slot "classify_reply".
+    let text = (await callLLM(db, {
+      system,
+      prompt: `Funder reply:\n"""\n${replyText}\n"""\n\nReturn the JSON now.`,
+      maxTokens: 1024,
+      temperature: 0,
+      jsonMode: true,
+      task: "classify_reply",
+    })).trim();
     let parsed: Record<string, unknown> | null = null;
     try { parsed = JSON.parse(text); } catch {
       const s = text.indexOf("{"), e = text.lastIndexOf("}");
@@ -209,7 +195,7 @@ Deno.serve(async (req) => {
       // Classify the reply (best-effort — NEVER blocks the stamp/alert above).
       let classification: ReplyClassification | null = null;
       try {
-        classification = await classifyReply(replyText);
+        classification = await classifyReply(db, replyText);
         if (classification) {
           await db.from("deal_submissions").update({
             response_type: classification.type,
