@@ -15,10 +15,17 @@ import {
   EnvelopeIcon,
   GlobeAltIcon,
   SparklesIcon,
+  DocumentArrowUpIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { useSession } from "../../context/SessionContext";
 import { getMatchingLenders } from "../../services/lenderMatchingService";
 import type { DealWithCustomer } from "../../types/deals";
+
+// GHL Documents & Contracts (Completed e-sign) for the MFunding sub-account —
+// where the closer downloads the signed application PDF once to re-upload here.
+const GHL_COMPLETED_DOCS_URL =
+  "https://app.vibereach.io/v2/location/t7NmVR4WCy927j4Zon4b/payments/proposals-estimates";
 
 type Method = "email" | "portal" | "email_and_portal" | "none";
 
@@ -87,10 +94,20 @@ function methodBadge(m: Method) {
 }
 
 export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
+  const { session } = useSession();
   const [matches, setMatches] = useState<Match[]>([]);
   const [profiles, setProfiles] = useState<Record<string, ProfileMeta>>({});
   const [lenderDest, setLenderDest] = useState<Record<string, { email: string | null; portal: string | null }>>({});
-  const [docsPresent, setDocsPresent] = useState<Set<string>>(new Set());
+  // App-side (Supabase customer_documents) and GHL-side doc types are tracked
+  // SEPARATELY: the stips guard uses the union (docsPresent), but the signed-app
+  // slot needs to know whether the signed application lives app-side (attaches
+  // automatically) vs only in GHL (must be downloaded + re-uploaded here).
+  const [appDocs, setAppDocs] = useState<Set<string>>(new Set());
+  const [ghlDocs, setGhlDocs] = useState<Set<string>>(new Set());
+  // Signed-application upload slot.
+  const [signedAppFile, setSignedAppFile] = useState<File | null>(null);
+  const [uploadingApp, setUploadingApp] = useState(false);
+  const [uploadAppError, setUploadAppError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Record<string, FunderResult>>({});
   const [existing, setExisting] = useState<Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean }>>({});
@@ -139,30 +156,32 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         setLenderDest(dmap);
         // Package check sees BOTH rails: app-side customer_documents AND the
         // GHL side (signed e-sign docs + files from the upload form) — a signed
-        // application in GHL counts, statements uploaded to GHL count.
-        const present = new Set(((docRes.data ?? []) as { document_type: string }[]).map((d) => d.document_type));
+        // application in GHL counts, statements uploaded to GHL count. Kept in
+        // two sets so the signed-app slot can tell app-side from GHL-only.
+        const appPresent = new Set(((docRes.data ?? []) as { document_type: string }[]).map((d) => d.document_type));
+        const ghlPresent = new Set<string>();
         if (deal.ghl_contact_id) {
           try {
             const { data: ghl } = await supabase.functions.invoke("ghl-docs-status", {
               body: { ghl_contact_id: deal.ghl_contact_id },
             });
             for (const doc of (ghl?.documents ?? []) as { name?: string; signed?: boolean }[]) {
-              if (doc.signed && /application/i.test(doc.name ?? "")) present.add("application");
+              if (doc.signed && /application/i.test(doc.name ?? "")) ghlPresent.add("application");
             }
             for (const u of (ghl?.uploads ?? []) as { field: string; files: unknown[] }[]) {
               if (!u.files?.length) continue;
-              if (/bank/i.test(u.field)) present.add("bank_statement");
+              if (/bank/i.test(u.field)) ghlPresent.add("bank_statement");
               else {
                 // Stips uploads (ID / voided check / ownership) — the upload form
                 // can't tag types, so files here unlock both; closers verify
                 // visually in the Docs-back panel.
-                present.add("id");
-                present.add("voided_check");
+                ghlPresent.add("id");
+                ghlPresent.add("voided_check");
               }
             }
           } catch { /* GHL peek is best-effort; app docs still count */ }
         }
-        if (!cancelled) setDocsPresent(present);
+        if (!cancelled) { setAppDocs(appPresent); setGhlDocs(ghlPresent); }
         const emap: Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean }> = {};
         for (const s of (subRes.data ?? []) as { id: string; lender_id: string; status: string; submission_method: string | null; error: string | null; portal_confirmed_at: string | null }[]) {
           emap[s.lender_id] = { status: s.status, method: s.submission_method, submissionId: s.id, hasError: !!s.error, portalConfirmed: !!s.portal_confirmed_at };
@@ -176,6 +195,55 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     })();
     return () => { cancelled = true; };
   }, [deal.id, deal.customer_id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Union of both rails — this is what the stips guard reads (unchanged behavior).
+  const docsPresent = useMemo(() => new Set<string>([...appDocs, ...ghlDocs]), [appDocs, ghlDocs]);
+  const signedAppInApp = appDocs.has("application");
+  const signedAppInGhl = ghlDocs.has("application");
+
+  // Re-read app-side customer_documents after an upload so the slot flips to ✅
+  // and any per-funder "forward the signed application" warning goes moot.
+  async function reloadAppDocs() {
+    if (!deal.customer_id) return;
+    const { data } = await supabase.from("customer_documents").select("document_type").eq("customer_id", deal.customer_id);
+    setAppDocs(new Set(((data ?? []) as { document_type: string }[]).map((d) => d.document_type)));
+  }
+
+  // Upload the signed application PDF the closer downloaded from GHL. Mirrors the
+  // shared DocumentUploader conventions exactly: same bucket, same path shape,
+  // same customer_documents insert — so the submit-to-funders engine picks it up
+  // automatically and attaches it (as an expiring link) to every funder.
+  async function uploadSignedApp() {
+    const file = signedAppFile;
+    if (!file || !deal.customer_id) return;
+    setUploadingApp(true);
+    setUploadAppError(null);
+    try {
+      const ext = file.name.split(".").pop();
+      const path = `customer/${deal.customer_id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
+      const { error: upErr } = await supabase.storage.from("customer-documents").upload(path, file, {
+        cacheControl: "3600",
+        upsert: false,
+      });
+      if (upErr) throw upErr;
+      const { error: dbErr } = await supabase.from("customer_documents").insert({
+        document_type: "application",
+        filename: file.name,
+        storage_path: path,
+        file_size: file.size,
+        mime_type: file.type,
+        uploaded_by: session?.user?.id,
+        customer_id: deal.customer_id,
+      });
+      if (dbErr) throw dbErr;
+      setSignedAppFile(null);
+      await reloadAppDocs();
+    } catch (e) {
+      setUploadAppError(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setUploadingApp(false);
+    }
+  }
 
   const methodOf = (lenderId: string): Method => {
     const p = profiles[lenderId];
@@ -443,6 +511,51 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               </>
             )}
           </div>
+
+          {/* Signed application slot — download the signed PDF from GHL once, drop
+              it here, and the engine attaches it to every funder submission. */}
+          {signedAppInApp ? (
+            <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1.5">
+              <CheckCircleIcon className="w-4 h-4 flex-shrink-0" />
+              Signed application on file — attaches to every submission.
+            </div>
+          ) : signedAppInGhl ? (
+            <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 space-y-2">
+              <p className="text-[12px] text-amber-700 dark:text-amber-300">
+                Signed in GHL — download it once and drop it here so it attaches to every funder submission.
+              </p>
+              <a
+                href={GHL_COMPLETED_DOCS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] text-ocean-blue hover:underline inline-flex items-center gap-1"
+              >
+                Open GHL → Documents &amp; Contracts (Completed) <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+              </a>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => { setSignedAppFile(e.target.files?.[0] ?? null); setUploadAppError(null); }}
+                  className="text-[11px] text-gray-600 dark:text-gray-300 file:mr-2 file:rounded file:border-0 file:bg-ocean-blue/10 file:px-2 file:py-1 file:text-ocean-blue"
+                />
+                <button
+                  type="button"
+                  disabled={!signedAppFile || uploadingApp}
+                  onClick={uploadSignedApp}
+                  className="text-[11px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                >
+                  {uploadingApp ? <ArrowPathIcon className="w-3 h-3 animate-spin" /> : <DocumentArrowUpIcon className="w-3 h-3" />}
+                  {uploadingApp ? "Uploading…" : "Upload signed application"}
+                </button>
+              </div>
+              {uploadAppError && <p className="text-[11px] text-red-600 dark:text-red-400">{uploadAppError}</p>}
+            </div>
+          ) : (
+            <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-[12px] text-gray-400">
+              No signed application yet.
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-2">
             <button
