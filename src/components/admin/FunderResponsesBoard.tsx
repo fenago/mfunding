@@ -596,6 +596,24 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
 
   // Fire the courtesy thank-you engine (submit-to-funders action=courtesy_decline).
   // Idempotent server-side; we also flip the local row so the button disables.
+  // Manual overrule: the watcher auto-applies declines/offers from reply
+  // classification, but funders change their minds (calls, restructures).
+  // Reopen puts the card back under active watch; the history stays in the
+  // activity feed and the response chips.
+  async function reopenSubmission(s: SubRow) {
+    setRowBusy(s.id);
+    try {
+      await updateSubmission(s.id, { status: "submitted", decline_reason: null });
+      await logActivity("note", `Reopened — ${s.lenderName}`,
+        `Closer manually reopened ${s.lenderName} (was ${s.status}) — back under active watch.`, "submitted");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not reopen.");
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
   async function sendThankYou(s: SubRow) {
     setRowBusy(s.id);
     setCourtesyMsg((m) => ({ ...m, [s.id]: "" }));
@@ -846,6 +864,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     )}
                     {/* Funder-declined cards: courtesy thank-you (idempotent) */}
                     {isFunderDeclined && (
+                      <button type="button" disabled={busy} onClick={() => reopenSubmission(s)} title="Overrule the decline — e.g. after a call where the funder agreed to take another look" className="text-[10px] font-semibold px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 inline-flex items-center gap-1">
+                        ↺ Reopen
+                      </button>
+                    )}
+                    {isFunderDeclined && (
                       s.courtesySentAt ? (
                         <span className="inline-flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
                           <CheckCircleIcon className="w-3.5 h-3.5" /> Thank-you sent
@@ -855,6 +878,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                           {busy ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <EnvelopeIcon className="w-3.5 h-3.5" />} Send thank-you
                         </button>
                       )
+                    )}
+                    {(st.key === "merchant_declined" || st.key === "accepted") && (
+                      <button type="button" disabled={busy} onClick={() => reopenSubmission(s)} title="Overrule — put this funder back to active/submitted" className="text-[10px] font-semibold px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 inline-flex items-center gap-1">
+                        ↺ Reopen
+                      </button>
                     )}
                     {/* Message the merchant — prefilled from this card's context */}
                     {showMsgButton && (
