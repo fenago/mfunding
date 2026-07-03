@@ -22,6 +22,8 @@ import {
   PaperAirplaneIcon,
   BuildingOffice2Icon,
   PaperClipIcon,
+  ArrowUpTrayIcon,
+  ExclamationCircleIcon,
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
@@ -59,6 +61,11 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
 
 type Frequency = "daily" | "weekly";
 const PAYMENTS_PER_MONTH: Record<Frequency, number> = { daily: 21, weekly: 4.33 };
+
+// Ad-hoc funder-message uploads: what the dropzone accepts.
+const ADHOC_ALLOWED_EXT = ["pdf", "png", "jpg", "jpeg", "heic", "csv", "xls", "xlsx", "doc", "docx"];
+const ADHOC_MAX_FILES = 8;
+const ADHOC_MAX_BYTES = 20 * 1024 * 1024; // 20MB per file
 
 const money = (n: number | null | undefined) =>
   n == null ? "—" : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
@@ -173,8 +180,13 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [msgError, setMsgError] = useState<string | null>(null);
   const [msgToast, setMsgToast] = useState<string | null>(null);
   // Funder-message attachments: the deal's documents, checkbox-selected.
-  const [docs, setDocs] = useState<{ id: string; filename: string | null; document_type: string; created_at: string }[]>([]);
+  // `uploaded` marks rows the closer added ad-hoc from the dropzone below.
+  const [docs, setDocs] = useState<{ id: string; filename: string | null; document_type: string; created_at: string; uploaded?: boolean }[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<Record<string, boolean>>({});
+  // Ad-hoc uploads in flight / failed (successful ones fold into `docs`).
+  const [adhocUploads, setAdhocUploads] = useState<{ localId: string; name: string; status: "uploading" | "error"; error?: string }[]>([]);
+  const [dropActive, setDropActive] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
 
   const monthlyRevenue = deal.customer?.monthly_revenue ?? null;
   const merchantFirst = deal.customer?.first_name?.trim() || "there";
@@ -262,6 +274,9 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     setMsgBcc("");
     setSelectedDocIds({});
     setDocs([]);
+    setAdhocUploads([]);
+    setAttachError(null);
+    setDropActive(false);
     setMsgError(null);
     setMsgOpen(true);
     // Load the deal's documents so the closer can attach the requested stip.
@@ -271,6 +286,66 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .eq("customer_id", deal.customer_id)
       .order("created_at", { ascending: false });
     setDocs((data ?? []) as { id: string; filename: string | null; document_type: string; created_at: string }[]);
+  }
+
+  // Upload one ad-hoc file to the SAME bucket/path scheme the app uses (mirrors
+  // FunderPicker.uploadSignedApp), insert a customer_documents row, then fold it
+  // into `docs` (auto-checked) so it rides through the existing documentIds flow.
+  async function uploadOneAdhoc(file: File) {
+    const localId = crypto.randomUUID();
+    setAdhocUploads((prev) => [...prev, { localId, name: file.name, status: "uploading" }]);
+    try {
+      if (!deal.customer_id) throw new Error("No customer on this deal.");
+      const ext = file.name.split(".").pop();
+      const path = `customer/${deal.customer_id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from("customer-documents")
+        .upload(path, file, { contentType: file.type, cacheControl: "3600", upsert: false });
+      if (upErr) throw upErr;
+      const { data, error: dbErr } = await supabase
+        .from("customer_documents")
+        .insert({
+          customer_id: deal.customer_id,
+          document_type: "other",
+          filename: file.name,
+          storage_path: path,
+          file_size: file.size,
+          mime_type: file.type,
+          status: "approved",
+          description: "Ad-hoc upload from Message-funder (Revenue Playbook)",
+          uploaded_by: session?.user?.id,
+        })
+        .select("id, filename, document_type, created_at")
+        .single();
+      if (dbErr) throw dbErr;
+      const row = data as { id: string; filename: string | null; document_type: string; created_at: string };
+      setDocs((prev) => [{ ...row, uploaded: true }, ...prev]);
+      setSelectedDocIds((m) => ({ ...m, [row.id]: true }));
+      setAdhocUploads((prev) => prev.filter((a) => a.localId !== localId));
+    } catch (e) {
+      setAdhocUploads((prev) =>
+        prev.map((a) => (a.localId === localId ? { ...a, status: "error", error: e instanceof Error ? e.message : "Upload failed" } : a)),
+      );
+    }
+  }
+
+  // Validate a dropped/chosen batch (extension + size + count), report rejects
+  // inline, and upload the survivors — one failure never kills the others.
+  async function handleAdhocFiles(fileList: FileList | File[]) {
+    setAttachError(null);
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
+    const errs: string[] = [];
+    const valid: File[] = [];
+    for (const f of files) {
+      if (valid.length >= ADHOC_MAX_FILES) { errs.push(`Max ${ADHOC_MAX_FILES} files at a time.`); break; }
+      const ext = (f.name.split(".").pop() || "").toLowerCase();
+      if (!ADHOC_ALLOWED_EXT.includes(ext)) { errs.push(`${f.name}: unsupported type`); continue; }
+      if (f.size > ADHOC_MAX_BYTES) { errs.push(`${f.name}: over 20MB`); continue; }
+      valid.push(f);
+    }
+    if (errs.length) setAttachError(errs.join(" · "));
+    await Promise.all(valid.map((f) => uploadOneAdhoc(f)));
   }
 
   async function sendFunderMessage() {
@@ -907,9 +982,61 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                             />
                             <span>
                               <span className="font-medium">{d.filename || "document"}</span>
+                              {d.uploaded && (
+                                <span className="ml-1 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300 px-1 py-px text-[9px] font-semibold align-middle">uploaded</span>
+                              )}
                               <span className="text-gray-400"> · {d.document_type.replace(/_/g, " ")} · {new Date(d.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
                             </span>
                           </label>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {/* Dropzone — attach arbitrary files, not just what's on file */}
+                  <label
+                    onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); setDropActive(false); }}
+                    onDrop={(e) => { e.preventDefault(); setDropActive(false); void handleAdhocFiles(e.dataTransfer.files); }}
+                    className={`mt-2 block cursor-pointer rounded-md border-2 border-dashed px-3 py-4 text-center transition-colors ${
+                      dropActive
+                        ? "border-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20"
+                        : "border-gray-300 dark:border-gray-600 hover:border-indigo-400"
+                    }`}
+                  >
+                    <ArrowUpTrayIcon className="w-5 h-5 text-gray-400 mx-auto mb-1" />
+                    <span className="block text-[11px] text-gray-500 dark:text-gray-400">
+                      {dropActive ? "Drop files here" : "Drag files here or click to browse"}
+                    </span>
+                    <span className="block text-[10px] text-gray-400 mt-0.5">
+                      pdf, png, jpg, heic, csv, xls, doc — up to 20MB each, 8 at a time
+                    </span>
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      accept=".pdf,.png,.jpg,.jpeg,.heic,.csv,.xls,.xlsx,.doc,.docx"
+                      onChange={(e) => { if (e.target.files) void handleAdhocFiles(e.target.files); e.target.value = ""; }}
+                    />
+                  </label>
+                  {attachError && (
+                    <p className="mt-1 text-[10.5px] text-rose-600 dark:text-rose-400">{attachError}</p>
+                  )}
+                  {adhocUploads.length > 0 && (
+                    <ul className="mt-1.5 space-y-1">
+                      {adhocUploads.map((a) => (
+                        <li key={a.localId} className="flex items-center gap-1.5 text-[11px]">
+                          {a.status === "uploading" ? (
+                            <>
+                              <ArrowPathIcon className="w-3.5 h-3.5 animate-spin text-indigo-500 flex-shrink-0" />
+                              <span className="text-gray-500 dark:text-gray-400 truncate">Uploading {a.name}…</span>
+                            </>
+                          ) : (
+                            <>
+                              <ExclamationCircleIcon className="w-3.5 h-3.5 text-rose-500 flex-shrink-0" />
+                              <span className="text-rose-600 dark:text-rose-400 truncate">{a.name} — {a.error || "Upload failed"}</span>
+                            </>
+                          )}
                         </li>
                       ))}
                     </ul>
