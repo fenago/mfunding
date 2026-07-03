@@ -894,23 +894,23 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         </p>
       )}
 
-      {/* Merchant thread — our sends AND the merchant's replies, in conversation
-          order. Funder messages live on their own cards, so this stays merchant-side. */}
-      {sentLog.some((m) => m.kind !== "funder") && (
+      {/* Card trails are the source of truth. This strip only exists for
+          messages that don't belong to any funder card (general sends / replies
+          with no prior context) so nothing becomes invisible. */}
+      {sentLog.some((m) => m.kind !== "funder" && !m.re) && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-2.5">
           <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 mb-1.5 inline-flex items-center gap-1">
-            <EnvelopeIcon className="w-3.5 h-3.5" /> Merchant thread — messages & replies
+            <EnvelopeIcon className="w-3.5 h-3.5" /> General merchant messages (not tied to a funder)
           </p>
           <ul className="space-y-1.5">
-            {sentLog.filter((m) => m.kind !== "funder").slice().sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((m, i) => (
+            {sentLog.filter((m) => m.kind !== "funder" && !m.re).slice().sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((m, i) => (
               <li key={i} className={`text-[11px] cursor-pointer ${m.kind === "reply" ? "text-emerald-700 dark:text-emerald-300 pl-3" : "text-gray-600 dark:text-gray-300"}`} onClick={() => setExpandedMsg(expandedMsg === `all-${m.at}` ? null : `all-${m.at}`)}>
                 {m.kind === "reply" && <span className="mr-0.5">↩</span>}
                 <span className={m.kind === "reply" ? "text-emerald-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-                {m.re && m.kind !== "reply" && <span className="ml-1 rounded bg-ocean-blue/10 text-ocean-blue px-1 py-px text-[9.5px] font-semibold">re: {m.re}</span>}
-                {" · "}<span className={`font-medium ${m.kind === "reply" ? "" : "text-gray-800 dark:text-gray-100"}`}>{m.subject}</span>
+                {" · "}<span className="font-medium text-gray-800 dark:text-gray-100">{m.subject}</span>
                 {expandedMsg === `all-${m.at}`
                   ? <span className="block mt-1 whitespace-pre-wrap bg-white dark:bg-gray-800 rounded p-2 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200">{m.snippet}</span>
-                  : (m.snippet && <span className={m.kind === "reply" ? "text-emerald-600/70 dark:text-emerald-400/70" : "text-gray-400"}> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>)}
+                  : (m.snippet && <span className="text-gray-400"> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>)}
               </li>
             ))}
           </ul>
