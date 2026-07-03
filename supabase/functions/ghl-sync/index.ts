@@ -173,7 +173,7 @@ function docPrefillFields(cust: any, deal?: any) {
   add("business_name", cust?.business_name);
   // Constant: names the "Representative" in the application's authorization
   // clause (Lendini requirement) — same value for every contact.
-  add("representative_name", "Agentic Voice Inc dba Momentum Funding and their representatives,");
+  add("representative_name", 'Representative: Agentic Voice Inc dba Momentum Funding and their representatives.');
   add("business_address", cust?.address_street);
   add("business_phone", cust?.phone);
   add("business_email", cust?.email);
