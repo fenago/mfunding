@@ -84,6 +84,7 @@ const navGroups: NavGroup[] = [
       { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: SUPER },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },

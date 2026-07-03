@@ -91,6 +91,7 @@ const PipelinePlaybookPage = lazyWithReload(() => import("../pages/admin/Pipelin
 const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
+const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
 const LeadToolsPage = lazyWithReload(() => import("../pages/admin/LeadToolsPage.tsx"));
 const LeadPartnerPage = lazyWithReload(() => import("../pages/admin/LeadPartnerPage.tsx"));
@@ -385,6 +386,12 @@ export const routes: RouteObject[] = [
                 path: "lead-budget",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <LeadBudgetCalculatorPage /> }],
+              },
+              // Funder partnership directory (super_admin only)
+              {
+                path: "funder-directory",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <FunderDirectoryPage /> }],
               },
               // Users & roles (super_admin only)
               {
