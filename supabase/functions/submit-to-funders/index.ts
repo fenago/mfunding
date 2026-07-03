@@ -647,7 +647,7 @@ Deno.serve(async (req) => {
         portal: { url: portalUrl, steps: recipe?.portal_steps ?? [], hint: recipe?.portal_credentials_hint ?? null },
         warning: docsWarning,
       });
-      await logActivity(db, dealId, lenderId, name, { portal: true, portalUrl, subject });
+      await logActivity(db, dealId, lenderId, name, { portal: true, portalUrl, subject, to: portalUrl ?? undefined, resubmit });
       continue;
     }
 
@@ -693,7 +693,7 @@ Deno.serve(async (req) => {
       notes: notes ?? null,
     }, existing?.id as string | undefined, caller.id);
 
-    await logActivity(db, dealId, lenderId, name, { to, emailSent, emailError, subject });
+    await logActivity(db, dealId, lenderId, name, { to, emailSent, emailError, subject, resubmit });
 
     results.push({
       lenderId, name, method, submissionId,
@@ -779,10 +779,20 @@ async function logActivity(
   detail: Record<string, unknown>,
 ) {
   try {
+    const d = detail as { courtesy?: boolean; portal?: boolean; resubmit?: boolean; to?: string; emailError?: string };
+    // Courtesy thank-yous log separately; submissions log as a board-parseable
+    // "funder:sent — <name>" so they render on that funder's Step 7 card.
+    const subject = d.courtesy ? `funder:courtesy — ${name}` : `funder:sent — ${name}`;
+    const verb = d.courtesy ? "Sent a thank-you"
+      : d.emailError ? "Attempted send (failed)"
+      : d.portal ? (d.resubmit ? "↻ Re-submitted via portal" : "📤 Submitted via portal")
+      : (d.resubmit ? "↻ Re-sent the package" : "📤 Submitted the package");
+    const content = `[re: ${name}] ${verb}${d.to ? ` to ${d.to}` : ""}.` +
+      (d.emailError ? ` (${d.emailError})` : "");
     await db.from("activity_log").insert({
-      entity_type: "deal", entity_id: dealId, interaction_type: "system",
-      subject: `submit-to-funder:${name}`,
-      content: JSON.stringify({ lenderId, via: "ghl", ...detail }),
+      entity_type: "deal", entity_id: dealId,
+      interaction_type: "application_submitted", // 'system' is not an allowed type
+      subject, content,
     });
   } catch { /* best-effort */ }
 }

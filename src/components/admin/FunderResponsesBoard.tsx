@@ -185,7 +185,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [msgCc, setMsgCc] = useState("");
   const [msgBcc, setMsgBcc] = useState("");
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply"; openedAt: string | null }[]>([]);
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent"; openedAt: string | null }[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
@@ -424,7 +424,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .from("activity_log")
       .select("created_at, subject, content")
       .eq("entity_type", "deal").eq("entity_id", deal.id)
-      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%")
+      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%")
       .order("created_at", { ascending: false }).limit(20);
     const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
@@ -437,15 +437,20 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
       if (m) { re = m[1] === "merchant" ? null : m[1]; snippet = snippet.slice(m[0].length); }
       const rawSubject = String(r.subject ?? "");
-      const kind: "merchant" | "funder" | "reply" | "funder_reply" =
+      const kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" =
         rawSubject.startsWith("funder:email") ? "funder"
         : rawSubject.startsWith("merchant:reply") ? "reply"
         : rawSubject.startsWith("ghl:funder-reply") ? "funder_reply"
+        : rawSubject.startsWith("funder:sent") ? "sent"
         : "merchant";
-      if (kind === "funder_reply") re = rawSubject.split("— ")[1]?.trim() || null;
+      if (kind === "funder_reply" || kind === "sent") re = rawSubject.split("— ")[1]?.trim() || null;
+      const resent = kind === "sent" && /re-?sent|re-?submitted/i.test(snippet);
       return {
         at: r.created_at as string,
-        subject: kind === "reply" ? "Merchant replied" : kind === "funder_reply" ? "Funder replied" : rawSubject.replace(/^(merchant|funder):email — /, ""),
+        subject: kind === "reply" ? "Merchant replied"
+          : kind === "funder_reply" ? "Funder replied"
+          : kind === "sent" ? (resent ? "Re-sent to funder" : "Submitted to funder")
+          : rawSubject.replace(/^(merchant|funder):email — /, ""),
         snippet, re, kind, openedAt,
       };
     });
@@ -907,16 +912,20 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                       const isFunder = m.kind === "funder";
                       const isReply = m.kind === "reply";
                       const isFunderReply = m.kind === "funder_reply";
+                      const isSent = m.kind === "sent";
+                      const isResend = isSent && /re-?sent|re-?submitted/i.test(m.subject);
                       return (
-                        <li key={i} className={`text-[10.5px] cursor-pointer ${isReply ? "text-emerald-700 dark:text-emerald-300 font-medium pl-2" : isFunderReply ? "text-rose-700 dark:text-rose-300 font-medium pl-2" : "text-gray-500 dark:text-gray-400"}`} onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
+                        <li key={i} className={`text-[10.5px] cursor-pointer ${isReply ? "text-emerald-700 dark:text-emerald-300 font-medium pl-2" : isFunderReply ? "text-rose-700 dark:text-rose-300 font-medium pl-2" : isSent ? "text-blue-700 dark:text-blue-300 font-medium" : "text-gray-500 dark:text-gray-400"}`} onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
                           {isReply
                             ? <span className="mr-0.5">↩</span>
                             : isFunderReply
                               ? <span className="mr-0.5">⬅</span>
+                              : isSent
+                                ? <span className="mr-0.5">{isResend ? "↻" : "📤"}</span>
                               : isFunder
                                 ? <BuildingOffice2Icon className="w-3 h-3 inline mr-0.5 text-indigo-500" />
                                 : <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />}
-                          {isReply ? "Merchant REPLIED" : isFunderReply ? "Funder REPLIED" : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : isFunderReply ? "text-rose-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                          {isReply ? "Merchant REPLIED" : isFunderReply ? "Funder REPLIED" : isSent ? (isResend ? "RE-SENT to funder" : "Submitted to funder") : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : isFunderReply ? "text-rose-500" : isSent ? "text-blue-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {isFunder && <span className="ml-1 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 px-1 py-px text-[9px] font-semibold">to funder</span>}
                           {" · "}<span className={isReply ? "" : "font-medium text-gray-700 dark:text-gray-200"}>{isReply ? (m.snippet.split(":")[0] || m.subject) : m.subject}</span>
                           <OpenedChip at={m.openedAt} />
