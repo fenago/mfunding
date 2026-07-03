@@ -104,7 +104,7 @@ export default function FunderDirectoryPage() {
   const [hideInSystem, setHideInSystem] = useState(false);
   const [pickStatus, setPickStatus] = useState<Record<string, string>>({});
   const [addState, setAddState] = useState<Record<string, AddState>>({});
-  const [liveNames, setLiveNames] = useState<string[]>([]); // normalized lenders.company_name
+  const [liveLenders, setLiveLenders] = useState<{ n: string; status: string }[]>([]); // normalized name + lender status
   const [hidden, setHidden] = useState<string[]>([]); // funder_directory_hidden.funder_name (junk removed)
   const [showRemoved, setShowRemoved] = useState(false);
   const [confirmHide, setConfirmHide] = useState<Record<string, boolean>>({});
@@ -126,21 +126,26 @@ export default function FunderDirectoryPage() {
     let alive = true;
     supabase
       .from("lenders")
-      .select("company_name")
+      .select("company_name, status")
       .then(({ data }) => {
         if (alive && data) {
-          setLiveNames(data.map((r: { company_name: string }) => norm(r.company_name)).filter(Boolean));
+          setLiveLenders(
+            data
+              .map((r: { company_name: string; status: string }) => ({ n: norm(r.company_name), status: r.status }))
+              .filter((x) => x.n),
+          );
         }
       });
     return () => { alive = false; };
   }, []);
 
-  const isInSystem = (f: Funder) => {
-    if (f.inSystem) return true; // static snapshot fallback
+  const liveMatch = (f: Funder) => {
     const fn = norm(f.name);
-    if (fn.length < 4) return false;
-    return liveNames.some((ln) => ln === fn || ln.includes(fn) || fn.includes(ln));
+    if (fn.length < 4) return undefined;
+    return liveLenders.find((l) => l.n === fn || l.n.includes(fn) || fn.includes(l.n));
   };
+  const isInSystem = (f: Funder) => f.inSystem || !!liveMatch(f);
+  const statusOf = (f: Funder) => liveMatch(f)?.status; // live lender status, or undefined (static-only)
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -160,11 +165,11 @@ export default function FunderDirectoryPage() {
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem, liveNames, hidden, showRemoved]);
+  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem, liveLenders, hidden, showRemoved]);
 
   const deadCount = useMemo(() => FUNDERS.filter((f) => f.verified === "dead").length, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const inSystemCount = useMemo(() => FUNDERS.filter((f) => isInSystem(f)).length, [liveNames]);
+  const inSystemCount = useMemo(() => FUNDERS.filter((f) => isInSystem(f)).length, [liveLenders]);
 
   async function addToLenders(f: Funder) {
     const key = f.name;
@@ -213,7 +218,7 @@ export default function FunderDirectoryPage() {
         notes: notes || null,
       });
       if (error) throw error;
-      setLiveNames((prev) => (prev.includes(norm(f.name)) ? prev : [...prev, norm(f.name)]));
+      setLiveLenders((prev) => (prev.some((l) => l.n === norm(f.name)) ? prev : [...prev, { n: norm(f.name), status }]));
       setAddState((s) => ({
         ...s,
         [key]: { status: "added", as: STATUS_OPTIONS.find((o) => o.value === status)?.label },
@@ -307,6 +312,7 @@ export default function FunderDirectoryPage() {
             {rows.map((f) => {
               const st = addState[f.name];
               const inSys = isInSystem(f);
+              const sysStatus = STATUS_OPTIONS.find((o) => o.value === statusOf(f))?.label;
               return (
                 <tr key={f.name} className="border-b border-gray-100 dark:border-gray-700/50 align-top">
                   <td className="py-3 px-4">
@@ -333,7 +339,7 @@ export default function FunderDirectoryPage() {
                   <td className="py-3 px-2 text-gray-600 dark:text-gray-300 whitespace-nowrap">{f.paper ?? "—"}</td>
                   <td className="py-3 px-2">
                     <div className="flex flex-wrap gap-1 max-w-[130px]">
-                      {inSys && <Chip label="In system" tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" />}
+                      {inSys && <Chip label={sysStatus ? `In system · ${sysStatus}` : "In system"} tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" />}
                       {f.lowRev && <Chip label="Low-rev" tone="bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" />}
                       {f.applyOnce && <Chip label="Apply-once" tone="bg-mint-green/15 text-mint-green" />}
                       {f.whiteLabel && <Chip label="White-label" tone="bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300" />}
@@ -366,7 +372,7 @@ export default function FunderDirectoryPage() {
                           </span>
                         ) : inSys ? (
                           <span className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
-                            <CheckCircleIcon className="w-4 h-4" /> In system
+                            <CheckCircleIcon className="w-4 h-4" /> In system{sysStatus ? ` · ${sysStatus}` : ""}
                           </span>
                         ) : (
                           <div className="flex items-center gap-1">
