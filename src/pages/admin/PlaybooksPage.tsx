@@ -22,8 +22,9 @@ import { PLAYBOOKS, type Playbook, type PlaybookStep, type StepField } from "../
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import FunderPicker from "../../components/admin/FunderPicker";
+import MyDayQueue from "../../components/admin/MyDayQueue";
 import PipelineFlow from "../../components/shared/PipelineFlow";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDeal } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import type { DealWithCustomer, DealStatus, Deal } from "../../types/deals";
@@ -76,12 +77,23 @@ export default function PlaybooksPage() {
   const [active, setActive] = useState<Playbook>(PLAYBOOKS[0]);
   const [deal, setDeal] = useState<DealWithCustomer | null>(null);
   const [busyStep, setBusyStep] = useState<number | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
   const { isSuperAdmin } = useUserProfile();
   // Renewals are gated per closer: super_admin always, a closer by their flag,
   // anyone without a closer row keeps default access.
   const canRenew = isSuperAdmin || !hasCloser || renewalsEnabled;
+
+  // Auto-dismiss the "deal closed" toast.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // Only render the renewal picker card for users allowed to work renewals.
+  const visiblePlaybooks = PLAYBOOKS.filter((p) => p.id !== "renewal" || canRenew);
 
   // The deal is "live" in this playbook only when its pipeline matches the open tab.
   const dealMatchesPlaybook = !!deal && pipelineOf(deal.deal_type) === active.pipeline;
@@ -175,6 +187,52 @@ export default function PlaybooksPage() {
     }
   }
 
+  // Load a deal picked from the "My Day" queue: switch to the playbook tab that
+  // matches its pipeline (preferring the Renewal flow for renewal deals when the
+  // user may work them), then load the deal into the workspace.
+  function pickFromQueue(d: QueueDeal) {
+    const pipe = pipelineOf(d.deal_type);
+    let target = visiblePlaybooks.find((p) => p.pipeline === pipe) ?? active;
+    if (d.is_renewal && canRenew) {
+      const renewal = visiblePlaybooks.find((p) => p.id === "renewal");
+      if (renewal) target = renewal;
+    }
+    setActive(target);
+    refreshDeal(d.id);
+  }
+
+  // Close a deal to a terminal state from the green context bar. updateDealStatus
+  // allows terminal moves (backward-lock exempts declined/dead/nurture) and fires
+  // the C/D GHL sequences; we then persist the reason/note, log it, and clear the
+  // workspace with a confirmation toast.
+  async function closeDeal(outcome: DealStatus, reason: string, note: string) {
+    if (!deal) return;
+    const label = DEAL_STATUS_CONFIG[outcome]?.label ?? outcome;
+    const name = dealName(deal);
+    try {
+      await updateDealStatus(deal.id, outcome);
+      await supabase
+        .from("deals")
+        .update({ closed_reason: reason, closed_note: note.trim() || null })
+        .eq("id", deal.id);
+      await addActivity({
+        interaction_type: "note",
+        subject: `Deal closed · ${label}`,
+        content: [`Outcome: ${label}`, `Reason: ${reason.replace(/_/g, " ")}`, note.trim()]
+          .filter(Boolean)
+          .join("\n"),
+      });
+      setDeal(null);
+      setToast(
+        outcome === "nurture"
+          ? `${name} moved to Nurture — the re-engage drip will keep working it.`
+          : `${name} closed as ${label}.`,
+      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not close the deal. Please try again.");
+    }
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -187,9 +245,12 @@ export default function PlaybooksPage() {
         </p>
       </div>
 
+      {/* My Day — ranked work queue; a card loads that deal + switches the flow tab */}
+      <MyDayQueue onPick={pickFromQueue} />
+
       {/* Flow selector */}
       <div className="grid gap-4 sm:grid-cols-3">
-        {PLAYBOOKS.map((p) => {
+        {visiblePlaybooks.map((p) => {
           const on = p.id === active.id;
           return (
             <button
@@ -227,7 +288,7 @@ export default function PlaybooksPage() {
 
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
         {dealMatchesPlaybook && deal ? (
-          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} splits={splits} hasCloser={hasCloser} />
+          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} onCloseDeal={closeDeal} splits={splits} hasCloser={hasCloser} />
         ) : (
           <div className="mb-6 space-y-3">
             {deal && !dealMatchesPlaybook && (
@@ -280,6 +341,17 @@ export default function PlaybooksPage() {
 
       {/* Live funnel */}
       <FunnelBoard />
+
+      {/* Deal-closed confirmation toast */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm rounded-lg bg-gray-900 dark:bg-gray-700 text-white shadow-xl px-4 py-3 flex items-start gap-3">
+          <CheckCircleIcon className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <p className="text-sm">{toast}</p>
+          <button onClick={() => setToast(null)} className="shrink-0 text-gray-400 hover:text-white">
+            <XMarkIcon className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -376,11 +448,12 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, onClear, onAdvance, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; splits: CloserSplits; hasCloser: boolean }) {
+function DealContextBar({ deal, pipeline, onClear, onAdvance, onCloseDeal, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; onCloseDeal: (outcome: DealStatus, reason: string, note: string) => Promise<void>; splits: CloserSplits; hasCloser: boolean }) {
   const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
   const idx = stages.findIndex((s) => s.key === deal.status);
   const cfg = DEAL_STATUS_CONFIG[deal.status];
   const terminal = TERMINAL.includes(deal.status);
+  const [closing, setClosing] = useState(false);
   const inPlay = expectedCommissionInPlay(deal.amount_requested, deal.is_renewal);
   // Company-lead split is the assumed default here (lead-source-aware later).
   const myCut = inPlay * (splits.company_lead_split / 100);
@@ -420,6 +493,15 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, splits, hasCloser 
           >
             Full deal page
           </Link>
+          {!terminal && (
+            <button
+              onClick={() => setClosing(true)}
+              title="Close this deal — nurture, declined, or dead"
+              className="text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700"
+            >
+              Close deal…
+            </button>
+          )}
           <button
             onClick={onClear}
             title="Work a different lead"
@@ -429,6 +511,17 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, splits, hasCloser 
           </button>
         </div>
       </div>
+
+      {closing && (
+        <CloseDealModal
+          dealName={dealName(deal)}
+          onCancel={() => setClosing(false)}
+          onConfirm={async (outcome, reason, note) => {
+            await onCloseDeal(outcome, reason, note);
+            setClosing(false);
+          }}
+        />
+      )}
       {/* Animated pipeline — shows where the lead is; click a stage to move it there (fires the GHL automation). */}
       <div className="mt-4 rounded-lg bg-white/70 dark:bg-gray-800/60 border border-emerald-200 dark:border-emerald-800 px-3 py-3">
         <div className="flex items-center justify-between mb-2">
@@ -441,6 +534,124 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, splits, hasCloser 
         You're working this lead. Fill in each step below — it saves to the deal, logs the call, and advances the stage. Or
         click a stage above to jump the lead there.
       </p>
+    </div>
+  );
+}
+
+// ───────────────────────── Close-deal modal ─────────────────────────
+// A dignified exit: move the deal to a terminal state, capture WHY, and
+// (for nurture/declined) let the GHL C/D sequences take over.
+
+const CLOSE_OUTCOMES: { value: DealStatus; label: string; hint: string }[] = [
+  { value: "nurture", label: "Nurture — long-term drip", hint: "Stays in the funnel; the re-engage sequence keeps checking in." },
+  { value: "declined", label: "Declined by funders", hint: "Funders passed — the declined sequence works alternatives." },
+  { value: "dead", label: "Dead — do not contact", hint: "Closes the file. No further automated outreach." },
+];
+
+const CLOSE_REASONS: { value: string; label: string }[] = [
+  { value: "unresponsive", label: "Unresponsive" },
+  { value: "rate_too_high", label: "Rate too high" },
+  { value: "went_with_competitor", label: "Went with competitor" },
+  { value: "not_qualified", label: "Not qualified" },
+  { value: "too_many_positions", label: "Too many positions" },
+  { value: "docs_never_arrived", label: "Docs never arrived" },
+  { value: "funders_declined", label: "Funders declined" },
+  { value: "other", label: "Other" },
+];
+
+function CloseDealModal({
+  dealName,
+  onCancel,
+  onConfirm,
+}: {
+  dealName: string;
+  onCancel: () => void;
+  onConfirm: (outcome: DealStatus, reason: string, note: string) => Promise<void>;
+}) {
+  const [outcome, setOutcome] = useState<DealStatus>("nurture");
+  const [reason, setReason] = useState<string>(CLOSE_REASONS[0].value);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const active = CLOSE_OUTCOMES.find((o) => o.value === outcome);
+
+  async function confirm() {
+    setBusy(true);
+    try {
+      await onConfirm(outcome, reason, note);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <div
+        className="w-full max-w-md rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-2xl p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-lg font-bold text-gray-900 dark:text-white">Close deal</h3>
+          <button onClick={onCancel} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+          Give <b className="text-gray-700 dark:text-gray-200">{dealName}</b> a dignified exit and record why.
+        </p>
+
+        <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">Outcome</label>
+        <div className="space-y-2 mb-4">
+          {CLOSE_OUTCOMES.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => setOutcome(o.value)}
+              className={`w-full text-left rounded-lg border px-3 py-2 transition ${
+                outcome === o.value
+                  ? "border-ocean-blue ring-1 ring-ocean-blue/30 bg-ocean-blue/5"
+                  : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              }`}
+            >
+              <p className="text-sm font-medium text-gray-900 dark:text-white">{o.label}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">{o.hint}</p>
+            </button>
+          ))}
+        </div>
+
+        <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">Reason</label>
+        <select className="input-field w-full mb-4" value={reason} onChange={(e) => setReason(e.target.value)}>
+          {CLOSE_REASONS.map((r) => (
+            <option key={r.value} value={r.value}>
+              {r.label}
+            </option>
+          ))}
+        </select>
+
+        <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">Note (optional)</label>
+        <textarea
+          className="input-field w-full h-20 mb-5"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Anything worth remembering when we re-engage…"
+        />
+
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="text-sm px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={confirm}
+            disabled={busy}
+            className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? "Closing…" : `Close as ${active?.label.split(" —")[0] ?? "…"}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
