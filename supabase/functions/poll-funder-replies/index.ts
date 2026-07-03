@@ -395,11 +395,12 @@ Deno.serve(async (req) => {
     (await db.rpc("get_ghl_config")).data?.webhook_secret;
   if (!expected || provided !== expected) return json({ error: "forbidden" }, 403);
 
-  // Every funder with an outstanding (answered-by-nobody) submission.
+  // Every ACTIVE submission — watched continuously. response_at is the newest
+  // reply we've seen (forward-only), so second/third funder replies re-alert.
   const { data: pending } = await db.from("deal_submissions")
-    .select("id, deal_id, lender_id, submitted_at")
+    .select("id, deal_id, lender_id, submitted_at, response_at, status")
     .not("submitted_at", "is", null)
-    .is("response_at", null);
+    .in("status", ["submitted", "offer_made"]);
   if (!pending?.length) {
     const mp = await runMerchantPhase(db, cfg);
     const opensFlagged = await harvestOpens(db, cfg);
@@ -436,14 +437,18 @@ Deno.serve(async (req) => {
       // the reply — GHL fills it with the quoted original. The real reply text
       // lives in the linked email record (meta.email.messageIds), so we resolve
       // that and judge authenticity by the email record's from-address.
+      const baselineMs = Date.parse(
+        String((newest as { response_at?: string | null }).response_at ?? newest.submitted_at),
+      );
       const candidates = list.filter((m) =>
         String(m.direction ?? "") === "inbound" &&
         /email/i.test(String(m.messageType ?? "")) &&
-        String(m.dateAdded ?? "") > String(newest.submitted_at),
+        Date.parse(String(m.dateAdded ?? "")) > baselineMs,
       );
 
       let replyText = "";
       let replyFrom = "";
+      let replyAt = "";
       for (const m of candidates) {
         const meta = m.meta as { email?: { messageIds?: string[] } } | undefined;
         const ids = meta?.email?.messageIds ?? [];
@@ -465,18 +470,20 @@ Deno.serve(async (req) => {
           if (!text) text = "(reply received — open the conversation to read it)";
           replyText = text;
           replyFrom = String(e.from ?? "");
+          replyAt = String(m.dateAdded ?? "");
           break;
         }
         if (replyText) break;
       }
       if (!replyText) continue;
 
-      // Stamp (idempotent: only the NULL row updates).
-      const now = new Date().toISOString();
+      // Forward-only stamp with the reply's own timestamp: idempotent because
+      // the baseline filter above only surfaces inbound newer than response_at.
+      if (!replyAt || Date.parse(replyAt) <= baselineMs) continue;
       const { data: stamped } = await db.from("deal_submissions")
-        .update({ response_at: now }).eq("id", newest.id).is("response_at", null)
+        .update({ response_at: replyAt }).eq("id", newest.id)
         .select("id");
-      if (!stamped?.length) break; // webhook (or a prior poll) beat us — done
+      if (!stamped?.length) break;
 
       replies++;
       const { data: deal } = await db.from("deals")
@@ -484,17 +491,34 @@ Deno.serve(async (req) => {
       const dealNumber = (deal?.deal_number as string) ?? newest.deal_id;
       const snippet = replyText.slice(0, 300);
 
-      // Classify the reply (best-effort — NEVER blocks the stamp/alert above).
+      // Classify the reply and APPLY it to the card (best-effort — NEVER blocks
+      // the stamp/alert): a decline marks the submission declined with the
+      // reason; stated offer terms populate the offer fields for review.
       let classification: ReplyClassification | null = null;
+      let applied = "";
       try {
         classification = await classifyReply(db, replyText);
         if (classification) {
-          await db.from("deal_submissions").update({
+          const patch: Record<string, unknown> = {
             response_type: classification.type,
             response_summary: classification.summary || null,
             classified_at: new Date().toISOString(),
             response_data: { raw: replyText, from: replyFrom, parsed: classification },
-          }).eq("id", newest.id);
+          };
+          if (classification.type === "decline" && newest.status !== "declined") {
+            patch.status = "declined";
+            patch.decline_reason = classification.summary ||
+              (classification.decline_reason_category ?? "declined").replace(/_/g, " ");
+            applied = "Card auto-marked DECLINED.";
+          } else if (classification.type === "offer") {
+            patch.status = "offer_made";
+            const t = classification.offer_terms;
+            const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : null);
+            if (t && num(t.amount)) patch.offer_amount = num(t.amount);
+            if (t && num(t.factor)) patch.factor_rate = num(t.factor);
+            applied = "Card auto-marked OFFER — verify the parsed terms and log any missing ones.";
+          }
+          await db.from("deal_submissions").update(patch).eq("id", newest.id);
         }
       } catch { /* classification is best-effort; the stamp is the record */ }
 
@@ -527,7 +551,8 @@ Deno.serve(async (req) => {
             `${lender.company_name} (${replyFrom}) replied on ${dealNumber}.\n\n` +
             classLine +
             (snippet ? `"${snippet}"\n\n` : "") +
-            `Read + respond in GHL → Conversations. Log any offer on the deal's Submissions tab.`;
+            (applied ? `${applied}\n\n` : "") +
+            `Read + respond in GHL → Conversations, or from the deal's Step 7 board.`;
           await sendEmailToContact(cfg, ownerId, subj,
             `<div style="font-family:Arial;font-size:14px;white-space:pre-wrap">${esc(bodyText)}</div>`,
             { text: bodyText });
