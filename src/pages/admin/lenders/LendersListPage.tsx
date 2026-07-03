@@ -13,6 +13,7 @@ import { ChartBarIcon, ArrowRightIcon } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import LenderEditModal from "../../../components/lenders/LenderEditModal";
 import { getFunderScoreboard, type FunderScore } from "../../../services/dealService";
+import { PARTNERSHIP_LABEL, PARTNERSHIP_COLOR } from "../../../data/partnershipTypes";
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
 type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
@@ -23,6 +24,7 @@ interface Lender {
   website: string | null;
   status: LenderStatus;
   lender_types: string[];
+  partnership_types: string[] | null;
   paper_types: PaperType[];
   min_credit_score: number | null;
   primary_contact_name: string | null;
@@ -307,6 +309,20 @@ export default function LendersListPage() {
                       <p className="text-sm text-gray-600 dark:text-gray-400">
                         Contact: {lender.primary_contact_name}
                       </p>
+                    )}
+
+                    {/* Partnership Types — how we work with this funder */}
+                    {lender.partnership_types && lender.partnership_types.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-3">
+                        {lender.partnership_types.map((type) => (
+                          <span
+                            key={type}
+                            className={`px-2 py-0.5 text-xs rounded font-semibold ${PARTNERSHIP_COLOR[type] || "bg-gray-100 text-gray-600"}`}
+                          >
+                            {PARTNERSHIP_LABEL[type] || type}
+                          </span>
+                        ))}
+                      </div>
                     )}
 
                     {/* Paper Types */}

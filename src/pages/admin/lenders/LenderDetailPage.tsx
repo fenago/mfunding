@@ -14,6 +14,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import { useUserProfile } from "../../../context/UserProfileContext";
+import { PARTNERSHIP_TYPES } from "../../../data/partnershipTypes";
 import LenderContactList from "../../../components/lenders/LenderContactList";
 import FunderRecipeCard from "../../../components/lenders/FunderRecipeCard";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
@@ -46,6 +47,7 @@ interface Lender {
   status: string;
   lender_types: string[];
   paper_types: PaperType[];
+  partnership_types: string[] | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
   primary_contact_phone: string | null;
@@ -133,6 +135,7 @@ interface LenderFormData {
   status: LenderStatus;
   lender_types: string[];
   paper_types: PaperType[];
+  partnership_types: string[];
   primary_contact_name: string;
   primary_contact_email: string;
   primary_contact_phone: string;
@@ -166,6 +169,7 @@ const initialFormData: LenderFormData = {
   status: "potential",
   lender_types: [],
   paper_types: [],
+  partnership_types: [],
   primary_contact_name: "",
   primary_contact_email: "",
   primary_contact_phone: "",
@@ -249,6 +253,7 @@ export default function LenderDetailPage() {
         status: (lender.status as LenderStatus) || "potential",
         lender_types: lender.lender_types || [],
         paper_types: lender.paper_types || [],
+        partnership_types: lender.partnership_types || [],
         primary_contact_name: lender.primary_contact_name || "",
         primary_contact_email: lender.primary_contact_email || "",
         primary_contact_phone: lender.primary_contact_phone || "",
@@ -485,6 +490,15 @@ export default function LenderDetailPage() {
     }));
   };
 
+  const handlePartnershipToggle = (t: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      partnership_types: prev.partnership_types.includes(t)
+        ? prev.partnership_types.filter((x) => x !== t)
+        : [...prev.partnership_types, t],
+    }));
+  };
+
   const handleSaveAll = async () => {
     if (!lender) return;
     setIsSaving(true);
@@ -498,6 +512,7 @@ export default function LenderDetailPage() {
         status: formData.status,
         lender_types: formData.lender_types,
         paper_types: formData.paper_types,
+        partnership_types: formData.partnership_types,
         primary_contact_name: formData.primary_contact_name || null,
         primary_contact_email: formData.primary_contact_email || null,
         primary_contact_phone: formData.primary_contact_phone || null,
@@ -868,6 +883,28 @@ export default function LenderDetailPage() {
                     >
                       <span className="font-medium">{config.label}</span>
                       <span className="block text-xs opacity-75">{config.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Partnership Type (how we work with them)
+                </label>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {PARTNERSHIP_TYPES.map((t) => (
+                    <button
+                      key={t.value}
+                      type="button"
+                      onClick={() => handlePartnershipToggle(t.value)}
+                      className={`px-3 py-2 text-sm rounded-lg border transition-colors text-left ${
+                        formData.partnership_types.includes(t.value)
+                          ? t.color + " border-2"
+                          : "bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-gray-400"
+                      }`}
+                    >
+                      <span className="font-medium">{t.label}</span>
                     </button>
                   ))}
                 </div>

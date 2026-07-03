@@ -172,10 +172,17 @@ export default function FunderDirectoryPage() {
         f.phone ? `Phone: ${f.phone}` : "",
       ].filter(Boolean).join("\n");
       const parsed = parseCriteria(f.criteria);
+      const partnership: string[] = [];
+      if (f.whiteLabel) partnership.push("white_label");
+      if (f.applyOnce) partnership.push("marketplace");
+      if (f.isoProgram) partnership.push("broker_iso");
+      if (/affiliate|referral/i.test(`${f.criteria ?? ""} ${f.notes ?? ""}`)) partnership.push("referral");
+      if (!partnership.length) partnership.push("direct");
       const { error } = await supabase.from("lenders").insert({
         company_name: f.name,
         website: f.website ?? null,
         lender_types: ["mca"],
+        partnership_types: partnership,
         paper_types: paperToTypes(f.paper),
         primary_contact_phone: f.phone ?? null,
         min_credit_score: parsed.min_credit_score ?? null,
