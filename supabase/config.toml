@@ -59,5 +59,12 @@ verify_jwt = true
 [functions.recommend-lenders]
 verify_jwt = true
 
+# Provider-key writes + connection test — enforces super_admin in code.
+[functions.llm-admin]
+verify_jwt = true
+
+[functions.send-merchant-email]
+verify_jwt = true
+
 [functions.poll-funder-replies]
 verify_jwt = false

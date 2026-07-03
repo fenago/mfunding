@@ -484,6 +484,7 @@ export interface FunderScore {
   acceptanceRate: number | null; // accepted ÷ offers (their offer win-rate), %
   avgFactor: number | null;      // mean factor rate across logged offers
   avgResponseMs: number | null;  // mean (response_at − submitted_at)
+  topDeclineReason: string | null; // most common AI-classified decline reason category
 }
 
 /**
@@ -495,7 +496,7 @@ export interface FunderScore {
 export async function getFunderScoreboard(): Promise<FunderScore[]> {
   const { data, error } = await supabase
     .from("deal_submissions")
-    .select("lender_id, status, submitted_at, response_at, offer_amount, factor_rate, lender:lenders!lender_id ( company_name )");
+    .select("lender_id, status, submitted_at, response_at, offer_amount, factor_rate, response_data, lender:lenders!lender_id ( company_name )");
   if (error) {
     console.error("Error fetching funder scoreboard:", error);
     throw error;
@@ -515,6 +516,7 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
     factorN: number;
     respSum: number;
     respN: number;
+    declineReasons: Map<string, number>; // decline_reason_category → count
   }
   const byLender = new Map<string, Acc>();
 
@@ -533,13 +535,18 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
     const acc = byLender.get(lenderId) ?? {
       lenderName: ((r.lender as { company_name?: string } | null)?.company_name) ?? "Funder",
       submissions: 0, replies: 0, offers: 0, accepted: 0, funderDeclines: 0,
-      factorSum: 0, factorN: 0, respSum: 0, respN: 0,
+      factorSum: 0, factorN: 0, respSum: 0, respN: 0, declineReasons: new Map<string, number>(),
     };
     acc.submissions += 1;
     if (responseAt) acc.replies += 1;
     if (offerAmount != null || OFFER_STATUSES.includes(status)) acc.offers += 1;
     if (status === "offer_accepted") acc.accepted += 1;
     if (status === "declined") acc.funderDeclines += 1;
+    // Tally the AI-classified decline reason (from response_data.parsed) so we can
+    // surface each funder's most common reason for passing.
+    const parsed = (r.response_data as { parsed?: { decline_reason_category?: string | null } } | null)?.parsed;
+    const cat = parsed?.decline_reason_category;
+    if (cat) acc.declineReasons.set(cat, (acc.declineReasons.get(cat) ?? 0) + 1);
     if (factorRate != null && factorRate > 0) { acc.factorSum += factorRate; acc.factorN += 1; }
     if (submittedAt && responseAt) {
       const ms = new Date(responseAt).getTime() - new Date(submittedAt).getTime();
@@ -550,6 +557,12 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
 
   const rows: FunderScore[] = [];
   for (const [lenderId, a] of byLender.entries()) {
+    // Mode of decline reasons — the category this funder passes on most.
+    let topDeclineReason: string | null = null;
+    let topN = 0;
+    for (const [cat, n] of a.declineReasons.entries()) {
+      if (n > topN) { topN = n; topDeclineReason = cat; }
+    }
     rows.push({
       lenderId,
       lenderName: a.lenderName,
@@ -561,6 +574,7 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
       acceptanceRate: a.offers > 0 ? (a.accepted / a.offers) * 100 : null,
       avgFactor: a.factorN > 0 ? a.factorSum / a.factorN : null,
       avgResponseMs: a.respN > 0 ? a.respSum / a.respN : null,
+      topDeclineReason,
     });
   }
   rows.sort((x, y) => (y.accepted - x.accepted) || (y.offers - x.offers) || (y.submissions - x.submissions));

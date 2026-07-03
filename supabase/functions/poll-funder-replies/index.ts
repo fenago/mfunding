@@ -21,11 +21,92 @@ const OWNER_EMAIL = "socrates73@gmail.com";
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const CLASSIFY_MODEL = "claude-sonnet-4-6";
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+interface ReplyClassification {
+  type: "stip_request" | "decline" | "offer" | "question" | "acknowledgment" | "other";
+  decline_reason_category:
+    | null | "low_revenue" | "industry" | "time_in_business" | "credit"
+    | "existing_positions" | "missing_docs" | "state" | "other";
+  requested_items: string[];
+  offer_terms: null | { amount?: unknown; factor?: unknown; term?: unknown };
+  summary: string;
+}
+
+// Ask Claude to structure a funder's reply so the closer sees what's needed
+// without opening GHL. Best-effort ONLY — every caller wraps this so a classify
+// failure can never block the stamp/alert. Returns null on any problem.
+async function classifyReply(replyText: string): Promise<ReplyClassification | null> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!apiKey || !replyText.trim()) return null;
+
+  const system =
+    "You classify a single email reply that an MCA/business-funding FUNDER sent back to an " +
+    "ISO (broker) about a submitted merchant file. An MCA is a purchase of future receivables, " +
+    "NOT a loan — never use lending terms. Read the reply and return ONLY a strict JSON object, " +
+    "no prose or markdown, of the EXACT shape:\n" +
+    '{"type":"stip_request"|"decline"|"offer"|"question"|"acknowledgment"|"other",' +
+    '"decline_reason_category":null|"low_revenue"|"industry"|"time_in_business"|"credit"|"existing_positions"|"missing_docs"|"state"|"other",' +
+    '"requested_items":string[],"offer_terms":null|{"amount":number|null,"factor":number|null,"term":string|null},' +
+    '"summary":"<one sentence>"}\n' +
+    "Rules: decline_reason_category is non-null ONLY when type is \"decline\" (else null). " +
+    "requested_items lists the concrete documents/items the funder is asking for when type is " +
+    "\"stip_request\" (else []). offer_terms is non-null ONLY when type is \"offer\" and terms are stated. " +
+    "summary is one plain sentence a closer can scan.";
+
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify({
+        model: Deno.env.get("ANTHROPIC_MODEL") ?? CLASSIFY_MODEL,
+        max_tokens: 1024,
+        temperature: 0,
+        system,
+        messages: [{ role: "user", content: `Funder reply:\n"""\n${replyText}\n"""\n\nReturn the JSON now.` }],
+      }),
+    });
+    if (!res.ok) return null;
+    const aiJson = await res.json().catch(() => null);
+    const rawText: string = (aiJson?.content ?? [])
+      .filter((b: { type?: string }) => b?.type === "text")
+      .map((b: { text?: string }) => b?.text ?? "")
+      .join("").trim();
+    let text = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = JSON.parse(text); } catch {
+      const s = text.indexOf("{"), e = text.lastIndexOf("}");
+      if (s !== -1 && e > s) { try { parsed = JSON.parse(text.slice(s, e + 1)); } catch { /* give up */ } }
+    }
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const TYPES = ["stip_request", "decline", "offer", "question", "acknowledgment", "other"];
+    const DECLINES = ["low_revenue", "industry", "time_in_business", "credit", "existing_positions", "missing_docs", "state", "other"];
+    const type = (TYPES.includes(parsed.type as string) ? parsed.type : "other") as ReplyClassification["type"];
+    const declineCat = type === "decline" && DECLINES.includes(parsed.decline_reason_category as string)
+      ? (parsed.decline_reason_category as ReplyClassification["decline_reason_category"]) : null;
+    const items = Array.isArray(parsed.requested_items)
+      ? (parsed.requested_items as unknown[]).filter((x) => typeof x === "string").slice(0, 10) as string[] : [];
+    const offer = type === "offer" && parsed.offer_terms && typeof parsed.offer_terms === "object"
+      ? (parsed.offer_terms as ReplyClassification["offer_terms"]) : null;
+    const summary = typeof parsed.summary === "string" ? parsed.summary.slice(0, 300) : "";
+    return { type, decline_reason_category: declineCat, requested_items: items, offer_terms: offer, summary };
+  } catch {
+    return null;
+  }
 }
 
 Deno.serve(async (req) => {
@@ -125,9 +206,23 @@ Deno.serve(async (req) => {
       const dealNumber = (deal?.deal_number as string) ?? newest.deal_id;
       const snippet = replyText.slice(0, 300);
 
+      // Classify the reply (best-effort — NEVER blocks the stamp/alert above).
+      let classification: ReplyClassification | null = null;
+      try {
+        classification = await classifyReply(replyText);
+        if (classification) {
+          await db.from("deal_submissions").update({
+            response_type: classification.type,
+            response_summary: classification.summary || null,
+            classified_at: new Date().toISOString(),
+            response_data: { raw: replyText, from: replyFrom, parsed: classification },
+          }).eq("id", newest.id);
+        }
+      } catch { /* classification is best-effort; the stamp is the record */ }
+
       await db.from("activity_log").insert({
         entity_type: "deal", entity_id: newest.deal_id, action: "ghl:funder-reply",
-        details: { lender: lender.company_name, submissionId: newest.id, via: "poll", from: replyFrom, snippet },
+        details: { lender: lender.company_name, submissionId: newest.id, via: "poll", from: replyFrom, snippet, classification },
       });
 
       // Internal alert — owner only.
@@ -138,9 +233,20 @@ Deno.serve(async (req) => {
         });
         const ownerId = owner.data?.contact?.id;
         if (ownerId) {
+          const typeLabel: Record<string, string> = {
+            stip_request: "Stip request", decline: "Decline", offer: "Offer",
+            question: "Question", acknowledgment: "Acknowledgment", other: "Reply",
+          };
+          const classLine = classification
+            ? `Type: ${typeLabel[classification.type] ?? classification.type}` +
+              (classification.decline_reason_category ? ` (${classification.decline_reason_category.replace(/_/g, " ")})` : "") +
+              (classification.requested_items.length ? `\nNeeds: ${classification.requested_items.join(", ")}` : "") +
+              (classification.summary ? `\n${classification.summary}` : "") + `\n\n`
+            : "";
           const subj = `Funder replied: ${lender.company_name} on ${dealNumber}`;
           const bodyText =
             `${lender.company_name} (${replyFrom}) replied on ${dealNumber}.\n\n` +
+            classLine +
             (snippet ? `"${snippet}"\n\n` : "") +
             `Read + respond in GHL → Conversations. Log any offer on the deal's Submissions tab.`;
           await sendEmailToContact(cfg, ownerId, subj,

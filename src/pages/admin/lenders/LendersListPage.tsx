@@ -373,6 +373,20 @@ function fmtDuration(ms: number | null): string {
   return `${(hr / 24).toFixed(1)}d`;
 }
 
+// AI decline-reason category → short human label for the scoreboard.
+const DECLINE_REASON_LABELS: Record<string, string> = {
+  low_revenue: "Low revenue",
+  industry: "Industry",
+  time_in_business: "Time in business",
+  credit: "Credit",
+  existing_positions: "Too many positions",
+  missing_docs: "Missing docs",
+  state: "State",
+  other: "Other",
+};
+const declineReasonLabel = (cat: string | null): string =>
+  cat ? (DECLINE_REASON_LABELS[cat] ?? cat.replace(/_/g, " ")) : "—";
+
 function FunderScoreboard() {
   const [rows, setRows] = useState<FunderScore[]>([]);
   const [loading, setLoading] = useState(true);
@@ -410,7 +424,7 @@ function FunderScoreboard() {
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[720px]">
+              <table className="w-full text-sm min-w-[860px]">
                 <thead>
                   <tr className="text-left text-[11px] uppercase tracking-wide text-gray-400 border-b border-gray-200 dark:border-gray-700">
                     <th className="py-2 pr-3 font-semibold">Funder</th>
@@ -419,6 +433,7 @@ function FunderScoreboard() {
                     <th className="py-2 px-2 text-right font-semibold">Offers</th>
                     <th className="py-2 px-2 text-right font-semibold">Accepted</th>
                     <th className="py-2 px-2 text-right font-semibold">Declines</th>
+                    <th className="py-2 px-2 text-left font-semibold" title="Most common AI-classified reason this funder passes on files">Top decline reason</th>
                     <th className="py-2 px-2 text-right font-semibold" title="Accepted ÷ offers">Win rate</th>
                     <th className="py-2 px-2 text-right font-semibold">Avg factor</th>
                     <th className="py-2 pl-2 text-right font-semibold" title="Avg time from submission to first response">Avg response</th>
@@ -437,6 +452,15 @@ function FunderScoreboard() {
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.offers}</td>
                       <td className="py-2 px-2 text-right font-semibold text-emerald-600 dark:text-emerald-400">{r.accepted}</td>
                       <td className="py-2 px-2 text-right text-gray-500 dark:text-gray-400">{r.funderDeclines}</td>
+                      <td className="py-2 px-2 text-left">
+                        {r.topDeclineReason ? (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[11px] font-medium bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+                            {declineReasonLabel(r.topDeclineReason)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.acceptanceRate == null ? "—" : `${r.acceptanceRate.toFixed(0)}%`}</td>
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.avgFactor == null ? "—" : `${r.avgFactor.toFixed(2)}x`}</td>
                       <td className="py-2 pl-2 text-right text-gray-700 dark:text-gray-200">{fmtDuration(r.avgResponseMs)}</td>

@@ -19,12 +19,39 @@ import {
   ArrowPathIcon,
   XMarkIcon,
   InboxArrowDownIcon,
+  PaperAirplaneIcon,
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
 import { updateSubmission } from "../../services/dealService";
 import { useSession } from "../../context/SessionContext";
+import { useUserProfile } from "../../context/UserProfileContext";
 import type { DealWithCustomer } from "../../types/deals";
+
+// No concrete "Bank Statements & Documents Upload" form URL is stored in the repo
+// or DB yet, so stip-request prefills use this placeholder — the closer swaps in
+// the real link (the body stays fully editable) before sending.
+const UPLOAD_LINK_PLACEHOLDER = "[UPLOAD LINK]";
+
+// AI response-type → badge label + color (mirrors the classifier's enum).
+const RESPONSE_TYPE_META: Record<string, { label: string; cls: string }> = {
+  stip_request: { label: "Stip request", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+  decline: { label: "Decline", cls: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" },
+  offer: { label: "Offer", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  question: { label: "Question", cls: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" },
+  acknowledgment: { label: "Acknowledgment", cls: "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300" },
+  other: { label: "Reply", cls: "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300" },
+};
+const DECLINE_REASON_LABELS: Record<string, string> = {
+  low_revenue: "Low revenue",
+  industry: "Industry",
+  time_in_business: "Time in business",
+  credit: "Credit",
+  existing_positions: "Too many positions",
+  missing_docs: "Missing docs",
+  state: "State",
+  other: "Other",
+};
 
 type Frequency = "daily" | "weekly";
 const PAYMENTS_PER_MONTH: Record<Frequency, number> = { daily: 21, weekly: 4.33 };
@@ -70,6 +97,11 @@ interface SubRow {
   totalPayback: number | null;
   declineReason: string | null;
   courtesySentAt: string | null;
+  // AI reply classification (from poll-funder-replies; may be null).
+  responseType: string | null;
+  responseSummary: string | null;
+  declineCategory: string | null;
+  requestedItems: string[];
 }
 
 type StateKey = "awaiting" | "replied" | "offer" | "accepted" | "merchant_declined" | "funder_declined";
@@ -107,6 +139,7 @@ function isLive(s: SubRow): boolean {
 
 export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: DealWithCustomer; mode?: "board" | "accepted" }) {
   const { session } = useSession();
+  const { profile } = useUserProfile();
   const [rows, setRows] = useState<SubRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -120,7 +153,86 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [declineReason, setDeclineReason] = useState("");
   const [courtesyMsg, setCourtesyMsg] = useState<Record<string, string>>({});
 
+  // Message-the-merchant modal (fires send-merchant-email on explicit click only).
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgSubject, setMsgSubject] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+  const [msgBusy, setMsgBusy] = useState(false);
+  const [msgError, setMsgError] = useState<string | null>(null);
+  const [msgToast, setMsgToast] = useState<string | null>(null);
+
   const monthlyRevenue = deal.customer?.monthly_revenue ?? null;
+  const merchantFirst = deal.customer?.first_name?.trim() || "there";
+  const merchantName = [deal.customer?.first_name, deal.customer?.last_name].filter(Boolean).join(" ").trim()
+    || deal.customer?.business_name || "the merchant";
+  const merchantEmail = deal.customer?.email ?? null;
+  const closerName = (profile?.display_name?.trim())
+    || [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim()
+    || "Momentum Funding";
+
+  // Build a context-aware prefill for the merchant message. Broker best practice:
+  // never name the funder to the merchant — phrase as "our funding partner".
+  function prefillFor(s: SubRow | null): { subject: string; body: string } {
+    // Stip request → ask the merchant for exactly what the funder needs.
+    if (s && s.responseType === "stip_request") {
+      const items = s.requestedItems.length ? s.requestedItems.join(", ") : "one more document";
+      return {
+        subject: "Quick item needed for your funding file",
+        body:
+          `Hi ${merchantFirst} — good news: one of our funding partners is actively reviewing your file. ` +
+          `To finish their review they need: ${items}. ` +
+          `Upload it here: ${UPLOAD_LINK_PLACEHOLDER} — or just reply to this email with the document attached.\n\n` +
+          `— ${closerName}`,
+      };
+    }
+    // Funder declined → reassure; do NOT mention the decline unless the closer edits it in.
+    if (s && (s.status === "declined")) {
+      return {
+        subject: "An update on your funding file",
+        body:
+          `Hi ${merchantFirst} — just a quick update: we're still actively working your file and ` +
+          `have more funding options in motion. I'll reach out the moment I have news. Thanks for your patience.\n\n` +
+          `— ${closerName}`,
+      };
+    }
+    // General / replied → a neutral update the closer completes.
+    return {
+      subject: "An update on your funding file",
+      body:
+        `Hi ${merchantFirst} — quick update on your funding file. ` +
+        `[write your update here]\n\n` +
+        `— ${closerName}`,
+    };
+  }
+
+  function openMessage(s: SubRow | null) {
+    const pre = prefillFor(s);
+    setMsgSubject(pre.subject);
+    setMsgBody(pre.body);
+    setMsgError(null);
+    setMsgOpen(true);
+  }
+
+  async function sendMerchantMessage() {
+    if (!msgSubject.trim()) { setMsgError("Enter a subject."); return; }
+    if (!msgBody.trim()) { setMsgError("Enter a message."); return; }
+    setMsgBusy(true);
+    setMsgError(null);
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
+        body: { dealId: deal.id, subject: msgSubject.trim(), body: msgBody.trim() },
+      });
+      if (fnErr) throw fnErr;
+      if (data?.error) throw new Error(data.error);
+      setMsgOpen(false);
+      setMsgToast("Message sent to the merchant.");
+      setTimeout(() => setMsgToast(null), 4000);
+    } catch (e) {
+      setMsgError(e instanceof Error ? e.message : "Could not send the message.");
+    } finally {
+      setMsgBusy(false);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -128,25 +240,35 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     try {
       const { data, error: qErr } = await supabase
         .from("deal_submissions")
-        .select("id, lender_id, status, submitted_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, lender:lenders!lender_id ( company_name )")
+        .select("id, lender_id, status, submitted_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, response_type, response_summary, response_data, lender:lenders!lender_id ( company_name )")
         .eq("deal_id", deal.id);
       if (qErr) throw qErr;
-      const mapped: SubRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => ({
-        id: r.id as string,
-        lenderId: r.lender_id as string,
-        lenderName: ((r.lender as { company_name?: string } | null)?.company_name) ?? "Funder",
-        status: r.status as string,
-        submittedAt: (r.submitted_at as string | null) ?? null,
-        responseAt: (r.response_at as string | null) ?? null,
-        offerAmount: (r.offer_amount as number | null) ?? null,
-        factorRate: (r.factor_rate as number | null) ?? null,
-        termMonths: (r.term_months as number | null) ?? null,
-        dailyPayment: (r.daily_payment as number | null) ?? null,
-        weeklyPayment: (r.weekly_payment as number | null) ?? null,
-        totalPayback: (r.total_payback as number | null) ?? null,
-        declineReason: (r.decline_reason as string | null) ?? null,
-        courtesySentAt: (r.courtesy_sent_at as string | null) ?? null,
-      }));
+      const mapped: SubRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => {
+        const parsed = (r.response_data as { parsed?: { decline_reason_category?: string | null; requested_items?: unknown } } | null)?.parsed;
+        const items = Array.isArray(parsed?.requested_items)
+          ? (parsed!.requested_items as unknown[]).filter((x) => typeof x === "string") as string[]
+          : [];
+        return {
+          id: r.id as string,
+          lenderId: r.lender_id as string,
+          lenderName: ((r.lender as { company_name?: string } | null)?.company_name) ?? "Funder",
+          status: r.status as string,
+          submittedAt: (r.submitted_at as string | null) ?? null,
+          responseAt: (r.response_at as string | null) ?? null,
+          offerAmount: (r.offer_amount as number | null) ?? null,
+          factorRate: (r.factor_rate as number | null) ?? null,
+          termMonths: (r.term_months as number | null) ?? null,
+          dailyPayment: (r.daily_payment as number | null) ?? null,
+          weeklyPayment: (r.weekly_payment as number | null) ?? null,
+          totalPayback: (r.total_payback as number | null) ?? null,
+          declineReason: (r.decline_reason as string | null) ?? null,
+          courtesySentAt: (r.courtesy_sent_at as string | null) ?? null,
+          responseType: (r.response_type as string | null) ?? null,
+          responseSummary: (r.response_summary as string | null) ?? null,
+          declineCategory: (parsed?.decline_reason_category as string | null) ?? null,
+          requestedItems: items,
+        };
+      });
       setRows(mapped.filter(isLive));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load funder responses.");
@@ -328,7 +450,16 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         <InboxArrowDownIcon className="w-4 h-4 text-ocean-blue" />
         <span className="text-sm font-semibold text-gray-900 dark:text-white">Funder responses</span>
         <span className="text-[11px] text-gray-400">log each reply as it comes in — cheapest payback first</span>
-        <button type="button" onClick={load} className="ml-auto text-[11px] text-ocean-blue hover:underline">↻ Refresh</button>
+        <button
+          type="button"
+          onClick={() => openMessage(null)}
+          disabled={!merchantEmail}
+          title={merchantEmail ? "Send an email to the merchant" : "No merchant email on file"}
+          className="ml-auto text-[11px] font-semibold text-ocean-blue hover:bg-ocean-blue/5 border border-ocean-blue/40 rounded px-2 py-1 inline-flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <EnvelopeIcon className="w-3.5 h-3.5" /> Message merchant
+        </button>
+        <button type="button" onClick={load} className="text-[11px] text-ocean-blue hover:underline">↻ Refresh</button>
       </div>
 
       {loading ? (
@@ -351,6 +482,9 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
             const busy = rowBusy === s.id;
             const isFunderDeclined = st.key === "funder_declined";
             const isTerminal = ["accepted", "merchant_declined", "funder_declined"].includes(st.key);
+            const typeMeta = s.responseType ? (RESPONSE_TYPE_META[s.responseType] ?? RESPONSE_TYPE_META.other) : null;
+            // Message-the-merchant CTA belongs on replied / stip-request / declined cards.
+            const showMsgButton = st.key === "replied" || s.responseType === "stip_request" || isFunderDeclined;
             return (
               <div key={s.id} className={`rounded-md border p-2.5 text-[11px] space-y-2 ${isBest ? "border-emerald-400 bg-emerald-50/70 dark:bg-emerald-900/15" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"} ${st.key === "merchant_declined" ? "opacity-60" : ""}`}>
                 {/* Header: funder + state badge */}
@@ -368,6 +502,30 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     <span className="text-gray-400">· {relTime(s.responseAt)}</span>
                   )}
                 </div>
+
+                {/* AI reply classification — what the funder actually said */}
+                {typeMeta && (
+                  <div className="space-y-1 rounded bg-gray-50 dark:bg-gray-900/40 px-1.5 py-1">
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full font-medium ${typeMeta.cls}`}>{typeMeta.label}</span>
+                      {s.declineCategory && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full font-medium bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+                          {DECLINE_REASON_LABELS[s.declineCategory] ?? s.declineCategory.replace(/_/g, " ")}
+                        </span>
+                      )}
+                    </div>
+                    {s.requestedItems.length > 0 && (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {s.requestedItems.map((it, i) => (
+                          <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                            {it}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {s.responseSummary && <p className="text-gray-600 dark:text-gray-300 italic">{s.responseSummary}</p>}
+                  </div>
+                )}
 
                 {/* Offer economics */}
                 {hasOffer && s.status !== "declined" && (
@@ -477,6 +635,12 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                         </button>
                       )
                     )}
+                    {/* Message the merchant — prefilled from this card's context */}
+                    {showMsgButton && (
+                      <button type="button" onClick={() => openMessage(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 inline-flex items-center gap-1">
+                        <EnvelopeIcon className="w-3.5 h-3.5" /> Message merchant
+                      </button>
+                    )}
                   </div>
                 )}
                 {courtesyMsg[s.id] && <p className="text-[10px] text-gray-500 dark:text-gray-400">{courtesyMsg[s.id]}</p>}
@@ -489,6 +653,51 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         <p className="text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 rounded px-2 py-1.5">
           An offer is accepted. Advance the deal with the step button below — accept/decline here don't move the stage on purpose.
         </p>
+      )}
+
+      {msgToast && (
+        <p className="text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 rounded px-2 py-1.5 inline-flex items-center gap-1">
+          <CheckCircleIcon className="w-3.5 h-3.5" /> {msgToast}
+        </p>
+      )}
+
+      {/* Message-the-merchant modal — sends via GHL (lands in the merchant's thread) */}
+      {msgOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !msgBusy && setMsgOpen(false)}>
+          <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-800 shadow-xl border border-gray-200 dark:border-gray-700" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <span className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                <EnvelopeIcon className="w-4 h-4 text-ocean-blue" /> Message the merchant
+              </span>
+              <button type="button" onClick={() => !msgBusy && setMsgOpen(false)} className="text-gray-400 hover:text-gray-600">
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="text-[12px] text-gray-600 dark:text-gray-300">
+                <span className="text-gray-400">To</span>{" "}
+                <span className="font-medium text-gray-900 dark:text-white">{merchantName}</span>
+                {merchantEmail ? <span className="text-gray-400"> · {merchantEmail}</span> : <span className="text-rose-500"> · no email on file</span>}
+              </div>
+              <label className="block text-[11px] font-medium text-gray-500">Subject
+                <input type="text" value={msgSubject} onChange={(e) => setMsgSubject(e.target.value)} className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
+              </label>
+              <label className="block text-[11px] font-medium text-gray-500">Message
+                <textarea value={msgBody} onChange={(e) => setMsgBody(e.target.value)} rows={9} className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white resize-y" />
+              </label>
+              <p className="text-[10px] text-gray-400">
+                Fully editable before you send. We don't name the funder to the merchant — phrase it as "our funding partner". This sends through GHL and lands in the merchant's existing email thread.
+              </p>
+              {msgError && <p className="text-[12px] text-red-600 dark:text-red-400">{msgError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-gray-200 dark:border-gray-700">
+              <button type="button" onClick={() => setMsgOpen(false)} disabled={msgBusy} className="text-[12px] px-3 py-1.5 rounded text-gray-600 hover:text-gray-800 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={sendMerchantMessage} disabled={msgBusy || !merchantEmail} className="text-[12px] font-semibold px-3 py-1.5 rounded bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1">
+                {msgBusy ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />} Send
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
