@@ -73,25 +73,44 @@ Deno.serve(async (req) => {
         cfg, "GET", `/conversations/${c.id}/messages?limit=15`,
       );
       const list = msgs.data?.messages?.messages ?? [];
-      // Our own sent body (for echo detection — a connected inbox can loop our
-      // CC copies back into GHL as "inbound"; those are not funder replies).
-      const { data: subRow } = await db.from("deal_submissions")
-        .select("sent_payload").eq("id", newest.id).maybeSingle();
-      const sentBody = String((subRow?.sent_payload as Record<string, unknown> | null)?.body ?? "");
-      const norm = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 160);
-      const sentSig = norm(sentBody);
+      // Candidate inbound messages. IMPORTANT: the message-level \`body\` is NOT
+      // the reply — GHL fills it with the quoted original. The real reply text
+      // lives in the linked email record (meta.email.messageIds), so we resolve
+      // that and judge authenticity by the email record's from-address.
+      const candidates = list.filter((m) =>
+        String(m.direction ?? "") === "inbound" &&
+        /email/i.test(String(m.messageType ?? "")) &&
+        String(m.dateAdded ?? "") > String(newest.submitted_at),
+      );
 
-      const inbound = list.find((m) => {
-        if (String(m.direction ?? "") !== "inbound") return false;
-        if (!/email/i.test(String(m.messageType ?? ""))) return false;
-        if (!(String(m.dateAdded ?? "") > String(newest.submitted_at))) return false;
-        const body = norm(String(m.body ?? ""));
-        if (sentSig && body && (body.startsWith(sentSig.slice(0, 120)) || sentSig.startsWith(body.slice(0, 120)))) {
-          return false; // echo of our own submission — ignore
+      let replyText = "";
+      let replyFrom = "";
+      for (const m of candidates) {
+        const meta = m.meta as { email?: { messageIds?: string[] } } | undefined;
+        const ids = meta?.email?.messageIds ?? [];
+        for (const eid of ids) {
+          const emailRes = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
+            cfg, "GET", `/conversations/messages/email/${eid}`,
+          );
+          const e = (emailRes.data?.emailMessage ?? emailRes.data ?? {}) as Record<string, unknown>;
+          if (String(e.direction ?? "") !== "inbound") continue;
+          const from = String(e.from ?? "").toLowerCase();
+          // Self-loop guard: our own sender bounced back is not a funder reply.
+          if (from.includes("send.mfunding.net") || from.includes("socrates73@gmail.com")) continue;
+          let text = String(e.body ?? "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
+            .replace(/\s+/g, " ").trim();
+          // Trim the quoted original ("On <date> ... wrote:") so alerts carry
+          // only what the funder actually said.
+          const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
+          if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
+          if (!text) text = "(reply received — open the conversation to read it)";
+          replyText = text;
+          replyFrom = String(e.from ?? "");
+          break;
         }
-        return true;
-      });
-      if (!inbound) continue;
+        if (replyText) break;
+      }
+      if (!replyText) continue;
 
       // Stamp (idempotent: only the NULL row updates).
       const now = new Date().toISOString();
@@ -104,11 +123,11 @@ Deno.serve(async (req) => {
       const { data: deal } = await db.from("deals")
         .select("deal_number, customer_id").eq("id", newest.deal_id).maybeSingle();
       const dealNumber = (deal?.deal_number as string) ?? newest.deal_id;
-      const snippet = String(inbound.body ?? "").replace(/\s+/g, " ").slice(0, 300);
+      const snippet = replyText.slice(0, 300);
 
       await db.from("activity_log").insert({
         entity_type: "deal", entity_id: newest.deal_id, action: "ghl:funder-reply",
-        details: { lender: lender.company_name, submissionId: newest.id, via: "poll", snippet },
+        details: { lender: lender.company_name, submissionId: newest.id, via: "poll", from: replyFrom, snippet },
       });
 
       // Internal alert — owner only.
@@ -121,7 +140,7 @@ Deno.serve(async (req) => {
         if (ownerId) {
           const subj = `Funder replied: ${lender.company_name} on ${dealNumber}`;
           const bodyText =
-            `${lender.company_name} replied on ${dealNumber}.\n\n` +
+            `${lender.company_name} (${replyFrom}) replied on ${dealNumber}.\n\n` +
             (snippet ? `"${snippet}"\n\n` : "") +
             `Read + respond in GHL → Conversations. Log any offer on the deal's Submissions tab.`;
           await sendEmailToContact(cfg, ownerId, subj,
