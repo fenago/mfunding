@@ -167,7 +167,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [msgCc, setMsgCc] = useState("");
   const [msgBcc, setMsgBcc] = useState("");
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" }[]>([]);
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" }[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
@@ -338,18 +338,19 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .from("activity_log")
       .select("created_at, subject, content")
       .eq("entity_type", "deal").eq("entity_id", deal.id)
-      .or("subject.like.merchant:email%,subject.like.funder:email%")
+      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%")
       .order("created_at", { ascending: false }).limit(20);
     setSentLog((data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
       let re: string | null = null;
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
-      if (m) { re = m[1]; snippet = snippet.slice(m[0].length); }
+      if (m) { re = m[1] === "merchant" ? null : m[1]; snippet = snippet.slice(m[0].length); }
       const rawSubject = String(r.subject ?? "");
-      const kind: "merchant" | "funder" = rawSubject.startsWith("funder:email") ? "funder" : "merchant";
+      const kind: "merchant" | "funder" | "reply" = rawSubject.startsWith("funder:email")
+        ? "funder" : rawSubject.startsWith("merchant:reply") ? "reply" : "merchant";
       return {
         at: r.created_at as string,
-        subject: rawSubject.replace(/^(merchant|funder):email — /, ""),
+        subject: kind === "reply" ? "Merchant replied" : rawSubject.replace(/^(merchant|funder):email — /, ""),
         snippet, re, kind,
       };
     }));
@@ -807,22 +808,23 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         </p>
       )}
 
-      {/* Merchant-message audit trail — every send-merchant-email for this deal.
-          Funder messages live on their own cards, so this list stays merchant-only. */}
-      {sentLog.some((m) => m.kind === "merchant") && (
+      {/* Merchant thread — our sends AND the merchant's replies, in conversation
+          order. Funder messages live on their own cards, so this stays merchant-side. */}
+      {sentLog.some((m) => m.kind !== "funder") && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-2.5">
           <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 mb-1.5 inline-flex items-center gap-1">
-            <EnvelopeIcon className="w-3.5 h-3.5" /> Messages sent to the merchant
+            <EnvelopeIcon className="w-3.5 h-3.5" /> Merchant thread — messages & replies
           </p>
           <ul className="space-y-1.5">
-            {sentLog.filter((m) => m.kind === "merchant").map((m, i) => (
-              <li key={i} className="text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer" onClick={() => setExpandedMsg(expandedMsg === `all-${m.at}` ? null : `all-${m.at}`)}>
-                <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-                {m.re && <span className="ml-1 rounded bg-ocean-blue/10 text-ocean-blue px-1 py-px text-[9.5px] font-semibold">re: {m.re}</span>}
-                {" · "}<span className="font-medium text-gray-800 dark:text-gray-100">{m.subject}</span>
+            {sentLog.filter((m) => m.kind !== "funder").slice().sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((m, i) => (
+              <li key={i} className={`text-[11px] cursor-pointer ${m.kind === "reply" ? "text-emerald-700 dark:text-emerald-300 pl-3" : "text-gray-600 dark:text-gray-300"}`} onClick={() => setExpandedMsg(expandedMsg === `all-${m.at}` ? null : `all-${m.at}`)}>
+                {m.kind === "reply" && <span className="mr-0.5">↩</span>}
+                <span className={m.kind === "reply" ? "text-emerald-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                {m.re && m.kind !== "reply" && <span className="ml-1 rounded bg-ocean-blue/10 text-ocean-blue px-1 py-px text-[9.5px] font-semibold">re: {m.re}</span>}
+                {" · "}<span className={`font-medium ${m.kind === "reply" ? "" : "text-gray-800 dark:text-gray-100"}`}>{m.subject}</span>
                 {expandedMsg === `all-${m.at}`
-                  ? <span className="block mt-1 whitespace-pre-wrap bg-white dark:bg-gray-800 rounded p-2 border border-gray-200 dark:border-gray-700">{m.snippet}</span>
-                  : (m.snippet && <span className="text-gray-400"> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>)}
+                  ? <span className="block mt-1 whitespace-pre-wrap bg-white dark:bg-gray-800 rounded p-2 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200">{m.snippet}</span>
+                  : (m.snippet && <span className={m.kind === "reply" ? "text-emerald-600/70 dark:text-emerald-400/70" : "text-gray-400"}> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>)}
               </li>
             ))}
           </ul>
