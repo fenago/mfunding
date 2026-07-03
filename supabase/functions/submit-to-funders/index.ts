@@ -83,7 +83,9 @@ interface Recipe {
 }
 
 const GENERIC_SUBJECT =
-  "New MCA Submission — {{business_name}} — {{amount_requested}} — ISO: Momentum Funding";
+  "Agentic Voice, Inc : Momentum Funding — New MCA Submission — {{business_name}} — {{amount_requested}}";
+// Owner is CC'd on every funder submission (also merged with recipe cc_emails).
+const ALWAYS_CC = ["socrates73@gmail.com"];
 const GENERIC_BODY =
   `New submission from Momentum Funding (ISO) for your review.\n\n` +
   `Business: {{business_name}}\nOwner: {{owner_name}}\nIndustry: {{industry}}\n` +
@@ -232,7 +234,7 @@ Deno.serve(async (req) => {
         const contactId = cr.data?.contact?.id;
         if (!contactId) emailError = `GHL upsert failed: ${cr.error ?? "no contact id"}`;
         else {
-          const sr = await sendEmailToContact(cfg, contactId, subject, htmlBody, { text: bodyText });
+          const sr = await sendEmailToContact(cfg, contactId, subject, htmlBody, { text: bodyText, emailCc: Array.from(new Set([...(recipe?.cc_emails ?? []), ...ALWAYS_CC])) });
           emailSent = sr.ok;
           if (!sr.ok) emailError = `GHL send failed: ${sr.error}`;
         }
@@ -434,7 +436,10 @@ Deno.serve(async (req) => {
       const funderContactId = cr.data?.contact?.id;
       if (!funderContactId) emailError = `GHL upsert failed: ${cr.error ?? "no contact id"}`;
       else {
-        const sr = await sendEmailToContact(cfg, funderContactId, subject, bodyHtml, { text: bodyText });
+        const sr = await sendEmailToContact(cfg, funderContactId, subject, bodyHtml, {
+          text: bodyText,
+          emailCc: Array.from(new Set([...(recipe?.cc_emails ?? []), ...ALWAYS_CC])),
+        });
         emailSent = sr.ok;
         if (!sr.ok) emailError = `GHL send failed: ${sr.error}`;
       }

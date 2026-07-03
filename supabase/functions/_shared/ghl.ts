@@ -263,11 +263,12 @@ export async function sendEmailToContact(
   contactId: string,
   subject: string,
   html: string,
-  opts?: { emailFrom?: string; text?: string },
+  opts?: { emailFrom?: string; text?: string; emailCc?: string[] },
 ) {
   const body: Record<string, unknown> = { type: "Email", contactId, subject, html };
   if (opts?.text) body.message = opts.text;
   if (opts?.emailFrom) body.emailFrom = opts.emailFrom;
+  if (opts?.emailCc?.length) body.emailCc = opts.emailCc;
   return await ghlFetch<{ messageId?: string; conversationId?: string }>(
     cfg, "POST", "/conversations/messages", body,
   );
