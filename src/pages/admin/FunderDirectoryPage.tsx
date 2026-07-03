@@ -86,7 +86,7 @@ export default function FunderDirectoryPage() {
       const { error } = await supabase.from("lenders").insert({
         company_name: f.name,
         website: f.website ?? null,
-        lender_types: ["merchant_cash_advance"],
+        lender_types: ["mca"],
         paper_types: paperToTypes(f.paper),
         primary_contact_phone: f.phone ?? null,
         status,
