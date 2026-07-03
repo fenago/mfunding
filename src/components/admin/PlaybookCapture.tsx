@@ -24,11 +24,13 @@ interface Customer {
 // Per-playbook defaults so the form arrives pre-configured for the flow.
 const PLAYBOOK_DEFAULTS: Record<
   Playbook["id"],
-  { leadSource: string; startStatus: DealStatus; isLiveTransfer: boolean }
+  { leadSource: string; startStatus: DealStatus; isLiveTransfer: boolean; isRenewal?: boolean }
 > = {
   website: { leadSource: "website", startStatus: "new", isLiveTransfer: false },
   "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true },
   vcf: { leadSource: "referral", startStatus: "new_distressed", isLiveTransfer: false },
+  // Renewal deals get is_renewal=true so commissions calculate at 6 points.
+  renewal: { leadSource: "renewal", startStatus: "new", isLiveTransfer: false, isRenewal: true },
 };
 
 // Only what's needed to START the lead: who they are + attribution. The
@@ -161,6 +163,7 @@ export default function PlaybookCapture({
         customer_id: customerId,
         deal_type: isVcf ? "vcf" : "mca",
         status: defaults.startStatus,
+        is_renewal: defaults.isRenewal ?? false,
         lead_source: last?.lead_source || defaults.leadSource,
         campaign_id: last?.campaign_id || null,
         market: (last?.market as Market) || undefined,
@@ -250,6 +253,7 @@ export default function PlaybookCapture({
         customer_id: customerId,
         deal_type: isVcf ? "vcf" : "mca",
         status: defaults.startStatus,
+        is_renewal: defaults.isRenewal ?? false,
         lead_source: form.lead_source || undefined,
         campaign_id: form.campaign_id || null,
         market: form.market || undefined,
