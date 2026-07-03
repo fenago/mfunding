@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BuildingLibraryIcon,
   MagnifyingGlassIcon,
@@ -34,6 +34,59 @@ const CATS: (FunderCategory | "all")[] = [
   "all", "marketplace", "iso_whitelabel", "low_revenue", "mainstream", "platform", "direct",
 ];
 
+const norm = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// Parse a dollar token like "$5K", "900K", "2.5M", "15,000" into a number.
+function money(s: string): number | null {
+  const m = s.replace(/[$,\s]/g, "").match(/^([\d.]+)([kmKM])?/);
+  if (!m) return null;
+  let n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const u = (m[2] || "").toLowerCase();
+  if (u === "k") n *= 1_000;
+  else if (u === "m") n *= 1_000_000;
+  return Math.round(n);
+}
+
+// Best-effort extraction of structured underwriting fields from a criteria string,
+// so the added lender record is filled in (not just name/website).
+function parseCriteria(c?: string) {
+  const out: {
+    min_credit_score?: number;
+    min_funding_amount?: number;
+    max_funding_amount?: number;
+    min_monthly_revenue?: number;
+    min_time_in_business?: number;
+  } = {};
+  if (!c) return out;
+  const credit =
+    c.match(/credit(?:\s*score)?\s*(?:as low as|of|min[:.]?|:)?\s*(\d{3})/i) ||
+    c.match(/(\d{3})\+?\s*(?:credit|fico)/i);
+  if (credit) {
+    const n = parseInt(credit[1], 10);
+    if (n >= 300 && n <= 850) out.min_credit_score = n;
+  }
+  const range = c.match(/\$([\d.,]+\s*[kmKM]?)\s*[–—-]\s*\$?([\d.,]+\s*[kmKM]?)/);
+  if (range) {
+    const lo = money(range[1]);
+    const hi = money(range[2]);
+    if (lo) out.min_funding_amount = lo;
+    if (hi) out.max_funding_amount = hi;
+  } else {
+    const upTo = c.match(/up to \$([\d.,]+\s*[kmKM]?)/i);
+    if (upTo) { const v = money(upTo[1]); if (v) out.max_funding_amount = v; }
+    const from = c.match(/from \$([\d.,]+\s*[kmKM]?)/i);
+    if (from) { const v = money(from[1]); if (v) out.min_funding_amount = v; }
+  }
+  const rev = c.match(/\$([\d.,]+\s*[kK]?)\+?\s*\/?\s*mo\b/i);
+  if (rev) { const v = money(rev[1]); if (v) out.min_monthly_revenue = v; }
+  const moM = c.match(/(\d+)\+?\s*(?:mo\b|months?\b)/i);
+  const yrM = c.match(/(\d+)\+?\s*(?:yr\b|years?\b)/i);
+  if (moM) out.min_time_in_business = parseInt(moM[1], 10);
+  else if (yrM) out.min_time_in_business = parseInt(yrM[1], 10) * 12;
+  return out;
+}
+
 function Chip({ label, tone }: { label: string; tone: string }) {
   return <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${tone}`}>{label}</span>;
 }
@@ -49,6 +102,28 @@ export default function FunderDirectoryPage() {
   const [hideInSystem, setHideInSystem] = useState(false);
   const [pickStatus, setPickStatus] = useState<Record<string, string>>({});
   const [addState, setAddState] = useState<Record<string, AddState>>({});
+  const [liveNames, setLiveNames] = useState<string[]>([]); // normalized lenders.company_name
+
+  // Live check against the lenders table so anything already added shows "In system".
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .from("lenders")
+      .select("company_name")
+      .then(({ data }) => {
+        if (alive && data) {
+          setLiveNames(data.map((r: { company_name: string }) => norm(r.company_name)).filter(Boolean));
+        }
+      });
+    return () => { alive = false; };
+  }, []);
+
+  const isInSystem = (f: Funder) => {
+    if (f.inSystem) return true; // static snapshot fallback
+    const fn = norm(f.name);
+    if (fn.length < 4) return false;
+    return liveNames.some((ln) => ln === fn || ln.includes(fn) || fn.includes(ln));
+  };
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -59,41 +134,61 @@ export default function FunderDirectoryPage() {
       if (onlyApplyOnce && !f.applyOnce) return false;
       if (onlyIso && !f.isoProgram) return false;
       if (hideDead && f.verified === "dead") return false;
-      if (hideInSystem && f.inSystem) return false;
+      if (hideInSystem && isInSystem(f)) return false;
       if (needle) {
         const hay = `${f.name} ${f.criteria ?? ""} ${f.notes ?? ""} ${f.paper ?? ""} ${CATEGORY_LABELS[f.category]}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem, liveNames]);
 
   const deadCount = useMemo(() => FUNDERS.filter((f) => f.verified === "dead").length, []);
-  const inSystemCount = useMemo(() => FUNDERS.filter((f) => f.inSystem).length, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const inSystemCount = useMemo(() => FUNDERS.filter((f) => isInSystem(f)).length, [liveNames]);
 
   async function addToLenders(f: Funder) {
     const key = f.name;
     const status = pickStatus[key] || "potential";
     setAddState((s) => ({ ...s, [key]: { status: "adding" } }));
     try {
+      const flags = [
+        f.lowRev && "Low-revenue",
+        f.whiteLabel && "White-label",
+        f.applyOnce && "Apply-once (one app → many)",
+        f.isoProgram && "ISO/partner program",
+      ].filter(Boolean).join(", ");
       const notes = [
-        CATEGORY_LABELS[f.category],
-        f.criteria,
-        f.whiteLabel ? "White-label available" : null,
-        f.applyOnce ? "Apply-once marketplace (one app → many funders)" : null,
-        f.isoProgram ? "Has ISO/partner program" : null,
-      ].filter(Boolean).join(" · ");
+        `Category: ${CATEGORY_LABELS[f.category]}`,
+        f.paper ? `Paper grade: ${f.paper}` : "",
+        f.criteria ? `Criteria: ${f.criteria}` : "",
+        flags ? `Flags: ${flags}` : "",
+        f.verified ? `Site check: ${f.verified}` : "",
+        f.website ? `Website: ${f.website}` : "",
+      ].filter(Boolean).join("\n");
+      const submissionNotes = [
+        f.applyUrl ? `Broker/ISO apply: ${f.applyUrl}` : "",
+        f.phone ? `Phone: ${f.phone}` : "",
+      ].filter(Boolean).join("\n");
+      const parsed = parseCriteria(f.criteria);
       const { error } = await supabase.from("lenders").insert({
         company_name: f.name,
         website: f.website ?? null,
         lender_types: ["mca"],
         paper_types: paperToTypes(f.paper),
         primary_contact_phone: f.phone ?? null,
+        min_credit_score: parsed.min_credit_score ?? null,
+        min_funding_amount: parsed.min_funding_amount ?? null,
+        max_funding_amount: parsed.max_funding_amount ?? null,
+        min_monthly_revenue: parsed.min_monthly_revenue ?? null,
+        min_time_in_business: parsed.min_time_in_business ?? null,
         status,
-        submission_notes: f.applyUrl ? `Broker/ISO apply: ${f.applyUrl}` : null,
+        submission_notes: submissionNotes || null,
         notes: notes || null,
       });
       if (error) throw error;
+      setLiveNames((prev) => (prev.includes(norm(f.name)) ? prev : [...prev, norm(f.name)]));
       setAddState((s) => ({
         ...s,
         [key]: { status: "added", as: STATUS_OPTIONS.find((o) => o.value === status)?.label },
@@ -117,7 +212,7 @@ export default function FunderDirectoryPage() {
           <p className="text-gray-600 dark:text-gray-300 mt-1">
             Research list of funders to partner with — marketplaces, ISO/white-label programs, low-revenue/subprime
             specialists, and direct funders. Eyeball the details, then use <b>Add to lenders</b> and pick the status
-            (Prospect, Applied, Live…). Nothing is written until you click.
+            (Prospect, Applied, Live…) — it lands in that exact section. Nothing is written until you click.
           </p>
         </div>
       </div>
@@ -174,6 +269,7 @@ export default function FunderDirectoryPage() {
           <tbody>
             {rows.map((f) => {
               const st = addState[f.name];
+              const inSys = isInSystem(f);
               return (
                 <tr key={f.name} className="border-b border-gray-100 dark:border-gray-700/50 align-top">
                   <td className="py-3 px-4">
@@ -200,7 +296,7 @@ export default function FunderDirectoryPage() {
                   <td className="py-3 px-2 text-gray-600 dark:text-gray-300 whitespace-nowrap">{f.paper ?? "—"}</td>
                   <td className="py-3 px-2">
                     <div className="flex flex-wrap gap-1 max-w-[130px]">
-                      {f.inSystem && <Chip label="In system" tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" />}
+                      {inSys && <Chip label="In system" tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" />}
                       {f.lowRev && <Chip label="Low-rev" tone="bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" />}
                       {f.applyOnce && <Chip label="Apply-once" tone="bg-mint-green/15 text-mint-green" />}
                       {f.whiteLabel && <Chip label="White-label" tone="bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300" />}
@@ -221,6 +317,10 @@ export default function FunderDirectoryPage() {
                     {st?.status === "added" ? (
                       <span className="inline-flex items-center gap-1 text-xs font-semibold text-mint-green">
                         <CheckCircleIcon className="w-4 h-4" /> Added as {st.as}
+                      </span>
+                    ) : inSys ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
+                        <CheckCircleIcon className="w-4 h-4" /> In system
                       </span>
                     ) : (
                       <div className="flex items-center gap-1 justify-end">
