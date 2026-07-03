@@ -7,6 +7,7 @@ import {
   GlobeAltIcon,
   ArrowTopRightOnSquareIcon,
   BookOpenIcon,
+  MapIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import LenderEditModal from "../../../components/lenders/LenderEditModal";
@@ -148,6 +149,13 @@ export default function LendersListPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <Link
+            to="/admin/funder-guide"
+            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+          >
+            <MapIcon className="w-5 h-5" />
+            Funder Guide
+          </Link>
           <Link
             to="/admin/lenders/resources"
             className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"

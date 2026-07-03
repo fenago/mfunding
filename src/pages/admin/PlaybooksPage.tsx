@@ -235,14 +235,26 @@ export default function PlaybooksPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-          <MapIcon className="w-6 h-6 text-ocean-blue" /> Revenue Playbooks
-        </h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Pick a flow, start or load a lead, then just fill in each step as you talk — the page saves the data, logs the
-          call, advances the stage, and updates GoHighLevel for you.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <MapIcon className="w-6 h-6 text-ocean-blue" /> Revenue Playbooks
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
+            Pick a flow, start or load a lead, then just fill in each step as you talk — the page saves the data, logs the
+            call, advances the stage, and updates GoHighLevel for you.
+          </p>
+        </div>
+        {/* The Pipeline Playbook is the stage-by-stage reference/onboarding map
+            (MCA web, MCA live-transfer, VCF) — kept as a companion to this
+            action console rather than duplicated here. */}
+        <Link
+          to="/admin/pipeline-playbook"
+          className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium text-ocean-blue hover:underline whitespace-nowrap"
+        >
+          Reference: full pipeline guide
+          <ArrowRightIcon className="w-4 h-4" />
+        </Link>
       </div>
 
       {/* My Day — ranked work queue; a card loads that deal + switches the flow tab */}
