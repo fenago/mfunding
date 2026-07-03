@@ -91,6 +91,48 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
   return results;
 }
 
+/** A queue deal carries just enough submission data to rank funder-reply urgency. */
+export interface QueueDeal extends DealWithCustomer {
+  submissions?: { response_at: string | null; status: string }[];
+}
+
+// Terminal / done statuses the "My Day" queue never surfaces (both pipelines).
+const QUEUE_CLOSED_STATUSES = [
+  "nurture",
+  "declined",
+  "dead",
+  "funded",
+  "renewal_eligible",
+  "restructure_executed",
+  "servicing",
+];
+
+/**
+ * Open deals for the "My Day" work queue, each with its funder submissions
+ * (response_at + status) so the caller can rank funder-reply urgency. RLS scopes
+ * what a closer can see; further Mine/All scoping happens client-side.
+ */
+export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
+  const { data, error } = await supabase
+    .from("deals")
+    .select(`
+      *,
+      customer:customers!customer_id (
+        id, first_name, last_name, business_name, email, phone,
+        monthly_revenue, time_in_business, industry
+      ),
+      submissions:deal_submissions ( response_at, status )
+    `)
+    .not("status", "in", `(${QUEUE_CLOSED_STATUSES.join(",")})`)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching queue deals:", error);
+    throw error;
+  }
+  return (data || []) as unknown as QueueDeal[];
+}
+
 export async function getDealById(id: string): Promise<{
   deal: DealWithCustomer;
   submissions: DealSubmissionWithLender[];
