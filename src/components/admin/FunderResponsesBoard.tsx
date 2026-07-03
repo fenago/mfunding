@@ -340,7 +340,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .eq("entity_type", "deal").eq("entity_id", deal.id)
       .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%")
       .order("created_at", { ascending: false }).limit(20);
-    setSentLog((data ?? []).map((r) => {
+    const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
       let re: string | null = null;
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
@@ -353,7 +353,15 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         subject: kind === "reply" ? "Merchant replied" : rawSubject.replace(/^(merchant|funder):email — /, ""),
         snippet, re, kind,
       };
-    }));
+    });
+    // A reply belongs to whichever funder we messaged the merchant about last —
+    // walk chronologically and inherit that card so replies surface ON the card.
+    let lastMerchantRe: string | null = null;
+    for (const e of parsed.slice().sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+      if (e.kind === "merchant") lastMerchantRe = e.re;
+      else if (e.kind === "reply" && !e.re) e.re = lastMerchantRe;
+    }
+    setSentLog(parsed);
   }
 
   async function load() {
@@ -771,17 +779,20 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                 )}
                 {sentLog.filter((m) => m.re === s.lenderName).length > 0 && (
                   <ul className="mt-1.5 space-y-1 border-t border-dashed border-gray-200 dark:border-gray-700 pt-1.5">
-                    {sentLog.filter((m) => m.re === s.lenderName).map((m, i) => {
+                    {sentLog.filter((m) => m.re === s.lenderName).slice().sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((m, i) => {
                       const key = `${m.kind}-${m.at}`;
                       const isFunder = m.kind === "funder";
+                      const isReply = m.kind === "reply";
                       return (
-                        <li key={i} className="text-[10.5px] text-gray-500 dark:text-gray-400 cursor-pointer" onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
-                          {isFunder
-                            ? <BuildingOffice2Icon className="w-3 h-3 inline mr-0.5 text-indigo-500" />
-                            : <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />}
-                          {isFunder ? "Funder messaged" : "Merchant messaged"} <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                        <li key={i} className={`text-[10.5px] cursor-pointer ${isReply ? "text-emerald-700 dark:text-emerald-300 font-medium pl-2" : "text-gray-500 dark:text-gray-400"}`} onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
+                          {isReply
+                            ? <span className="mr-0.5">↩</span>
+                            : isFunder
+                              ? <BuildingOffice2Icon className="w-3 h-3 inline mr-0.5 text-indigo-500" />
+                              : <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />}
+                          {isReply ? "Merchant REPLIED" : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {isFunder && <span className="ml-1 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 px-1 py-px text-[9px] font-semibold">to funder</span>}
-                          {" · "}<span className="font-medium text-gray-700 dark:text-gray-200">{m.subject}</span>
+                          {" · "}<span className={isReply ? "" : "font-medium text-gray-700 dark:text-gray-200"}>{isReply ? (m.snippet.split(":")[0] || m.subject) : m.subject}</span>
                           {expandedMsg === key && (
                             <span className="block mt-1 whitespace-pre-wrap text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded p-1.5">{m.snippet}</span>
                           )}

@@ -21,7 +21,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
-  corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
+  corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
   listContactFileUploads,
 } from "../_shared/ghl.ts";
 
@@ -367,9 +367,14 @@ Deno.serve(async (req) => {
     const bcc = (payload.bcc ?? []).map((e) => String(e).trim()).filter(emailOk).slice(0, 10);
 
     const bodyHtml = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
+    // Reply in the funder's existing email thread when one exists (e.g. answering
+    // their stip request lands as a threaded Re: in their inbox, not a new email).
+    let replyMessageId: string | undefined;
+    try { replyMessageId = (await latestEmailMessageId(mCfg, contactId)) ?? undefined; } catch { /* best-effort */ }
     const sr = await sendEmailToContact(mCfg, contactId, subject, bodyHtml, {
       text: bodyText, emailCc: cc, emailBcc: bcc,
       attachments: attachmentUrls.length ? attachmentUrls : undefined,
+      replyMessageId,
     });
     if (!sr.ok) return json({ error: `GHL send failed: ${sr.error}` }, 502);
 

@@ -14,7 +14,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
+  corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
 } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
@@ -109,7 +109,9 @@ Deno.serve(async (req) => {
   }
 
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
-  const sr = await sendEmailToContact(cfg, contactId, subject, html, { text: bodyText, emailCc: cc, emailBcc: bcc });
+  let replyMessageId: string | undefined;
+  try { replyMessageId = (await latestEmailMessageId(cfg, contactId)) ?? undefined; } catch { /* thread if we can */ }
+  const sr = await sendEmailToContact(cfg, contactId, subject, html, { text: bodyText, emailCc: cc, emailBcc: bcc, replyMessageId });
   if (!sr.ok) return json({ error: `GHL send failed: ${sr.error}` }, 502);
 
   // Audit trail (best-effort — never fail the send over the log).

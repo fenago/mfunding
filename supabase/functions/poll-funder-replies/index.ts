@@ -147,7 +147,7 @@ async function findMerchantReply(
   cfg: Awaited<ReturnType<typeof getGhlConfig>>,
   contactId: string,
   afterIso: string,
-): Promise<{ text: string; from: string; at: string } | null> {
+): Promise<{ text: string; from: string; at: string; attachments: string[] } | null> {
   const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
     cfg, "GET",
     `/conversations/search?locationId=${cfg.locationId}&contactId=${contactId}`,
@@ -180,7 +180,9 @@ async function findMerchantReply(
         if (from.includes("send.mfunding.net") || from.includes("socrates73@gmail.com")) continue;
         let text = cleanEmailBody(String(e.body ?? ""));
         if (!text) text = "(reply received — open the conversation to read it)";
-        best = { text, from: String(e.from ?? ""), at };
+        const attachments = Array.isArray(e.attachments)
+          ? (e.attachments as unknown[]).filter((u) => typeof u === "string") as string[] : [];
+        best = { text, from: String(e.from ?? ""), at, attachments };
         break;
       }
     }
@@ -198,7 +200,7 @@ async function runMerchantPhase(
 ): Promise<{ merchantReplies: number; merchantDetails: string[] }> {
   const cutoff = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
   const { data: rows } = await db.from("deals")
-    .select("id, deal_number, merchant_reply_at, created_at, customer:customers!customer_id ( ghl_contact_id, email, business_name, first_name, last_name )")
+    .select("id, deal_number, customer_id, merchant_reply_at, created_at, customer:customers!customer_id ( ghl_contact_id, email, business_name, first_name, last_name )")
     .not("status", "in", `(${MERCHANT_CLOSED_STATUSES.join(",")})`)
     .gt("updated_at", cutoff)
     .order("updated_at", { ascending: false })
@@ -249,10 +251,49 @@ async function runMerchantPhase(
     if (stampErr || !stamped?.length) continue;
 
     merchantReplies++;
+
+    // Auto-file email attachments onto the merchant's document record so they
+    // are immediately attachable to funder messages / submissions. Best-effort;
+    // dedupe by the source URL we record in the description.
+    let filedNames: string[] = [];
+    try {
+      const custId = (deal as unknown as { customer_id?: string }).customer_id;
+      if (custId) {
+        for (const u of reply.attachments.slice(0, 8)) {
+          const marker = `src:${u.slice(-60)}`;
+          const { data: dupe } = await db.from("customer_documents")
+            .select("id").eq("customer_id", custId).like("description", `%${marker}%`).limit(1);
+          if (dupe?.length) continue;
+          const resp = await fetch(u);
+          if (!resp.ok) continue;
+          const buf = new Uint8Array(await resp.arrayBuffer());
+          if (!buf.length || buf.length > 25_000_000) continue;
+          const rawName = decodeURIComponent(u.split("/").pop() ?? "attachment").split("?")[0];
+          const ext = (rawName.match(/\.([a-z0-9]{2,5})$/i)?.[1] ?? "pdf").toLowerCase();
+          const mime = resp.headers.get("content-type") ?? (ext === "pdf" ? "application/pdf" : "application/octet-stream");
+          const niceName = `Merchant email ${new Date(reply.at).toISOString().slice(0, 10)} — ${rawName}`.slice(0, 120);
+          const path = `customer/${custId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+          const { error: upErr } = await db.storage.from("customer-documents")
+            .upload(path, buf, { contentType: mime });
+          if (upErr) continue;
+          const docType = /statement|bank/i.test(rawName) ? "bank_statement"
+            : /check/i.test(rawName) ? "voided_check"
+            : /license|id\b|dl\b/i.test(rawName) ? "id" : "other";
+          await db.from("customer_documents").insert({
+            customer_id: custId, document_type: docType, filename: niceName,
+            storage_path: path, file_size: buf.length, mime_type: mime, status: "approved",
+            description: `Auto-filed from the merchant's email reply (${reply.at}). ${marker}`,
+          });
+          filedNames.push(rawName);
+        }
+      }
+    } catch { /* filing is best-effort; the reply alert below still fires */ }
+
     await db.from("activity_log").insert({
       entity_type: "deal", entity_id: deal.id, interaction_type: "email",
       subject: "merchant:reply",
-      content: `[re: merchant] ${summary ?? "Merchant replied"}: "${snippet.slice(0, 180)}"`,
+      content: `[re: merchant] ${summary ?? "Merchant replied"}: "${snippet.slice(0, 180)}"` +
+        (filedNames.length ? ` [auto-filed: ${filedNames.join(", ")}]` : ""),
     });
 
     // Internal alert — owner only. NEVER email the merchant.
@@ -268,6 +309,7 @@ async function runMerchantPhase(
           `${businessName} (${reply.from}) wrote back on ${dealNumber}.\n\n` +
           (summary ? `${summary}\n\n` : "") +
           (snippet ? `"${snippet}"\n\n` : "") +
+          (filedNames.length ? `📎 Auto-filed to their documents: ${filedNames.join(", ")}\n\n` : "") +
           `Read + respond in GHL → Conversations, or open the deal in the Revenue Playbook.`;
         await sendEmailToContact(cfg, ownerId, subj,
           `<div style="font-family:Arial;font-size:14px;white-space:pre-wrap">${esc(bodyText)}</div>`,

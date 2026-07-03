@@ -263,7 +263,7 @@ export async function sendEmailToContact(
   contactId: string,
   subject: string,
   html: string,
-  opts?: { emailFrom?: string; text?: string; emailCc?: string[]; emailBcc?: string[]; attachments?: string[] },
+  opts?: { emailFrom?: string; text?: string; emailCc?: string[]; emailBcc?: string[]; attachments?: string[]; replyMessageId?: string },
 ) {
   const body: Record<string, unknown> = { type: "Email", contactId, subject, html };
   if (opts?.text) body.message = opts.text;
@@ -273,9 +273,33 @@ export async function sendEmailToContact(
   // Array of file URLs GHL fetches at send time and attaches to the email
   // (e.g. secure customer-document links or leadconnectorhq download URLs).
   if (opts?.attachments?.length) body.attachments = opts.attachments;
+  // Thread the send as a reply to an existing email in the conversation so the
+  // recipient's inbox keeps one thread (GHL sets Re:/In-Reply-To headers).
+  if (opts?.replyMessageId) body.replyMessageId = opts.replyMessageId;
   return await ghlFetch<{ messageId?: string; conversationId?: string }>(
     cfg, "POST", "/conversations/messages", body,
   );
+}
+
+/** Latest email message id in the contact's conversation (or null). Use as
+ * replyMessageId so outbound lands as a threaded reply in the recipient's inbox. */
+export async function latestEmailMessageId(cfg: GhlConfig, contactId: string): Promise<string | null> {
+  const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
+    cfg, "GET", `/conversations/search?locationId=${cfg.locationId}&contactId=${contactId}`,
+  );
+  const cid = conv.data?.conversations?.[0]?.id;
+  if (!cid) return null;
+  const msgs = await ghlFetch<{ messages?: { messages?: Array<Record<string, unknown>> } }>(
+    cfg, "GET", `/conversations/${cid}/messages?limit=10`,
+  );
+  for (const m of msgs.data?.messages?.messages ?? []) {
+    if (!/email/i.test(String(m.messageType ?? ""))) continue;
+    // replyMessageId must be an EMAIL RECORD id (meta.email.messageIds), not
+    // the conversation-message id — GHL 404s otherwise.
+    const ids = (m.meta as { email?: { messageIds?: string[] } } | undefined)?.email?.messageIds ?? [];
+    if (ids.length) return String(ids[ids.length - 1]);
+  }
+  return null;
 }
 
 // ---- Comms page helpers (contact search + thread history) --------------------
