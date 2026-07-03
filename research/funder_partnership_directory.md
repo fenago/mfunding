@@ -47,7 +47,7 @@
 
 | Funder | Paper | Flags | Website | Broker apply | Phone | Criteria |
 |---|---|---|---|---|---|---|
-| **Uplyft Capital** | — | Low-rev, ISO | uplyftcapital.com | [affiliate](https://app.impact.com/campaign-promo-signup/Uplyft-Capital.brand) | 1-800-515-7531 | **Credit as low as 475** · $5K–$5M · 24-hr · $200–600/funded deal |
+| **Uplyft Capital** | — | Low-rev, ISO | uplyftcapital.com | [broker intake](https://daydreamos.com/broker-intake/uplyft-capital) | 1-800-515-7531 | **Credit as low as 475** · $5K–$5M · 24-hr · $200–600/funded deal |
 | **Giggle Finance** | — | Low-rev, ISO | gigglefinance.com | [partnerships](https://gigglefinance.com/partnerships/#referral) | — | Gig/freelancer/startup · up to $15K · **no min credit** · sole-props/1099s |
 | **Alpine Funding Partners** | — | Low-rev | alpinefundings.com | — | 877-993-8634 | **$5,000/mo · 3mo TIB · 500 credit** · MCA/RBF/LOC/equipment |
 | **mcashadvance** | — | Low-rev, ISO | mcashadvance.com | [brokers](https://www.mcashadvance.com/about-us/for-brokers/) | 855-433-8641 | $7,500+/mo · 3+mo · $5K–$900K · no hard pull, low credit OK |
