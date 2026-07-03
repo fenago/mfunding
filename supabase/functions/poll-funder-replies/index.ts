@@ -207,8 +207,9 @@ Deno.serve(async (req) => {
       } catch { /* classification is best-effort; the stamp is the record */ }
 
       await db.from("activity_log").insert({
-        entity_type: "deal", entity_id: newest.deal_id, action: "ghl:funder-reply",
-        details: { lender: lender.company_name, submissionId: newest.id, via: "poll", from: replyFrom, snippet, classification },
+        entity_type: "deal", entity_id: newest.deal_id, interaction_type: "email",
+        subject: `ghl:funder-reply — ${lender.company_name}`,
+        content: `${classification?.type ?? "reply"}: "${snippet.slice(0, 180)}" (${replyFrom})`,
       });
 
       // Internal alert — owner only.
