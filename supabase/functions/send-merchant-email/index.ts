@@ -31,7 +31,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let payload: { dealId?: string; subject?: string; body?: string; cc?: string[]; bcc?: string[] };
+  let payload: { dealId?: string; subject?: string; body?: string; cc?: string[]; bcc?: string[]; regarding?: string | null };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const dealId = payload.dealId;
   const subject = (payload.subject ?? "").trim();
@@ -116,7 +116,8 @@ Deno.serve(async (req) => {
   try {
     const routing = [cc.length ? `CC: ${cc.join(", ")}` : "", bcc.length ? `BCC: ${bcc.join(", ")}` : ""]
       .filter(Boolean).join(" · ");
-    const snippet = (routing ? `[${routing}]\n` : "") + bodyText.slice(0, 200);
+    const re = (payload.regarding ?? "").toString().trim().slice(0, 80);
+    const snippet = (re ? `[re: ${re}] ` : "") + (routing ? `[${routing}]\n` : "") + bodyText.slice(0, 500);
     await db.from("activity_log").insert({
       entity_type: "deal",
       entity_id: dealId,

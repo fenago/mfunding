@@ -161,7 +161,9 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [msgBody, setMsgBody] = useState("");
   const [msgCc, setMsgCc] = useState("");
   const [msgBcc, setMsgBcc] = useState("");
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string }[]>([]);
+  const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null }[]>([]);
+  const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
   const [msgToast, setMsgToast] = useState<string | null>(null);
@@ -212,6 +214,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
 
   function openMessage(s: SubRow | null) {
     const pre = prefillFor(s);
+    setMsgRe(s?.lenderName ?? null);
     setMsgSubject(pre.subject);
     setMsgBody(pre.body);
     setMsgError(null);
@@ -229,6 +232,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           dealId: deal.id, subject: msgSubject.trim(), body: msgBody.trim(),
           cc: msgCc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
           bcc: msgBcc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
+          regarding: msgRe,
         },
       });
       if (fnErr) throw fnErr;
@@ -251,11 +255,17 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .eq("entity_type", "deal").eq("entity_id", deal.id)
       .like("subject", "merchant:email%")
       .order("created_at", { ascending: false }).limit(10);
-    setSentLog((data ?? []).map((r) => ({
-      at: r.created_at as string,
-      subject: String(r.subject ?? "").replace(/^merchant:email — /, ""),
-      snippet: String(r.content ?? ""),
-    })));
+    setSentLog((data ?? []).map((r) => {
+      let snippet = String(r.content ?? "");
+      let re: string | null = null;
+      const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
+      if (m) { re = m[1]; snippet = snippet.slice(m[0].length); }
+      return {
+        at: r.created_at as string,
+        subject: String(r.subject ?? "").replace(/^merchant:email — /, ""),
+        snippet, re,
+      };
+    }));
   }
 
   async function load() {
@@ -667,6 +677,20 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     )}
                   </div>
                 )}
+                {sentLog.filter((m) => m.re === s.lenderName).length > 0 && (
+                  <ul className="mt-1.5 space-y-1 border-t border-dashed border-gray-200 dark:border-gray-700 pt-1.5">
+                    {sentLog.filter((m) => m.re === s.lenderName).map((m, i) => (
+                      <li key={i} className="text-[10.5px] text-gray-500 dark:text-gray-400 cursor-pointer" onClick={() => setExpandedMsg(expandedMsg === m.at ? null : m.at)}>
+                        <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />
+                        Merchant messaged <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                        {" · "}<span className="font-medium text-gray-700 dark:text-gray-200">{m.subject}</span>
+                        {expandedMsg === m.at && (
+                          <span className="block mt-1 whitespace-pre-wrap text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded p-1.5">{m.snippet}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {courtesyMsg[s.id] && <p className="text-[10px] text-gray-500 dark:text-gray-400">{courtesyMsg[s.id]}</p>}
               </div>
             );
@@ -693,10 +717,13 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           </p>
           <ul className="space-y-1.5">
             {sentLog.map((m, i) => (
-              <li key={i} className="text-[11px] text-gray-600 dark:text-gray-300">
+              <li key={i} className="text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer" onClick={() => setExpandedMsg(expandedMsg === `all-${m.at}` ? null : `all-${m.at}`)}>
                 <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                {m.re && <span className="ml-1 rounded bg-ocean-blue/10 text-ocean-blue px-1 py-px text-[9.5px] font-semibold">re: {m.re}</span>}
                 {" · "}<span className="font-medium text-gray-800 dark:text-gray-100">{m.subject}</span>
-                {m.snippet && <span className="text-gray-400"> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>}
+                {expandedMsg === `all-${m.at}`
+                  ? <span className="block mt-1 whitespace-pre-wrap bg-white dark:bg-gray-800 rounded p-2 border border-gray-200 dark:border-gray-700">{m.snippet}</span>
+                  : (m.snippet && <span className="text-gray-400"> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>)}
               </li>
             ))}
           </ul>
