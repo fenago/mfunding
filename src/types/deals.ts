@@ -72,6 +72,8 @@ export interface Deal {
   bank_statements_at: string | null;
   offer_accepted_at: string | null;
   nurture_at: string | null;
+  merchant_reply_at?: string | null;
+  merchant_reply_summary?: string | null;
   submitted_at: string | null;
   offer_received_at: string | null;
   offer_presented_at: string | null;
