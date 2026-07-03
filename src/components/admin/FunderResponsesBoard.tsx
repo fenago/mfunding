@@ -220,7 +220,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           `Hi ${merchantFirst} — good news: one of our funding partners is actively reviewing your file. ` +
           `To finish their review they need: ${items}. ` +
           `Upload it here: ${UPLOAD_LINK_PLACEHOLDER} — or just reply to this email with the document attached.\n\n` +
-          `— ${closerName}`,
+          `— ${closerName}\nMomentum Funding · (954) 737-5692`,
       };
     }
     // Funder declined → reassure; do NOT mention the decline unless the closer edits it in.
@@ -230,7 +230,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         body:
           `Hi ${merchantFirst} — just a quick update: we're still actively working your file and ` +
           `have more funding options in motion. I'll reach out the moment I have news. Thanks for your patience.\n\n` +
-          `— ${closerName}`,
+          `— ${closerName}\nMomentum Funding · (954) 737-5692`,
       };
     }
     // General / replied → a neutral update the closer completes.
@@ -239,7 +239,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       body:
         `Hi ${merchantFirst} — quick update on your funding file. ` +
         `[write your update here]\n\n` +
-        `— ${closerName}`,
+        `— ${closerName}\nMomentum Funding · (954) 737-5692`,
     };
   }
 
@@ -259,7 +259,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   function funderPrefillFor(s: SubRow): { subject: string; body: string } {
     const business = deal.customer?.business_name || "the merchant";
     const dealNo = deal.deal_number || "—";
-    const signoff = `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding`;
+    const signoff = `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding · (954) 737-5692`;
     if (s.responseType === "stip_request") {
       const items = s.requestedItems.length ? s.requestedItems.join(", ") : "the requested items";
       return {

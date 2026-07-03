@@ -60,7 +60,7 @@ export default function OptinPage() {
 
     if (submitError || !data?.ok) {
       console.error('Opt-in submission error:', submitError || data);
-      setError("Sorry — we couldn't complete your opt-in. Please try again or call (786) 840-9404.");
+      setError("Sorry — we couldn't complete your opt-in. Please try again or call (954) 737-5692.");
       return;
     }
 

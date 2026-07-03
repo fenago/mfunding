@@ -113,7 +113,7 @@ const GENERIC_BODY =
   `Use of funds: {{use_of_funds}}\nOwner phone: {{owner_phone}}\nOwner email: {{owner_email}}\n` +
   `Deal #: {{deal_number}}\n\nDocuments:\n{{doc_links}}\n\n` +
   `This is a purchase of future receivables (MCA) — not a loan. Reply with any questions.\n` +
-  `— {{closer_name}}, Momentum Funding Submissions`;
+  `— {{closer_name}}, Momentum Funding Submissions · (954) 737-5692`;
 
 /** Build the flat merge-token map from a deal + its customer + the closer. */
 function buildTokens(
@@ -270,7 +270,7 @@ Deno.serve(async (req) => {
     const bodyText =
       `Thank you for taking a look at this file — we appreciate the quick review. ` +
       `We'll keep you in mind for the next one that fits your box.\n\n` +
-      `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding`;
+      `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding · (954) 737-5692`;
     const bodyHtml = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
 
     const sr = await sendEmailToContact(cCfg, contactId, subject, bodyHtml, { text: bodyText, emailCc: ALWAYS_CC });

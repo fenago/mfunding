@@ -56,8 +56,8 @@ export default function Footer() {
 
             {/* Contact */}
             <div className="mt-5 space-y-1.5 text-sm">
-              <a href="tel:+17868409404" className="block text-white/60 hover:text-white transition-colors">
-                (786) 840-9404
+              <a href="tel:+19547375692" className="block text-white/60 hover:text-white transition-colors">
+                (954) 737-5692
               </a>
               <a href="mailto:sales@send.mfunding.net" className="block text-white/60 hover:text-white transition-colors">
                 sales@send.mfunding.net

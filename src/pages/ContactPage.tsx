@@ -20,8 +20,8 @@ const contactInfo = [
   {
     icon: PhoneIcon,
     label: 'Phone',
-    value: '(786) 840-9404 | (888) 596-5378',
-    href: 'tel:+17868409404',
+    value: '(954) 737-5692 | (888) 596-5378',
+    href: 'tel:+19547375692',
     description: 'Mon–Fri, 9am–6pm EST',
   },
   {
@@ -88,7 +88,7 @@ export default function ContactPage() {
     if (submitError || !data?.ok) {
       console.error('Contact form submission error:', submitError || data);
       setError(
-        "Sorry — we couldn't send your message. Please call us at (786) 840-9404 or email sales@send.mfunding.net."
+        "Sorry — we couldn't send your message. Please call us at (954) 737-5692 or email sales@send.mfunding.net."
       );
       return;
     }
@@ -98,7 +98,7 @@ export default function ContactPage() {
 
   return (
     <>
-      <SEO title="Contact Us — Talk to a Funding Advisor" description="Contact Momentum Funding to discuss business funding options. Call (786) 840-9404 or email sales@send.mfunding.net. Mon–Fri, 9am–6pm EST. No upfront fees, no obligation." keywords="contact momentum funding, business funding advisor, talk to funding specialist" />
+      <SEO title="Contact Us — Talk to a Funding Advisor" description="Contact Momentum Funding to discuss business funding options. Call (954) 737-5692 or email sales@send.mfunding.net. Mon–Fri, 9am–6pm EST. No upfront fees, no obligation." keywords="contact momentum funding, business funding advisor, talk to funding specialist" />
       <Navbar />
       <ScrollToTop />
       <main>

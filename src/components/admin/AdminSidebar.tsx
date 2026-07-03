@@ -126,6 +126,7 @@ const navGroups: NavGroup[] = [
     title: "Modeling & Insights",
     items: [
       { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: SUPER },
+      { name: "Funder Performance", path: "/admin/analytics/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
       { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: SUPER },
       { name: "Unit Economics (MCA)", path: "/admin/unit-economics", icon: CalculatorIcon, roles: SUPER },
       { name: "Unit Economics (VCF)", path: "/admin/unit-economics-vcf", icon: CalculatorIcon, roles: SUPER },
