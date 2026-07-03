@@ -511,14 +511,16 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
 
   // Best-effort activity-trail entry (mirrors FunderPicker's logActivity shape).
   async function logActivity(interaction_type: string, subject: string, content: string, newStatus?: string) {
-    try {
-      await supabase.from("activity_log").insert({
-        entity_type: "deal", entity_id: deal.id,
-        interaction_type, subject, content,
-        new_status: newStatus ?? null,
-        logged_by: session?.user?.id ?? null,
-      });
-    } catch { /* the trail is nice-to-have; never block the action on it */ }
+    // The trail is nice-to-have so we never THROW here — but Supabase returns
+    // errors rather than throwing, so a bare try/catch would hide a real failure
+    // (RLS denial, bad constraint). Check .error explicitly and at least log it.
+    const { error } = await supabase.from("activity_log").insert({
+      entity_type: "deal", entity_id: deal.id,
+      interaction_type, subject, content,
+      new_status: newStatus ?? null,
+      logged_by: session?.user?.id ?? null,
+    });
+    if (error) console.warn("activity_log insert failed (non-blocking):", error.message);
   }
 
   function openOfferForm(s: SubRow) {

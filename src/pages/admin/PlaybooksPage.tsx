@@ -150,10 +150,14 @@ export default function PlaybooksPage() {
         };
       }
       if (Object.keys(custUpdates).length) {
-        await supabase.from("customers").update(custUpdates).eq("id", deal.customer_id);
+        // Supabase returns errors, it does NOT throw — an unchecked write fails
+        // invisibly (RLS denial, constraint). Surface it instead of pretending it saved.
+        const { error } = await supabase.from("customers").update(custUpdates).eq("id", deal.customer_id).select("id");
+        if (error) throw new Error(`Couldn't save merchant fields: ${error.message}`);
       }
       if (Object.keys(dealUpdates).length) {
-        await supabase.from("deals").update(dealUpdates).eq("id", deal.id);
+        const { error } = await supabase.from("deals").update(dealUpdates).eq("id", deal.id).select("id");
+        if (error) throw new Error(`Couldn't save the step: ${error.message}`);
       }
 
       // Log it to the deal's activity feed (the same feed the deal page shows).
