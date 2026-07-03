@@ -22,6 +22,7 @@ import { PLAYBOOKS, type Playbook, type PlaybookStep, type StepField } from "../
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import FunderPicker from "../../components/admin/FunderPicker";
+import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDeal } from "../../services/dealService";
@@ -1128,6 +1129,19 @@ function StepCard({
             in their own recipe format. Stage advance stays on the step button. */}
         {step.stageKey === "submitted_to_funder" && interactive && deal && (
           <FunderPicker deal={deal} />
+        )}
+
+        {/* Funder responses — one card per funder the deal went to, moving through
+            ⏳ Awaiting → ✉ Replied → 💰 Offer → ✅ Accepted / 🙅 Merchant declined /
+            ❌ Funder declined. Log offers/declines inline; the stage move stays on
+            the step button. Rendered on both offer steps that exist in the flow. */}
+        {(step.stageKey === "offer_received" || step.stageKey === "offer_presented") && interactive && deal && (
+          <FunderResponsesBoard deal={deal} />
+        )}
+
+        {/* Accepted-offer summary as context for the Accept + e-sign step. */}
+        {step.stageKey === "offer_accepted" && interactive && deal && (
+          <FunderResponsesBoard deal={deal} mode="accepted" />
         )}
 
         {/* ───── Capture area — the fields live HERE, at the step where you ask ───── */}

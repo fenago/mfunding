@@ -138,19 +138,24 @@ Deno.serve(async (req) => {
   let payload: {
     dealId?: string;
     lenderIds?: string[];
+    lenderId?: string;
     notes?: string;
     resubmit?: boolean;
     /** When true, this is a recipe QA send: the engine renders each lender's
      * recipe against a SAMPLE deal and emails ONLY the logged-in admin. It never
      * emails a real funder and never writes deal_submissions. */
     test_email?: boolean;
+    /** "courtesy_decline" → send a short thank-you to a funder that PASSED on
+     * this file (relationship upkeep). Only ever sends on a declined submission. */
+    action?: "courtesy_decline";
   };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const lenderIds = (payload.lenderIds ?? []).filter(Boolean);
   const notes = payload.notes;
   const resubmit = !!payload.resubmit;
   const testMode = !!payload.test_email;
-  if (lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
+  const courtesyMode = payload.action === "courtesy_decline";
+  if (!courtesyMode && lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
   if (!testMode && !payload.dealId) return json({ error: "dealId is required" }, 400);
 
   const db = serviceClient();
@@ -177,6 +182,78 @@ Deno.serve(async (req) => {
     name: [callerProfile?.first_name, callerProfile?.last_name].filter(Boolean).join(" ").trim(),
     email: caller.email ?? "",
   };
+
+  // ---------- COURTESY DECLINE: thank a funder who passed on this file ----------
+  // Relationship upkeep — a short professional "thanks for the quick look" note.
+  // HARD RULE: only ever sends when the submission row is funder-declined, and
+  // only once (stamps courtesy_sent_at so the button disables). Never touches a
+  // live/awaiting/offer row, so it can't be used to email a funder mid-deal.
+  if (courtesyMode) {
+    const dealId = payload.dealId;
+    const lenderId = payload.lenderId ?? lenderIds[0];
+    if (!dealId || !lenderId) return json({ error: "dealId and lenderId are required" }, 400);
+
+    // Closers may only act on their own deals (same guard as normal mode).
+    if (callerRole === "closer") {
+      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    }
+
+    const { data: sub } = await db
+      .from("deal_submissions")
+      .select("id, status, courtesy_sent_at")
+      .eq("deal_id", dealId).eq("lender_id", lenderId).maybeSingle();
+    if (!sub) return json({ error: "No submission found for this funder on this deal" }, 404);
+    if (sub.status !== "declined") {
+      return json({ error: "A thank-you note only sends on a funder-declined submission." }, 422);
+    }
+    if (sub.courtesy_sent_at) {
+      return json({ ok: true, alreadySent: true, courtesy_sent_at: sub.courtesy_sent_at });
+    }
+
+    const { data: dealRow } = await db
+      .from("deals").select("id, customer_id").eq("id", dealId).maybeSingle();
+    const { data: cust } = dealRow?.customer_id
+      ? await db.from("customers").select("business_name").eq("id", dealRow.customer_id).maybeSingle()
+      : { data: null };
+    const { data: lender } = await db
+      .from("lenders").select("id, company_name, submission_email, ghl_contact_id").eq("id", lenderId).maybeSingle();
+    if (!lender) return json({ error: "Funder not found" }, 404);
+
+    let cCfg: Awaited<ReturnType<typeof getGhlConfig>> | null = null;
+    let cErr: string | undefined;
+    try { cCfg = await getGhlConfig(db); } catch (e) { cErr = e instanceof Error ? e.message : String(e); }
+    if (!cCfg) return json({ error: `GHL not configured: ${cErr ?? "missing credentials"}` }, 502);
+
+    const to = (lender.submission_email as string) || "";
+    let contactId = (lender.ghl_contact_id as string | null) ?? null;
+    if (!contactId && !to) return json({ error: "No email or GHL contact on file for this funder" }, 422);
+    if (!contactId && to) {
+      const cr = await upsertContact(cCfg, { email: to, firstName: lender.company_name as string, tags: ["funder"], source: "Courtesy Note" });
+      contactId = cr.data?.contact?.id ?? null;
+      if (contactId && contactId !== lender.ghl_contact_id) {
+        await db.from("lenders").update({ ghl_contact_id: contactId }).eq("id", lenderId);
+      }
+    }
+    if (!contactId) return json({ error: "Could not resolve the funder's GHL contact" }, 502);
+
+    const biz = (cust?.business_name as string) || "this file";
+    const closerName = closer.name || "Momentum Funding";
+    const subject = `Re: ${biz} — thank you`;
+    const bodyText =
+      `Thank you for taking a look at this file — we appreciate the quick review. ` +
+      `We'll keep you in mind for the next one that fits your box.\n\n` +
+      `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding`;
+    const bodyHtml = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
+
+    const sr = await sendEmailToContact(cCfg, contactId, subject, bodyHtml, { text: bodyText, emailCc: ALWAYS_CC });
+    if (!sr.ok) return json({ error: `GHL send failed: ${sr.error}` }, 502);
+
+    const sentIso = new Date().toISOString();
+    await db.from("deal_submissions").update({ courtesy_sent_at: sentIso }).eq("id", sub.id);
+    await logActivity(db, dealId, lenderId, lender.company_name as string, { courtesy: true, to });
+    return json({ ok: true, sent: true, courtesy_sent_at: sentIso });
+  }
 
   // Load the recipes for the selected lenders (may be empty → generic fallback).
   const { data: profileRows } = await db

@@ -471,6 +471,102 @@ export async function updateSubmission(
   return submission as DealSubmission;
 }
 
+/** One funder's activity across all its deal submissions, for the Lenders-page
+ * scoreboard. Only funders with ≥1 real submission are returned. */
+export interface FunderScore {
+  lenderId: string;
+  lenderName: string;
+  submissions: number;   // packages actually sent
+  replies: number;       // any response came back
+  offers: number;        // offers made (funded terms quoted)
+  accepted: number;      // offers the merchant accepted
+  funderDeclines: number;// funder passed on the file
+  acceptanceRate: number | null; // accepted ÷ offers (their offer win-rate), %
+  avgFactor: number | null;      // mean factor rate across logged offers
+  avgResponseMs: number | null;  // mean (response_at − submitted_at)
+}
+
+/**
+ * Aggregate every funder's submission history into a per-lender scoreboard.
+ * One query over deal_submissions (+ lender name), reduced client-side. Sorted
+ * accepted desc, then offers desc. Only counts submissions that actually went
+ * out (or came back) — never-sent / failed rows are ignored.
+ */
+export async function getFunderScoreboard(): Promise<FunderScore[]> {
+  const { data, error } = await supabase
+    .from("deal_submissions")
+    .select("lender_id, status, submitted_at, response_at, offer_amount, factor_rate, lender:lenders!lender_id ( company_name )");
+  if (error) {
+    console.error("Error fetching funder scoreboard:", error);
+    throw error;
+  }
+
+  const OFFER_STATUSES = ["offer_made", "offer_accepted", "offer_declined", "approved"];
+  const LIVE_STATUSES = ["submitted", "under_review", "approved", "offer_made", "offer_accepted", "offer_declined", "declined"];
+
+  interface Acc {
+    lenderName: string;
+    submissions: number;
+    replies: number;
+    offers: number;
+    accepted: number;
+    funderDeclines: number;
+    factorSum: number;
+    factorN: number;
+    respSum: number;
+    respN: number;
+  }
+  const byLender = new Map<string, Acc>();
+
+  for (const r of (data ?? []) as unknown as Array<Record<string, unknown>>) {
+    const lenderId = r.lender_id as string;
+    if (!lenderId) continue;
+    const status = r.status as string;
+    const submittedAt = r.submitted_at as string | null;
+    const responseAt = r.response_at as string | null;
+    const offerAmount = r.offer_amount as number | null;
+    const factorRate = r.factor_rate as number | null;
+    // Only count a submission that actually went out (or produced a response).
+    const isLive = !!submittedAt || !!responseAt || offerAmount != null || LIVE_STATUSES.includes(status);
+    if (!isLive) continue;
+
+    const acc = byLender.get(lenderId) ?? {
+      lenderName: ((r.lender as { company_name?: string } | null)?.company_name) ?? "Funder",
+      submissions: 0, replies: 0, offers: 0, accepted: 0, funderDeclines: 0,
+      factorSum: 0, factorN: 0, respSum: 0, respN: 0,
+    };
+    acc.submissions += 1;
+    if (responseAt) acc.replies += 1;
+    if (offerAmount != null || OFFER_STATUSES.includes(status)) acc.offers += 1;
+    if (status === "offer_accepted") acc.accepted += 1;
+    if (status === "declined") acc.funderDeclines += 1;
+    if (factorRate != null && factorRate > 0) { acc.factorSum += factorRate; acc.factorN += 1; }
+    if (submittedAt && responseAt) {
+      const ms = new Date(responseAt).getTime() - new Date(submittedAt).getTime();
+      if (Number.isFinite(ms) && ms >= 0) { acc.respSum += ms; acc.respN += 1; }
+    }
+    byLender.set(lenderId, acc);
+  }
+
+  const rows: FunderScore[] = [];
+  for (const [lenderId, a] of byLender.entries()) {
+    rows.push({
+      lenderId,
+      lenderName: a.lenderName,
+      submissions: a.submissions,
+      replies: a.replies,
+      offers: a.offers,
+      accepted: a.accepted,
+      funderDeclines: a.funderDeclines,
+      acceptanceRate: a.offers > 0 ? (a.accepted / a.offers) * 100 : null,
+      avgFactor: a.factorN > 0 ? a.factorSum / a.factorN : null,
+      avgResponseMs: a.respN > 0 ? a.respSum / a.respN : null,
+    });
+  }
+  rows.sort((x, y) => (y.accepted - x.accepted) || (y.offers - x.offers) || (y.submissions - x.submissions));
+  return rows;
+}
+
 export async function getDealStats(): Promise<{
   total: number;
   byStatus: Record<string, number>;

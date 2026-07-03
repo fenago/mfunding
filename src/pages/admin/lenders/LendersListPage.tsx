@@ -9,8 +9,10 @@ import {
   BookOpenIcon,
   MapIcon,
 } from "@heroicons/react/24/outline";
+import { ChartBarIcon, ArrowRightIcon } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import LenderEditModal from "../../../components/lenders/LenderEditModal";
+import { getFunderScoreboard, type FunderScore } from "../../../services/dealService";
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
 type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
@@ -172,6 +174,9 @@ export default function LendersListPage() {
           </button>
         </div>
       </div>
+
+      {/* Funder scoreboard — how each funder is actually performing on real deals */}
+      <FunderScoreboard />
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-6">
@@ -350,6 +355,102 @@ export default function LendersListPage() {
         onClose={() => setIsAddModalOpen(false)}
         onSave={fetchLenders}
       />
+    </div>
+  );
+}
+
+// ───────────────────────── Funder scoreboard ─────────────────────────
+// A compact, collapsible stats strip at the top of the Lenders page: for every
+// funder with ≥1 submission, how they're actually performing — submissions,
+// replies, offers, accepts, funder-declines, offer win-rate, avg factor, and
+// avg response time. Built from one aggregate query (getFunderScoreboard).
+
+function fmtDuration(ms: number | null): string {
+  if (ms == null) return "—";
+  const hr = ms / 3_600_000;
+  if (hr < 1) return `${Math.max(1, Math.round(ms / 60_000))}m`;
+  if (hr < 48) return `${hr.toFixed(hr < 10 ? 1 : 0)}h`;
+  return `${(hr / 24).toFixed(1)}d`;
+}
+
+function FunderScoreboard() {
+  const [rows, setRows] = useState<FunderScore[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(true);
+
+  useEffect(() => {
+    getFunderScoreboard()
+      .then(setRows)
+      .catch((e) => setError(e instanceof Error ? e.message : "Could not load the scoreboard"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Nothing to show until there's real submission history — stay out of the way.
+  if (!loading && !error && rows.length === 0) return null;
+
+  return (
+    <div className="mb-6 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-5 py-3 flex items-center justify-between text-left"
+      >
+        <span className="flex items-center gap-2 font-semibold text-gray-900 dark:text-white">
+          <ChartBarIcon className="w-5 h-5 text-ocean-blue" /> Funder scoreboard
+          {!loading && <span className="text-xs font-normal text-gray-400">{rows.length} active</span>}
+        </span>
+        <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5">
+          {loading ? (
+            <p className="text-sm text-gray-400">Loading funder performance…</p>
+          ) : error ? (
+            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[720px]">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                    <th className="py-2 pr-3 font-semibold">Funder</th>
+                    <th className="py-2 px-2 text-right font-semibold">Sent</th>
+                    <th className="py-2 px-2 text-right font-semibold">Replies</th>
+                    <th className="py-2 px-2 text-right font-semibold">Offers</th>
+                    <th className="py-2 px-2 text-right font-semibold">Accepted</th>
+                    <th className="py-2 px-2 text-right font-semibold">Declines</th>
+                    <th className="py-2 px-2 text-right font-semibold" title="Accepted ÷ offers">Win rate</th>
+                    <th className="py-2 px-2 text-right font-semibold">Avg factor</th>
+                    <th className="py-2 pl-2 text-right font-semibold" title="Avg time from submission to first response">Avg response</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.lenderId} className="border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30">
+                      <td className="py-2 pr-3">
+                        <Link to={`/admin/lenders/${r.lenderId}`} className="font-medium text-ocean-blue hover:underline">
+                          {r.lenderName}
+                        </Link>
+                      </td>
+                      <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.submissions}</td>
+                      <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.replies}</td>
+                      <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.offers}</td>
+                      <td className="py-2 px-2 text-right font-semibold text-emerald-600 dark:text-emerald-400">{r.accepted}</td>
+                      <td className="py-2 px-2 text-right text-gray-500 dark:text-gray-400">{r.funderDeclines}</td>
+                      <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.acceptanceRate == null ? "—" : `${r.acceptanceRate.toFixed(0)}%`}</td>
+                      <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.avgFactor == null ? "—" : `${r.avgFactor.toFixed(2)}x`}</td>
+                      <td className="py-2 pl-2 text-right text-gray-700 dark:text-gray-200">{fmtDuration(r.avgResponseMs)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="mt-2 text-[11px] text-gray-400">
+                Win rate = accepted ÷ offers. Only funders with at least one submission appear; sorted by accepted, then offers.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
