@@ -81,7 +81,18 @@
 
 Every entry links to its FunderIntel profile, which has a **"Request Intro"** button to connect as an ISO. **Paper grade** is the underwriting signal (D = weakest/low-revenue-friendly). Full per-funder minimums (revenue, credit, TIB) live on each profile page.
 
-> ⚠️ These rows are **directory-only** — website / phone / exact criteria are not yet enriched here (they're on the FunderIntel profile). Ask me to deep-dive any of them for full contact + underwriting details.
+> ✅ **Liveness audit complete (July 2026).** Every entry was verified via FireCrawl — real official site, phone, and broker/ISO apply URL are now in the **app** (Admin → Funder Directory), with a green/red/gray status dot per funder. Roughly **~1 in 6 of the FunderIntel appendix is dead or unverifiable.** Prune these:
+
+**❌ DEAD — do not pursue (no live site / bankrupt / parked / suspended):**
+Bow Apple Capital, Bridge Funding Capital, Capback, Fundura Capital (bankruptcy 2026), Infinity Capital Funding (MCA division sold 2020), Lendfi Corp (domain for-sale), Nulook Capital (bankrupt 2017), SPG Advance (suspended), SRS Capital Funds (bankrupt 2021), Silver Street Funding, Super Fast Cap, Upsize Capital, Zinch (not a real funder).
+
+**⚠️ UNVERIFIABLE — real company but no reachable official site (proceed with caution):**
+Alfa Advance, Alva Advance, Capitalize Group (placeholder), Clearfund Solutions (broken SSL), Jett Capital (unrelated advisory firm), Luca (not a funder), Masada Funding, Octane Financing (unrelated consumer lender), Reliable Funding, SBL Funding, Strategic Capital, Swiss Fund, Thor Capital Group (Cloudflare error), United Business Funding.
+
+**🔀 ALIVE but no longer a standard MCA-ISO channel (verify product fit first):**
+RiverStrong Capital → real-estate hard money · Delancey Street → debt-relief/settlement · Channel Partners Capital → wholesale-only (no direct-to-merchant) · Cap Fund Now → marketplace/aggregator · Wayflyer → ecommerce RBF · Funding Circle → UK-focused (US wound down) · BHG Financial → term loans (not MCA) · SG Credit Partners → situational credit · PayPal / Shopify / Square / Stripe Capital → platform-embedded (no ISO submission).
+
+**🟣 Already in your `lenders` system (flagged, not re-added):** 501 Advance, Arcadia Servicing, CAN Capital, CapitaWize, CFG Merchant Solutions, FAC Solutions, Funding Circle, Libertas, Lendini, Liquidibee, Merchant Marketplace, National Funding, Nexi Finance, Reliance Financial, Reliant Funding, The LCF Group, True Advance Funding, Viking Funding, InstaFunders — plus the enriched ones (mcashadvance, Greenbox, Pearl, Mulligan, Rapid, Kapitus, OnDeck, Credibly, Lendio, Biz2Credit, Fora, Stafford, FunderIntel, Mantis).
 
 **Reaches D paper (most low-revenue-friendly):** Spartan Capital (A-D), Overnight-Capital (A-D), Smart Business Funding (A-D), TMR Now (A-D), True Advance Funding, Viking Funding, CapitaWize, Lendini, Liquidibee, Thoro Corp, Alternative Funding Group, Alva Advance, Avanza Capital, Capytal (C-D), Cashium Capital (C-D), Coolidge Capital (C-D), InstaFunders (C-D), Jett Capital (C-D), Octane Financing (C-D), QFS Capital (C-D), Riverstrong Capital (C-D), SBL Funding (C-D), SRS Capital Funds (C-D), Superior Capital (C-D), Swiss Fund (C-D), United Business Funding (C-D), United First (C-D), Upsize Capital (C-D), Uptown Fund (C-D), Vader Mountain Capital (C-D), Mantis/Meged/Velocity (listed above), Merchant Cash Group, Merchant Marketplace, WeFund, Zinch, and more.
 

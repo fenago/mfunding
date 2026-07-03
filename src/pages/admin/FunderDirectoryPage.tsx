@@ -45,6 +45,8 @@ export default function FunderDirectoryPage() {
   const [onlyWhiteLabel, setOnlyWhiteLabel] = useState(false);
   const [onlyApplyOnce, setOnlyApplyOnce] = useState(false);
   const [onlyIso, setOnlyIso] = useState(false);
+  const [hideDead, setHideDead] = useState(false);
+  const [hideInSystem, setHideInSystem] = useState(false);
   const [pickStatus, setPickStatus] = useState<Record<string, string>>({});
   const [addState, setAddState] = useState<Record<string, AddState>>({});
 
@@ -56,13 +58,18 @@ export default function FunderDirectoryPage() {
       if (onlyWhiteLabel && !f.whiteLabel) return false;
       if (onlyApplyOnce && !f.applyOnce) return false;
       if (onlyIso && !f.isoProgram) return false;
+      if (hideDead && f.verified === "dead") return false;
+      if (hideInSystem && f.inSystem) return false;
       if (needle) {
         const hay = `${f.name} ${f.criteria ?? ""} ${f.notes ?? ""} ${f.paper ?? ""} ${CATEGORY_LABELS[f.category]}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso]);
+  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem]);
+
+  const deadCount = useMemo(() => FUNDERS.filter((f) => f.verified === "dead").length, []);
+  const inSystemCount = useMemo(() => FUNDERS.filter((f) => f.inSystem).length, []);
 
   async function addToLenders(f: Funder) {
     const key = f.name;
@@ -145,6 +152,8 @@ export default function FunderDirectoryPage() {
         <button className={toggleCls(onlyApplyOnce)} onClick={() => setOnlyApplyOnce((v) => !v)}>Apply-once</button>
         <button className={toggleCls(onlyWhiteLabel)} onClick={() => setOnlyWhiteLabel((v) => !v)}>White-label</button>
         <button className={toggleCls(onlyIso)} onClick={() => setOnlyIso((v) => !v)}>ISO program</button>
+        <button className={toggleCls(hideDead)} onClick={() => setHideDead((v) => !v)}>Hide dead ({deadCount})</button>
+        <button className={toggleCls(hideInSystem)} onClick={() => setHideInSystem((v) => !v)}>Hide in-system ({inSystemCount})</button>
         <span className="ml-auto text-sm text-gray-500">{rows.length} of {FUNDERS.length} funders</span>
       </div>
 
@@ -168,7 +177,12 @@ export default function FunderDirectoryPage() {
               return (
                 <tr key={f.name} className="border-b border-gray-100 dark:border-gray-700/50 align-top">
                   <td className="py-3 px-4">
-                    <p className="font-semibold text-gray-900 dark:text-white">{f.name}</p>
+                    <p className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+                      {f.verified === "dead" && <span title="No live site found — likely defunct" className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" />}
+                      {f.verified === "active" && <span title="Verified live" className="w-2 h-2 rounded-full bg-mint-green flex-shrink-0" />}
+                      {f.verified === "uncertain" && <span title="Unverified" className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0" />}
+                      {f.name}
+                    </p>
                     <div className="flex flex-col gap-0.5 mt-1">
                       {f.website && (
                         <a href={f.website} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-ocean-blue hover:underline">
@@ -186,6 +200,7 @@ export default function FunderDirectoryPage() {
                   <td className="py-3 px-2 text-gray-600 dark:text-gray-300 whitespace-nowrap">{f.paper ?? "—"}</td>
                   <td className="py-3 px-2">
                     <div className="flex flex-wrap gap-1 max-w-[130px]">
+                      {f.inSystem && <Chip label="In system" tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" />}
                       {f.lowRev && <Chip label="Low-rev" tone="bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" />}
                       {f.applyOnce && <Chip label="Apply-once" tone="bg-mint-green/15 text-mint-green" />}
                       {f.whiteLabel && <Chip label="White-label" tone="bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300" />}
