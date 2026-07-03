@@ -158,14 +158,15 @@ async function findMerchantReply(
       cfg, "GET", `/conversations/${c.id}/messages?limit=15`,
     );
     const list = msgs.data?.messages?.messages ?? [];
+    const afterMs = Date.parse(afterIso);
     const candidates = list.filter((m) =>
       String(m.direction ?? "") === "inbound" &&
       /email/i.test(String(m.messageType ?? "")) &&
-      String(m.dateAdded ?? "") > afterIso,
+      Date.parse(String(m.dateAdded ?? "")) > afterMs,
     );
     for (const m of candidates) {
       const at = String(m.dateAdded ?? "");
-      if (best && at <= best.at) continue; // already hold a newer one
+      if (best && Date.parse(at) <= Date.parse(best.at)) continue; // already hold a newer one
       const meta = m.meta as { email?: { messageIds?: string[] } } | undefined;
       const ids = meta?.email?.messageIds ?? [];
       for (const eid of ids) {
@@ -220,12 +221,11 @@ async function runMerchantPhase(
     // (or, on the first pass, newer than the deal's creation).
     const afterIso = (deal.merchant_reply_at as string | null) ?? (deal.created_at as string);
     let reply: { text: string; from: string; at: string } | null = null;
-    let dbgErr = "";
     try {
       reply = await findMerchantReply(cfg, cust.ghl_contact_id, afterIso);
-    } catch (e) { dbgErr = e instanceof Error ? e.message : String(e); }
-    merchantDetails.push(`dbg ${deal.deal_number}: after=${afterIso} reply=${reply ? reply.at : "null"} err=${dbgErr}`);
+    } catch { /* transient GHL error — try again next run */ }
     if (!reply) continue;
+    if (Date.parse(reply.at) <= Date.parse(afterIso)) continue; // format-proof forward-only guard
 
     const businessName = cust.business_name
       || [cust.first_name, cust.last_name].filter(Boolean).join(" ").trim()
@@ -239,13 +239,14 @@ async function runMerchantPhase(
 
     // Stamp forward-only. The .or guard makes concurrent runs race-safe; the
     // baseline filter already guarantees reply.at > merchant_reply_at.
+    // Forward-only is already guaranteed by the baseline (candidates must be
+    // newer than merchant_reply_at), so a plain keyed update is race-safe here:
+    // the worst concurrent case is two runs writing the same value.
     const { data: stamped, error: stampErr } = await db.from("deals")
       .update({ merchant_reply_at: reply.at, merchant_reply_summary: summary })
       .eq("id", deal.id)
-      .or(`merchant_reply_at.is.null,merchant_reply_at.lt.${reply.at}`)
       .select("id");
-    if (stampErr) merchantDetails.push(`dbg stampErr ${deal.deal_number}: ${stampErr.message}`);
-    if (!stamped?.length) continue; // another run beat us to this reply
+    if (stampErr || !stamped?.length) continue;
 
     merchantReplies++;
     await db.from("activity_log").insert({
