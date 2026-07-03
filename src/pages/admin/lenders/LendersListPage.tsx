@@ -72,6 +72,16 @@ export default function LendersListPage() {
 
   useEffect(() => {
     fetchLenders();
+    // Refresh when the tab regains focus so lenders added elsewhere (e.g. the
+    // Funder Directory) show up without a manual reload.
+    const refresh = () => { if (document.visibilityState === "visible") fetchLenders(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchLenders = async () => {
@@ -91,8 +101,10 @@ export default function LendersListPage() {
 
   const filteredLenders = lenders
     .filter((lender) => {
-      if (searchQuery && !lender.company_name.toLowerCase().includes(searchQuery.toLowerCase())) {
-        return false;
+      if (searchQuery) {
+        // Ignore spaces/punctuation so "1west" matches "1 West", etc.
+        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (!norm(lender.company_name).includes(norm(searchQuery))) return false;
       }
       if (statusFilter && lender.status !== statusFilter) {
         return false;
