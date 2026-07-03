@@ -263,13 +263,16 @@ export async function sendEmailToContact(
   contactId: string,
   subject: string,
   html: string,
-  opts?: { emailFrom?: string; text?: string; emailCc?: string[]; emailBcc?: string[] },
+  opts?: { emailFrom?: string; text?: string; emailCc?: string[]; emailBcc?: string[]; attachments?: string[] },
 ) {
   const body: Record<string, unknown> = { type: "Email", contactId, subject, html };
   if (opts?.text) body.message = opts.text;
   if (opts?.emailFrom) body.emailFrom = opts.emailFrom;
   if (opts?.emailCc?.length) body.emailCc = opts.emailCc;
   if (opts?.emailBcc?.length) body.emailBcc = opts.emailBcc;
+  // Array of file URLs GHL fetches at send time and attaches to the email
+  // (e.g. secure customer-document links or leadconnectorhq download URLs).
+  if (opts?.attachments?.length) body.attachments = opts.attachments;
   return await ghlFetch<{ messageId?: string; conversationId?: string }>(
     cfg, "POST", "/conversations/messages", body,
   );

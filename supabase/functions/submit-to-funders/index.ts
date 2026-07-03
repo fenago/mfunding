@@ -50,6 +50,25 @@ const tib = (months: unknown) => {
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+/** Allow only GHL/LeadConnector-hosted file URLs to be passed straight through
+ * as attachments (a merchant-uploaded file's public download link). Anything
+ * else could exfiltrate an arbitrary URL through our sender, so it's dropped. */
+function isGhlFileUrl(u: string): boolean {
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return h === "leadconnectorhq.com" || h.endsWith(".leadconnectorhq.com") ||
+      h === "msgsndr.com" || h.endsWith(".msgsndr.com");
+  } catch { return false; }
+}
+
+/** Best-effort friendly name for a pass-through URL (last path segment). */
+function fileNameFromUrl(u: string): string {
+  try {
+    const seg = new URL(u).pathname.split("/").filter(Boolean).pop();
+    return seg ? decodeURIComponent(seg) : "attachment";
+  } catch { return "attachment"; }
+}
+
 // Human labels for the doc slugs (which ARE customer_document_type enum values).
 const DOC_LABELS: Record<string, string> = {
   application: "Signed application",
@@ -146,8 +165,15 @@ Deno.serve(async (req) => {
      * emails a real funder and never writes deal_submissions. */
     test_email?: boolean;
     /** "courtesy_decline" → send a short thank-you to a funder that PASSED on
-     * this file (relationship upkeep). Only ever sends on a declined submission. */
-    action?: "courtesy_decline";
+     * this file (relationship upkeep). Only ever sends on a declined submission.
+     * "message_funder" → compose a free-form email to a funder with deal docs
+     * attached (e.g. reply to a stip request from the Step 7 board). */
+    action?: "courtesy_decline" | "message_funder";
+    subject?: string;
+    body?: string;
+    cc?: string[];
+    bcc?: string[];
+    attachments?: { documentIds?: string[]; urls?: string[] };
   };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const lenderIds = (payload.lenderIds ?? []).filter(Boolean);
@@ -155,7 +181,8 @@ Deno.serve(async (req) => {
   const resubmit = !!payload.resubmit;
   const testMode = !!payload.test_email;
   const courtesyMode = payload.action === "courtesy_decline";
-  if (!courtesyMode && lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
+  const messageFunderMode = payload.action === "message_funder";
+  if (!courtesyMode && !messageFunderMode && lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
   if (!testMode && !payload.dealId) return json({ error: "dealId is required" }, 400);
 
   const db = serviceClient();
@@ -253,6 +280,114 @@ Deno.serve(async (req) => {
     await db.from("deal_submissions").update({ courtesy_sent_at: sentIso }).eq("id", sub.id);
     await logActivity(db, dealId, lenderId, lender.company_name as string, { courtesy: true, to });
     return json({ ok: true, sent: true, courtesy_sent_at: sentIso });
+  }
+
+  // ---------- MESSAGE FUNDER: free-form email to a funder, docs attached ----------
+  // Powers the Step 7 board's "Message funder" — e.g. replying to a funder's stip
+  // request with the merchant's bank statement attached, without leaving the
+  // playbook. Same staff/closer-owns-deal auth as the submit engine. Documents are
+  // resolved to secure links and MUST belong to THIS deal's customer (a documentId
+  // from another merchant is rejected). Owner is always CC'd (ALWAYS_CC).
+  if (messageFunderMode) {
+    const dealId = payload.dealId;
+    const lenderId = payload.lenderId ?? lenderIds[0];
+    const subject = (payload.subject ?? "").trim();
+    const bodyText = (payload.body ?? "").trim();
+    if (!dealId || !lenderId) return json({ error: "dealId and lenderId are required" }, 400);
+    if (!subject) return json({ error: "subject is required" }, 400);
+    if (!bodyText) return json({ error: "body is required" }, 400);
+
+    // Closers may only act on their own deals (same guard as normal mode).
+    if (callerRole === "closer") {
+      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    }
+
+    const { data: dealRow } = await db
+      .from("deals").select("id, deal_number, customer_id").eq("id", dealId).maybeSingle();
+    if (!dealRow) return json({ error: "deal not found" }, 404);
+    const { data: lender } = await db
+      .from("lenders").select("id, company_name, submission_email, ghl_contact_id").eq("id", lenderId).maybeSingle();
+    if (!lender) return json({ error: "Funder not found" }, 404);
+
+    let mCfg: Awaited<ReturnType<typeof getGhlConfig>> | null = null;
+    let mErr: string | undefined;
+    try { mCfg = await getGhlConfig(db); } catch (e) { mErr = e instanceof Error ? e.message : String(e); }
+    if (!mCfg) return json({ error: `GHL not configured: ${mErr ?? "missing credentials"}` }, 502);
+
+    // Resolve the funder's GHL contact (upsert + persist, like the submit engine).
+    const to = (lender.submission_email as string) || "";
+    let contactId = (lender.ghl_contact_id as string | null) ?? null;
+    if (!contactId && !to) return json({ error: "No email or GHL contact on file for this funder" }, 422);
+    if (!contactId && to) {
+      const cr = await upsertContact(mCfg, { email: to, firstName: lender.company_name as string, tags: ["funder"], source: "Funder Message" });
+      contactId = cr.data?.contact?.id ?? null;
+      if (contactId && contactId !== lender.ghl_contact_id) {
+        await db.from("lenders").update({ ghl_contact_id: contactId }).eq("id", lenderId);
+      }
+    }
+    if (!contactId) return json({ error: "Could not resolve the funder's GHL contact" }, 502);
+
+    // Resolve attachments → an array of URLs GHL fetches at send time.
+    const attachmentUrls: string[] = [];
+    const attachedNames: string[] = [];
+
+    // documentIds → secure expiring links from customer-documents storage. HARD
+    // GATE: every requested doc MUST belong to this deal's customer.
+    const docIds = Array.from(new Set((payload.attachments?.documentIds ?? []).filter(Boolean)));
+    if (docIds.length) {
+      const { data: docs } = await db
+        .from("customer_documents")
+        .select("id, customer_id, filename, storage_path")
+        .in("id", docIds);
+      const rows = (docs ?? []) as Array<{ id: string; customer_id: string; filename: string | null; storage_path: string }>;
+      if (rows.length !== docIds.length || rows.some((d) => d.customer_id !== dealRow.customer_id)) {
+        return json({ error: "One or more documents don't belong to this deal's merchant." }, 403);
+      }
+      for (const d of rows) {
+        const { data: signed } = await db.storage.from(DOC_BUCKET).createSignedUrl(d.storage_path, SIGNED_URL_TTL);
+        if (!signed?.signedUrl) continue;
+        attachmentUrls.push(signed.signedUrl);
+        attachedNames.push(d.filename || "document");
+      }
+    }
+
+    // urls → pass through ONLY leadconnectorhq/GHL download URLs (whitelist hosts).
+    for (const u of (payload.attachments?.urls ?? [])) {
+      if (typeof u !== "string" || !isGhlFileUrl(u)) continue;
+      attachmentUrls.push(u);
+      attachedNames.push(fileNameFromUrl(u));
+    }
+
+    const emailOk = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+    const cc = Array.from(new Set([
+      ...(payload.cc ?? []).map((e) => String(e).trim()).filter(emailOk),
+      ...ALWAYS_CC,
+    ]));
+    const bcc = (payload.bcc ?? []).map((e) => String(e).trim()).filter(emailOk).slice(0, 10);
+
+    const bodyHtml = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
+    const sr = await sendEmailToContact(mCfg, contactId, subject, bodyHtml, {
+      text: bodyText, emailCc: cc, emailBcc: bcc,
+      attachments: attachmentUrls.length ? attachmentUrls : undefined,
+    });
+    if (!sr.ok) return json({ error: `GHL send failed: ${sr.error}` }, 502);
+
+    // Audit trail — same [re: …] marker the board parses, plus attachment list.
+    try {
+      const routingParts: string[] = [];
+      if (cc.length) routingParts.push(`CC: ${cc.join(", ")}`);
+      if (bcc.length) routingParts.push(`BCC: ${bcc.join(", ")}`);
+      const routing = routingParts.length ? `[${routingParts.join(" · ")}] ` : "";
+      const attachedStr = attachedNames.length ? ` [attached: ${attachedNames.join(", ")}]` : "";
+      const content = `[re: ${lender.company_name}] ${routing}${bodyText.slice(0, 500)}${attachedStr}`;
+      await db.from("activity_log").insert({
+        entity_type: "deal", entity_id: dealId, interaction_type: "email",
+        subject: `funder:email — ${subject}`, content, logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+
+    return json({ ok: true, sent: true, to, attached: attachedNames, messageId: sr.data?.messageId ?? null });
   }
 
   // Load the recipes for the selected lenders (may be empty → generic fallback).

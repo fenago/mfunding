@@ -20,6 +20,8 @@ import {
   XMarkIcon,
   InboxArrowDownIcon,
   PaperAirplaneIcon,
+  BuildingOffice2Icon,
+  PaperClipIcon,
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
@@ -155,18 +157,24 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [declineReason, setDeclineReason] = useState("");
   const [courtesyMsg, setCourtesyMsg] = useState<Record<string, string>>({});
 
-  // Message-the-merchant modal (fires send-merchant-email on explicit click only).
+  // Message modal — reused for both the merchant (send-merchant-email) and a
+  // funder (submit-to-funders action=message_funder). Fires only on explicit click.
   const [msgOpen, setMsgOpen] = useState(false);
+  const [msgMode, setMsgMode] = useState<"merchant" | "funder">("merchant");
+  const [msgLender, setMsgLender] = useState<{ id: string; name: string } | null>(null);
   const [msgSubject, setMsgSubject] = useState("");
   const [msgBody, setMsgBody] = useState("");
   const [msgCc, setMsgCc] = useState("");
   const [msgBcc, setMsgBcc] = useState("");
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null }[]>([]);
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" }[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
   const [msgToast, setMsgToast] = useState<string | null>(null);
+  // Funder-message attachments: the deal's documents, checkbox-selected.
+  const [docs, setDocs] = useState<{ id: string; filename: string | null; document_type: string; created_at: string }[]>([]);
+  const [selectedDocIds, setSelectedDocIds] = useState<Record<string, boolean>>({});
 
   const monthlyRevenue = deal.customer?.monthly_revenue ?? null;
   const merchantFirst = deal.customer?.first_name?.trim() || "there";
@@ -214,11 +222,88 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
 
   function openMessage(s: SubRow | null) {
     const pre = prefillFor(s);
+    setMsgMode("merchant");
+    setMsgLender(null);
     setMsgRe(s?.lenderName ?? null);
     setMsgSubject(pre.subject);
     setMsgBody(pre.body);
     setMsgError(null);
     setMsgOpen(true);
+  }
+
+  // Prefill for a message TO the funder. Stip-request cards get a "here are the
+  // requested items" draft; everything else a neutral follow-up. Fully editable.
+  function funderPrefillFor(s: SubRow): { subject: string; body: string } {
+    const business = deal.customer?.business_name || "the merchant";
+    const dealNo = deal.deal_number || "—";
+    const signoff = `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding`;
+    if (s.responseType === "stip_request") {
+      const items = s.requestedItems.length ? s.requestedItems.join(", ") : "the requested items";
+      return {
+        subject: `Re: ${business} — requested items`,
+        body: `Hi — please find the requested ${items} attached for ${business} (Deal ${dealNo}). ` +
+          `Let us know if anything else is needed.\n\n${signoff}`,
+      };
+    }
+    return {
+      subject: `Re: ${business} — Deal ${dealNo}`,
+      body: `Hi — following up on ${business} (Deal ${dealNo}). [write your message here]\n\n${signoff}`,
+    };
+  }
+
+  async function openFunderMessage(s: SubRow) {
+    setMsgMode("funder");
+    setMsgLender({ id: s.lenderId, name: s.lenderName });
+    setMsgRe(s.lenderName);
+    const pre = funderPrefillFor(s);
+    setMsgSubject(pre.subject);
+    setMsgBody(pre.body);
+    setMsgCc("");
+    setMsgBcc("");
+    setSelectedDocIds({});
+    setDocs([]);
+    setMsgError(null);
+    setMsgOpen(true);
+    // Load the deal's documents so the closer can attach the requested stip.
+    const { data } = await supabase
+      .from("customer_documents")
+      .select("id, filename, document_type, created_at")
+      .eq("customer_id", deal.customer_id)
+      .order("created_at", { ascending: false });
+    setDocs((data ?? []) as { id: string; filename: string | null; document_type: string; created_at: string }[]);
+  }
+
+  async function sendFunderMessage() {
+    if (!msgLender) return;
+    if (!msgSubject.trim()) { setMsgError("Enter a subject."); return; }
+    if (!msgBody.trim()) { setMsgError("Enter a message."); return; }
+    setMsgBusy(true);
+    setMsgError(null);
+    try {
+      const documentIds = Object.entries(selectedDocIds).filter(([, v]) => v).map(([k]) => k);
+      const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
+        body: {
+          action: "message_funder",
+          dealId: deal.id,
+          lenderId: msgLender.id,
+          subject: msgSubject.trim(),
+          body: msgBody.trim(),
+          cc: msgCc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
+          bcc: msgBcc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
+          attachments: { documentIds },
+        },
+      });
+      if (fnErr) throw fnErr;
+      if (data?.error) throw new Error(data.error);
+      setMsgOpen(false);
+      setMsgToast("Message sent to the funder.");
+      void loadSentLog();
+      setTimeout(() => setMsgToast(null), 4000);
+    } catch (e) {
+      setMsgError(e instanceof Error ? e.message : "Could not send the message.");
+    } finally {
+      setMsgBusy(false);
+    }
   }
 
   async function sendMerchantMessage() {
@@ -253,17 +338,19 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .from("activity_log")
       .select("created_at, subject, content")
       .eq("entity_type", "deal").eq("entity_id", deal.id)
-      .like("subject", "merchant:email%")
-      .order("created_at", { ascending: false }).limit(10);
+      .or("subject.like.merchant:email%,subject.like.funder:email%")
+      .order("created_at", { ascending: false }).limit(20);
     setSentLog((data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
       let re: string | null = null;
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
       if (m) { re = m[1]; snippet = snippet.slice(m[0].length); }
+      const rawSubject = String(r.subject ?? "");
+      const kind: "merchant" | "funder" = rawSubject.startsWith("funder:email") ? "funder" : "merchant";
       return {
         at: r.created_at as string,
-        subject: String(r.subject ?? "").replace(/^merchant:email — /, ""),
-        snippet, re,
+        subject: rawSubject.replace(/^(merchant|funder):email — /, ""),
+        snippet, re, kind,
       };
     }));
   }
@@ -675,20 +762,31 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                         <EnvelopeIcon className="w-3.5 h-3.5" /> Message merchant
                       </button>
                     )}
+                    {/* Message the funder — reply with docs attached (any state) */}
+                    <button type="button" onClick={() => openFunderMessage(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 inline-flex items-center gap-1">
+                      <BuildingOffice2Icon className="w-3.5 h-3.5" /> Message funder
+                    </button>
                   </div>
                 )}
                 {sentLog.filter((m) => m.re === s.lenderName).length > 0 && (
                   <ul className="mt-1.5 space-y-1 border-t border-dashed border-gray-200 dark:border-gray-700 pt-1.5">
-                    {sentLog.filter((m) => m.re === s.lenderName).map((m, i) => (
-                      <li key={i} className="text-[10.5px] text-gray-500 dark:text-gray-400 cursor-pointer" onClick={() => setExpandedMsg(expandedMsg === m.at ? null : m.at)}>
-                        <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />
-                        Merchant messaged <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-                        {" · "}<span className="font-medium text-gray-700 dark:text-gray-200">{m.subject}</span>
-                        {expandedMsg === m.at && (
-                          <span className="block mt-1 whitespace-pre-wrap text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded p-1.5">{m.snippet}</span>
-                        )}
-                      </li>
-                    ))}
+                    {sentLog.filter((m) => m.re === s.lenderName).map((m, i) => {
+                      const key = `${m.kind}-${m.at}`;
+                      const isFunder = m.kind === "funder";
+                      return (
+                        <li key={i} className="text-[10.5px] text-gray-500 dark:text-gray-400 cursor-pointer" onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
+                          {isFunder
+                            ? <BuildingOffice2Icon className="w-3 h-3 inline mr-0.5 text-indigo-500" />
+                            : <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />}
+                          {isFunder ? "Funder messaged" : "Merchant messaged"} <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                          {isFunder && <span className="ml-1 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 px-1 py-px text-[9px] font-semibold">to funder</span>}
+                          {" · "}<span className="font-medium text-gray-700 dark:text-gray-200">{m.subject}</span>
+                          {expandedMsg === key && (
+                            <span className="block mt-1 whitespace-pre-wrap text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded p-1.5">{m.snippet}</span>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
                 {courtesyMsg[s.id] && <p className="text-[10px] text-gray-500 dark:text-gray-400">{courtesyMsg[s.id]}</p>}
@@ -709,14 +807,15 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         </p>
       )}
 
-      {/* Merchant-message audit trail — every send-merchant-email for this deal */}
-      {sentLog.length > 0 && (
+      {/* Merchant-message audit trail — every send-merchant-email for this deal.
+          Funder messages live on their own cards, so this list stays merchant-only. */}
+      {sentLog.some((m) => m.kind === "merchant") && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-2.5">
           <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 mb-1.5 inline-flex items-center gap-1">
             <EnvelopeIcon className="w-3.5 h-3.5" /> Messages sent to the merchant
           </p>
           <ul className="space-y-1.5">
-            {sentLog.map((m, i) => (
+            {sentLog.filter((m) => m.kind === "merchant").map((m, i) => (
               <li key={i} className="text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer" onClick={() => setExpandedMsg(expandedMsg === `all-${m.at}` ? null : `all-${m.at}`)}>
                 <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                 {m.re && <span className="ml-1 rounded bg-ocean-blue/10 text-ocean-blue px-1 py-px text-[9.5px] font-semibold">re: {m.re}</span>}
@@ -730,24 +829,35 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         </div>
       )}
 
-      {/* Message-the-merchant modal — sends via GHL (lands in the merchant's thread) */}
+      {/* Message modal — merchant (send-merchant-email) OR funder (message_funder).
+          Both send via GHL and land in the recipient's Conversations thread. */}
       {msgOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !msgBusy && setMsgOpen(false)}>
           <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-800 shadow-xl border border-gray-200 dark:border-gray-700" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
               <span className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                <EnvelopeIcon className="w-4 h-4 text-ocean-blue" /> Message the merchant
+                {msgMode === "funder"
+                  ? <><BuildingOffice2Icon className="w-4 h-4 text-indigo-500" /> Message the funder</>
+                  : <><EnvelopeIcon className="w-4 h-4 text-ocean-blue" /> Message the merchant</>}
               </span>
               <button type="button" onClick={() => !msgBusy && setMsgOpen(false)} className="text-gray-400 hover:text-gray-600">
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
             <div className="p-4 space-y-3">
-              <div className="text-[12px] text-gray-600 dark:text-gray-300">
-                <span className="text-gray-400">To</span>{" "}
-                <span className="font-medium text-gray-900 dark:text-white">{merchantName}</span>
-                {merchantEmail ? <span className="text-gray-400"> · {merchantEmail}</span> : <span className="text-rose-500"> · no email on file</span>}
-              </div>
+              {msgMode === "funder" ? (
+                <div className="text-[12px] text-gray-600 dark:text-gray-300">
+                  <span className="text-gray-400">To</span>{" "}
+                  <span className="font-medium text-gray-900 dark:text-white">{msgLender?.name ?? "Funder"}</span>
+                  <span className="text-gray-400"> · funder submission contact</span>
+                </div>
+              ) : (
+                <div className="text-[12px] text-gray-600 dark:text-gray-300">
+                  <span className="text-gray-400">To</span>{" "}
+                  <span className="font-medium text-gray-900 dark:text-white">{merchantName}</span>
+                  {merchantEmail ? <span className="text-gray-400"> · {merchantEmail}</span> : <span className="text-rose-500"> · no email on file</span>}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
                 <label className="block text-[11px] font-medium text-gray-500">CC
                   <input type="text" value={msgCc} onChange={(e) => setMsgCc(e.target.value)} placeholder="email, email…" className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
@@ -762,16 +872,56 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
               <label className="block text-[11px] font-medium text-gray-500">Message
                 <textarea value={msgBody} onChange={(e) => setMsgBody(e.target.value)} rows={9} className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white resize-y" />
               </label>
+
+              {/* Attachments — funder mode only: the deal's documents as checkboxes */}
+              {msgMode === "funder" && (
+                <div className="rounded-md border border-gray-200 dark:border-gray-700 p-2">
+                  <p className="text-[11px] font-medium text-gray-500 mb-1 inline-flex items-center gap-1">
+                    <PaperClipIcon className="w-3.5 h-3.5" /> Attach documents
+                  </p>
+                  {docs.length === 0 ? (
+                    <p className="text-[11px] text-gray-400">No documents on file for this merchant.</p>
+                  ) : (
+                    <ul className="space-y-1 max-h-40 overflow-y-auto">
+                      {docs.map((d) => (
+                        <li key={d.id}>
+                          <label className="flex items-start gap-2 text-[12px] text-gray-700 dark:text-gray-200 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!selectedDocIds[d.id]}
+                              onChange={(e) => setSelectedDocIds((m) => ({ ...m, [d.id]: e.target.checked }))}
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <span className="font-medium">{d.filename || "document"}</span>
+                              <span className="text-gray-400"> · {d.document_type.replace(/_/g, " ")} · {new Date(d.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                            </span>
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
               <p className="text-[10px] text-gray-400">
-                Fully editable before you send. We don't name the funder to the merchant — phrase it as "our funding partner". This sends through GHL and lands in the merchant's existing email thread.
+                {msgMode === "funder"
+                  ? "Fully editable before you send. Selected documents are attached as secure links the funder can download. The owner is always CC'd. This sends through GHL and lands in the funder's thread."
+                  : "Fully editable before you send. We don't name the funder to the merchant — phrase it as \"our funding partner\". This sends through GHL and lands in the merchant's existing email thread."}
               </p>
               {msgError && <p className="text-[12px] text-red-600 dark:text-red-400">{msgError}</p>}
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-gray-200 dark:border-gray-700">
               <button type="button" onClick={() => setMsgOpen(false)} disabled={msgBusy} className="text-[12px] px-3 py-1.5 rounded text-gray-600 hover:text-gray-800 disabled:opacity-50">Cancel</button>
-              <button type="button" onClick={sendMerchantMessage} disabled={msgBusy || !merchantEmail} className="text-[12px] font-semibold px-3 py-1.5 rounded bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1">
-                {msgBusy ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />} Send
-              </button>
+              {msgMode === "funder" ? (
+                <button type="button" onClick={sendFunderMessage} disabled={msgBusy} className="text-[12px] font-semibold px-3 py-1.5 rounded bg-indigo-600 text-white hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1">
+                  {msgBusy ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />} Send
+                </button>
+              ) : (
+                <button type="button" onClick={sendMerchantMessage} disabled={msgBusy || !merchantEmail} className="text-[12px] font-semibold px-3 py-1.5 rounded bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1">
+                  {msgBusy ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />} Send
+                </button>
+              )}
             </div>
           </div>
         </div>
