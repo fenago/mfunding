@@ -403,7 +403,21 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
             </span>
             <span className="text-[11px] text-gray-400">score {m.score}</span>
             {alreadyOut && <span className="text-[11px] text-emerald-600">already submitted</span>}
+            {alreadyOut && existing[m.id]?.submissionId && (
+              <button
+                type="button"
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); viewPayload({ lenderId: m.id, submissionId: existing[m.id].submissionId, status: "already_submitted" }); }}
+                className="text-[11px] text-ocean-blue hover:underline"
+              >
+                view payload
+              </button>
+            )}
           </span>
+          {payloadOpen[m.id] !== undefined && (
+            <pre className="mt-1 max-h-64 overflow-auto rounded bg-gray-900 text-gray-100 text-[10px] p-2 whitespace-pre-wrap">
+              {JSON.stringify(payloadOpen[m.id], null, 2)}
+            </pre>
+          )}
           {missing.length > 0 && (
             <span className="block text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
               ⚠ needs: {missing.map(docLabel).join(", ")}
