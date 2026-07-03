@@ -607,6 +607,17 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                 view payload
               </button>
             )}
+            {alreadyOut && (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); submit([m.id], true); }}
+                title="Re-send this funder the current package (e.g. after the recipe or docs were fixed). No new merchant email goes out."
+                className="text-[11px] font-medium text-orange-600 hover:underline disabled:opacity-50"
+              >
+                ↻ resend
+              </button>
+            )}
           </span>
           {payloadOpen[m.id] !== undefined && (
             <pre className="mt-1 max-h-64 overflow-auto rounded bg-gray-900 text-gray-100 text-[10px] p-2 whitespace-pre-wrap">
