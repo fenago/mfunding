@@ -188,7 +188,7 @@ Deno.serve(async (req) => {
   // Load the funders (names + email/portal fallbacks).
   const { data: lenders } = await db
     .from("lenders")
-    .select("id, company_name, submission_email, submission_portal_url")
+    .select("id, company_name, submission_email, submission_portal_url, ghl_contact_id")
     .in("id", lenderIds);
   const lenderById = new Map<string, Record<string, unknown>>(
     (lenders ?? []).map((l) => [l.id as string, l as Record<string, unknown>]),
@@ -445,6 +445,11 @@ Deno.serve(async (req) => {
       const funderContactId = cr.data?.contact?.id;
       if (!funderContactId) emailError = `GHL upsert failed: ${cr.error ?? "no contact id"}`;
       else {
+        // Persist the funder's GHL contact id so ghl-webhook can resolve their
+        // inbound replies back to this lender (funder-reply detection).
+        if ((lender.ghl_contact_id ?? null) !== funderContactId) {
+          await db.from("lenders").update({ ghl_contact_id: funderContactId }).eq("id", lenderId);
+        }
         const sr = await sendEmailToContact(cfg, funderContactId, subject, bodyHtml, {
           text: bodyText,
           emailCc: Array.from(new Set([...(recipe?.cc_emails ?? []), ...ALWAYS_CC])),

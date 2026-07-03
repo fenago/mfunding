@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowPathIcon, DocumentMagnifyingGlassIcon, ArrowRightIcon } from "@heroicons/react/24/outline";
+import { ArrowPathIcon, DocumentMagnifyingGlassIcon, ArrowRightIcon, EnvelopeOpenIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 
 // Self-contained "needs attention" row — surfaces operational queues so the new
@@ -9,6 +9,7 @@ import supabase from "../../supabase";
 export default function NeedsAttention() {
   const [renewals, setRenewals] = useState(0);
   const [pendingDocs, setPendingDocs] = useState(0);
+  const [funderReplies, setFunderReplies] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -20,16 +21,24 @@ export default function NeedsAttention() {
         .from("customer_documents").select("id", { count: "exact", head: true })
         .in("status", ["pending", "reviewed"]);
       setPendingDocs(d || 0);
+      // Funders who replied but whose submission hasn't been advanced to an
+      // offer/decline yet — these need a human to read the reply in GHL.
+      const { count: f } = await supabase
+        .from("deal_submissions").select("id", { count: "exact", head: true })
+        .not("response_at", "is", null)
+        .eq("status", "submitted");
+      setFunderReplies(f || 0);
     })();
   }, []);
 
   const cards = [
     { label: "Renewal-eligible deals", value: renewals, to: "/admin/renewals", icon: ArrowPathIcon },
     { label: "Documents to review", value: pendingDocs, to: "/admin/documents", icon: DocumentMagnifyingGlassIcon },
+    { label: "Funder responses to review", value: funderReplies, to: "/admin/deals", icon: EnvelopeOpenIcon },
   ];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
       {cards.map((c) => {
         const Icon = c.icon;
         return (

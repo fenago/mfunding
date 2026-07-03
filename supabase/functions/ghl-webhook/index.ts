@@ -6,13 +6,28 @@
 //   ContactCreate / ContactUpdate            → upsert customers (match by ghl_contact_id, else email)
 //   OpportunityStatusUpdate / OpportunityStageUpdate / OpportunityUpdate
 //                                            → update deals (match by ghl_opportunity_id), map stage→status
+//   InboundMessage (email reply from a funder contact)
+//                                            → stamp deal_submissions.response_at + email an internal alert
+//
+// Funder-reply detection (feature): when a contact tagged "funder" replies (their
+// ghl_contact_id matches a lenders row), we stamp response_at on that funder's most
+// recent open submission and send an internal alert email to the owner. See the
+// "GHL config for funder replies" note near handleInboundMessage for the workflow
+// the user must add if native InboundMessage webhooks aren't enabled.
 //
 // Auth: GHL cannot send a Supabase JWT, so this function uses verify_jwt = false
 // and instead checks a shared secret. Set GHL_WEBHOOK_SECRET in the vault and
 // pass it as `?secret=...` (or header `x-ghl-secret`) when registering the webhook.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
+import {
+  corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
+} from "../_shared/ghl.ts";
+
+// Internal alerts go ONLY here — never to a funder or merchant.
+const OWNER_EMAIL = "socrates73@gmail.com";
+const esc = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 // GHL stage name (lowercased) → deal status
 const STATUS_BY_STAGE: Record<string, string> = {
@@ -97,8 +112,21 @@ Deno.serve(async (req) => {
   const type = String(evt.type ?? evt.eventType ?? cd.type ?? "");
   const looksLikeOpportunity = !!(evt.pipeline_id || evt.opportunity_name || evt.opportunity || cd.opportunityId);
   const looksLikeContact = !!(evt.contact_id || evt.contactId || evt.contact);
+  // Inbound message: native webhook (type "InboundMessage") or a "Customer Replied"
+  // workflow that posts a flat payload marking it (customData.type / messageType).
+  const messageType = String(evt.messageType ?? evt.message_type ?? cd.messageType ?? cd.message_type ?? "");
+  const direction = String(evt.direction ?? cd.direction ?? "").toLowerCase();
+  const looksLikeMessage = !!(evt.conversationId || cd.conversationId || messageType || evt.body || cd.message_body);
+  const isInboundMessage =
+    type.startsWith("InboundMessage") ||
+    String(cd.type ?? "").startsWith("InboundMessage") ||
+    (!type && looksLikeMessage && direction !== "outbound");
   try {
-    if (type.startsWith("Opportunity") || (!type && looksLikeOpportunity)) {
+    if (isInboundMessage) {
+      const r = await handleInboundMessage(db, evt);
+      await logEvent(db, evt, type || "InboundMessage", r.outcome, r.detail);
+      return json({ ok: true, type: type || "InboundMessage", ...r.result });
+    } else if (type.startsWith("Opportunity") || (!type && looksLikeOpportunity)) {
       await handleOpportunity(db, evt);
     } else if (type.startsWith("Contact") || (!type && looksLikeContact)) {
       await handleContact(db, evt);
@@ -134,6 +162,129 @@ async function logEvent(db: DB, evt: Record<string, unknown>, type: string, outc
 }
 
 type DB = ReturnType<typeof serviceClient>;
+
+interface InboundResult {
+  outcome: "processed" | "ignored" | "error";
+  detail: string;
+  result: Record<string, unknown>;
+}
+
+// ── Funder reply → stamp submission + alert the owner ────────────────────────
+//
+// GHL config for funder replies:
+//   If native "InboundMessage" webhooks are enabled on the sub-account (Settings →
+//   Webhooks, or a Marketplace app subscription), nothing else is needed — they
+//   POST here with { type:"InboundMessage", contactId, conversationId, body,
+//   messageType }. Otherwise add a Workflow:
+//     Trigger:  "Customer Replied"  (Channel = Email)
+//     Action:   "Webhook" → POST to this function's URL (?secret=<GHL_WEBHOOK_SECRET>)
+//               with Custom Data: type=InboundMessage, contactId={{contact.id}},
+//               messageType=Email, conversationId={{message.conversationId}},
+//               message_body={{message.body}}
+//   Either shape resolves the sending contact → lenders.ghl_contact_id.
+async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promise<InboundResult> {
+  const cd = (evt.customData ?? {}) as Record<string, unknown>;
+  const contact = (evt.contact ?? {}) as Record<string, unknown>;
+  const contactId = String(
+    evt.contactId ?? evt.contact_id ?? cd.contactId ?? cd.contact_id ?? contact.id ?? "",
+  );
+  const messageType = String(evt.messageType ?? evt.message_type ?? cd.messageType ?? cd.message_type ?? "");
+  const conversationId = String(evt.conversationId ?? cd.conversationId ?? cd.conversation_id ?? "");
+  const body = String(evt.body ?? evt.message ?? cd.message_body ?? cd.body ?? "");
+
+  if (!contactId) return { outcome: "ignored", detail: "inbound message without contact id", result: { handled: false } };
+
+  // Funders were emailed, so only email replies matter. Skip clearly non-email
+  // channels; still process when the type is unknown (workflow may omit it).
+  if (messageType && !/email/i.test(messageType)) {
+    return { outcome: "ignored", detail: `inbound ${messageType} — not an email reply`, result: { handled: false } };
+  }
+
+  // Does this contact map to a funder?
+  const { data: lender } = await db.from("lenders")
+    .select("id, company_name").eq("ghl_contact_id", contactId).maybeSingle();
+  if (!lender) {
+    return { outcome: "ignored", detail: "inbound message not from a funder contact", result: { handled: false } };
+  }
+
+  // Most recent submission to this funder that is out and not yet answered. The
+  // reply doesn't say which deal, so stamp the latest open one. Because we only
+  // stamp when response_at IS NULL, a webhook retry (or a second reply) is a
+  // no-op — no duplicate alerts.
+  const { data: sub } = await db.from("deal_submissions")
+    .select("id, deal_id")
+    .eq("lender_id", lender.id)
+    .not("submitted_at", "is", null)
+    .is("response_at", null)
+    .order("submitted_at", { ascending: false })
+    .limit(1).maybeSingle();
+  if (!sub) {
+    return {
+      outcome: "processed",
+      detail: `${lender.company_name} replied but no open submission to stamp`,
+      result: { handled: true, lender: lender.company_name, stamped: false },
+    };
+  }
+
+  const now = new Date().toISOString();
+  await db.from("deal_submissions").update({ response_at: now }).eq("id", sub.id);
+
+  // Deal context for the alert.
+  const { data: deal } = await db.from("deals")
+    .select("deal_number, customer_id").eq("id", sub.deal_id).maybeSingle();
+  const dealNumber = (deal?.deal_number as string) || String(sub.deal_id);
+  let business = "";
+  if (deal?.customer_id) {
+    const { data: cust } = await db.from("customers").select("business_name").eq("id", deal.customer_id).maybeSingle();
+    business = (cust?.business_name as string) || "";
+  }
+
+  const snippet = body ? body.replace(/\s+/g, " ").slice(0, 300) : "";
+  await log(db, "deal", sub.deal_id, "ghl:funder-reply", {
+    lender: lender.company_name, submissionId: sub.id, conversationId, snippet,
+  });
+
+  // Internal alert — owner ONLY, never the funder or merchant.
+  let alerted = false;
+  let alertError: string | undefined;
+  try {
+    const cfg = await getGhlConfig(db);
+    const owner = await upsertContact(cfg, {
+      email: OWNER_EMAIL, firstName: "Momentum", lastName: "Funding",
+      tags: ["staff"], source: "Funder Reply Alert",
+    });
+    const ownerContactId = owner.data?.contact?.id;
+    if (!ownerContactId) {
+      alertError = `owner contact upsert failed: ${owner.error ?? "no id"}`;
+    } else {
+      const subject = `Funder replied: ${lender.company_name} on ${dealNumber}`;
+      const line = business
+        ? `${lender.company_name} replied on ${dealNumber} (${business}).`
+        : `${lender.company_name} replied on ${dealNumber}.`;
+      const text = `${line}\n\nOpen GHL → Conversations to read the full reply and respond.` +
+        (snippet ? `\n\nPreview: ${snippet}` : "");
+      const html =
+        `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px">` +
+        `<p>${esc(line)}</p>` +
+        `<p>Open <strong>GHL → Conversations</strong> to read the full reply and respond.</p>` +
+        (snippet
+          ? `<blockquote style="border-left:3px solid #cbd5e1;margin:8px 0;padding:4px 12px;color:#334155;white-space:pre-wrap">${esc(snippet)}</blockquote>`
+          : "") +
+        `</div>`;
+      const sr = await sendEmailToContact(cfg, ownerContactId, subject, html, { text });
+      alerted = sr.ok;
+      if (!sr.ok) alertError = `alert send failed: ${sr.error}`;
+    }
+  } catch (e) {
+    alertError = e instanceof Error ? e.message : String(e);
+  }
+
+  return {
+    outcome: "processed",
+    detail: `${lender.company_name} reply stamped on ${dealNumber}; alert ${alerted ? "sent" : `not sent (${alertError ?? "unknown"})`}`,
+    result: { handled: true, lender: lender.company_name, dealNumber, submissionId: sub.id, stamped: true, alerted },
+  };
+}
 
 async function handleContact(db: DB, evt: Record<string, unknown>) {
   const c = (evt.contact ?? evt) as Record<string, unknown>;

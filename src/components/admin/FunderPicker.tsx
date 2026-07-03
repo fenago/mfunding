@@ -77,6 +77,19 @@ const DOC_LABELS: Record<string, string> = {
   other: "Other",
 };
 const docLabel = (s: string) => DOC_LABELS[s] ?? s.replace(/_/g, " ");
+
+// Compact "3h ago" / "2d ago" for the funder-reply chip.
+function relTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(diff)) return "";
+  const min = Math.round(diff / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.round(hr / 24);
+  return `${day}d ago`;
+}
 // The core package the checklist surfaces (customer_document_type enum values).
 const CORE_STIPS = ["application", "bank_statement", "id", "voided_check"];
 
@@ -110,7 +123,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const [uploadAppError, setUploadAppError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Record<string, FunderResult>>({});
-  const [existing, setExisting] = useState<Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean }>>({});
+  const [existing, setExisting] = useState<Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean; responseAt: string | null }>>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [showMisfits, setShowMisfits] = useState(false);
@@ -151,7 +164,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           ids.length ? supabase.from("funder_submission_profiles").select("lender_id, method, required_stips, to_email").in("lender_id", ids) : Promise.resolve({ data: [] }),
           ids.length ? supabase.from("lenders").select("id, submission_email, submission_portal_url").in("id", ids) : Promise.resolve({ data: [] }),
           deal.customer_id ? supabase.from("customer_documents").select("document_type").eq("customer_id", deal.customer_id) : Promise.resolve({ data: [] }),
-          supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at").eq("deal_id", deal.id),
+          supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at, response_at").eq("deal_id", deal.id),
         ]);
         if (cancelled) return;
         setMatches(m.map((x) => ({ id: x.id, company_name: x.company_name, score: x.score, reasons: x.reasons })));
@@ -193,9 +206,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           } catch { /* GHL peek is best-effort; app docs still count */ }
         }
         if (!cancelled) { setAppDocs(appPresent); setGhlDocs(ghlPresent); }
-        const emap: Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean }> = {};
-        for (const s of (subRes.data ?? []) as { id: string; lender_id: string; status: string; submission_method: string | null; error: string | null; portal_confirmed_at: string | null }[]) {
-          emap[s.lender_id] = { status: s.status, method: s.submission_method, submissionId: s.id, hasError: !!s.error, portalConfirmed: !!s.portal_confirmed_at };
+        const emap: Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean; responseAt: string | null }> = {};
+        for (const s of (subRes.data ?? []) as { id: string; lender_id: string; status: string; submission_method: string | null; error: string | null; portal_confirmed_at: string | null; response_at: string | null }[]) {
+          emap[s.lender_id] = { status: s.status, method: s.submission_method, submissionId: s.id, hasError: !!s.error, portalConfirmed: !!s.portal_confirmed_at, responseAt: s.response_at };
         }
         setExisting(emap);
       } catch (e) {
@@ -402,7 +415,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               <badge.icon className="w-3 h-3" /> {badge.label}
             </span>
             <span className="text-[11px] text-gray-400">score {m.score}</span>
-            {alreadyOut && <span className="text-[11px] text-emerald-600">already submitted</span>}
+            {alreadyOut && (existing[m.id]?.responseAt
+              ? <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600">✉ replied {relTime(existing[m.id].responseAt!)}</span>
+              : <span className="text-[11px] text-emerald-600">already submitted</span>)}
             {alreadyOut && existing[m.id]?.submissionId && (
               <button
                 type="button"
