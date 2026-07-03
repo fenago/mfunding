@@ -48,6 +48,7 @@ interface RecipeForm {
   portal_credentials_hint: string;
   required_stips: string[];
   special_instructions: string;
+  internal_notes: string;
   active: boolean;
 }
 
@@ -55,7 +56,7 @@ const EMPTY: RecipeForm = {
   method: "email", to_email: "", cc_emails: "", subject_template: "",
   body_template: "", attach_docs: [], attachment_mode: "links",
   max_statement_months: "4", portal_url: "", portal_steps: "",
-  portal_credentials_hint: "", required_stips: [], special_instructions: "",
+  portal_credentials_hint: "", required_stips: [], special_instructions: "", internal_notes: "",
   active: true,
 };
 
@@ -90,6 +91,7 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
           portal_credentials_hint: data.portal_credentials_hint ?? "",
           required_stips: data.required_stips ?? [],
           special_instructions: data.special_instructions ?? "",
+          internal_notes: data.internal_notes ?? "",
           active: data.active ?? true,
         });
       } else {
@@ -122,6 +124,7 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
         portal_credentials_hint: form.portal_credentials_hint.trim() || null,
         required_stips: form.required_stips,
         special_instructions: form.special_instructions.trim() || null,
+        internal_notes: form.internal_notes.trim() || null,
         active: form.active,
         updated_at: new Date().toISOString(),
       };
@@ -291,8 +294,10 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Special instructions</label>
-        <textarea value={form.special_instructions} onChange={(e) => set("special_instructions", e.target.value)} className="input-field text-sm" rows={2} placeholder="e.g. No PDFs over 10MB · Subject MUST start with ISO#4412" />
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Special instructions <span className="text-xs font-normal text-amber-600">— PRINTED IN THE FUNDER EMAIL</span></label>
+        <textarea value={form.special_instructions} onChange={(e) => set("special_instructions", e.target.value)} className="input-field text-sm" rows={2} placeholder="Only text the funder should read — e.g. Subject MUST start with ISO#4412" />
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 mt-3">Internal notes <span className="text-xs font-normal text-gray-400">— never sent; closer/ops guidance</span></label>
+        <textarea value={form.internal_notes} onChange={(e) => set("internal_notes", e.target.value)} className="input-field text-sm" rows={3} placeholder="Routing rules, commission terms, warnings (e.g. UCS calls the merchant directly)…" />
       </div>
 
       {err && <p className="text-sm text-red-600 dark:text-red-400 mb-3">{err}</p>}

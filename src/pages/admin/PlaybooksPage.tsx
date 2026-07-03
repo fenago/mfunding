@@ -1053,10 +1053,15 @@ function FunnelBoard() {
   const [dealsLoading, setDealsLoading] = useState(false);
 
   useEffect(() => {
-    getDealStats()
-      .then((s) => setCounts(s.byStatus))
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load funnel"))
-      .finally(() => setLoading(false));
+    const load = () =>
+      getDealStats()
+        .then((s) => setCounts(s.byStatus))
+        .catch((e) => setError(e instanceof Error ? e.message : "Failed to load funnel"))
+        .finally(() => setLoading(false));
+    load();
+    // Live-ish: stage moves show up without a manual refresh.
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
   }, []);
 
   const def = pipe === "mca" ? MCA_PIPELINE : VCF_PIPELINE;
