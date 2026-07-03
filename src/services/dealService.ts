@@ -5,6 +5,7 @@ import type {
   DealSubmission,
   DealSubmissionWithLender,
   DealStatus,
+  SubmissionStatus,
   CreateDealData,
   UpdateDealData,
   DealFilters,
@@ -579,6 +580,376 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
   }
   rows.sort((x, y) => (y.accepted - x.accepted) || (y.offers - x.offers) || (y.submissions - x.submissions));
   return rows;
+}
+
+// ─────────────────────── Funder performance analytics ───────────────────────
+// Powers /admin/analytics/lenders. Everything below is derived from real rows
+// in deal_submissions + activity_log — no fabricated numbers. Designed to read
+// well at n=6 (today) and n=500 (later): a live event feed leads at low volume,
+// the leaderboard + decline intelligence become the story as data accumulates.
+
+export type FunderFeedKind =
+  | "decline"
+  | "stip_request"
+  | "offer"
+  | "question"
+  | "acknowledgment"
+  | "reply"
+  | "open";
+
+export interface FunderFeedEvent {
+  id: string;
+  at: string;                 // ISO timestamp
+  kind: FunderFeedKind;
+  funderName: string | null;
+  lenderId: string | null;
+  dealId: string | null;
+  dealNumber: string | null;
+  detail: string | null;      // short human snippet ("low revenue", requested item…)
+  opener?: "funder" | "merchant"; // only for kind === "open"
+}
+
+export interface FunderDealRef {
+  dealId: string;
+  dealNumber: string | null;
+  businessName: string | null;
+  amountRequested: number | null;
+  status: SubmissionStatus;
+  responseType: string | null;
+}
+
+export interface FunderAnalyticsRow {
+  lenderId: string;
+  lenderName: string;
+  paperType: string | null;
+  sent: number;
+  replied: number;
+  replyRate: number | null;         // replied ÷ sent, %
+  medianResponseHrs: number | null;
+  offers: number;
+  offerRate: number | null;         // offers ÷ sent, %
+  accepted: number;
+  declines: number;
+  topDeclineReason: string | null;  // AI-classified category
+  declineReasonCounts: Record<string, number>;
+  avgFactor: number | null;
+  avgOfferToAsk: number | null;     // mean(offer_amount ÷ amount_requested)
+  estCommission: number;            // Σ(accepted deal amount) × 8pts — estimate
+  commissionIsEstimate: boolean;
+  lastInteraction: string | null;
+  requestedItems: string[];         // distinct stip items this funder has asked for
+  deals: FunderDealRef[];
+  declinedRevenues: number[];       // monthly_revenue of declined merchants
+  offeredRevenues: number[];        // monthly_revenue of merchants they offered
+}
+
+export interface FunderAnalytics {
+  totals: {
+    submissions: number;
+    replies: number;
+    offers: number;
+    declines: number;
+    accepted: number;
+    stipRequests: number;
+    avgFirstResponseHrs: number | null;
+    openRate: number | null;        // opened ÷ tracked emails, %
+    trackedEmails: number;
+    openedEmails: number;
+  };
+  funders: FunderAnalyticsRow[];
+  feed: FunderFeedEvent[];
+  declineReasonTotals: Record<string, number>;
+}
+
+const OFFER_SUBMISSION_STATUSES = ["offer_made", "offer_accepted", "offer_declined", "approved"];
+const LIVE_SUBMISSION_STATUSES = ["submitted", "under_review", "approved", "offer_made", "offer_accepted", "offer_declined", "declined", "funded"];
+
+function median(nums: number[]): number | null {
+  if (nums.length === 0) return null;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+// Classify a funder-reply activity_log entry from its content prefix.
+function feedKindFromContent(content: string): FunderFeedKind {
+  const c = content.trim().toLowerCase();
+  if (c.startsWith("decline")) return "decline";
+  if (c.startsWith("stip")) return "stip_request";
+  if (c.startsWith("offer")) return "offer";
+  if (c.startsWith("question")) return "question";
+  if (c.startsWith("acknowledg")) return "acknowledgment";
+  return "reply";
+}
+
+// Pull the human snippet out of a funder-reply log line: drop the "Decline:"/
+// "Stip request:" prefix and surrounding quotes, then truncate.
+function feedDetailFromContent(content: string): string | null {
+  let t = content.replace(/^\s*[A-Za-z ]+:\s*/, "").trim();
+  t = t.replace(/^["“]|["”]$/g, "").replace(/["“].*$/s, "").trim();
+  if (!t) return null;
+  return t.length > 90 ? t.slice(0, 90) + "…" : t;
+}
+
+/**
+ * One aggregate view of every funder's real submission + reply history.
+ * A handful of parallel queries, reduced client-side (same shape as
+ * getFunderScoreboard, extended for the analytics page).
+ */
+export async function getFunderAnalytics(): Promise<FunderAnalytics> {
+  const [subsRes, dealsRes, custRes, lendersRes, logRes] = await Promise.all([
+    supabase
+      .from("deal_submissions")
+      .select("id, deal_id, lender_id, status, submitted_at, response_at, response_type, response_summary, response_data, decline_reason, offer_amount, factor_rate, courtesy_sent_at, updated_at, lender:lenders!lender_id ( company_name, paper_types )"),
+    supabase.from("deals").select("id, deal_number, amount_requested, customer_id, status"),
+    supabase.from("customers").select("id, business_name, monthly_revenue"),
+    supabase.from("lenders").select("id, company_name"),
+    supabase
+      .from("activity_log")
+      .select("id, entity_id, subject, content, created_at")
+      .eq("entity_type", "deal")
+      .or("subject.ilike.ghl:funder-reply%,subject.ilike.funder:email%,subject.ilike.merchant:email%")
+      .order("created_at", { ascending: false })
+      .limit(200),
+  ]);
+
+  if (subsRes.error) { console.error("getFunderAnalytics submissions:", subsRes.error); throw subsRes.error; }
+
+  const subs = (subsRes.data ?? []) as unknown as Array<Record<string, unknown>>;
+  const deals = (dealsRes.data ?? []) as Array<{ id: string; deal_number: string | null; amount_requested: number | null; customer_id: string | null; status: string }>;
+  const customers = (custRes.data ?? []) as Array<{ id: string; business_name: string | null; monthly_revenue: number | null }>;
+  const lenders = (lendersRes.data ?? []) as Array<{ id: string; company_name: string | null }>;
+  const logs = (logRes.data ?? []) as Array<{ id: string; entity_id: string; subject: string | null; content: string | null; created_at: string }>;
+
+  const dealById = new Map(deals.map((d) => [d.id, d]));
+  const custById = new Map(customers.map((c) => [c.id, c]));
+  const lenderById = new Map(lenders.map((l) => [l.id, l]));
+  // funder company_name → lenderId, for linking activity_log events (which are
+  // deal-scoped and only name the funder in the subject) back to the lender.
+  const lenderIdByName = new Map<string, string>();
+  for (const l of lenders) if (l.company_name) lenderIdByName.set(l.company_name.toLowerCase(), l.id);
+
+  interface Acc {
+    lenderName: string;
+    paperType: string | null;
+    sent: number;
+    replied: number;
+    offers: number;
+    accepted: number;
+    declines: number;
+    factorSum: number; factorN: number;
+    offerToAskSum: number; offerToAskN: number;
+    estCommission: number;
+    responseHrs: number[];
+    lastInteraction: number | null; // epoch ms
+    declineReasons: Map<string, number>;
+    requestedItems: Set<string>;
+    deals: FunderDealRef[];
+    declinedRevenues: number[];
+    offeredRevenues: number[];
+  }
+  const byLender = new Map<string, Acc>();
+
+  const totals = { submissions: 0, replies: 0, offers: 0, declines: 0, accepted: 0, stipRequests: 0 };
+  const responseHrsAll: number[] = [];
+  const declineReasonTotals: Record<string, number> = {};
+  const feed: FunderFeedEvent[] = [];
+  // Track (lenderId|kind|dealId) already emitted from activity_log so submission-
+  // derived events don't double-post the same reply.
+  const feedKeys = new Set<string>();
+
+  for (const r of subs) {
+    const lenderId = r.lender_id as string;
+    if (!lenderId) continue;
+    const status = r.status as SubmissionStatus;
+    const submittedAt = r.submitted_at as string | null;
+    const responseAt = r.response_at as string | null;
+    const offerAmount = r.offer_amount as number | null;
+    const factorRate = r.factor_rate as number | null;
+    const responseType = r.response_type as string | null;
+    const isLive = !!submittedAt || !!responseAt || offerAmount != null || LIVE_SUBMISSION_STATUSES.includes(status);
+    if (!isLive) continue;
+
+    const lenderObj = r.lender as { company_name?: string; paper_types?: string[] } | null;
+    const acc = byLender.get(lenderId) ?? {
+      lenderName: lenderObj?.company_name ?? lenderById.get(lenderId)?.company_name ?? "Funder",
+      paperType: (lenderObj?.paper_types && lenderObj.paper_types[0]) || null,
+      sent: 0, replied: 0, offers: 0, accepted: 0, declines: 0,
+      factorSum: 0, factorN: 0, offerToAskSum: 0, offerToAskN: 0, estCommission: 0,
+      responseHrs: [], lastInteraction: null,
+      declineReasons: new Map<string, number>(), requestedItems: new Set<string>(),
+      deals: [], declinedRevenues: [], offeredRevenues: [],
+    };
+
+    const deal = r.deal_id ? dealById.get(r.deal_id as string) : undefined;
+    const cust = deal?.customer_id ? custById.get(deal.customer_id) : undefined;
+    const amountRequested = deal?.amount_requested != null ? Number(deal.amount_requested) : null;
+    const monthlyRevenue = cust?.monthly_revenue != null ? Number(cust.monthly_revenue) : null;
+    const isOffer = offerAmount != null || OFFER_SUBMISSION_STATUSES.includes(status);
+
+    acc.sent += 1;
+    totals.submissions += 1;
+    if (responseAt) { acc.replied += 1; totals.replies += 1; }
+    if (isOffer) { acc.offers += 1; totals.offers += 1; }
+    if (status === "offer_accepted") {
+      acc.accepted += 1; totals.accepted += 1;
+      if (amountRequested != null) acc.estCommission += amountRequested * (COMMISSION_DEFAULTS.NEW_DEAL_POINTS / 100);
+    }
+    if (status === "declined") { acc.declines += 1; totals.declines += 1; }
+
+    const parsed = (r.response_data as { parsed?: { decline_reason_category?: string | null; requested_items?: string[] | null; offer_terms?: unknown } } | null)?.parsed;
+    const cat = parsed?.decline_reason_category;
+    if (cat) {
+      acc.declineReasons.set(cat, (acc.declineReasons.get(cat) ?? 0) + 1);
+      declineReasonTotals[cat] = (declineReasonTotals[cat] ?? 0) + 1;
+    }
+    for (const item of (parsed?.requested_items ?? [])) if (item) acc.requestedItems.add(item);
+    if (responseType === "stip_request") totals.stipRequests += 1;
+
+    if (status === "declined" && monthlyRevenue != null) acc.declinedRevenues.push(monthlyRevenue);
+    if (isOffer && monthlyRevenue != null) acc.offeredRevenues.push(monthlyRevenue);
+
+    if (factorRate != null && factorRate > 0) { acc.factorSum += factorRate; acc.factorN += 1; }
+    if (isOffer && offerAmount != null && amountRequested && amountRequested > 0) {
+      acc.offerToAskSum += offerAmount / amountRequested; acc.offerToAskN += 1;
+    }
+    if (submittedAt && responseAt) {
+      const hrs = (new Date(responseAt).getTime() - new Date(submittedAt).getTime()) / 3_600_000;
+      if (Number.isFinite(hrs) && hrs >= 0) { acc.responseHrs.push(hrs); responseHrsAll.push(hrs); }
+    }
+    const lastTs = Math.max(
+      submittedAt ? Date.parse(submittedAt) : 0,
+      responseAt ? Date.parse(responseAt) : 0,
+      r.updated_at ? Date.parse(r.updated_at as string) : 0,
+    );
+    if (lastTs > 0 && (acc.lastInteraction == null || lastTs > acc.lastInteraction)) acc.lastInteraction = lastTs;
+
+    acc.deals.push({
+      dealId: (r.deal_id as string) ?? "",
+      dealNumber: deal?.deal_number ?? null,
+      businessName: cust?.business_name ?? null,
+      amountRequested,
+      status,
+      responseType,
+    });
+    byLender.set(lenderId, acc);
+  }
+
+  // Live event feed from activity_log (preserves stip→decline history that a
+  // submission's current status would otherwise flatten).
+  let trackedEmails = 0;
+  let openedEmails = 0;
+  for (const log of logs) {
+    const subject = log.subject ?? "";
+    const content = log.content ?? "";
+    const dealNumber = dealById.get(log.entity_id)?.deal_number ?? null;
+
+    if (subject.startsWith("ghl:funder-reply")) {
+      const funderName = subject.split("—")[1]?.trim() || null;
+      const lenderId = funderName ? lenderIdByName.get(funderName.toLowerCase()) ?? null : null;
+      const kind = feedKindFromContent(content);
+      feed.push({
+        id: log.id, at: log.created_at, kind, funderName, lenderId,
+        dealId: log.entity_id, dealNumber, detail: feedDetailFromContent(content),
+      });
+      if (lenderId) feedKeys.add(`${lenderId}|${kind}|${log.entity_id}`);
+    }
+
+    // Open tracking: outbound funder/merchant emails carry [emsg:…] and, once
+    // opened, an [opened:ISO] marker. Count for open-rate + surface as events.
+    const isFunderEmail = subject.startsWith("funder:email");
+    const isMerchantEmail = subject.startsWith("merchant:email");
+    if (isFunderEmail || isMerchantEmail) {
+      if (content.includes("[emsg:")) trackedEmails += 1;
+      const openMatch = content.match(/\[opened:([^\]]+)\]/);
+      if (openMatch) {
+        openedEmails += 1;
+        const reMatch = content.match(/\[re:\s*([^\]]+)\]/);
+        const funderName = isFunderEmail ? (reMatch?.[1]?.trim() ?? null) : null;
+        const lenderId = funderName ? lenderIdByName.get(funderName.toLowerCase()) ?? null : null;
+        feed.push({
+          id: `${log.id}-open`, at: openMatch[1], kind: "open",
+          funderName: isFunderEmail ? funderName : null, lenderId,
+          dealId: log.entity_id, dealNumber,
+          detail: isFunderEmail ? "opened your submission email" : "merchant opened your email",
+          opener: isFunderEmail ? "funder" : "merchant",
+        });
+      }
+    }
+  }
+
+  // Backfill feed with submission responses not already logged in activity_log.
+  for (const r of subs) {
+    const lenderId = r.lender_id as string;
+    const responseAt = r.response_at as string | null;
+    const responseType = r.response_type as string | null;
+    if (!lenderId || !responseAt || !responseType) continue;
+    const kind: FunderFeedKind = responseType === "stip_request" ? "stip_request"
+      : responseType === "offer" ? "offer"
+      : responseType === "decline" ? "decline"
+      : responseType === "question" ? "question"
+      : responseType === "acknowledgment" ? "acknowledgment" : "reply";
+    const dealId = r.deal_id as string;
+    if (feedKeys.has(`${lenderId}|${kind}|${dealId}`)) continue;
+    feed.push({
+      id: `sub-${r.id as string}`, at: responseAt, kind,
+      funderName: (r.lender as { company_name?: string } | null)?.company_name ?? lenderById.get(lenderId)?.company_name ?? null,
+      lenderId, dealId, dealNumber: dealById.get(dealId)?.deal_number ?? null,
+      detail: (r.response_summary as string | null) ?? (r.decline_reason as string | null),
+    });
+  }
+
+  feed.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+
+  const funders: FunderAnalyticsRow[] = [];
+  for (const [lenderId, a] of byLender.entries()) {
+    let topDeclineReason: string | null = null;
+    let topN = 0;
+    const declineReasonCounts: Record<string, number> = {};
+    for (const [cat, n] of a.declineReasons.entries()) {
+      declineReasonCounts[cat] = n;
+      if (n > topN) { topN = n; topDeclineReason = cat; }
+    }
+    funders.push({
+      lenderId,
+      lenderName: a.lenderName,
+      paperType: a.paperType,
+      sent: a.sent,
+      replied: a.replied,
+      replyRate: a.sent > 0 ? (a.replied / a.sent) * 100 : null,
+      medianResponseHrs: median(a.responseHrs),
+      offers: a.offers,
+      offerRate: a.sent > 0 ? (a.offers / a.sent) * 100 : null,
+      accepted: a.accepted,
+      declines: a.declines,
+      topDeclineReason,
+      declineReasonCounts,
+      avgFactor: a.factorN > 0 ? a.factorSum / a.factorN : null,
+      avgOfferToAsk: a.offerToAskN > 0 ? a.offerToAskSum / a.offerToAskN : null,
+      estCommission: a.estCommission,
+      commissionIsEstimate: true,
+      lastInteraction: a.lastInteraction != null ? new Date(a.lastInteraction).toISOString() : null,
+      requestedItems: [...a.requestedItems],
+      deals: a.deals,
+      declinedRevenues: a.declinedRevenues,
+      offeredRevenues: a.offeredRevenues,
+    });
+  }
+  funders.sort((x, y) =>
+    (y.accepted - x.accepted) || (y.offers - x.offers) || (y.replied - x.replied) || (y.sent - x.sent));
+
+  return {
+    totals: {
+      ...totals,
+      avgFirstResponseHrs: responseHrsAll.length > 0 ? responseHrsAll.reduce((s, h) => s + h, 0) / responseHrsAll.length : null,
+      openRate: trackedEmails > 0 ? (openedEmails / trackedEmails) * 100 : null,
+      trackedEmails,
+      openedEmails,
+    },
+    funders,
+    feed,
+    declineReasonTotals,
+  };
 }
 
 export async function getDealStats(): Promise<{

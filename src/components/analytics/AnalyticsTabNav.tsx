@@ -5,7 +5,7 @@ const TABS = [
   { path: "/admin/analytics/realtime", label: "Real-Time" },
   { path: "/admin/analytics/deals", label: "Deal Analytics" },
   { path: "/admin/analytics/closers", label: "Closers" },
-  { path: "/admin/analytics/lenders", label: "Lenders" },
+  { path: "/admin/analytics/lenders", label: "Funders" },
   { path: "/admin/analytics/markets", label: "Markets" },
   { path: "/admin/analytics/lead-sources", label: "Lead Sources" },
 ];
