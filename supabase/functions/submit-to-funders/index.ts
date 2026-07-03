@@ -276,6 +276,15 @@ Deno.serve(async (req) => {
     docsByType.set(d.document_type, arr);
   }
 
+  // HARD GATE: the signed application must be ON FILE (app-side) so it attaches
+  // to every funder email — a submission without it burns credibility. The
+  // closer uploads it once via the Step 6 "Signed application" slot.
+  if (!docsByType.has("application")) {
+    return json({
+      error: "Signed application is not on file. Download it from GHL (Documents & Contracts → Completed) and upload it in the 'Signed application' slot on Step 6 — it will then attach to every submission.",
+    }, 422);
+  }
+
   // --- Merchant docs uploaded GHL-side. Bank statements and stips usually come
   // in through the GHL upload form and live on the contact's FILE_UPLOAD custom
   // fields, NOT Supabase storage. Fetch them once (contact-level, same for every
@@ -476,7 +485,14 @@ Deno.serve(async (req) => {
   // actually received the package. Product-neutral language (never "loan").
   let merchantNotified = false;
   const newSends = results.filter((r) => r.status === "sent").length;
-  if (cfg && ghlContactId && newSends > 0) {
+  // One email per DEAL, ever: skip if any funder had already received this
+  // deal before this run (adding funders later shouldn't re-notify the merchant).
+  const { count: priorSends } = await db.from("deal_submissions")
+    .select("id", { count: "exact", head: true })
+    .eq("deal_id", dealId)
+    .not("submitted_at", "is", null)
+    .lt("submitted_at", nowIso);
+  if (cfg && ghlContactId && newSends > 0 && (priorSends ?? 0) === 0) {
     try {
       const first = (c.first_name as string | null) ?? "";
       const biz = (c.business_name as string | null) ?? "your business";

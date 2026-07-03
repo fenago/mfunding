@@ -571,12 +571,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
-              disabled={submitting || selected.size === 0}
+              disabled={submitting || selected.size === 0 || !signedAppInApp}
+              title={!signedAppInApp ? "Upload the signed application first — it must attach to every submission" : undefined}
               onClick={() => submit([...selected])}
               className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
             >
               {submitting ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />}
-              {submitting ? "Sending…" : `Submit to ${selected.size || 0} selected`}
+              {submitting ? "Sending…" : !signedAppInApp ? "Upload the signed application to submit" : `Submit to ${selected.size || 0} selected`}
             </button>
             {error && <span className="text-[11px] text-amber-600 dark:text-amber-400 text-right flex-1">{error}</span>}
           </div>
