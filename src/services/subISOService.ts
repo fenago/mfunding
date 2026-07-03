@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type { SubISO, SubISOFormData } from "../types/commissions";
 
 export async function getAllSubISOs(): Promise<SubISO[]> {
@@ -25,31 +26,17 @@ export async function getSubISOById(id: string): Promise<SubISO> {
 export async function createSubISO(formData: SubISOFormData): Promise<SubISO> {
   const { data: { user } } = await supabase.auth.getUser();
 
-  const { data, error } = await supabase
-    .from("sub_isos")
-    .insert({ ...formData, created_by: user?.id })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as SubISO;
+  const rows = await mustWrite<SubISO>("create sub-ISO", supabase.from("sub_isos").insert({ ...formData, created_by: user?.id }));
+  return rows[0];
 }
 
 export async function updateSubISO(id: string, formData: Partial<SubISOFormData>): Promise<SubISO> {
-  const { data, error } = await supabase
-    .from("sub_isos")
-    .update(formData)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as SubISO;
+  const rows = await mustWrite<SubISO>("update sub-ISO", supabase.from("sub_isos").update(formData).eq("id", id));
+  return rows[0];
 }
 
 export async function deleteSubISO(id: string) {
-  const { error } = await supabase.from("sub_isos").delete().eq("id", id);
-  if (error) throw error;
+  await mustWrite("delete sub-ISO", supabase.from("sub_isos").delete().eq("id", id));
 }
 
 export async function getSubISODealStats(subISOId: string) {

@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { tryWrite } from "@/supabase/writes";
 
 // The exact express-written-consent wording shown to the user. Keep this in sync
 // with the visible text rendered by <TcpaConsent>. This string is what gets
@@ -17,18 +18,14 @@ export async function recordConsent(args: {
   source: string;
   page: string;
 }): Promise<void> {
-  try {
-    await supabase.from("tcpa_consents").insert({
-      name: args.name || null,
-      email: args.email || null,
-      phone: args.phone || null,
-      consent: true,
-      consent_text: TCPA_CONSENT_TEXT,
-      source: args.source,
-      page: args.page,
-      user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
-    });
-  } catch (e) {
-    console.error("recordConsent failed:", e);
-  }
+  await tryWrite("record TCPA consent", supabase.from("tcpa_consents").insert({
+    name: args.name || null,
+    email: args.email || null,
+    phone: args.phone || null,
+    consent: true,
+    consent_text: TCPA_CONSENT_TEXT,
+    source: args.source,
+    page: args.page,
+    user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+  }));
 }

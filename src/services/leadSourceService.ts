@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // Lead source cost tracking — cost per lead, spend, and ROI by source. Feeds the
 // golden-ratio metric (cost per funded deal < $1,500).
@@ -49,16 +50,13 @@ export async function listLeadSources(): Promise<LeadSource[]> {
 
 export async function saveLeadSource(id: string | null, input: Partial<LeadSourceInput>): Promise<LeadSource> {
   if (id) {
-    const { data, error } = await supabase.from("lead_sources").update(input).eq("id", id).select().single();
-    if (error) throw error;
-    return data as LeadSource;
+    const rows = await mustWrite<LeadSource>("update lead source", supabase.from("lead_sources").update(input).eq("id", id));
+    return rows[0];
   }
-  const { data, error } = await supabase.from("lead_sources").insert(input).select().single();
-  if (error) throw error;
-  return data as LeadSource;
+  const rows = await mustWrite<LeadSource>("create lead source", supabase.from("lead_sources").insert(input));
+  return rows[0];
 }
 
 export async function deleteLeadSource(id: string): Promise<void> {
-  const { error } = await supabase.from("lead_sources").delete().eq("id", id);
-  if (error) throw error;
+  await mustWrite("delete lead source", supabase.from("lead_sources").delete().eq("id", id));
 }

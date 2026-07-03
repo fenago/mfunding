@@ -8,6 +8,7 @@ import {
   UserPlusIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { createDeal } from "../../services/dealService";
 import { listCampaigns, type Campaign } from "../../services/campaignService";
 import { MARKET_CONFIG } from "../../types/deals";
@@ -194,22 +195,22 @@ export default function PlaybookCapture({
           setSaving(false);
           return;
         }
-        const { data: created, error: cErr } = await supabase
-          .from("customers")
-          .insert({
-            first_name: form.first_name.trim(),
-            last_name: form.last_name.trim() || null,
-            business_name: form.business_name.trim() || null,
-            email: form.email.trim() || null,
-            phone: form.phone.trim(),
-            status: "lead",
-            source: "other",
-            is_live_transfer: defaults.isLiveTransfer,
-          })
-          .select("id")
-          .single();
-        if (cErr || !created) {
-          setError(`Could not create the lead: ${cErr?.message ?? "unknown error"}`);
+        let created: { id: string } | undefined;
+        try {
+          created = (await mustWrite<{ id: string }>("create lead", supabase
+            .from("customers")
+            .insert({
+              first_name: form.first_name.trim(),
+              last_name: form.last_name.trim() || null,
+              business_name: form.business_name.trim() || null,
+              email: form.email.trim() || null,
+              phone: form.phone.trim(),
+              status: "lead",
+              source: "other",
+              is_live_transfer: defaults.isLiveTransfer,
+            })))[0];
+        } catch (e) {
+          setError(`Could not create the lead: ${e instanceof Error ? e.message : "unknown error"}`);
           setSaving(false);
           return;
         }

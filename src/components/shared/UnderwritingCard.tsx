@@ -7,6 +7,7 @@ import {
 } from "../../services/underwritingService";
 import { updateDealStatus } from "../../services/dealService";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type { DealWithCustomer } from "../../types/deals";
 
 interface Props {
@@ -61,7 +62,7 @@ export default function UnderwritingCard({ deal, onDecision }: Props) {
       setSaved(a);
       if (decision === "declined") {
         await updateDealStatus(deal.id, "declined"); // also syncs GHL -> Lost
-        await supabase.from("deals").update({ lost_reason: "bank_data_fail" }).eq("id", deal.id);
+        await mustWrite("set deal lost reason", supabase.from("deals").update({ lost_reason: "bank_data_fail" }).eq("id", deal.id));
       }
       onDecision?.();
     } finally {

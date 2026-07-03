@@ -28,6 +28,7 @@ import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDeal } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type { DealWithCustomer, DealStatus, Deal } from "../../types/deals";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commissions";
@@ -150,14 +151,13 @@ export default function PlaybooksPage() {
         };
       }
       if (Object.keys(custUpdates).length) {
-        // Supabase returns errors, it does NOT throw — an unchecked write fails
-        // invisibly (RLS denial, constraint). Surface it instead of pretending it saved.
-        const { error } = await supabase.from("customers").update(custUpdates).eq("id", deal.customer_id).select("id");
-        if (error) throw new Error(`Couldn't save merchant fields: ${error.message}`);
+        await mustWrite(
+          "Couldn't save merchant fields",
+          supabase.from("customers").update(custUpdates).eq("id", deal.customer_id),
+        );
       }
       if (Object.keys(dealUpdates).length) {
-        const { error } = await supabase.from("deals").update(dealUpdates).eq("id", deal.id).select("id");
-        if (error) throw new Error(`Couldn't save the step: ${error.message}`);
+        await mustWrite("Couldn't save the step", supabase.from("deals").update(dealUpdates).eq("id", deal.id));
       }
 
       // Log it to the deal's activity feed (the same feed the deal page shows).
@@ -216,10 +216,13 @@ export default function PlaybooksPage() {
     const name = dealName(deal);
     try {
       await updateDealStatus(deal.id, outcome);
-      await supabase
-        .from("deals")
-        .update({ closed_reason: reason, closed_note: note.trim() || null })
-        .eq("id", deal.id);
+      await mustWrite(
+        "save deal close reason",
+        supabase
+          .from("deals")
+          .update({ closed_reason: reason, closed_note: note.trim() || null })
+          .eq("id", deal.id),
+      );
       await addActivity({
         interaction_type: "note",
         subject: `Deal closed · ${label}`,

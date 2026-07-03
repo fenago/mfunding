@@ -49,7 +49,6 @@ export async function tryWrite<T = unknown>(label: string, builder: Builder<T>):
   const q = typeof builder.select === "function" ? builder.select() : builder;
   const { error } = await q;
   if (error) {
-    // eslint-disable-next-line no-console
     console.warn(`[tryWrite] ${label} failed (non-blocking): ${error.message}`);
     return false;
   }

@@ -9,6 +9,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { syncFunderToGHL } from "../../services/ghlService";
 import ConfirmModal from "../shared/ConfirmModal";
 
@@ -124,23 +125,21 @@ export default function LenderContactList({
       }
 
       // Update lender with new contacts
-      const { error: updateError } = await supabase
+      await mustWrite("save lender contacts", supabase
         .from("lenders")
         .update({ contacts: updatedContacts })
-        .eq("id", lenderId);
-
-      if (updateError) throw updateError;
+        .eq("id", lenderId));
 
       // If marked as primary, also update primary_contact fields
       if (formData.is_primary) {
-        await supabase
+        await mustWrite("set lender primary contact", supabase
           .from("lenders")
           .update({
             primary_contact_name: formData.name,
             primary_contact_email: formData.email,
             primary_contact_phone: formData.phone,
           })
-          .eq("id", lenderId);
+          .eq("id", lenderId));
       }
 
       // Push this person into GHL/VibeReach under the funder's Business. Best-effort.
@@ -179,23 +178,21 @@ export default function LenderContactList({
       const updatedContacts = currentContacts.filter((c) => c.id !== contactToDelete.id);
 
       // Update lender with filtered contacts
-      const { error: updateError } = await supabase
+      await mustWrite("save lender contacts", supabase
         .from("lenders")
         .update({ contacts: updatedContacts })
-        .eq("id", lenderId);
-
-      if (updateError) throw updateError;
+        .eq("id", lenderId));
 
       // If deleted contact was primary, clear primary fields
       if (contactToDelete.is_primary) {
-        await supabase
+        await mustWrite("clear lender primary contact", supabase
           .from("lenders")
           .update({
             primary_contact_name: null,
             primary_contact_email: null,
             primary_contact_phone: null,
           })
-          .eq("id", lenderId);
+          .eq("id", lenderId));
       }
 
       onUpdate();

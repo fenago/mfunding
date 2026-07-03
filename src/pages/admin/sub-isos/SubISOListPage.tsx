@@ -6,6 +6,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type { SubISO, SubISOStatus, SubISOFormData } from "../../../types/commissions";
 import { SUB_ISO_STATUS_CONFIG, COMMISSION_DEFAULTS } from "../../../types/commissions";
 
@@ -112,13 +113,13 @@ export default function SubISOListPage() {
     setIsSaving(true);
     try {
       if (editingSubISO) {
-        await supabase
-          .from("sub_isos")
-          .update(formData)
-          .eq("id", editingSubISO.id);
+        await mustWrite(
+          "update sub-ISO",
+          supabase.from("sub_isos").update(formData).eq("id", editingSubISO.id),
+        );
       } else {
         const { data: { user } } = await supabase.auth.getUser();
-        await supabase.from("sub_isos").insert({ ...formData, created_by: user?.id });
+        await mustWrite("create sub-ISO", supabase.from("sub_isos").insert({ ...formData, created_by: user?.id }));
       }
       setIsModalOpen(false);
       fetchSubISOs();

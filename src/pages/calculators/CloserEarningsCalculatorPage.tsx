@@ -12,6 +12,7 @@ import Footer from "../../components/landing/Footer";
 import ScrollToTop from "../../components/ui/ScrollToTop";
 import SEO from '../../components/seo/SEO';
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 const usd = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -51,17 +52,19 @@ export default function CloserEarningsCalculatorPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const { error: submitError } = await supabase.from("contact_submissions").insert({
-        name: `${form.first_name} ${form.last_name}`.trim(),
-        email: form.email,
-        phone: form.phone || null,
-        subject: "MCA Closer Recruiting Application",
-        message:
-          `Recruiting lead from closer-earnings calculator. ` +
-          `Inputs: ${dealsPerMonth} deals/mo, avg deal ${usd(avgDealSize)}, ${splitPct}% split. ` +
-          `Projected: ${usd(monthly)}/mo, ${usd(annual)}/yr.`,
-      });
-      if (submitError) throw new Error(submitError.message);
+      await mustWrite(
+        "submit closer recruiting application",
+        supabase.from("contact_submissions").insert({
+          name: `${form.first_name} ${form.last_name}`.trim(),
+          email: form.email,
+          phone: form.phone || null,
+          subject: "MCA Closer Recruiting Application",
+          message:
+            `Recruiting lead from closer-earnings calculator. ` +
+            `Inputs: ${dealsPerMonth} deals/mo, avg deal ${usd(avgDealSize)}, ${splitPct}% split. ` +
+            `Projected: ${usd(monthly)}/mo, ${usd(annual)}/yr.`,
+        }),
+      );
       setUnlocked(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");

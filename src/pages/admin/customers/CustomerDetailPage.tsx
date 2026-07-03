@@ -11,6 +11,7 @@ import {
   CalendarIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import CustomerEditModal from "../../../components/customers/CustomerEditModal";
 import CustomerAIRecommendation from "../../../components/customers/CustomerAIRecommendation";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
@@ -101,10 +102,10 @@ export default function CustomerDetailPage() {
   }) => {
     await addActivity(data);
     if (data.follow_up_date) {
-      await supabase
-        .from("customers")
-        .update({ next_follow_up_date: data.follow_up_date })
-        .eq("id", id);
+      await mustWrite(
+        "set customer follow-up date",
+        supabase.from("customers").update({ next_follow_up_date: data.follow_up_date }).eq("id", id),
+      );
       fetchCustomer();
     }
   };
@@ -128,15 +129,14 @@ export default function CustomerDetailPage() {
   };
 
   const handleDocumentDelete = async (docId: string) => {
-    const { error } = await supabase
-      .from("customer_documents")
-      .delete()
-      .eq("id", docId);
-
-    if (error) {
-      console.error("Error deleting document:", error);
-    } else {
+    try {
+      await mustWrite(
+        "delete customer document",
+        supabase.from("customer_documents").delete().eq("id", docId),
+      );
       setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    } catch (error) {
+      console.error("Error deleting document:", error);
     }
   };
 

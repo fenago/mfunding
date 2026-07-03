@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { useSession } from "./SessionContext";
 
 export type UserRole = "user" | "closer" | "employee" | "admin" | "super_admin";
@@ -171,12 +172,7 @@ export const UserProfileProvider = ({ children }: Props) => {
     }
 
     try {
-      const { error } = await supabase.from("profiles").update(updates).eq("id", session.user.id);
-
-      if (error) {
-        console.error("Error updating profile:", error);
-        return { error: error as unknown as Error };
-      }
+      await mustWrite("update profile", supabase.from("profiles").update(updates).eq("id", session.user.id));
 
       await fetchProfile();
       return { error: null };

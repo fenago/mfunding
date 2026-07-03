@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // Bank analysis = the single bank-data source the underwriting workbench reads,
 // whether the numbers came from Plaid (auto) or were keyed in manually.
@@ -44,24 +45,21 @@ export async function getBankAnalysisForDeal(dealId: string): Promise<BankAnalys
 /** Insert a manual bank analysis (the manual equivalent of Plaid extraction). */
 export async function createBankAnalysis(input: BankAnalysisInput): Promise<BankAnalysis> {
   const { data: auth } = await supabase.auth.getUser();
-  const { data, error } = await supabase
-    .from("bank_analyses")
-    .insert({ ...input, source: input.source ?? "manual", entered_by: auth.user?.id ?? null })
-    .select()
-    .single();
-  if (error) throw error;
-  return data as BankAnalysis;
+  const rows = await mustWrite<BankAnalysis>(
+    "create bank analysis",
+    supabase
+      .from("bank_analyses")
+      .insert({ ...input, source: input.source ?? "manual", entered_by: auth.user?.id ?? null }),
+  );
+  return rows[0];
 }
 
 export async function updateBankAnalysis(id: string, patch: BankAnalysisInput): Promise<BankAnalysis> {
-  const { data, error } = await supabase
-    .from("bank_analyses")
-    .update(patch)
-    .eq("id", id)
-    .select()
-    .single();
-  if (error) throw error;
-  return data as BankAnalysis;
+  const rows = await mustWrite<BankAnalysis>(
+    "update bank analysis",
+    supabase.from("bank_analyses").update(patch).eq("id", id),
+  );
+  return rows[0];
 }
 
 /**

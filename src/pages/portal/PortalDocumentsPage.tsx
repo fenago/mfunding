@@ -8,6 +8,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 interface CustomerDocument {
   id: string;
@@ -91,17 +92,18 @@ export default function PortalDocumentsPage() {
       if (uploadError) throw uploadError;
 
       // Create document record
-      const { error: dbError } = await supabase.from("customer_documents").insert({
-        customer_id: customerId,
-        document_type: "other",
-        filename: file.name,
-        storage_path: fileName,
-        file_size: file.size,
-        mime_type: file.type,
-        uploaded_by: session?.user?.id,
-      });
-
-      if (dbError) throw dbError;
+      await mustWrite(
+        "create document record",
+        supabase.from("customer_documents").insert({
+          customer_id: customerId,
+          document_type: "other",
+          filename: file.name,
+          storage_path: fileName,
+          file_size: file.size,
+          mime_type: file.type,
+          uploaded_by: session?.user?.id,
+        }),
+      );
 
       // Refresh documents
       fetchCustomerAndDocuments();

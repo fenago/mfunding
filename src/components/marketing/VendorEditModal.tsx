@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { XMarkIcon, SparklesIcon, PlusIcon, TrashIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { syncVendorToGHL } from "../../services/ghlService";
 import InteractionTimeline from "../shared/InteractionTimeline";
 import { useActivityLog } from "../../hooks/useActivityLog";
@@ -283,20 +284,14 @@ export default function VendorEditModal({
 
       let vendorId: string | null = vendor?.id ?? null;
       if (vendor) {
-        const { error } = await supabase
+        await mustWrite("update vendor", supabase
           .from("marketing_vendors")
           .update(payload)
-          .eq("id", vendor.id);
-
-        if (error) throw error;
+          .eq("id", vendor.id));
       } else {
-        const { data: inserted, error } = await supabase
+        const inserted = (await mustWrite<{ id: string }>("create vendor", supabase
           .from("marketing_vendors")
-          .insert(payload)
-          .select("id")
-          .single();
-
-        if (error) throw error;
+          .insert(payload)))[0];
         vendorId = inserted?.id ?? null;
       }
 

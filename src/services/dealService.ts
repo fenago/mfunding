@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type {
   Deal,
   DealWithCustomer,
@@ -180,39 +181,20 @@ export async function getDealById(id: string): Promise<{
 }
 
 export async function createDeal(data: CreateDealData): Promise<Deal> {
-  const { data: deal, error } = await supabase
-    .from("deals")
-    .insert(data)
-    .select()
-    .single();
-
-  if (error) {
-    console.error("Error creating deal:", error);
-    throw error;
-  }
+  const rows = await mustWrite<Deal>("create deal", supabase.from("deals").insert(data));
+  const deal = rows[0];
 
   // Push the new deal into GoHighLevel (contact + opportunity at its stage) so
   // admin-created leads land in GHL and fire Speed-to-Lead — same as the public
   // intake. Best-effort: never block deal creation if GHL is unavailable.
-  void syncDealToGHL((deal as Deal).id).catch((e) => console.warn("GHL sync (createDeal) failed:", e));
+  void syncDealToGHL(deal.id).catch((e) => console.warn("GHL sync (createDeal) failed:", e));
 
-  return deal as Deal;
+  return deal;
 }
 
 export async function updateDeal(id: string, data: UpdateDealData): Promise<Deal> {
-  const { data: deal, error } = await supabase
-    .from("deals")
-    .update(data)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) {
-    console.error("Error updating deal:", error);
-    throw error;
-  }
-
-  const d = deal as Deal;
+  const rows = await mustWrite<Deal>("update deal", supabase.from("deals").update(data).eq("id", id));
+  const d = rows[0];
   // Gap #6: a deal can be marked Funded BEFORE amount_funded is known. When the
   // amount is filled in later via an edit, make sure the commission gets created.
   // autoCreateCommissionForFundedDeal is idempotent (no-ops if one already exists),
@@ -264,17 +246,8 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
     updateData[timestampCol] = new Date().toISOString();
   }
 
-  const { data: deal, error } = await supabase
-    .from("deals")
-    .update(updateData)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) {
-    console.error("Error updating deal status:", error);
-    throw error;
-  }
+  const rows = await mustWrite<Deal>("update deal status", supabase.from("deals").update(updateData).eq("id", id));
+  const deal = rows[0];
 
   // Auto-generate the commission when a deal becomes funded (best-effort —
   // never block the status change if commission creation fails).
@@ -457,19 +430,11 @@ export async function updateSubmission(
     updateData.response_at = new Date().toISOString();
   }
 
-  const { data: submission, error } = await supabase
-    .from("deal_submissions")
-    .update(updateData)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) {
-    console.error("Error updating submission:", error);
-    throw error;
-  }
-
-  return submission as DealSubmission;
+  const rows = await mustWrite<DealSubmission>(
+    "update deal submission",
+    supabase.from("deal_submissions").update(updateData).eq("id", id),
+  );
+  return rows[0];
 }
 
 /** One funder's activity across all its deal submissions, for the Lenders-page

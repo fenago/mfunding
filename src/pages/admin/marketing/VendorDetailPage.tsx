@@ -9,6 +9,7 @@ import {
   UserIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
 import VendorEditModal from "../../../components/marketing/VendorEditModal";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
@@ -145,15 +146,14 @@ export default function VendorDetailPage() {
   };
 
   const handleDocumentDelete = async (docId: string) => {
-    const { error } = await supabase
-      .from("vendor_documents")
-      .delete()
-      .eq("id", docId);
-
-    if (error) {
-      console.error("Error deleting document:", error);
-    } else {
+    try {
+      await mustWrite(
+        "delete vendor document",
+        supabase.from("vendor_documents").delete().eq("id", docId),
+      );
       setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    } catch (error) {
+      console.error("Error deleting document:", error);
     }
   };
 

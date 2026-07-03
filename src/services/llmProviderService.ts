@@ -6,6 +6,7 @@
 // (set_key / key_status / test) and are NEVER read back into the browser.
 
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // The 7 switchable providers, in display order, with a suggested default model.
 export const LLM_PROVIDERS = [
@@ -59,9 +60,9 @@ export async function getLLMSettings(): Promise<LLMSettings> {
 
 /** Upsert the active-config row (super_admin only via RLS). */
 export async function saveLLMSettings(settings: LLMSettings): Promise<void> {
-  const { error } = await supabase
-    .from("llm_settings")
-    .upsert(
+  await mustWrite(
+    "save LLM settings",
+    supabase.from("llm_settings").upsert(
       {
         id: 1,
         provider: settings.provider,
@@ -70,8 +71,8 @@ export async function saveLLMSettings(settings: LLMSettings): Promise<void> {
         updated_at: new Date().toISOString(),
       },
       { onConflict: "id" },
-    );
-  if (error) throw error;
+    ),
+  );
 }
 
 /** Which providers have an API key set (booleans only — never the values). */

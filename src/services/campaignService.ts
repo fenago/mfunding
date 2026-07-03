@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 export type CampaignChannel =
   | "live_transfer"
@@ -70,18 +71,15 @@ export async function listCampaigns(): Promise<Campaign[]> {
 
 export async function saveCampaign(id: string | null, input: Partial<CampaignInput>): Promise<Campaign> {
   if (id) {
-    const { data, error } = await supabase.from("campaigns").update(input).eq("id", id).select().single();
-    if (error) throw error;
-    return data as Campaign;
+    const rows = await mustWrite<Campaign>("update campaign", supabase.from("campaigns").update(input).eq("id", id));
+    return rows[0];
   }
-  const { data, error } = await supabase.from("campaigns").insert(input).select().single();
-  if (error) throw error;
-  return data as Campaign;
+  const rows = await mustWrite<Campaign>("create campaign", supabase.from("campaigns").insert(input));
+  return rows[0];
 }
 
 export async function deleteCampaign(id: string): Promise<void> {
-  const { error } = await supabase.from("campaigns").delete().eq("id", id);
-  if (error) throw error;
+  await mustWrite("delete campaign", supabase.from("campaigns").delete().eq("id", id));
 }
 
 /** Compute metrics for every campaign in one pass over attributed deals. */

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import supabase from "../supabase";
+import { tryWrite } from "@/supabase/writes";
 
 export type EntityType = "customer" | "lender" | "marketing_vendor";
 
@@ -82,12 +83,7 @@ export function useActivityLog(entityType: EntityType, entityId: string | undefi
       insertData.created_at = data.created_at;
     }
 
-    const { error } = await supabase.from("activity_log").insert(insertData);
-
-    if (error) {
-      console.error("Error adding activity:", error);
-      throw error;
-    }
+    await tryWrite("add activity log entry", supabase.from("activity_log").insert(insertData));
 
     await fetchActivities();
   };

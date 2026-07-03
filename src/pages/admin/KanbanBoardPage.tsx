@@ -23,6 +23,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useSession } from "../../context/SessionContext";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
+import { mustWrite, tryWrite } from "@/supabase/writes";
 import {
   PlusIcon,
   XMarkIcon,
@@ -401,10 +402,10 @@ function SettingsModal({
   const handleAddPhase = async () => {
     if (!newPhaseName.trim()) return;
     const maxPosition = Math.max(0, ...phases.map(p => p.position));
-    await supabase.from("kanban_phases").insert({
+    await mustWrite("add phase", supabase.from("kanban_phases").insert({
       name: newPhaseName.trim(),
       position: maxPosition + 1,
-    });
+    }));
     setNewPhaseName("");
     onPhasesChange();
   };
@@ -412,35 +413,35 @@ function SettingsModal({
   const handleAddCategory = async () => {
     if (!newCategoryName.trim()) return;
     const maxPosition = Math.max(0, ...categories.map(c => c.position));
-    await supabase.from("kanban_categories").insert({
+    await mustWrite("add category", supabase.from("kanban_categories").insert({
       name: newCategoryName.trim(),
       position: maxPosition + 1,
-    });
+    }));
     setNewCategoryName("");
     onCategoriesChange();
   };
 
   const handleUpdatePhase = async (phase: Phase) => {
-    await supabase.from("kanban_phases").update({ name: phase.name }).eq("id", phase.id);
+    await mustWrite("rename phase", supabase.from("kanban_phases").update({ name: phase.name }).eq("id", phase.id));
     setEditingPhase(null);
     onPhasesChange();
   };
 
   const handleUpdateCategory = async (category: Category) => {
-    await supabase.from("kanban_categories").update({ name: category.name }).eq("id", category.id);
+    await mustWrite("rename category", supabase.from("kanban_categories").update({ name: category.name }).eq("id", category.id));
     setEditingCategory(null);
     onCategoriesChange();
   };
 
   const handleDeletePhase = async (id: string) => {
     if (!confirm("Delete this phase?")) return;
-    await supabase.from("kanban_phases").delete().eq("id", id);
+    await mustWrite("delete phase", supabase.from("kanban_phases").delete().eq("id", id));
     onPhasesChange();
   };
 
   const handleDeleteCategory = async (id: string) => {
     if (!confirm("Delete this category?")) return;
-    await supabase.from("kanban_categories").delete().eq("id", id);
+    await mustWrite("delete category", supabase.from("kanban_categories").delete().eq("id", id));
     onCategoriesChange();
   };
 
@@ -876,17 +877,17 @@ function TaskDetailModal({
   const handleAddComment = async () => {
     if (!task || !newComment.trim()) return;
     setIsLoading(true);
-    await supabase.from("task_comments").insert({
+    await mustWrite("add task comment", supabase.from("task_comments").insert({
       task_id: task.id,
       user_id: session?.user?.id,
       content: newComment.trim(),
-    });
-    await supabase.from("task_activity").insert({
+    }));
+    await tryWrite("log comment activity", supabase.from("task_activity").insert({
       task_id: task.id,
       user_id: session?.user?.id,
       action: "added_comment",
       new_value: newComment.trim().substring(0, 100),
-    });
+    }));
     setNewComment("");
     fetchComments();
     setIsLoading(false);
@@ -1193,33 +1194,37 @@ export default function KanbanBoardPage() {
     }));
 
     for (const update of updates) {
-      await supabase.from("kanban_tasks").update({ position: update.position, status: update.status }).eq("id", update.id);
+      // Optimistic bulk reorder (UI already updated); tolerate 0-row writes.
+      await tryWrite(
+        "reorder task",
+        supabase.from("kanban_tasks").update({ position: update.position, status: update.status }).eq("id", update.id),
+      );
     }
 
     if (oldStatus !== targetStatus) {
-      await supabase.from("task_activity").insert({
+      await tryWrite("log status change", supabase.from("task_activity").insert({
         task_id: active.id,
         user_id: session?.user?.id,
         action: "status_change",
         old_value: COLUMNS.find((c) => c.id === oldStatus)?.title,
         new_value: COLUMNS.find((c) => c.id === targetStatus)?.title,
-      });
+      }));
     }
   };
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
     if (editingTask) {
-      await supabase.from("kanban_tasks").update(taskData).eq("id", editingTask.id);
+      await mustWrite("update task", supabase.from("kanban_tasks").update(taskData).eq("id", editingTask.id));
       setTasks((prev) => prev.map((t) => t.id === editingTask.id ? { ...t, ...taskData } : t));
     } else {
       const maxPosition = Math.max(0, ...tasks.filter((t) => t.status === taskData.status).map((t) => t.position));
-      const { data } = await supabase.from("kanban_tasks").insert({
+      const [data] = await mustWrite<Task>("create task", supabase.from("kanban_tasks").insert({
         ...taskData,
         status: taskData.status || "backlog",
         priority: taskData.priority || "medium",
         position: maxPosition + 1,
         created_by: session?.user?.id,
-      }).select().single();
+      }));
       if (data) setTasks((prev) => [...prev, data]);
     }
     setIsEditModalOpen(false);
@@ -1228,14 +1233,18 @@ export default function KanbanBoardPage() {
 
   const handleDeleteTask = async (id: string) => {
     if (!confirm("Delete this task?")) return;
-    await supabase.from("kanban_tasks").delete().eq("id", id);
+    await mustWrite("delete task", supabase.from("kanban_tasks").delete().eq("id", id));
     setTasks((prev) => prev.filter((t) => t.id !== id));
   };
 
   const handleAssign = async (taskId: string, assignedTo: string | null) => {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, assigned_to: assignedTo } : t)));
-    const { error } = await supabase.from("kanban_tasks").update({ assigned_to: assignedTo }).eq("id", taskId);
-    if (error) {
+    try {
+      await mustWrite(
+        "assign task",
+        supabase.from("kanban_tasks").update({ assigned_to: assignedTo }).eq("id", taskId),
+      );
+    } catch {
       // Revert on failure (e.g. RLS blocked the update).
       await fetchTasks();
       alert("Could not update the assignee. You may not have permission to edit this task.");

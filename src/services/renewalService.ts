@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // Renewal monitoring — funded deals tracked by paydown %. Renewal outreach in GHL
 // fires off the "Paydown %" custom field (pushed via ghlService.pushDealPaydownToGHL),
@@ -52,6 +53,5 @@ export async function updateDealPaydown(dealId: string, paydown: number): Promis
     patch.status = "renewal_eligible";
     patch.renewal_eligible_date = new Date().toISOString().slice(0, 10);
   }
-  const { error } = await supabase.from("deals").update(patch).eq("id", dealId);
-  if (error) throw error;
+  await mustWrite("update deal paydown", supabase.from("deals").update(patch).eq("id", dealId));
 }

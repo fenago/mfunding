@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // State-specific compliance disclosures. The GHL workflow can also pull these
 // directly from the REST API (they're readable when is_active = true).
@@ -81,12 +82,9 @@ export async function updateDisclosure(
   id: string,
   patch: Partial<Pick<Disclosure, "title" | "body" | "is_active">>,
 ): Promise<Disclosure> {
-  const { data, error } = await supabase
-    .from("compliance_disclosures")
-    .update(patch)
-    .eq("id", id)
-    .select()
-    .single();
-  if (error) throw error;
-  return data as Disclosure;
+  const rows = await mustWrite<Disclosure>(
+    "update compliance disclosure",
+    supabase.from("compliance_disclosures").update(patch).eq("id", id),
+  );
+  return rows[0];
 }

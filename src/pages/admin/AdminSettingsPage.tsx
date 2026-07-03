@@ -10,6 +10,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import DocumentUploader from "../../components/shared/DocumentUploader";
 import DocumentList from "../../components/shared/DocumentList";
 
@@ -119,15 +120,14 @@ export default function AdminSettingsPage() {
   };
 
   const handleDocumentDelete = async (docId: string) => {
-    const { error } = await supabase
-      .from("company_documents")
-      .delete()
-      .eq("id", docId);
-
-    if (error) {
-      console.error("Error deleting document:", error);
-    } else {
+    try {
+      await mustWrite(
+        "delete company document",
+        supabase.from("company_documents").delete().eq("id", docId),
+      );
       setCompanyDocuments((prev) => prev.filter((d) => d.id !== docId));
+    } catch (error) {
+      console.error("Error deleting document:", error);
     }
   };
 

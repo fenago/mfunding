@@ -22,6 +22,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
+import { mustWrite, tryWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
 import { getMatchingLenders } from "../../services/lenderMatchingService";
 import { updateSubmission } from "../../services/dealService";
@@ -307,7 +308,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         upsert: false,
       });
       if (upErr) throw upErr;
-      const { error: dbErr } = await supabase.from("customer_documents").insert({
+      await mustWrite("upload signed application doc", supabase.from("customer_documents").insert({
         document_type: "application",
         filename: file.name,
         storage_path: path,
@@ -315,8 +316,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         mime_type: file.type,
         uploaded_by: session?.user?.id,
         customer_id: deal.customer_id,
-      });
-      if (dbErr) throw dbErr;
+      }));
       setSignedAppFile(null);
       await reloadAppDocs();
     } catch (e) {
@@ -428,11 +428,15 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   async function markPortalSubmitted(r: FunderResult) {
     if (!r.submissionId) return;
     const nowIso = new Date().toISOString();
-    const { error: upErr } = await supabase
-      .from("deal_submissions")
-      .update({ status: "submitted", submitted_at: nowIso, portal_confirmed_at: nowIso })
-      .eq("id", r.submissionId);
-    if (upErr) { setError(`Could not mark submitted: ${upErr.message}`); return; }
+    try {
+      await mustWrite("mark portal submitted", supabase
+        .from("deal_submissions")
+        .update({ status: "submitted", submitted_at: nowIso, portal_confirmed_at: nowIso })
+        .eq("id", r.submissionId));
+    } catch (e) {
+      setError(`Could not mark submitted: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     setResults((prev) => ({ ...prev, [r.lenderId]: { ...r, status: "portal_confirmed" } }));
   }
 
@@ -451,14 +455,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // Best-effort activity trail entry against this deal — mirrors useActivityLog's
   // insert shape so it shows up in the deal's Activity tab.
   async function logActivity(interaction_type: string, subject: string, content: string, newStatus?: string) {
-    try {
-      await supabase.from("activity_log").insert({
-        entity_type: "deal", entity_id: deal.id,
-        interaction_type, subject, content,
-        new_status: newStatus ?? null,
-        logged_by: session?.user?.id ?? null,
-      });
-    } catch { /* the trail is nice-to-have; never block the offer save on it */ }
+    // the trail is nice-to-have; never block the offer save on it
+    await tryWrite("deal activity log", supabase.from("activity_log").insert({
+      entity_type: "deal", entity_id: deal.id,
+      interaction_type, subject, content,
+      new_status: newStatus ?? null,
+      logged_by: session?.user?.id ?? null,
+    }));
   }
 
   function openOfferForm(lenderId: string) {

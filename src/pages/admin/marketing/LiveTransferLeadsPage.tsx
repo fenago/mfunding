@@ -10,6 +10,7 @@ import {
   CheckBadgeIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import PageGuide from "../../../components/admin/PageGuide";
 
 interface LiveTransferVendor {
@@ -107,11 +108,10 @@ export default function LiveTransferLeadsPage() {
     );
     setVendors(next);
     try {
-      const { error } = await supabase
-        .from("marketing_vendors")
-        .update({ rank: newRank })
-        .eq("vendor_name", vendor.vendor_name);
-      if (error) throw error;
+      await mustWrite(
+        "update vendor rank",
+        supabase.from("marketing_vendors").update({ rank: newRank }).eq("vendor_name", vendor.vendor_name),
+      );
     } catch (e) {
       console.error("Error saving rank:", e);
       setVendors(prev); // rollback

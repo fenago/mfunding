@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { DocumentArrowUpIcon, XMarkIcon, CheckCircleIcon, ExclamationCircleIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
 
 interface DocumentUploaderProps {
@@ -166,13 +167,10 @@ export default function DocumentUploader({
         insertPayload.vendor_id = entityId;
       }
 
-      const { data, error: dbError } = await supabase
-        .from(tableName)
-        .insert(insertPayload)
-        .select()
-        .single();
-
-      if (dbError) throw dbError;
+      const data = (await mustWrite<{ id: string }>(
+        "save uploaded document",
+        supabase.from(tableName).insert(insertPayload),
+      ))[0];
 
       // Update status to success
       setSelectedFiles((prev) =>

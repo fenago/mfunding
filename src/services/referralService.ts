@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // Referral partner program — CPAs, bookkeepers, RE agents, equipment vendors.
 // $100 (default) gift card per funded referral.
@@ -39,16 +40,13 @@ export async function listReferralPartners(): Promise<ReferralPartner[]> {
 
 export async function saveReferralPartner(id: string | null, input: Partial<ReferralPartnerInput>): Promise<ReferralPartner> {
   if (id) {
-    const { data, error } = await supabase.from("referral_partners").update(input).eq("id", id).select().single();
-    if (error) throw error;
-    return data as ReferralPartner;
+    const rows = await mustWrite<ReferralPartner>("update referral partner", supabase.from("referral_partners").update(input).eq("id", id));
+    return rows[0];
   }
-  const { data, error } = await supabase.from("referral_partners").insert(input).select().single();
-  if (error) throw error;
-  return data as ReferralPartner;
+  const rows = await mustWrite<ReferralPartner>("create referral partner", supabase.from("referral_partners").insert(input));
+  return rows[0];
 }
 
 export async function deleteReferralPartner(id: string): Promise<void> {
-  const { error } = await supabase.from("referral_partners").delete().eq("id", id);
-  if (error) throw error;
+  await mustWrite("delete referral partner", supabase.from("referral_partners").delete().eq("id", id));
 }

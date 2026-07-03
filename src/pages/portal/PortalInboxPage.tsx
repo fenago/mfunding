@@ -6,6 +6,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
+import { tryWrite } from "@/supabase/writes";
 
 interface Message {
   id: string;
@@ -56,10 +57,13 @@ export default function PortalInboxPage() {
 
     // Mark as read if unread
     if (message.status === "unread") {
-      await supabase
-        .from("messages")
-        .update({ status: "read", read_at: new Date().toISOString() })
-        .eq("id", message.id);
+      await tryWrite(
+        "mark message read",
+        supabase
+          .from("messages")
+          .update({ status: "read", read_at: new Date().toISOString() })
+          .eq("id", message.id),
+      );
 
       setMessages((prev) =>
         prev.map((m) => (m.id === message.id ? { ...m, status: "read" as const } : m))

@@ -5,6 +5,7 @@ import {
   SparklesIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { syncFunderToGHL } from "../../services/ghlService";
 import { PARTNERSHIP_TYPES } from "../../data/partnershipTypes";
 
@@ -347,11 +348,9 @@ export default function LenderEditModal({
 
       let lenderId: string | null = lender?.id ?? null;
       if (lender) {
-        const { error } = await supabase.from("lenders").update(payload).eq("id", lender.id);
-        if (error) throw error;
+        await mustWrite("update lender", supabase.from("lenders").update(payload).eq("id", lender.id));
       } else {
-        const { data: inserted, error } = await supabase.from("lenders").insert(payload).select("id").single();
-        if (error) throw error;
+        const inserted = (await mustWrite<{ id: string }>("create lender", supabase.from("lenders").insert(payload)))[0];
         lenderId = inserted?.id ?? null;
       }
 

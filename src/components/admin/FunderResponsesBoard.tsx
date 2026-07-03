@@ -27,6 +27,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
+import { mustWrite, tryWrite } from "@/supabase/writes";
 import { updateSubmission } from "../../services/dealService";
 import { useSession } from "../../context/SessionContext";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -313,23 +314,22 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         .from("customer-documents")
         .upload(path, file, { contentType: file.type, cacheControl: "3600", upsert: false });
       if (upErr) throw upErr;
-      const { data, error: dbErr } = await supabase
-        .from("customer_documents")
-        .insert({
-          customer_id: deal.customer_id,
-          document_type: "other",
-          filename: file.name,
-          storage_path: path,
-          file_size: file.size,
-          mime_type: file.type,
-          status: "approved",
-          description: "Ad-hoc upload from Message-funder (Revenue Playbook)",
-          uploaded_by: session?.user?.id,
-        })
-        .select("id, filename, document_type, created_at")
-        .single();
-      if (dbErr) throw dbErr;
-      const row = data as { id: string; filename: string | null; document_type: string; created_at: string };
+      const row = (await mustWrite<{ id: string; filename: string | null; document_type: string; created_at: string }>(
+        "upload ad-hoc funder doc",
+        supabase
+          .from("customer_documents")
+          .insert({
+            customer_id: deal.customer_id,
+            document_type: "other",
+            filename: file.name,
+            storage_path: path,
+            file_size: file.size,
+            mime_type: file.type,
+            status: "approved",
+            description: "Ad-hoc upload from Message-funder (Revenue Playbook)",
+            uploaded_by: session?.user?.id,
+          }),
+      ))[0];
       setDocs((prev) => [{ ...row, uploaded: true }, ...prev]);
       setSelectedDocIds((m) => ({ ...m, [row.id]: true }));
       setAdhocUploads((prev) => prev.filter((a) => a.localId !== localId));
@@ -511,16 +511,14 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
 
   // Best-effort activity-trail entry (mirrors FunderPicker's logActivity shape).
   async function logActivity(interaction_type: string, subject: string, content: string, newStatus?: string) {
-    // The trail is nice-to-have so we never THROW here — but Supabase returns
-    // errors rather than throwing, so a bare try/catch would hide a real failure
-    // (RLS denial, bad constraint). Check .error explicitly and at least log it.
-    const { error } = await supabase.from("activity_log").insert({
+    // The trail is nice-to-have so we never THROW here — tryWrite surfaces any
+    // RLS denial / bad-constraint failure to the console without blocking.
+    await tryWrite("deal activity log", supabase.from("activity_log").insert({
       entity_type: "deal", entity_id: deal.id,
       interaction_type, subject, content,
       new_status: newStatus ?? null,
       logged_by: session?.user?.id ?? null,
-    });
-    if (error) console.warn("activity_log insert failed (non-blocking):", error.message);
+    }));
   }
 
   function openOfferForm(s: SubRow) {

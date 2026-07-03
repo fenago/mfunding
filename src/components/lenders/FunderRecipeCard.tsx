@@ -10,6 +10,7 @@ import {
   ArrowPathIcon, CheckIcon, PaperAirplaneIcon, DocumentTextIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 type Method = "email" | "portal" | "email_and_portal";
 type AttachmentMode = "links" | "attachments" | "both";
@@ -128,9 +129,8 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
         active: form.active,
         updated_at: new Date().toISOString(),
       };
-      const { error } = await supabase
-        .from("funder_submission_profiles").upsert(payload, { onConflict: "lender_id" });
-      if (error) throw error;
+      await mustWrite("save funder recipe", supabase
+        .from("funder_submission_profiles").upsert(payload, { onConflict: "lender_id" }));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {

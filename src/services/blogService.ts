@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 export interface BlogPost {
   id: string;
@@ -44,16 +45,13 @@ export async function listAllPosts(): Promise<BlogPost[]> {
 
 export async function savePost(id: string | null, input: Partial<BlogPostInput>): Promise<BlogPost> {
   if (id) {
-    const { data, error } = await supabase.from("blog_posts").update(input).eq("id", id).select().single();
-    if (error) throw error;
-    return data as BlogPost;
+    const rows = await mustWrite<BlogPost>("update blog post", supabase.from("blog_posts").update(input).eq("id", id));
+    return rows[0];
   }
-  const { data, error } = await supabase.from("blog_posts").insert(input).select().single();
-  if (error) throw error;
-  return data as BlogPost;
+  const rows = await mustWrite<BlogPost>("create blog post", supabase.from("blog_posts").insert(input));
+  return rows[0];
 }
 
 export async function deletePost(id: string): Promise<void> {
-  const { error } = await supabase.from("blog_posts").delete().eq("id", id);
-  if (error) throw error;
+  await mustWrite("delete blog post", supabase.from("blog_posts").delete().eq("id", id));
 }

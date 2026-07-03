@@ -7,6 +7,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type { Closer, CloserStatus, CloserFormData, Market } from "../../../types/commissions";
 import {
   CLOSER_STATUS_CONFIG,
@@ -132,12 +133,12 @@ export default function CloserListPage() {
     setIsSaving(true);
     try {
       if (editingCloser) {
-        await supabase
-          .from("closers")
-          .update(formData)
-          .eq("id", editingCloser.id);
+        await mustWrite(
+          "update closer",
+          supabase.from("closers").update(formData).eq("id", editingCloser.id),
+        );
       } else {
-        await supabase.from("closers").insert(formData);
+        await mustWrite("create closer", supabase.from("closers").insert(formData));
       }
       setIsModalOpen(false);
       fetchClosers();

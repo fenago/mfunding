@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // Internal underwriting — score a deal's risk from the bank analysis + customer
 // profile, BEFORE submitting to funders. One source in, a recommendation out.
@@ -107,11 +108,9 @@ export async function saveScorecard(config: ScorecardConfig): Promise<void> {
   const { data: existing } = await supabase
     .from("underwriting_scorecards").select("id").eq("is_active", true).limit(1).maybeSingle();
   if (existing) {
-    const { error } = await supabase.from("underwriting_scorecards").update({ config }).eq("id", existing.id);
-    if (error) throw error;
+    await mustWrite("update underwriting scorecard", supabase.from("underwriting_scorecards").update({ config }).eq("id", existing.id));
   } else {
-    const { error } = await supabase.from("underwriting_scorecards").insert({ name: "Default", config, is_active: true });
-    if (error) throw error;
+    await mustWrite("create underwriting scorecard", supabase.from("underwriting_scorecards").insert({ name: "Default", config, is_active: true }));
   }
 }
 
@@ -148,9 +147,9 @@ export async function saveAssessment(params: {
   notes?: string;
 }): Promise<UnderwritingAssessment> {
   const { data: auth } = await supabase.auth.getUser();
-  const { data, error } = await supabase
-    .from("underwriting_assessments")
-    .insert({
+  const rows = await mustWrite<UnderwritingAssessment>(
+    "create underwriting assessment",
+    supabase.from("underwriting_assessments").insert({
       deal_id: params.dealId,
       bank_analysis_id: params.bankAnalysisId ?? null,
       score: params.result.score,
@@ -160,9 +159,7 @@ export async function saveAssessment(params: {
       breakdown: params.result.breakdown,
       notes: params.notes ?? null,
       assessed_by: auth.user?.id ?? null,
-    })
-    .select()
-    .single();
-  if (error) throw error;
-  return data as UnderwritingAssessment;
+    }),
+  );
+  return rows[0];
 }

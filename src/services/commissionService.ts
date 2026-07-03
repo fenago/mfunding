@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type {
   Commission,
   CommissionWithDetails,
@@ -107,14 +108,8 @@ export function calculateCommission(params: CalculateCommissionParams): Commissi
 }
 
 export async function createCommission(data: Omit<Commission, 'id' | 'created_at' | 'updated_at'>) {
-  const { data: commission, error } = await supabase
-    .from("commissions")
-    .insert(data)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return commission as Commission;
+  const rows = await mustWrite<Commission>("create commission", supabase.from("commissions").insert(data));
+  return rows[0];
 }
 
 export async function getAllCommissions(
@@ -177,15 +172,11 @@ export async function updatePaymentStatus(
     updateData.clawback_reason = extra?.clawback_reason || '';
   }
 
-  const { data, error } = await supabase
-    .from("commissions")
-    .update(updateData)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as Commission;
+  const rows = await mustWrite<Commission>(
+    "update commission payment status",
+    supabase.from("commissions").update(updateData).eq("id", id),
+  );
+  return rows[0];
 }
 
 export async function getCommissionSummary(dateFrom?: string, dateTo?: string): Promise<CommissionSummary> {
@@ -267,6 +258,5 @@ export async function getMonthlyCommissionData(months = 12): Promise<MonthlyComm
 }
 
 export async function deleteCommission(id: string) {
-  const { error } = await supabase.from("commissions").delete().eq("id", id);
-  if (error) throw error;
+  await mustWrite("delete commission", supabase.from("commissions").delete().eq("id", id));
 }

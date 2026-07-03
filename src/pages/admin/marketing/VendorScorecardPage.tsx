@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { syncVendorToGHL } from "../../../services/ghlService";
 import PageGuide from "../../../components/admin/PageGuide";
 
@@ -162,11 +163,16 @@ export default function VendorScorecardPage() {
           reputation: v.note || null,
         };
         if (v.dbId) {
-          await supabase.from("marketing_vendors").update(payload).eq("id", v.dbId);
+          await mustWrite("update vendor scorecard", supabase.from("marketing_vendors").update(payload).eq("id", v.dbId));
         } else {
-          const { data: inserted } = await supabase.from("marketing_vendors").insert({
-            ...payload, status: "testing", lead_types: ["live_transfer"],
-          }).select("id").single();
+          const inserted = (
+            await mustWrite<{ id: string }>(
+              "insert scored vendor",
+              supabase.from("marketing_vendors").insert({
+                ...payload, status: "testing", lead_types: ["live_transfer"],
+              }),
+            )
+          )[0];
           // New vendor → push into GHL/VibeReach. Best-effort.
           if (inserted?.id) void syncVendorToGHL(inserted.id).catch((e) => console.warn("GHL vendor sync failed:", e));
         }

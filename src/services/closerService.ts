@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 import type { Closer, CloserFormData, CloserCommissionSummary } from "../types/commissions";
 
 export async function getAllClosers(): Promise<Closer[]> {
@@ -23,31 +24,17 @@ export async function getCloserById(id: string): Promise<Closer> {
 }
 
 export async function createCloser(formData: CloserFormData): Promise<Closer> {
-  const { data, error } = await supabase
-    .from("closers")
-    .insert(formData)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as Closer;
+  const rows = await mustWrite<Closer>("create closer", supabase.from("closers").insert(formData));
+  return rows[0];
 }
 
 export async function updateCloser(id: string, formData: Partial<CloserFormData>): Promise<Closer> {
-  const { data, error } = await supabase
-    .from("closers")
-    .update(formData)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as Closer;
+  const rows = await mustWrite<Closer>("update closer", supabase.from("closers").update(formData).eq("id", id));
+  return rows[0];
 }
 
 export async function deleteCloser(id: string) {
-  const { error } = await supabase.from("closers").delete().eq("id", id);
-  if (error) throw error;
+  await mustWrite("delete closer", supabase.from("closers").delete().eq("id", id));
 }
 
 export async function getCloserPerformance(closerId: string): Promise<CloserCommissionSummary> {

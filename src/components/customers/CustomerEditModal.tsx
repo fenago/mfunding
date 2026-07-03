@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 type CustomerStatus = "lead" | "contacted" | "application_submitted" | "in_review" | "approved" | "funded" | "renewed" | "declined" | "follow_up";
 type LeadSource = "website" | "live_transfer" | "aged_lead" | "referral" | "cold_call" | "partner" | "marketing" | "other";
@@ -231,16 +232,12 @@ export default function CustomerEditModal({
       };
 
       if (customer) {
-        const { error } = await supabase
+        await mustWrite("update customer", supabase
           .from("customers")
           .update(payload)
-          .eq("id", customer.id);
-
-        if (error) throw error;
+          .eq("id", customer.id));
       } else {
-        const { error } = await supabase.from("customers").insert(payload);
-
-        if (error) throw error;
+        await mustWrite("create customer", supabase.from("customers").insert(payload));
       }
 
       onSave();

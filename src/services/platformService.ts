@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // Key-value platform settings (white-label branding + misc super-admin config).
 
@@ -26,8 +27,7 @@ export async function getSetting<T>(key: string, fallback: T): Promise<T> {
 }
 
 export async function saveSetting<T>(key: string, value: T): Promise<void> {
-  const { error } = await supabase.from("platform_settings").upsert({ key, value }, { onConflict: "key" });
-  if (error) throw error;
+  await mustWrite("save platform setting", supabase.from("platform_settings").upsert({ key, value }, { onConflict: "key" }));
 }
 
 export const getBranding = () => getSetting<Branding>("branding", DEFAULT_BRANDING);

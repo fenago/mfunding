@@ -11,6 +11,7 @@ import {
   ArrowUturnLeftIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { mustWrite, tryWrite } from "@/supabase/writes";
 import {
   FUNDERS,
   CATEGORY_LABELS,
@@ -201,23 +202,25 @@ export default function FunderDirectoryPage() {
       if (f.isoProgram) partnership.push("broker_iso");
       if (/affiliate|referral/i.test(`${f.criteria ?? ""} ${f.notes ?? ""}`)) partnership.push("referral");
       if (!partnership.length) partnership.push("direct");
-      const { error } = await supabase.from("lenders").insert({
-        company_name: f.name,
-        website: f.website ?? null,
-        lender_types: ["mca"],
-        partnership_types: partnership,
-        paper_types: paperToTypes(f.paper),
-        primary_contact_phone: f.phone ?? null,
-        min_credit_score: parsed.min_credit_score ?? null,
-        min_funding_amount: parsed.min_funding_amount ?? null,
-        max_funding_amount: parsed.max_funding_amount ?? null,
-        min_monthly_revenue: parsed.min_monthly_revenue ?? null,
-        min_time_in_business: parsed.min_time_in_business ?? null,
-        status,
-        submission_notes: submissionNotes || null,
-        notes: notes || null,
-      });
-      if (error) throw error;
+      await mustWrite(
+        "add funder to lenders",
+        supabase.from("lenders").insert({
+          company_name: f.name,
+          website: f.website ?? null,
+          lender_types: ["mca"],
+          partnership_types: partnership,
+          paper_types: paperToTypes(f.paper),
+          primary_contact_phone: f.phone ?? null,
+          min_credit_score: parsed.min_credit_score ?? null,
+          min_funding_amount: parsed.min_funding_amount ?? null,
+          max_funding_amount: parsed.max_funding_amount ?? null,
+          min_monthly_revenue: parsed.min_monthly_revenue ?? null,
+          min_time_in_business: parsed.min_time_in_business ?? null,
+          status,
+          submission_notes: submissionNotes || null,
+          notes: notes || null,
+        }),
+      );
       setLiveLenders((prev) => (prev.some((l) => l.n === norm(f.name)) ? prev : [...prev, { n: norm(f.name), status }]));
       setAddState((s) => ({
         ...s,
@@ -230,13 +233,21 @@ export default function FunderDirectoryPage() {
 
   async function handleHide(f: Funder) {
     if (!confirmHide[f.name]) { setConfirmHide((s) => ({ ...s, [f.name]: true })); return; }
-    const { error } = await supabase.from("funder_directory_hidden").insert({ funder_name: f.name });
-    if (!error) setHidden((h) => (h.includes(f.name) ? h : [...h, f.name]));
+    const ok = await tryWrite(
+      "hide funder",
+      supabase.from("funder_directory_hidden").insert({ funder_name: f.name }),
+    );
+    if (ok) setHidden((h) => (h.includes(f.name) ? h : [...h, f.name]));
     setConfirmHide((s) => ({ ...s, [f.name]: false }));
   }
   async function handleRestore(f: Funder) {
-    const { error } = await supabase.from("funder_directory_hidden").delete().eq("funder_name", f.name);
-    if (!error) setHidden((h) => h.filter((n) => n !== f.name));
+    // Delete-if-any: restoring a funder that isn't currently hidden legitimately
+    // affects 0 rows, so tryWrite (no row assertion) rather than mustWrite.
+    const ok = await tryWrite(
+      "restore funder",
+      supabase.from("funder_directory_hidden").delete().eq("funder_name", f.name),
+    );
+    if (ok) setHidden((h) => h.filter((n) => n !== f.name));
   }
 
   const toggleCls = (on: boolean) =>

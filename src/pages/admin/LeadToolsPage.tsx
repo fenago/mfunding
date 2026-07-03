@@ -10,6 +10,7 @@ import {
   UsersIcon,
 } from '@heroicons/react/24/outline';
 import supabase from '../../supabase';
+import { mustWrite } from '@/supabase/writes';
 import PageGuide from '../../components/admin/PageGuide';
 
 // ----------------------------------------------------------------------------
@@ -287,14 +288,19 @@ export default function LeadToolsPage() {
     setSavingKey(tool.key);
     // Optimistic update
     setTools((prev) => prev.map((t) => (t.key === tool.key ? { ...t, enabled: next } : t)));
-    const { error } = await supabase.from('lead_tools').update({ enabled: next }).eq('key', tool.key);
-    setSavingKey(null);
-    if (error) {
+    try {
+      await mustWrite(
+        'toggle lead tool',
+        supabase.from('lead_tools').update({ enabled: next }).eq('key', tool.key),
+      );
+    } catch (err) {
+      setSavingKey(null);
       // Revert on failure
       setTools((prev) => prev.map((t) => (t.key === tool.key ? { ...t, enabled: !next } : t)));
-      setError('Failed to update "' + tool.name + '": ' + error.message);
+      setError('Failed to update "' + tool.name + '": ' + (err instanceof Error ? err.message : String(err)));
       return;
     }
+    setSavingKey(null);
     setSavedKeys((prev) => ({ ...prev, [tool.key]: Date.now() }));
     setTimeout(() => {
       setSavedKeys((prev) => {

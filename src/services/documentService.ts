@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { mustWrite } from "@/supabase/writes";
 
 // Document review workflow — admins review uploaded customer documents
 // (pending -> reviewed -> approved / rejected). Bucket: customer-documents.
@@ -35,8 +36,7 @@ export async function getDocumentsForReview(includeAll = false): Promise<ReviewD
 }
 
 export async function setDocumentStatus(id: string, status: DocReviewStatus): Promise<void> {
-  const { error } = await supabase.from("customer_documents").update({ status }).eq("id", id);
-  if (error) throw error;
+  await mustWrite("update document status", supabase.from("customer_documents").update({ status }).eq("id", id));
 }
 
 /** Short-lived signed URL to view/download a document. */

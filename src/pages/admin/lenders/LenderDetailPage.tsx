@@ -13,6 +13,7 @@ import {
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "../../../context/UserProfileContext";
 import { PARTNERSHIP_TYPES } from "../../../data/partnershipTypes";
 import LenderContactList from "../../../components/lenders/LenderContactList";
@@ -230,9 +231,15 @@ export default function LenderDetailPage() {
     if (!confirmDelete) { setConfirmDelete(true); return; }
     setIsDeleting(true);
     setDeleteError(null);
-    const { error } = await supabase.from("lenders").delete().eq("id", lender.id);
+    try {
+      await mustWrite("delete lender", supabase.from("lenders").delete().eq("id", lender.id));
+    } catch (error) {
+      setIsDeleting(false);
+      setDeleteError(error instanceof Error ? error.message : "Failed to delete");
+      setConfirmDelete(false);
+      return;
+    }
     setIsDeleting(false);
-    if (error) { setDeleteError(error.message); setConfirmDelete(false); return; }
     navigate("/admin/lenders");
   }
 
@@ -317,15 +324,14 @@ export default function LenderDetailPage() {
   };
 
   const handleDocumentDelete = async (docId: string) => {
-    const { error } = await supabase
-      .from("lender_documents")
-      .delete()
-      .eq("id", docId);
-
-    if (error) {
-      console.error("Error deleting document:", error);
-    } else {
+    try {
+      await mustWrite(
+        "delete lender document",
+        supabase.from("lender_documents").delete().eq("id", docId),
+      );
       setDocuments((prev) => prev.filter((d) => d.id !== docId));
+    } catch (error) {
+      console.error("Error deleting document:", error);
     }
   };
 
@@ -430,15 +436,7 @@ export default function LenderDetailPage() {
         return;
       }
 
-      const { error } = await supabase
-        .from("lenders")
-        .update(updates)
-        .eq("id", lender.id);
-
-      if (error) {
-        console.error("Supabase error:", error);
-        throw error;
-      }
+      await mustWrite("apply extracted lender data", supabase.from("lenders").update(updates).eq("id", lender.id));
 
       setExtractSuccess("Data applied successfully!");
       setExtractedData(null);
@@ -456,12 +454,10 @@ export default function LenderDetailPage() {
     setIsUpdatingStatus(true);
 
     try {
-      const { error } = await supabase
-        .from("lenders")
-        .update({ status: newStatus })
-        .eq("id", lender.id);
-
-      if (error) throw error;
+      await mustWrite(
+        "update lender status",
+        supabase.from("lenders").update({ status: newStatus }).eq("id", lender.id),
+      );
       setFormData((prev) => ({ ...prev, status: newStatus }));
       fetchLender();
     } catch (error) {
@@ -539,12 +535,7 @@ export default function LenderDetailPage() {
         submission_notes: formData.submission_notes || null,
       };
 
-      const { error } = await supabase
-        .from("lenders")
-        .update(payload)
-        .eq("id", lender.id);
-
-      if (error) throw error;
+      await mustWrite("save lender", supabase.from("lenders").update(payload).eq("id", lender.id));
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
       fetchLender();

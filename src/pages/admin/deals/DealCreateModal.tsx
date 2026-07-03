@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { mustWrite } from "@/supabase/writes";
 import { createDeal } from "../../../services/dealService";
 import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import type { DealType, Market, CreateDealData } from "../../../types/deals";
@@ -121,21 +122,24 @@ export default function DealCreateModal({
           setIsSaving(false);
           return;
         }
-        const { data: created, error: cErr } = await supabase
-          .from("customers")
-          .insert({
-            first_name: newCustomer.first_name.trim(),
-            last_name: newCustomer.last_name.trim() || null,
-            business_name: newCustomer.business_name.trim() || null,
-            email: newCustomer.email.trim() || null,
-            phone: newCustomer.phone.trim(),
-            status: "lead",
-            source: "other",
-          })
-          .select("id")
-          .single();
-        if (cErr || !created) {
-          setError(`Could not create customer: ${cErr?.message ?? "unknown error"}`);
+        let created: { id: string };
+        try {
+          created = (
+            await mustWrite<{ id: string }>(
+              "create customer",
+              supabase.from("customers").insert({
+                first_name: newCustomer.first_name.trim(),
+                last_name: newCustomer.last_name.trim() || null,
+                business_name: newCustomer.business_name.trim() || null,
+                email: newCustomer.email.trim() || null,
+                phone: newCustomer.phone.trim(),
+                status: "lead",
+                source: "other",
+              }),
+            )
+          )[0];
+        } catch (cErr) {
+          setError(`Could not create customer: ${cErr instanceof Error ? cErr.message : "unknown error"}`);
           setIsSaving(false);
           return;
         }
