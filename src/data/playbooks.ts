@@ -44,6 +44,22 @@ export const APPROVAL_SIZING_EXPLAIN: PlaybookExplain = {
   ],
 };
 
+// Renewal math — surfaced on the renewal call so the closer frames the offer
+// as the NET number (new advance minus the payoff), not the gross. This is the
+// single most-fumbled part of a renewal conversation.
+export const RENEWAL_NET_EXPLAIN: PlaybookExplain = {
+  label: "How renewals size — and the net-funding math",
+  intro:
+    "A renewal is not a fresh first-position deal. Proven repayment history is the merchant's biggest asset here, and the offer almost always PAYS OFF the current balance first — so quote the NET, never the gross.",
+  rows: [
+    ["⬆ Proven repayment", "On-time history de-risks the file", "Renewals commonly size 1.2–1.5× monthly revenue — bigger than the original"],
+    ["⬆ Incumbent edge", "The funder holding the current advance already knows the payment history", "They usually beat new paper — fastest approval, best terms; give them first look"],
+    ["🧮 Net-of-balance", "The new advance retires the remaining balance, merchant pockets the rest", "$60K approval − $22K balance owed = $38K NET into the account"],
+    ["🗣 Say the NET number", "Merchants hear 'gross' and panic about the payoff", "“You're approved for sixty; after we clear the twenty-two you still owe, you net about thirty-eight thousand.”"],
+    ["⏱ Timing = terms", "Higher paydown → more favorable renewal", "75%+ paid down is the sweet spot — lead with that when it's true"],
+  ],
+};
+
 export interface PlaybookStep {
   n: number;
   title: string;
@@ -86,7 +102,7 @@ const VCF_QUALIFY_FIELDS: StepField[] = [
 ];
 
 export interface Playbook {
-  id: "website" | "live-transfer" | "vcf";
+  id: "website" | "live-transfer" | "vcf" | "renewal";
   name: string;
   tagline: string;
   pipeline: "mca" | "vcf";
@@ -454,6 +470,133 @@ export const PLAYBOOKS: Playbook[] = [
         ],
         say: "[First Name], your positions are restructured and your payment is way down. When cash flow is healthy again, I'm here to help you grow. Know any owners in the same spot? I can help them too.",
         note: "Recurring commission pays weekly/monthly over the 12–24 month program — keep the relationship warm.",
+      },
+    ],
+  },
+
+  // ─────────────────────────────────────────── RENEWAL → SECOND ADVANCE ───────────────────────────────────────────
+  {
+    id: "renewal",
+    name: "Renewal → Second Advance",
+    tagline: "A funded merchant is paying down. Turn their track record into a second advance — the cheapest deal you'll ever close.",
+    pipeline: "mca",
+    revenue: "6 points on renewal · ≈ $3,000 avg per renewal · 45–60% of funded merchants take one",
+    entry: "From Admin → Renewals (/admin/renewals): the MCA 12 automation fires renewal emails at 40%, 60%, 75%, and 100% paydown. Every merchant on that board is already warmed — you're following up, not cold-calling.",
+    workFrom: {
+      screen: "The Renewals board — pick a merchant, then create their renewal deal",
+      route: "/admin/renewals",
+      appNote:
+        "Start on Admin → Renewals (/admin/renewals): it lists funded merchants by paydown %, and MCA 12 has already emailed them at their trigger. Work the hottest first (75%+). When they say yes, create a NEW deal for that customer with the Renewal box checked (is_renewal = true) — that's what makes it commission at 6 points instead of 8. From there it's the same deal page as any MCA, just lighter: the incumbent funder already holds their history.",
+    },
+    steps: [
+      {
+        n: 1,
+        title: "Spot the trigger — work the board hottest-first",
+        stageKey: "new",
+        automation: "MCA 12 — Renewal Triggers (fires at 40 / 60 / 75 / 100% paydown)",
+        sla: "Same day the trigger fires",
+        tone: "speed",
+        do: [
+          "Open Admin → Renewals (/admin/renewals). It lists every funded merchant with their live paydown %; the ones at a trigger are flagged.",
+          "Call order: 75%+ paid down = HOTTEST (best terms, most eager) → then 100% (advance nearly done) → then 60% → then 40% (earliest, softest ask).",
+          "MCA 12 already emailed them at their trigger, so open with that: they've SEEN the 'you may qualify for more' note. You're the follow-up, not a surprise.",
+          "When they're interested, create the renewal deal: New deal on their customer with the Renewal box checked (is_renewal = true). Everything downstream keys off that flag.",
+        ],
+        route: { to: "/admin/renewals", label: "Admin → Renewals" },
+        note: "Renewals are the cheapest deals you'll ever fund — no lead cost, no cold call, a merchant who already trusts you and has a funder who already knows them. 45–60% take one. This is the highest-margin motion in the whole business.",
+      },
+      {
+        n: 2,
+        title: "The renewal call — match the pitch to their trigger",
+        stageKey: "contacted",
+        automation: "MCA 12 — Renewal Triggers",
+        sla: "65%+ contact rate on your own funded book",
+        explain: RENEWAL_NET_EXPLAIN,
+        do: [
+          "Open the deal (/admin/deals/:id) and move Status → Contacted once you reach them; log the call in the Activity tab.",
+          "Use the script for THEIR paydown tier (below) — the ask is different at 40% vs. 100%.",
+          "Quote the NET, not the gross. The renewal pays off their remaining balance first; say the number that actually hits their account (see 'How renewals size' above).",
+        ],
+        say:
+          "40% paid down: “[First Name], you're about 40% through your advance and paying like clockwork — that track record means you may already qualify for additional capital. Want me to run the numbers?”\n" +
+          "60% paid down: “You're more than halfway paid down, so I can put a renewal offer together right now. It pays off what's left and puts fresh capital on top — want to see the net?”\n" +
+          "75% paid down: “This is the best window you'll get — you're 75% paid down, which unlocks our most favorable renewal terms. Let's lock it in before the balance runs off.”\n" +
+          "100% paid down: “You've paid this one off in full — congratulations. You've earned the strongest terms we offer. Ready for the next round?”",
+        note: "Incumbent funder usually beats new paper on a renewal — faster approval, better terms, because they own the payment history. Frame it as a reward for good repayment, never as 'more debt'.",
+      },
+      {
+        n: 3,
+        title: "Re-qualify light — only what changed",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
+        do: [
+          "You already know this merchant — do NOT re-run the full BANT-F. Confirm just three things: current monthly revenue, current balance / paydown, and any NEW positions taken since you funded them.",
+          "On the deal page move Status → Qualifying and update the numbers on the Customer record (/admin/customers/:id).",
+          "CHECK FOR NEW STACKING: if they've taken on 2+ new advances since your deal, the renewal may not clear — size down or, if they're underwater, switch to the VCF playbook.",
+        ],
+        say: "Just need to refresh a couple numbers since we funded you. Roughly what's monthly revenue running now? And have you taken any other advances since ours — anybody else pulling daily or weekly?",
+        collect: [
+          "Current monthly revenue (has it grown?)",
+          "Current balance / paydown % (confirm against the Renewals board)",
+          "Any NEW positions since funding (≥2 new → size down or route to VCF)",
+        ],
+        fields: [
+          { key: "monthly_revenue", label: "Current monthly revenue ($)", kind: "money", target: "customer", column: "monthly_revenue", placeholder: "28000" },
+          { key: "amount_requested", label: "Renewal amount requested ($)", kind: "money", target: "deal", column: "amount_requested", placeholder: "60000", hint: "Gross approval target — the net after payoff is what you quote the merchant." },
+        ],
+        tone: "branch",
+        note: "Minimal friction — this is a returning customer, not a fresh lead. The whole point of a renewal is that it's fast.",
+      },
+      {
+        n: 4,
+        title: "Docs light — usually 1–2 recent months",
+        stageKey: "bank_statements",
+        automation: "MCA 06 — Bank Statements (Sequence A)",
+        sla: "Short chase — most of the file already exists",
+        tone: "leak",
+        cta: "Send the upload link (moves to Bank Statements)",
+        do: [
+          "The incumbent funder already has the original application and history, so a renewal typically needs just the 1–2 MOST RECENT months of statements to show current activity — not a fresh 4-month package.",
+          "Send the secure 'Bank Statements & Documents Upload' link (same link as a new deal); move Status → Bank Statements as they arrive.",
+          "Review what's in via Admin → Doc Review (/admin/documents). Sequence A chases anything missing, but there's far less to chase here.",
+        ],
+        collect: ["Last 1–2 months bank statements (upload)", "Updated voided check ONLY if their bank changed"],
+        say: "Almost nothing to gather since you're already in our system — just your last month or two of statements so the funder sees current activity. I'll text you the secure link; upload takes about a minute.",
+        route: { to: "/admin/documents", label: "Admin → Doc Review" },
+        note: "Way less friction than a new deal — the funder already holds the original file. Don't over-ask; requesting a full 4-month package on a renewal is the #1 way to stall an easy deal.",
+      },
+      {
+        n: 5,
+        title: "Submit — incumbent funder FIRST",
+        stageKey: "submitted_to_funder",
+        automation: "MCA 07 — Submission Orchestrator (submit-to-funders fn)",
+        sla: "Incumbent usually responds fastest",
+        do: [
+          "Open the deal → Submissions tab. Submit to the INCUMBENT funder first — the one who holds the current advance. They know the payment history, approve fastest, and usually give the best renewal terms.",
+          "Only go wide (3–5 funders, like a new deal) if the incumbent's offer is weak or they pass.",
+          "When offers land, compare on NET dollars to the merchant, not gross approval — a bigger gross with a bigger payoff can net LESS. Present the net side-by-side.",
+        ],
+        route: { to: "/admin/deals", label: "Deal → Submissions tab" },
+        say: "Good news — I'm putting your renewal in front of your current funder first since they already know your history, which usually means the fastest yes and the best terms. I'll have numbers back to you within a day.",
+        note: "Net-funding math matters most here: new advance − remaining balance = what the merchant actually receives. When you compare two offers, rank them by that net number, and that's the only number you quote.",
+      },
+      {
+        n: 6,
+        title: "Fund → restart the clock",
+        stageKey: "funded",
+        automation: "MCA 11 — Funded → Renewal",
+        tone: "win",
+        do: [
+          "When the funder confirms the deposit, move Status → Funded. Commission auto-calculates at 6 points × the renewal split (see Admin → Commissions) — because this deal is flagged is_renewal.",
+          "The Day-1 congrats + Google review + referral-ask email fires automatically — ask for the referral AGAIN; repeat renewers are your best referral source.",
+          "Renewal triggers re-arm automatically off the NEW deal's paydown %. This same merchant reappears on Admin → Renewals for the next round — the flywheel just keeps turning.",
+        ],
+        fields: [
+          { key: "amount_funded", label: "Amount funded — gross ($)", kind: "money", target: "deal", column: "amount_funded", placeholder: "60000", hint: "Gross funded amount. Saving this + marking Funded auto-creates the 6-point renewal commission." },
+        ],
+        route: { to: "/admin/renewals", label: "Admin → Renewals" },
+        say: "Done, [First Name]! Your renewal funded and the net is in your account. Same deal as before — send any owner who needs capital my way and there's a $100 gift card in it for you on every one that funds.",
+        note: "Renewal commission is 6 points (≈ $3,000 on $50K) at the renewal split — lower gross than a new deal, but near-zero acquisition cost makes it the highest-margin dollar you earn. And it re-arms itself: fund it, and the next renewal is already scheduled.",
       },
     ],
   },
