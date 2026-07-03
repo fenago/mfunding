@@ -35,7 +35,7 @@ import {
   ChatBubbleLeftRightIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
-import { useRenewalsAccess } from "../../hooks/useCloserSplits";
+import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
 import Logo from "../ui/Logo";
@@ -57,26 +57,42 @@ const OPS: NavRole[] = ["closer", "admin", "super_admin"]; // operational — al
 const ADMIN: NavRole[] = ["admin", "super_admin"]; // managers — not closers
 const SUPER: NavRole[] = ["super_admin"]; // owner-only: financials, config, network
 
+// The focused "closer lens" (closers, employees, admins-with-a-closer-row) sees
+// only these operating links — the daily work surface. Everything else is hidden
+// for them. Role/renewals gating still applies on top (so a pure closer, who
+// can't reach the admin-only Task Board route, won't see it here either).
+const CLOSER_LENS_PATHS = new Set<string>([
+  "/admin/playbooks", // 🎯 Revenue Playbook — their command center
+  "/admin/comms",
+  "/admin/documents", // Doc Review
+  "/admin/todos", // Task Board
+  "/admin/resources",
+  "/admin/renewals", // shown per closers.renewals_enabled (handled in canSee)
+]);
+
 const navGroups: NavGroup[] = [
   {
     title: "Home",
     items: [
-      { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: OPS },
-      { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
+      // Home link for managers only; the closer lens lands on the Revenue Playbook.
+      { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: ADMIN },
     ],
   },
   {
-    title: "Pipeline",
+    title: "Daily",
     items: [
-      { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
+      { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
-      { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: OPS },
-      { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
+      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
+      { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
+      { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
+      { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
     ],
   },
   {
-    title: "Lead Sourcing",
+    title: "Leads & Marketing",
     items: [
       { name: "Lead Partner (Synergy)", path: "/admin/lead-partner", icon: BuildingOffice2Icon, roles: SUPER },
       { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
@@ -84,11 +100,6 @@ const navGroups: NavGroup[] = [
       { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
       { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
-    ],
-  },
-  {
-    title: "Marketing & Outreach",
-    items: [
       { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
       { name: "Budget Planner", path: "/admin/lead-budget", icon: CalculatorIcon, roles: SUPER },
       { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
@@ -97,43 +108,29 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    title: "Team & Partners",
+    title: "Pipeline Ops",
+    items: [
+      { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: OPS },
+    ],
+  },
+  {
+    title: "Team & Money",
     items: [
       { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
       { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
-    ],
-  },
-  {
-    title: "Funder Network",
-    items: [
-      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
-      { name: "Funder Guide", path: "/admin/funder-guide", icon: BuildingLibraryIcon, roles: OPS },
-    ],
-  },
-  {
-    title: "Finance",
-    items: [
       { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },
+    ],
+  },
+  {
+    title: "Modeling & Insights",
+    items: [
+      { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: SUPER },
+      { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: SUPER },
       { name: "Unit Economics (MCA)", path: "/admin/unit-economics", icon: CalculatorIcon, roles: SUPER },
       { name: "Unit Economics (VCF)", path: "/admin/unit-economics-vcf", icon: CalculatorIcon, roles: SUPER },
       { name: "Live Transfer ROI", path: "/admin/live-transfer-roi", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: SUPER },
       { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: SUPER },
-    ],
-  },
-  {
-    title: "Insights",
-    items: [
-      { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: SUPER },
-      { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: SUPER },
-    ],
-  },
-  {
-    title: "Playbooks & Training",
-    items: [
-      { name: "Revenue Playbooks", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
-      { name: "Pipeline Playbook", path: "/admin/pipeline-playbook", icon: MapIcon, roles: OPS },
-      { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
     ],
   },
   {
@@ -157,6 +154,7 @@ export default function AdminSidebar() {
   const location = useLocation();
   const { profile, isSuperAdmin } = useUserProfile();
   const { canSeeRenewals, loading: renewalsLoading } = useRenewalsAccess();
+  const { isCloserLens } = useCloserLens();
   const { mode, cycleMode } = useTheme();
   const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
   const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
@@ -170,8 +168,13 @@ export default function AdminSidebar() {
     window.location.href = "/";
   };
 
-  const role = profile?.role as NavRole | undefined;
+  // Employees have admin-level app access minus super-admin screens, so treat
+  // them as "admin" for nav visibility (their role isn't itself a NavRole).
+  const role: NavRole | undefined =
+    profile?.role === "employee" ? "admin" : (profile?.role as NavRole | undefined);
   const canSee = (item: NavItem) => {
+    // Closer lens: only the daily operating links, regardless of group.
+    if (isCloserLens && !CLOSER_LENS_PATHS.has(item.path)) return false;
     if (!(isSuperAdmin || (!!role && item.roles.includes(role)))) return false;
     // Renewals is additionally gated per closer (closers.renewals_enabled).
     // super_admin always passes; for everyone else defer until the flag loads

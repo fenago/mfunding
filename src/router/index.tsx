@@ -63,7 +63,7 @@ import Providers from "../Providers.tsx";
 
 // Admin pages
 const AdminLayout = lazyWithReload(() => import("../pages/admin/AdminLayout.tsx"));
-const AdminDashboardPage = lazyWithReload(() => import("../pages/admin/AdminDashboardPage.tsx"));
+const AdminIndexRoute = lazyWithReload(() => import("./AdminIndexRoute.tsx"));
 const KanbanBoardPage = lazyWithReload(() => import("../pages/admin/KanbanBoardPage.tsx"));
 const LendersListPage = lazyWithReload(() => import("../pages/admin/lenders/LendersListPage.tsx"));
 const LenderDetailPage = lazyWithReload(() => import("../pages/admin/lenders/LenderDetailPage.tsx"));
@@ -302,7 +302,7 @@ export const routes: RouteObject[] = [
             children: [
               {
                 index: true,
-                element: <AdminDashboardPage />,
+                element: <AdminIndexRoute />,
               },
               {
                 path: "todos",

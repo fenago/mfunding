@@ -100,3 +100,23 @@ export function useRenewalsAccess(): UseRenewalsAccessResult {
   const canSeeRenewals = isSuperAdmin || !hasCloser || renewalsEnabled;
   return { canSeeRenewals, loading };
 }
+
+interface UseCloserLensResult {
+  /**
+   * True when the user should get the focused "closer lens" — the streamlined
+   * work-queue-first experience (lands on the Revenue Playbook, sees only the
+   * daily operating links). Mirrors the renewals "is a closer" resolution:
+   * a closer/employee, OR an admin who has a `closers` row. super_admins and
+   * plain admins (no closer row) keep the full admin console.
+   */
+  isCloserLens: boolean;
+  loading: boolean;
+}
+
+export function useCloserLens(): UseCloserLensResult {
+  const { isSuperAdmin, isCloser, profile } = useUserProfile();
+  const { hasCloser, loading } = useCloserSplits();
+  const isEmployee = profile?.role === "employee";
+  const isCloserLens = !isSuperAdmin && (isCloser || isEmployee || hasCloser);
+  return { isCloserLens, loading };
+}
