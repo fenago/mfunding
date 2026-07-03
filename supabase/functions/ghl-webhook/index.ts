@@ -226,6 +226,21 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
     };
   }
 
+  // Echo guard: a connected inbox can loop our own CC copy back as "inbound".
+  // If the body starts with our sent payload, it's us — not the funder.
+  const { data: subPayload } = await db.from("deal_submissions")
+    .select("sent_payload").eq("id", sub.id).maybeSingle();
+  const sentBody = String((subPayload?.sent_payload as Record<string, unknown> | null)?.body ?? "");
+  const normEcho = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 160);
+  const bodyN = normEcho(body); const sentN = normEcho(sentBody);
+  if (sentN && bodyN && (bodyN.startsWith(sentN.slice(0, 120)) || sentN.startsWith(bodyN.slice(0, 120)))) {
+    return {
+      outcome: "ignored",
+      detail: `echo of our own submission to ${lender.company_name} — not a reply`,
+      result: { handled: false },
+    };
+  }
+
   const now = new Date().toISOString();
   await db.from("deal_submissions").update({ response_at: now }).eq("id", sub.id);
 

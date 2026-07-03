@@ -73,11 +73,24 @@ Deno.serve(async (req) => {
         cfg, "GET", `/conversations/${c.id}/messages?limit=15`,
       );
       const list = msgs.data?.messages?.messages ?? [];
-      const inbound = list.find((m) =>
-        String(m.direction ?? "") === "inbound" &&
-        /email/i.test(String(m.messageType ?? "")) &&
-        String(m.dateAdded ?? "") > String(newest.submitted_at),
-      );
+      // Our own sent body (for echo detection — a connected inbox can loop our
+      // CC copies back into GHL as "inbound"; those are not funder replies).
+      const { data: subRow } = await db.from("deal_submissions")
+        .select("sent_payload").eq("id", newest.id).maybeSingle();
+      const sentBody = String((subRow?.sent_payload as Record<string, unknown> | null)?.body ?? "");
+      const norm = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 160);
+      const sentSig = norm(sentBody);
+
+      const inbound = list.find((m) => {
+        if (String(m.direction ?? "") !== "inbound") return false;
+        if (!/email/i.test(String(m.messageType ?? ""))) return false;
+        if (!(String(m.dateAdded ?? "") > String(newest.submitted_at))) return false;
+        const body = norm(String(m.body ?? ""));
+        if (sentSig && body && (body.startsWith(sentSig.slice(0, 120)) || sentSig.startsWith(body.slice(0, 120)))) {
+          return false; // echo of our own submission — ignore
+        }
+        return true;
+      });
       if (!inbound) continue;
 
       // Stamp (idempotent: only the NULL row updates).
