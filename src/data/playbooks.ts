@@ -155,7 +155,7 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
       "If all decline → resubmit to the tier-2 / specialty set, or route to VCF if stacked.",
     ],
     route: { to: "/admin/deals", label: "Deal → Submissions tab" },
-    say: "Great news — I've sent your file to our top funding partners. They usually respond in 24–48 hours and I'll email you the moment offers come in.",
+    say: "Great news — your file is with our internal underwriting and is being sent to our top funding partners. They usually respond in 24–48 hours, and I'll email you the moment offers come in.",
   },
   {
     n: 7,

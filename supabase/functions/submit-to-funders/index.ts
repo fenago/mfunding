@@ -471,7 +471,35 @@ Deno.serve(async (req) => {
   }
 
   const anySent = results.some((r) => r.status === "sent" || r.status === "portal_pending");
+
+  // Merchant confirmation — one email per submit action when at least one funder
+  // actually received the package. Product-neutral language (never "loan").
+  let merchantNotified = false;
+  const newSends = results.filter((r) => r.status === "sent").length;
+  if (cfg && ghlContactId && newSends > 0) {
+    try {
+      const first = (c.first_name as string | null) ?? "";
+      const biz = (c.business_name as string | null) ?? "your business";
+      const nSubject = "Your file is with our funding partners";
+      const nBody =
+        `Hi ${first || "there"},
+
+Great news — your file for ${biz} has passed our internal review ` +
+        `and has been submitted to our funding partners. They typically respond within 24–48 hours, ` +
+        `and the moment offers come back we'll reach out with your options.
+
+` +
+        `No action is needed from you right now.
+
+— Momentum Funding`;
+      const nHtml = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(nBody)}</div>`;
+      const nr = await sendEmailToContact(cfg, ghlContactId, nSubject, nHtml, { text: nBody });
+      merchantNotified = nr.ok;
+    } catch { /* best-effort — never fail the submit over the courtesy email */ }
+  }
+
   return json({
+    merchantNotified,
     ok: true,
     dealId,
     total: results.length,

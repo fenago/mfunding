@@ -236,6 +236,13 @@ Deno.serve(async (req) => {
         reasons: Array.isArray(r.reasons) ? r.reasons.filter((x: unknown) => typeof x === "string") : [],
         watch_outs: Array.isArray(r.watch_outs) ? r.watch_outs.filter((x: unknown) => typeof x === "string") : [],
       }));
+    // Persist — these recommendations cost tokens; the picker rehydrates from
+    // the deal so a reload never throws them away.
+    await db.from("deals").update({
+      ai_lender_recommendations: { summary: parsed.summary ?? "", recommendations: parsed.recommendations ?? [] },
+      ai_recommended_at: new Date().toISOString(),
+    }).eq("id", dealId);
+
 
     return json({
       ok: true,

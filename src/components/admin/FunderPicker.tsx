@@ -123,6 +123,17 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiRan, setAiRan] = useState(false);
 
+  // Rehydrate persisted AI analysis (saved on the deal by recommend-lenders)
+  // so a page reload never throws away paid tokens.
+  useEffect(() => {
+    const saved = deal.ai_lender_recommendations as { summary?: string; recommendations?: AiRec[] } | null;
+    if (saved && (saved.recommendations?.length || saved.summary)) {
+      setAiRecs((saved.recommendations ?? []) as AiRec[]);
+      setAiSummary(saved.summary ?? "");
+      setAiRan(true);
+    }
+  }, [deal.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
