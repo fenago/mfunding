@@ -6,7 +6,7 @@ module.exports = {
     'plugin:@typescript-eslint/recommended',
     'plugin:react-hooks/recommended',
   ],
-  ignorePatterns: ['dist', '.eslintrc.cjs'],
+  ignorePatterns: ['dist', '.eslintrc.cjs', 'eslint-rules', 'supabase/functions'],
   parser: '@typescript-eslint/parser',
   plugins: ['react-refresh'],
   rules: {
@@ -14,5 +14,8 @@ module.exports = {
       'warn',
       { allowConstantExport: true },
     ],
+    // Loud-by-default: every supabase table write must go through
+    // mustWrite()/tryWrite() (src/supabase/writes.ts). See eslint-rules/.
+    'require-supabase-write-wrapper': 'error',
   },
 }
