@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   ArrowLeftIcon,
   GlobeAltIcon,
@@ -10,8 +10,10 @@ import {
   ArrowPathIcon,
   CpuChipIcon,
   CheckIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
+import { useUserProfile } from "../../../context/UserProfileContext";
 import LenderContactList from "../../../components/lenders/LenderContactList";
 import FunderRecipeCard from "../../../components/lenders/FunderRecipeCard";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
@@ -213,6 +215,22 @@ export default function LenderDetailPage() {
   const [extractedData, setExtractedData] = useState<LenderExtraction | null>(null);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [isApplyingData, setIsApplyingData] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const { isSuperAdmin } = useUserProfile();
+
+  async function handleDelete() {
+    if (!lender) return;
+    if (!confirmDelete) { setConfirmDelete(true); return; }
+    setIsDeleting(true);
+    setDeleteError(null);
+    const { error } = await supabase.from("lenders").delete().eq("id", lender.id);
+    setIsDeleting(false);
+    if (error) { setDeleteError(error.message); setConfirmDelete(false); return; }
+    navigate("/admin/lenders");
+  }
 
   useEffect(() => {
     if (id) {
@@ -646,8 +664,27 @@ export default function LenderDetailPage() {
               )}
               {isSaving ? "Saving..." : "Save Changes"}
             </button>
+            {isSuperAdmin && (
+              <button
+                onClick={handleDelete}
+                onBlur={() => setConfirmDelete(false)}
+                disabled={isDeleting}
+                title="Delete this lender"
+                className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                  confirmDelete
+                    ? "text-white bg-red-600 hover:bg-red-700"
+                    : "text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-300 dark:hover:bg-red-900/40"
+                }`}
+              >
+                {isDeleting ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <TrashIcon className="w-4 h-4" />}
+                {isDeleting ? "Deleting…" : confirmDelete ? "Click to confirm" : "Delete"}
+              </button>
+            )}
           </div>
         </div>
+        {deleteError && (
+          <p className="text-sm text-red-500 mt-2">Could not delete: {deleteError}</p>
+        )}
       </div>
 
       {/* Tabs */}
