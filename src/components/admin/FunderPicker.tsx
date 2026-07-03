@@ -16,10 +16,15 @@ import {
   GlobeAltIcon,
   SparklesIcon,
   DocumentArrowUpIcon,
+  CurrencyDollarIcon,
+  XMarkIcon,
+  HandThumbDownIcon,
 } from "@heroicons/react/24/outline";
+import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
 import { useSession } from "../../context/SessionContext";
 import { getMatchingLenders } from "../../services/lenderMatchingService";
+import { updateSubmission } from "../../services/dealService";
 import type { DealWithCustomer } from "../../types/deals";
 
 // GHL Documents & Contracts (Completed e-sign) for the MFunding sub-account —
@@ -93,6 +98,42 @@ function relTime(iso: string): string {
 // The core package the checklist surfaces (customer_document_type enum values).
 const CORE_STIPS = ["application", "bank_statement", "id", "voided_check"];
 
+// Everything the FunderPicker tracks per existing submission — includes the
+// offer economics so a logged offer renders inline and in the compare strip
+// without a page refetch.
+interface ExistingSub {
+  status: string;
+  method: string | null;
+  submissionId: string;
+  hasError: boolean;
+  portalConfirmed: boolean;
+  responseAt: string | null;
+  offerAmount: number | null;
+  factorRate: number | null;
+  termMonths: number | null;
+  dailyPayment: number | null;
+  weeklyPayment: number | null;
+  totalPayback: number | null;
+  declineReason: string | null;
+}
+
+type Frequency = "daily" | "weekly";
+// Roughly how many payments hit per month on each retrieval cadence — used only
+// for the "% of monthly revenue" burden hint, not for any stored math.
+const PAYMENTS_PER_MONTH: Record<Frequency, number> = { daily: 21, weekly: 4.33 };
+
+const money = (n: number | null | undefined) =>
+  n == null ? "—" : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+
+// Merchant-side monthly burden of an offer + its share of monthly revenue.
+// amber when the pull eats >15% of revenue (a common affordability red line).
+function burden(payment: number | null, freq: Frequency, monthlyRevenue: number | null | undefined) {
+  if (!payment) return null;
+  const monthly = payment * PAYMENTS_PER_MONTH[freq];
+  const pct = monthlyRevenue ? (monthly / monthlyRevenue) * 100 : null;
+  return { monthly, pct, hot: pct != null && pct > 15 };
+}
+
 const FIT_STYLE: Record<Fit, { label: string; cls: string }> = {
   strong: { label: "STRONG FIT", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
   possible: { label: "POSSIBLE", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
@@ -123,7 +164,17 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const [uploadAppError, setUploadAppError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Record<string, FunderResult>>({});
-  const [existing, setExisting] = useState<Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean; responseAt: string | null }>>({});
+  const [existing, setExisting] = useState<Record<string, ExistingSub>>({});
+  // Inline offer capture: which submitted row's "Log offer" form is open, its
+  // field values, and which row's "Funder declined" reason box is open.
+  const [offerFormFor, setOfferFormFor] = useState<string | null>(null);
+  const [offerForm, setOfferForm] = useState<{ amount: string; factor: string; term: string; payment: string; frequency: Frequency }>({ amount: "", factor: "", term: "", payment: "", frequency: "daily" });
+  const [savingOffer, setSavingOffer] = useState(false);
+  const [offerError, setOfferError] = useState<string | null>(null);
+  const [declineFor, setDeclineFor] = useState<string | null>(null);
+  const [declineReason, setDeclineReason] = useState("");
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [acceptedHint, setAcceptedHint] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [showMisfits, setShowMisfits] = useState(false);
@@ -164,7 +215,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           ids.length ? supabase.from("funder_submission_profiles").select("lender_id, method, required_stips, to_email").in("lender_id", ids) : Promise.resolve({ data: [] }),
           ids.length ? supabase.from("lenders").select("id, submission_email, submission_portal_url").in("id", ids) : Promise.resolve({ data: [] }),
           deal.customer_id ? supabase.from("customer_documents").select("document_type").eq("customer_id", deal.customer_id) : Promise.resolve({ data: [] }),
-          supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at, response_at").eq("deal_id", deal.id),
+          supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason").eq("deal_id", deal.id),
         ]);
         if (cancelled) return;
         setMatches(m.map((x) => ({ id: x.id, company_name: x.company_name, score: x.score, reasons: x.reasons })));
@@ -206,9 +257,15 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           } catch { /* GHL peek is best-effort; app docs still count */ }
         }
         if (!cancelled) { setAppDocs(appPresent); setGhlDocs(ghlPresent); }
-        const emap: Record<string, { status: string; method: string | null; submissionId: string; hasError: boolean; portalConfirmed: boolean; responseAt: string | null }> = {};
-        for (const s of (subRes.data ?? []) as { id: string; lender_id: string; status: string; submission_method: string | null; error: string | null; portal_confirmed_at: string | null; response_at: string | null }[]) {
-          emap[s.lender_id] = { status: s.status, method: s.submission_method, submissionId: s.id, hasError: !!s.error, portalConfirmed: !!s.portal_confirmed_at, responseAt: s.response_at };
+        const emap: Record<string, ExistingSub> = {};
+        for (const s of (subRes.data ?? []) as { id: string; lender_id: string; status: string; submission_method: string | null; error: string | null; portal_confirmed_at: string | null; response_at: string | null; offer_amount: number | null; factor_rate: number | null; term_months: number | null; daily_payment: number | null; weekly_payment: number | null; total_payback: number | null; decline_reason: string | null }[]) {
+          emap[s.lender_id] = {
+            status: s.status, method: s.submission_method, submissionId: s.id, hasError: !!s.error,
+            portalConfirmed: !!s.portal_confirmed_at, responseAt: s.response_at,
+            offerAmount: s.offer_amount, factorRate: s.factor_rate, termMonths: s.term_months,
+            dailyPayment: s.daily_payment, weeklyPayment: s.weekly_payment, totalPayback: s.total_payback,
+            declineReason: s.decline_reason,
+          };
         }
         setExisting(emap);
       } catch (e) {
@@ -386,6 +443,121 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     setPayloadOpen((p) => ({ ...p, [r.lenderId]: data?.sent_payload ?? null }));
   }
 
+  const nameOf = (lenderId: string) => matches.find((m) => m.id === lenderId)?.company_name ?? "Funder";
+
+  // Best-effort activity trail entry against this deal — mirrors useActivityLog's
+  // insert shape so it shows up in the deal's Activity tab.
+  async function logActivity(interaction_type: string, subject: string, content: string, newStatus?: string) {
+    try {
+      await supabase.from("activity_log").insert({
+        entity_type: "deal", entity_id: deal.id,
+        interaction_type, subject, content,
+        new_status: newStatus ?? null,
+        logged_by: session?.user?.id ?? null,
+      });
+    } catch { /* the trail is nice-to-have; never block the offer save on it */ }
+  }
+
+  function openOfferForm(lenderId: string) {
+    const e = existing[lenderId];
+    setDeclineFor(null);
+    setOfferError(null);
+    setOfferFormFor(lenderId);
+    // Prefill from any offer already on the row so "Log offer" doubles as edit.
+    setOfferForm({
+      amount: e?.offerAmount != null ? String(e.offerAmount) : "",
+      factor: e?.factorRate != null ? String(e.factorRate) : "",
+      term: e?.termMonths != null ? String(e.termMonths) : "",
+      payment: e?.dailyPayment != null ? String(e.dailyPayment) : e?.weeklyPayment != null ? String(e.weeklyPayment) : "",
+      frequency: e?.weeklyPayment != null ? "weekly" : "daily",
+    });
+  }
+
+  // Persist a logged offer onto the submission row (status → offer_made) and
+  // reflect it locally so the compare strip + row summary update immediately.
+  async function saveOffer(lenderId: string) {
+    const e = existing[lenderId];
+    if (!e) return;
+    const amount = parseFloat(offerForm.amount);
+    const factor = parseFloat(offerForm.factor);
+    if (!Number.isFinite(amount) || amount <= 0) { setOfferError("Enter the advance amount."); return; }
+    if (!Number.isFinite(factor) || factor <= 0) { setOfferError("Enter the factor rate (e.g. 1.3)."); return; }
+    const term = offerForm.term ? parseInt(offerForm.term, 10) : null;
+    const payment = offerForm.payment ? parseFloat(offerForm.payment) : null;
+    const totalPayback = Math.round(amount * factor);
+    const daily = offerForm.frequency === "daily" ? payment : null;
+    const weekly = offerForm.frequency === "weekly" ? payment : null;
+    setSavingOffer(true);
+    setOfferError(null);
+    try {
+      await updateSubmission(e.submissionId, {
+        status: "offer_made",
+        offer_amount: amount,
+        factor_rate: factor,
+        term_months: term,
+        daily_payment: daily,
+        weekly_payment: weekly,
+        total_payback: totalPayback,
+      });
+      setExisting((prev) => ({
+        ...prev,
+        [lenderId]: { ...prev[lenderId], status: "offer_made", offerAmount: amount, factorRate: factor, termMonths: term, dailyPayment: daily, weeklyPayment: weekly, totalPayback },
+      }));
+      const freqLabel = offerForm.frequency;
+      await logActivity(
+        "offer_received",
+        `Offer logged — ${nameOf(lenderId)}`,
+        `${nameOf(lenderId)} offered ${money(amount)} at ${factor} factor (${money(totalPayback)} payback)${payment ? `, ${money(payment)} ${freqLabel}` : ""}${term ? `, ${term} mo` : ""}.`,
+        "offer_made",
+      );
+      setOfferFormFor(null);
+    } catch (err) {
+      setOfferError(err instanceof Error ? err.message : "Could not save the offer.");
+    } finally {
+      setSavingOffer(false);
+    }
+  }
+
+  // Funder declined the DEAL (distinct from the merchant declining an offer).
+  async function markFunderDeclined(lenderId: string) {
+    const e = existing[lenderId];
+    if (!e) return;
+    setRowBusy(lenderId);
+    try {
+      await updateSubmission(e.submissionId, { status: "declined", decline_reason: declineReason.trim() || null });
+      setExisting((prev) => ({ ...prev, [lenderId]: { ...prev[lenderId], status: "declined", declineReason: declineReason.trim() || null } }));
+      await logActivity("note", `Funder declined — ${nameOf(lenderId)}`, `${nameOf(lenderId)} declined the deal${declineReason.trim() ? `: ${declineReason.trim()}` : "."}`, "declined");
+      setDeclineFor(null);
+      setDeclineReason("");
+    } catch (err) {
+      setOfferError(err instanceof Error ? err.message : "Could not record the decline.");
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  // Merchant's call on a logged offer: accept THIS one (others untouched) or
+  // decline it. Neither advances the deal stage — that stays on the step button.
+  async function setOfferOutcome(lenderId: string, outcome: "offer_accepted" | "offer_declined") {
+    const e = existing[lenderId];
+    if (!e) return;
+    setRowBusy(lenderId);
+    try {
+      await updateSubmission(e.submissionId, { status: outcome });
+      setExisting((prev) => ({ ...prev, [lenderId]: { ...prev[lenderId], status: outcome } }));
+      if (outcome === "offer_accepted") {
+        await logActivity("note", `Offer accepted — ${nameOf(lenderId)}`, `Merchant accepted ${nameOf(lenderId)}'s offer of ${money(e.offerAmount)}.`, "offer_accepted");
+        setAcceptedHint(true);
+      } else {
+        await logActivity("note", `Offer declined by merchant — ${nameOf(lenderId)}`, `Merchant declined ${nameOf(lenderId)}'s offer.`, "offer_declined");
+      }
+    } catch (err) {
+      setOfferError(err instanceof Error ? err.message : "Could not update the offer.");
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
   const renderRow = (m: Match) => {
     const method = methodOf(m.id);
     const missing = missingStipsOf(m.id);
@@ -394,9 +566,10 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     const disabled = noDest || missing.length > 0 || alreadyOut;
     const badge = methodBadge(method);
     const checked = selected.has(m.id);
+    const e = existing[m.id];
     return (
+      <div key={m.id} className="space-y-1.5">
       <label
-        key={m.id}
         className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
           disabled ? "border-gray-200 dark:border-gray-700 opacity-60" : checked ? "border-ocean-blue bg-ocean-blue/5" : "border-gray-200 dark:border-gray-700 hover:border-ocean-blue/50 cursor-pointer"
         }`}
@@ -415,7 +588,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               <badge.icon className="w-3 h-3" /> {badge.label}
             </span>
             <span className="text-[11px] text-gray-400">score {m.score}</span>
-            {alreadyOut && (existing[m.id]?.responseAt
+            {alreadyOut && e?.status === "offer_made" && <span className="text-[11px] font-medium text-orange-600">offer logged</span>}
+            {alreadyOut && e?.status === "offer_accepted" && <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600"><TrophyIcon className="w-3 h-3" /> offer accepted</span>}
+            {alreadyOut && e?.status === "offer_declined" && <span className="text-[11px] font-medium text-rose-600">offer declined by merchant</span>}
+            {alreadyOut && e?.status === "declined" && <span className="text-[11px] font-medium text-rose-600">funder declined</span>}
+            {alreadyOut && !["offer_made", "offer_accepted", "offer_declined", "declined"].includes(e?.status ?? "") && (existing[m.id]?.responseAt
               ? <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600">✉ replied {relTime(existing[m.id].responseAt!)}</span>
               : <span className="text-[11px] text-emerald-600">already submitted</span>)}
             {alreadyOut && existing[m.id]?.submissionId && (
@@ -441,12 +618,145 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           {noDest && <span className="block text-[11px] text-gray-400 mt-0.5">no submission email or portal on file</span>}
         </span>
       </label>
+
+      {/* Inline offer capture — only on rows already sent to the funder, so the
+          closer logs the reply without leaving Step 6. */}
+      {alreadyOut && e && renderOfferBlock(m, e)}
+      </div>
+    );
+  };
+
+  // The compact "Log offer / Funder declined" strip + inline forms that hang
+  // under a submitted funder row.
+  const renderOfferBlock = (m: Match, e: ExistingSub) => {
+    const hasOffer = e.offerAmount != null;
+    const freq: Frequency = e.weeklyPayment != null ? "weekly" : "daily";
+    const payment = freq === "weekly" ? e.weeklyPayment : e.dailyPayment;
+    const b = burden(payment, freq, deal.customer?.monthly_revenue ?? null);
+    const busy = rowBusy === m.id;
+    return (
+      <div className="ml-6 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 px-3 py-2 space-y-2">
+        {/* Logged-offer summary */}
+        {hasOffer && e.status !== "declined" && (
+          <div className="flex items-center gap-2 flex-wrap text-[11px]">
+            <span className="font-semibold text-gray-800 dark:text-gray-100">{money(e.offerAmount)}</span>
+            <span className="text-gray-400">·</span>
+            <span className="text-gray-600 dark:text-gray-300">{e.factorRate}x</span>
+            <span className="text-gray-400">·</span>
+            <span className="text-gray-600 dark:text-gray-300">{money(e.totalPayback)} payback</span>
+            {payment != null && <><span className="text-gray-400">·</span><span className="text-gray-600 dark:text-gray-300">{money(payment)}/{freq === "weekly" ? "wk" : "day"}</span></>}
+            {e.termMonths != null && <><span className="text-gray-400">·</span><span className="text-gray-600 dark:text-gray-300">{e.termMonths} mo</span></>}
+            {b?.pct != null && (
+              <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full font-medium ${b.hot ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"}`}>
+                {b.pct.toFixed(0)}% of monthly revenue{b.hot ? " ⚠" : ""}
+              </span>
+            )}
+          </div>
+        )}
+        {e.status === "declined" && (
+          <p className="text-[11px] text-rose-600 dark:text-rose-400">Funder declined{e.declineReason ? ` — ${e.declineReason}` : ""}.</p>
+        )}
+
+        {/* Row actions */}
+        {declineFor !== m.id && offerFormFor !== m.id && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {e.status !== "declined" && (
+              <button type="button" onClick={() => openOfferForm(m.id)} className="text-[11px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 inline-flex items-center gap-1">
+                <CurrencyDollarIcon className="w-3.5 h-3.5" /> {hasOffer ? "Edit offer" : "Log offer"}
+              </button>
+            )}
+            {e.status !== "declined" && !hasOffer && (
+              <button type="button" onClick={() => { setDeclineFor(m.id); setDeclineReason(""); setOfferFormFor(null); }} className="text-[11px] font-semibold px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 inline-flex items-center gap-1">
+                <HandThumbDownIcon className="w-3.5 h-3.5" /> Funder declined
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Inline offer form */}
+        {offerFormFor === m.id && (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <label className="text-[10px] text-gray-500">Advance amount
+                <input type="number" inputMode="decimal" value={offerForm.amount} onChange={(ev) => setOfferForm((f) => ({ ...f, amount: ev.target.value }))} placeholder="50000" className="mt-0.5 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-[12px] text-gray-900 dark:text-white" />
+              </label>
+              <label className="text-[10px] text-gray-500">Factor rate
+                <input type="number" inputMode="decimal" step="0.01" value={offerForm.factor} onChange={(ev) => setOfferForm((f) => ({ ...f, factor: ev.target.value }))} placeholder="1.30" className="mt-0.5 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-[12px] text-gray-900 dark:text-white" />
+              </label>
+              <label className="text-[10px] text-gray-500">Term (months)
+                <input type="number" inputMode="numeric" value={offerForm.term} onChange={(ev) => setOfferForm((f) => ({ ...f, term: ev.target.value }))} placeholder="6" className="mt-0.5 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-[12px] text-gray-900 dark:text-white" />
+              </label>
+              <label className="text-[10px] text-gray-500">Payment
+                <div className="mt-0.5 flex gap-1">
+                  <input type="number" inputMode="decimal" value={offerForm.payment} onChange={(ev) => setOfferForm((f) => ({ ...f, payment: ev.target.value }))} placeholder="450" className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-[12px] text-gray-900 dark:text-white" />
+                  <select value={offerForm.frequency} onChange={(ev) => setOfferForm((f) => ({ ...f, frequency: ev.target.value as Frequency }))} className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1 py-1 text-[12px] text-gray-900 dark:text-white">
+                    <option value="daily">daily</option>
+                    <option value="weekly">weekly</option>
+                  </select>
+                </div>
+              </label>
+            </div>
+            {/* Live payback + burden preview from the in-progress form values */}
+            {(() => {
+              const a = parseFloat(offerForm.amount), fac = parseFloat(offerForm.factor), pay = parseFloat(offerForm.payment);
+              if (!Number.isFinite(a) || !Number.isFinite(fac)) return null;
+              const pv = burden(Number.isFinite(pay) ? pay : null, offerForm.frequency, deal.customer?.monthly_revenue ?? null);
+              return (
+                <p className="text-[11px] text-gray-500">
+                  Total payback {money(Math.round(a * fac))}
+                  {pv?.pct != null && <span className={pv.hot ? "text-amber-600 font-medium" : ""}> · {pv.pct.toFixed(0)}% of monthly revenue{pv.hot ? " ⚠" : ""}</span>}
+                </p>
+              );
+            })()}
+            {offerError && <p className="text-[11px] text-red-600 dark:text-red-400">{offerError}</p>}
+            <div className="flex items-center gap-2">
+              <button type="button" disabled={savingOffer} onClick={() => saveOffer(m.id)} className="text-[11px] font-semibold px-2.5 py-1 rounded bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1">
+                {savingOffer ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <CheckCircleIcon className="w-3.5 h-3.5" />} Save offer
+              </button>
+              <button type="button" onClick={() => { setOfferFormFor(null); setOfferError(null); }} className="text-[11px] text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
+                <XMarkIcon className="w-3.5 h-3.5" /> Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Inline "funder declined" reason box */}
+        {declineFor === m.id && (
+          <div className="space-y-2">
+            <input type="text" value={declineReason} onChange={(ev) => setDeclineReason(ev.target.value)} placeholder="Reason (optional) — e.g. too many positions, low deposits" className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-[12px] text-gray-900 dark:text-white" />
+            <div className="flex items-center gap-2">
+              <button type="button" disabled={busy} onClick={() => markFunderDeclined(m.id)} className="text-[11px] font-semibold px-2.5 py-1 rounded bg-rose-600 text-white hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1">
+                {busy ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <HandThumbDownIcon className="w-3.5 h-3.5" />} Record decline
+              </button>
+              <button type="button" onClick={() => { setDeclineFor(null); setDeclineReason(""); }} className="text-[11px] text-gray-500 hover:text-gray-700 inline-flex items-center gap-1">
+                <XMarkIcon className="w-3.5 h-3.5" /> Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     );
   };
 
   const resultRows = matches
     .map((m) => results[m.id])
     .filter(Boolean) as FunderResult[];
+
+  // Every submission that carries a logged offer (funder-declined ones drop out),
+  // ranked cheapest-payback-first so the best economics sit at the front.
+  const loggedOffers = useMemo(() => {
+    const rows = Object.entries(existing)
+      .filter(([, e]) => e.offerAmount != null && e.status !== "declined")
+      .map(([lenderId, e]) => {
+        const freq: Frequency = e.weeklyPayment != null ? "weekly" : "daily";
+        const payment = freq === "weekly" ? e.weeklyPayment : e.dailyPayment;
+        const payback = e.totalPayback ?? (e.offerAmount ?? 0) * (e.factorRate ?? 1);
+        return { lenderId, e, freq, payment, payback, b: burden(payment, freq, deal.customer?.monthly_revenue ?? null) };
+      });
+    rows.sort((a, b) => (a.payback - b.payback) || ((a.e.factorRate ?? 99) - (b.e.factorRate ?? 99)));
+    return rows;
+  }, [existing, deal.customer?.monthly_revenue]);
+  const bestOfferLender = loggedOffers[0]?.lenderId;
 
   return (
     <div className="mt-4 rounded-lg border border-ocean-blue/40 bg-white dark:bg-gray-800 p-3 space-y-3">
@@ -594,6 +904,61 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           ) : (
             <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-[12px] text-gray-400">
               No signed application yet.
+            </div>
+          )}
+
+          {/* Offers compare strip — side-by-side once ≥1 offer is logged, best
+              economics (cheapest payback) highlighted. Accept/decline here don't
+              move the deal stage; that stays on the step button. */}
+          {loggedOffers.length > 0 && (
+            <div className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <TrophyIcon className="w-4 h-4 text-emerald-500" />
+                <span className="text-[12px] font-semibold text-gray-900 dark:text-white">Offers — {loggedOffers.length} logged</span>
+                <span className="text-[10px] text-gray-400">ranked by total payback (cheapest for the merchant first)</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {loggedOffers.map(({ lenderId, e, freq, payment, payback, b }) => {
+                  const isBest = lenderId === bestOfferLender;
+                  const accepted = e.status === "offer_accepted";
+                  const declined = e.status === "offer_declined";
+                  const busy = rowBusy === lenderId;
+                  return (
+                    <div key={lenderId} className={`rounded-md border p-2.5 text-[11px] space-y-1.5 ${isBest ? "border-emerald-400 bg-emerald-50/70 dark:bg-emerald-900/15" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"} ${declined ? "opacity-50" : ""}`}>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {isBest && <TrophyIcon className="w-3.5 h-3.5 text-emerald-500" />}
+                        <span className="font-semibold text-gray-900 dark:text-white">{nameOf(lenderId)}</span>
+                        {isBest && <span className="text-[9px] uppercase tracking-wide text-emerald-600 font-semibold">best value</span>}
+                        {accepted && <span className="text-[9px] uppercase tracking-wide text-emerald-700 font-semibold">accepted</span>}
+                        {declined && <span className="text-[9px] uppercase tracking-wide text-rose-600 font-semibold">declined</span>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-gray-600 dark:text-gray-300">
+                        <span className="text-gray-400">Amount</span><span className="text-right font-medium">{money(e.offerAmount)}</span>
+                        <span className="text-gray-400">Factor</span><span className="text-right">{e.factorRate}x</span>
+                        <span className="text-gray-400">Payback</span><span className="text-right font-medium">{money(payback)}</span>
+                        {payment != null && <><span className="text-gray-400">Payment</span><span className="text-right">{money(payment)}/{freq === "weekly" ? "wk" : "day"}</span></>}
+                        {e.termMonths != null && <><span className="text-gray-400">Term</span><span className="text-right">{e.termMonths} mo</span></>}
+                      </div>
+                      {b?.pct != null && (
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full font-medium ${b.hot ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"}`}>
+                          {b.pct.toFixed(0)}% of monthly revenue{b.hot ? " ⚠" : ""}
+                        </span>
+                      )}
+                      {!accepted && !declined && (
+                        <div className="flex items-center gap-1.5 pt-0.5">
+                          <button type="button" disabled={busy} onClick={() => setOfferOutcome(lenderId, "offer_accepted")} className="text-[10px] font-semibold px-2 py-1 rounded bg-emerald-600 text-white hover:opacity-90 disabled:opacity-50">Mark accepted</button>
+                          <button type="button" disabled={busy} onClick={() => setOfferOutcome(lenderId, "offer_declined")} className="text-[10px] font-semibold px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 disabled:opacity-50">Declined by merchant</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {acceptedHint && (
+                <p className="text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 rounded px-2 py-1.5">
+                  Offer accepted. Now advance the deal: <span className="font-medium">Offer Received → Offer Presented → Accepted</span> via the step buttons below — the stage move stays manual on purpose.
+                </p>
+              )}
             </div>
           )}
 
