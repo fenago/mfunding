@@ -300,9 +300,16 @@ export default function PlaybooksPage() {
         </div>
 
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
-        {dealMatchesPlaybook && deal ? (
+        {dealMatchesPlaybook && deal ? (<>
           <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} onCloseDeal={closeDeal} splits={splits} hasCloser={hasCloser} />
-        ) : (
+          {deal.merchant_reply_at && Date.now() - Date.parse(deal.merchant_reply_at) < 3 * 24 * 60 * 60 * 1000 && (
+            <div className="mt-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-800 dark:text-emerald-200 flex flex-wrap items-center gap-1.5">
+              <span className="font-semibold">💬 Merchant replied {(() => { const m = Math.round((Date.now() - Date.parse(deal.merchant_reply_at!)) / 60000); return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; })()}</span>
+              {deal.merchant_reply_summary && <span>— {deal.merchant_reply_summary}</span>}
+              <Link to="/admin/comms" className="underline font-medium ml-auto">read the thread in Comms →</Link>
+            </div>
+          )}
+        </>) : (
           <div className="mb-6 space-y-3">
             {deal && !dealMatchesPlaybook && (
               <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-200 flex items-center justify-between gap-3">

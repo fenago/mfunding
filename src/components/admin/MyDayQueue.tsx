@@ -27,9 +27,13 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
     const since = responded.map((s) => s.response_at as string).sort()[0];
     return { rank: 1, badge: "💬 Funder replied", why: "A funder responded — pull the offer in.", since, tone: "emerald" };
   }
-  // 2 — offer received, sitting >24h without being presented.
+  // 2 — the merchant wrote back within the last 3 days: read + act.
+  if (deal.merchant_reply_at && now - Date.parse(deal.merchant_reply_at) < 3 * DAY) {
+    return { rank: 2, badge: "💬 Merchant replied", why: deal.merchant_reply_summary || "The merchant wrote back — read + act.", since: deal.merchant_reply_at, tone: "emerald" };
+  }
+  // 3 — offer received, sitting >24h without being presented.
   if (deal.status === "offer_received" && deal.offer_received_at && now - Date.parse(deal.offer_received_at) > DAY) {
-    return { rank: 2, badge: "📄 Present offers", why: "Offer in hand 24h+ — get it in front of them.", since: deal.offer_received_at, tone: "amber" };
+    return { rank: 3, badge: "📄 Present offers", why: "Offer in hand 24h+ — get it in front of them.", since: deal.offer_received_at, tone: "amber" };
   }
   // 3 — a docs stage stalled 3+ days.
   const staleCol: Record<string, keyof QueueDeal> = {
@@ -40,16 +44,16 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   if (deal.status in staleCol) {
     const ts = deal[staleCol[deal.status]] as string | null;
     if (ts && now - Date.parse(ts) > 3 * DAY) {
-      return { rank: 3, badge: "⏰ Docs stale", why: "No movement in 3+ days — chase the stips.", since: ts, tone: "red" };
+      return { rank: 4, badge: "⏰ Docs stale", why: "No movement in 3+ days — chase the stips.", since: ts, tone: "red" };
     }
   }
   // 4 — submitted 48h+ ago and no funder has responded yet.
   if (deal.status === "submitted_to_funder" && deal.submitted_at && !anyResponded && now - Date.parse(deal.submitted_at) > 2 * DAY) {
-    return { rank: 4, badge: "📤 Nudge funders", why: "Submitted 48h+ ago, still silent — nudge them.", since: deal.submitted_at, tone: "blue" };
+    return { rank: 5, badge: "📤 Nudge funders", why: "Submitted 48h+ ago, still silent — nudge them.", since: deal.submitted_at, tone: "blue" };
   }
   // 5 — a new lead untouched for over an hour.
   if (deal.status === "new" && deal.created_at && now - Date.parse(deal.created_at) > HOUR) {
-    return { rank: 5, badge: "🆕 Untouched lead", why: "New lead sitting 1h+ — make first contact.", since: deal.created_at, tone: "gray" };
+    return { rank: 6, badge: "🆕 Untouched lead", why: "New lead sitting 1h+ — make first contact.", since: deal.created_at, tone: "gray" };
   }
   return null;
 }

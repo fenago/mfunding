@@ -95,6 +95,191 @@ async function classifyReply(db: SupabaseClient, replyText: string): Promise<Rep
   }
 }
 
+// ── Merchant reply detection ────────────────────────────────────────────────
+// Deals we never chase for a merchant reply (mirrors the My Day queue's closed set).
+const MERCHANT_CLOSED_STATUSES = [
+  "funded", "nurture", "declined", "dead",
+  "renewal_eligible", "restructure_executed", "servicing",
+];
+
+// Strip HTML/entities, collapse whitespace, and drop the quoted original so the
+// snippet carries only what the merchant actually wrote.
+function cleanEmailBody(raw: string): string {
+  let text = raw.replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
+    .replace(/\s+/g, " ").trim();
+  const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
+  if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
+  return text;
+}
+
+// Ask Claude for a one-line, closer-scannable summary of a merchant email,
+// explicitly flagging attached/promised documents. Best-effort ONLY — a failure
+// returns null and never blocks the stamp/alert. Uses a plain summarization task
+// (the funder "classify_reply" prompt is funder-flavored and wrong here).
+async function summarizeMerchantReply(db: SupabaseClient, replyText: string): Promise<string | null> {
+  if (!replyText.trim()) return null;
+  const system =
+    "You summarize a single email a small-business MERCHANT sent to their business-funding " +
+    "broker. A merchant cash advance is a purchase of future receivables, NOT a loan — never " +
+    "use lending terms. Reply with ONE plain sentence a closer can scan, and explicitly note " +
+    "whether the merchant attached or promised any documents (e.g. bank statements, ID, voided " +
+    "check). No preamble, no markdown, no quotes around it.";
+  try {
+    const text = (await callLLM(db, {
+      system,
+      prompt: `Merchant email:\n"""\n${replyText}\n"""\n\nOne-sentence summary:`,
+      maxTokens: 256,
+      temperature: 0,
+      task: "summarize_merchant_reply",
+    })).trim();
+    return text ? text.slice(0, 300) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Newest inbound merchant reply in a contact's GHL conversations that is strictly
+// newer than `afterIso`. Same resolution as the funder path: the message-level
+// body is the quoted original, so the real text lives in the linked email record
+// (meta.email.messageIds). from-guard rejects our own senders. Returns the reply
+// text, from-address, and the MESSAGE's own timestamp (used to stamp forward-only).
+async function findMerchantReply(
+  cfg: Awaited<ReturnType<typeof getGhlConfig>>,
+  contactId: string,
+  afterIso: string,
+): Promise<{ text: string; from: string; at: string } | null> {
+  const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
+    cfg, "GET",
+    `/conversations/search?locationId=${cfg.locationId}&contactId=${contactId}`,
+  );
+  let best: { text: string; from: string; at: string } | null = null;
+  for (const c of conv.data?.conversations ?? []) {
+    const msgs = await ghlFetch<{ messages?: { messages?: Array<Record<string, unknown>> } }>(
+      cfg, "GET", `/conversations/${c.id}/messages?limit=15`,
+    );
+    const list = msgs.data?.messages?.messages ?? [];
+    const candidates = list.filter((m) =>
+      String(m.direction ?? "") === "inbound" &&
+      /email/i.test(String(m.messageType ?? "")) &&
+      String(m.dateAdded ?? "") > afterIso,
+    );
+    for (const m of candidates) {
+      const at = String(m.dateAdded ?? "");
+      if (best && at <= best.at) continue; // already hold a newer one
+      const meta = m.meta as { email?: { messageIds?: string[] } } | undefined;
+      const ids = meta?.email?.messageIds ?? [];
+      for (const eid of ids) {
+        const emailRes = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
+          cfg, "GET", `/conversations/messages/email/${eid}`,
+        );
+        const e = (emailRes.data?.emailMessage ?? emailRes.data ?? {}) as Record<string, unknown>;
+        if (String(e.direction ?? "") !== "inbound") continue;
+        const from = String(e.from ?? "").toLowerCase();
+        // Self-loop guard: our own sender bounced back is not a merchant reply.
+        if (from.includes("send.mfunding.net") || from.includes("socrates73@gmail.com")) continue;
+        let text = cleanEmailBody(String(e.body ?? ""));
+        if (!text) text = "(reply received — open the conversation to read it)";
+        best = { text, from: String(e.from ?? ""), at };
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+// Phase 2 (runs every scheduled invocation, independent of the funder phase):
+// scan recently-active deals whose merchant has a GHL contact and alert on inbound
+// email newer than what we've already stamped. Idempotent — a run with no NEW
+// inbound stamps nothing (baseline == merchant_reply_at ⇒ zero candidates).
+async function runMerchantPhase(
+  db: SupabaseClient,
+  cfg: Awaited<ReturnType<typeof getGhlConfig>>,
+): Promise<{ merchantReplies: number; merchantDetails: string[] }> {
+  const cutoff = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: rows } = await db.from("deals")
+    .select("id, deal_number, merchant_reply_at, created_at, customer:customers!customer_id ( ghl_contact_id, email, business_name, first_name, last_name )")
+    .not("status", "in", `(${MERCHANT_CLOSED_STATUSES.join(",")})`)
+    .gt("updated_at", cutoff)
+    .order("updated_at", { ascending: false })
+    .limit(40);
+
+  // Only deals whose merchant actually has a GHL contact; cap the batch at ~20.
+  const deals = (rows ?? [])
+    .filter((d) => (d.customer as { ghl_contact_id?: string } | null)?.ghl_contact_id)
+    .slice(0, 20);
+
+  let merchantReplies = 0;
+  const merchantDetails: string[] = [];
+
+  for (const deal of deals) {
+    const cust = deal.customer as
+      { ghl_contact_id: string; email?: string; business_name?: string; first_name?: string; last_name?: string } | null;
+    if (!cust?.ghl_contact_id) continue;
+
+    // Baseline: only ever look for inbound newer than what we've already seen
+    // (or, on the first pass, newer than the deal's creation).
+    const afterIso = (deal.merchant_reply_at as string | null) ?? (deal.created_at as string);
+    let reply: { text: string; from: string; at: string } | null = null;
+    let dbgErr = "";
+    try {
+      reply = await findMerchantReply(cfg, cust.ghl_contact_id, afterIso);
+    } catch (e) { dbgErr = e instanceof Error ? e.message : String(e); }
+    merchantDetails.push(`dbg ${deal.deal_number}: after=${afterIso} reply=${reply ? reply.at : "null"} err=${dbgErr}`);
+    if (!reply) continue;
+
+    const businessName = cust.business_name
+      || [cust.first_name, cust.last_name].filter(Boolean).join(" ").trim()
+      || "the merchant";
+    const dealNumber = (deal.deal_number as string) ?? String(deal.id);
+    const snippet = reply.text.slice(0, 300);
+
+    // Summarize (best-effort — must NOT block the stamp/alert below).
+    let summary: string | null = null;
+    try { summary = await summarizeMerchantReply(db, reply.text); } catch { /* best-effort */ }
+
+    // Stamp forward-only. The .or guard makes concurrent runs race-safe; the
+    // baseline filter already guarantees reply.at > merchant_reply_at.
+    const { data: stamped, error: stampErr } = await db.from("deals")
+      .update({ merchant_reply_at: reply.at, merchant_reply_summary: summary })
+      .eq("id", deal.id)
+      .or(`merchant_reply_at.is.null,merchant_reply_at.lt.${reply.at}`)
+      .select("id");
+    if (stampErr) merchantDetails.push(`dbg stampErr ${deal.deal_number}: ${stampErr.message}`);
+    if (!stamped?.length) continue; // another run beat us to this reply
+
+    merchantReplies++;
+    await db.from("activity_log").insert({
+      entity_type: "deal", entity_id: deal.id, interaction_type: "email",
+      subject: "merchant:reply",
+      content: `[re: merchant] ${summary ?? "Merchant replied"}: "${snippet.slice(0, 180)}"`,
+    });
+
+    // Internal alert — owner only. NEVER email the merchant.
+    try {
+      const owner = await upsertContact(cfg, {
+        email: OWNER_EMAIL, firstName: "Momentum", lastName: "Funding",
+        tags: ["staff"], source: "Merchant Reply Alert",
+      });
+      const ownerId = owner.data?.contact?.id;
+      if (ownerId) {
+        const subj = `Merchant replied: ${businessName} on ${dealNumber}`;
+        const bodyText =
+          `${businessName} (${reply.from}) wrote back on ${dealNumber}.\n\n` +
+          (summary ? `${summary}\n\n` : "") +
+          (snippet ? `"${snippet}"\n\n` : "") +
+          `Read + respond in GHL → Conversations, or open the deal in the Revenue Playbook.`;
+        await sendEmailToContact(cfg, ownerId, subj,
+          `<div style="font-family:Arial;font-size:14px;white-space:pre-wrap">${esc(bodyText)}</div>`,
+          { text: bodyText });
+      }
+    } catch { /* alert is best-effort; the stamp is the record */ }
+
+    merchantDetails.push(`${businessName} → ${dealNumber}`);
+  }
+
+  return { merchantReplies, merchantDetails };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const db = serviceClient();
@@ -112,7 +297,10 @@ Deno.serve(async (req) => {
     .select("id, deal_id, lender_id, submitted_at")
     .not("submitted_at", "is", null)
     .is("response_at", null);
-  if (!pending?.length) return json({ ok: true, checked: 0, replies: 0 });
+  if (!pending?.length) {
+    const mp = await runMerchantPhase(db, cfg);
+    return json({ ok: true, checked: 0, replies: 0, merchant_replies: mp.merchantReplies, merchant_details: mp.merchantDetails });
+  }
 
   const lenderIds = [...new Set(pending.map((p) => p.lender_id))];
   const { data: lenders } = await db.from("lenders")
@@ -247,5 +435,9 @@ Deno.serve(async (req) => {
     }
   }
 
-  return json({ ok: true, checked: (lenders ?? []).length, replies, details });
+  const mp = await runMerchantPhase(db, cfg);
+  return json({
+    ok: true, checked: (lenders ?? []).length, replies, details,
+    merchant_replies: mp.merchantReplies, merchant_details: mp.merchantDetails,
+  });
 });
