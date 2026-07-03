@@ -159,6 +159,9 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [msgOpen, setMsgOpen] = useState(false);
   const [msgSubject, setMsgSubject] = useState("");
   const [msgBody, setMsgBody] = useState("");
+  const [msgCc, setMsgCc] = useState("");
+  const [msgBcc, setMsgBcc] = useState("");
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string }[]>([]);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
   const [msgToast, setMsgToast] = useState<string | null>(null);
@@ -222,18 +225,37 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     setMsgError(null);
     try {
       const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
-        body: { dealId: deal.id, subject: msgSubject.trim(), body: msgBody.trim() },
+        body: {
+          dealId: deal.id, subject: msgSubject.trim(), body: msgBody.trim(),
+          cc: msgCc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
+          bcc: msgBcc.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
+        },
       });
       if (fnErr) throw fnErr;
       if (data?.error) throw new Error(data.error);
       setMsgOpen(false);
       setMsgToast("Message sent to the merchant.");
+      void loadSentLog();
       setTimeout(() => setMsgToast(null), 4000);
     } catch (e) {
       setMsgError(e instanceof Error ? e.message : "Could not send the message.");
     } finally {
       setMsgBusy(false);
     }
+  }
+
+  async function loadSentLog() {
+    const { data } = await supabase
+      .from("activity_log")
+      .select("created_at, subject, content")
+      .eq("entity_type", "deal").eq("entity_id", deal.id)
+      .like("subject", "merchant:email%")
+      .order("created_at", { ascending: false }).limit(10);
+    setSentLog((data ?? []).map((r) => ({
+      at: r.created_at as string,
+      subject: String(r.subject ?? "").replace(/^merchant:email — /, ""),
+      snippet: String(r.content ?? ""),
+    })));
   }
 
   async function load() {
@@ -279,7 +301,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     }
   }
 
-  useEffect(() => { load(); }, [deal.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); loadSentLog(); }, [deal.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Best-effort activity-trail entry (mirrors FunderPicker's logActivity shape).
   async function logActivity(interaction_type: string, subject: string, content: string, newStatus?: string) {
@@ -663,6 +685,24 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
         </p>
       )}
 
+      {/* Merchant-message audit trail — every send-merchant-email for this deal */}
+      {sentLog.length > 0 && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-2.5">
+          <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 mb-1.5 inline-flex items-center gap-1">
+            <EnvelopeIcon className="w-3.5 h-3.5" /> Messages sent to the merchant
+          </p>
+          <ul className="space-y-1.5">
+            {sentLog.map((m, i) => (
+              <li key={i} className="text-[11px] text-gray-600 dark:text-gray-300">
+                <span className="text-gray-400">{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                {" · "}<span className="font-medium text-gray-800 dark:text-gray-100">{m.subject}</span>
+                {m.snippet && <span className="text-gray-400"> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Message-the-merchant modal — sends via GHL (lands in the merchant's thread) */}
       {msgOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !msgBusy && setMsgOpen(false)}>
@@ -680,6 +720,14 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                 <span className="text-gray-400">To</span>{" "}
                 <span className="font-medium text-gray-900 dark:text-white">{merchantName}</span>
                 {merchantEmail ? <span className="text-gray-400"> · {merchantEmail}</span> : <span className="text-rose-500"> · no email on file</span>}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block text-[11px] font-medium text-gray-500">CC
+                  <input type="text" value={msgCc} onChange={(e) => setMsgCc(e.target.value)} placeholder="email, email…" className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
+                </label>
+                <label className="block text-[11px] font-medium text-gray-500">BCC
+                  <input type="text" value={msgBcc} onChange={(e) => setMsgBcc(e.target.value)} placeholder="email, email…" className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
+                </label>
               </div>
               <label className="block text-[11px] font-medium text-gray-500">Subject
                 <input type="text" value={msgSubject} onChange={(e) => setMsgSubject(e.target.value)} className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />

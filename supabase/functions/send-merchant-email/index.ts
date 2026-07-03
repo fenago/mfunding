@@ -3,7 +3,7 @@
 // thread — the system of record for comms). This fires ONLY on an explicit
 // closer click in the Funder Responses board; there is NO auto-send anywhere.
 //
-// POST body: { dealId, subject, body }  (plain-text body; rendered to simple HTML)
+// POST body: { dealId, subject, body, cc?, bcc? }  (plain-text body; rendered to simple HTML)
 //
 // Auth mirrors submit-to-funders: signed-in staff only (verify_jwt = true, plus
 // an in-code role check). Closers may only email the merchant on their OWN deals.
@@ -31,11 +31,14 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let payload: { dealId?: string; subject?: string; body?: string };
+  let payload: { dealId?: string; subject?: string; body?: string; cc?: string[]; bcc?: string[] };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const dealId = payload.dealId;
   const subject = (payload.subject ?? "").trim();
   const bodyText = (payload.body ?? "").trim();
+  const emailOk = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+  const cc = (payload.cc ?? []).map((e) => String(e).trim()).filter(emailOk).slice(0, 10);
+  const bcc = (payload.bcc ?? []).map((e) => String(e).trim()).filter(emailOk).slice(0, 10);
   if (!dealId) return json({ error: "dealId is required" }, 400);
   if (!subject) return json({ error: "subject is required" }, 400);
   if (!bodyText) return json({ error: "body is required" }, 400);
@@ -106,12 +109,14 @@ Deno.serve(async (req) => {
   }
 
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
-  const sr = await sendEmailToContact(cfg, contactId, subject, html, { text: bodyText });
+  const sr = await sendEmailToContact(cfg, contactId, subject, html, { text: bodyText, emailCc: cc, emailBcc: bcc });
   if (!sr.ok) return json({ error: `GHL send failed: ${sr.error}` }, 502);
 
   // Audit trail (best-effort — never fail the send over the log).
   try {
-    const snippet = bodyText.slice(0, 200);
+    const routing = [cc.length ? `CC: ${cc.join(", ")}` : "", bcc.length ? `BCC: ${bcc.join(", ")}` : ""]
+      .filter(Boolean).join(" · ");
+    const snippet = (routing ? `[${routing}]\n` : "") + bodyText.slice(0, 200);
     await db.from("activity_log").insert({
       entity_type: "deal",
       entity_id: dealId,
