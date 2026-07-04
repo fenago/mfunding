@@ -372,7 +372,20 @@ const directRows: Funder[] = DIRECTORY.map(([name, paper, slug]) => {
   };
 });
 
-export const FUNDERS: Funder[] = [
-  ...ENRICHED.map((f) => ({ ...f, verified: "active" as const, inSystem: f.inSystem ?? IN_SYSTEM.has(f.name) })),
-  ...directRows,
-];
+// Merge enriched + directory rows, then DEDUPE by name (case-insensitive).
+// Enriched entries come first, so the richer/verified version wins over the
+// basic FunderIntel tuple. Without this, a name in both lists produces a
+// duplicate React key and breaks list filtering (search would show every row).
+export const FUNDERS: Funder[] = (() => {
+  const merged: Funder[] = [
+    ...ENRICHED.map((f) => ({ ...f, verified: "active" as const, inSystem: f.inSystem ?? IN_SYSTEM.has(f.name) })),
+    ...directRows,
+  ];
+  const seen = new Set<string>();
+  return merged.filter((f) => {
+    const key = f.name.trim().toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+})();
