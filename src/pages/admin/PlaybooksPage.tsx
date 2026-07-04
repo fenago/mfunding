@@ -23,6 +23,7 @@ import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import FunderPicker from "../../components/admin/FunderPicker";
 import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
+import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabilityChecklist";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDeal } from "../../services/dealService";
@@ -1138,6 +1139,16 @@ function StepCard({
             )}
           </div>
         )}
+
+        {/* Funder availability — as docs come in and at the submission step, show
+            which live MCA funders are READY to submit vs NEED which docs, from the
+            structured lender_programs requirements. Advisory only; doesn't gate. */}
+        {(step.stageKey === "docs_collected" ||
+          step.stageKey === "bank_statements" ||
+          step.stageKey === "submitted_to_funder") &&
+          interactive &&
+          deal &&
+          deal.deal_type === "mca" && <FunderAvailabilityChecklist deal={deal} />}
 
         {/* Funder fan-out — check the funders, hit Submit, each gets your package
             in their own recipe format. Stage advance stays on the step button. */}
