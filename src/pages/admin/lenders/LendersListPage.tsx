@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
 import {
   PlusIcon,
@@ -422,6 +422,8 @@ function FunderScoreboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(true);
+  const [sortKey, setSortKey] = useState<string>("accepted");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   useEffect(() => {
     getFunderScoreboard()
@@ -429,6 +431,34 @@ function FunderScoreboard() {
       .catch((e) => setError(e instanceof Error ? e.message : "Could not load the scoreboard"))
       .finally(() => setLoading(false));
   }, []);
+
+  const valueOf = (r: FunderScore, k: string): number | string => {
+    if (k === "lenderName") return r.lenderName.toLowerCase();
+    if (k === "replyRate") return r.submissions ? r.replies / r.submissions : -1;
+    if (k === "offerRate") return r.submissions ? r.offers / r.submissions : -1;
+    const v = (r as unknown as Record<string, number | null>)[k];
+    return v == null ? -1 : v;
+  };
+  const sortedRows = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      const av = valueOf(a, sortKey), bv = valueOf(b, sortKey);
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, sortKey, sortDir]);
+  const toggleSort = (k: string) => {
+    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(k); setSortDir("desc"); }
+  };
+  const sortableHead = (k: string, label: string, align = "text-right") => (
+    <th className={`py-2 px-2 font-semibold ${align}`}>
+      <button onClick={() => toggleSort(k)} className={`inline-flex items-center gap-0.5 hover:text-ocean-blue ${sortKey === k ? "text-ocean-blue" : ""}`}>
+        {label}{sortKey === k && <span className="text-[9px]">{sortDir === "asc" ? "▲" : "▼"}</span>}
+      </button>
+    </th>
+  );
 
   // Nothing to show until there's real submission history — stay out of the way.
   if (!loading && !error && rows.length === 0) return null;
@@ -454,23 +484,33 @@ function FunderScoreboard() {
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[860px]">
+              <div className="flex justify-end mb-2">
+                <Link to="/admin/analytics/lenders" className="inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline">
+                  Full Funder Performance dashboard (charts, per-funder detail) <ArrowRightIcon className="w-3 h-3" />
+                </Link>
+              </div>
+              <table className="w-full text-sm min-w-[1000px]">
                 <thead>
                   <tr className="text-left text-[11px] uppercase tracking-wide text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                    <th className="py-2 pr-3 font-semibold">Funder</th>
-                    <th className="py-2 px-2 text-right font-semibold">Sent</th>
-                    <th className="py-2 px-2 text-right font-semibold">Replies</th>
-                    <th className="py-2 px-2 text-right font-semibold">Offers</th>
-                    <th className="py-2 px-2 text-right font-semibold">Accepted</th>
-                    <th className="py-2 px-2 text-right font-semibold">Declines</th>
+                    {sortableHead("lenderName", "Funder", "text-left pr-3")}
+                    {sortableHead("submissions", "Sent")}
+                    {sortableHead("replies", "Replies")}
+                    {sortableHead("replyRate", "Reply %")}
+                    {sortableHead("offers", "Offers")}
+                    {sortableHead("offerRate", "Offer %")}
+                    {sortableHead("accepted", "Accepted")}
+                    {sortableHead("funderDeclines", "Declines")}
                     <th className="py-2 px-2 text-left font-semibold" title="Most common AI-classified reason this funder passes on files">Top decline reason</th>
-                    <th className="py-2 px-2 text-right font-semibold" title="Accepted ÷ offers">Win rate</th>
-                    <th className="py-2 px-2 text-right font-semibold">Avg factor</th>
-                    <th className="py-2 pl-2 text-right font-semibold" title="Avg time from submission to first response">Avg response</th>
+                    {sortableHead("acceptanceRate", "Win rate")}
+                    {sortableHead("avgFactor", "Avg factor")}
+                    {sortableHead("avgResponseMs", "Avg response")}
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r) => (
+                  {sortedRows.map((r) => {
+                    const replyRate = r.submissions ? (r.replies / r.submissions) * 100 : null;
+                    const offerRate = r.submissions ? (r.offers / r.submissions) * 100 : null;
+                    return (
                     <tr key={r.lenderId} className="border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30">
                       <td className="py-2 pr-3">
                         <Link to={`/admin/lenders/${r.lenderId}`} className="font-medium text-ocean-blue hover:underline">
@@ -479,7 +519,9 @@ function FunderScoreboard() {
                       </td>
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.submissions}</td>
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.replies}</td>
+                      <td className="py-2 px-2 text-right text-gray-500 dark:text-gray-400">{replyRate == null ? "—" : `${replyRate.toFixed(0)}%`}</td>
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.offers}</td>
+                      <td className="py-2 px-2 text-right text-gray-500 dark:text-gray-400">{offerRate == null ? "—" : `${offerRate.toFixed(0)}%`}</td>
                       <td className="py-2 px-2 text-right font-semibold text-emerald-600 dark:text-emerald-400">{r.accepted}</td>
                       <td className="py-2 px-2 text-right text-gray-500 dark:text-gray-400">{r.funderDeclines}</td>
                       <td className="py-2 px-2 text-left">
@@ -495,11 +537,12 @@ function FunderScoreboard() {
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.avgFactor == null ? "—" : `${r.avgFactor.toFixed(2)}x`}</td>
                       <td className="py-2 pl-2 text-right text-gray-700 dark:text-gray-200">{fmtDuration(r.avgResponseMs)}</td>
                     </tr>
-                  ))}
+                  );})}
                 </tbody>
               </table>
               <p className="mt-2 text-[11px] text-gray-400">
-                Win rate = accepted ÷ offers. Only funders with at least one submission appear; sorted by accepted, then offers.
+                Click any column to sort. Reply %/Offer % are of Sent; Win rate = accepted ÷ offers. Only funders with ≥1 submission appear.
+                <span className="text-amber-600 dark:text-amber-400"> Not yet tracked: email open/read time (needs GHL email-open events wired in).</span>
               </p>
             </div>
           )}

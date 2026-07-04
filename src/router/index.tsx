@@ -94,6 +94,7 @@ const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/Lea
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
 const FunderMatrixPage = lazyWithReload(() => import("../pages/admin/FunderMatrixPage.tsx"));
 const EmailPage = lazyWithReload(() => import("../pages/admin/EmailPage.tsx"));
+const ColdEmailPlannerPage = lazyWithReload(() => import("../pages/admin/ColdEmailPlannerPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
 const LeadToolsPage = lazyWithReload(() => import("../pages/admin/LeadToolsPage.tsx"));
 const LeadPartnerPage = lazyWithReload(() => import("../pages/admin/LeadPartnerPage.tsx"));
@@ -406,6 +407,11 @@ export const routes: RouteObject[] = [
                 path: "email",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <EmailPage /> }],
+              },
+              // Cold email planner — capacity model + warmup tracker (admin+)
+              {
+                path: "cold-email",
+                element: <ColdEmailPlannerPage />,
               },
               // Users & roles (super_admin only)
               {
