@@ -436,6 +436,7 @@ function FunderScoreboard() {
     if (k === "lenderName") return r.lenderName.toLowerCase();
     if (k === "replyRate") return r.submissions ? r.replies / r.submissions : -1;
     if (k === "offerRate") return r.submissions ? r.offers / r.submissions : -1;
+    if (k === "openRate") return r.submissions ? r.opens / r.submissions : -1;
     const v = (r as unknown as Record<string, number | null>)[k];
     return v == null ? -1 : v;
   };
@@ -489,7 +490,7 @@ function FunderScoreboard() {
                   Full Funder Performance dashboard (charts, per-funder detail) <ArrowRightIcon className="w-3 h-3" />
                 </Link>
               </div>
-              <table className="w-full text-sm min-w-[1000px]">
+              <table className="w-full text-sm min-w-[1180px]">
                 <thead>
                   <tr className="text-left text-[11px] uppercase tracking-wide text-gray-400 border-b border-gray-200 dark:border-gray-700">
                     {sortableHead("lenderName", "Funder", "text-left pr-3")}
@@ -503,6 +504,8 @@ function FunderScoreboard() {
                     <th className="py-2 px-2 text-left font-semibold" title="Most common AI-classified reason this funder passes on files">Top decline reason</th>
                     {sortableHead("acceptanceRate", "Win rate")}
                     {sortableHead("avgFactor", "Avg factor")}
+                    {sortableHead("openRate", "Open %")}
+                    {sortableHead("avgTimeToOpenMs", "Avg open")}
                     {sortableHead("avgResponseMs", "Avg response")}
                   </tr>
                 </thead>
@@ -535,14 +538,16 @@ function FunderScoreboard() {
                       </td>
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.acceptanceRate == null ? "—" : `${r.acceptanceRate.toFixed(0)}%`}</td>
                       <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{r.avgFactor == null ? "—" : `${r.avgFactor.toFixed(2)}x`}</td>
+                      <td className="py-2 px-2 text-right text-gray-500 dark:text-gray-400">{r.submissions ? `${((r.opens / r.submissions) * 100).toFixed(0)}%` : "—"}</td>
+                      <td className="py-2 px-2 text-right text-gray-700 dark:text-gray-200">{fmtDuration(r.avgTimeToOpenMs)}</td>
                       <td className="py-2 pl-2 text-right text-gray-700 dark:text-gray-200">{fmtDuration(r.avgResponseMs)}</td>
                     </tr>
                   );})}
                 </tbody>
               </table>
               <p className="mt-2 text-[11px] text-gray-400">
-                Click any column to sort. Reply %/Offer % are of Sent; Win rate = accepted ÷ offers. Only funders with ≥1 submission appear.
-                <span className="text-amber-600 dark:text-amber-400"> Not yet tracked: email open/read time (needs GHL email-open events wired in).</span>
+                Click any column to sort. Reply %/Offer %/Open % are of Sent; Win rate = accepted ÷ offers. <b>Avg open</b> = how fast the funder reads our submission. Only funders with ≥1 submission appear.
+                <span className="text-amber-600 dark:text-amber-400"> Open metrics populate once the GHL "Email Opened → webhook" workflow is turned on (see Task Board).</span>
               </p>
             </div>
           )}

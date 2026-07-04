@@ -121,8 +121,18 @@ Deno.serve(async (req) => {
     type.startsWith("InboundMessage") ||
     String(cd.type ?? "").startsWith("InboundMessage") ||
     (!type && looksLikeMessage && direction !== "outbound");
+  // Email OPEN: a GHL "Email Events → Opened" workflow posts a webhook with
+  // customData.type = "EmailOpened" (or a native LCEmailStats event=opened).
+  const isEmailOpen =
+    type === "EmailOpened" || type === "LCEmailStats" ||
+    String(cd.type ?? "").toLowerCase() === "emailopened" ||
+    String(evt.event ?? cd.event ?? cd.email_event ?? "").toLowerCase() === "opened";
   try {
-    if (isInboundMessage) {
+    if (isEmailOpen) {
+      const r = await handleEmailOpen(db, evt);
+      await logEvent(db, evt, type || "EmailOpened", r.outcome, r.detail);
+      return json({ ok: true, type: type || "EmailOpened", ...r.result });
+    } else if (isInboundMessage) {
       const r = await handleInboundMessage(db, evt);
       await logEvent(db, evt, type || "InboundMessage", r.outcome, r.detail);
       return json({ ok: true, type: type || "InboundMessage", ...r.result });
@@ -167,6 +177,45 @@ interface InboundResult {
   outcome: "processed" | "ignored" | "error";
   detail: string;
   result: Record<string, unknown>;
+}
+
+// ── Funder email OPEN → stamp submission.opened_at (time-to-open metric) ─────
+// The funder's GHL contactId maps to a lender (ghl_contact_id). We stamp that
+// funder's most recent still-unopened submission as opened (first open), and
+// bump open_count on repeats. Matching is by funder + recency (no message-id
+// plumbing needed) — enough for "how fast do they read our submissions".
+async function handleEmailOpen(db: DB, evt: Record<string, unknown>): Promise<InboundResult> {
+  const cd = (evt.customData ?? {}) as Record<string, unknown>;
+  const c = (evt.contact ?? {}) as Record<string, unknown>;
+  const contactId = String(c.id ?? evt.contactId ?? evt.contact_id ?? cd.contactId ?? cd.contact_id ?? "");
+  if (!contactId) return { outcome: "ignored", detail: "email-open: no contactId", result: {} };
+
+  const { data: lender } = await db.from("lenders").select("id, company_name").eq("ghl_contact_id", contactId).maybeSingle();
+  if (!lender) return { outcome: "ignored", detail: `email-open: no lender for contact ${contactId}`, result: {} };
+
+  // Prefer the most recent still-unopened sent submission; else the most recent sent one.
+  let sub: { id: string; opened_at: string | null; open_count: number | null } | null = null;
+  const un = await db.from("deal_submissions").select("id, opened_at, open_count")
+    .eq("lender_id", lender.id).not("submitted_at", "is", null).is("opened_at", null)
+    .order("submitted_at", { ascending: false }).limit(1).maybeSingle();
+  sub = (un.data as typeof sub) ?? null;
+  if (!sub) {
+    const any = await db.from("deal_submissions").select("id, opened_at, open_count")
+      .eq("lender_id", lender.id).not("submitted_at", "is", null)
+      .order("submitted_at", { ascending: false }).limit(1).maybeSingle();
+    sub = (any.data as typeof sub) ?? null;
+  }
+  if (!sub) return { outcome: "ignored", detail: `email-open: no sent submission for ${lender.company_name}`, result: {} };
+
+  const patch: Record<string, unknown> = { open_count: (Number(sub.open_count) || 0) + 1 };
+  const firstOpen = !sub.opened_at;
+  if (firstOpen) patch.opened_at = new Date().toISOString();
+  await db.from("deal_submissions").update(patch).eq("id", sub.id);
+  return {
+    outcome: "processed",
+    detail: `email-open: ${lender.company_name} submission ${sub.id} (${firstOpen ? "first open" : "repeat"})`,
+    result: { lender: lender.company_name, submissionId: sub.id, firstOpen },
+  };
 }
 
 // ── Funder reply → stamp submission + alert the owner ────────────────────────

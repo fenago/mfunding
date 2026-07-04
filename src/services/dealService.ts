@@ -450,6 +450,8 @@ export interface FunderScore {
   acceptanceRate: number | null; // accepted ÷ offers (their offer win-rate), %
   avgFactor: number | null;      // mean factor rate across logged offers
   avgResponseMs: number | null;  // mean (response_at − submitted_at)
+  opens: number;                 // submissions the funder opened (GHL email-open events)
+  avgTimeToOpenMs: number | null;// mean (opened_at − submitted_at) — how fast they read it
   topDeclineReason: string | null; // most common AI-classified decline reason category
 }
 
@@ -462,7 +464,7 @@ export interface FunderScore {
 export async function getFunderScoreboard(): Promise<FunderScore[]> {
   const { data, error } = await supabase
     .from("deal_submissions")
-    .select("lender_id, status, submitted_at, response_at, offer_amount, factor_rate, response_data, lender:lenders!lender_id ( company_name )");
+    .select("lender_id, status, submitted_at, response_at, opened_at, offer_amount, factor_rate, response_data, lender:lenders!lender_id ( company_name )");
   if (error) {
     console.error("Error fetching funder scoreboard:", error);
     throw error;
@@ -482,6 +484,8 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
     factorN: number;
     respSum: number;
     respN: number;
+    openSum: number;
+    openN: number;
     declineReasons: Map<string, number>; // decline_reason_category → count
   }
   const byLender = new Map<string, Acc>();
@@ -501,7 +505,7 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
     const acc = byLender.get(lenderId) ?? {
       lenderName: ((r.lender as { company_name?: string } | null)?.company_name) ?? "Funder",
       submissions: 0, replies: 0, offers: 0, accepted: 0, funderDeclines: 0,
-      factorSum: 0, factorN: 0, respSum: 0, respN: 0, declineReasons: new Map<string, number>(),
+      factorSum: 0, factorN: 0, respSum: 0, respN: 0, openSum: 0, openN: 0, declineReasons: new Map<string, number>(),
     };
     acc.submissions += 1;
     if (responseAt) acc.replies += 1;
@@ -517,6 +521,11 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
     if (submittedAt && responseAt) {
       const ms = new Date(responseAt).getTime() - new Date(submittedAt).getTime();
       if (Number.isFinite(ms) && ms >= 0) { acc.respSum += ms; acc.respN += 1; }
+    }
+    const openedAt = r.opened_at as string | null;
+    if (submittedAt && openedAt) {
+      const oms = new Date(openedAt).getTime() - new Date(submittedAt).getTime();
+      if (Number.isFinite(oms) && oms >= 0) { acc.openSum += oms; acc.openN += 1; }
     }
     byLender.set(lenderId, acc);
   }
@@ -540,6 +549,8 @@ export async function getFunderScoreboard(): Promise<FunderScore[]> {
       acceptanceRate: a.offers > 0 ? (a.accepted / a.offers) * 100 : null,
       avgFactor: a.factorN > 0 ? a.factorSum / a.factorN : null,
       avgResponseMs: a.respN > 0 ? a.respSum / a.respN : null,
+      opens: a.openN,
+      avgTimeToOpenMs: a.openN > 0 ? a.openSum / a.openN : null,
       topDeclineReason,
     });
   }
