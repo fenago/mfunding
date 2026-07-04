@@ -240,7 +240,7 @@ export default function LenderDetailPage() {
   // strings while editing; list fields stored as a single newline-joined string.
   const [mcaProgramId, setMcaProgramId] = useState<string | null>(null);
   const [mcaValues, setMcaValues] = useState<Record<string, string>>({});
-  const [mcaOpen, setMcaOpen] = useState(true);
+  const [mcaOpen, setMcaOpen] = useState(false); // minimized by default
   const [isSavingMca, setIsSavingMca] = useState(false);
   const [mcaSaveSuccess, setMcaSaveSuccess] = useState(false);
   const [mcaError, setMcaError] = useState<string | null>(null);
