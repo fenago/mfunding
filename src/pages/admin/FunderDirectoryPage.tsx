@@ -9,6 +9,7 @@ import {
   PlusIcon,
   TrashIcon,
   ArrowUturnLeftIcon,
+  PencilSquareIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
@@ -108,6 +109,10 @@ export default function FunderDirectoryPage() {
   const [addState, setAddState] = useState<Record<string, AddState>>({});
   const [liveLenders, setLiveLenders] = useState<{ n: string; status: string }[]>([]); // normalized name + lender status
   const [hidden, setHidden] = useState<string[]>([]); // funder_directory_hidden.funder_name (junk removed)
+  const [notes, setNotes] = useState<Record<string, string>>({}); // funder_name → research note
+  const [noteEditor, setNoteEditor] = useState<string | null>(null); // which funder's note is open
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteSaving, setNoteSaving] = useState(false);
   const [showRemoved, setShowRemoved] = useState(false);
   const [confirmHide, setConfirmHide] = useState<Record<string, boolean>>({});
 
@@ -122,6 +127,50 @@ export default function FunderDirectoryPage() {
       });
     return () => { alive = false; };
   }, []);
+
+  // Load research notes.
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .from("funder_directory_notes")
+      .select("funder_name, note")
+      .then(({ data }) => {
+        if (alive && data) {
+          const m: Record<string, string> = {};
+          for (const r of data as { funder_name: string; note: string }[]) m[r.funder_name] = r.note;
+          setNotes(m);
+        }
+      });
+    return () => { alive = false; };
+  }, []);
+
+  function openNote(name: string) {
+    setNoteDraft(notes[name] ?? "");
+    setNoteEditor(name);
+  }
+  async function saveNote(name: string) {
+    setNoteSaving(true);
+    try {
+      const note = noteDraft.trim();
+      if (note) {
+        await mustWrite(
+          "save funder note",
+          supabase.from("funder_directory_notes").upsert(
+            { funder_name: name, note, updated_at: new Date().toISOString() },
+            { onConflict: "funder_name" },
+          ),
+        );
+        setNotes((n) => ({ ...n, [name]: note }));
+      } else {
+        // cleared → delete the row (may affect 0 rows, so tryWrite)
+        await tryWrite("clear funder note", supabase.from("funder_directory_notes").delete().eq("funder_name", name));
+        setNotes((n) => { const next = { ...n }; delete next[name]; return next; });
+      }
+      setNoteEditor(null);
+    } finally {
+      setNoteSaving(false);
+    }
+  }
 
   // Live check against the lenders table so anything already added shows "In system".
   useEffect(() => {
@@ -346,6 +395,32 @@ export default function FunderDirectoryPage() {
                         </a>
                       )}
                     </div>
+                    {/* Research notes — jot "did I apply? what did they say?" */}
+                    {noteEditor === f.name ? (
+                      <div className="mt-1.5">
+                        <textarea
+                          value={noteDraft}
+                          onChange={(e) => setNoteDraft(e.target.value)}
+                          rows={3}
+                          autoFocus
+                          placeholder="e.g. Hit Apply 7/4 — unsure if it submitted, following up…"
+                          className="w-full text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-gray-900 dark:text-white"
+                        />
+                        <div className="flex items-center gap-2 mt-1">
+                          <button onClick={() => saveNote(f.name)} disabled={noteSaving} className="text-[11px] font-semibold px-2 py-0.5 rounded bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50">Save</button>
+                          <button onClick={() => setNoteEditor(null)} className="text-[11px] text-gray-500 hover:text-gray-700">Cancel</button>
+                        </div>
+                      </div>
+                    ) : notes[f.name] ? (
+                      <button onClick={() => openNote(f.name)} className="mt-1.5 flex items-start gap-1 text-left text-[11px] text-amber-700 dark:text-amber-300 hover:underline">
+                        <PencilSquareIcon className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                        <span className="whitespace-pre-wrap">{notes[f.name]}</span>
+                      </button>
+                    ) : (
+                      <button onClick={() => openNote(f.name)} className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-gray-400 hover:text-ocean-blue">
+                        <PencilSquareIcon className="w-3.5 h-3.5" /> Add note
+                      </button>
+                    )}
                   </td>
                   <td className="py-3 px-2 text-gray-600 dark:text-gray-300 whitespace-nowrap">{CATEGORY_LABELS[f.category]}</td>
                   <td className="py-3 px-2 text-gray-600 dark:text-gray-300 whitespace-nowrap">{f.paper ?? "—"}</td>
