@@ -119,6 +119,17 @@ interface AssignableUser {
   role: string;
 }
 
+// A task's link may be an absolute URL (https://…) or an internal path
+// (/admin/…). new URL() throws on the latter, which used to crash the whole
+// board — so label safely: hostname for absolute, the trimmed path otherwise.
+function linkLabel(link: string): string {
+  try {
+    return new URL(link).hostname;
+  } catch {
+    return link.replace(/^\//, "") || link;
+  }
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -304,7 +315,7 @@ function SortableTaskCard({
             className="flex items-center gap-1 text-[10px] text-ocean-blue hover:underline mb-1.5 truncate"
           >
             <ArrowTopRightOnSquareIcon className="w-3 h-3 flex-shrink-0" />
-            <span className="truncate">{new URL(task.link).hostname}</span>
+            <span className="truncate">{linkLabel(task.link)}</span>
           </a>
         )}
 
