@@ -31,6 +31,7 @@ import BankAnalysisCard from "../../../components/shared/BankAnalysisCard";
 import UnderwritingCard from "../../../components/shared/UnderwritingCard";
 import OfferComparison from "../../../components/shared/OfferComparison";
 import PipelineFlow from "../../../components/shared/PipelineFlow";
+import QualificationPanel from "../../../components/admin/QualificationPanel";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 // Required stip document types for a deal
@@ -546,6 +547,27 @@ export default function DealDetailPage() {
               </div>
             </div>
           )}
+
+          {/* Funder Qualification */}
+          <details className="md:col-span-2 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 group" open>
+            <summary className="flex items-center justify-between p-6 cursor-pointer list-none">
+              <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                Funder qualification — which programs match?
+              </h3>
+              <span className="text-xs text-gray-400 group-open:hidden">Show</span>
+              <span className="text-xs text-gray-400 hidden group-open:inline">Hide</span>
+            </summary>
+            <div className="px-6 pb-6">
+              <QualificationPanel
+                deal={{
+                  amount_requested: deal.amount_requested,
+                  monthly_revenue: deal.customer?.monthly_revenue,
+                  time_in_business: deal.customer?.time_in_business,
+                }}
+              />
+            </div>
+          </details>
 
           {/* Deal Notes */}
           {deal.notes && (

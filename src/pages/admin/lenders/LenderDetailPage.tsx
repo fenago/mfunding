@@ -11,10 +11,18 @@ import {
   CpuChipIcon,
   CheckIcon,
   TrashIcon,
+  ChevronDownIcon,
+  ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "../../../context/UserProfileContext";
+import {
+  PROGRAM_FIELDS,
+  PROGRAM_SELECT,
+  type LenderProgram,
+  type ProgramField,
+} from "../../../data/lenderPrograms";
 import { PARTNERSHIP_TYPES } from "../../../data/partnershipTypes";
 import LenderContactList from "../../../components/lenders/LenderContactList";
 import FunderRecipeCard from "../../../components/lenders/FunderRecipeCard";
@@ -225,7 +233,110 @@ export default function LenderDetailPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { isSuperAdmin } = useUserProfile();
+  const { isSuperAdmin, isAdmin } = useUserProfile();
+
+  // ── MCA Approval Criteria (lender_programs, product_type = 'mca') ──
+  // Editable per-field values keyed by ProgramField.key. numbers/text stored as
+  // strings while editing; list fields stored as a single newline-joined string.
+  const [mcaProgramId, setMcaProgramId] = useState<string | null>(null);
+  const [mcaValues, setMcaValues] = useState<Record<string, string>>({});
+  const [mcaOpen, setMcaOpen] = useState(true);
+  const [isSavingMca, setIsSavingMca] = useState(false);
+  const [mcaSaveSuccess, setMcaSaveSuccess] = useState(false);
+  const [mcaError, setMcaError] = useState<string | null>(null);
+
+  // Convert a loaded program row into the string-keyed edit map.
+  function programToValues(row: Partial<LenderProgram> | null): Record<string, string> {
+    const next: Record<string, string> = {};
+    for (const f of PROGRAM_FIELDS) {
+      const raw = row ? (row as Record<string, unknown>)[f.key as string] : null;
+      if (raw === null || raw === undefined) {
+        next[f.key as string] = "";
+      } else if (f.type === "list") {
+        next[f.key as string] = Array.isArray(raw) ? (raw as string[]).join("\n") : String(raw);
+      } else {
+        next[f.key as string] = String(raw);
+      }
+    }
+    return next;
+  }
+
+  const fetchMcaProgram = async (lenderId: string) => {
+    const { data, error } = await supabase
+      .from("lender_programs")
+      .select(PROGRAM_SELECT)
+      .eq("lender_id", lenderId)
+      .eq("product_type", "mca")
+      .maybeSingle();
+    if (error) {
+      console.error("Error fetching MCA program:", error);
+      setMcaError(error.message);
+      return;
+    }
+    const row = (data as unknown as LenderProgram) || null;
+    setMcaProgramId(row?.id ?? null);
+    setMcaValues(programToValues(row));
+  };
+
+  // Turn the edit map into a DB payload (null when blank).
+  function valuesToPayload(): Record<string, unknown> {
+    const payload: Record<string, unknown> = {};
+    for (const f of PROGRAM_FIELDS) {
+      const v = (mcaValues[f.key as string] ?? "").trim();
+      if (f.type === "money" || f.type === "number" || f.type === "percent") {
+        const n = v === "" ? null : Number(v);
+        payload[f.key as string] = n === null || Number.isNaN(n) ? null : n;
+      } else if (f.type === "list") {
+        const arr = v
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        payload[f.key as string] = arr.length ? arr : null;
+      } else {
+        payload[f.key as string] = v === "" ? null : v;
+      }
+    }
+    return payload;
+  }
+
+  const handleSaveMca = async () => {
+    if (!lender) return;
+    setIsSavingMca(true);
+    setMcaSaveSuccess(false);
+    setMcaError(null);
+    try {
+      const fields = valuesToPayload();
+      const now = new Date().toISOString();
+      if (mcaProgramId) {
+        await mustWrite(
+          "update MCA approval criteria",
+          supabase
+            .from("lender_programs")
+            .update({ ...fields, updated_at: now })
+            .eq("id", mcaProgramId),
+        );
+      } else {
+        await mustWrite(
+          "create MCA approval criteria",
+          supabase.from("lender_programs").insert({
+            lender_id: lender.id,
+            product_type: "mca",
+            is_active: true,
+            ...fields,
+            updated_at: now,
+          }),
+        );
+      }
+      setMcaSaveSuccess(true);
+      setTimeout(() => setMcaSaveSuccess(false), 2000);
+      await fetchMcaProgram(lender.id);
+    } catch (error) {
+      console.error("Error saving MCA criteria:", error);
+      setMcaError(error instanceof Error ? error.message : "Failed to save criteria");
+    } finally {
+      setIsSavingMca(false);
+    }
+  };
 
   async function handleDelete() {
     if (!lender) return;
@@ -248,6 +359,7 @@ export default function LenderDetailPage() {
     if (id) {
       fetchLender();
       fetchDocuments();
+      fetchMcaProgram(id);
     }
   }, [id]);
 
@@ -825,6 +937,130 @@ export default function LenderDetailPage() {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* ── MCA Approval Criteria (lender_programs) — visually distinct amber card ── */}
+          <div className="bg-amber-50 dark:bg-amber-900/10 border-2 border-amber-300 dark:border-amber-800 rounded-xl overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setMcaOpen((o) => !o)}
+              className="w-full flex items-center justify-between gap-3 px-6 py-4 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-200/70 dark:bg-amber-800/40 rounded-lg">
+                  <ShieldCheckIcon className="w-6 h-6 text-amber-700 dark:text-amber-300" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-amber-900 dark:text-amber-200 text-lg">
+                    MCA Approval Criteria
+                  </h3>
+                  <p className="text-xs text-amber-700/80 dark:text-amber-300/70">
+                    Merchant-cash-advance underwriting profile used by the Funder Approval Matrix &amp; qualification matcher
+                  </p>
+                </div>
+              </div>
+              <ChevronDownIcon
+                className={`w-5 h-5 text-amber-700 dark:text-amber-300 transition-transform ${mcaOpen ? "rotate-180" : ""}`}
+              />
+            </button>
+
+            {mcaOpen && (
+              <div className="px-6 pb-6">
+                <div className="grid md:grid-cols-2 gap-3">
+                  {PROGRAM_FIELDS.map((field: ProgramField) => {
+                    const key = field.key as string;
+                    const value = mcaValues[key] ?? "";
+                    const isList = field.type === "list";
+                    const isNumeric =
+                      field.type === "money" || field.type === "number" || field.type === "percent";
+                    return (
+                      <div
+                        key={key}
+                        className={`rounded-lg border border-amber-200 dark:border-amber-800/60 bg-amber-100/50 dark:bg-amber-900/20 p-3 ${
+                          isList ? "md:col-span-2" : ""
+                        }`}
+                      >
+                        <label className="block text-sm font-semibold text-amber-900 dark:text-amber-200 mb-1">
+                          {field.label}
+                          {field.unit && (
+                            <span className="ml-1 text-xs font-normal text-amber-700/70 dark:text-amber-300/60">
+                              ({field.unit})
+                            </span>
+                          )}
+                        </label>
+                        {isList ? (
+                          <textarea
+                            value={value}
+                            onChange={(e) =>
+                              setMcaValues((prev) => ({ ...prev, [key]: e.target.value }))
+                            }
+                            disabled={!isAdmin}
+                            rows={3}
+                            placeholder="One item per line"
+                            className="w-full rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-60"
+                          />
+                        ) : (
+                          <div className="relative">
+                            {field.type === "money" && (
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-600 dark:text-amber-400">
+                                $
+                              </span>
+                            )}
+                            <input
+                              type={isNumeric ? "number" : "text"}
+                              value={value}
+                              onChange={(e) =>
+                                setMcaValues((prev) => ({ ...prev, [key]: e.target.value }))
+                              }
+                              disabled={!isAdmin}
+                              placeholder={field.help || ""}
+                              className={`w-full rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-60 ${
+                                field.type === "money" ? "pl-7 pr-3" : "px-3"
+                              } ${field.type === "percent" ? "pr-8" : ""}`}
+                            />
+                            {field.type === "percent" && (
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-amber-600 dark:text-amber-400">
+                                %
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {field.help && !isList && field.type !== "money" && (
+                          <p className="mt-1 text-xs text-amber-700/70 dark:text-amber-300/60">{field.help}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {isAdmin && (
+                  <div className="flex items-center gap-3 mt-4">
+                    <button
+                      type="button"
+                      onClick={handleSaveMca}
+                      disabled={isSavingMca}
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors disabled:opacity-60"
+                    >
+                      {isSavingMca ? (
+                        <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <CheckIcon className="w-4 h-4" />
+                      )}
+                      {isSavingMca ? "Saving…" : "Save criteria"}
+                    </button>
+                    {mcaSaveSuccess && (
+                      <span className="text-sm text-green-700 dark:text-green-400 flex items-center gap-1">
+                        <CheckIcon className="w-4 h-4" />
+                        Saved
+                      </span>
+                    )}
+                    {mcaError && (
+                      <span className="text-sm text-red-600 dark:text-red-400">{mcaError}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Products & Paper Types */}

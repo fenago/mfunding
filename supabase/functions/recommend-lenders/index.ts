@@ -66,7 +66,7 @@ const LENDER_FIELDS = [
 
 // Compact one-funder view — drop empty fields so the prompt stays lean and the
 // model isn't misled by nulls.
-function lenderForPrompt(l: Lender) {
+function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null) {
   const out: Record<string, unknown> = {
     lender_id: l.id,
     lender_name: l.company_name,
@@ -74,6 +74,14 @@ function lenderForPrompt(l: Lender) {
   };
   for (const f of LENDER_FIELDS) {
     if (has(l[f])) out[f] = l[f];
+  }
+  // Authoritative per-funder MCA approval criteria (Funder Approval Matrix).
+  if (program) {
+    const pm: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(program)) {
+      if (k !== "lender_id" && has(v)) pm[k] = v;
+    }
+    if (Object.keys(pm).length) out.mca_approval_matrix = pm;
   }
   return out;
 }
@@ -112,8 +120,28 @@ Deno.serve(async (req) => {
       // funder the closer can't submit to.
       .in("status", ["live_vendor", "approved"]);
     if (lErr) return json({ error: `could not load lenders: ${lErr.message}` }, 502);
-    const lenders = ((lendersRaw ?? []) as Lender[])
-      .filter((l) => l.company_name && LENDER_FIELDS.some((f) => has(l[f])));
+    const allLenders = (lendersRaw ?? []) as Lender[];
+
+    // 2b) Funder Approval Matrix (lender_programs, MCA) — the authoritative
+    //     approval criteria the owner maintains per funder. Merged into each
+    //     funder view so the model ranks against the real matrix, and a funder
+    //     with only matrix criteria (empty flat fields) still counts as usable.
+    const programMap = new Map<string, Record<string, unknown>>();
+    if (allLenders.length) {
+      const { data: programsRaw } = await db
+        .from("lender_programs")
+        .select("lender_id, approval_min, approval_max, term_text, min_credit_score, annual_revenue_required, monthly_revenue_required, time_in_business_months, cost_of_capital, time_to_approve, approval_pct_min, approval_pct_max, payment_frequency, industries_note, important_details, required_documents")
+        .eq("product_type", "mca").eq("is_active", true)
+        .in("lender_id", allLenders.map((l) => l.id));
+      for (const p of (programsRaw ?? []) as Record<string, unknown>[]) {
+        const populated = Object.entries(p).some(([k, v]) => k !== "lender_id" && has(v));
+        if (populated) programMap.set(p.lender_id as string, p);
+      }
+    }
+
+    const lenders = allLenders.filter(
+      (l) => l.company_name && (LENDER_FIELDS.some((f) => has(l[f])) || programMap.has(l.id)),
+    );
     if (lenders.length === 0) {
       return json({ error: "No funders with usable criteria in the network yet." }, 422);
     }
@@ -169,8 +197,9 @@ Deno.serve(async (req) => {
       `MERCHANT PROFILE (product requested: ${productLabel}):\n` +
       JSON.stringify(profile, null, 2) +
       (missing_fields.length ? `\n\nMissing/unknown merchant fields: ${missing_fields.join(", ")}.` : "") +
-      `\n\nFUNDER NETWORK (${lenders.length} funders; only populated criteria are shown per funder):\n` +
-      JSON.stringify(lenders.map(lenderForPrompt), null, 2) +
+      `\n\nFUNDER NETWORK (${lenders.length} funders; only populated criteria are shown per funder. ` +
+      `Each funder's "mca_approval_matrix" is the authoritative approval criteria — rank primarily against it):\n` +
+      JSON.stringify(lenders.map((l) => lenderForPrompt(l, programMap.get(l.id))), null, 2) +
       `\n\nReturn the ranked JSON now.`;
 
     // 4) Call the active LLM provider (task "recommend_lenders"). callLLM

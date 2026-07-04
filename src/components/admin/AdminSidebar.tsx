@@ -34,6 +34,7 @@ import {
   PhoneArrowUpRightIcon,
   ChatBubbleLeftRightIcon,
   EnvelopeIcon,
+  TableCellsIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -86,6 +87,7 @@ const navGroups: NavGroup[] = [
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
       { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: SUPER },
+      { name: "Funder Approval Matrix", path: "/admin/funder-matrix", icon: TableCellsIcon, roles: SUPER },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
