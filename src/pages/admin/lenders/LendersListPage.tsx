@@ -14,6 +14,7 @@ import supabase from "../../../supabase";
 import LenderEditModal from "../../../components/lenders/LenderEditModal";
 import { getFunderScoreboard, type FunderScore } from "../../../services/dealService";
 import { PARTNERSHIP_LABEL, PARTNERSHIP_COLOR } from "../../../data/partnershipTypes";
+import { PROGRAM_SELECT, money, type LenderProgram } from "../../../data/lenderPrograms";
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "affiliate_referral" | "rejected" | "inactive";
 type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
@@ -86,18 +87,22 @@ export default function LendersListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const [programs, setPrograms] = useState<Record<string, LenderProgram>>({});
+
   const fetchLenders = async () => {
     setIsLoading(true);
-    const { data, error } = await supabase
-      .from("lenders")
-      .select("*")
-      .order("company_name", { ascending: true });
-
+    const [{ data, error }, { data: progs }] = await Promise.all([
+      supabase.from("lenders").select("*").order("company_name", { ascending: true }),
+      supabase.from("lender_programs").select(PROGRAM_SELECT).eq("product_type", "mca").eq("is_active", true),
+    ]);
     if (error) {
       console.error("Error fetching lenders:", error);
     } else {
       setLenders(data || []);
     }
+    const pm: Record<string, LenderProgram> = {};
+    for (const p of (progs || []) as LenderProgram[]) pm[p.lender_id] = p;
+    setPrograms(pm);
     setIsLoading(false);
   };
 
@@ -325,6 +330,9 @@ export default function LendersListPage() {
                       </p>
                     )}
 
+                    {/* MCA approval basics + hard document requirements (from the Funder Approval Matrix) */}
+                    {programs[lender.id] && <ProgramSummary p={programs[lender.id]} />}
+
                     {/* Partnership Types — how we work with this funder */}
                     {lender.partnership_types && lender.partnership_types.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-3">
@@ -385,6 +393,44 @@ export default function LendersListPage() {
         onClose={() => setIsAddModalOpen(false)}
         onSave={fetchLenders}
       />
+    </div>
+  );
+}
+
+// Compact MCA approval basics + HARD document requirements shown on each lender
+// card — the "can I send this deal here, and what docs do they need" glance.
+function ProgramSummary({ p }: { p: LenderProgram }) {
+  const uw: string[] = [];
+  if (p.approval_min != null || p.approval_max != null) uw.push(`${money(p.approval_min)}–${money(p.approval_max)}`);
+  if (p.min_credit_score != null) uw.push(`${p.min_credit_score}+ FICO`);
+  if (p.monthly_revenue_required != null) uw.push(`${money(p.monthly_revenue_required)}/mo`);
+  if (p.time_in_business_months != null) uw.push(`${p.time_in_business_months}mo TIB`);
+  if (p.cost_of_capital) uw.push(p.cost_of_capital);
+
+  const docs: string[] = [];
+  if (p.doc_bank_statement_months) docs.push(`${p.doc_bank_statement_months}mo bank stmts`);
+  if (p.doc_application) docs.push("Application");
+  if (p.doc_photo_id) docs.push("Photo ID");
+  if (p.doc_voided_check) docs.push("Voided check");
+  if (p.doc_proof_of_ownership) docs.push("Proof of ownership");
+  if (p.doc_tax_financials === "required") docs.push("Tax return");
+
+  if (!uw.length && !docs.length) return null;
+  return (
+    <div className="mt-2 space-y-1.5">
+      {uw.length > 0 && (
+        <p className="text-xs text-gray-600 dark:text-gray-300 leading-snug">{uw.join(" · ")}</p>
+      )}
+      {docs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-gray-400 mr-0.5">Docs&nbsp;req.</span>
+          {docs.map((d) => (
+            <span key={d} className="inline-block px-1.5 py-0.5 text-[11px] rounded font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+              {d}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

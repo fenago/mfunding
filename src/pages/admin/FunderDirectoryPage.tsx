@@ -108,6 +108,7 @@ export default function FunderDirectoryPage() {
   const [pickStatus, setPickStatus] = useState<Record<string, string>>({});
   const [addState, setAddState] = useState<Record<string, AddState>>({});
   const [liveLenders, setLiveLenders] = useState<{ n: string; status: string }[]>([]); // normalized name + lender status
+  const [dbLenders, setDbLenders] = useState<Array<Record<string, unknown>>>([]); // full lender rows (so every lender shows in the directory)
   const [hidden, setHidden] = useState<string[]>([]); // funder_directory_hidden.funder_name (junk removed)
   const [notes, setNotes] = useState<Record<string, string>>({}); // funder_name → research note
   const [noteEditor, setNoteEditor] = useState<string | null>(null); // which funder's note is open
@@ -177,9 +178,10 @@ export default function FunderDirectoryPage() {
     let alive = true;
     supabase
       .from("lenders")
-      .select("company_name, status")
+      .select("id, company_name, status, website, paper_types, partnership_types, lender_types, min_funding_amount, max_funding_amount, min_credit_score, min_monthly_revenue, factor_rate_range, notes, submission_portal_url, primary_contact_phone")
       .then(({ data }) => {
         if (alive && data) {
+          setDbLenders(data as Array<Record<string, unknown>>);
           setLiveLenders(
             data
               .map((r: { company_name: string; status: string }) => ({ n: norm(r.company_name), status: r.status }))
@@ -198,9 +200,48 @@ export default function FunderDirectoryPage() {
   const isInSystem = (f: Funder) => f.inSystem || !!liveMatch(f);
   const statusOf = (f: Funder) => liveMatch(f)?.status; // live lender status, or undefined (static-only)
 
+  // Every lender in the DB must appear in the directory. Build a synthetic Funder
+  // row for each lender not already represented by a static directory entry.
+  const syntheticFunders = useMemo<Funder[]>(() => {
+    const staticNames = FUNDERS.map((f) => norm(f.name));
+    const out: Funder[] = [];
+    for (const l of dbLenders) {
+      const name = String(l.company_name ?? "");
+      const nn = norm(name);
+      if (nn.length < 3) continue;
+      if (staticNames.some((sn) => sn === nn || sn.includes(nn) || nn.includes(sn))) continue; // already represented
+      const pt = (l.partnership_types as string[] | null) ?? [];
+      const paperArr = (l.paper_types as string[] | null) ?? [];
+      const letters = paperArr.map((p) => p[0]?.toUpperCase()).filter(Boolean) as string[];
+      const paper = letters.length ? `${letters[0]}${letters.length > 1 ? "-" + letters[letters.length - 1] : ""}` : undefined;
+      const lowRev = paperArr.includes("c_paper") || paperArr.includes("d_paper");
+      const category: FunderCategory = pt.includes("marketplace") ? "marketplace" : pt.includes("white_label") ? "iso_whitelabel" : lowRev ? "low_revenue" : "direct";
+      const crumbs: string[] = [];
+      const mn = l.min_funding_amount as number | null, mx = l.max_funding_amount as number | null;
+      if (mn || mx) crumbs.push(`$${Number(mn || 0).toLocaleString()}–$${Number(mx || 0).toLocaleString()}`);
+      if (l.min_credit_score != null) crumbs.push(`${l.min_credit_score}+ FICO`);
+      if (l.min_monthly_revenue != null) crumbs.push(`$${Number(l.min_monthly_revenue).toLocaleString()}/mo`);
+      if (l.factor_rate_range) crumbs.push(String(l.factor_rate_range));
+      out.push({
+        name, category, paper, lowRev,
+        whiteLabel: pt.includes("white_label"),
+        applyOnce: pt.includes("marketplace"),
+        isoProgram: true,
+        website: (l.website as string) || undefined,
+        applyUrl: (l.submission_portal_url as string) || undefined,
+        phone: (l.primary_contact_phone as string) || undefined,
+        criteria: crumbs.join(" · ") || (l.notes ? String(l.notes).slice(0, 140) : undefined),
+        verified: "active",
+        inSystem: true,
+      });
+    }
+    return out;
+  }, [dbLenders]);
+  const allFunders = useMemo(() => [...FUNDERS, ...syntheticFunders], [syntheticFunders]);
+
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return FUNDERS.filter((f) => {
+    return allFunders.filter((f) => {
       if (showRemoved ? !hidden.includes(f.name) : hidden.includes(f.name)) return false;
       if (cat !== "all" && f.category !== cat) return false;
       if (onlyLowRev && !f.lowRev) return false;
@@ -216,11 +257,11 @@ export default function FunderDirectoryPage() {
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem, liveLenders, hidden, showRemoved]);
+  }, [q, cat, onlyLowRev, onlyWhiteLabel, onlyApplyOnce, onlyIso, hideDead, hideInSystem, liveLenders, hidden, showRemoved, allFunders]);
 
-  const deadCount = useMemo(() => FUNDERS.filter((f) => f.verified === "dead").length, []);
+  const deadCount = useMemo(() => allFunders.filter((f) => f.verified === "dead").length, [allFunders]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const inSystemCount = useMemo(() => FUNDERS.filter((f) => isInSystem(f)).length, [liveLenders]);
+  const inSystemCount = useMemo(() => allFunders.filter((f) => isInSystem(f)).length, [liveLenders, allFunders]);
 
   async function addToLenders(f: Funder) {
     const key = f.name;
