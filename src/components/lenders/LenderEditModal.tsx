@@ -9,7 +9,7 @@ import { mustWrite } from "@/supabase/writes";
 import { syncFunderToGHL } from "../../services/ghlService";
 import { PARTNERSHIP_TYPES } from "../../data/partnershipTypes";
 
-type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
+type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "affiliate_referral" | "rejected" | "inactive";
 type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
 
 interface LenderFormData {
@@ -117,6 +117,7 @@ const STATUS_OPTIONS: { value: LenderStatus; label: string }[] = [
   { value: "processing", label: "Processing" },
   { value: "approved", label: "Approved" },
   { value: "live_vendor", label: "Live Vendor" },
+  { value: "affiliate_referral", label: "Affiliate / Referral" },
   { value: "rejected", label: "Rejected" },
   { value: "inactive", label: "Inactive" },
 ];

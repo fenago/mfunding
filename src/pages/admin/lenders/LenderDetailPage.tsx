@@ -93,7 +93,7 @@ const GEMINI_MODELS: { value: GeminiModel; label: string }[] = [
   { value: "gemini-2.0-pro-exp", label: "Pro (Quality)" },
 ];
 
-type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
+type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "affiliate_referral" | "rejected" | "inactive";
 
 const PAPER_TYPE_CONFIG: Record<PaperType, { label: string; description: string; color: string }> = {
   a_paper: { label: "A Paper", description: "700+ credit, clean", color: "bg-green-100 text-green-800" },
@@ -108,6 +108,7 @@ const STATUS_OPTIONS: { value: LenderStatus; label: string; color: string }[] = 
   { value: "processing", label: "Processing", color: "bg-yellow-100 text-yellow-800" },
   { value: "approved", label: "Approved", color: "bg-green-100 text-green-800" },
   { value: "live_vendor", label: "Live Vendor", color: "bg-emerald-100 text-emerald-800" },
+  { value: "affiliate_referral", label: "Affiliate / Referral", color: "bg-amber-100 text-amber-800" },
   { value: "rejected", label: "Rejected", color: "bg-red-100 text-red-800" },
   { value: "inactive", label: "Inactive", color: "bg-gray-100 text-gray-500" },
 ];

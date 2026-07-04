@@ -27,6 +27,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "processing", label: "Processing" },
   { value: "approved", label: "Approved" },
   { value: "live_vendor", label: "Live" },
+  { value: "affiliate_referral", label: "Affiliate / Referral" },
   { value: "rejected", label: "Rejected" },
   { value: "inactive", label: "Inactive" },
 ];

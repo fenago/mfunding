@@ -15,7 +15,7 @@ import LenderEditModal from "../../../components/lenders/LenderEditModal";
 import { getFunderScoreboard, type FunderScore } from "../../../services/dealService";
 import { PARTNERSHIP_LABEL, PARTNERSHIP_COLOR } from "../../../data/partnershipTypes";
 
-type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "rejected" | "inactive";
+type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "affiliate_referral" | "rejected" | "inactive";
 type PaperType = "a_paper" | "b_paper" | "c_paper" | "d_paper";
 
 interface Lender {
@@ -39,8 +39,9 @@ const STATUS_CONFIG: Record<LenderStatus, { label: string; color: string; priori
   processing: { label: "Processing", color: "bg-yellow-100 text-yellow-800", priority: 3 },
   application_submitted: { label: "Applied", color: "bg-blue-100 text-blue-800", priority: 4 },
   potential: { label: "Potential", color: "bg-gray-100 text-gray-800", priority: 5 },
-  rejected: { label: "Rejected", color: "bg-red-100 text-red-800", priority: 6 },
-  inactive: { label: "Inactive", color: "bg-gray-100 text-gray-600", priority: 7 },
+  affiliate_referral: { label: "Affiliate / Referral", color: "bg-amber-100 text-amber-800", priority: 6 },
+  rejected: { label: "Rejected", color: "bg-red-100 text-red-800", priority: 7 },
+  inactive: { label: "Inactive", color: "bg-gray-100 text-gray-600", priority: 8 },
 };
 
 const PAPER_TYPE_CONFIG: Record<PaperType, { label: string; description: string; color: string; minScore: number; maxScore: number }> = {
@@ -57,6 +58,7 @@ const STATUS_ORDER: LenderStatus[] = [
   "processing",
   "application_submitted",
   "potential",
+  "affiliate_referral",
   "rejected",
   "inactive",
 ];

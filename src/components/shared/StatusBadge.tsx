@@ -17,6 +17,7 @@ const LENDER_STATUS: Record<string, StatusConfig> = {
   processing: { label: "Processing", color: "text-yellow-700 dark:text-yellow-300", bg: "bg-yellow-100 dark:bg-yellow-900", dotColor: "bg-yellow-500" },
   approved: { label: "Approved", color: "text-green-700 dark:text-green-300", bg: "bg-green-100 dark:bg-green-900", dotColor: "bg-green-500" },
   live_vendor: { label: "Live Vendor", color: "text-teal-700 dark:text-teal-300", bg: "bg-teal-100 dark:bg-teal-900", dotColor: "bg-teal-500" },
+  affiliate_referral: { label: "Affiliate / Referral", color: "text-amber-800 dark:text-amber-300", bg: "bg-amber-100 dark:bg-amber-900/40", dotColor: "bg-amber-500" },
   rejected: { label: "Rejected", color: "text-red-700 dark:text-red-300", bg: "bg-red-100 dark:bg-red-900", dotColor: "bg-red-500" },
   inactive: { label: "Inactive", color: "text-gray-500", bg: "bg-gray-100 dark:bg-gray-800", dotColor: "bg-gray-400" },
 };
