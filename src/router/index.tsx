@@ -92,6 +92,7 @@ const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
+const EmailPage = lazyWithReload(() => import("../pages/admin/EmailPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
 const LeadToolsPage = lazyWithReload(() => import("../pages/admin/LeadToolsPage.tsx"));
 const LeadPartnerPage = lazyWithReload(() => import("../pages/admin/LeadPartnerPage.tsx"));
@@ -392,6 +393,12 @@ export const routes: RouteObject[] = [
                 path: "funder-directory",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <FunderDirectoryPage /> }],
+              },
+              // Cold-email (Instantly) dashboard + strategy (super_admin only)
+              {
+                path: "email",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <EmailPage /> }],
               },
               // Users & roles (super_admin only)
               {
