@@ -15,6 +15,7 @@ interface InstantlyAccount {
   warmup_score?: number;
   stat_warmup_score?: number;
   daily_limit?: number;
+  setup_pending?: boolean;
   [k: string]: unknown;
 }
 interface InstantlyCampaign {
@@ -142,7 +143,7 @@ export default function EmailPage() {
                 return (
                   <tr key={(a.email as string) ?? i} className="border-t border-gray-100 dark:border-gray-700/50">
                     <td className="py-2 px-3 font-medium text-gray-900 dark:text-gray-100">{a.email ?? "—"}</td>
-                    <td className="py-2 px-3">{label(ACCOUNT_STATUS, a.status)}</td>
+                    <td className="py-2 px-3">{a.setup_pending ? <span className="text-amber-600">Setup pending</span> : label(ACCOUNT_STATUS, a.status)}</td>
                     <td className="py-2 px-3">{label(WARMUP_STATUS, a.warmup_status)}</td>
                     <td className="py-2 px-3">
                       {Number.isFinite(score) && score > 0 ? (
