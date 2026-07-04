@@ -250,7 +250,11 @@ export default function LenderDetailPage() {
     const next: Record<string, string> = {};
     for (const f of PROGRAM_FIELDS) {
       const raw = row ? (row as Record<string, unknown>)[f.key as string] : null;
-      if (raw === null || raw === undefined) {
+      if (f.type === "bool") {
+        next[f.key as string] = raw === true ? "true" : "false";
+      } else if (f.type === "tri") {
+        next[f.key as string] = raw ? String(raw) : "no";
+      } else if (raw === null || raw === undefined) {
         next[f.key as string] = "";
       } else if (f.type === "list") {
         next[f.key as string] = Array.isArray(raw) ? (raw as string[]).join("\n") : String(raw);
@@ -283,7 +287,11 @@ export default function LenderDetailPage() {
     const payload: Record<string, unknown> = {};
     for (const f of PROGRAM_FIELDS) {
       const v = (mcaValues[f.key as string] ?? "").trim();
-      if (f.type === "money" || f.type === "number" || f.type === "percent") {
+      if (f.type === "bool") {
+        payload[f.key as string] = v === "true";
+      } else if (f.type === "tri") {
+        payload[f.key as string] = v || "no"; // NOT NULL column, defaults to 'no'
+      } else if (f.type === "money" || f.type === "number" || f.type === "percent") {
         const n = v === "" ? null : Number(v);
         payload[f.key as string] = n === null || Number.isNaN(n) ? null : n;
       } else if (f.type === "list") {
@@ -988,7 +996,35 @@ export default function LenderDetailPage() {
                             </span>
                           )}
                         </label>
-                        {isList ? (
+                        {field.type === "bool" ? (
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={value === "true"}
+                              onChange={(e) =>
+                                setMcaValues((prev) => ({ ...prev, [key]: e.target.checked ? "true" : "false" }))
+                              }
+                              disabled={!isAdmin}
+                              className="w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-400 disabled:opacity-60"
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Required</span>
+                          </label>
+                        ) : field.type === "tri" ? (
+                          <select
+                            value={value || "no"}
+                            onChange={(e) =>
+                              setMcaValues((prev) => ({ ...prev, [key]: e.target.value }))
+                            }
+                            disabled={!isAdmin}
+                            className="w-full rounded-md border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-60"
+                          >
+                            {(field.options ?? []).map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : isList ? (
                           <textarea
                             value={value}
                             onChange={(e) =>

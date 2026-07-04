@@ -2,25 +2,40 @@ import { useCallback, useEffect, useState } from "react";
 import { TableCellsIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
 import supabase from "@/supabase";
+import { mustWrite } from "@/supabase/writes";
+import { useUserProfile } from "@/context/UserProfileContext";
 import {
   PRODUCT_TYPES,
   PROGRAM_FIELDS,
   PROGRAM_SELECT,
   fmtField,
   type LenderProgram,
+  type ProgramField,
 } from "@/data/lenderPrograms";
 
 type Lender = { id: string; company_name: string; status: string; website: string | null };
 type MatrixRow = LenderProgram & { lender: Lender };
 
-// Right-align money/number/percent cells; text/list stay left.
+// Right-align money/number/percent cells; text/list/bool/tri stay left.
 const isNumeric = (t: string) => t === "money" || t === "number" || t === "percent";
 
+// Quick filters over the structured doc columns — proves the queryability win.
+type DocFilter = { id: string; label: string; test: (r: MatrixRow) => boolean };
+const DOC_FILTERS: DocFilter[] = [
+  { id: "voided", label: "Needs voided check", test: (r) => r.doc_voided_check === true },
+  { id: "photo_id", label: "Needs photo ID", test: (r) => r.doc_photo_id === true },
+  { id: "tax", label: "Needs tax return", test: (r) => r.doc_tax_financials === "required" },
+  { id: "cc_if", label: "Accepts if-applicable CC", test: (r) => r.doc_cc_processing === "if_applicable" },
+];
+
 export default function FunderMatrixPage() {
+  const { isAdmin } = useUserProfile();
   const [productType, setProductType] = useState("mca");
   const [rows, setRows] = useState<MatrixRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
@@ -55,6 +70,102 @@ export default function FunderMatrixPage() {
     return () => window.removeEventListener("focus", onFocus);
   }, [fetchRows]);
 
+  const toggleFilter = (id: string) => {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Optimistic local patch; persist via mustWrite. On failure, surface + refetch to revert.
+  const patchDoc = (id: string, key: keyof LenderProgram, value: unknown) => {
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
+  };
+
+  const saveDoc = async (id: string, key: keyof LenderProgram, value: unknown) => {
+    try {
+      await mustWrite(
+        "update funder docs",
+        supabase
+          .from("lender_programs")
+          .update({ [key]: value, updated_at: new Date().toISOString() })
+          .eq("id", id),
+      );
+      setSaveError(null);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Failed to save");
+      fetchRows(); // revert optimistic change to the persisted truth
+    }
+  };
+
+  const filtered = rows.filter((r) =>
+    DOC_FILTERS.every((f) => (activeFilters.has(f.id) ? f.test(r) : true)),
+  );
+
+  // Render one cell: doc columns are inline-editable for admins; everything else is read-only.
+  const renderCell = (r: MatrixRow, f: ProgramField) => {
+    const editable = f.doc && isAdmin;
+    if (!editable) return fmtField(f, r[f.key]);
+
+    if (f.type === "bool") {
+      return (
+        <input
+          type="checkbox"
+          checked={r[f.key] === true}
+          onChange={(e) => {
+            patchDoc(r.id, f.key, e.target.checked);
+            saveDoc(r.id, f.key, e.target.checked);
+          }}
+          className="w-4 h-4 text-ocean-blue rounded border-gray-300 focus:ring-ocean-blue cursor-pointer"
+        />
+      );
+    }
+    if (f.type === "tri") {
+      return (
+        <select
+          value={(r[f.key] as string) ?? "no"}
+          onChange={(e) => {
+            patchDoc(r.id, f.key, e.target.value);
+            saveDoc(r.id, f.key, e.target.value);
+          }}
+          className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 py-1 text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-ocean-blue"
+        >
+          {(f.options ?? []).map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      );
+    }
+    if (f.type === "number") {
+      return (
+        <input
+          type="number"
+          value={(r[f.key] as number | null) ?? ""}
+          onChange={(e) =>
+            patchDoc(r.id, f.key, e.target.value === "" ? null : Number(e.target.value))
+          }
+          onBlur={(e) => saveDoc(r.id, f.key, e.target.value === "" ? null : Number(e.target.value))}
+          className="w-14 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 py-1 text-xs text-right tabular-nums text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-ocean-blue"
+        />
+      );
+    }
+    // text (doc_conditions / doc_other)
+    return (
+      <input
+        type="text"
+        value={(r[f.key] as string | null) ?? ""}
+        onChange={(e) => patchDoc(r.id, f.key, e.target.value)}
+        onBlur={(e) => saveDoc(r.id, f.key, e.target.value.trim() === "" ? null : e.target.value.trim())}
+        placeholder="—"
+        className="w-44 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-ocean-blue"
+      />
+    );
+  };
+
   return (
     <div className="max-w-[1400px] mx-auto px-4 py-8">
       {/* Header */}
@@ -65,8 +176,9 @@ export default function FunderMatrixPage() {
             <div>
               <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Funder Approval Matrix</h1>
               <p className="text-gray-600 dark:text-gray-300 mt-1">
-                Side-by-side approval criteria for every live funder — modeled on a product-summary sheet.
-                Muted amber cells flag missing criteria worth filling in.
+                Side-by-side approval &amp; document criteria for every live funder — modeled on a
+                product-summary sheet. Structured doc columns are editable inline{isAdmin ? "" : " (admins only)"};
+                muted amber cells flag missing criteria worth filling in.
               </p>
             </div>
             <button
@@ -106,9 +218,48 @@ export default function FunderMatrixPage() {
           ),
         )}
         <span className="ml-auto text-sm text-gray-500">
-          {loading ? "Loading…" : `${rows.length} live MCA program${rows.length === 1 ? "" : "s"}`}
+          {loading
+            ? "Loading…"
+            : `${filtered.length}${filtered.length !== rows.length ? ` / ${rows.length}` : ""} live MCA program${
+                rows.length === 1 ? "" : "s"
+              }`}
         </span>
       </div>
+
+      {/* Doc-requirement quick filters */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Filter by docs:</span>
+        {DOC_FILTERS.map((f) => {
+          const on = activeFilters.has(f.id);
+          return (
+            <button
+              key={f.id}
+              onClick={() => toggleFilter(f.id)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                on
+                  ? "bg-mint-green text-white border-mint-green"
+                  : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-mint-green"
+              }`}
+            >
+              {f.label}
+            </button>
+          );
+        })}
+        {activeFilters.size > 0 && (
+          <button
+            onClick={() => setActiveFilters(new Set())}
+            className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-200 underline"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {saveError && (
+        <div className="mb-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-4 py-2 text-sm text-red-700 dark:text-red-300">
+          Could not save: {saveError}
+        </div>
+      )}
 
       {/* Matrix */}
       {error ? (
@@ -122,6 +273,10 @@ export default function FunderMatrixPage() {
       ) : rows.length === 0 ? (
         <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-10 text-center text-gray-500 dark:text-gray-400">
           No live funder programs yet. When a lender is set to <b>Live</b>, its MCA program appears here.
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-10 text-center text-gray-500 dark:text-gray-400">
+          No funders match the selected doc filters.
         </div>
       ) : (
         <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-x-auto">
@@ -145,7 +300,7 @@ export default function FunderMatrixPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {filtered.map((r) => (
                 <tr
                   key={r.id}
                   className="border-b border-gray-100 dark:border-gray-700/50 align-top hover:bg-gray-50 dark:hover:bg-gray-700/30"
@@ -159,8 +314,14 @@ export default function FunderMatrixPage() {
                     </Link>
                   </td>
                   {PROGRAM_FIELDS.map((f) => {
-                    const display = fmtField(f, r[f.key]);
-                    const blank = display === "—";
+                    const cell = renderCell(r, f);
+                    // Amber "missing" flag only for optional free-value columns — a false
+                    // bool or "no" tri is a known answer, not a gap.
+                    const blank =
+                      typeof cell === "string" &&
+                      cell === "—" &&
+                      f.type !== "bool" &&
+                      f.type !== "tri";
                     return (
                       <td
                         key={f.key}
@@ -172,7 +333,7 @@ export default function FunderMatrixPage() {
                             : "text-gray-700 dark:text-gray-200"
                         }`}
                       >
-                        {display}
+                        {cell}
                       </td>
                     );
                   })}
