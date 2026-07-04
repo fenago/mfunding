@@ -31,6 +31,8 @@ export interface LenderProgram {
   monthly_revenue_required: number | null;
   time_in_business_months: number | null;
   cost_of_capital: string | null;
+  points_min: number | null;
+  points_max: number | null;
   time_to_approve: string | null;
   approval_pct_min: number | null;
   approval_pct_max: number | null;
@@ -64,6 +66,8 @@ export const PROGRAM_FIELDS: ProgramField[] = [
   { key: "monthly_revenue_required", label: "Monthly revenue required", short: "Monthly rev", type: "money", gate: true },
   { key: "time_in_business_months", label: "Time in business", short: "TIB", type: "number", unit: "mo", gate: true },
   { key: "cost_of_capital", label: "Cost of capital", short: "Cost", type: "text", help: "e.g. 1.20–1.49 factor" },
+  { key: "points_min", label: "Commission points (min)", short: "Pts min", type: "number", unit: "pts", help: "what we get paid" },
+  { key: "points_max", label: "Commission points (max)", short: "Pts max", type: "number", unit: "pts", help: "what we get paid" },
   { key: "time_to_approve", label: "Time to approve", short: "Speed", type: "text", help: "e.g. 24–48 hrs" },
   { key: "approval_pct_min", label: "Approval % of monthly sales (min)", short: "% min", type: "percent", unit: "%" },
   { key: "approval_pct_max", label: "Approval % of monthly sales (max)", short: "% max", type: "percent", unit: "%" },
@@ -75,7 +79,7 @@ export const PROGRAM_FIELDS: ProgramField[] = [
 
 // Columns to SELECT for a program (lender_programs.*), plus the joined lender name/status.
 export const PROGRAM_SELECT =
-  "id, lender_id, product_type, is_active, approval_min, approval_max, term_text, min_credit_score, annual_revenue_required, monthly_revenue_required, time_in_business_months, cost_of_capital, time_to_approve, approval_pct_min, approval_pct_max, payment_frequency, industries_note, important_details, required_documents, notes";
+  "id, lender_id, product_type, is_active, approval_min, approval_max, term_text, min_credit_score, annual_revenue_required, monthly_revenue_required, time_in_business_months, cost_of_capital, points_min, points_max, time_to_approve, approval_pct_min, approval_pct_max, payment_frequency, industries_note, important_details, required_documents, notes";
 
 export function money(n: number | null | undefined): string {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
