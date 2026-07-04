@@ -11,6 +11,7 @@ import {
   ExclamationTriangleIcon,
   ClipboardDocumentCheckIcon,
   ArrowUpTrayIcon,
+  TableCellsIcon,
 } from "@heroicons/react/24/outline";
 import { getFunderDocReadiness, type FunderReadiness } from "../../services/funderAvailability";
 import type { DealWithCustomer } from "../../types/deals";
@@ -37,7 +38,9 @@ export default function FunderAvailabilityChecklist({ deal }: { deal: DealWithCu
     return () => {
       cancelled = true;
     };
-  }, [deal.id, deal.customer_id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // doc_checklist is the source of truth for availability — recompute when the
+    // closer ticks a box (parent mirrors the change into the deal).
+  }, [deal.id, deal.customer_id, JSON.stringify(deal.doc_checklist)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const readyCount = rows.filter((r) => r.ready).length;
 
@@ -54,6 +57,14 @@ export default function FunderAvailabilityChecklist({ deal }: { deal: DealWithCu
           </span>
         ) : null}
         <span className="text-[11px] text-gray-400">who can I submit this merchant to right now?</span>
+        <Link
+          to="/admin/funder-matrix"
+          onClick={(e) => e.stopPropagation()}
+          className="ml-auto text-[11px] font-medium text-ocean-blue hover:underline inline-flex items-center gap-1"
+          title="Open the full Funder Approval Matrix (criteria + doc requirements) to reference"
+        >
+          <TableCellsIcon className="w-3.5 h-3.5" /> Funder matrix
+        </Link>
       </summary>
 
       <div className="px-3 pb-3 space-y-2">

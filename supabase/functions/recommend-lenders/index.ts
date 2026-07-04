@@ -189,7 +189,7 @@ Deno.serve(async (req) => {
     // 1) Deal + merchant.
     const { data: deal, error: dErr } = await db
       .from("deals")
-      .select("id, deal_type, status, customer_id, amount_requested, use_of_funds, vcf_active_positions, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, credit_score_range, ein)")
+      .select("id, deal_type, status, customer_id, amount_requested, use_of_funds, vcf_active_positions, doc_checklist, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, credit_score_range, ein)")
       .eq("id", dealId).single();
     if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message}` }, 404);
     const cust = (deal.customer ?? {}) as Lender;
@@ -227,17 +227,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 2c) Docs on the merchant's file — distinct customer_documents.document_type
-    //     for this deal's customer. Feeds the per-funder doc-readiness math.
+    // 2c) Docs on the merchant's file — the CLOSER-CONTROLLED manual checklist
+    //     (deals.doc_checklist) is the SOURCE OF TRUTH, keyed by
+    //     customer_document_type slug → true. We no longer infer "on file" from
+    //     customer_documents, which misses docs (a Photo ID uploaded to GHL as
+    //     "image.jpg" is never typed 'id'). Feeds the per-funder doc-readiness math.
     const docsOnFile = new Set<string>();
-    if (deal.customer_id) {
-      const { data: docRows } = await db
-        .from("customer_documents")
-        .select("document_type")
-        .eq("customer_id", deal.customer_id);
-      for (const d of (docRows ?? []) as { document_type: string }[]) {
-        if (d.document_type) docsOnFile.add(d.document_type);
-      }
+    const checklist = (deal.doc_checklist ?? {}) as Record<string, boolean>;
+    for (const [slug, on] of Object.entries(checklist)) {
+      if (on === true) docsOnFile.add(slug);
     }
 
     const lenders = allLenders.filter(

@@ -98,6 +98,9 @@ export interface Deal {
   notes: string | null;
   /** Playbook "collected" chips, keyed "<playbookId>:<stepN>" → checked labels. */
   playbook_checklist: Record<string, string[]> | null;
+  /** Closer-controlled manual doc checklist, keyed by customer_document_type slug
+   *  → true when collected. SOURCE OF TRUTH for funder doc availability. */
+  doc_checklist?: Record<string, boolean> | null;
   /** Persisted AI lender analysis (tokens cost money — survives reloads). */
   ai_lender_recommendations: { summary: string; recommendations: unknown[] } | null;
   ai_recommended_at: string | null;

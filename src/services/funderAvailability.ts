@@ -1,8 +1,9 @@
 // Funder Availability — "which live MCA funders can I submit THIS merchant to
 // right now?" It reads each live funder's STRUCTURED doc requirements off
 // lender_programs (product_type='mca', is_active) and checks them against the
-// docs actually on the merchant's file (customer_documents + the GHL side,
-// computed exactly the way FunderPicker computes docsPresent).
+// closer-controlled manual doc checklist (deals.doc_checklist) — the SOURCE OF
+// TRUTH for what's collected. (The DocumentChecklist UI still HINTS from
+// customer_documents/GHL, but only the ticked checklist counts here.)
 //
 // This is ADVISORY visibility only. It does NOT gate the submit engine — the
 // real hard gate (required_stips + signed-application) still lives in
@@ -49,39 +50,17 @@ interface ProgramRow {
   lenders: { id: string; company_name: string; status: string } | null;
 }
 
-// Compute the union of docs on file for a deal's customer — app-side
-// customer_documents unioned with GHL-side docs (signed application, uploaded
-// bank statements / stips). This mirrors FunderPicker's docsPresent exactly so
-// the two panels never disagree about what's on file.
-async function getDocsPresent(deal: DealWithCustomer): Promise<Set<string>> {
+// Docs on file for a deal — the CLOSER-CONTROLLED manual checklist
+// (deals.doc_checklist) is the SOURCE OF TRUTH. A doc slug is present iff the
+// closer ticked it in the DocumentChecklist. We no longer infer "on file" from
+// customer_documents.document_type or the GHL peek, because those miss docs (a
+// Photo ID uploaded to GHL as "image.jpg" is never typed 'id'). The checklist,
+// which the closer validates against the detection hints, is authoritative.
+function getDocsPresent(deal: DealWithCustomer): Set<string> {
   const present = new Set<string>();
-  if (deal.customer_id) {
-    const { data } = await supabase
-      .from("customer_documents")
-      .select("document_type")
-      .eq("customer_id", deal.customer_id);
-    for (const d of (data ?? []) as { document_type: string }[]) present.add(d.document_type);
-  }
-  // GHL peek is best-effort — app docs still count if it fails.
-  if (deal.ghl_contact_id) {
-    try {
-      const { data: ghl } = await supabase.functions.invoke("ghl-docs-status", {
-        body: { ghl_contact_id: deal.ghl_contact_id },
-      });
-      for (const doc of (ghl?.documents ?? []) as { name?: string; signed?: boolean }[]) {
-        if (doc.signed && /application/i.test(doc.name ?? "")) present.add("application");
-      }
-      for (const u of (ghl?.uploads ?? []) as { field: string; files: unknown[] }[]) {
-        if (!u.files?.length) continue;
-        if (/bank/i.test(u.field)) present.add("bank_statement");
-        else {
-          present.add("id");
-          present.add("voided_check");
-        }
-      }
-    } catch {
-      /* best-effort */
-    }
+  const checklist = deal.doc_checklist ?? {};
+  for (const [slug, on] of Object.entries(checklist)) {
+    if (on === true) present.add(slug);
   }
   return present;
 }
@@ -141,16 +120,14 @@ function evaluate(p: ProgramRow, docs: Set<string>): FunderReadiness {
 // Main entry: readiness for every LIVE MCA funder against this deal's merchant,
 // ready funders first then by name.
 export async function getFunderDocReadiness(deal: DealWithCustomer): Promise<FunderReadiness[]> {
-  const [{ data: programs }, docs] = await Promise.all([
-    supabase
-      .from("lender_programs")
-      .select(
-        "lender_id, doc_bank_statement_months, doc_application, doc_photo_id, doc_voided_check, doc_cc_processing, doc_mtd_statement, doc_proof_of_ownership, doc_ar_aging, doc_tax_financials, doc_conditions, lenders!inner(id, company_name, status)",
-      )
-      .eq("product_type", "mca")
-      .eq("is_active", true),
-    getDocsPresent(deal),
-  ]);
+  const { data: programs } = await supabase
+    .from("lender_programs")
+    .select(
+      "lender_id, doc_bank_statement_months, doc_application, doc_photo_id, doc_voided_check, doc_cc_processing, doc_mtd_statement, doc_proof_of_ownership, doc_ar_aging, doc_tax_financials, doc_conditions, lenders!inner(id, company_name, status)",
+    )
+    .eq("product_type", "mca")
+    .eq("is_active", true);
+  const docs = getDocsPresent(deal);
 
   // Filter to live funders client-side — mirrors FunderMatrixPage, which does the
   // same rather than filtering the embedded resource server-side.

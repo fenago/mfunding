@@ -24,6 +24,7 @@ import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import FunderPicker from "../../components/admin/FunderPicker";
 import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
 import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabilityChecklist";
+import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDeal } from "../../services/dealService";
@@ -106,6 +107,12 @@ export default function PlaybooksPage() {
   async function refreshDeal(id: string) {
     const res = await getDealById(id);
     if (res) setDeal(res.deal);
+  }
+
+  // The DocumentChecklist persists doc_checklist itself; this just mirrors the
+  // change into the loaded deal so FunderAvailabilityChecklist recomputes live.
+  function onDocChecklistChange(next: Record<string, boolean>) {
+    setDeal((d) => (d ? { ...d, doc_checklist: next } : d));
   }
 
   // Click a pipeline stage to move the lead there — updates the deal + syncs GHL,
@@ -361,6 +368,7 @@ export default function PlaybooksPage() {
                 current={current}
                 busy={busyStep === s.n}
                 onComplete={completeStep}
+                onDocChecklistChange={onDocChecklistChange}
               />
             );
           })}
@@ -910,6 +918,7 @@ function StepCard({
   current,
   busy,
   onComplete,
+  onDocChecklistChange,
 }: {
   step: PlaybookStep;
   last: boolean;
@@ -921,6 +930,7 @@ function StepCard({
   current: boolean;
   busy: boolean;
   onComplete: (step: PlaybookStep, values: Record<string, string>, note: string, outcome: string, checked: string[], advance?: boolean) => void;
+  onDocChecklistChange: (next: Record<string, boolean>) => void;
 }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
 
@@ -1139,6 +1149,16 @@ function StepCard({
             )}
           </div>
         )}
+
+        {/* Manual doc checklist — closer ticks what they've collected; this is the
+            SOURCE OF TRUTH for funder availability. Shown on the doc-collection
+            steps, above the availability panel it feeds. MCA deals only. */}
+        {(step.stageKey === "docs_collected" || step.stageKey === "bank_statements") &&
+          interactive &&
+          deal &&
+          deal.deal_type === "mca" && (
+            <DocumentChecklist deal={deal} onChange={onDocChecklistChange} />
+          )}
 
         {/* Funder availability — as docs come in and at the submission step, show
             which live MCA funders are READY to submit vs NEED which docs, from the
