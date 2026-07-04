@@ -147,6 +147,7 @@ const ENRICHED: Funder[] = [
   { name: "Altbanq (SOS Capital)", category: "direct", lowRev: false, whiteLabel: false, applyOnce: false, isoProgram: true, website: "https://altbanq.com", phone: "(212) 235-5455", criteria: "NY alternative-finance funder (formerly SOS Capital) · term loans + MCA + payment processing", verified: "active" },
   { name: "GRP Funding", category: "mainstream", lowRev: false, whiteLabel: false, applyOnce: false, isoProgram: true, website: "https://www.grpfunding.com", applyUrl: "https://www.grpfunding.com/merchantapp", criteria: "Berlin, CT · nationwide · full suite (term/LOC/SBA/equipment/CRE/fix-&-flip/factoring/business cash advance)", verified: "active" },
   { name: "Vital Cap Funding", category: "direct", lowRev: true, whiteLabel: false, applyOnce: false, isoProgram: true, website: "https://vitalcapfunding.com", phone: "718-612-7694", criteria: "Brooklyn small-biz funder · up to $5M · LOC / term / refi / equipment / bridge / factoring", verified: "active" },
+  { name: "The Fundworks", category: "low_revenue", lowRev: true, whiteLabel: false, applyOnce: false, isoProgram: true, website: "https://thefundworks.com", applyUrl: "https://thefundworks.com/iso-sign-up/", criteria: "Revenue-based-financing direct funder · dedicated ISO/partner sign-up · growth/partnership focus", verified: "active" },
 ];
 
 // ── FunderIntel direct-funder directory (name, paper grade, profile slug) ─────
