@@ -137,7 +137,37 @@ function docReadiness(p: ProgramRow | null | undefined, docs: Set<string>): DocR
 
 // Compact one-funder view — drop empty fields so the prompt stays lean and the
 // model isn't misled by nulls.
-function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null, readiness?: DocReadiness) {
+interface Qualification { qualifies: boolean; disqualifiers: string[]; }
+
+// GROUND-TRUTH qualification: does the merchant meet this funder's HARD minimums
+// (revenue, time in business, funding amount range) from the Funder Approval
+// Matrix? Computed in code — the AI must NOT call a disqualified funder a fit.
+// Credit is intentionally NOT gated here (often a range/unknown; unknown credit
+// must never disqualify). Voided check / docs are handled separately.
+function qualification(
+  program: ProgramRow | null | undefined,
+  m: { monthlyRev: number | null; tibMonths: number | null; amount: number | null },
+): Qualification {
+  const dq: string[] = [];
+  if (!program) return { qualifies: true, disqualifiers: dq }; // no matrix criteria → can't disqualify
+  const n = (v: unknown) => { const x = Number(v); return Number.isFinite(x) && x > 0 ? x : null; };
+  const fmt = (x: number) => `$${Math.round(x).toLocaleString("en-US")}`;
+  const minRev = n(program.monthly_revenue_required);
+  const minTib = n(program.time_in_business_months);
+  const aMin = n(program.approval_min);
+  const aMax = n(program.approval_max);
+  if (minRev && m.monthlyRev != null && m.monthlyRev < minRev)
+    dq.push(`Monthly revenue ${fmt(m.monthlyRev)} is below the ${fmt(minRev)}/mo minimum`);
+  if (minTib && m.tibMonths != null && m.tibMonths < minTib)
+    dq.push(`Time in business ${m.tibMonths} mo is below the ${minTib} mo minimum`);
+  if (aMin && m.amount != null && m.amount < aMin)
+    dq.push(`Amount ${fmt(m.amount)} is below the ${fmt(aMin)} minimum`);
+  if (aMax && m.amount != null && m.amount > aMax)
+    dq.push(`Amount ${fmt(m.amount)} exceeds the ${fmt(aMax)} maximum`);
+  return { qualifies: dq.length === 0, disqualifiers: dq };
+}
+
+function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null, readiness?: DocReadiness, qual?: Qualification) {
   const out: Record<string, unknown> = {
     lender_id: l.id,
     lender_name: l.company_name,
@@ -166,6 +196,13 @@ function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null, re
         missing_hard: readiness.docsMissing,
         ...(readiness.docsAdvisory.length ? { advisory: readiness.docsAdvisory } : {}),
       };
+  }
+  // Ground-truth qualification (hard minimums). A DISQUALIFIED funder cannot be
+  // a fit — the AI is told so, and code enforces fit='poor' regardless.
+  if (qual) {
+    out.qualification_status = qual.qualifies
+      ? "QUALIFIES"
+      : { status: "DISQUALIFIED", reasons: qual.disqualifiers };
   }
   return out;
 }
@@ -247,8 +284,16 @@ Deno.serve(async (req) => {
 
     // Per-funder doc readiness (ground truth, computed here — not by the AI).
     const readinessMap = new Map<string, DocReadiness>();
+    // Per-funder qualification against hard minimums (revenue / TIB / amount).
+    const merchantNums = {
+      monthlyRev: Number.isFinite(Number(cust.monthly_revenue)) ? Number(cust.monthly_revenue) : null,
+      tibMonths: Number.isFinite(Number(cust.time_in_business)) ? Number(cust.time_in_business) : null,
+      amount: Number.isFinite(Number(deal.amount_requested)) ? Number(deal.amount_requested) : null,
+    };
+    const qualMap = new Map<string, Qualification>();
     for (const l of lenders) {
       readinessMap.set(l.id, docReadiness(docReqMap.get(l.id), docsOnFile));
+      qualMap.set(l.id, qualification(docReqMap.get(l.id), merchantNums));
     }
 
     // 3) Merchant profile + which fields are missing (be honest about gaps).
@@ -291,6 +336,13 @@ Deno.serve(async (req) => {
       "a funder's fit for unknown credit UNLESS that specific funder has a stated min_credit_score — mention " +
       "credit only in that funder's own watch_outs. " +
       "Be honest and explicit about other missing data — never invent facts. " +
+      "QUALIFICATION vs STIPULATIONS — two different things, do not conflate: " +
+      'A funder carries "qualification_status". "QUALIFIES" means the merchant meets its HARD criteria ' +
+      "(revenue, time in business, funding amount). {\"status\":\"DISQUALIFIED\",\"reasons\":[...]} means the merchant " +
+      "FAILS a hard minimum (e.g. revenue below the funder's floor) — this funder is OUT: mark fit \"poor\" and state " +
+      "the reason; do NOT recommend submitting. A MISSING DOCUMENT is NOT a disqualifier — it is a STIPULATION we " +
+      "collect. A funder can QUALIFY and still be missing a doc: keep it as a strong/possible fit and simply LIST the " +
+      "doc to collect. Only failing the hard CRITERIA disqualifies; a missing driver's license, ID, etc. never does. " +
       "DOC READINESS — reason holistically about criteria FIT and DOC READINESS together. " +
       'Each funder carries a "doc_status": "READY" means every hard-required doc for that funder is already ' +
       'on the merchant\'s file; {"status":"MISSING_REQUIRED_DOCS","missing_hard":[...]} means a required doc is ' +
@@ -317,7 +369,7 @@ Deno.serve(async (req) => {
       `\n\nFUNDER NETWORK (${lenders.length} funders; only populated criteria are shown per funder. ` +
       `Each funder's "mca_approval_matrix" is the authoritative approval criteria — rank primarily against it. ` +
       `Each funder's "doc_status" is the ground-truth doc readiness for THIS merchant — factor it in per the rules above):\n` +
-      JSON.stringify(lenders.map((l) => lenderForPrompt(l, programMap.get(l.id), readinessMap.get(l.id))), null, 2) +
+      JSON.stringify(lenders.map((l) => lenderForPrompt(l, programMap.get(l.id), readinessMap.get(l.id), qualMap.get(l.id))), null, 2) +
       `\n\nReturn the ranked JSON now.`;
 
     // 4) Call the active LLM provider (task "recommend_lenders"). callLLM
@@ -365,10 +417,15 @@ Deno.serve(async (req) => {
       .map((r) => {
         const readiness = readinessMap.get(r.lender_id) ??
           { docsReady: true, docsMissing: [], docsAdvisory: [] };
+        const qual = qualMap.get(r.lender_id) ?? { qualifies: true, disqualifiers: [] };
         return {
           lender_id: r.lender_id as string,
           lender_name: validIds.get(r.lender_id) as string,
-          fit: fits.has(r.fit) ? r.fit : "possible",
+          // HARD GATE: a merchant failing a funder minimum is NOT a fit,
+          // regardless of what the model said.
+          fit: qual.qualifies ? (fits.has(r.fit) ? r.fit : "possible") : "poor",
+          qualifies: qual.qualifies,
+          disqualifiers: qual.disqualifiers,
           reasons: Array.isArray(r.reasons) ? r.reasons.filter((x: unknown) => typeof x === "string") : [],
           watch_outs: Array.isArray(r.watch_outs) ? r.watch_outs.filter((x: unknown) => typeof x === "string") : [],
           docsReady: readiness.docsReady,
@@ -378,7 +435,7 @@ Deno.serve(async (req) => {
       });
 
     // Top-line: how many strong fits are also docs-ready ("submit now").
-    const submitNow = recommendations.filter((r) => r.fit === "strong" && r.docsReady).length;
+    const submitNow = recommendations.filter((r) => r.fit === "strong" && r.docsReady && r.qualifies).length;
     const aiSummary = typeof parsed.summary === "string" ? parsed.summary : "";
     const summary = submitNow > 0
       ? `${submitNow} funder${submitNow === 1 ? " is a" : "s are"} strong fit${submitNow === 1 ? "" : "s"} AND docs-ready — submit now.` +

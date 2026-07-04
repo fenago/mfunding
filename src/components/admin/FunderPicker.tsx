@@ -59,6 +59,11 @@ interface AiRec {
   // (additive — older persisted recs may not carry these).
   docsReady?: boolean;
   docsMissing?: string[];
+  // Ground-truth qualification (hard criteria: revenue/TIB/amount). A false here
+  // means the merchant fails the funder's minimums — a hard disqualifier, unlike
+  // a missing doc (which is just a stipulation to collect).
+  qualifies?: boolean;
+  disqualifiers?: string[];
   docsAdvisory?: string[];
 }
 
@@ -844,7 +849,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                           <span className="font-medium text-gray-900 dark:text-white">{r.lender_name}</span>
                           <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${fit.cls}`}>{fit.label}</span>
                           {/* Ground-truth doc readiness (from recommend-lenders). */}
-                          {r.docsReady === true && (
+                          {r.qualifies === false && (
+                            <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" title={(r.disqualifiers ?? []).join("; ")}>
+                              ✕ doesn't qualify
+                            </span>
+                          )}
+                          {r.docsReady === true && r.qualifies !== false && (
                             <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">docs ready</span>
                           )}
                           {r.docsReady === false && (r.docsMissing?.length ?? 0) > 0 && (
@@ -857,6 +867,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                           {r.reasons.length > 0 && (
                             <ul className="mt-1 list-disc pl-4 text-[11px] text-gray-600 dark:text-gray-300 space-y-0.5">
                               {r.reasons.map((s, i) => <li key={i}>{s}</li>)}
+                            </ul>
+                          )}
+                          {(r.disqualifiers?.length ?? 0) > 0 && (
+                            <ul className="mt-1 list-disc pl-4 text-[11px] text-rose-600 dark:text-rose-400 space-y-0.5">
+                              {r.disqualifiers!.map((s, i) => <li key={i}>✕ {s}</li>)}
                             </ul>
                           )}
                           {r.watch_outs.length > 0 && (
