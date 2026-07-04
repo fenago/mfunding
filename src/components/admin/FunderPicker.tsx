@@ -55,6 +55,11 @@ interface AiRec {
   fit: Fit;
   reasons: string[];
   watch_outs: string[];
+  // Ground-truth doc readiness attached server-side by recommend-lenders
+  // (additive — older persisted recs may not carry these).
+  docsReady?: boolean;
+  docsMissing?: string[];
+  docsAdvisory?: string[];
 }
 
 interface FunderResult {
@@ -838,6 +843,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                         <summary className="cursor-pointer select-none px-3 py-2 flex items-center gap-2 flex-wrap">
                           <span className="font-medium text-gray-900 dark:text-white">{r.lender_name}</span>
                           <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${fit.cls}`}>{fit.label}</span>
+                          {/* Ground-truth doc readiness (from recommend-lenders). */}
+                          {r.docsReady === true && (
+                            <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">docs ready</span>
+                          )}
+                          {r.docsReady === false && (r.docsMissing?.length ?? 0) > 0 && (
+                            <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">needs: {r.docsMissing!.join(", ")}</span>
+                          )}
                           {r.fit === "strong" && checkable && <span className="text-[10px] text-emerald-600">auto-selected</span>}
                           {blockReason && <span className="text-[10px] text-amber-600">{blockReason}</span>}
                         </summary>

@@ -64,9 +64,80 @@ const LENDER_FIELDS = [
   "submission_email", "submission_portal_url", "submission_notes", "notes",
 ] as const;
 
+// Human labels for the docs-on-file vocabulary (customer_documents.document_type
+// slugs). Mirrors FunderPicker / funderAvailability DOC_LABELS so the AI, the
+// server, and the client all speak the same doc names.
+const DOC_LABELS: Record<string, string> = {
+  application: "Signed application",
+  bank_statement: "Bank statements",
+  id: "Photo ID",
+  business_license: "Business license",
+  tax_return: "Tax return",
+  voided_check: "Voided check",
+};
+
+// Per-funder doc readiness computed deterministically server-side (NOT by the
+// AI). Mirrors src/services/funderAvailability.ts evaluate() exactly.
+interface DocReadiness {
+  docsReady: boolean;
+  docsMissing: string[]; // hard-required docs not on file, human-labeled
+  docsAdvisory: string[]; // voided check + conditional/if-applicable (never blocking)
+}
+
+// A lender_programs row (MCA) reduced to the doc-requirement columns.
+// deno-lint-ignore no-explicit-any
+type ProgramRow = Record<string, any>;
+
+// For one funder's MCA program + the docs on the merchant's file, decide
+// ready / missing / advisories. HARD-required docs flip a funder to NOT ready;
+// voided check and conditional/if-applicable docs are advisories that NEVER
+// lower readiness (STANDING RULE: a bank-portal screenshot satisfies a voided
+// check, so it never blocks).
+function docReadiness(p: ProgramRow | null | undefined, docs: Set<string>): DocReadiness {
+  const missing: string[] = [];
+  const advisory: string[] = [];
+  if (!p) return { docsReady: true, docsMissing: missing, docsAdvisory: advisory };
+
+  const bankMonths = Number(p.doc_bank_statement_months ?? 0) || 0;
+  const hard: [boolean, string][] = [
+    [p.doc_application === true, "application"],
+    [p.doc_photo_id === true, "id"],
+    [bankMonths > 0, "bank_statement"],
+    [p.doc_proof_of_ownership === true, "business_license"],
+    [p.doc_tax_financials === "required", "tax_return"],
+  ];
+  for (const [required, slug] of hard) {
+    if (!required || docs.has(slug)) continue;
+    if (slug === "bank_statement" && bankMonths > 0) {
+      missing.push(`${DOC_LABELS.bank_statement} (${bankMonths}mo)`);
+    } else {
+      missing.push(DOC_LABELS[slug]);
+    }
+  }
+
+  // ADVISORY docs — shown for context, never blocking.
+  if (p.doc_voided_check === true && !docs.has("voided_check")) {
+    advisory.push("Voided check (a bank-portal screenshot satisfies it)");
+  }
+  if (p.doc_tax_financials === "conditional") {
+    advisory.push("Tax return / financials may be needed for larger deals");
+  }
+  if (p.doc_cc_processing === "required" || p.doc_cc_processing === "if_applicable") {
+    advisory.push("CC-processing statements may also be needed");
+  }
+  if (p.doc_ar_aging === "required" || p.doc_ar_aging === "if_applicable") {
+    advisory.push("A/R aging report may also be needed");
+  }
+  if (p.doc_mtd_statement === true) {
+    advisory.push("Month-to-date bank statement may also be needed");
+  }
+
+  return { docsReady: missing.length === 0, docsMissing: missing, docsAdvisory: advisory };
+}
+
 // Compact one-funder view — drop empty fields so the prompt stays lean and the
 // model isn't misled by nulls.
-function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null) {
+function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null, readiness?: DocReadiness) {
   const out: Record<string, unknown> = {
     lender_id: l.id,
     lender_name: l.company_name,
@@ -82,6 +153,19 @@ function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null) {
       if (k !== "lender_id" && has(v)) pm[k] = v;
     }
     if (Object.keys(pm).length) out.mca_approval_matrix = pm;
+  }
+  // Ground-truth doc readiness for THIS merchant vs THIS funder's structured
+  // requirements. The AI reasons about it; it does not compute it.
+  if (readiness) {
+    out.doc_status = readiness.docsReady
+      ? (readiness.docsAdvisory.length
+        ? { status: "READY", advisory: readiness.docsAdvisory }
+        : "READY")
+      : {
+        status: "MISSING_REQUIRED_DOCS",
+        missing_hard: readiness.docsMissing,
+        ...(readiness.docsAdvisory.length ? { advisory: readiness.docsAdvisory } : {}),
+      };
   }
   return out;
 }
@@ -105,7 +189,7 @@ Deno.serve(async (req) => {
     // 1) Deal + merchant.
     const { data: deal, error: dErr } = await db
       .from("deals")
-      .select("id, deal_type, status, amount_requested, use_of_funds, vcf_active_positions, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, credit_score_range, ein)")
+      .select("id, deal_type, status, customer_id, amount_requested, use_of_funds, vcf_active_positions, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, credit_score_range, ein)")
       .eq("id", dealId).single();
     if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message}` }, 404);
     const cust = (deal.customer ?? {}) as Lender;
@@ -126,16 +210,33 @@ Deno.serve(async (req) => {
     //     approval criteria the owner maintains per funder. Merged into each
     //     funder view so the model ranks against the real matrix, and a funder
     //     with only matrix criteria (empty flat fields) still counts as usable.
+    //     Also pulls the STRUCTURED doc requirements (doc_* columns) used for the
+    //     per-funder doc-readiness math below.
     const programMap = new Map<string, Record<string, unknown>>();
+    const docReqMap = new Map<string, ProgramRow>();
     if (allLenders.length) {
       const { data: programsRaw } = await db
         .from("lender_programs")
-        .select("lender_id, approval_min, approval_max, term_text, min_credit_score, annual_revenue_required, monthly_revenue_required, time_in_business_months, cost_of_capital, time_to_approve, approval_pct_min, approval_pct_max, payment_frequency, industries_note, important_details, required_documents")
+        .select("lender_id, approval_min, approval_max, term_text, min_credit_score, annual_revenue_required, monthly_revenue_required, time_in_business_months, cost_of_capital, time_to_approve, approval_pct_min, approval_pct_max, payment_frequency, industries_note, important_details, required_documents, doc_bank_statement_months, doc_application, doc_photo_id, doc_voided_check, doc_cc_processing, doc_mtd_statement, doc_proof_of_ownership, doc_ar_aging, doc_tax_financials, doc_conditions, doc_other")
         .eq("product_type", "mca").eq("is_active", true)
         .in("lender_id", allLenders.map((l) => l.id));
       for (const p of (programsRaw ?? []) as Record<string, unknown>[]) {
+        docReqMap.set(p.lender_id as string, p as ProgramRow);
         const populated = Object.entries(p).some(([k, v]) => k !== "lender_id" && has(v));
         if (populated) programMap.set(p.lender_id as string, p);
+      }
+    }
+
+    // 2c) Docs on the merchant's file — distinct customer_documents.document_type
+    //     for this deal's customer. Feeds the per-funder doc-readiness math.
+    const docsOnFile = new Set<string>();
+    if (deal.customer_id) {
+      const { data: docRows } = await db
+        .from("customer_documents")
+        .select("document_type")
+        .eq("customer_id", deal.customer_id);
+      for (const d of (docRows ?? []) as { document_type: string }[]) {
+        if (d.document_type) docsOnFile.add(d.document_type);
       }
     }
 
@@ -144,6 +245,12 @@ Deno.serve(async (req) => {
     );
     if (lenders.length === 0) {
       return json({ error: "No funders with usable criteria in the network yet." }, 422);
+    }
+
+    // Per-funder doc readiness (ground truth, computed here — not by the AI).
+    const readinessMap = new Map<string, DocReadiness>();
+    for (const l of lenders) {
+      readinessMap.set(l.id, docReadiness(docReqMap.get(l.id), docsOnFile));
     }
 
     // 3) Merchant profile + which fields are missing (be honest about gaps).
@@ -186,6 +293,16 @@ Deno.serve(async (req) => {
       "a funder's fit for unknown credit UNLESS that specific funder has a stated min_credit_score — mention " +
       "credit only in that funder's own watch_outs. " +
       "Be honest and explicit about other missing data — never invent facts. " +
+      "DOC READINESS — reason holistically about criteria FIT and DOC READINESS together. " +
+      'Each funder carries a "doc_status": "READY" means every hard-required doc for that funder is already ' +
+      'on the merchant\'s file; {"status":"MISSING_REQUIRED_DOCS","missing_hard":[...]} means a required doc is ' +
+      "not yet collected. Fit and doc-readiness are INDEPENDENT: judge fit from the criteria/matrix ONLY. " +
+      "A funder can be a strong fit AND missing docs. When a funder is a strong or possible fit but its doc_status " +
+      "is MISSING_REQUIRED_DOCS, keep the fit as-is and add a watch_out like \"Collect <doc> before submitting\". " +
+      "When a funder is a strong fit AND doc_status is READY, note in reasons that it is ready to submit now, and " +
+      "order docs-ready strong fits first among equals. NEVER lower a funder's fit because of a doc gap. " +
+      'The "advisory" items (voided check, conditional/if-applicable docs) must NEVER lower fit and NEVER be ' +
+      "treated as blocking — a voided check is satisfied by a bank-portal screenshot; mention advisories only lightly if at all. " +
       "Recommend 3 to 7 funders, best first. " +
       'A "strong" fit clearly meets the stated criteria; "possible" is plausible but has gaps or unknowns; ' +
       '"poor" is a likely mismatch (include only if few good options exist). ' +
@@ -193,13 +310,16 @@ Deno.serve(async (req) => {
       '{"recommendations":[{"lender_id":string,"lender_name":string,"fit":"strong"|"possible"|"poor","reasons":string[],"watch_outs":string[]}],"summary":string}. ' +
       "Use the exact lender_id and lender_name from the provided funder list.";
 
+    const docsOnFileLabels = [...docsOnFile].map((s) => DOC_LABELS[s] ?? s.replace(/_/g, " "));
     const user =
       `MERCHANT PROFILE (product requested: ${productLabel}):\n` +
       JSON.stringify(profile, null, 2) +
       (missing_fields.length ? `\n\nMissing/unknown merchant fields: ${missing_fields.join(", ")}.` : "") +
+      `\n\nDOCS ON FILE for this merchant: ${docsOnFileLabels.length ? docsOnFileLabels.join(", ") : "none yet"}.` +
       `\n\nFUNDER NETWORK (${lenders.length} funders; only populated criteria are shown per funder. ` +
-      `Each funder's "mca_approval_matrix" is the authoritative approval criteria — rank primarily against it):\n` +
-      JSON.stringify(lenders.map((l) => lenderForPrompt(l, programMap.get(l.id))), null, 2) +
+      `Each funder's "mca_approval_matrix" is the authoritative approval criteria — rank primarily against it. ` +
+      `Each funder's "doc_status" is the ground-truth doc readiness for THIS merchant — factor it in per the rules above):\n` +
+      JSON.stringify(lenders.map((l) => lenderForPrompt(l, programMap.get(l.id), readinessMap.get(l.id))), null, 2) +
       `\n\nReturn the ranked JSON now.`;
 
     // 4) Call the active LLM provider (task "recommend_lenders"). callLLM
@@ -236,23 +356,42 @@ Deno.serve(async (req) => {
       return json({ error: "Could not parse AI response.", raw: text.slice(0, 500) }, 502);
     }
 
-    // Keep only recommendations that point at a real funder in the list.
+    // Keep only recommendations that point at a real funder in the list, and
+    // ATTACH the ground-truth doc-readiness the code computed (docsReady /
+    // docsMissing / docsAdvisory) — never trust the AI to compute these.
     const validIds = new Map(lenders.map((l) => [l.id, l.company_name]));
     const fits = new Set(["strong", "possible", "poor"]);
     // deno-lint-ignore no-explicit-any
     const recommendations = (parsed.recommendations as any[])
       .filter((r) => r && validIds.has(r.lender_id))
-      .map((r) => ({
-        lender_id: r.lender_id as string,
-        lender_name: validIds.get(r.lender_id) as string,
-        fit: fits.has(r.fit) ? r.fit : "possible",
-        reasons: Array.isArray(r.reasons) ? r.reasons.filter((x: unknown) => typeof x === "string") : [],
-        watch_outs: Array.isArray(r.watch_outs) ? r.watch_outs.filter((x: unknown) => typeof x === "string") : [],
-      }));
-    // Persist — these recommendations cost tokens; the picker rehydrates from
-    // the deal so a reload never throws them away.
+      .map((r) => {
+        const readiness = readinessMap.get(r.lender_id) ??
+          { docsReady: true, docsMissing: [], docsAdvisory: [] };
+        return {
+          lender_id: r.lender_id as string,
+          lender_name: validIds.get(r.lender_id) as string,
+          fit: fits.has(r.fit) ? r.fit : "possible",
+          reasons: Array.isArray(r.reasons) ? r.reasons.filter((x: unknown) => typeof x === "string") : [],
+          watch_outs: Array.isArray(r.watch_outs) ? r.watch_outs.filter((x: unknown) => typeof x === "string") : [],
+          docsReady: readiness.docsReady,
+          docsMissing: readiness.docsMissing,
+          docsAdvisory: readiness.docsAdvisory,
+        };
+      });
+
+    // Top-line: how many strong fits are also docs-ready ("submit now").
+    const submitNow = recommendations.filter((r) => r.fit === "strong" && r.docsReady).length;
+    const aiSummary = typeof parsed.summary === "string" ? parsed.summary : "";
+    const summary = submitNow > 0
+      ? `${submitNow} funder${submitNow === 1 ? " is a" : "s are"} strong fit${submitNow === 1 ? "" : "s"} AND docs-ready — submit now.` +
+        (aiSummary ? ` ${aiSummary}` : "")
+      : aiSummary;
+
+    // Persist the ENRICHED recs (with doc-readiness fields) — additive, so the
+    // UI reading ai_lender_recommendations keeps working. These cost tokens; the
+    // picker rehydrates from the deal so a reload never throws them away.
     await db.from("deals").update({
-      ai_lender_recommendations: { summary: parsed.summary ?? "", recommendations: parsed.recommendations ?? [] },
+      ai_lender_recommendations: { summary, recommendations },
       ai_recommended_at: new Date().toISOString(),
     }).eq("id", dealId);
 
@@ -261,10 +400,11 @@ Deno.serve(async (req) => {
       ok: true,
       deal_id: dealId,
       model,
-      summary: typeof parsed.summary === "string" ? parsed.summary : "",
+      summary,
       recommendations,
       missing_fields,
       considered: lenders.length,
+      submit_now: submitNow,
     });
   } catch (e) {
     return json({ error: String(e instanceof Error ? e.message : e) }, 500);
