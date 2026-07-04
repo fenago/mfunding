@@ -40,11 +40,95 @@ function label(map: Record<string, string>, v: unknown): string {
   return map[String(v)] ?? String(v);
 }
 
+// Step-by-step runbook for standing up a new sending domain (from our Instantly playbook).
+const STEPS: { title: string; body: ReactNode }[] = [
+  {
+    title: "Pick the sending domain (never our main domain)",
+    body: (
+      <>
+        <p>Use a <b>throwaway secondary domain</b> for cold email — e.g. <code>getmfunding.com</code>, <code>trymfunding.com</code>, <code>mfunding-team.com</code>. <b>Never send from mfunding.com</b> — if a sending domain lands in spam, our real domain's reputation must stay clean.</p>
+        <p>Keep names close to the brand but clearly secondary. One new domain = up to 5 mailboxes.</p>
+      </>
+    ),
+  },
+  {
+    title: "Buy it — DFY (fast) or own it (recommended)",
+    body: (
+      <>
+        <p><b>Option A — Own it (recommended):</b> register the domain at Cloudflare/Namecheap (~$12/yr) + buy <b>Google Workspace</b> direct (~$7/mailbox/mo), <i>or</i> use a pre-warmed provider (Zapmail / InboxKit, ~$3/inbox, real Google inboxes). Then in Instantly use <b>Connect existing accounts → Google</b>. You own everything and keep it if we ever leave Instantly.</p>
+        <p><b>Option B — DFY in Instantly:</b> Instantly buys the domain + Google mailboxes for you (~$5–8/mailbox + ~$15/domain). Zero setup, but the domain is <b>rented — you don't own it</b> and can't take it with you. Fine for speed; not for anything you'd reuse.</p>
+      </>
+    ),
+  },
+  {
+    title: "Set the Forwarding Domain → mfunding.com",
+    body: (
+      <p>In the setup screen, set <b>Forwarding Domain</b> to our real live site (<code>mfunding.com</code>), <b>not</b> the sending domain. This redirects anyone who visits the sending domain to the real site, so it resolves somewhere legitimate instead of a dead page (a trust/deliverability signal).</p>
+    ),
+  },
+  {
+    title: "Create the mailboxes (one persona per domain)",
+    body: (
+      <>
+        <p>Max <b>5 mailboxes per domain</b>, all under <b>one consistent, backable persona</b> (a real name with a real LinkedIn + photo). Delete any placeholder rows (e.g. "Immanuel Kant") first.</p>
+        <p>For each mailbox: type <b>Sender First + Last</b> up top → enter the <b>email prefix only</b> in the Email field → pick the specific domain (not "All Domains") → click <b>Add</b>. Use human prefixes: <code>ernesto</code>, <code>ernesto.lee</code>, <code>elee</code>, <code>ernestolee</code>, <code>e.lee</code>. Avoid role names (<code>info@</code>, <code>sales@</code>, <code>funding@</code>).</p>
+      </>
+    ),
+  },
+  {
+    title: "Wait for provisioning (Setup Pending → Connected)",
+    body: (
+      <p>New mailboxes show <b>Setup Pending</b> while Instantly configures DNS (SPF/DKIM/DMARC). This takes a few hours up to ~72h. You <b>can't warm up or send</b> until they flip to Connected — nothing you do speeds it up.</p>
+    ),
+  },
+  {
+    title: "Set each mailbox's sender profile",
+    body: (
+      <p>Once Instantly gives you the account passwords (billing/accounts area), log into each Gmail and set the <b>display name</b> (the persona) + a <b>real photo</b>. Don't change the mailbox password — Instantly needs it to stay connected. Consistent name + photo is part of what warmup signals to Google.</p>
+    ),
+  },
+  {
+    title: "Enable warmup",
+    body: (
+      <>
+        <p>Select all mailboxes → turn on <b>warmup</b> (flame icon / bulk action). Conservative settings for fresh Google inboxes:</p>
+        <ul className="list-disc pl-5 space-y-0.5">
+          <li>Start <b>2–4 warmup emails/day</b>, ramp gradually to ~20–30/day.</li>
+          <li>Reply rate <b>~20–30%</b>.</li>
+          <li>Keep warmup <b>ON permanently</b> — even after going live, keep a slice of daily volume as warmup.</li>
+        </ul>
+      </>
+    ),
+  },
+  {
+    title: "Warm for 4–6 weeks (do not send cold email yet)",
+    body: (
+      <p>This is the discipline that makes or breaks it: <b>warm a minimum of 4 weeks, 6 is better</b>, before sending any cold email. Rushing warmup is the #1 cause of new domains landing in spam, and a burned fresh domain is hard to recover. <b>Health score climbing into the 90s = green light.</b></p>
+    ),
+  },
+  {
+    title: "Prep during warmup, then go live & scale",
+    body: (
+      <>
+        <p>Use the warmup weeks to <b>build + verify the lead list</b> (clean, verified emails only — a dirty list with bounces undoes warmup) and <b>write the sequence</b> (intro + 2–3 follow-ups) + signatures.</p>
+        <p>Launch at <b>~30–50 cold emails/inbox/day</b> (the permanent safe ceiling). Replies land in Instantly's <b>Unibox</b> → assign each to whoever closes it. <b>Scale by adding new domains</b> (5 inboxes each, ideally a new closer's persona) — never by cranking a single inbox past its ceiling.</p>
+      </>
+    ),
+  },
+];
+
 export default function EmailPage() {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showStrategy, setShowStrategy] = useState(true);
+  const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
+  const toggleStep = (i: number) =>
+    setOpenSteps((prev) => {
+      const n = new Set(prev);
+      n.has(i) ? n.delete(i) : n.add(i);
+      return n;
+    });
 
   async function load() {
     setLoading(true);
@@ -184,6 +268,29 @@ export default function EmailPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      {/* ── How to add a new sending domain ─────────────────────────── */}
+      <section className="mt-8">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Add a new sending domain — step by step</h2>
+        <p className="text-sm text-gray-500 mb-3">
+          The exact process to stand up a new domain + 5 mailboxes and get them ready to send. Do this each time we add capacity.
+        </p>
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700/60 bg-white dark:bg-gray-900">
+          {STEPS.map((s, i) => {
+            const open = openSteps.has(i);
+            return (
+              <div key={i}>
+                <button onClick={() => toggleStep(i)} className="w-full flex items-center gap-3 px-4 py-3 text-left">
+                  <span className="w-6 h-6 rounded-full bg-ocean-blue text-white text-xs flex items-center justify-center font-bold flex-shrink-0">{i + 1}</span>
+                  <span className="font-medium text-gray-900 dark:text-white flex-1">{s.title}</span>
+                  <ChevronDownIcon className={`w-5 h-5 text-gray-400 transition-transform flex-shrink-0 ${open ? "" : "-rotate-90"}`} />
+                </button>
+                {open && <div className="pb-4 pr-4 pl-[3.25rem] text-sm text-gray-600 dark:text-gray-300 space-y-2">{s.body}</div>}
+              </div>
+            );
+          })}
         </div>
       </section>
 
