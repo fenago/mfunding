@@ -356,8 +356,9 @@ Deno.serve(async (req) => {
       "Recommend 3 to 7 funders, best first. " +
       'A "strong" fit clearly meets the stated criteria; "possible" is plausible but has gaps or unknowns; ' +
       '"poor" is a likely mismatch (include only if few good options exist). ' +
+      "ALSO write \"business_summary\": a polished 2-4 sentence overview of the MERCHANT suitable to paste at the BOTTOM OF A FUNDER SUBMISSION — who they are, industry, time in business, monthly revenue, amount requested + use of funds, and any genuine strengths (seasoning, stability). It is FUNDER-FACING: do NOT mention other funders, qualification counts, disqualifications, doc gaps, or any internal analysis. Professional, factual, no hype. " +
       "Return ONLY a single strict JSON object, no prose or markdown, of the exact shape: " +
-      '{"recommendations":[{"lender_id":string,"lender_name":string,"fit":"strong"|"possible"|"poor","reasons":string[],"watch_outs":string[]}],"summary":string}. ' +
+      '{"recommendations":[{"lender_id":string,"lender_name":string,"fit":"strong"|"possible"|"poor","reasons":string[],"watch_outs":string[]}],"summary":string,"business_summary":string}. ' +
       "Use the exact lender_id and lender_name from the provided funder list.";
 
     const docsOnFileLabels = [...docsOnFile].map((s) => DOC_LABELS[s] ?? s.replace(/_/g, " "));
@@ -434,9 +435,32 @@ Deno.serve(async (req) => {
         };
       });
 
+    // Show DISQUALIFIED funders too (grayed, with the reason) — the AI ranks the
+    // best fits and drops the rest, but the closer wants to SEE who's out and why.
+    const shown = new Set(recommendations.map((r) => r.lender_id));
+    for (const l of lenders) {
+      const q = qualMap.get(l.id);
+      if (!q || q.qualifies || shown.has(l.id)) continue;
+      const readiness = readinessMap.get(l.id) ?? { docsReady: true, docsMissing: [], docsAdvisory: [] };
+      recommendations.push({
+        lender_id: l.id,
+        lender_name: l.company_name as string,
+        fit: "poor",
+        qualifies: false,
+        disqualifiers: q.disqualifiers,
+        reasons: ["Merchant does not meet this funder's minimum criteria."],
+        watch_outs: [],
+        docsReady: readiness.docsReady,
+        docsMissing: readiness.docsMissing,
+        docsAdvisory: readiness.docsAdvisory,
+      });
+    }
+
     // Top-line: how many strong fits are also docs-ready ("submit now").
     const submitNow = recommendations.filter((r) => r.fit === "strong" && r.docsReady && r.qualifies).length;
     const aiSummary = typeof parsed.summary === "string" ? parsed.summary : "";
+    const businessSummary = typeof (parsed as { business_summary?: unknown }).business_summary === "string"
+      ? (parsed as { business_summary?: string }).business_summary!.trim() : "";
     const summary = submitNow > 0
       ? `${submitNow} funder${submitNow === 1 ? " is a" : "s are"} strong fit${submitNow === 1 ? "" : "s"} AND docs-ready — submit now.` +
         (aiSummary ? ` ${aiSummary}` : "")
@@ -447,6 +471,7 @@ Deno.serve(async (req) => {
     // picker rehydrates from the deal so a reload never throws them away.
     await db.from("deals").update({
       ai_lender_recommendations: { summary, recommendations },
+      ...(businessSummary ? { ai_business_summary: businessSummary } : {}),
       ai_recommended_at: new Date().toISOString(),
     }).eq("id", dealId);
 

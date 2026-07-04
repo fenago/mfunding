@@ -470,7 +470,7 @@ Deno.serve(async (req) => {
   const dealId = payload.dealId!;
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id, ghl_contact_id, vcf_active_positions, vcf_total_balance, vcf_daily_debit, vcf_current_funders, vcf_hardship_reason")
+    .select("id, deal_number, deal_type, amount_requested, use_of_funds, status, customer_id, ghl_contact_id, ai_business_summary, vcf_active_positions, vcf_total_balance, vcf_daily_debit, vcf_current_funders, vcf_hardship_reason")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
@@ -614,12 +614,16 @@ Deno.serve(async (req) => {
     let bodyText = render(recipe?.body_template || GENERIC_BODY, tokens);
     if (recipe?.special_instructions) bodyText += `\n\n${recipe.special_instructions}`;
     if (notes) bodyText += `\n\nNotes: ${notes}`;
+    // Funder-facing deal overview (the AI's clean merchant summary) at the bottom.
+    const bizSummary = ((deal as Record<string, unknown>).ai_business_summary as string | null)?.trim() || "";
+    if (bizSummary) bodyText += `\n\n— Deal Overview —\n${bizSummary}`;
     const bodyHtml =
       `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px">` +
       `<div style="white-space:pre-wrap">${esc(render(recipe?.body_template || GENERIC_BODY, tokens))}</div>` +
       (docLinkHtml.length ? `<ul style="margin:8px 0">${docLinkHtml.join("")}</ul>` : "") +
       (recipe?.special_instructions ? `<p style="margin:8px 0;color:#334155">${esc(recipe.special_instructions)}</p>` : "") +
       (notes ? `<p style="margin:8px 0"><strong>Notes:</strong> ${esc(notes)}</p>` : "") +
+      (bizSummary ? `<div style="margin-top:12px;padding-top:8px;border-top:1px solid #e2e8f0"><strong style="color:#334155">Deal Overview</strong><p style="margin:4px 0;color:#334155;white-space:pre-wrap">${esc(bizSummary)}</p></div>` : "") +
       `</div>`;
 
     const to = recipe?.to_email || (lender.submission_email as string) || "";
