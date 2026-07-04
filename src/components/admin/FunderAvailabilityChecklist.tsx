@@ -5,10 +5,12 @@
 // visibility panel; it does NOT gate anything — FunderPicker keeps its own hard
 // gate. Rendered on the doc-collection + funder-submission playbook steps.
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   CheckCircleIcon,
   ExclamationTriangleIcon,
   ClipboardDocumentCheckIcon,
+  ArrowUpTrayIcon,
 } from "@heroicons/react/24/outline";
 import { getFunderDocReadiness, type FunderReadiness } from "../../services/funderAvailability";
 import type { DealWithCustomer } from "../../types/deals";
@@ -91,9 +93,14 @@ export default function FunderAvailabilityChecklist({ deal }: { deal: DealWithCu
                             ready
                           </span>
                         ) : (
-                          <span className="text-[11px] text-amber-700 dark:text-amber-300">
+                          <Link
+                            to={`/admin/customers/${deal.customer_id}#documents`}
+                            className="text-[11px] text-amber-700 dark:text-amber-300 hover:underline inline-flex items-center gap-1"
+                            title="Upload the missing document(s) for this merchant"
+                          >
                             Needs: {r.missing.join(", ")}
-                          </span>
+                            <ArrowUpTrayIcon className="w-3 h-3" />
+                          </Link>
                         )}
                       </span>
                       {r.advisories.length > 0 && (
