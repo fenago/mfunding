@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { TableCellsIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
+import { TableCellsIcon, ArrowPathIcon, ArrowsPointingOutIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -34,6 +34,7 @@ export default function FunderMatrixPage() {
   const [rows, setRows] = useState<MatrixRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [popout, setPopout] = useState<{ title: string; content: string } | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
 
@@ -107,7 +108,27 @@ export default function FunderMatrixPage() {
   // Render one cell: doc columns are inline-editable for admins; everything else is read-only.
   const renderCell = (r: MatrixRow, f: ProgramField) => {
     const editable = f.doc && isAdmin;
-    if (!editable) return fmtField(f, r[f.key]);
+    if (!editable) {
+      const val = fmtField(f, r[f.key]);
+      // Long list/text cells: clamp to a preview + a popout so the row never
+      // grows to infinity. Everything stays readable via the ⤢ button.
+      if ((f.type === "list" || f.type === "text") && val !== "—" && val.length > 48) {
+        return (
+          <div className="flex items-start gap-1">
+            <span className="line-clamp-2 break-words">{val}</span>
+            <button
+              type="button"
+              onClick={() => setPopout({ title: `${r.lender.company_name} — ${f.label}`, content: val })}
+              title="View full"
+              className="flex-shrink-0 text-ocean-blue hover:text-ocean-blue/70 mt-0.5"
+            >
+              <ArrowsPointingOutIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        );
+      }
+      return val;
+    }
 
     if (f.type === "bool") {
       return (
@@ -326,7 +347,7 @@ export default function FunderMatrixPage() {
                       <td
                         key={f.key}
                         className={`py-3 px-3 ${isNumeric(f.type) ? "text-right tabular-nums" : "text-left"} ${
-                          f.type === "list" || f.type === "text" ? "max-w-[220px]" : "whitespace-nowrap"
+                          f.type === "list" || f.type === "text" ? "max-w-[200px] align-top" : "whitespace-nowrap"
                         } ${
                           blank
                             ? "text-amber-500/70 dark:text-amber-500/60 italic"
@@ -341,6 +362,29 @@ export default function FunderMatrixPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Full-content popout — so a long Details / Documents summary never has to
+          expand the row; the cell stays compact and this shows the whole thing. */}
+      {popout && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setPopout(null)}>
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white pr-4">{popout.title}</h3>
+              <button type="button" onClick={() => setPopout(null)} className="text-gray-400 hover:text-gray-600 flex-shrink-0">
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto text-sm text-gray-700 dark:text-gray-200 whitespace-pre-wrap break-words leading-relaxed">
+              {popout.content.split(" · ").map((line, i) => (
+                <div key={i} className="flex gap-2 py-0.5">
+                  <span className="text-ocean-blue flex-shrink-0">•</span>
+                  <span>{line}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>

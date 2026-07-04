@@ -123,6 +123,7 @@ export const PROGRAM_FIELDS: ProgramField[] = [
   { key: "doc_tax_financials", label: "Tax return / financials", short: "Tax / financials", type: "tri", doc: true, options: TAX_OPTIONS },
   { key: "doc_conditions", label: "Conditional doc rules", short: "Conditions", type: "text", doc: true },
   { key: "doc_other", label: "Other documents", short: "Docs — other", type: "text", doc: true },
+  { key: "required_documents", label: "Documents summary (readable)", short: "Documents summary", type: "list", doc: true, help: "Readable summary of the requirement. The split-out columns are the source of truth; this is the at-a-glance version." },
 ];
 
 // Keys of the structured doc columns (used by the matrix inline editor + filters).
