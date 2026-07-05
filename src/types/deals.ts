@@ -101,6 +101,12 @@ export interface Deal {
   /** Closer-controlled manual doc checklist, keyed by customer_document_type slug
    *  → true when collected. SOURCE OF TRUTH for funder doc availability. */
   doc_checklist?: Record<string, boolean> | null;
+  /** Lead temperature (cold|cool|warm|warmer|hot|hottest) — drives My Day rank. */
+  temperature?: string | null;
+  /** Qualification snapshot that arrived WITH the lead (revenue, TIB, FICO, etc.). */
+  lead_qual?: Record<string, unknown> | null;
+  /** Speed-to-lead countdown target for hot/hottest leads. */
+  first_call_due_at?: string | null;
   /** Persisted AI lender analysis (tokens cost money — survives reloads). */
   ai_lender_recommendations: { summary: string; recommendations: unknown[] } | null;
   ai_recommended_at: string | null;

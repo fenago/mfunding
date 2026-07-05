@@ -15,12 +15,34 @@ interface Urgency {
   tone: string;
 }
 
-// Ranking rules — the order here IS the priority (1 = most urgent). A deal that
+// mm:ss countdown from a millisecond delta.
+function countdown(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+const WARM = new Set(["warm", "warmer"]);
+const HOT = new Set(["hot", "hottest"]);
+
+// Ranking rules — the order here IS the priority (0 = most urgent). A deal that
 // matches none of these never enters the queue.
 function classify(deal: QueueDeal, now: number): Urgency | null {
   const subs = deal.submissions ?? [];
   const responded = subs.filter((s) => s.response_at);
   const anyResponded = responded.length > 0;
+
+  // 0 — a HOT lead (real-time / live transfer) with a live speed-to-lead clock.
+  // The most time-critical thing on the board: the merchant expects a call NOW.
+  if (deal.status === "new" && deal.first_call_due_at && HOT.has(deal.temperature ?? "")) {
+    const dueMs = Date.parse(deal.first_call_due_at) - now;
+    return {
+      rank: 0,
+      badge: dueMs > 0 ? `🔴 CALL NOW · ${countdown(dueMs)}` : "🔴 CALL NOW · OVERDUE",
+      why: dueMs > 0 ? "Real-time lead — call before the clock runs out." : "Real-time lead PAST its call window — call immediately.",
+      since: deal.created_at,
+      tone: "red",
+    };
+  }
 
   // 1 — a funder replied, but the deal is still parked in Submitted.
   if (deal.status === "submitted_to_funder" && anyResponded) {
@@ -51,9 +73,18 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   if (deal.status === "submitted_to_funder" && deal.submitted_at && !anyResponded && now - Date.parse(deal.submitted_at) > 2 * DAY) {
     return { rank: 5, badge: "📤 Nudge funders", why: "Submitted 48h+ ago, still silent — nudge them.", since: deal.submitted_at, tone: "blue" };
   }
-  // 5 — a new lead untouched for over an hour.
-  if (deal.status === "new" && deal.created_at && now - Date.parse(deal.created_at) > HOUR) {
-    return { rank: 6, badge: "🆕 Untouched lead", why: "New lead sitting 1h+ — make first contact.", since: deal.created_at, tone: "gray" };
+  // 5 — a new lead untouched. Temperature sets how fast it surfaces: WARM/warmer
+  // (purchased web + aged transfer) must be worked within minutes; cold/unknown
+  // after an hour. (Hot leads are caught by rank 0 above with a countdown.)
+  if (deal.status === "new" && deal.created_at) {
+    const age = now - Date.parse(deal.created_at);
+    const warm = WARM.has(deal.temperature ?? "");
+    const threshold = warm ? 5 * 60_000 : HOUR;
+    if (age > threshold) {
+      return warm
+        ? { rank: 5.5, badge: "🌤️ Warm lead — call now", why: "Purchased/qualified lead sitting 5m+ — these decay fast.", since: deal.created_at, tone: "amber" }
+        : { rank: 6, badge: "🆕 Untouched lead", why: "New lead sitting 1h+ — make first contact.", since: deal.created_at, tone: "gray" };
+    }
   }
   return null;
 }
@@ -116,6 +147,13 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
     const t = setInterval(load, 60_000);
     return () => clearInterval(t);
   }, [load]);
+
+  // Tick `now` every second so the hot-lead speed-to-lead countdown counts down
+  // live (the 60s data reload is too coarse for a ticking clock).
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
 
   const mineScope = (d: QueueDeal) => !d.assigned_closer_id || d.assigned_closer_id === effectiveUserId;
 
