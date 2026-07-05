@@ -5,7 +5,10 @@ import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
   ChevronDownIcon,
+  CheckCircleIcon,
+  FireIcon,
 } from "@heroicons/react/24/outline";
+import { BarChart, Bar, XAxis, YAxis, Cell, ReferenceLine, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 // ── Live Instantly data ──────────────────────────────────────────────────────
 interface InstantlyAccount {
@@ -16,6 +19,8 @@ interface InstantlyAccount {
   stat_warmup_score?: number;
   daily_limit?: number;
   setup_pending?: boolean;
+  timestamp_warmup_start?: string | null;
+  timestamp_created?: string | null;
   [k: string]: unknown;
 }
 interface InstantlyCampaign {
@@ -28,8 +33,50 @@ interface Overview {
   key_present?: boolean;
   accounts: InstantlyAccount[];
   campaigns: InstantlyCampaign[];
+  forwarding?: Record<string, { target: string | null; ok: boolean }>;
+  real_site?: string;
   errors?: { accounts: string | null; campaigns: string | null };
 }
+
+// ── Warmup countdown model ────────────────────────────────────────────────────
+// RED before 3 weeks (do NOT send) · YELLOW 3–6 weeks (warming, can start light
+// after ~3.5wk) · GREEN after 6 weeks (safe full send).
+const WARM_YELLOW_DAYS = 21; // 3 weeks
+const WARM_GREEN_DAYS = 42;  // 6 weeks
+const WARM_MIN_SEND_DAYS = 25; // ~3.5 weeks — earliest you'd cautiously start
+const DAY_MS = 86_400_000;
+
+type WarmTone = "red" | "yellow" | "green";
+interface WarmState {
+  started: boolean;
+  days: number;                 // days warming so far
+  toGreen: number;              // days remaining until green (0 if green)
+  pct: number;                  // progress toward 6 weeks (0–100)
+  tone: WarmTone;
+  label: string;
+  canStart: boolean;            // past the ~3.5-week minimum
+}
+
+function warmupStart(a: InstantlyAccount): string | null {
+  return a.timestamp_warmup_start || a.timestamp_created || null;
+}
+
+function warmState(startIso: string | null, now: number): WarmState {
+  if (!startIso) return { started: false, days: 0, toGreen: WARM_GREEN_DAYS, pct: 0, tone: "red", label: "Warmup not started", canStart: false };
+  const days = Math.max(0, Math.floor((now - Date.parse(startIso)) / DAY_MS));
+  const toGreen = Math.max(0, WARM_GREEN_DAYS - days);
+  const pct = Math.min(100, Math.round((days / WARM_GREEN_DAYS) * 100));
+  const canStart = days >= WARM_MIN_SEND_DAYS;
+  if (days >= WARM_GREEN_DAYS) return { started: true, days, toGreen, pct, tone: "green", label: "Ready — safe to send", canStart: true };
+  if (days >= WARM_YELLOW_DAYS) return { started: true, days, toGreen, pct, tone: "yellow", label: canStart ? "Warming — can start light" : "Warming — not yet at 3.5-week minimum", canStart };
+  return { started: true, days, toGreen, pct, tone: "red", label: "Too early — do NOT send", canStart: false };
+}
+
+const WARM_TONE: Record<WarmTone, { chip: string; bar: string; ring: string; dot: string; text: string }> = {
+  red:    { chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",       bar: "bg-red-500",    ring: "border-red-300 dark:border-red-800",       dot: "bg-red-500",    text: "text-red-600 dark:text-red-400" },
+  yellow: { chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", bar: "bg-amber-500",  ring: "border-amber-300 dark:border-amber-800",   dot: "bg-amber-500",  text: "text-amber-600 dark:text-amber-400" },
+  green:  { chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300", bar: "bg-emerald-500", ring: "border-emerald-300 dark:border-emerald-800", dot: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400" },
+};
 
 const ACCOUNT_STATUS: Record<string, string> = { "1": "Active", "2": "Paused", "-1": "Error", "-2": "Suspended", "0": "Setup pending" };
 const WARMUP_STATUS: Record<string, string> = { "0": "Paused", "1": "Active", "-1": "Error" };
@@ -152,6 +199,7 @@ export default function EmailPage() {
   const accounts = data?.accounts ?? [];
   const campaigns = data?.campaigns ?? [];
   const warmScore = (a: InstantlyAccount) => a.stat_warmup_score ?? a.warmup_score;
+  const domains = groupDomains(accounts, data?.forwarding ?? {}, Date.now());
 
   return (
     <div className="max-w-[1200px] mx-auto px-4 py-8">
@@ -203,6 +251,9 @@ export default function EmailPage() {
           </div>
         </div>
       )}
+
+      {/* Domain warmup — countdown clocks + forwarding + progress chart */}
+      <DomainWarmupDashboard domains={domains} realSite={data?.real_site ?? "mfunding.net"} loading={loading} />
 
       {/* Sending accounts */}
       <section className="mt-6">
@@ -345,6 +396,139 @@ export default function EmailPage() {
         )}
       </section>
     </div>
+  );
+}
+
+// ── Domain warmup dashboard ───────────────────────────────────────────────────
+interface DomainGroup {
+  domain: string;
+  accts: InstantlyAccount[];
+  start: string | null;
+  ws: WarmState;
+  avgHealth: number;
+  fwd?: { target: string | null; ok: boolean };
+}
+
+function groupDomains(accounts: InstantlyAccount[], forwarding: Record<string, { target: string | null; ok: boolean }>, now: number): DomainGroup[] {
+  const map = new Map<string, InstantlyAccount[]>();
+  for (const a of accounts) {
+    const d = a.email?.split("@")[1]?.toLowerCase() ?? "unknown";
+    const arr = map.get(d) ?? [];
+    arr.push(a);
+    map.set(d, arr);
+  }
+  return [...map.entries()]
+    .map(([domain, accts]) => {
+      const starts = accts.map(warmupStart).filter((s): s is string => !!s).sort();
+      const start = starts[0] ?? null; // domain warmup began when its first mailbox started
+      const avgHealth = accts.length
+        ? Math.round(accts.reduce((s, a) => s + (Number(a.stat_warmup_score ?? a.warmup_score) || 0), 0) / accts.length)
+        : 0;
+      return { domain, accts, start, ws: warmState(start, now), avgHealth, fwd: forwarding[domain] };
+    })
+    .sort((a, b) => a.domain.localeCompare(b.domain));
+}
+
+function DomainWarmupDashboard({ domains, realSite, loading }: { domains: DomainGroup[]; realSite: string; loading: boolean }) {
+  if (loading && domains.length === 0) {
+    return <section className="mt-6"><p className="text-sm text-gray-400">Loading domain warmup…</p></section>;
+  }
+  if (domains.length === 0) return null;
+
+  const chartData = domains.map((g) => ({ name: g.domain.replace(/\.com$|\.net$/, ""), days: g.ws.days, tone: g.ws.tone }));
+
+  return (
+    <section className="mt-6">
+      <div className="flex items-center gap-2 mb-1">
+        <FireIcon className="w-5 h-5 text-amber-500" />
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white">Domain warmup</h2>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+        Do <b>not</b> send cold email until a domain is warmed. <span className="text-red-600 dark:text-red-400 font-medium">Red &lt; 3 wks</span> ·{" "}
+        <span className="text-amber-600 dark:text-amber-400 font-medium">Yellow 3–6 wks</span> (earliest send ~3.5 wks) ·{" "}
+        <span className="text-emerald-600 dark:text-emerald-400 font-medium">Green ≥ 6 wks (safe)</span>.
+      </p>
+
+      {/* Countdown cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {domains.map((g) => {
+          const t = WARM_TONE[g.ws.tone];
+          return (
+            <div key={g.domain} className={`rounded-xl border-2 ${t.ring} bg-white dark:bg-gray-900 p-4`}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-gray-900 dark:text-white truncate">{g.domain}</span>
+                <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${t.chip}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${t.dot}`} /> {g.ws.tone}
+                </span>
+              </div>
+
+              {/* The clock */}
+              <div className="mt-3 flex items-end gap-2">
+                <span className={`text-4xl font-extrabold tabular-nums ${t.text}`}>{g.ws.started ? g.ws.days : "—"}</span>
+                <span className="text-sm text-gray-500 dark:text-gray-400 mb-1">days warming</span>
+              </div>
+              <p className={`text-xs font-medium ${t.text}`}>{g.ws.label}</p>
+
+              {/* Progress toward 6 weeks, with the 3-week + 3.5-week markers */}
+              <div className="mt-3">
+                <div className="relative h-2.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                  <div className={`h-full ${t.bar} transition-all`} style={{ width: `${g.ws.pct}%` }} />
+                  {/* 3-week (50%) and 6-week (100%) markers */}
+                  <span className="absolute top-0 bottom-0 w-px bg-gray-400/70" style={{ left: `${(WARM_YELLOW_DAYS / WARM_GREEN_DAYS) * 100}%` }} title="3 weeks" />
+                </div>
+                <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+                  <span>0</span><span>3 wk</span><span>6 wk ✓</span>
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-600 dark:text-gray-300 mt-2">
+                {g.ws.tone === "green"
+                  ? "✅ Safe to send."
+                  : g.ws.started
+                    ? <><b className={t.text}>{g.ws.toGreen} days</b> until safe to send{g.ws.canStart ? " (can start light now)" : ""}.</>
+                    : "Warmup hasn't started yet."}
+              </p>
+
+              {/* Meta: mailboxes · health · forwarding */}
+              <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700 space-y-1 text-xs">
+                <div className="flex justify-between"><span className="text-gray-500">Mailboxes</span><span className="text-gray-800 dark:text-gray-200 font-medium">{g.accts.length}</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Warmup health</span><span className="text-gray-800 dark:text-gray-200 font-medium">{g.avgHealth}%</span></div>
+                <div className="flex justify-between items-center gap-2">
+                  <span className="text-gray-500">Forwarding</span>
+                  {g.fwd?.ok ? (
+                    <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium"><CheckCircleIcon className="w-3.5 h-3.5" />{realSite}</span>
+                  ) : g.fwd?.target ? (
+                    <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400 font-medium" title={`Should forward to ${realSite}`}><ExclamationTriangleIcon className="w-3.5 h-3.5" />→ {g.fwd.target} ✕</span>
+                  ) : (
+                    <span className="text-gray-400">unknown</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Warmup progress chart */}
+      <div className="mt-5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Warmup progress — days toward the 6-week safe line</h3>
+        <ResponsiveContainer width="100%" height={Math.max(140, chartData.length * 46)}>
+          <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
+            <CartesianGrid strokeDasharray="3 3" horizontal={false} className="stroke-gray-200 dark:stroke-gray-700" />
+            <XAxis type="number" domain={[0, WARM_GREEN_DAYS]} tick={{ fontSize: 11 }} tickFormatter={(v) => `${v}d`} />
+            <YAxis type="category" dataKey="name" width={90} tick={{ fontSize: 12 }} />
+            <Tooltip formatter={(v) => [`${v} days`, "Warming"]} />
+            <ReferenceLine x={WARM_YELLOW_DAYS} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: "3 wk", position: "top", fontSize: 10, fill: "#f59e0b" }} />
+            <ReferenceLine x={WARM_GREEN_DAYS} stroke="#10b981" strokeDasharray="4 4" label={{ value: "6 wk", position: "top", fontSize: 10, fill: "#10b981" }} />
+            <Bar dataKey="days" radius={[0, 4, 4, 0]} barSize={20}>
+              {chartData.map((d, i) => (
+                <Cell key={i} fill={d.tone === "green" ? "#10b981" : d.tone === "yellow" ? "#f59e0b" : "#ef4444"} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </section>
   );
 }
 

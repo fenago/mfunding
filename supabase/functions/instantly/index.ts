@@ -55,6 +55,39 @@ async function instantlyGet(apiKey: string, path: string): Promise<{ ok: boolean
   }
 }
 
+/** Our real live site — every sending domain should FORWARD here. */
+const REAL_SITE = "mfunding.net";
+
+/** Server-side forwarding check: where does a sending domain redirect when
+ * visited? The admin page can't read cross-origin redirects, but we can. Returns
+ * the redirect target + whether it points at our real site (mfunding.net). */
+async function checkForwarding(domain: string): Promise<{ target: string | null; ok: boolean }> {
+  for (const scheme of ["https", "http"]) {
+    try {
+      const res = await fetch(`${scheme}://${domain}`, { redirect: "manual", signal: AbortSignal.timeout(6000) });
+      const loc = res.headers.get("location");
+      if (loc) {
+        let host = loc;
+        try { host = new URL(loc).hostname; } catch { /* keep raw */ }
+        return { target: host.replace(/^www\./, ""), ok: host.replace(/^www\./, "") === REAL_SITE };
+      }
+      // 200 with no redirect = it resolves to itself, not forwarded to the real site
+      if (res.status >= 200 && res.status < 300) return { target: domain, ok: false };
+    } catch { /* try next scheme */ }
+  }
+  return { target: null, ok: false };
+}
+
+/** Unique sending domains from the account emails. */
+function domainsOf(accounts: unknown[]): string[] {
+  const set = new Set<string>();
+  for (const a of accounts as { email?: string }[]) {
+    const d = a.email?.split("@")[1]?.toLowerCase();
+    if (d) set.add(d);
+  }
+  return [...set];
+}
+
 /** Instantly v2 list endpoints return { items: [...] } — normalize to an array. */
 function items(payload: unknown): unknown[] {
   if (Array.isArray(payload)) return payload;
@@ -107,10 +140,18 @@ Deno.serve(async (req) => {
       instantlyGet(apiKey, "/accounts?limit=100"),
       instantlyGet(apiKey, "/campaigns?limit=100"),
     ]);
+    const accounts = acc.ok ? items(acc.data) : [];
+    // Live forwarding check per sending domain (target + is-it-mfunding.net).
+    const doms = domainsOf(accounts);
+    const fwdPairs = await Promise.all(doms.map(async (d) => [d, await checkForwarding(d)] as const));
+    const forwarding: Record<string, { target: string | null; ok: boolean }> = {};
+    for (const [d, f] of fwdPairs) forwarding[d] = f;
     return json({
       key_present: true,
-      accounts: acc.ok ? items(acc.data) : [],
+      accounts,
       campaigns: camp.ok ? items(camp.data) : [],
+      forwarding,
+      real_site: REAL_SITE,
       errors: {
         accounts: acc.ok ? null : (acc.error || `status ${acc.status}`),
         campaigns: camp.ok ? null : (camp.error || `status ${camp.status}`),
