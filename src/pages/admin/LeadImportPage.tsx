@@ -5,7 +5,6 @@ import {
   DocumentArrowUpIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
-  UsersIcon,
   BoltIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
@@ -67,12 +66,6 @@ interface ImportResult {
   sample_errors: string[];
 }
 
-interface PoolCount {
-  key: string;
-  label: string;
-  count: number;
-}
-
 export default function LeadImportPage() {
   const [sources, setSources] = useState<LeadSource[]>([]);
   const [sourceKey, setSourceKey] = useState("");
@@ -85,10 +78,8 @@ export default function LeadImportPage() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [poolCounts, setPoolCounts] = useState<PoolCount[]>([]);
 
   const source = sources.find((s) => s.key === sourceKey) || null;
-  const isPool = source ? !source.creates_deal : false;
 
   // Load bulk_csv sources.
   useEffect(() => {
@@ -103,25 +94,6 @@ export default function LeadImportPage() {
       else setSources(data || []);
     })();
   }, []);
-
-  const loadPoolCounts = useCallback(async (srcs: LeadSource[]) => {
-    const pool = srcs.filter((s) => !s.creates_deal);
-    const counts = await Promise.all(
-      pool.map(async (s) => {
-        const { count } = await supabase
-          .from("customers")
-          .select("id", { count: "exact", head: true })
-          .contains("tags", ["nurture"])
-          .eq("source_details", s.key);
-        return { key: s.key, label: s.label, count: count ?? 0 };
-      }),
-    );
-    setPoolCounts(counts);
-  }, []);
-
-  useEffect(() => {
-    if (sources.length) loadPoolCounts(sources);
-  }, [sources, loadPoolCounts]);
 
   // Fields to show for the selected source (identity always; qual only for full sources).
   const visibleFields = useMemo(() => {
@@ -245,7 +217,6 @@ export default function LeadImportPage() {
       );
 
       setResult(acc);
-      loadPoolCounts(sources);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -259,9 +230,8 @@ export default function LeadImportPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Lead Import</h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Bulk-import a Synergy CSV. Cold lists (aged / UCC / trigger) land in the{" "}
-          <span className="font-medium">Nurture Pool</span> as contacts only; warm lists
-          (web / aged transfer) create <span className="font-medium">active pipeline deals</span>.
+          Bulk-import a Synergy CSV. Imported leads land on the{" "}
+          <span className="font-medium">active MCA pipeline</span> as deals.
         </p>
       </div>
 
@@ -288,33 +258,18 @@ export default function LeadImportPage() {
             >
               <div className="font-medium">{s.label}</div>
               <div className="text-xs mt-0.5 flex items-center gap-1">
-                {s.creates_deal ? (
-                  <><BoltIcon className="w-3.5 h-3.5 text-amber-500" /> Active pipeline · {s.temperature}</>
-                ) : (
-                  <><UsersIcon className="w-3.5 h-3.5 text-gray-400" /> Nurture pool · cold</>
-                )}
+                <BoltIcon className="w-3.5 h-3.5 text-amber-500" /> Active pipeline · {s.temperature}
               </div>
             </button>
           ))}
         </div>
         {source && (
-          <div
-            className={`mt-3 text-sm rounded-lg px-3 py-2 ${
-              isPool
-                ? "bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300"
-                : "bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300"
-            }`}
-          >
-            {isPool ? (
-              <>These leads go to the <b>Nurture Pool</b> — contacts only, no deal, tagged{" "}
-                <code className="text-xs">nurture</code>. A deal is created when a dialer promotes them.</>
-            ) : (
-              <>These leads enter the <b>Active MCA Pipeline</b> at stage{" "}
-                <code className="text-xs">{source.default_status}</code>
-                {source.first_call_sla_seconds
-                  ? <> with a first-call clock of {source.first_call_sla_seconds}s.</>
-                  : "."}</>
-            )}
+          <div className="mt-3 text-sm rounded-lg px-3 py-2 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300">
+            These leads enter the <b>Active MCA Pipeline</b> at stage{" "}
+            <code className="text-xs">{source.default_status}</code>
+            {source.first_call_sla_seconds
+              ? <> with a first-call clock of {source.first_call_sla_seconds}s.</>
+              : "."}
           </div>
         )}
       </div>
@@ -398,17 +353,11 @@ export default function LeadImportPage() {
       {csv && source && (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 mb-6">
           <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">4. Preview & import</h2>
-          <div
-            className={`mb-4 flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
-              isPool
-                ? "bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300"
-                : "bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300"
-            }`}
-          >
-            {isPool ? <UsersIcon className="w-4 h-4" /> : <BoltIcon className="w-4 h-4" />}
+          <div className="mb-4 flex items-center gap-2 rounded-lg px-3 py-2 text-sm bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300">
+            <BoltIcon className="w-4 h-4" />
             <span>
               <b>{csv.rows.length.toLocaleString()}</b> rows will go to the{" "}
-              <b>{isPool ? "Nurture Pool" : "Active Pipeline"}</b>.
+              <b>Active Pipeline</b>.
               {" "}Duplicates (by phone or email) are merged, not re-created.
             </span>
           </div>
@@ -465,32 +414,7 @@ export default function LeadImportPage() {
             </div>
           )}
           <div className="mt-3 text-sm">
-            {isPool ? (
-              <Link to="/admin/customers?segment=nurture" className="text-ocean-blue hover:underline">
-                View the Nurture Pool →
-              </Link>
-            ) : (
-              <Link to="/admin/deals" className="text-ocean-blue hover:underline">View the pipeline →</Link>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Nurture Pool counts */}
-      {poolCounts.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Nurture Pool by source</h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {poolCounts.map((p) => (
-              <Link
-                key={p.key}
-                to={`/admin/customers?segment=nurture&source=${p.key}`}
-                className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700"
-              >
-                <div className="text-2xl font-bold text-gray-900 dark:text-white">{p.count.toLocaleString()}</div>
-                <div className="text-xs text-gray-500">{p.label}</div>
-              </Link>
-            ))}
+            <Link to="/admin/deals" className="text-ocean-blue hover:underline">View the pipeline →</Link>
           </div>
         </div>
       )}

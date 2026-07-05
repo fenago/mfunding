@@ -30,12 +30,12 @@ const PLAYBOOK_DEFAULTS: Record<
   // manualEntry: does the closer ever TYPE a new lead here? Only when there's no
   // prior record — a live transfer (merchant on the phone) or a walk-in web/VCF
   // add. For the Synergy import + email + cold-email paths the lead ALWAYS
-  // already exists (CSV import / auto-created from email / Nurture Pool), so the
+  // already exists (CSV import / auto-created from email), so the
   // closer works an EXISTING deal — never types one in. (default: true)
   // ORIGINAL flows (website, live-transfer, vcf, renewal) are untouched — they
   // keep manual "+ New lead". manualEntry:false is ONLY on the NEW Synergy /
-  // cold-email paths, where the lead always already exists (import / email /
-  // Nurture Pool) so the closer works an existing record, never types one in.
+  // cold-email paths, where the lead always already exists (import / email)
+  // so the closer works an existing record, never types one in.
   website: { leadSource: "website", startStatus: "new", isLiveTransfer: false },
   "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true },
   "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false, manualEntry: false },

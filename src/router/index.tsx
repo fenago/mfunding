@@ -599,7 +599,7 @@ export const routes: RouteObject[] = [
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <LeadSourcesPage /> }],
               },
-              // Bulk CSV lead import + Nurture Pool (admin + super_admin / ops)
+              // Bulk CSV lead import (admin + super_admin / ops)
               {
                 path: "lead-import",
                 element: <AdminOnlyProtectedRoute />,
