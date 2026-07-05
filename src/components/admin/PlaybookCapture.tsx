@@ -25,19 +25,17 @@ interface Customer {
 // Per-playbook defaults so the form arrives pre-configured for the flow.
 const PLAYBOOK_DEFAULTS: Record<
   Playbook["id"],
-  { leadSource: string; startStatus: DealStatus; isLiveTransfer: boolean; isRenewal?: boolean; manualEntry?: boolean }
+  { leadSource: string; startStatus: DealStatus; isLiveTransfer: boolean; isRenewal?: boolean; manualEntry?: boolean; defaultMode?: "new" | "existing" }
 > = {
   // manualEntry: does the closer ever TYPE a new lead here? Only when there's no
   // prior record — a live transfer (merchant on the phone) or a walk-in web/VCF
-  // add. For the Synergy import + email + cold-email paths the lead ALWAYS
-  // already exists (CSV import / auto-created from email), so the
-  // closer works an EXISTING deal — never types one in. (default: true)
-  // ORIGINAL flows (website, live-transfer, vcf, renewal) are untouched — they
-  // keep manual "+ New lead". manualEntry:false is ONLY on the NEW Synergy /
-  // cold-email paths, where the lead always already exists (import / email)
-  // so the closer works an existing record, never types one in.
-  website: { leadSource: "website", startStatus: "new", isLiveTransfer: false },
-  "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true },
+  // add. manualEntry:false (Synergy import + email + cold-email paths) hides the
+  // "+ New lead" option entirely — the lead always already exists.
+  // defaultMode: which view opens first WHEN manual entry is allowed. Website
+  // opens on the existing-customer picker ("Work this lead"), with "+ New lead"
+  // still one click away; Live Transfer opens on the "+ New lead" form.
+  website: { leadSource: "website", startStatus: "new", isLiveTransfer: false, defaultMode: "existing" },
+  "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true, defaultMode: "new" },
   "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true, manualEntry: false },
@@ -101,7 +99,7 @@ export default function PlaybookCapture({
     setForm({ ...emptyForm, lead_source: defaults.leadSource });
     setSaved(null);
     setError(null);
-    setMode(allowsManualEntry ? "new" : "existing");
+    setMode(allowsManualEntry ? (defaults.defaultMode ?? "new") : "existing");
     setExistingId("");
   }, [playbook.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
