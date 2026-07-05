@@ -3,9 +3,14 @@ import { mustWrite } from "@/supabase/writes";
 
 export type CampaignChannel =
   | "live_transfer"
-  | "google_ads"
+  | "real_time"
+  | "web_purchased"
+  | "aged_transfer"
+  | "cold_email"
   | "aged_leads"
   | "ucc"
+  | "trigger"
+  | "google_ads"
   | "referral"
   | "seo"
   | "social"
@@ -21,6 +26,8 @@ export interface Campaign {
   budget: number;
   spent: number;
   leads_target: number | null;
+  leads_purchased: number | null; // how many leads we actually BOUGHT (true acquisition cost)
+  clicks: number | null;          // for click channels (Google Ads) → real CPC
   market: string | null;
   vendor_id: string | null;
   start_date: string | null;
@@ -34,9 +41,14 @@ export type CampaignInput = Omit<Campaign, "id" | "created_at" | "updated_at">;
 
 export const CHANNEL_LABELS: Record<CampaignChannel, string> = {
   live_transfer: "Live Transfer Leads",
-  google_ads: "Google Ads",
+  real_time: "Real-Time / Appointment Leads",
+  web_purchased: "Purchased Web Leads",
+  aged_transfer: "Aged Live Transfers",
+  cold_email: "Cold Email (Instantly)",
   aged_leads: "Aged Leads",
   ucc: "UCC Data",
+  trigger: "Trigger Leads",
+  google_ads: "Google Ads",
   referral: "Referral",
   seo: "SEO / Organic",
   social: "Social",
@@ -44,16 +56,22 @@ export const CHANNEL_LABELS: Record<CampaignChannel, string> = {
 };
 
 export interface CampaignMetrics {
-  leads: number; // attributed deals
+  spent: number;
+  leads: number; // attributed deals (leads that entered the pipeline)
+  leadsPurchased: number | null; // leads we bought (from the campaign record)
   byStatus: Record<string, number>;
   contacted: number; // reached at least 'contacted'
+  contactPct: number; // contacted / leads
   funded: number;
   fundedAmount: number; // sum of amount_funded
-  estCommission: number; // fundedAmount * commissionRate
+  estCommission: number; // fundedAmount * commissionRate (the "revenue" to us)
   conversionPct: number; // funded / leads
-  costPerLead: number | null;
-  costPerFunded: number | null;
-  roiPct: number | null; // (estCommission - spent) / spent
+  acquisitionCpl: number | null; // spent / leadsPurchased — TRUE cost per lead bought
+  costPerLead: number | null;    // spent / attributed leads (pipeline entry cost)
+  costPerFunded: number | null;  // spent / funded — the number that matters most
+  cpc: number | null;            // spent / clicks (click channels only)
+  roas: number | null;           // estCommission / spent — revenue-to-spend ratio (×)
+  roiPct: number | null;         // (estCommission - spent) / spent
 }
 
 // Average broker commission on a funded deal ≈ 8 points.
@@ -113,16 +131,24 @@ export async function getCampaignMetrics(campaigns: Campaign[]): Promise<Record<
       .filter(([s]) => PAST_NEW(s))
       .reduce((n, [, v]) => n + v, 0);
     const estCommission = a.fundedAmount * COMMISSION_RATE;
+    const purchased = c.leads_purchased ?? null;
+    const clicks = c.clicks ?? null;
     out[c.id] = {
+      spent,
       leads: a.leads,
+      leadsPurchased: purchased,
       byStatus: a.byStatus,
       contacted,
+      contactPct: a.leads ? (contacted / a.leads) * 100 : 0,
       funded: a.funded,
       fundedAmount: a.fundedAmount,
       estCommission,
       conversionPct: a.leads ? (a.funded / a.leads) * 100 : 0,
+      acquisitionCpl: purchased && purchased > 0 ? spent / purchased : null,
       costPerLead: a.leads ? spent / a.leads : null,
       costPerFunded: a.funded ? spent / a.funded : null,
+      cpc: clicks && clicks > 0 ? spent / clicks : null,
+      roas: spent > 0 ? estCommission / spent : null,
       roiPct: spent > 0 ? ((estCommission - spent) / spent) * 100 : null,
     };
   }

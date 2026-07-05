@@ -33,6 +33,8 @@ const BLANK = {
   budget: "",
   spent: "",
   leads_target: "",
+  leads_purchased: "",
+  clicks: "",
   market: "",
   start_date: "",
   end_date: "",
@@ -80,7 +82,12 @@ export default function CampaignsPage() {
         commission += m.estCommission;
       }
     }
-    return { spent, funded, leads, commission, cpf: funded ? spent / funded : null, roi: spent ? ((commission - spent) / spent) * 100 : null };
+    return {
+      spent, funded, leads, commission,
+      cpf: funded ? spent / funded : null,
+      roas: spent ? commission / spent : null,
+      roi: spent ? ((commission - spent) / spent) * 100 : null,
+    };
   }, [rows, metrics]);
 
   function add() {
@@ -97,6 +104,8 @@ export default function CampaignsPage() {
       budget: String(c.budget ?? ""),
       spent: String(c.spent ?? ""),
       leads_target: c.leads_target != null ? String(c.leads_target) : "",
+      leads_purchased: c.leads_purchased != null ? String(c.leads_purchased) : "",
+      clicks: c.clicks != null ? String(c.clicks) : "",
       market: c.market ?? "",
       start_date: c.start_date ?? "",
       end_date: c.end_date ?? "",
@@ -114,6 +123,8 @@ export default function CampaignsPage() {
         budget: Number(form.budget || 0),
         spent: Number(form.spent || 0),
         leads_target: form.leads_target === "" ? null : Number(form.leads_target),
+        leads_purchased: form.leads_purchased === "" ? null : Number(form.leads_purchased),
+        clicks: form.clicks === "" ? null : Number(form.clicks),
         market: form.market || null,
         start_date: form.start_date || null,
         end_date: form.end_date || null,
@@ -156,11 +167,12 @@ export default function CampaignsPage() {
         </div>
       )}
 
-      {/* Roll-up */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {/* Roll-up — the numbers that decide if a channel is worth it */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Stat label="Total spend" value={money(totals.spent)} />
         <Stat label="Funded deals" value={`${totals.funded}`} sub={`${totals.leads} attributed leads`} />
-        <Stat label="Blended cost / funded" value={money(totals.cpf)} sub="Target < $1,500" highlight={totals.cpf != null && totals.cpf < 1500} />
+        <Stat label="⭐ Cost / funded" value={money(totals.cpf)} sub="Target < $1,500" highlight={totals.cpf != null && totals.cpf < 1500} />
+        <Stat label="⭐ ROAS" value={totals.roas == null ? "—" : `${totals.roas.toFixed(1)}×`} sub={totals.roas == null ? "revenue ÷ spend" : totals.roas >= 1 ? "profitable" : "underwater"} highlight={totals.roas != null && totals.roas >= 1} />
         <Stat label="Est. commission · ROI" value={money(totals.commission)} sub={totals.roi == null ? undefined : `${totals.roi >= 0 ? "+" : ""}${totals.roi.toFixed(0)}% ROI`} />
       </div>
 
@@ -177,9 +189,11 @@ export default function CampaignsPage() {
                   <th className="px-4 py-3 font-medium">Campaign</th>
                   <th className="px-4 py-3 font-medium">Spend</th>
                   <th className="px-4 py-3 font-medium">Leads</th>
+                  <th className="px-4 py-3 font-medium">CPL <span className="normal-case text-[10px] text-gray-400">bought</span></th>
                   <th className="px-4 py-3 font-medium">Funded</th>
                   <th className="px-4 py-3 font-medium">Conv.</th>
-                  <th className="px-4 py-3 font-medium">Cost / funded</th>
+                  <th className="px-4 py-3 font-medium">⭐ Cost / funded</th>
+                  <th className="px-4 py-3 font-medium">⭐ ROAS</th>
                   <th className="px-4 py-3 font-medium">ROI</th>
                   <th className="px-4 py-3 font-medium text-right">Actions</th>
                 </tr>
@@ -208,9 +222,18 @@ export default function CampaignsPage() {
                           {c.budget ? <span className="text-xs text-gray-400"> / {money(c.budget)}</span> : null}
                         </td>
                         <td className="px-4 py-3 text-gray-700 dark:text-gray-200">{m?.leads ?? 0}</td>
+                        <td className="px-4 py-3 text-gray-700 dark:text-gray-200">
+                          {m?.acquisitionCpl == null ? "—" : money(m.acquisitionCpl)}
+                          {c.leads_purchased ? <span className="text-xs text-gray-400 block">{c.leads_purchased} bought</span> : null}
+                        </td>
                         <td className="px-4 py-3 font-semibold text-gray-900 dark:text-white">{m?.funded ?? 0}</td>
                         <td className="px-4 py-3 text-gray-700 dark:text-gray-200">{pct(m?.conversionPct)}</td>
-                        <td className="px-4 py-3 text-gray-700 dark:text-gray-200">{money(m?.costPerFunded)}</td>
+                        <td className={`px-4 py-3 font-medium ${m?.costPerFunded != null && m.costPerFunded < 1500 ? "text-emerald-600 dark:text-emerald-400" : "text-gray-700 dark:text-gray-200"}`}>{money(m?.costPerFunded)}</td>
+                        <td className="px-4 py-3 font-medium">
+                          {m?.roas == null ? "—" : (
+                            <span className={m.roas >= 1 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>{m.roas.toFixed(1)}×</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           {m?.roiPct == null ? (
                             "—"
@@ -234,7 +257,7 @@ export default function CampaignsPage() {
                       </tr>
                       {isOpen && m && (
                         <tr>
-                          <td colSpan={8} className="px-4 pb-4 bg-gray-50 dark:bg-gray-900/40">
+                          <td colSpan={10} className="px-4 pb-4 bg-gray-50 dark:bg-gray-900/40">
                             <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mt-2 mb-2">
                               Where this campaign's leads are
                             </p>
@@ -315,6 +338,14 @@ export default function CampaignsPage() {
               <label className="text-sm text-gray-600 dark:text-gray-300">
                 Expected leads
                 <input type="number" className={input} value={form.leads_target} onChange={(e) => setForm({ ...form, leads_target: e.target.value })} placeholder="40" />
+              </label>
+              <label className="text-sm text-gray-600 dark:text-gray-300">
+                Leads purchased <span className="text-xs text-gray-400">(what you actually bought → true CPL)</span>
+                <input type="number" className={input} value={form.leads_purchased} onChange={(e) => setForm({ ...form, leads_purchased: e.target.value })} placeholder="25" />
+              </label>
+              <label className="text-sm text-gray-600 dark:text-gray-300">
+                Clicks <span className="text-xs text-gray-400">(paid/click channels → CPC)</span>
+                <input type="number" className={input} value={form.clicks} onChange={(e) => setForm({ ...form, clicks: e.target.value })} placeholder="Google Ads only" />
               </label>
               <label className="text-sm text-gray-600 dark:text-gray-300">
                 Market
