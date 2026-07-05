@@ -104,6 +104,7 @@ const CompliancePage = lazyWithReload(() => import("../pages/admin/CompliancePag
 const RenewalsPage = lazyWithReload(() => import("../pages/admin/RenewalsPage.tsx"));
 const DocumentReviewPage = lazyWithReload(() => import("../pages/admin/DocumentReviewPage.tsx"));
 const LeadSourcesPage = lazyWithReload(() => import("../pages/admin/LeadSourcesPage.tsx"));
+const LeadImportPage = lazyWithReload(() => import("../pages/admin/LeadImportPage.tsx"));
 const ReferralPartnersPage = lazyWithReload(() => import("../pages/admin/ReferralPartnersPage.tsx"));
 const SyncLogPage = lazyWithReload(() => import("../pages/admin/SyncLogPage.tsx"));
 const PlatformConfigPage = lazyWithReload(() => import("../pages/admin/PlatformConfigPage.tsx"));
@@ -597,6 +598,12 @@ export const routes: RouteObject[] = [
                 path: "lead-sources",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <LeadSourcesPage /> }],
+              },
+              // Bulk CSV lead import + Nurture Pool (admin + super_admin / ops)
+              {
+                path: "lead-import",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <LeadImportPage /> }],
               },
               // Referral partners (admin + super_admin)
               {

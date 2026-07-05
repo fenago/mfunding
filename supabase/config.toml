@@ -66,5 +66,9 @@ verify_jwt = true
 [functions.send-merchant-email]
 verify_jwt = true
 
+# Bulk CSV lead importer — ops-only. Runs service-role; JWT gate keeps it internal.
+[functions.bulk-lead-import]
+verify_jwt = true
+
 [functions.poll-funder-replies]
 verify_jwt = false

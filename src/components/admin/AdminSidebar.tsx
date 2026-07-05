@@ -36,6 +36,7 @@ import {
   EnvelopeIcon,
   TableCellsIcon,
   RocketLaunchIcon,
+  ArrowUpTrayIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -106,6 +107,7 @@ const navGroups: NavGroup[] = [
       { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
       { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
       { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
+      { name: "Lead Import", path: "/admin/lead-import", icon: ArrowUpTrayIcon, roles: ADMIN },
       { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
       { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
       { name: "Budget Planner", path: "/admin/lead-budget", icon: CalculatorIcon, roles: SUPER },
