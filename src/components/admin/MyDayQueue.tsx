@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BoltIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
+import { BoltIcon, ArrowPathIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
 import { getOpenDealsForQueue, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 
@@ -131,6 +131,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   const [deals, setDeals] = useState<QueueDeal[]>([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(() => Date.now());
+  // My Day is an accordion but DEFAULT EXPANDED.
+  const [collapsed, setCollapsed] = useState(false);
 
   const load = useCallback(() => {
     getOpenDealsForQueue()
@@ -172,7 +174,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2">
+        <button type="button" onClick={() => setCollapsed((c) => !c)} className="flex items-center gap-2 text-left">
+          <ChevronDownIcon className={`w-4 h-4 text-gray-400 transition-transform ${collapsed ? "-rotate-90" : ""}`} />
           <BoltIcon className="w-5 h-5 text-amber-500" />
           <h2 className="text-base font-bold text-gray-900 dark:text-white">My Day</h2>
           {!loading && items.length > 0 && (
@@ -181,7 +184,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
             </span>
           )}
           <span className="hidden sm:inline text-xs text-gray-400">— what needs you next, most urgent first</span>
-        </div>
+        </button>
         <div className="flex items-center gap-2">
           {canToggle && (
             <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
@@ -206,7 +209,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         </div>
       </div>
 
-      {loading ? (
+      {!collapsed && (loading ? (
         <p className="text-sm text-gray-400 py-2">Loading your queue…</p>
       ) : items.length === 0 ? (
         <p className="text-sm text-gray-500 dark:text-gray-400 py-2">Queue clear — work the funnel below 🎉</p>
@@ -228,7 +231,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
             </button>
           ))}
         </div>
-      )}
+      ))}
     </div>
   );
 }

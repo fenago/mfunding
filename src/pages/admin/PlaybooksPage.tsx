@@ -87,6 +87,8 @@ export default function PlaybooksPage() {
   // The flow's step list is an accordion, DEFAULT CLOSED (My Day above stays
   // open). It auto-opens when a deal is loaded — you're here to work it.
   const [flowOpen, setFlowOpen] = useState(false);
+  // Flow picker (the grid of flow cards) is an accordion, DEFAULT CLOSED.
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [busyStep, setBusyStep] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
@@ -295,14 +297,27 @@ export default function PlaybooksPage() {
       {/* My Day — ranked work queue; a card loads that deal + switches the flow tab */}
       <MyDayQueue onPick={pickFromQueue} />
 
-      {/* Flow selector */}
+      {/* Flow selector — accordion, DEFAULT CLOSED. Collapsed it shows the active
+          flow; expand to pick a different one. */}
+      <button
+        type="button"
+        onClick={() => setPickerOpen((o) => !o)}
+        className="w-full flex items-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3 text-left"
+      >
+        <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${pickerOpen ? "rotate-90" : ""}`} />
+        <span className="text-xs text-gray-500 dark:text-gray-400">Flow:</span>
+        <span className="font-semibold text-gray-900 dark:text-white">{active.name}</span>
+        <span className="ml-auto text-xs text-gray-400">{pickerOpen ? "hide" : "change"}</span>
+      </button>
+
+      {pickerOpen && (
       <div className="grid gap-4 sm:grid-cols-3">
         {visiblePlaybooks.map((p) => {
           const on = p.id === active.id;
           return (
             <button
               key={p.id}
-              onClick={() => setActive(p)}
+              onClick={() => { setActive(p); setPickerOpen(false); }}
               className={`text-left rounded-xl border p-4 transition-shadow ${
                 on
                   ? "border-ocean-blue ring-2 ring-ocean-blue/30 bg-white dark:bg-gray-800"
@@ -321,6 +336,7 @@ export default function PlaybooksPage() {
           );
         })}
       </div>
+      )}
 
       {/* My commission calculator */}
       <CommissionCalculator splits={splits} hasCloser={hasCloser} canRenew={canRenew} />
