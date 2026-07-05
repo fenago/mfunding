@@ -102,7 +102,16 @@ const VCF_QUALIFY_FIELDS: StepField[] = [
 ];
 
 export interface Playbook {
-  id: "website" | "live-transfer" | "vcf" | "renewal";
+  id:
+    | "website"
+    | "live-transfer"
+    | "cold-outreach"
+    | "web-lead"
+    | "aged-transfer"
+    | "realtime"
+    | "cold-email"
+    | "vcf"
+    | "renewal";
   name: string;
   tagline: string;
   pipeline: "mca" | "vcf";
@@ -354,6 +363,313 @@ export const PLAYBOOKS: Playbook[] = [
           "Tell them what's coming next so the emails don't surprise them: the application to e-sign + a secure upload link.",
         ],
         say: "Based on what you've told me, you qualify. Stay with me two more minutes — I'm going to take down a few details and send your application over so it arrives already filled out. All you'll do is tap to sign.",
+      },
+      ...MCA_CLOSE_STEPS,
+    ],
+  },
+
+  // ─────────────────────────────────── COLD OUTREACH (Aged + UCC + Trigger) ───────────────────────────────────
+  // All three cold Synergy data products are ONE path: bulk-imported to the
+  // Nurture Pool (contacts, NO deal), you dial the list, and a deal is created
+  // only when someone qualifies ("Promote to pipeline").
+  {
+    id: "cold-outreach",
+    name: "Cold Data → Funded (Aged · UCC · Trigger)",
+    tagline: "Cold bulk lists you bought. Dial the pool, qualify from scratch, promote the winners.",
+    pipeline: "mca",
+    revenue: "≈ $4,000 avg commission · lead cost $0.01–$0.05/record",
+    entry: "Bulk CSV import → Nurture Pool (customers tagged 'nurture', NO deal yet). Aged/UCC/Trigger all land here.",
+    workFrom: {
+      screen: "Work the Nurture Pool dial list — no deal exists until you qualify someone",
+      route: "/admin/customers",
+      appNote:
+        "These are COLD contacts sitting in the Nurture Pool (Admin → Customers → Nurture Pool, filter by source). There is NO deal on the board for them — that's deliberate, so cold data never clogs the pipeline. You dial down the list; the moment someone qualifies, hit 'Promote to pipeline' on their contact — THAT creates the MCA deal at New and drops you into the close. Trigger leads (credit just pulled) sit at the top — call those first.",
+    },
+    steps: [
+      {
+        n: 1,
+        title: "Work the dial list (first dial < 48h of import)",
+        stageKey: "new",
+        automation: "MCA F — Reactivation cadence",
+        sla: "First dial < 48h of import · multi-touch over 14 days",
+        tone: "speed",
+        do: [
+          "Open Admin → Customers → Nurture Pool and filter by source (Trigger first — credit just pulled = shopping NOW; then UCC; then Aged).",
+          "Dial down the list. No-answer → SMS/email cadence (Sequences B & F) and move on; the list is a numbers game.",
+          "Log each attempt on the contact so the cadence advances and nobody gets double-dialed.",
+        ],
+        route: { to: "/admin/customers", label: "Admin → Customers → Nurture Pool" },
+        note: "You paid pennies per record — velocity wins. Don't over-invest in any single cold contact until they show interest.",
+      },
+      {
+        n: 2,
+        title: "Reached them — pitch by list type + qualify from zero",
+        stageKey: "contacted",
+        do: [
+          "Open with the angle that fits the list: AGED = cold intro; UCC = they've taken an advance before; TRIGGER = they're actively shopping.",
+          "Run the full BANT-F — these are UNqualified, you know nothing yet. Type answers into the fields below.",
+          "If they qualify: hit 'Promote to pipeline' on the contact — that creates the MCA deal at New and moves them to Contacted. Everything below is the standard close.",
+        ],
+        say: "Hi [First Name], [Closer] with Momentum Funding. [UCC: I see you've used business funding before — a lot of owners are pulling more capital right now.] [Trigger: looks like you're shopping for financing — I can probably get you a better option.] [Aged: I work with business owners on fast working capital.] Do you have 90 seconds?",
+        collect: [
+          "Time in business (6+ months)",
+          "Monthly revenue ($15K+ min)",
+          "Amount needed + use of funds",
+          "Existing advances? (≥2 → route to VCF)",
+        ],
+        fields: MCA_QUALIFY_FIELDS,
+        explain: APPROVAL_SIZING_EXPLAIN,
+        tone: "branch",
+        note: "Not interested → tag soft-no (back to nurture). Qualifies → Promote to pipeline, which creates the deal.",
+      },
+      {
+        n: 3,
+        title: "Promoted → set Qualifying + send the app",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
+        do: [
+          "They're now a real deal on the board. Move Status → Qualifying and tee up the application (< 24h — strike while they're warm).",
+          "Tell them what's coming: the app to e-sign + a secure upload link.",
+        ],
+        say: "Good news — you qualify. Give me two minutes and I'll send your application over pre-filled; all you do is tap to sign.",
+      },
+      ...MCA_CLOSE_STEPS,
+    ],
+  },
+
+  // ─────────────────────────────────────────── WEB LEAD (purchased) ───────────────────────────────────────────
+  {
+    id: "web-lead",
+    name: "Purchased Web Lead → Funded",
+    tagline: "You bought a form-fill with full qual data. Verify it fast — these decay by the day.",
+    pipeline: "mca",
+    revenue: "≈ $4,000 avg commission · lead cost $1–$3 (fresher = pricier)",
+    entry: "Bulk CSV import → deal at New (warm). Arrives WITH revenue, TIB, FICO, funding request in the qual snapshot.",
+    workFrom: {
+      screen: "Open the deal — the qual they submitted is already on it; you verify, not re-collect",
+      route: "/admin/deals",
+      appNote:
+        "This merchant filled a funding form (on a site or social campaign) and you bought it. The deal is already on the board at New with everything they told the form — revenue, time in business, FICO, funding request — sitting in the deal's qual snapshot. Your job is speed + verification, not a cold pitch: they raised their hand, so confirm the numbers and move to the app. Fresh leads (1–7 days) convert far better than 30-day ones, so the board sorts them fresh-first.",
+    },
+    steps: [
+      {
+        n: 1,
+        title: "Call fast — they asked for this (< 5 min fresh)",
+        stageKey: "new",
+        automation: "MCA 01 — Speed to Lead",
+        sla: "< 5 min (1–7 day leads) · < 1 hr (older)",
+        tone: "speed",
+        do: [
+          "Open the deal (Admin → Deals, sorted fresh-first). Read the qual snapshot BEFORE you dial — you already know their revenue, TIB, FICO, and what they want.",
+          "Confirm you're the assigned closer + set the Campaign for ROI.",
+          "Call now. They submitted a form requesting funding — reference it so you're a callback, not a cold call.",
+        ],
+        route: { to: "/admin/deals", label: "Admin → Deals → open the fresh lead" },
+        say: "Hi [First Name], [Closer] from Momentum Funding — you requested about [amount] in working capital for [Business Name]. I've got your info in front of me, just calling to get you options. Good time?",
+        note: "Every day a web lead ages, contact + close rates drop. Fresh ones are the priority in your queue.",
+      },
+      {
+        n: 2,
+        title: "VERIFY their numbers (don't re-interrogate)",
+        stageKey: "contacted",
+        do: [
+          "You already have revenue / TIB / FICO / funding request from the form — CONFIRM each, don't re-ask cold. 'I show about $Xk/mo and roughly N months in business — still accurate?'",
+          "Correct anything that changed; log it on the fields below. Move Status → Contacted.",
+        ],
+        say: "I've got you at roughly [revenue]/month, about [time in business] in business, looking for [amount]. Is that all still right? Anything changed?",
+        collect: ["Confirm revenue", "Confirm time in business", "Confirm amount + use", "Confirm existing advances (≥2 → VCF)"],
+        fields: MCA_QUALIFY_FIELDS,
+        explain: APPROVAL_SIZING_EXPLAIN,
+        tone: "branch",
+      },
+      {
+        n: 3,
+        title: "Verified → Qualifying + send the app",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
+        do: [
+          "Numbers check out → Status → Qualifying and send the application same call (< 24h hard).",
+          "Set expectations: app to e-sign + secure upload link.",
+        ],
+        say: "Everything lines up — you're a fit. Two minutes and I'll send your application pre-filled; just tap to sign.",
+      },
+      ...MCA_CLOSE_STEPS,
+    ],
+  },
+
+  // ─────────────────────────────────────────── AGED LIVE TRANSFER ───────────────────────────────────────────
+  {
+    id: "aged-transfer",
+    name: "Aged Live Transfer → Funded",
+    tagline: "Fully qualified once — but 1–4 months ago. Re-warm and re-confirm; things change.",
+    pipeline: "mca",
+    revenue: "≈ $4,000 avg commission · lead cost $3–$5 (by age)",
+    entry: "Bulk CSV import → deal at New (warmer). Arrives with the FULL prior live-transfer qualification + the date it was taken.",
+    workFrom: {
+      screen: "Open the deal — the prior qualification is on it, but treat it as a starting point, not gospel",
+      route: "/admin/deals",
+      appNote:
+        "This merchant was qualified on a live transfer 30–120 days ago; you bought the qual data without the live call. The deal is on the board at New with that prior qualification in the snapshot — but it's MONTHS old. Revenue, positions, and appetite may have moved, so your first job is to re-warm ('we spoke a while back') and RE-CONFIRM before you invest. Warmer than a web lead (they were fully qualified once) but staler than fresh.",
+    },
+    steps: [
+      {
+        n: 1,
+        title: "Re-engage — 'we connected a while back' (< 30 min)",
+        stageKey: "new",
+        sla: "< 30 min, same day",
+        tone: "speed",
+        do: [
+          "Open the deal. Note the qualified-date in the snapshot — that's how long ago they were vetted.",
+          "Set the Campaign for ROI; confirm you're the closer.",
+          "Call with a re-engagement open — they DID look for funding before, so it's a warm reconnect.",
+        ],
+        route: { to: "/admin/deals", label: "Admin → Deals → open the aged transfer" },
+        say: "Hi [First Name], [Closer] with Momentum Funding — we connected a little while back about working capital for [Business Name]. Circling back because programs have improved. Still looking for funding?",
+      },
+      {
+        n: 2,
+        title: "RE-CONFIRM the qual (it's months old)",
+        stageKey: "contacted",
+        do: [
+          "Do NOT assume the old numbers hold. Re-verify revenue, positions, and amount — a lot changes in 1–4 months.",
+          "Update the fields below with today's reality. Move Status → Contacted.",
+          "Watch for NEW positions taken since — could flip them to a VCF (debt relief) candidate.",
+        ],
+        say: "Last time you were around [revenue]/month looking for [amount]. Where are things today — revenue still there? Taken on any new advances since we spoke?",
+        collect: ["Re-confirm revenue", "Re-confirm time in business", "Re-confirm amount + use", "NEW positions since? (≥2 → VCF)"],
+        fields: MCA_QUALIFY_FIELDS,
+        explain: APPROVAL_SIZING_EXPLAIN,
+        tone: "branch",
+      },
+      {
+        n: 3,
+        title: "Re-confirmed → Qualifying + send the app",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
+        do: [
+          "Still qualifies on today's numbers → Status → Qualifying and send the app.",
+          "Set expectations: e-sign app + secure upload link.",
+        ],
+        say: "Perfect — you still qualify, and terms are better than before. Two minutes and I'll send your application pre-filled to sign.",
+      },
+      ...MCA_CLOSE_STEPS,
+    ],
+  },
+
+  // ─────────────────────────────────── REAL-TIME / APPOINTMENT (hot) ───────────────────────────────────
+  {
+    id: "realtime",
+    name: "Real-Time Lead → Funded",
+    tagline: "Synergy qualified them and emailed it in — they JUST hung up. Call in 60 seconds.",
+    pipeline: "mca",
+    revenue: "≈ $4,000 avg commission · lead cost $10–$20",
+    entry: "Synergy emails the lead to sales@ → auto-parsed into a deal at New (HOT) with a 60-second call countdown.",
+    workFrom: {
+      screen: "Open the deal from the top of My Day — the countdown is running",
+      route: "/admin/playbooks",
+      appNote:
+        "Synergy pre-qualified this merchant and emailed it to sales@ the instant the merchant hung up — the system already parsed it into a deal at New, pinned it to the TOP of your My Day with a red 60-second countdown, and dropped their full qual (revenue, FICO, funding request, existing balances) into the snapshot. This is the closest thing to a live transfer without the phone handoff: the merchant is expecting your call RIGHT NOW. Speed is the entire product — call before the countdown hits zero.",
+    },
+    steps: [
+      {
+        n: 1,
+        title: "CALL NOW — before the countdown hits zero",
+        stageKey: "new",
+        automation: "MCA 01 — Speed to Lead",
+        sla: "First call < 60 seconds (hard countdown)",
+        tone: "speed",
+        do: [
+          "The deal is already created and at the top of My Day with a live countdown — open it and CALL immediately.",
+          "The merchant literally just finished with Synergy and expects you; open like an expected call, not a cold one.",
+          "No answer? Redial now → +2m → +5m → +15m before letting it fall to nurture. A $10–$20 lead you don't call fast is money lit on fire.",
+        ],
+        route: { to: "/admin/deals", label: "Open the hot deal (top of My Day)" },
+        say: "Hi [First Name]? [Closer] with Momentum Funding — you were just speaking with our team about working capital for [Business Name]. Got you right here — let's get you options.",
+        note: "If the countdown expires uncalled it re-alerts + reassigns to the next closer, then pings the manager. Don't let it.",
+      },
+      {
+        n: 2,
+        title: "Verify Synergy's pre-qual (don't re-interrogate)",
+        stageKey: "contacted",
+        do: [
+          "Synergy already vetted revenue / FICO / funding request / existing balances — it's in the snapshot. CONFIRM, don't re-run a full cold qualify.",
+          "Quick verify + update the fields below, then Status → Contacted.",
+        ],
+        say: "I've got your details in front of me — about [revenue]/month, looking for [amount] for [use]. Just confirming that's all accurate before I pull your options.",
+        collect: ["Confirm revenue", "Confirm TIB", "Confirm amount + use", "Confirm existing positions (≥2 → VCF)"],
+        fields: MCA_QUALIFY_FIELDS,
+        explain: APPROVAL_SIZING_EXPLAIN,
+        tone: "branch",
+      },
+      {
+        n: 3,
+        title: "Confirmed → Qualifying + send the app (same call)",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
+        do: [
+          "Everything checks → Status → Qualifying and send the app on THIS call while they're hot.",
+          "Set expectations: e-sign app + secure upload link.",
+        ],
+        say: "You're a strong fit. Stay with me two minutes — I'll send your application pre-filled right now; just tap to sign.",
+      },
+      ...MCA_CLOSE_STEPS,
+    ],
+  },
+
+  // ─────────────────────────────────────────── COLD EMAIL (Instantly) ───────────────────────────────────────────
+  {
+    id: "cold-email",
+    name: "Cold Email Reply → Funded",
+    tagline: "A prospect replied to an Instantly campaign. They raised a hand by email — re-engage warm.",
+    pipeline: "mca",
+    revenue: "≈ $4,000 avg commission · our own outbound (no per-lead cost)",
+    entry: "Prospect replies to an Instantly campaign → intent-classified → deal at New (cool). Separate from Synergy (Door 2).",
+    workFrom: {
+      screen: "Open the deal — read what they replied to, then re-engage on that thread/offer",
+      route: "/admin/deals",
+      appNote:
+        "This came from OUR cold-email engine (Instantly) — a prospect replied 'interested' to a campaign, the system classified the intent and created a deal at New (cool), tagged with the campaign. They are NOT pre-qualified — they responded to an email, not a phone screen. So this is a warm re-engage: reference the specific offer/campaign they replied to, then qualify from scratch. The Instantly sequence for them was auto-stopped so we don't keep cold-mailing an active lead.",
+    },
+    steps: [
+      {
+        n: 1,
+        title: "Re-engage the reply (< 15 min — they're at their desk)",
+        stageKey: "new",
+        automation: "MCA 01 — Speed to Lead",
+        sla: "First contact < 15 min of the reply",
+        tone: "speed",
+        do: [
+          "Open the deal; read the campaign tag + their reply so you reference the exact offer they responded to.",
+          "They just emailed from their desk — reply/call fast while it's top of mind. Set the Campaign for ROI.",
+          "Reply on the same thread or call; either way, be a human following up on THEIR message.",
+        ],
+        route: { to: "/admin/deals", label: "Admin → Deals → open the cold-email lead" },
+        say: "Hi [First Name], [Closer] from Momentum Funding — thanks for replying about [campaign offer]. Happy to walk you through it. Are you the owner of [Business Name], and do you have a couple minutes?",
+      },
+      {
+        n: 2,
+        title: "Qualify fresh (they're a cold prospect)",
+        stageKey: "contacted",
+        do: [
+          "They replied to an email — you know nothing yet. Run the full BANT-F, type answers into the fields below.",
+          "Move Status → Contacted.",
+        ],
+        say: "So I can point you at the right option — how long in business, roughly what's monthly revenue, how much are you looking for, and are you making payments on any existing advances?",
+        collect: ["6+ months in business", "$15K+/mo revenue", "Amount + use of funds", "Existing advances (≥2 → VCF)"],
+        fields: MCA_QUALIFY_FIELDS,
+        explain: APPROVAL_SIZING_EXPLAIN,
+        tone: "branch",
+      },
+      {
+        n: 3,
+        title: "Qualifies → Qualifying + send the app",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
+        do: [
+          "Passed BANT-F → Status → Qualifying and send the application (< 24h).",
+          "Set expectations: e-sign app + secure upload link.",
+        ],
+        say: "Great — you qualify. Give me two minutes and I'll send your application pre-filled; all you do is tap to sign.",
       },
       ...MCA_CLOSE_STEPS,
     ],

@@ -29,6 +29,13 @@ const PLAYBOOK_DEFAULTS: Record<
 > = {
   website: { leadSource: "website", startStatus: "new", isLiveTransfer: false },
   "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true },
+  // New Synergy / cold-email lead paths. Cold-outreach starts leads live (dialer
+  // reached a pool contact); real-time behaves like a live transfer (call now).
+  "cold-outreach": { leadSource: "aged", startStatus: "new", isLiveTransfer: false },
+  "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false },
+  "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false },
+  realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true },
+  "cold-email": { leadSource: "cold_email", startStatus: "new", isLiveTransfer: false },
   vcf: { leadSource: "referral", startStatus: "new_distressed", isLiveTransfer: false },
   // Renewal deals get is_renewal=true so commissions calculate at 6 points.
   renewal: { leadSource: "renewal", startStatus: "new", isLiveTransfer: false, isRenewal: true },
