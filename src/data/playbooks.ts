@@ -567,16 +567,16 @@ export const PLAYBOOKS: Playbook[] = [
   // ─────────────────────────────────────────── COLD EMAIL (Instantly) ───────────────────────────────────────────
   {
     id: "cold-email",
-    name: "Cold Email Reply → Funded",
-    tagline: "A prospect replied to an Instantly campaign. They raised a hand by email — re-engage warm.",
+    name: "Cold Campaign Reply → Funded",
+    tagline: "Someone replied to our cold email campaign. They raised a hand — re-engage warm.",
     pipeline: "mca",
-    revenue: "≈ $4,000 avg commission · our own outbound (no per-lead cost)",
-    entry: "Prospect replies to an Instantly campaign → intent-classified → deal at New (cool). Separate from Synergy (Door 2).",
+    revenue: "≈ $4,000 avg commission · list cost $0.01–$0.05/record, emailed at scale",
+    entry: "We buy a cold list (Aged/UCC/Trigger) → load it into Instantly → email it → an interested REPLY comes back (garbage filtered) → deal at New (cool).",
     workFrom: {
       screen: "Open the deal — read what they replied to, then re-engage on that thread/offer",
       route: "/admin/deals",
       appNote:
-        "This came from OUR cold-email engine (Instantly) — a prospect replied 'interested' to a campaign, the system classified the intent and created a deal at New (cool), tagged with the campaign. They are NOT pre-qualified — they responded to an email, not a phone screen. So this is a warm re-engage: reference the specific offer/campaign they replied to, then qualify from scratch. The Instantly sequence for them was auto-stopped so we don't keep cold-mailing an active lead.",
+        "This is the ONLY cold path, and it's email-only — nobody dials a cold list. We bought a list (Aged/UCC/Trigger) from Synergy, loaded it into Instantly, and emailed it; this person REPLIED with interest. The system filtered out the 'remove me' / junk, classified this as interested, created a deal at New (cool), tagged with the campaign, and auto-stopped their sequence. They are NOT pre-qualified — they answered an email, not a phone screen. So: reference the specific offer they replied to, then qualify from scratch.",
     },
     steps: [
       {
