@@ -954,13 +954,15 @@ function StepCard({
   const explains = step.explain ? (Array.isArray(step.explain) ? step.explain : [step.explain]) : [];
   const [showExplain, setShowExplain] = useState<number | null>(null);
 
-  // Accordion: completed steps fold up so the closer lands on the live one.
-  // Click the title row to peek at a folded step. Everything stays expanded
-  // when no lead is loaded (reference reading).
+  // Accordion. Working a deal: completed steps fold up so the closer lands on the
+  // live one. Browsing (no lead): the UNIQUE intake (steps 1–3) stays open and the
+  // SHARED close (4–9, identical across every flow) folds up — so a flow reads as
+  // its distinctive part, not a wall of the same close steps. Click any title to
+  // toggle.
   const [openCard, setOpenCard] = useState(true);
   useEffect(() => {
-    setOpenCard(!interactive || !done || current);
-  }, [interactive, done, current, deal?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    setOpenCard(interactive ? (!done || current) : step.n <= 3);
+  }, [interactive, done, current, deal?.id, step.n]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Prefill structured fields + the saved "collected" chips from the loaded
   // deal so captured data shows through. The note clears after each save (it's

@@ -32,16 +32,23 @@ const PLAYBOOK_DEFAULTS: Record<
   // add. For the Synergy import + email + cold-email paths the lead ALWAYS
   // already exists (CSV import / auto-created from email / Nurture Pool), so the
   // closer works an EXISTING deal — never types one in. (default: true)
-  website: { leadSource: "website", startStatus: "new", isLiveTransfer: false },
+  // manualEntry=true ONLY where the closer types a brand-new person from nothing
+  // — a LIVE TRANSFER (merchant on the phone, no record). Website is form-created,
+  // renewal is an existing funded customer, VCF is own-book/inbound, and the
+  // Synergy import + email paths are pre-created — all worked from an EXISTING
+  // record, never typed in.
+  website: { leadSource: "website", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true },
   "cold-outreach": { leadSource: "aged", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true, manualEntry: false },
   "cold-email": { leadSource: "cold_email", startStatus: "new", isLiveTransfer: false, manualEntry: false },
+  // VCF keeps manual entry: a distressed merchant can call in cold (not yet in
+  // the book or inbound form).
   vcf: { leadSource: "referral", startStatus: "new_distressed", isLiveTransfer: false },
-  // Renewal deals get is_renewal=true so commissions calculate at 6 points.
-  renewal: { leadSource: "renewal", startStatus: "new", isLiveTransfer: false, isRenewal: true },
+  // Renewal is always an EXISTING funded customer; is_renewal=true → 6-pt comp.
+  renewal: { leadSource: "renewal", startStatus: "new", isLiveTransfer: false, isRenewal: true, manualEntry: false },
 };
 
 // Only what's needed to START the lead: who they are + attribution. The
@@ -382,8 +389,8 @@ export default function PlaybookCapture({
               ) : (
                 <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-800 dark:text-blue-200">
                   These leads are <b>already in the system</b> — you don't type them in.
-                  Open one from <b>My Day</b> above, or (for Cold Data) promote it from the{" "}
-                  <b>Nurture Pool</b>. Use the search below only to pull up a specific existing lead.
+                  Open one from <b>My Day</b> above, or from <b>{playbook.workFrom.screen}</b>.
+                  Use the search below only to pull up a specific existing lead.
                 </div>
               )}
 
