@@ -76,23 +76,24 @@ Synergy CSV (30–120 day-old qualified transfers)
 ```
 *Paths 1–3 all ride the SAME importer — one build, three source templates.*
 
-### B.0 — ONE detection point for all inbound email (CONFIRMED)
+### B.0 — TWO detection doors (CONFIRMED) — keep them separate
 
-Ernesto confirmed: **real-time leads, cold-email replies, and live-transfer emails ALL arrive at `sales@send.mfunding.net` → our main GHL/VibeReach Conversations.** That collapses detection to a **single door**:
+There are **two independent front doors**. This separation is deliberate — cold email marketing must never mix with the Synergy real-time/live-transfer intake.
 
+**🚪 Door 1 — `sales@send.mfunding.net` (main GHL/VibeReach).** ONLY two lead types land here, both from Synergy:
 ```
 Inbound email to sales@send.mfunding.net
-  → GHL/VibeReach fires an inbound-message webhook → our ghl-webhook fn (already exists)
+  → GHL/VibeReach inbound-message webhook → our ghl-webhook fn (already exists)
       (fallback: 1-min poll of GHL Conversations API — survives a dropped webhook)
-  → LEAD ROUTER classifies by SENDER (+ In-Reply-To for replies):
-       • from Synergy REAL-TIME sender      → Path 4 (hot) — parse, create hot deal, countdown
-       • from Synergy LIVE-TRANSFER sender  → Path 5 (match to a live call — see below)
-       • reply to one of OUR cold campaigns → Path 6 (intent-classify)
+  → LEAD ROUTER classifies by SENDER:
+       • from Synergy REAL-TIME sender      → Path 4 (hot) — parse, hot deal, countdown
+       • from Synergy LIVE-TRANSFER sender  → Path 5 (match to the live call — see below)
        • anything else                      → normal Conversations (NOT a lead — leave it)
   → Message-ID idempotency so webhook + poll can't double-create
 ```
+We **extend the existing `ghl-webhook`** with this router. The two **Synergy sender addresses** (real-time vs live-transfer) are the disambiguation keys and the critical missing inputs.
 
-So we **extend the existing `ghl-webhook`** with a lead-router rather than standing up separate inboxes/pollers. The **sender address is the disambiguation key** — which is why the two Synergy sender addresses (real-time vs live-transfer) are the critical missing inputs. Emails that don't match a lead sender are ignored and stay in the normal inbox.
+**🚪 Door 2 — Instantly (its own system).** ALL email marketing runs through Instantly — outbound campaigns AND their replies. **Cold-email replies land in the Instantly unified inbox, NOT `sales@`.** Detected on Instantly's own path (API poll or Instantly integration) → Path 6. This door is walled off from Door 1 entirely; the two never share a router.
 
 ### 🔥 Path 4 — Real-Time / Appointment → **email to sales@ → router → Active Pipeline, hot**
 ```
@@ -126,17 +127,17 @@ ENTRY B — the EMAIL (async qual data): arrives at sales@ before, during, or af
 
 🔌 Needs: the **live-transfer sender address**, and confirmation the merchant's **phone number is in the email body** (that's the match key).
 
-### ❄️ Path 6 — Cold Email (our Instantly outbound) → **reply to sales@ → router → Active Pipeline, cool**
+### ❄️ Path 6 — Cold Email (Instantly) → **Door 2, its own path → Active Pipeline, cool**
 ```
-Prospect replies to a campaign → lands at sales@send.mfunding.net (our VibeReach inbox)
-  → ghl-webhook → router (recognized as a reply to one of our campaigns)
-  → inbound-lead-intake + AI INTENT-CLASSIFY
+Prospect replies to a campaign → lands in the INSTANTLY unified inbox (NOT sales@)
+  → detected on Instantly's own path (API poll or Instantly integration)
+  → AI INTENT-CLASSIFY
        interested/question → create customer + DEAL (temperature 'cool', campaign tag)
        not_interested/OOO  → ignore ·  unsubscribe → suppress (compliance)
-  → AUTO-STOP the Instantly sequence for that prospect (Instantly API)
+  → AUTO-STOP the Instantly sequence for that prospect
 6B landing: campaign CTA → landing page form → funding_applications → same web-form intake
 ```
-🔌 Needs: a sample reply + campaign offer (so the router recognizes campaign replies and the intake references the offer). *Confirmed: replies land in the main VibeReach inbox, not a separate Instantly-only inbox — so the same router handles them.*
+🔌 Needs: how Instantly replies reach us (API poll vs Instantly webhook) + a sample reply + campaign offer. **Separate from Door 1 — never touches the Synergy router.**
 
 ---
 
