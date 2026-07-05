@@ -71,12 +71,6 @@ const team = [
     bio: 'With over two decades of experience in financial services and business strategy, Dr. Lee founded Momentum Funding to bridge the gap between hardworking business owners and the capital they need to grow.',
   },
   {
-    name: 'Stephanie Decker',
-    role: 'VP of Sales',
-    image: '/team/stephanie-decker.jpg',
-    bio: "Stephanie leads our sales team with a client-first approach, ensuring every business owner gets personalized funding solutions that match their unique needs and goals.",
-  },
-  {
     name: 'Carlos Marquez',
     role: 'VP of Operations',
     image: '/team/carlos-marquez.png',
