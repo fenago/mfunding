@@ -400,12 +400,17 @@ export default function LendersListPage() {
 // Compact MCA approval basics + HARD document requirements shown on each lender
 // card — the "can I send this deal here, and what docs do they need" glance.
 function ProgramSummary({ p }: { p: LenderProgram }) {
-  const uw: string[] = [];
-  if (p.approval_min != null || p.approval_max != null) uw.push(`${money(p.approval_min)}–${money(p.approval_max)}`);
-  if (p.min_credit_score != null) uw.push(`${p.min_credit_score}+ FICO`);
-  if (p.monthly_revenue_required != null) uw.push(`${money(p.monthly_revenue_required)}/mo`);
-  if (p.time_in_business_months != null) uw.push(`${p.time_in_business_months}mo TIB`);
-  if (p.cost_of_capital) uw.push(p.cost_of_capital);
+  // The hard requirements a merchant must clear — always shown & labeled so you
+  // can eyeball qualification (— means we don't have it yet for this funder).
+  const reqs = [
+    { label: "Min monthly rev", value: p.monthly_revenue_required != null ? money(p.monthly_revenue_required) : "—" },
+    { label: "Time in business", value: p.time_in_business_months != null ? `${p.time_in_business_months} mo` : "—" },
+    { label: "Min credit", value: p.min_credit_score != null ? String(p.min_credit_score) : "—" },
+    {
+      label: "Approval range",
+      value: p.approval_min != null || p.approval_max != null ? `${money(p.approval_min)}–${money(p.approval_max)}` : "—",
+    },
+  ];
 
   const docs: string[] = [];
   if (p.doc_bank_statement_months) docs.push(`${p.doc_bank_statement_months}mo bank stmts`);
@@ -415,14 +420,22 @@ function ProgramSummary({ p }: { p: LenderProgram }) {
   if (p.doc_proof_of_ownership) docs.push("Proof of ownership");
   if (p.doc_tax_financials === "required") docs.push("Tax return");
 
-  if (!uw.length && !docs.length) return null;
   return (
-    <div className="mt-2 space-y-1.5">
-      {uw.length > 0 && (
-        <p className="text-xs text-gray-600 dark:text-gray-300 leading-snug">{uw.join(" · ")}</p>
+    <div className="mt-3 rounded-lg border border-gray-100 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-900/30 p-2.5">
+      <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1.5">Hard requirements</p>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+        {reqs.map((r) => (
+          <div key={r.label} className="flex flex-col leading-tight">
+            <span className="text-[10px] uppercase tracking-wide text-gray-400">{r.label}</span>
+            <span className={`text-sm font-semibold ${r.value === "—" ? "text-gray-300 dark:text-gray-600" : "text-gray-900 dark:text-gray-100"}`}>{r.value}</span>
+          </div>
+        ))}
+      </div>
+      {p.cost_of_capital && (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2 truncate" title={p.cost_of_capital}>Factor / cost: {p.cost_of_capital}</p>
       )}
       {docs.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1 mt-2">
           <span className="text-[10px] uppercase tracking-wide text-gray-400 mr-0.5">Docs&nbsp;req.</span>
           {docs.map((d) => (
             <span key={d} className="inline-block px-1.5 py-0.5 text-[11px] rounded font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
