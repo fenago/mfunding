@@ -46,7 +46,7 @@ const STEPS: { title: string; body: ReactNode }[] = [
     title: "Pick the sending domain (never our main domain)",
     body: (
       <>
-        <p>Use a <b>throwaway secondary domain</b> for cold email — e.g. <code>getmfunding.com</code>, <code>trymfunding.com</code>, <code>mfunding-team.com</code>. <b>Never send from mfunding.com</b> — if a sending domain lands in spam, our real domain's reputation must stay clean.</p>
+        <p>Use a <b>throwaway secondary domain</b> for cold email — e.g. <code>getmfunding.com</code>, <code>trymfunding.com</code>, <code>mfunding-team.com</code>. <b>Never send from mfunding.net</b> — if a sending domain lands in spam, our real domain's reputation must stay clean.</p>
         <p>Keep names close to the brand but clearly secondary. One new domain = up to 5 mailboxes.</p>
       </>
     ),
@@ -61,9 +61,9 @@ const STEPS: { title: string; body: ReactNode }[] = [
     ),
   },
   {
-    title: "Set the Forwarding Domain → mfunding.com",
+    title: "Set the Forwarding Domain → mfunding.net",
     body: (
-      <p>In the setup screen, set <b>Forwarding Domain</b> to our real live site (<code>mfunding.com</code>), <b>not</b> the sending domain. This redirects anyone who visits the sending domain to the real site, so it resolves somewhere legitimate instead of a dead page (a trust/deliverability signal).</p>
+      <p>In the setup screen, set <b>Forwarding Domain</b> to our real live site (<code>mfunding.net</code>), <b>not</b> the sending domain. This redirects anyone who visits the sending domain to the real site, so it resolves somewhere legitimate instead of a dead page (a trust/deliverability signal).</p>
     ),
   },
   {
@@ -314,8 +314,8 @@ export default function EmailPage() {
               <p>Preferred: <b>register domains yourself</b> (Cloudflare/Namecheap ~$12/yr) + <b>Google Workspace direct</b> (~$7/mo), or a <b>3rd-party pre-warmed provider</b> (Zapmail / InboxKit ~$3/inbox, real GWS, OAuth into Instantly). Connect via "Connect existing accounts" so Instantly is just software on top of infrastructure <b>we</b> own.</p>
             </Card>
             <Card title="3 · Keep real email separate">
-              <p><b>Never send cold email from our main domain.</b> Use throwaway <b>secondary</b> sending domains (e.g. getmfunding.com) so if one lands in spam, mfunding.com's reputation is untouched.</p>
-              <p>Set each sending domain's <b>forwarding domain</b> to the real site (mfunding.com) so a curious prospect lands somewhere legit.</p>
+              <p><b>Never send cold email from our main domain.</b> Use throwaway <b>secondary</b> sending domains (e.g. getmfunding.com) so if one lands in spam, mfunding.net's reputation is untouched.</p>
+              <p>Set each sending domain's <b>forwarding domain</b> to the real site (mfunding.net) so a curious prospect lands somewhere legit.</p>
             </Card>
             <Card title="4 · Personas — who sends vs. who closes">
               <p>One <b>consistent, backable persona per domain</b> (real name + LinkedIn + photo). Prefixes that look human: <code>ernesto@</code>, <code>ernesto.lee@</code>, <code>elee@</code>, <code>ernestolee@</code>, <code>e.lee@</code>. Avoid role addresses (info@, sales@, funding@).</p>
