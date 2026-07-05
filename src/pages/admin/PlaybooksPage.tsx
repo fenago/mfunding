@@ -18,7 +18,7 @@ import {
   XMarkIcon,
   LockClosedIcon,
 } from "@heroicons/react/24/outline";
-import { PLAYBOOKS, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
+import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import FunderPicker from "../../components/admin/FunderPicker";
@@ -206,6 +206,12 @@ export default function PlaybooksPage() {
   function pickFromQueue(d: QueueDeal) {
     const pipe = pipelineOf(d.deal_type);
     let target = visiblePlaybooks.find((p) => p.pipeline === pipe) ?? active;
+    // Prefer the playbook that matches the deal's lead_source (real-time, web
+    // lead, aged transfer, cold outreach/email, live transfer…), so the closer
+    // lands on the RIGHT intake for how this lead arrived — not just any MCA tab.
+    const bySource = playbookIdForLeadSource(d.lead_source);
+    const sourceMatch = bySource && visiblePlaybooks.find((p) => p.id === bySource);
+    if (sourceMatch && sourceMatch.pipeline === pipe) target = sourceMatch;
     if (d.is_renewal && canRenew) {
       const renewal = visiblePlaybooks.find((p) => p.id === "renewal");
       if (renewal) target = renewal;

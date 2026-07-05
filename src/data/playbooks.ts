@@ -225,6 +225,27 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
   },
 ];
 
+// Which playbook a deal opens into, keyed by its lead_source (mirrors
+// inbound_lead_sources.playbook_id). A deal from a real-time lead opens the
+// realtime intake; a purchased web lead opens the web-lead intake; etc.
+export const LEAD_SOURCE_TO_PLAYBOOK: Record<string, Playbook["id"]> = {
+  website: "website",
+  live_transfer: "live-transfer",
+  aged: "cold-outreach",
+  ucc: "cold-outreach",
+  trigger: "cold-outreach",
+  web_purchased: "web-lead",
+  aged_transfer: "aged-transfer",
+  realtime_appt: "realtime",
+  cold_email: "cold-email",
+  cold_email_landing: "cold-email",
+  renewal: "renewal",
+};
+
+export function playbookIdForLeadSource(leadSource?: string | null): Playbook["id"] | undefined {
+  return leadSource ? LEAD_SOURCE_TO_PLAYBOOK[leadSource] : undefined;
+}
+
 export const PLAYBOOKS: Playbook[] = [
   // ─────────────────────────────────────────── WEBSITE LEAD ───────────────────────────────────────────
   {
