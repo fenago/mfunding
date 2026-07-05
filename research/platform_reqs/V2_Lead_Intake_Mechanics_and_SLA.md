@@ -76,41 +76,67 @@ Synergy CSV (30–120 day-old qualified transfers)
 ```
 *Paths 1–3 all ride the SAME importer — one build, three source templates.*
 
-### 🔥 Path 4 — Real-Time / Appointment → **real-time email → parse → Active Pipeline, hot**
+### B.0 — ONE detection point for all inbound email (CONFIRMED)
+
+Ernesto confirmed: **real-time leads, cold-email replies, and live-transfer emails ALL arrive at `sales@send.mfunding.net` → our main GHL/VibeReach Conversations.** That collapses detection to a **single door**:
+
 ```
-Synergy emails ONE lead per email to a dedicated address (e.g. realtime@send.mfunding.net)
-  → DETECTION (layered):
-      (primary)  GHL/VibeReach inbound-email webhook on that sender → POST to inbound-lead-intake
-      (fallback) 1-min poller scanning the inbox (survives a broken webhook)
-      (idempotency) email Message-ID dedupes so webhook+poller can't double-create
+Inbound email to sales@send.mfunding.net
+  → GHL/VibeReach fires an inbound-message webhook → our ghl-webhook fn (already exists)
+      (fallback: 1-min poll of GHL Conversations API — survives a dropped webhook)
+  → LEAD ROUTER classifies by SENDER (+ In-Reply-To for replies):
+       • from Synergy REAL-TIME sender      → Path 4 (hot) — parse, create hot deal, countdown
+       • from Synergy LIVE-TRANSFER sender  → Path 5 (match to a live call — see below)
+       • reply to one of OUR cold campaigns → Path 6 (intent-classify)
+       • anything else                      → normal Conversations (NOT a lead — leave it)
+  → Message-ID idempotency so webhook + poll can't double-create
+```
+
+So we **extend the existing `ghl-webhook`** with a lead-router rather than standing up separate inboxes/pollers. The **sender address is the disambiguation key** — which is why the two Synergy sender addresses (real-time vs live-transfer) are the critical missing inputs. Emails that don't match a lead sender are ignored and stay in the normal inbox.
+
+### 🔥 Path 4 — Real-Time / Appointment → **email to sales@ → router → Active Pipeline, hot**
+```
+Synergy emails one lead → sales@send.mfunding.net → ghl-webhook → router (real-time sender)
   → inbound-lead-intake: AI-parse the email body → structured fields
   → dedup → customer + DEAL (status 'New', temperature 'hot', lead_qual=full,
       first_call_due_at = now + 60s)
   → GHL sync → 🔴 INSTANT alert to on-floor closer (round-robin) + PIN to top of My Day + COUNTDOWN
 ```
-🔌 Needs: the sender address + one sample email (sets the parser).
+🔌 Needs: the **real-time sender address** + one sample email (sets the parser).
 
-### 🔥🔥 Path 5 — Live Transfer → **live phone → quick-capture → Active Pipeline, hottest**
-```
-Synergy DIALS the closer's LeadConnector number and warm-transfers the merchant
-  → the answered CALL is the entry (no data feed)
-  → closer hits "Live transfer in" (persistent button / hotkey) → quick-capture screen
-      spins up customer + DEAL (status 'New', temperature 'hottest') in seconds WHILE TALKING
-  → if Synergy sends qual data by email/SMS alongside, it pre-fills the capture screen
-```
-SLA is **answer speed**, not entry latency — the lead is already a phone call.
+### 🔥🔥 Path 5 — Live Transfer → **live phone (primary) + email (async, may arrive after) → Active Pipeline, hottest**
 
-### ❄️ Path 6 — Cold Email (our Instantly outbound) → **reply/landing → Active Pipeline, cool**
+The real design problem you flagged: **Synergy calls `954-737-5692` AND emails at the same time, but the email may arrive *after the call ends*.** So neither can be assumed first — we handle the race both ways.
+
 ```
-6A reply:   prospect replies → Instantly unified inbox → (VibeReach/GHL integration)
-              inbound-email webhook  OR  Instantly API poll
-            → inbound-lead-intake + AI INTENT-CLASSIFY
-                 interested/question → create customer + DEAL (temperature 'cool', campaign tag)
-                 not_interested/OOO → ignore ·  unsubscribe → suppress (compliance)
-            → AUTO-STOP the Instantly sequence for that prospect (Instantly API)
+ENTRY A — the CALL (primary): Synergy warm-transfers the merchant to 954-737-5692
+  → closer hits "Live transfer in" → quick-capture spins up customer + DEAL
+     (status 'New', temperature 'hottest') WHILE TALKING — does NOT wait for the email
+
+ENTRY B — the EMAIL (async qual data): arrives at sales@ before, during, or after the call
+  → router (live-transfer sender) → MATCH to a live-transfer deal by
+       merchant PHONE (extracted from email)  +  time window (±15 min)
+     ├─ MATCH found  → ENRICH that deal's lead_qual with the emailed data (no duplicate)
+     └─ NO match yet → create the deal from the email (temperature 'hottest') AND
+                        alert the floor: "Live-transfer email — did you take this call?"
+  → the closer's later quick-capture also dedupes by phone → folds into the same deal
+```
+
+**Why this works regardless of order:** whoever lands first (call-capture or email) creates the deal; whoever lands second **matches by merchant phone + time window and enriches** instead of duplicating. The closer never waits on the email to start talking, and the qual data attaches itself whenever it shows up. SLA is still **answer speed** (< 3 rings) — the email is a bonus that fills in `lead_qual`, never a blocker.
+
+🔌 Needs: the **live-transfer sender address**, and confirmation the merchant's **phone number is in the email body** (that's the match key).
+
+### ❄️ Path 6 — Cold Email (our Instantly outbound) → **reply to sales@ → router → Active Pipeline, cool**
+```
+Prospect replies to a campaign → lands at sales@send.mfunding.net (our VibeReach inbox)
+  → ghl-webhook → router (recognized as a reply to one of our campaigns)
+  → inbound-lead-intake + AI INTENT-CLASSIFY
+       interested/question → create customer + DEAL (temperature 'cool', campaign tag)
+       not_interested/OOO  → ignore ·  unsubscribe → suppress (compliance)
+  → AUTO-STOP the Instantly sequence for that prospect (Instantly API)
 6B landing: campaign CTA → landing page form → funding_applications → same web-form intake
 ```
-🔌 Needs: how Instantly reaches us (VibeReach/GHL vs API) + sample reply + campaign offer.
+🔌 Needs: a sample reply + campaign offer (so the router recognizes campaign replies and the intake references the offer). *Confirmed: replies land in the main VibeReach inbox, not a separate Instantly-only inbox — so the same router handles them.*
 
 ---
 
@@ -154,12 +180,18 @@ An SLA with no consequence is a wish. Escalation rules:
 - **Docs stalled** → Sequence A already handles this (14-day chase + breakup).
 - **Every breach is logged** → so "speed-to-lead" and "time-to-first-call" become real, reportable metrics per source — which is also how we learn which Synergy product actually converts for the price.
 
-## F. Decisions needed before I build the core + importer
+## F. Decisions — CONFIRMED vs still-open
 
-1. **Nurture Pool home:** cold bulk as `customers` (status `lead`) in a tagged segment with **no deal** until qualified — confirm that's how you want it (vs. a "Cold" pre-stage on the pipeline). *My strong rec: no deal until qualified* — keeps the board clean.
-2. **Where do the real-time + cold-email emails physically land?** A dedicated Google Workspace inbox we poll, or into GHL/VibeReach Conversations we webhook off? (Changes the detection build.)
-3. **Live-transfer number:** which LeadConnector/GHL number does Synergy transfer to, and do they send qual data alongside the call to pre-fill capture?
-4. **Dialer:** do we work the cold bulk in-house, or take Synergy's **Telemarketing Agents ($12/hr)** to dial it? Determines whether the Nurture Pool feeds our My Day or an external dialer export.
-5. **Who imports:** which role runs the CSV uploads (VA? admin?) — sets the permissions on the Lead Import page.
+**✅ CONFIRMED by Ernesto:**
+1. **Nurture Pool = contacts, no deal until qualified.** Cold bulk lands as `customers` (status `lead`) in a tagged/dialer segment; the deal is created at qualification (promotion). Board stays clean.
+2. **All inbound lead email → `sales@send.mfunding.net` → main GHL/VibeReach Conversations.** Detection = extend `ghl-webhook` with a lead-router (+ GHL Conversations poll fallback). One door, classified by sender.
+3. **Live transfer → call `954-737-5692` (GHL number)** + a simultaneous email that **may arrive after the call**. Handled by the call-first / email-enrich race design in Path 5 (match by merchant phone + ±15-min window).
 
-Once 1–3 are answered I can build the shared core + importer with the routing and SLAs wired in from the start, instead of retrofitting them.
+**⛳ Still open (needed to build/enable each path):**
+1. **The two Synergy sender addresses** — the **real-time** sender and the **live-transfer** sender. These are the router's disambiguation keys; without them the router can't tell a hot appointment from a live-transfer email. (Plus one sample email of each → sets the parser + confirms the merchant phone is in the live-transfer email body for matching.)
+2. **Cold-email recognition:** a sample campaign reply so the router reliably tags "this is a reply to one of our campaigns" (vs. via In-Reply-To/campaign thread) + the campaign offer.
+3. **Dialer for the Nurture Pool:** in-house, or Synergy's **Telemarketing Agents ($12/hr)**? Decides whether the pool feeds our My Day dialer view or an external export.
+4. **Who imports:** which role runs the CSV uploads (VA? admin?) — sets permissions on the Lead Import page.
+5. **Bulk CSV samples** (one per type: aged/ucc/trigger/web/aged-transfer) — so the importer's column-map is right first try.
+
+**I can start building now:** the shared core (config + `lead_qual`/`temperature` columns + `lead_intake_log` + dedup), the **Nurture Pool + bulk importer** (Paths 1–3), and the **`ghl-webhook` lead-router skeleton** — none of those are blocked. Only the live *activation* of Paths 4–6 waits on the two Synergy sender addresses + the cold-email sample. Retrofitting is avoided because routing + SLAs are designed in from the first commit.
