@@ -274,10 +274,21 @@ export default function FunderDirectoryPage() {
         f.applyOnce && "Apply-once (one app → many)",
         f.isoProgram && "ISO/partner program",
       ].filter(Boolean).join(", ");
+      // Pull the ISO-support tag ("ISO ✓ submit") and the 💲 cost note out of the
+      // criteria so they land as their own clean lines instead of buried in a blob.
+      const crit = f.criteria ?? "";
+      const isoTag = (crit.match(/ISO\s*[✓~✗][^·]*/)?.[0] ?? "").trim();
+      const costTag = (crit.match(/💲.*/)?.[0] ?? "").replace(/^💲\s*/, "").trim();
+      const coreCriteria = crit
+        .replace(/ISO\s*[✓~✗][^·]*·?\s*/, "")
+        .replace(/·?\s*💲.*/, "")
+        .trim();
       const notes = [
         `Category: ${CATEGORY_LABELS[f.category]}`,
         f.paper ? `Paper grade: ${f.paper}` : "",
-        f.criteria ? `Criteria: ${f.criteria}` : "",
+        isoTag ? `ISO support: ${isoTag}` : "",
+        costTag ? `Cost: ${costTag}` : "",
+        coreCriteria ? `Criteria: ${coreCriteria}` : "",
         flags ? `Flags: ${flags}` : "",
         f.verified ? `Site check: ${f.verified}` : "",
         f.website ? `Website: ${f.website}` : "",
