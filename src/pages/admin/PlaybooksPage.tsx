@@ -38,6 +38,10 @@ import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits"
 import { useUserProfile } from "../../context/UserProfileContext";
 import { CalculatorIcon } from "@heroicons/react/24/outline";
 
+// The NEW lead-path playbooks (Synergy imports/email + cold email). Only these
+// fold their shared close steps when browsing; the original flows are untouched.
+const NEW_LEAD_PLAYBOOKS = new Set(["cold-outreach", "web-lead", "aged-transfer", "realtime", "cold-email"]);
+
 const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
   mca: Object.fromEntries(MCA_PIPELINE.stages.map((s) => [s.key, s.label])),
   vcf: Object.fromEntries(VCF_PIPELINE.stages.map((s) => [s.key, s.label])),
@@ -80,6 +84,9 @@ const dealName = (d: DealWithCustomer) =>
 export default function PlaybooksPage() {
   const [active, setActive] = useState<Playbook>(PLAYBOOKS[0]);
   const [deal, setDeal] = useState<DealWithCustomer | null>(null);
+  // The flow's step list is an accordion, DEFAULT CLOSED (My Day above stays
+  // open). It auto-opens when a deal is loaded — you're here to work it.
+  const [flowOpen, setFlowOpen] = useState(false);
   const [busyStep, setBusyStep] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
@@ -102,6 +109,12 @@ export default function PlaybooksPage() {
   // The deal is "live" in this playbook only when its pipeline matches the open tab.
   const dealMatchesPlaybook = !!deal && pipelineOf(deal.deal_type) === active.pipeline;
   const order = PIPELINES[active.pipeline].stages.map((s) => s.key);
+
+  // Auto-open the flow accordion when a deal is loaded (you're here to work it);
+  // it defaults closed when just browsing.
+  useEffect(() => {
+    if (deal) setFlowOpen(true);
+  }, [deal?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const currentIdx = deal ? order.indexOf(deal.status) : -1;
 
   async function refreshDeal(id: string) {
@@ -355,7 +368,22 @@ export default function PlaybooksPage() {
           <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{active.workFrom.appNote}</p>
         </div>
 
-        <ol className="relative space-y-4">
+        {/* The step-by-step flow is an accordion — DEFAULT CLOSED so the page
+            leads with My Day + the flow picker; expand (or load a deal) to work. */}
+        <button
+          type="button"
+          onClick={() => setFlowOpen((o) => !o)}
+          className="w-full flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-3 text-left"
+        >
+          <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${flowOpen ? "rotate-90" : ""}`} />
+          <span className="font-semibold text-gray-900 dark:text-white">
+            {flowOpen ? "Hide" : "View"} the {active.name} flow
+          </span>
+          <span className="text-xs text-gray-400">{active.steps.length} steps</span>
+        </button>
+
+        {flowOpen && (
+        <ol className="relative space-y-4 mt-4">
           {active.steps.map((s, i) => {
             const stageIdx = s.stageKey ? order.indexOf(s.stageKey) : -1;
             const done = dealMatchesPlaybook && stageIdx >= 0 && stageIdx <= currentIdx;
@@ -372,6 +400,7 @@ export default function PlaybooksPage() {
                 checklistKey={`${active.id}:${s.n}`}
                 done={done}
                 current={current}
+                foldCloseOnBrowse={NEW_LEAD_PLAYBOOKS.has(active.id)}
                 busy={busyStep === s.n}
                 onComplete={completeStep}
                 onDocChecklistChange={onDocChecklistChange}
@@ -379,6 +408,7 @@ export default function PlaybooksPage() {
             );
           })}
         </ol>
+        )}
       </div>
 
       {/* Live funnel */}
@@ -922,6 +952,7 @@ function StepCard({
   checklistKey,
   done,
   current,
+  foldCloseOnBrowse,
   busy,
   onComplete,
   onDocChecklistChange,
@@ -934,6 +965,7 @@ function StepCard({
   checklistKey: string;
   done: boolean;
   current: boolean;
+  foldCloseOnBrowse: boolean;
   busy: boolean;
   onComplete: (step: PlaybookStep, values: Record<string, string>, note: string, outcome: string, checked: string[], advance?: boolean) => void;
   onDocChecklistChange: (next: Record<string, boolean>) => void;
@@ -955,14 +987,14 @@ function StepCard({
   const [showExplain, setShowExplain] = useState<number | null>(null);
 
   // Accordion. Working a deal: completed steps fold up so the closer lands on the
-  // live one. Browsing (no lead): the UNIQUE intake (steps 1–3) stays open and the
-  // SHARED close (4–9, identical across every flow) folds up — so a flow reads as
-  // its distinctive part, not a wall of the same close steps. Click any title to
-  // toggle.
+  // live one (all flows). Browsing (no lead): ORIGINAL flows stay fully expanded
+  // (untouched). Only the NEW lead paths (foldCloseOnBrowse) fold the SHARED close
+  // (4–9) and keep the unique intake (1–3) open, so they read as their distinctive
+  // part. Click any title to toggle.
   const [openCard, setOpenCard] = useState(true);
   useEffect(() => {
-    setOpenCard(interactive ? (!done || current) : step.n <= 3);
-  }, [interactive, done, current, deal?.id, step.n]); // eslint-disable-line react-hooks/exhaustive-deps
+    setOpenCard(interactive ? (!done || current) : (foldCloseOnBrowse ? step.n <= 3 : true));
+  }, [interactive, done, current, deal?.id, step.n, foldCloseOnBrowse]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Prefill structured fields + the saved "collected" chips from the loaded
   // deal so captured data shows through. The note clears after each save (it's
