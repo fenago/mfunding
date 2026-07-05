@@ -25,17 +25,20 @@ interface Customer {
 // Per-playbook defaults so the form arrives pre-configured for the flow.
 const PLAYBOOK_DEFAULTS: Record<
   Playbook["id"],
-  { leadSource: string; startStatus: DealStatus; isLiveTransfer: boolean; isRenewal?: boolean }
+  { leadSource: string; startStatus: DealStatus; isLiveTransfer: boolean; isRenewal?: boolean; manualEntry?: boolean }
 > = {
+  // manualEntry: does the closer ever TYPE a new lead here? Only when there's no
+  // prior record — a live transfer (merchant on the phone) or a walk-in web/VCF
+  // add. For the Synergy import + email + cold-email paths the lead ALWAYS
+  // already exists (CSV import / auto-created from email / Nurture Pool), so the
+  // closer works an EXISTING deal — never types one in. (default: true)
   website: { leadSource: "website", startStatus: "new", isLiveTransfer: false },
   "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true },
-  // New Synergy / cold-email lead paths. Cold-outreach starts leads live (dialer
-  // reached a pool contact); real-time behaves like a live transfer (call now).
-  "cold-outreach": { leadSource: "aged", startStatus: "new", isLiveTransfer: false },
-  "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false },
-  "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false },
-  realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true },
-  "cold-email": { leadSource: "cold_email", startStatus: "new", isLiveTransfer: false },
+  "cold-outreach": { leadSource: "aged", startStatus: "new", isLiveTransfer: false, manualEntry: false },
+  "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false, manualEntry: false },
+  "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false, manualEntry: false },
+  realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true, manualEntry: false },
+  "cold-email": { leadSource: "cold_email", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   vcf: { leadSource: "referral", startStatus: "new_distressed", isLiveTransfer: false },
   // Renewal deals get is_renewal=true so commissions calculate at 6 points.
   renewal: { leadSource: "renewal", startStatus: "new", isLiveTransfer: false, isRenewal: true },
@@ -86,12 +89,16 @@ export default function PlaybookCapture({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Deal | null>(null);
 
+  // Whether this flow ever creates a lead by hand. Import/email/pool paths never
+  // do — the lead already exists, so the closer only ever loads an existing one.
+  const allowsManualEntry = defaults.manualEntry !== false;
+
   // Reset the form whenever the closer switches playbook tabs.
   useEffect(() => {
     setForm({ ...emptyForm, lead_source: defaults.leadSource });
     setSaved(null);
     setError(null);
-    setMode("new");
+    setMode(allowsManualEntry ? "new" : "existing");
     setExistingId("");
   }, [playbook.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -352,23 +359,33 @@ export default function PlaybookCapture({
                 </div>
               )}
 
-              {/* New vs existing toggle */}
-              <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
-                <button
-                  type="button"
-                  onClick={() => setMode("new")}
-                  className={`px-3 py-1.5 ${mode === "new" ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300"}`}
-                >
-                  + New lead
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("existing")}
-                  className={`px-3 py-1.5 ${mode === "existing" ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300"}`}
-                >
-                  Existing customer
-                </button>
-              </div>
+              {/* New vs existing toggle — only when this flow ever creates a
+                  lead by hand (live transfer / walk-in). Import/email/pool paths
+                  never type a lead in, so we don't offer "+ New lead" there. */}
+              {allowsManualEntry ? (
+                <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setMode("new")}
+                    className={`px-3 py-1.5 ${mode === "new" ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300"}`}
+                  >
+                    + New lead
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode("existing")}
+                    className={`px-3 py-1.5 ${mode === "existing" ? "bg-ocean-blue text-white" : "text-gray-600 dark:text-gray-300"}`}
+                  >
+                    Existing customer
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-800 dark:text-blue-200">
+                  These leads are <b>already in the system</b> — you don't type them in.
+                  Open one from <b>My Day</b> above, or (for Cold Data) promote it from the{" "}
+                  <b>Nurture Pool</b>. Use the search below only to pull up a specific existing lead.
+                </div>
+              )}
 
               {mode === "existing" ? (
                 <div>
