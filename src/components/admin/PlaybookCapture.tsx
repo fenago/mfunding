@@ -38,7 +38,6 @@ const PLAYBOOK_DEFAULTS: Record<
   // Nurture Pool) so the closer works an existing record, never types one in.
   website: { leadSource: "website", startStatus: "new", isLiveTransfer: false },
   "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true },
-  "cold-outreach": { leadSource: "aged", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true, manualEntry: false },

@@ -105,7 +105,6 @@ export interface Playbook {
   id:
     | "website"
     | "live-transfer"
-    | "cold-outreach"
     | "web-lead"
     | "aged-transfer"
     | "realtime"
@@ -231,9 +230,6 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
 export const LEAD_SOURCE_TO_PLAYBOOK: Record<string, Playbook["id"]> = {
   website: "website",
   live_transfer: "live-transfer",
-  aged: "cold-outreach",
-  ucc: "cold-outreach",
-  trigger: "cold-outreach",
   web_purchased: "web-lead",
   aged_transfer: "aged-transfer",
   realtime_appt: "realtime",
@@ -384,77 +380,6 @@ export const PLAYBOOKS: Playbook[] = [
           "Tell them what's coming next so the emails don't surprise them: the application to e-sign + a secure upload link.",
         ],
         say: "Based on what you've told me, you qualify. Stay with me two more minutes — I'm going to take down a few details and send your application over so it arrives already filled out. All you'll do is tap to sign.",
-      },
-      ...MCA_CLOSE_STEPS,
-    ],
-  },
-
-  // ─────────────────────────────────── COLD OUTREACH (Aged + UCC + Trigger) ───────────────────────────────────
-  // All three cold Synergy data products are ONE path: bulk-imported to the
-  // Nurture Pool (contacts, NO deal), you dial the list, and a deal is created
-  // only when someone qualifies ("Promote to pipeline").
-  {
-    id: "cold-outreach",
-    name: "Cold Data → Funded (Aged · UCC · Trigger)",
-    tagline: "Cold bulk lists you bought. Dial the pool, qualify from scratch, promote the winners.",
-    pipeline: "mca",
-    revenue: "≈ $4,000 avg commission · lead cost $0.01–$0.05/record",
-    entry: "Bulk CSV import → Nurture Pool (customers tagged 'nurture', NO deal yet). Aged/UCC/Trigger all land here.",
-    workFrom: {
-      screen: "Work the Nurture Pool dial list — no deal exists until you qualify someone",
-      route: "/admin/customers",
-      appNote:
-        "These are COLD contacts sitting in the Nurture Pool (Admin → Customers → Nurture Pool, filter by source). There is NO deal on the board for them — that's deliberate, so cold data never clogs the pipeline. You dial down the list; the moment someone qualifies, hit 'Promote to pipeline' on their contact — THAT creates the MCA deal at New and drops you into the close. Trigger leads (credit just pulled) sit at the top — call those first.",
-    },
-    steps: [
-      {
-        n: 1,
-        title: "Work the dial list (first dial < 48h of import) — Nurture Pool, no deal yet",
-        // NO stageKey — these contacts live in the Nurture Pool with NO deal on
-        // the pipeline. A deal (at the New stage) is created only on "Promote to
-        // pipeline" in step 2, so this step is deliberately pre-pipeline.
-        automation: "MCA F — Reactivation cadence",
-        sla: "First dial < 48h of import · multi-touch over 14 days",
-        tone: "speed",
-        do: [
-          "Open Admin → Customers → Nurture Pool and filter by source (Trigger first — credit just pulled = shopping NOW; then UCC; then Aged).",
-          "Dial down the list. No-answer → SMS/email cadence (Sequences B & F) and move on; the list is a numbers game.",
-          "Log each attempt on the contact so the cadence advances and nobody gets double-dialed.",
-        ],
-        route: { to: "/admin/customers", label: "Admin → Customers → Nurture Pool" },
-        note: "You paid pennies per record — velocity wins. Don't over-invest in any single cold contact until they show interest.",
-      },
-      {
-        n: 2,
-        title: "Reached them — pitch by list type + qualify from zero",
-        stageKey: "contacted",
-        do: [
-          "Open with the angle that fits the list: AGED = cold intro; UCC = they've taken an advance before; TRIGGER = they're actively shopping.",
-          "Run the full BANT-F — these are UNqualified, you know nothing yet. Type answers into the fields below.",
-          "If they qualify: hit 'Promote to pipeline' on the contact — that creates the MCA deal at New and moves them to Contacted. Everything below is the standard close.",
-        ],
-        say: "Hi [First Name], [Closer] with Momentum Funding. [UCC: I see you've used business funding before — a lot of owners are pulling more capital right now.] [Trigger: looks like you're shopping for financing — I can probably get you a better option.] [Aged: I work with business owners on fast working capital.] Do you have 90 seconds?",
-        collect: [
-          "Time in business (6+ months)",
-          "Monthly revenue ($15K+ min)",
-          "Amount needed + use of funds",
-          "Existing advances? (≥2 → route to VCF)",
-        ],
-        fields: MCA_QUALIFY_FIELDS,
-        explain: APPROVAL_SIZING_EXPLAIN,
-        tone: "branch",
-        note: "Not interested → tag soft-no (back to nurture). Qualifies → Promote to pipeline, which creates the deal.",
-      },
-      {
-        n: 3,
-        title: "Promoted → set Qualifying + send the app",
-        stageKey: "qualifying",
-        automation: "MCA 03 — Qualifying",
-        do: [
-          "They're now a real deal on the board. Move Status → Qualifying and tee up the application (< 24h — strike while they're warm).",
-          "Tell them what's coming: the app to e-sign + a secure upload link.",
-        ],
-        say: "Good news — you qualify. Give me two minutes and I'll send your application over pre-filled; all you do is tap to sign.",
       },
       ...MCA_CLOSE_STEPS,
     ],

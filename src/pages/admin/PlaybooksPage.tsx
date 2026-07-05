@@ -40,7 +40,7 @@ import { CalculatorIcon } from "@heroicons/react/24/outline";
 
 // The NEW lead-path playbooks (Synergy imports/email + cold email). Only these
 // fold their shared close steps when browsing; the original flows are untouched.
-const NEW_LEAD_PLAYBOOKS = new Set(["cold-outreach", "web-lead", "aged-transfer", "realtime", "cold-email"]);
+const NEW_LEAD_PLAYBOOKS = new Set(["web-lead", "aged-transfer", "realtime", "cold-email"]);
 
 const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
   mca: Object.fromEntries(MCA_PIPELINE.stages.map((s) => [s.key, s.label])),
