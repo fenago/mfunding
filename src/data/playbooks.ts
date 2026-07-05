@@ -409,8 +409,10 @@ export const PLAYBOOKS: Playbook[] = [
     steps: [
       {
         n: 1,
-        title: "Work the dial list (first dial < 48h of import)",
-        stageKey: "new",
+        title: "Work the dial list (first dial < 48h of import) — Nurture Pool, no deal yet",
+        // NO stageKey — these contacts live in the Nurture Pool with NO deal on
+        // the pipeline. A deal (at the New stage) is created only on "Promote to
+        // pipeline" in step 2, so this step is deliberately pre-pipeline.
         automation: "MCA F — Reactivation cadence",
         sla: "First dial < 48h of import · multi-touch over 14 days",
         tone: "speed",
