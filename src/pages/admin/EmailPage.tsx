@@ -93,8 +93,11 @@ const STEPS: { title: string; body: ReactNode }[] = [
     title: "Pick the sending domain (never our main domain)",
     body: (
       <>
-        <p>Use a <b>throwaway secondary domain</b> for cold email — e.g. <code>getmfunding.com</code>, <code>trymfunding.com</code>, <code>mfunding-team.com</code>. <b>Never send from mfunding.net</b> — if a sending domain lands in spam, our real domain's reputation must stay clean.</p>
-        <p>Keep names close to the brand but clearly secondary. One new domain = up to 5 mailboxes.</p>
+        <p><b>Our naming convention: <code>[word]mfunding.com</code></b> — a short action word in front of "mfunding", always <code>.com</code>. Keep it close to the brand but clearly a secondary sending domain.</p>
+        <p><b>Domains we already own</b> (don't reuse — one at a time): <code>getmfunding.com</code>, <code>trymfunding.com</code>, <code>workmfunding.com</code>.</p>
+        <p><b>Next ones to register</b> (pick the next unused): <code>gomfunding.com</code> · <code>joinmfunding.com</code> · <code>hellomfunding.com</code> · <code>mymfunding.com</code> · <code>usemfunding.com</code> · <code>trymomentumfunding.com</code>.</p>
+        <p className="text-red-600 dark:text-red-400"><b>NEVER use <code>mfunding.net</code></b> (our real live site — protect its reputation) <b>or <code>mfunding.com</code></b> (a parked placeholder, not ours). Those are never sending domains.</p>
+        <p>One new domain = <b>exactly 5 mailboxes</b> under one real persona.</p>
       </>
     ),
   },
@@ -110,7 +113,12 @@ const STEPS: { title: string; body: ReactNode }[] = [
   {
     title: "Set the Forwarding Domain → mfunding.net",
     body: (
-      <p>In the setup screen, set <b>Forwarding Domain</b> to our real live site (<code>mfunding.net</code>), <b>not</b> the sending domain. This redirects anyone who visits the sending domain to the real site, so it resolves somewhere legitimate instead of a dead page (a trust/deliverability signal).</p>
+      <>
+        <p>In the order/setup screen, the <b>Forwarding Domain</b> field must be exactly:</p>
+        <p className="my-1"><code className="text-base font-bold">mfunding.net</code> <span className="text-xs text-gray-500">(no <code>https://</code>, no <code>www</code>, no trailing slash)</span></p>
+        <p>This redirects anyone who visits the sending domain to our real site, so it resolves somewhere legitimate instead of a dead page (a trust/deliverability signal). <b>Not</b> the sending domain, <b>not</b> <code>mfunding.com</code>.</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400"><b>Already-bought domain pointing wrong?</b> Fix it in Instantly at <b>Billing → Email Accounts and Domains → select the domain → update Forwarding Domain → <code>mfunding.net</code></b>. (This is exactly how <code>getmfunding.com</code> gets corrected from <code>mfunding.com</code>.)</p>
+      </>
     ),
   },
   {
