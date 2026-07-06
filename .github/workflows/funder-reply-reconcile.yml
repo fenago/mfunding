@@ -1,0 +1,50 @@
+# Funder-reply reconciler — self-maintaining funder→lender association.
+#
+# Why: funders reply to our submissions from all kinds of addresses that land in
+# GHL Conversations unassociated. Every 6 hours this invokes funder-reply-
+# reconcile in "cron" mode: it domain-matches each stray reply to a lender,
+# AI-extracts the signature POC, and AUTO-APPLIES only the HIGH-CONFIDENCE ones
+# (domain match + a non-empty extracted name, not already linked) — saving the
+# contact, filling primary_* when empty, and setting lenders.ghl_contact_id so
+# the ghl-webhook path auto-associates every FUTURE reply. Ambiguous matches (no
+# extractable name — generic submissions@/info@ mailboxes) are left for the
+# /admin/funder-contacts review screen. Idempotent: an already-linked lender is
+# skipped, so re-runs are safe.
+#
+# Auth: funder-reply-reconcile is verify_jwt=true, so the request carries the
+# public anon key as Bearer (to pass the API gateway) AND the shared secret (to
+# unlock the trusted auto-apply path inside the function).
+#
+# Secrets required (already used by other workflows):
+#   SUPABASE_ANON_KEY   — public anon JWT (also baked into the frontend bundle)
+#   FUNDER_POLL_SECRET  — same shared secret as the GHL webhook
+
+name: Funder reply reconcile
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"   # every 6 hours at :23 UTC
+  workflow_dispatch: {}       # allow manual runs from the Actions tab
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reconcile funder replies (scan + auto-apply clean matches)
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL || 'https://ehibjeonqpqskhcvizow.supabase.co' }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SECRET: ${{ secrets.FUNDER_POLL_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_ANON_KEY:-}" ] || [ -z "${SECRET:-}" ]; then
+            echo "::error::SUPABASE_ANON_KEY and FUNDER_POLL_SECRET must both be set as repo secrets."
+            exit 1
+          fi
+          RES=$(curl -sS -X POST \
+            "${SUPABASE_URL}/functions/v1/funder-reply-reconcile?secret=${SECRET}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            --data '{"action":"cron"}')
+          echo "$RES"
+          echo "$RES" | grep -q '"ok":true' || { echo "::error::reconciler failed"; exit 1; }
