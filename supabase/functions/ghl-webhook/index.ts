@@ -21,7 +21,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
+  corsHeaders, serviceClient, getGhlConfig, ghlFetch, upsertContact, sendEmailToContact,
 } from "../_shared/ghl.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
@@ -378,14 +378,105 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
     existing = data;
   }
 
+  let custId: string | null = null;
   if (existing) {
     await db.from("customers").update(patch).eq("id", existing.id);
     await log(db, "customer", existing.id, `ghl:${String(evt.type)}`, evt);
+    custId = existing.id;
   } else {
     const { data: created } = await db.from("customers")
       .insert({ ...patch, status: "lead", source: "other" }).select("id").maybeSingle();
-    if (created) await log(db, "customer", created.id, `ghl:${String(evt.type)}`, evt);
+    if (created) { await log(db, "customer", created.id, `ghl:${String(evt.type)}`, evt); custId = created.id; }
   }
+
+  // Pull any intake-form file uploads (GHL file-upload custom fields) into the
+  // customer's Documents. Best-effort — never let it break the contact upsert.
+  if (custId && ghlId) {
+    try {
+      const n = await syncFormUploads(db, custId, ghlId);
+      if (n > 0) await logEvent(db, evt, String(evt.type), "form_uploads_synced", `${n} file(s)`);
+    } catch (e) {
+      await logEvent(db, evt, String(evt.type), "form_upload_sync_error", e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
+// Sync GHL intake-form file uploads → customer_documents. GHL stores form file
+// uploads as file-upload custom fields on the contact (value = { <docId>: { meta:
+// { originalname }, url } }). Only emailed attachments were being auto-filed, so
+// form uploads (bank statements, ID) silently never reached the app. Idempotent
+// via customer_documents.external_ref = the GHL doc id. Returns files synced.
+async function syncFormUploads(db: DB, customerId: string, ghlContactId: string): Promise<number> {
+  const cfg = await getGhlConfig(db);
+  const res = await ghlFetch<{ contact?: { customFields?: Array<{ id: string; value: unknown }> } }>(
+    cfg, "GET", `/contacts/${ghlContactId}`,
+  );
+  const fields = res.ok ? (res.data?.contact?.customFields ?? []) : [];
+  const files: Array<{ ref: string; name: string; url: string }> = [];
+  for (const f of fields) {
+    const v = f.value;
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    for (const [ref, entry] of Object.entries(v as Record<string, unknown>)) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      const meta = (e.meta ?? {}) as Record<string, unknown>;
+      const url = String(e.url ?? e.documentId ?? "");
+      const name = String(meta.originalname ?? meta.name ?? e.name ?? `${ref}.pdf`).trim();
+      if (url.startsWith("http")) files.push({ ref, name, url });
+    }
+  }
+  if (!files.length) return 0;
+
+  const { data: existingDocs } = await db.from("customer_documents")
+    .select("external_ref").eq("customer_id", customerId).not("external_ref", "is", null);
+  const have = new Set((existingDocs ?? []).map((r: { external_ref: string }) => r.external_ref));
+
+  let synced = 0;
+  for (const file of files.slice(0, 25)) {
+    if (have.has(file.ref)) continue;
+    try {
+      // Auth header is dropped on the cross-origin redirect to storage (expected).
+      const bin = await fetch(file.url, { headers: { Authorization: `Bearer ${cfg.apiKey}`, Version: "2021-07-28" } });
+      if (!bin.ok) continue;
+      const bytes = new Uint8Array(await bin.arrayBuffer());
+      if (!bytes.length) continue;
+      const ct = contentTypeFor(file.name);
+      const slug = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "upload";
+      const path = `customer/${customerId}/${Date.now()}-${slug}`;
+      const up = await db.storage.from("customer-documents").upload(path, bytes, { contentType: ct, upsert: false });
+      if (up.error) continue;
+      await db.from("customer_documents").insert({
+        customer_id: customerId,
+        document_type: docTypeFor(file.name),
+        filename: file.name,
+        storage_path: path,
+        file_size: bytes.length,
+        mime_type: ct,
+        status: "pending",
+        external_ref: file.ref,
+        description: "Auto-synced from GHL intake-form upload.",
+      });
+      synced++;
+    } catch (_e) { /* skip this file, keep going */ }
+  }
+  return synced;
+}
+
+function contentTypeFor(name: string): string {
+  const n = name.toLowerCase();
+  if (n.endsWith(".pdf")) return "application/pdf";
+  if (n.endsWith(".png")) return "image/png";
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+  if (n.endsWith(".webp")) return "image/webp";
+  return "application/octet-stream";
+}
+
+// Keep to the document_type values the app already uses.
+function docTypeFor(name: string): string {
+  const n = name.toLowerCase();
+  if (/statement/.test(n)) return "bank_statement";
+  if (/applica/.test(n)) return "application";
+  return "other";
 }
 
 async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
