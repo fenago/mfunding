@@ -21,7 +21,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig, ghlFetch, upsertContact, sendEmailToContact,
+  corsHeaders, serviceClient, getGhlConfig, ghlFetch, upsertContact, sendEmailToContact, addContactTags,
 } from "../_shared/ghl.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
@@ -350,6 +350,38 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
   };
 }
 
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+}
+
+// If a contact's email is on a KNOWN funder's domain, tag it (`funder` + the
+// company slug) so the unified inbox groups by company at scale, and signal the
+// caller to SKIP merchant-customer creation — funder reps aren't leads.
+async function tagFunderContact(db: DB, contactId: string, email: string): Promise<boolean> {
+  const domain = (email.split("@")[1] ?? "").trim().toLowerCase();
+  if (!domain || !domain.includes(".") ||
+    /(gmail|yahoo|outlook|hotmail|aol|icloud|docusign|hellosign)\./.test(domain)) return false;
+  const domOf = (s?: string | null) => {
+    if (!s) return null;
+    if (s.includes("@")) return s.split("@")[1].trim().toLowerCase();
+    return s.replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#]/)[0].toLowerCase() || null;
+  };
+  const { data: lenders } = await db.from("lenders")
+    .select("id, company_name, ghl_tag_slug, website, submission_email, primary_contact_email");
+  const lender = (lenders ?? []).find((l: Record<string, unknown>) =>
+    [l.website, l.submission_email, l.primary_contact_email].some((x) => domOf(x as string) === domain));
+  if (!lender) return false;
+  const slug = (lender.ghl_tag_slug as string) || slugify(String(lender.company_name));
+  if (!lender.ghl_tag_slug) await db.from("lenders").update({ ghl_tag_slug: slug }).eq("id", lender.id as string);
+  if (contactId) {
+    try {
+      const cfg = await getGhlConfig(db);
+      await addContactTags(cfg, contactId, ["funder", slug]);
+    } catch { /* tagging is best-effort */ }
+  }
+  return true;
+}
+
 async function handleContact(db: DB, evt: Record<string, unknown>) {
   const c = (evt.contact ?? evt) as Record<string, unknown>;
   const cd = (evt.customData ?? {}) as Record<string, unknown>;
@@ -357,6 +389,12 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
   const ghlId = String(evt.contactId ?? cd.contactId ?? evt.contact_id ?? c.id ?? "");
   const email = (c.email ?? evt.email ?? null) as string | null;
   if (!ghlId && !email) return;
+
+  // Funder rep? Tag by company for the unified inbox and DON'T create a lead.
+  if (email) {
+    const isFunder = await tagFunderContact(db, ghlId, email);
+    if (isFunder) { await logEvent(db, evt, String(evt.type), "funder_contact_tagged", email); return; }
+  }
 
   const patch = {
     first_name: (c.firstName ?? evt.first_name ?? undefined) as string | undefined,
