@@ -22,7 +22,7 @@ const STATUS_STYLE: Record<string, string> = {
 
 export default function DocumentReviewPage() {
   const [docs, setDocs] = useState<ReviewDoc[]>([]);
-  const [showAll, setShowAll] = useState(false);
+  const [showAll, setShowAll] = useState(true); // default to ALL documents (uncheck to see only what needs review)
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
 
