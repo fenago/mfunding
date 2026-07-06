@@ -443,6 +443,47 @@ async function harvestOpens(
   return flagged;
 }
 
+type FunderContactSrc = {
+  ghl_contact_id: string;
+  submission_email?: string | null;
+  primary_contact_email?: string | null;
+  website?: string | null;
+};
+
+// The funder's email domain (from submission/contact email, else website host).
+function domainOf(l: FunderContactSrc): string | null {
+  const fromEmail = (e?: string | null) =>
+    e && e.includes("@") ? e.split("@")[1].trim().toLowerCase() : null;
+  return (
+    fromEmail(l.submission_email) ||
+    fromEmail(l.primary_contact_email) ||
+    (l.website
+      ? l.website.replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#]/)[0].toLowerCase() || null
+      : null)
+  );
+}
+
+// Every GHL contact for a funder: the linked one PLUS any contact on the same
+// email domain (support@, gverma@, …). Replies from a sibling address were
+// silently dropped because only the linked contact was watched.
+async function gatherFunderContactIds(
+  cfg: Awaited<ReturnType<typeof getGhlConfig>>,
+  lender: FunderContactSrc,
+): Promise<string[]> {
+  const ids = new Set<string>();
+  if (lender.ghl_contact_id) ids.add(lender.ghl_contact_id);
+  const domain = domainOf(lender);
+  if (domain && domain.includes(".") && !/(gmail|yahoo|outlook|hotmail|aol|icloud)\./.test(domain)) {
+    const res = await ghlFetch<{ contacts?: Array<{ id: string; email?: string }> }>(
+      cfg, "POST", `/contacts/search`, { locationId: cfg.locationId, query: domain, pageLimit: 20 },
+    );
+    for (const c of res.data?.contacts ?? []) {
+      if (c.id && String(c.email ?? "").toLowerCase().endsWith("@" + domain)) ids.add(c.id);
+    }
+  }
+  return [...ids];
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const db = serviceClient();
@@ -469,7 +510,7 @@ Deno.serve(async (req) => {
 
   const lenderIds = [...new Set(pending.map((p) => p.lender_id))];
   const { data: lenders } = await db.from("lenders")
-    .select("id, company_name, ghl_contact_id")
+    .select("id, company_name, ghl_contact_id, submission_email, primary_contact_email, website")
     .in("id", lenderIds)
     .not("ghl_contact_id", "is", null);
 
@@ -483,12 +524,19 @@ Deno.serve(async (req) => {
     const newest = subs[0];
     if (!newest) continue;
 
-    // Conversations for this funder contact.
-    const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
-      cfg, "GET",
-      `/conversations/search?locationId=${cfg.locationId}&contactId=${lender.ghl_contact_id}`,
-    );
-    for (const c of conv.data?.conversations ?? []) {
+    // Conversations across ALL of this funder's contacts (linked + same email
+    // domain). Funders often reply from a different address (e.g. support@ vs the
+    // submissions@ we sent to), which lands on a separate GHL contact and was
+    // being missed entirely.
+    const contactIds = await gatherFunderContactIds(cfg, lender as FunderContactSrc);
+    const conversations: Array<{ id: string }> = [];
+    for (const cid of contactIds) {
+      const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
+        cfg, "GET", `/conversations/search?locationId=${cfg.locationId}&contactId=${cid}`,
+      );
+      for (const c of conv.data?.conversations ?? []) conversations.push(c);
+    }
+    for (const c of conversations) {
       const msgs = await ghlFetch<{ messages?: { messages?: Array<Record<string, unknown>> } }>(
         cfg, "GET", `/conversations/${c.id}/messages?limit=15`,
       );
