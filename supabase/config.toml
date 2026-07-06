@@ -72,3 +72,9 @@ verify_jwt = true
 
 [functions.poll-funder-replies]
 verify_jwt = false
+
+# Funder-reply reconciler — admin UI (user JWT) OR trusted cron (?secret=…).
+# The cron sends the service-role key as Bearer to pass the gateway, then the
+# shared-secret check inside grants the auto-apply path.
+[functions.funder-reply-reconcile]
+verify_jwt = true
