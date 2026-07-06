@@ -21,7 +21,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig, ghlFetch, upsertContact, sendEmailToContact, addContactTags,
+  corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact, upsertContact, sendEmailToContact, addContactTags,
 } from "../_shared/ghl.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
@@ -231,6 +231,70 @@ async function handleEmailOpen(db: DB, evt: Record<string, unknown>): Promise<In
 //               messageType=Email, conversationId={{message.conversationId}},
 //               message_body={{message.body}}
 //   Either shape resolves the sending contact → lenders.ghl_contact_id.
+// Generic mailbox providers / system senders that are never a funder's own domain.
+const NON_FUNDER_DOMAIN = /(gmail|yahoo|outlook|hotmail|aol|icloud|docusign|hellosign|pandadoc|boldsign|signnow|dropboxsign|leadconnector)\./;
+const OWN_DOMAIN = /(^|\.)(mfunding\.net|send\.mfunding\.net|mfunding\.com)$/;
+
+// Real-time reconciler hook: given an inbound sender's contactId (and, when we
+// can get it, their email), match the sender's email DOMAIN to a lender. If that
+// lender isn't linked to a GHL contact yet, LINK it (set ghl_contact_id) and
+// append the contact — so THIS and every future reply from the funder auto-
+// associates via the eq(ghl_contact_id) lookup. Best-effort/guarded: any failure
+// returns null and the caller falls back to its existing behavior. Returns the
+// resolved lender (linked or already-matching) or null.
+async function linkFunderByDomain(
+  db: DB, contactId: string, emailHint: string,
+): Promise<{ id: string; company_name: string } | null> {
+  let email = emailHint.trim().toLowerCase();
+  let name = "";
+  let phone = "";
+  try {
+    const cfg = await getGhlConfig(db);
+    if (!email) {
+      const c = await getContact(cfg, contactId);
+      const ct = (c.data?.contact ?? {}) as Record<string, unknown>;
+      email = String(ct.email ?? "").trim().toLowerCase();
+      name = [ct.firstName, ct.lastName].filter(Boolean).join(" ").trim();
+      phone = String(ct.phone ?? "").trim();
+    }
+  } catch { /* couldn't load the contact — give up quietly */ }
+  if (!email || !email.includes("@")) return null;
+  const domain = email.split("@")[1]?.trim().toLowerCase() ?? "";
+  if (!domain || !domain.includes(".") || NON_FUNDER_DOMAIN.test(domain) || OWN_DOMAIN.test(domain)) return null;
+
+  const domOf = (s?: string | null) => {
+    if (!s) return null;
+    if (s.includes("@")) return s.split("@")[1].trim().toLowerCase();
+    return s.replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#]/)[0].toLowerCase() || null;
+  };
+  const { data: lenders } = await db.from("lenders")
+    .select("id, company_name, ghl_contact_id, contacts, website, submission_email, primary_contact_email, primary_contact_name, primary_contact_phone");
+  const lender = (lenders ?? []).find((l: Record<string, unknown>) =>
+    [l.website, l.submission_email, l.primary_contact_email].some((x) => domOf(x as string) === domain));
+  if (!lender) return null;
+
+  // Only mutate when not yet linked (freshest-wins-only-if-empty for primary_*).
+  if (!lender.ghl_contact_id && contactId) {
+    const patch: Record<string, unknown> = { ghl_contact_id: contactId };
+    const arr = Array.isArray(lender.contacts) ? (lender.contacts as Array<Record<string, unknown>>) : [];
+    const exists = arr.some((c) => String(c.email ?? "").toLowerCase() === email);
+    if (!exists) {
+      arr.push({
+        name: name || null, title: null, email, phone: phone || null,
+        source: "email_reply", ghl_contact_id: contactId, added_at: new Date().toISOString(),
+      });
+      patch.contacts = arr;
+    }
+    if (!lender.primary_contact_email) patch.primary_contact_email = email;
+    if (!lender.primary_contact_name && name) patch.primary_contact_name = name;
+    if (!lender.primary_contact_phone && phone) patch.primary_contact_phone = phone;
+    await db.from("lenders").update(patch).eq("id", lender.id as string);
+    await log(db, "lender", lender.id as string, "ghl:funder-linked",
+      { via: "inbound-domain-match", email, contactId });
+  }
+  return { id: lender.id as string, company_name: lender.company_name as string };
+}
+
 async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promise<InboundResult> {
   const cd = (evt.customData ?? {}) as Record<string, unknown>;
   const contact = (evt.contact ?? {}) as Record<string, unknown>;
@@ -249,9 +313,21 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
     return { outcome: "ignored", detail: `inbound ${messageType} — not an email reply`, result: { handled: false } };
   }
 
-  // Does this contact map to a funder?
-  const { data: lender } = await db.from("lenders")
+  // Does this contact map to a funder? First by the linked GHL contact id.
+  let lender: { id: string; company_name: string } | null = null;
+  const { data: linkedLender } = await db.from("lenders")
     .select("id, company_name").eq("ghl_contact_id", contactId).maybeSingle();
+  lender = linkedLender;
+  // Fallback (real-time reconciler): the funder replied from an address we've
+  // never linked. Match by the sender's email DOMAIN and LINK the lender so this
+  // and every future reply auto-associates. Best-effort — never throws.
+  if (!lender) {
+    const emailHint = String(
+      (evt.contact as Record<string, unknown> | undefined)?.email ??
+      cd.email ?? cd.from ?? evt.email ?? evt.from ?? "",
+    );
+    try { lender = await linkFunderByDomain(db, contactId, emailHint); } catch { /* guarded */ }
+  }
   if (!lender) {
     return { outcome: "ignored", detail: "inbound message not from a funder contact", result: { handled: false } };
   }
