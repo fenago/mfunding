@@ -105,7 +105,12 @@ const MERCHANT_CLOSED_STATUSES = [
 // Strip HTML/entities, collapse whitespace, and drop the quoted original so the
 // snippet carries only what the merchant actually wrote.
 function cleanEmailBody(raw: string): string {
-  let text = raw.replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
+  // Drop <style>/<script> blocks first so their CSS/JS text doesn't leak into
+  // the snippet (e.g. ".ProseMirror > p.custom-newline { … }" from HTML editors).
+  let text = raw
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
     .replace(/\s+/g, " ").trim();
   const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
   if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
@@ -188,6 +193,61 @@ async function findMerchantReply(
     }
   }
   return best;
+}
+
+// Capture OUR OUTBOUND emails to a funder (replies typed directly in GHL
+// Conversations, bypassing the app) into the deal's Step-7 thread as funder:email
+// so they show up next to the funder's reply. Deduped by the GHL email id
+// [emsg:<id>], so anything already logged by submit-to-funders (or a prior run)
+// never double-posts. The [re: <funder>] prefix pins it to the funder's card.
+async function captureOutboundFunderEmails(
+  db: SupabaseClient,
+  cfg: Awaited<ReturnType<typeof getGhlConfig>>,
+  lenderName: string,
+  dealId: string,
+  list: Array<Record<string, unknown>>,
+  afterMs: number,
+): Promise<number> {
+  let logged = 0;
+  const outbound = list
+    .filter((m) =>
+      String(m.direction ?? "") === "outbound" &&
+      /email/i.test(String(m.messageType ?? "")) &&
+      Date.parse(String(m.dateAdded ?? "")) >= afterMs)
+    .slice(0, 8);
+  for (const m of outbound) {
+    const meta = m.meta as { email?: { messageIds?: string[] } } | undefined;
+    for (const eid of meta?.email?.messageIds ?? []) {
+      // Already in the thread (logged by submit-to-funders or an earlier run)?
+      const { data: dup } = await db.from("activity_log")
+        .select("id").eq("entity_type", "deal").eq("entity_id", dealId)
+        .like("content", `%[emsg:${eid}]%`).limit(1);
+      if (dup?.length) continue;
+      const emailRes = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
+        cfg, "GET", `/conversations/messages/email/${eid}`,
+      );
+      const e = (emailRes.data?.emailMessage ?? emailRes.data ?? {}) as Record<string, unknown>;
+      if (String(e.direction ?? "") !== "outbound") continue;
+      const subject = String(e.subject ?? "").trim();
+      let text = cleanEmailBody(String(e.body ?? ""));
+      const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
+      if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
+      // Skip our own submission / re-send emails — those are already on the board
+      // as funder:sent. Only genuine replies (typed in Conversations) belong here.
+      if (/new submission from|merchant information sheet|referral guidelines|submitted the package/i.test(text)) continue;
+      const atts = Array.isArray(e.attachments)
+        ? (e.attachments as unknown[]).filter((u) => typeof u === "string").length : 0;
+      const attNote = atts ? ` (${atts} attachment${atts > 1 ? "s" : ""})` : "";
+      const snippet = (text || "(sent from GHL Conversations)").slice(0, 220);
+      await db.from("activity_log").insert({
+        entity_type: "deal", entity_id: dealId, interaction_type: "email",
+        subject: `funder:email — ${subject || lenderName}`,
+        content: `[re: ${lenderName}] ${snippet}${attNote} [emsg:${eid}]`,
+      });
+      logged++;
+    }
+  }
+  return logged;
 }
 
 // Phase 2 (runs every scheduled invocation, independent of the funder phase):
@@ -437,6 +497,18 @@ Deno.serve(async (req) => {
       // the reply — GHL fills it with the quoted original. The real reply text
       // lives in the linked email record (meta.email.messageIds), so we resolve
       // that and judge authenticity by the email record's from-address.
+      // Capture our OUTBOUND replies typed in GHL Conversations into the thread
+      // (Gap: replies not sent through the app were invisible on the Step-7 board).
+      // Only AFTER the funder replied — anything earlier is the submission email
+      // itself, which is already logged as funder:sent.
+      const nResp = (newest as { response_at?: string | null }).response_at;
+      if (nResp) {
+        const outLogged = await captureOutboundFunderEmails(
+          db, cfg, lender.company_name, newest.deal_id, list, Date.parse(nResp),
+        );
+        if (outLogged) details.push(`${lender.company_name} ← ${outLogged} reply (Conversations)`);
+      }
+
       const baselineMs = Date.parse(
         String((newest as { response_at?: string | null }).response_at ?? newest.submitted_at),
       );
