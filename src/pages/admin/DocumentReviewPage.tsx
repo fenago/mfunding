@@ -23,8 +23,11 @@ const STATUS_STYLE: Record<string, string> = {
 export default function DocumentReviewPage() {
   const [docs, setDocs] = useState<ReviewDoc[]>([]);
   const [showAll, setShowAll] = useState(true); // default to ALL documents (uncheck to see only what needs review)
+  const [typeFilter, setTypeFilter] = useState("all"); // document-type filter (defaults to All)
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  const shown = typeFilter === "all" ? docs : docs.filter((d) => d.document_type === typeFilter);
 
   async function load() {
     setLoading(true);
@@ -53,17 +56,32 @@ export default function DocumentReviewPage() {
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">Review uploaded merchant documents and approve or reject them.</p>
         </div>
-        <label className="text-sm text-gray-500 flex items-center gap-2">
-          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all
-        </label>
+        <div className="flex items-center gap-4">
+          <label className="text-sm text-gray-500 flex items-center gap-2">
+            Type
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+              className="text-sm border border-gray-200 dark:border-gray-700 rounded-md px-2 py-1 bg-white dark:bg-gray-800"
+            >
+              <option value="all">All types</option>
+              {Object.entries(DOC_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm text-gray-500 flex items-center gap-2">
+            <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show all
+          </label>
+        </div>
       </div>
 
       {loading ? (
         <p className="text-sm text-gray-400">Loading…</p>
-      ) : docs.length === 0 ? (
+      ) : shown.length === 0 ? (
         <div className="text-center py-10 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
           <CheckCircleIcon className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
-          <p className="text-gray-500">{showAll ? "No documents." : "Nothing to review — all caught up."}</p>
+          <p className="text-gray-500">{typeFilter !== "all" ? `No ${DOC_LABELS[typeFilter] ?? typeFilter} documents.` : showAll ? "No documents." : "Nothing to review — all caught up."}</p>
         </div>
       ) : (
         <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
@@ -75,7 +93,7 @@ export default function DocumentReviewPage() {
               </tr>
             </thead>
             <tbody>
-              {docs.map((d) => (
+              {shown.map((d) => (
                 <tr key={d.id} className="border-b border-gray-50 dark:border-gray-800">
                   <td className="py-3 px-4">
                     <Link to={`/admin/customers/${d.customer_id}`} className="text-gray-900 dark:text-white hover:text-ocean-blue">

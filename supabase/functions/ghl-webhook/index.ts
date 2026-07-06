@@ -412,17 +412,27 @@ async function syncFormUploads(db: DB, customerId: string, ghlContactId: string)
     cfg, "GET", `/contacts/${ghlContactId}`,
   );
   const fields = res.ok ? (res.data?.contact?.customFields ?? []) : [];
-  const files: Array<{ ref: string; name: string; url: string }> = [];
+  // Field id -> field name (e.g. "MCA Bank Statements", "Other Documents (ID,
+  // voided check…)") so we type each file by the upload field it came from, not
+  // just the (often generic, e.g. "image.jpg") filename.
+  const defs = await ghlFetch<{ customFields?: Array<{ id: string; name: string }> }>(
+    cfg, "GET", `/locations/${cfg.locationId}/customFields`,
+  );
+  const fieldName: Record<string, string> = {};
+  for (const fd of (defs.data?.customFields ?? [])) fieldName[fd.id] = fd.name;
+
+  const files: Array<{ ref: string; name: string; url: string; hint: string }> = [];
   for (const f of fields) {
     const v = f.value;
     if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const hint = fieldName[f.id] ?? "";
     for (const [ref, entry] of Object.entries(v as Record<string, unknown>)) {
       if (!entry || typeof entry !== "object") continue;
       const e = entry as Record<string, unknown>;
       const meta = (e.meta ?? {}) as Record<string, unknown>;
       const url = String(e.url ?? e.documentId ?? "");
       const name = String(meta.originalname ?? meta.name ?? e.name ?? `${ref}.pdf`).trim();
-      if (url.startsWith("http")) files.push({ ref, name, url });
+      if (url.startsWith("http")) files.push({ ref, name, url, hint });
     }
   }
   if (!files.length) return 0;
@@ -447,7 +457,7 @@ async function syncFormUploads(db: DB, customerId: string, ghlContactId: string)
       if (up.error) continue;
       await db.from("customer_documents").insert({
         customer_id: customerId,
-        document_type: docTypeFor(file.name),
+        document_type: docTypeFor(`${file.hint} ${file.name}`),
         filename: file.name,
         storage_path: path,
         file_size: bytes.length,
@@ -471,11 +481,14 @@ function contentTypeFor(name: string): string {
   return "application/octet-stream";
 }
 
-// Keep to the document_type values the app already uses.
-function docTypeFor(name: string): string {
-  const n = name.toLowerCase();
+// Keep to the document_type values the app already uses (bank_statement,
+// application, id, voided_check, other). Matches against the field name + filename.
+function docTypeFor(s: string): string {
+  const n = s.toLowerCase();
   if (/statement/.test(n)) return "bank_statement";
   if (/applica/.test(n)) return "application";
+  if (/driver|licen|passport|photo id|\bid\b/.test(n)) return "id";
+  if (/void|cheque|\bcheck\b/.test(n)) return "voided_check";
   return "other";
 }
 
