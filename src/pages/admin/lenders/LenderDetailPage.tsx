@@ -307,6 +307,25 @@ export default function LenderDetailPage() {
     return payload;
   }
 
+  // Save with self-healing: if a write fails (commonly a stale auth token — which
+  // makes reads look fine while writes 401 / return 0 rows), refresh the session
+  // and retry once. Returns the REAL error string on final failure (never the old
+  // generic "Failed to save changes"), so we can always see what actually broke.
+  async function saveWithRetry(op: () => Promise<void>): Promise<string | null> {
+    try {
+      await op();
+      return null;
+    } catch {
+      try {
+        await supabase.auth.refreshSession();
+        await op();
+        return null;
+      } catch (e2) {
+        return e2 instanceof Error ? e2.message : String(e2);
+      }
+    }
+  }
+
   // Shared MCA-program upsert — used by the block's own "Save criteria" button
   // AND by the top "Save Changes" so one save persists the whole page.
   const persistMca = async () => {
@@ -333,17 +352,16 @@ export default function LenderDetailPage() {
     setIsSavingMca(true);
     setMcaSaveSuccess(false);
     setMcaError(null);
-    try {
-      await persistMca();
+    const err = await saveWithRetry(persistMca);
+    if (err) {
+      console.error("Error saving MCA criteria:", err);
+      setMcaError(err);
+    } else {
       setMcaSaveSuccess(true);
       setTimeout(() => setMcaSaveSuccess(false), 2000);
       await fetchMcaProgram(lender.id);
-    } catch (error) {
-      console.error("Error saving MCA criteria:", error);
-      setMcaError(error instanceof Error ? error.message : "Failed to save criteria");
-    } finally {
-      setIsSavingMca(false);
     }
+    setIsSavingMca(false);
   };
 
   async function handleDelete() {
@@ -621,8 +639,7 @@ export default function LenderDetailPage() {
     setIsSaving(true);
     setSaveSuccess(false);
 
-    try {
-      const payload = {
+    const payload = {
         company_name: formData.company_name,
         website: formData.website || null,
         description: formData.description || null,
@@ -656,18 +673,22 @@ export default function LenderDetailPage() {
         submission_notes: formData.submission_notes || null,
       };
 
+      // One save persists the whole page (lender record + MCA criteria), self-heals
+      // a stale session, and surfaces the REAL error instead of "Failed to save".
+    const err = await saveWithRetry(async () => {
       await mustWrite("save lender", supabase.from("lenders").update(payload).eq("id", lender.id));
-      await persistMca(); // top "Save Changes" also persists the MCA approval criteria
+      await persistMca();
+    });
+    if (err) {
+      console.error("Error saving lender:", err);
+      alert(`Couldn't save: ${err}`);
+    } else {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
       fetchLender();
       await fetchMcaProgram(lender.id);
-    } catch (error) {
-      console.error("Error saving lender:", error);
-      alert("Failed to save changes");
-    } finally {
-      setIsSaving(false);
     }
+    setIsSaving(false);
   };
 
   if (isLoading) {
