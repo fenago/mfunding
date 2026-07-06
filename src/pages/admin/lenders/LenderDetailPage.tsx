@@ -307,34 +307,34 @@ export default function LenderDetailPage() {
     return payload;
   }
 
+  // Shared MCA-program upsert — used by the block's own "Save criteria" button
+  // AND by the top "Save Changes" so one save persists the whole page.
+  const persistMca = async () => {
+    if (!lender) return;
+    const fields = valuesToPayload();
+    const now = new Date().toISOString();
+    if (mcaProgramId) {
+      await mustWrite(
+        "update MCA approval criteria",
+        supabase.from("lender_programs").update({ ...fields, updated_at: now }).eq("id", mcaProgramId),
+      );
+    } else {
+      await mustWrite(
+        "create MCA approval criteria",
+        supabase.from("lender_programs").insert({
+          lender_id: lender.id, product_type: "mca", is_active: true, ...fields, updated_at: now,
+        }),
+      );
+    }
+  };
+
   const handleSaveMca = async () => {
     if (!lender) return;
     setIsSavingMca(true);
     setMcaSaveSuccess(false);
     setMcaError(null);
     try {
-      const fields = valuesToPayload();
-      const now = new Date().toISOString();
-      if (mcaProgramId) {
-        await mustWrite(
-          "update MCA approval criteria",
-          supabase
-            .from("lender_programs")
-            .update({ ...fields, updated_at: now })
-            .eq("id", mcaProgramId),
-        );
-      } else {
-        await mustWrite(
-          "create MCA approval criteria",
-          supabase.from("lender_programs").insert({
-            lender_id: lender.id,
-            product_type: "mca",
-            is_active: true,
-            ...fields,
-            updated_at: now,
-          }),
-        );
-      }
+      await persistMca();
       setMcaSaveSuccess(true);
       setTimeout(() => setMcaSaveSuccess(false), 2000);
       await fetchMcaProgram(lender.id);
@@ -657,9 +657,11 @@ export default function LenderDetailPage() {
       };
 
       await mustWrite("save lender", supabase.from("lenders").update(payload).eq("id", lender.id));
+      await persistMca(); // top "Save Changes" also persists the MCA approval criteria
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
       fetchLender();
+      await fetchMcaProgram(lender.id);
     } catch (error) {
       console.error("Error saving lender:", error);
       alert("Failed to save changes");
