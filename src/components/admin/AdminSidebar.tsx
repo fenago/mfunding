@@ -90,6 +90,7 @@ const navGroups: NavGroup[] = [
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
       { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: SUPER },
       { name: "Funder Approval Matrix", path: "/admin/funder-matrix", icon: TableCellsIcon, roles: SUPER },
+      { name: "Funder Contacts", path: "/admin/funder-contacts", icon: UserGroupIcon, roles: ADMIN },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
