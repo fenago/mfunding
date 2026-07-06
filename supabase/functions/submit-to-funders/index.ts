@@ -148,7 +148,12 @@ function render(tpl: string, tokens: Record<string, string>): string {
   return tpl.replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_m, k) => tokens[k] ?? "");
 }
 
-interface DocRow { document_type: string; filename: string | null; storage_path: string; status: string }
+interface DocRow { document_type: string; filename: string | null; storage_path: string; status: string; file_size?: number | null }
+
+// Email attachment ceiling (GHL/SendGrid ~25MB total; stay under it). Anything
+// that would exceed it stays a secure link instead of failing the send.
+const MAX_ATTACH_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACH_COUNT = 15;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -485,7 +490,7 @@ Deno.serve(async (req) => {
   // All docs on file for this deal's customer, grouped by type.
   const { data: docRows } = await db
     .from("customer_documents")
-    .select("document_type, filename, storage_path, status")
+    .select("document_type, filename, storage_path, status, file_size")
     .eq("customer_id", deal.customer_id);
   const docsByType = new Map<string, DocRow[]>();
   for (const d of (docRows ?? []) as DocRow[]) {
@@ -556,10 +561,30 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    // --- Gather docs as expiring signed links (Phase 6 real attachments = later). ---
+    // --- Gather docs. Every doc becomes a secure link; per the recipe's
+    // attachment_mode we ALSO attach the actual files (GHL fetches the signed
+    // URL at send time). Oversized sets fall back to link-only so a send never
+    // fails on the ~25MB email cap. ---
     const attachSlugs = recipe?.attach_docs?.length ? recipe.attach_docs : ["application", "bank_statement"];
+    const mode = recipe?.attachment_mode ?? "links";
+    const wantAttach = mode === "attachments" || mode === "both";
+    const wantLinks = mode === "links" || mode === "both";
     const docLinkLines: string[] = [];
     const docLinkHtml: string[] = [];
+    const attachmentUrls: string[] = [];
+    const attachedNames: string[] = [];
+    let attachBytes = 0;
+    // Add a signed URL as an attachment if there's room; return whether attached.
+    const tryAttach = (url: string, name: string, size?: number | null): boolean => {
+      if (!wantAttach) return false;
+      if (attachmentUrls.length >= MAX_ATTACH_COUNT) return false;
+      const sz = Number(size) || 0;
+      if (sz && attachBytes + sz > MAX_ATTACH_BYTES) return false; // known-oversized → keep as link
+      attachmentUrls.push(url);
+      attachedNames.push(name);
+      attachBytes += sz;
+      return true;
+    };
     let appLinkCount = 0; // app-side signed-application copies actually linked
     for (const slug of attachSlugs) {
       const list = docsByType.get(slug) ?? [];
@@ -570,6 +595,7 @@ Deno.serve(async (req) => {
         const label = `${docLabel(slug)}${d.filename ? ` (${d.filename})` : ""}`;
         docLinkLines.push(`${label} — ${url}`);
         docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
+        tryAttach(url, d.filename || `${slug}.pdf`, d.file_size);
         if (slug === "application") appLinkCount++;
       }
     }
@@ -582,7 +608,7 @@ Deno.serve(async (req) => {
     const pushGroup = (heading: string, files: Array<{ name: string; url: string }>) => {
       if (!files.length) return;
       docLinkLines.push(`${heading} (${files.length}):`);
-      for (const f of files) docLinkLines.push(`  ${f.name} — ${f.url}`);
+      for (const f of files) { docLinkLines.push(`  ${f.name} — ${f.url}`); tryAttach(f.url, f.name); }
       docLinkHtml.push(
         `<li>${esc(heading)} (${files.length}):<ul style="margin:2px 0">` +
         files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a></li>`).join("") + `</ul></li>`,
@@ -602,7 +628,11 @@ Deno.serve(async (req) => {
       docsWarning = "signed application not auto-attached — forward it from GHL";
     }
 
-    const docLinksText = docLinkLines.length ? docLinkLines.join("\n") : "(documents will be sent on request)";
+    // Body doc section: for attachments-only mode, point to the attachments
+    // instead of listing links; links + both keep the link list.
+    const docLinksText = !wantLinks
+      ? (attachedNames.length ? `See attached: ${attachedNames.join(", ")}` : "(documents attached)")
+      : (docLinkLines.length ? docLinkLines.join("\n") : "(documents will be sent on request)");
 
     // Portal-only funders: no funder email — return the guided portal flow.
     const isPortalOnly = method === "portal";
@@ -620,7 +650,8 @@ Deno.serve(async (req) => {
     const bodyHtml =
       `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px">` +
       `<div style="white-space:pre-wrap">${esc(render(recipe?.body_template || GENERIC_BODY, tokens))}</div>` +
-      (docLinkHtml.length ? `<ul style="margin:8px 0">${docLinkHtml.join("")}</ul>` : "") +
+      (wantLinks && docLinkHtml.length ? `<ul style="margin:8px 0">${docLinkHtml.join("")}</ul>` : "") +
+      (wantAttach && attachedNames.length ? `<p style="margin:8px 0;color:#334155">📎 Attached: ${attachedNames.map(esc).join(", ")}</p>` : "") +
       (recipe?.special_instructions ? `<p style="margin:8px 0;color:#334155">${esc(recipe.special_instructions)}</p>` : "") +
       (notes ? `<p style="margin:8px 0"><strong>Notes:</strong> ${esc(notes)}</p>` : "") +
       (bizSummary ? `<div style="margin-top:12px;padding-top:8px;border-top:1px solid #e2e8f0"><strong style="color:#334155">Deal Overview</strong><p style="margin:4px 0;color:#334155;white-space:pre-wrap">${esc(bizSummary)}</p></div>` : "") +
@@ -631,12 +662,9 @@ Deno.serve(async (req) => {
 
     const sentPayload: Record<string, unknown> = {
       method, to, cc, subject, body: bodyText,
-      docLinks: docLinkLines, attachSlugs, attachment_mode: recipe?.attachment_mode ?? "links",
+      docLinks: docLinkLines, attachSlugs, attachment_mode: mode,
+      attachedFiles: attachedNames, attachedCount: attachmentUrls.length,
       docsWarning, usedRecipe: !!recipe, renderedAt: nowIso,
-      // links mode only in this phase; note if a recipe asked for real attachments.
-      note: (recipe?.attachment_mode && recipe.attachment_mode !== "links")
-        ? "attachment_mode requested files but engine sent secure links (Phase 6 pending)"
-        : undefined,
     };
 
     // ---- PORTAL branch ----
@@ -675,6 +703,7 @@ Deno.serve(async (req) => {
         const sr = await sendEmailToContact(cfg, funderContactId, subject, bodyHtml, {
           text: bodyText,
           emailCc: Array.from(new Set([...(recipe?.cc_emails ?? []), ...ALWAYS_CC])),
+          attachments: attachmentUrls.length ? attachmentUrls : undefined,
         });
         emailSent = sr.ok;
         if (!sr.ok) emailError = `GHL send failed: ${sr.error}`;
