@@ -71,7 +71,7 @@ export async function resolveConfig(db: SupabaseClient, task?: string): Promise<
   return { provider, model };
 }
 
-async function getKey(db: SupabaseClient, provider: string): Promise<string> {
+export async function getKey(db: SupabaseClient, provider: string): Promise<string> {
   const { data, error } = await db
     .from("llm_provider_keys")
     .select("api_key")
@@ -185,6 +185,54 @@ async function callOpenAICompatible(
 }
 
 // ---- Public entry point -----------------------------------------------------
+
+// ---- Anthropic content-block call (native PDF / image document blocks) -------
+//
+// callLLM only accepts a plain text prompt. The underwriter's extraction pass
+// needs to send bank-statement PDFs as native document blocks (the model reads
+// the PDF directly). This helper talks straight to Anthropic with an explicit
+// model + arbitrary content blocks, loading the anthropic key via the same
+// service-role path as callLLM. jsonMode strips ```json fences from the reply.
+//
+// It intentionally forces provider "anthropic" — PDF document blocks are an
+// Anthropic-native feature and the underwriter is spec'd on Claude models.
+// deno-lint-ignore no-explicit-any
+export type AnthropicContentBlock = Record<string, any>;
+
+export async function callAnthropicBlocks(
+  db: SupabaseClient,
+  model: string,
+  content: AnthropicContentBlock[],
+  opts: { system?: string; maxTokens?: number; temperature?: number; jsonMode?: boolean } = {},
+): Promise<string> {
+  const key = await getKey(db, "anthropic");
+  const body: Record<string, unknown> = {
+    model,
+    max_tokens: opts.maxTokens ?? 4096,
+    messages: [{ role: "user", content }],
+  };
+  if (opts.system) body.system = opts.system;
+  if (opts.temperature != null) body.temperature = opts.temperature;
+
+  const res = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${bodyPrefix(text)}`);
+  const jsonRes = JSON.parse(text) as { content?: Array<{ type?: string; text?: string }> };
+  const out = (jsonRes.content ?? [])
+    .filter((b) => b?.type === "text")
+    .map((b) => b?.text ?? "")
+    .join("")
+    .trim();
+  return opts.jsonMode ? stripFences(out) : out;
+}
 
 export async function callLLM(db: SupabaseClient, opts: CallLLMOptions): Promise<string> {
   const { provider, model } = await resolveConfig(db, opts.task);

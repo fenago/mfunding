@@ -675,8 +675,10 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
   // customer's Documents. Best-effort — never let it break the contact upsert.
   if (custId && ghlId) {
     try {
-      const n = await syncFormUploads(db, custId, ghlId);
-      if (n > 0) await logEvent(db, evt, String(evt.type), "form_uploads_synced", `${n} file(s)`);
+      const { synced, bankStatementsAdded } = await syncFormUploads(db, custId, ghlId);
+      if (synced > 0) await logEvent(db, evt, String(evt.type), "form_uploads_synced", `${synced} file(s)`);
+      // New bank statements → re-run the AI underwriter (auto, deduped by docs_hash).
+      if (bankStatementsAdded > 0) await triggerUnderwriting(custId);
     } catch (e) {
       await logEvent(db, evt, String(evt.type), "form_upload_sync_error", e instanceof Error ? e.message : String(e));
     }
@@ -688,7 +690,11 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
 // { originalname }, url } }). Only emailed attachments were being auto-filed, so
 // form uploads (bank statements, ID) silently never reached the app. Idempotent
 // via customer_documents.external_ref = the GHL doc id. Returns files synced.
-async function syncFormUploads(db: DB, customerId: string, ghlContactId: string): Promise<number> {
+async function syncFormUploads(
+  db: DB,
+  customerId: string,
+  ghlContactId: string,
+): Promise<{ synced: number; bankStatementsAdded: number }> {
   const cfg = await getGhlConfig(db);
   const res = await ghlFetch<{ contact?: { customFields?: Array<{ id: string; value: unknown }> } }>(
     cfg, "GET", `/contacts/${ghlContactId}`,
@@ -717,13 +723,14 @@ async function syncFormUploads(db: DB, customerId: string, ghlContactId: string)
       if (url.startsWith("http")) files.push({ ref, name, url, hint });
     }
   }
-  if (!files.length) return 0;
+  if (!files.length) return { synced: 0, bankStatementsAdded: 0 };
 
   const { data: existingDocs } = await db.from("customer_documents")
     .select("external_ref").eq("customer_id", customerId).not("external_ref", "is", null);
   const have = new Set((existingDocs ?? []).map((r: { external_ref: string }) => r.external_ref));
 
   let synced = 0;
+  let bankStatementsAdded = 0;
   for (const file of files.slice(0, 25)) {
     if (have.has(file.ref)) continue;
     try {
@@ -733,13 +740,14 @@ async function syncFormUploads(db: DB, customerId: string, ghlContactId: string)
       const bytes = new Uint8Array(await bin.arrayBuffer());
       if (!bytes.length) continue;
       const ct = contentTypeFor(file.name);
+      const docType = docTypeFor(`${file.hint} ${file.name}`);
       const slug = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "upload";
       const path = `customer/${customerId}/${Date.now()}-${slug}`;
       const up = await db.storage.from("customer-documents").upload(path, bytes, { contentType: ct, upsert: false });
       if (up.error) continue;
       await db.from("customer_documents").insert({
         customer_id: customerId,
-        document_type: docTypeFor(`${file.hint} ${file.name}`),
+        document_type: docType,
         filename: file.name,
         storage_path: path,
         file_size: bytes.length,
@@ -749,9 +757,37 @@ async function syncFormUploads(db: DB, customerId: string, ghlContactId: string)
         description: "Auto-synced from GHL intake-form upload.",
       });
       synced++;
+      if (docType === "bank_statement") bankStatementsAdded++;
     } catch (_e) { /* skip this file, keep going */ }
   }
-  return synced;
+  return { synced, bankStatementsAdded };
+}
+
+// Fire-and-forget: re-run the AI underwriter for a deal when new bank statements
+// arrive (auto mode; deduped server-side by docs_hash). Best-effort — never breaks
+// the webhook. Invoked with the service-role key so underwrite-deal treats it as a
+// trusted server call.
+async function triggerUnderwriting(customerId: string): Promise<void> {
+  try {
+    const url = Deno.env.get("SUPABASE_URL");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!url || !serviceKey) return;
+    const db = serviceClient();
+    // The merchant's most recently updated active deal is the one collecting docs.
+    const { data: deal } = await db
+      .from("deals")
+      .select("id")
+      .eq("customer_id", customerId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!deal?.id) return;
+    await fetch(`${url}/functions/v1/underwrite-deal`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${serviceKey}` },
+      body: JSON.stringify({ dealId: deal.id, mode: "auto" }),
+    });
+  } catch { /* best-effort — underwriting must never break the webhook */ }
 }
 
 function contentTypeFor(name: string): string {
