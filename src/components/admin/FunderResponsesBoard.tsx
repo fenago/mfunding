@@ -26,6 +26,7 @@ import {
   ExclamationCircleIcon,
   ChevronDownIcon,
   UserPlusIcon,
+  PencilSquareIcon,
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
@@ -201,6 +202,10 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [offerError, setOfferError] = useState<string | null>(null);
   const [declineFor, setDeclineFor] = useState<string | null>(null);
   const [declineReason, setDeclineReason] = useState("");
+  // Free-form note per funder card (e.g. "texted Curt 7:21a re: LCF decline").
+  const [noteFor, setNoteFor] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
   const [courtesyMsg, setCourtesyMsg] = useState<Record<string, string>>({});
 
   // Message modal — reused for both the merchant (send-merchant-email) and a
@@ -220,7 +225,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   // is the fixed submission contact, resolved server-side, so it has no menu.)
   const [contactMenuFor, setContactMenuFor] = useState<"cc" | "bcc" | null>(null);
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent"; openedAt: string | null }[]>([]);
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note"; openedAt: string | null }[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
@@ -504,7 +509,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .from("activity_log")
       .select("created_at, subject, content")
       .eq("entity_type", "deal").eq("entity_id", deal.id)
-      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%")
+      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%,subject.like.funder:note%")
       .order("created_at", { ascending: false }).limit(20);
     const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
@@ -517,19 +522,21 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
       if (m) { re = m[1] === "merchant" ? null : m[1]; snippet = snippet.slice(m[0].length); }
       const rawSubject = String(r.subject ?? "");
-      const kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" =
-        rawSubject.startsWith("funder:email") ? "funder"
+      const kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note" =
+        rawSubject.startsWith("funder:note") ? "note"
+        : rawSubject.startsWith("funder:email") ? "funder"
         : rawSubject.startsWith("merchant:reply") ? "reply"
         : rawSubject.startsWith("ghl:funder-reply") ? "funder_reply"
         : rawSubject.startsWith("funder:sent") ? "sent"
         : "merchant";
-      if (kind === "funder_reply" || kind === "sent") re = rawSubject.split("— ")[1]?.trim() || null;
+      if (kind === "funder_reply" || kind === "sent" || kind === "note") re = rawSubject.split("— ")[1]?.trim() || null;
       const resent = kind === "sent" && /re-?sent|re-?submitted/i.test(snippet);
       return {
         at: r.created_at as string,
         subject: kind === "reply" ? "Merchant replied"
           : kind === "funder_reply" ? "Funder replied"
           : kind === "sent" ? (resent ? "Re-sent to funder" : "Submitted to funder")
+          : kind === "note" ? "Note"
           : rawSubject.replace(/^(merchant|funder):email — /, ""),
         snippet, re, kind, openedAt,
       };
@@ -599,6 +606,22 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       new_status: newStatus ?? null,
       logged_by: session?.user?.id ?? null,
     }));
+  }
+
+  // Save a free-form note tied to THIS funder card. The `funder:note — <name>`
+  // subject marker is what makes it surface on the right funder's timeline.
+  async function saveNote(s: SubRow) {
+    const text = noteText.trim();
+    if (!text) { setNoteFor(null); return; }
+    setNoteBusy(true);
+    try {
+      await logActivity("note", `funder:note — ${s.lenderName}`, text);
+      setNoteFor(null);
+      setNoteText("");
+      await loadSentLog();
+    } finally {
+      setNoteBusy(false);
+    }
   }
 
   function openOfferForm(s: SubRow) {
@@ -983,6 +1006,26 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     <button type="button" onClick={() => openFunderMessage(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 inline-flex items-center gap-1">
                       <BuildingOffice2Icon className="w-3.5 h-3.5" /> Message funder
                     </button>
+                    {/* Add a free-form note tied to THIS funder (e.g. "texted Curt 7:21a") */}
+                    <button type="button" onClick={() => { setNoteFor(s.id); setNoteText(""); setDeclineFor(null); setOfferFormFor(null); }} className="text-[10px] font-semibold px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 inline-flex items-center gap-1">
+                      <PencilSquareIcon className="w-3.5 h-3.5" /> Add note
+                    </button>
+                  </div>
+                )}
+                {noteFor === s.id && (
+                  <div className="mt-1.5 space-y-1.5">
+                    <textarea
+                      autoFocus
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                      rows={3}
+                      placeholder={`Note for ${s.lenderName} — e.g. "Texted Curt 7:21a: Reliant declined, confirming LCF also declined."`}
+                      className="w-full text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-gray-900 dark:text-white"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button type="button" disabled={noteBusy} onClick={() => saveNote(s)} className="text-[10px] font-semibold px-2 py-1 rounded bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50">{noteBusy ? "Saving…" : "Save note"}</button>
+                      <button type="button" onClick={() => { setNoteFor(null); setNoteText(""); }} className="text-[10px] text-gray-500 hover:text-gray-700">Cancel</button>
+                    </div>
                   </div>
                 )}
                 {sentLog.filter((m) => m.re === s.lenderName).length > 0 && (
@@ -993,21 +1036,24 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                       const isReply = m.kind === "reply";
                       const isFunderReply = m.kind === "funder_reply";
                       const isSent = m.kind === "sent";
+                      const isNote = m.kind === "note";
                       const isResend = isSent && /re-?sent|re-?submitted/i.test(m.subject);
                       return (
-                        <li key={i} className={`text-[10.5px] cursor-pointer ${isReply ? "text-emerald-700 dark:text-emerald-300 font-medium pl-2" : isFunderReply ? "text-rose-700 dark:text-rose-300 font-medium pl-2" : isSent ? "text-blue-700 dark:text-blue-300 font-medium" : "text-gray-500 dark:text-gray-400"}`} onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
+                        <li key={i} className={`text-[10.5px] cursor-pointer ${isReply ? "text-emerald-700 dark:text-emerald-300 font-medium pl-2" : isFunderReply ? "text-rose-700 dark:text-rose-300 font-medium pl-2" : isSent ? "text-blue-700 dark:text-blue-300 font-medium" : isNote ? "text-amber-700 dark:text-amber-300" : "text-gray-500 dark:text-gray-400"}`} onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
                           {isReply
                             ? <span className="mr-0.5">↩</span>
                             : isFunderReply
                               ? <span className="mr-0.5">⬅</span>
                               : isSent
                                 ? <span className="mr-0.5">{isResend ? "↻" : "📤"}</span>
+                              : isNote
+                                ? <PencilSquareIcon className="w-3 h-3 inline mr-0.5 text-amber-500" />
                               : isFunder
                                 ? <BuildingOffice2Icon className="w-3 h-3 inline mr-0.5 text-indigo-500" />
                                 : <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />}
-                          {isReply ? "Merchant REPLIED" : isFunderReply ? "Funder REPLIED" : isSent ? (isResend ? "RE-SENT to funder" : "Submitted to funder") : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : isFunderReply ? "text-rose-500" : isSent ? "text-blue-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                          {isReply ? "Merchant REPLIED" : isFunderReply ? "Funder REPLIED" : isSent ? (isResend ? "RE-SENT to funder" : "Submitted to funder") : isNote ? "Note" : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : isFunderReply ? "text-rose-500" : isSent ? "text-blue-500" : isNote ? "text-amber-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {isFunder && <span className="ml-1 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 px-1 py-px text-[9px] font-semibold">to funder</span>}
-                          {" · "}<span className={isReply ? "" : "font-medium text-gray-700 dark:text-gray-200"}>{isReply ? (m.snippet.split(":")[0] || m.subject) : m.subject}</span>
+                          {isNote ? (<>{" · "}<span className="text-gray-700 dark:text-gray-200 whitespace-pre-wrap">{m.snippet}</span></>) : (<>{" · "}<span className={isReply ? "" : "font-medium text-gray-700 dark:text-gray-200"}>{isReply ? (m.snippet.split(":")[0] || m.subject) : m.subject}</span></>)}
                           <OpenedChip at={m.openedAt} />
                           {expandedMsg === key && (
                             <span className="block mt-1 whitespace-pre-wrap text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded p-1.5">{m.snippet}</span>
