@@ -29,6 +29,7 @@ import InteractionTimeline from "../../../components/shared/InteractionTimeline"
 import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
 import BankAnalysisCard from "../../../components/shared/BankAnalysisCard";
 import UnderwritingCard from "../../../components/shared/UnderwritingCard";
+import AIUnderwritingPanel from "../../../components/shared/AIUnderwritingPanel";
 import OfferComparison from "../../../components/shared/OfferComparison";
 import PipelineFlow from "../../../components/shared/PipelineFlow";
 import QualificationPanel from "../../../components/admin/QualificationPanel";
@@ -49,7 +50,7 @@ export default function DealDetailPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [submissions, setSubmissions] = useState<DealSubmissionWithLender[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "submissions" | "documents" | "activity" | "notes">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "underwriting" | "submissions" | "documents" | "activity" | "notes">("overview");
   const [matchingLenders, setMatchingLenders] = useState<{ id: string; company_name: string; score: number; reasons: string[] }[]>([]);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [submittingLenderId, setSubmittingLenderId] = useState<string | null>(null);
@@ -225,6 +226,7 @@ export default function DealDetailPage() {
 
   const tabs = [
     { id: "overview", label: "Overview" },
+    { id: "underwriting", label: "Underwriting" },
     { id: "submissions", label: `Submissions (${submissions.length})` },
     { id: "documents", label: `Documents (${documents.length})` },
     { id: "activity", label: `Activity (${activities.length})` },
@@ -578,6 +580,9 @@ export default function DealDetailPage() {
           )}
         </div>
       )}
+
+      {/* Tab: Underwriting (AI internal underwriter) */}
+      {activeTab === "underwriting" && <AIUnderwritingPanel dealId={deal.id} />}
 
       {/* Tab: Submissions */}
       {activeTab === "submissions" && (

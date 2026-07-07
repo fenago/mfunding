@@ -3,6 +3,7 @@ import { DocumentArrowUpIcon, XMarkIcon, CheckCircleIcon, ExclamationCircleIcon 
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
+import { autoUnderwriteForCustomer } from "../../services/aiUnderwritingService";
 
 interface DocumentUploaderProps {
   entityType: "lender" | "customer" | "company" | "vendor";
@@ -176,6 +177,13 @@ export default function DocumentUploader({
       setSelectedFiles((prev) =>
         prev.map((f) => (f.id === id ? { ...f, status: "success" as const } : f))
       );
+
+      // Auto-run the AI underwriter when a bank statement lands (fire-and-forget;
+      // resolves the customer's deal server-side). The GHL-side auto-run already
+      // covers statements that arrive through GHL.
+      if (entityType === "customer" && documentType === "bank_statement") {
+        autoUnderwriteForCustomer(entityId);
+      }
 
       onUploadComplete({
         id: data.id,

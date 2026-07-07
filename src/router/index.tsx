@@ -109,6 +109,7 @@ const ReferralPartnersPage = lazyWithReload(() => import("../pages/admin/Referra
 const SyncLogPage = lazyWithReload(() => import("../pages/admin/SyncLogPage.tsx"));
 const FunderContactsPage = lazyWithReload(() => import("../pages/admin/FunderContactsPage.tsx"));
 const PlatformConfigPage = lazyWithReload(() => import("../pages/admin/PlatformConfigPage.tsx"));
+const UnderwritingSettingsPage = lazyWithReload(() => import("../pages/admin/UnderwritingSettingsPage.tsx"));
 const UsersPage = lazyWithReload(() => import("../pages/admin/UsersPage.tsx"));
 const SequencesPage = lazyWithReload(() => import("../pages/admin/SequencesPage.tsx"));
 const ResourcesAdminPage = lazyWithReload(() => import("../pages/admin/ResourcesAdminPage.tsx"));
@@ -635,6 +636,12 @@ export const routes: RouteObject[] = [
                 path: "platform-config",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <PlatformConfigPage /> }],
+              },
+              // AI underwriter tuning knobs (super_admin only)
+              {
+                path: "underwriting-settings",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <UnderwritingSettingsPage /> }],
               },
               // Settings (super_admin only)
               {
