@@ -26,7 +26,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
-  corsHeaders, serviceClient, getGhlConfig, ghlFetch, type GhlConfig,
+  corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact, type GhlConfig,
 } from "../_shared/ghl.ts";
 import { callLLM } from "../_shared/llm.ts";
 
@@ -43,6 +43,8 @@ const OWN_SUBSTR = ["mfunding.net", "send.mfunding.net", "mfunding.com", "socrat
 // Our own phone numbers (10 digits) — a calendar invite / booking email prints
 // these in its body; they must never be captured as a funder's phone.
 const OWN_PHONE_DIGITS = new Set(["9547375692"]);
+// Toll-free area codes — a shared/marketing line, never a funder's direct POC.
+const TOLLFREE_NPA = new Set(["800", "888", "877", "866", "855", "844", "833"]);
 // E-sign / system / calendar senders — automated, no human POC to save.
 const SYSTEM_SUBSTR = [
   "boldsign", "pandadoc", "signnow", "docusign", "hellosign", "dropboxsign",
@@ -406,6 +408,172 @@ async function backfillPhones(db: SupabaseClient, cfg: GhlConfig): Promise<Backf
   };
 }
 
+// ── PHONE → FUNDER MATCH ─────────────────────────────────────────────────────
+// The email path ties funder REPLIES to a lender by sender DOMAIN. This path does
+// the same for inbound CALLS + TEXTS, but by PHONE NUMBER: funder-contact phones
+// are already on file (lenders.primary_contact_phone + contacts[].phone/text_phone),
+// so an inbound call/SMS whose caller number matches one of them is FROM that funder.
+
+// A phone as its bare 10 US digits (drops a leading country-code 1). Null if it's
+// not a plausible US number — same rule as normalizePhone but returns the key.
+function phoneDigits(raw: string | null | undefined): string | null {
+  const p = normalizePhone(raw);
+  return p ? p.replace(/\D/g, "") : null;
+}
+const isTollFree = (digits: string): boolean => TOLLFREE_NPA.has(digits.slice(0, 3));
+
+// Build phone(10 digits) → lender. First lender wins on a shared DIRECT line
+// (reported as a conflict). A shared TOLL-FREE line is tied to NOBODY — it is
+// removed and poisoned so no later lender can claim it either; a toll-free unique
+// to a single lender is kept. Every collision is reported.
+function buildPhoneMap(lenders: LenderRow[]): { map: Map<string, LenderRow>; conflicts: string[] } {
+  const map = new Map<string, LenderRow>();
+  const poisoned = new Set<string>(); // shared toll-free — never map to anyone
+  const conflicts: string[] = [];
+  for (const l of lenders) {
+    const digits = new Set<string>();
+    const add = (raw: unknown) => { const d = phoneDigits(raw as string); if (d) digits.add(d); };
+    add(l.primary_contact_phone);
+    for (const c of contactsArray(l.contacts)) { add(c.phone); add(c.text_phone); }
+    for (const d of digits) {
+      if (poisoned.has(d)) continue;
+      const existing = map.get(d);
+      if (existing && existing.id !== l.id) {
+        conflicts.push(`${d}: ${existing.company_name} vs ${l.company_name}`);
+        // A shared toll-free is ambiguous marketing — tie it to no one.
+        if (isTollFree(d)) { map.delete(d); poisoned.add(d); }
+        continue; // first-wins for a shared direct line
+      }
+      if (!existing) map.set(d, l);
+    }
+  }
+  return { map, conflicts };
+}
+
+interface PhoneMatchResult {
+  scanned: number;
+  phone_matches: number;
+  linked: number;
+  conflicts: string[];
+  samples: Array<{ lender: string; phone: string; contactName: string }>;
+}
+
+async function matchPhones(db: SupabaseClient, cfg: GhlConfig): Promise<PhoneMatchResult> {
+  const { data: lenders } = await db.from("lenders")
+    .select("id, company_name, website, submission_email, primary_contact_email, primary_contact_name, primary_contact_phone, ghl_contact_id, contacts");
+  const rows = (lenders ?? []) as LenderRow[];
+  const { map, conflicts } = buildPhoneMap(rows);
+
+  // GHL contacts already tied to a funder (lender.ghl_contact_id or a saved
+  // contacts[].ghl_contact_id) — never re-touch, so re-runs are idempotent.
+  const linkedContactIds = new Set<string>();
+  for (const l of rows) {
+    if (l.ghl_contact_id) linkedContactIds.add(l.ghl_contact_id);
+    for (const c of contactsArray(l.contacts)) {
+      const id = String(c.ghl_contact_id ?? "").trim();
+      if (id) linkedContactIds.add(id);
+    }
+  }
+
+  // Merchant phones — a call/text from a merchant is never a funder POC.
+  const merchantDigits = new Set<string>();
+  const { data: custs } = await db.from("customers").select("phone");
+  for (const c of (custs ?? []) as Array<{ phone: string | null }>) {
+    const d = phoneDigits(c.phone);
+    if (d) merchantDigits.add(d);
+  }
+
+  // Our own numbers (never a funder): the static blocklist + the location's own
+  // line (an outbound call we placed can surface as its own conversation).
+  const ownDigits = new Set(OWN_PHONE_DIGITS);
+  try {
+    const loc = await ghlFetch<{ location?: Record<string, unknown> } & Record<string, unknown>>(
+      cfg, "GET", `/locations/${cfg.locationId}`,
+    );
+    const lp = ((loc.data?.location as Record<string, unknown> | undefined)?.phone ?? loc.data?.phone) as string | undefined;
+    const d = phoneDigits(lp);
+    if (d) ownDigits.add(d);
+  } catch { /* best-effort */ }
+
+  const convRes = await ghlFetch<{ conversations?: Array<Record<string, unknown>> }>(
+    cfg, "GET", `/conversations/search?locationId=${cfg.locationId}&limit=100&sortBy=last_message_date`,
+  );
+  const conversations = convRes.data?.conversations ?? [];
+
+  let phoneMatches = 0, linked = 0;
+  const samples: Array<{ lender: string; phone: string; contactName: string }> = [];
+  const seen = new Set<string>(); // one pass per contact per run
+
+  for (const c of conversations) {
+    const contactId = String(c.contactId ?? "");
+    if (!contactId || seen.has(contactId)) continue;
+
+    // The caller phone — prefer the conversation's, else the contact record.
+    let phoneRaw = String(c.phone ?? "").trim();
+    if (!phoneRaw) {
+      const cr = await getContact(cfg, contactId);
+      phoneRaw = String((cr.data?.contact as Record<string, unknown> | undefined)?.phone ?? "").trim();
+    }
+    const digits = phoneDigits(phoneRaw);
+    if (!digits) continue;
+    if (ownDigits.has(digits) || merchantDigits.has(digits)) continue;
+
+    const lender = map.get(digits);
+    if (!lender) continue; // not a known funder phone — the primary noise filter
+
+    seen.add(contactId);
+    if (linkedContactIds.has(contactId)) continue; // already tied to a funder
+    phoneMatches++;
+
+    const contactName = String(c.fullName ?? c.contactName ?? "").trim();
+    const contactEmail = String(c.email ?? "").trim().toLowerCase();
+    const formatted = normalizePhone(digits)!; // digits already validated → non-null
+    const arr = contactsArray(lender.contacts);
+
+    // Append a funder contact (dedupe by phone/email).
+    let appended = false;
+    if (!hasContact(lender, contactEmail, formatted)) {
+      arr.push({
+        name: contactName || lender.company_name,
+        email: contactEmail || null,
+        phone: formatted,
+        source: "phone_match",
+        ghl_contact_id: contactId,
+        added_at: new Date().toISOString(),
+      });
+      lender.contacts = arr; // keep in-memory row fresh for a later match on the same lender
+      appended = true;
+    }
+
+    // Link the lender to this GHL contact if not linked yet — closes the loop so
+    // ghl-webhook auto-associates every future reply/text from this contact.
+    let linkedNow = false;
+    const patch: Record<string, unknown> = {};
+    if (appended) patch.contacts = lender.contacts;
+    if (!lender.ghl_contact_id) { patch.ghl_contact_id = contactId; lender.ghl_contact_id = contactId; linkedNow = true; }
+
+    if (!appended && !linkedNow) continue; // nothing new to persist
+
+    const { error } = await db.from("lenders").update(patch).eq("id", lender.id);
+    if (error) continue;
+    linkedContactIds.add(contactId);
+    linked++;
+    if (samples.length < 12) samples.push({ lender: lender.company_name, phone: formatted, contactName: contactName || lender.company_name });
+
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "lender", entity_id: lender.id, interaction_type: "note",
+        subject: "funder-reply-reconcile",
+        content: `Tied inbound call/text from ${formatted}` +
+          (contactName ? ` (${contactName})` : "") +
+          `${appended ? " · contact saved" : ""}${linkedNow ? " · GHL contact linked" : ""} [ghl:${contactId}]`,
+      });
+    } catch { /* audit is best-effort */ }
+  }
+
+  return { scanned: conversations.length, phone_matches: phoneMatches, linked, conflicts, samples };
+}
+
 // ── SCAN ─────────────────────────────────────────────────────────────────────
 async function scan(db: SupabaseClient, cfg: GhlConfig): Promise<{ proposals: Proposal[]; conflicts: string[]; scanned: number }> {
   const { data: lenders } = await db.from("lenders")
@@ -568,6 +736,11 @@ Deno.serve(async (req) => {
       return json({ ok: true, action: "backfill-phones", ...r });
     }
 
+    if (action === "match-phones") {
+      const r = await matchPhones(db, cfg);
+      return json({ ok: true, action: "match-phones", ...r });
+    }
+
     if (action === "apply") {
       const approved = Array.isArray(payload.approved) ? (payload.approved as ApproveItem[]) : [];
       const results: ApplyResult[] = [];
@@ -591,10 +764,16 @@ Deno.serve(async (req) => {
         }));
       }
       const pendingReview = r.proposals.filter((p) => !p.extracted.name && !p.alreadyLinked).length;
+      // Also tie inbound calls/texts to funders by phone number (see matchPhones).
+      const ph = await matchPhones(db, cfg);
       return json({
         ok: true, action: "cron", scanned: r.scanned, proposals: r.proposals.length,
         auto_applied: results.filter((x) => x.ok).length,
         pending_review: pendingReview, conflicts: r.conflicts, results,
+        phone_match: {
+          scanned: ph.scanned, phone_matches: ph.phone_matches, linked: ph.linked,
+          conflicts: ph.conflicts, samples: ph.samples,
+        },
       });
     }
 
