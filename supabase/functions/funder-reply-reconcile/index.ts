@@ -40,6 +40,9 @@ function json(body: unknown, status = 200) {
 // ── Noise: senders that are never a funder point-of-contact ──────────────────
 // Our own sending identities (a CC copy of our submission can loop back).
 const OWN_SUBSTR = ["mfunding.net", "send.mfunding.net", "mfunding.com", "socrates73@gmail.com"];
+// Our own phone numbers (10 digits) — a calendar invite / booking email prints
+// these in its body; they must never be captured as a funder's phone.
+const OWN_PHONE_DIGITS = new Set(["9547375692"]);
 // E-sign / system / calendar senders — automated, no human POC to save.
 const SYSTEM_SUBSTR = [
   "boldsign", "pandadoc", "signnow", "docusign", "hellosign", "dropboxsign",
@@ -207,6 +210,202 @@ async function extractSignature(db: SupabaseClient, body: string): Promise<Extra
   }
 }
 
+// ── PHONE BACKFILL ───────────────────────────────────────────────────────────
+// The AI signature extractor under-performed on phones — most saved contacts got
+// name+email but no phone. A signature phone is far more reliable via a plain
+// US-phone REGEX, so backfill runs that over the freshest inbound email body and
+// writes the number back into the contact (LLM is only a last-ditch fallback).
+
+// Normalize any written form → "(305) 851-0900". Returns null if not a plausible
+// 10-digit US number (drops a leading country-code 1).
+function normalizePhone(raw: string | null | undefined): string | null {
+  let d = String(raw ?? "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+  if (d.length !== 10) return null;
+  if (d[0] === "0" || d[0] === "1") return null; // invalid US area code
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}
+
+// Matches (305) 851-0900 · 305-851-0900 · 305.851.0900 · +1 305 851 0900 ·
+// 3058510900 · 305 851 0900. Digit look-arounds keep it from biting into a
+// longer number (EIN, account #, a fax printed as one run of digits).
+const PHONE_RE =
+  /(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.\-]?)\d{3}[\s.\-]?\d{4}(?!\d)/g;
+// A phone we want (as opposed to a fax) is often on a labeled line.
+const LABEL_RE = /\b(phone|direct|office|cell|mobile|telephone|tel|call|ph|mob)\b|(?:^|\s)[pomct]\s*[:.\-]/i;
+const FAX_RE = /\bfax\b|(?:^|\s)f\s*[:.\-]/i;
+
+// Regex-extract the sender's phone from the SIGNATURE of an email body. Prefers
+// a labeled (phone/direct/cell) non-fax number, and the one nearest the person's
+// name when several appear. Returns a normalized string or null.
+function extractSignaturePhone(rawBody: string, personName?: string | null): string | null {
+  const text = toText(rawBody);
+  if (!text) return null;
+  // Drop the quoted original — the signature we want is our correspondent's.
+  let sig = text;
+  const q = sig.search(/\bOn\s.{4,80}\swrote:/);
+  if (q > 0) sig = sig.slice(0, q).trim();
+  const lines = sig.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  const tail = lines.slice(-18); // the signature block lives at the end
+
+  const firstName = personName ? personName.toLowerCase().split(/\s+/)[0] : "";
+  const nameIdx = firstName
+    ? tail.findIndex((l) => firstName.length > 1 && l.toLowerCase().includes(firstName))
+    : -1;
+
+  interface Cand { phone: string; labeled: boolean; fax: boolean; idx: number }
+  const cands: Cand[] = [];
+  tail.forEach((line, idx) => {
+    // A line that carries our own identity (e.g. a booking line "…
+    // sales@send.mfunding.net 9547375692") holds OUR number, not the funder's.
+    if (OWN_SUBSTR.some((s) => line.toLowerCase().includes(s))) return;
+    const matches = line.match(PHONE_RE);
+    if (!matches) return;
+    const labeled = LABEL_RE.test(line);
+    const fax = FAX_RE.test(line);
+    for (const m of matches) {
+      const norm = normalizePhone(m);
+      if (!norm) continue;
+      if (OWN_PHONE_DIGITS.has(norm.replace(/\D/g, ""))) continue; // never our own line
+      cands.push({ phone: norm, labeled, fax, idx });
+    }
+  });
+  // Never return a fax when a real phone is present; if only fax exists, decline.
+  const pool = cands.filter((c) => !c.fax);
+  if (!pool.length) return null;
+
+  const score = (c: Cand) => {
+    let s = c.labeled ? 10 : 0;
+    s += nameIdx >= 0 ? Math.max(0, 8 - Math.abs(c.idx - nameIdx)) : c.idx; // near name, else deeper
+    return s;
+  };
+  pool.sort((a, b) => score(b) - score(a));
+  return pool[0].phone;
+}
+
+// Inbound email bodies for a GHL contact, best candidate first. Unlike the
+// shared latestInboundBody (used by scan), this does NOT trust the CONVERSATION
+// message-level `direction` — on these funder threads it is often null and the
+// real direction lives on the resolved email record. We therefore resolve every
+// email record, keep the inbound ones, drop calendar/automated senders, and rank
+// funder-domain senders (then most-recent) first so a signature phone surfaces.
+async function inboundFunderBodies(cfg: GhlConfig, contactId: string, contactEmail: string): Promise<string[]> {
+  const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
+    cfg, "GET", `/conversations/search?locationId=${cfg.locationId}&contactId=${contactId}`,
+  );
+  const cid = conv.data?.conversations?.[0]?.id;
+  if (!cid) return [];
+
+  const msgs = await ghlFetch<{ messages?: { messages?: Array<Record<string, unknown>> } }>(
+    cfg, "GET", `/conversations/${cid}/messages?limit=25`,
+  );
+  const list = msgs.data?.messages?.messages ?? [];
+  const emailIds: string[] = [];
+  for (const m of list) {
+    if (!/email/i.test(String(m.messageType ?? ""))) continue;
+    const ids = (m.meta as { email?: { messageIds?: string[] } } | undefined)?.email?.messageIds ?? [];
+    emailIds.push(...ids);
+  }
+
+  const domain = contactEmail.includes("@") ? contactEmail.split("@")[1].toLowerCase() : "";
+  const found: Array<{ body: string; sameDomain: boolean; date: number }> = [];
+  for (const eid of [...new Set(emailIds)]) {
+    const res = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
+      cfg, "GET", `/conversations/messages/email/${eid}`,
+    );
+    const e = (res.data?.emailMessage ?? res.data ?? {}) as Record<string, unknown>;
+    if (String(e.direction ?? "") !== "inbound") continue;
+    const from = String(e.from ?? "").toLowerCase();
+    if (/calendar\.google|no-?reply|unsubscribe|leadconnector/.test(from)) continue; // automated, no POC
+    const body = String(e.body ?? "");
+    if (!body.trim()) continue;
+    // A calendar/booking invite prints OUR number, not the funder's — skip it by
+    // content (its sender is often the funder, so the sender filter misses it).
+    if (/Powered by Google Calendar|Book another appointment|calendar\.google\.com\/calendar\/appointments|guest list for this booked appointment/i.test(body)) continue;
+    found.push({
+      body,
+      sameDomain: !!domain && from.includes(domain),
+      date: Date.parse(String(e.dateAdded ?? e.date ?? "")) || 0,
+    });
+  }
+  found.sort((a, b) => (a.sameDomain === b.sameDomain ? b.date - a.date : a.sameDomain ? -1 : 1));
+  return found.map((f) => f.body);
+}
+
+interface BackfillResult {
+  scanned_lenders: number;
+  contacts_checked: number;
+  phones_found: number;
+  phones_written: number;
+  sample: Array<{ lender: string; email: string | null; phone: string }>;
+}
+
+async function backfillPhones(db: SupabaseClient, cfg: GhlConfig): Promise<BackfillResult> {
+  const { data: lenders } = await db.from("lenders")
+    .select("id, company_name, primary_contact_email, primary_contact_phone, contacts");
+  const rows = ((lenders ?? []) as LenderRow[]).filter((l) => contactsArray(l.contacts).length > 0);
+
+  let contactsChecked = 0, phonesFound = 0, phonesWritten = 0;
+  const sample: Array<{ lender: string; email: string | null; phone: string }> = [];
+
+  for (const l of rows) {
+    const arr = contactsArray(l.contacts);
+    let lenderFound = 0;
+    let primaryPhoneToSet: string | null = null;
+    const primaryEmail = String(l.primary_contact_email ?? "").toLowerCase();
+    const primaryHasPhone = !!String(l.primary_contact_phone ?? "").trim();
+
+    for (const c of arr) {
+      const ghlId = String(c.ghl_contact_id ?? "").trim();
+      const existingPhone = String(c.phone ?? "").trim();
+      if (!ghlId) continue;
+      if (existingPhone) continue; // idempotent — never overwrite an existing phone
+      contactsChecked++;
+
+      const bodies = await inboundFunderBodies(cfg, ghlId, String(c.email ?? ""));
+      if (!bodies.length) continue;
+      const name = String(c.name ?? "") || null;
+
+      // Regex over each candidate body (funder-domain first); first hit wins.
+      let phone: string | null = null;
+      for (const body of bodies) {
+        phone = extractSignaturePhone(body, name);
+        if (phone) break;
+      }
+      // Last-ditch: the LLM extractor (same task as the reconciler) on the best body.
+      if (!phone) {
+        const ex = await extractSignature(db, bodies[0]);
+        phone = normalizePhone(ex.phone);
+      }
+      if (!phone) continue;
+      if (OWN_PHONE_DIGITS.has(phone.replace(/\D/g, ""))) continue; // never our own number
+
+      c.phone = phone; // mutate this contact only
+      phonesFound++;
+      lenderFound++;
+
+      const cEmail = String(c.email ?? "").toLowerCase();
+      if (!primaryHasPhone && primaryEmail && cEmail === primaryEmail) primaryPhoneToSet = phone;
+      sample.push({ lender: l.company_name, email: cEmail || null, phone });
+    }
+
+    if (lenderFound > 0) {
+      const patch: Record<string, unknown> = { contacts: arr };
+      if (primaryPhoneToSet) patch.primary_contact_phone = primaryPhoneToSet;
+      const { error } = await db.from("lenders").update(patch).eq("id", l.id);
+      if (!error) phonesWritten += lenderFound;
+    }
+  }
+
+  return {
+    scanned_lenders: rows.length,
+    contacts_checked: contactsChecked,
+    phones_found: phonesFound,
+    phones_written: phonesWritten,
+    sample,
+  };
+}
+
 // ── SCAN ─────────────────────────────────────────────────────────────────────
 async function scan(db: SupabaseClient, cfg: GhlConfig): Promise<{ proposals: Proposal[]; conflicts: string[]; scanned: number }> {
   const { data: lenders } = await db.from("lenders")
@@ -362,6 +561,11 @@ Deno.serve(async (req) => {
     if (action === "scan") {
       const r = await scan(db, cfg);
       return json({ ok: true, action: "scan", ...r });
+    }
+
+    if (action === "backfill-phones") {
+      const r = await backfillPhones(db, cfg);
+      return json({ ok: true, action: "backfill-phones", ...r });
     }
 
     if (action === "apply") {
