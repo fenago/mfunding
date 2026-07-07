@@ -22,6 +22,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact, upsertContact, sendEmailToContact, addContactTags,
+  listBusinesses, createBusiness, linkContactToBusiness,
 } from "../_shared/ghl.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
@@ -261,6 +262,43 @@ function phoneVariants(p: string): string[] {
   ];
 }
 
+// Best-effort: ensure the lender has a GHL Business and that the GHL contact we
+// just tied to it is linked UNDER that business (mirrors funder-reply-reconcile's
+// syncLenderContactsToGhl for the single contact). Reuse ghl_business_id, else
+// find a business whose name equals company_name, else create it; cache the id
+// back. Never throws — a failure here must not break inbound message handling.
+async function ensureContactInLenderBusiness(db: DB, lenderId: string, contactId: string) {
+  if (!lenderId || !contactId) return;
+  try {
+    const cfg = await getGhlConfig(db);
+    const { data: l } = await db.from("lenders")
+      .select("company_name, website, ghl_business_id").eq("id", lenderId).maybeSingle();
+    if (!l) return;
+    const row = l as Record<string, unknown>;
+    const companyName = String(row.company_name ?? "").trim();
+    const website = (row.website ?? null) as string | null;
+    let businessId = String(row.ghl_business_id ?? "").trim();
+    if (!businessId) {
+      const want = companyName.toLowerCase();
+      if (want) {
+        const list = await listBusinesses(cfg);
+        const found = (list.data?.businesses ?? []).find(
+          (b) => String(b.name ?? "").trim().toLowerCase() === want,
+        );
+        businessId = found?.id ?? "";
+        if (!businessId) {
+          const created = await createBusiness(cfg, { name: companyName, website });
+          businessId = created.data?.business?.id ?? "";
+        }
+      }
+      if (businessId) await db.from("lenders").update({ ghl_business_id: businessId }).eq("id", lenderId);
+    }
+    if (!businessId) return;
+    if (companyName) await ghlFetch(cfg, "PUT", `/contacts/${contactId}`, { companyName });
+    await linkContactToBusiness(cfg, contactId, businessId);
+  } catch { /* best-effort */ }
+}
+
 // Real-time reconciler hook: given an inbound sender's contactId (and, when we
 // can get it, their email), match the sender's email DOMAIN to a lender. If that
 // lender isn't linked to a GHL contact yet, LINK it (set ghl_contact_id) and
@@ -317,6 +355,8 @@ async function linkFunderByDomain(
     await db.from("lenders").update(patch).eq("id", lender.id as string);
     await log(db, "lender", lender.id as string, "ghl:funder-linked",
       { via: "inbound-domain-match", email, contactId });
+    // Also link this contact under the funder's GHL Business (best-effort).
+    await ensureContactInLenderBusiness(db, lender.id as string, contactId);
   }
   return { id: lender.id as string, company_name: lender.company_name as string };
 }
@@ -394,6 +434,8 @@ async function linkFunderByPhone(
     await db.from("lenders").update(patch).eq("id", lender.id as string);
     await log(db, "lender", lender.id as string, "ghl:funder-linked",
       { via: `inbound-phone-match:${source}`, phone, contactId });
+    // Also link this contact under the funder's GHL Business (best-effort).
+    await ensureContactInLenderBusiness(db, lender.id as string, contactId);
   }
   return { id: lender.id as string, company_name: lender.company_name as string };
 }
