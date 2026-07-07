@@ -120,7 +120,11 @@ Deno.serve(async (req) => {
   const isInboundMessage =
     type.startsWith("InboundMessage") ||
     String(cd.type ?? "").startsWith("InboundMessage") ||
-    (!type && looksLikeMessage && direction !== "outbound");
+    (!type && looksLikeMessage && direction !== "outbound") ||
+    // Channel-typed inbound SMS/Call/Voicemail from a workflow payload that sets
+    // a messageType but no InboundMessage type (guarded by direction so we never
+    // pick up outbound). handleInboundMessage decides what to do per channel.
+    (/(sms|text|call|voice)/i.test(messageType) && direction !== "outbound");
   // Email OPEN: a GHL "Email Events → Opened" workflow posts a webhook with
   // customData.type = "EmailOpened" (or a native LCEmailStats event=opened).
   const isEmailOpen =
@@ -235,6 +239,28 @@ async function handleEmailOpen(db: DB, evt: Record<string, unknown>): Promise<In
 const NON_FUNDER_DOMAIN = /(gmail|yahoo|outlook|hotmail|aol|icloud|docusign|hellosign|pandadoc|boldsign|signnow|dropboxsign|leadconnector)\./;
 const OWN_DOMAIN = /(^|\.)(mfunding\.net|send\.mfunding\.net|mfunding\.com)$/;
 
+// Our own numbers (GHL location number, etc.) — never link these to a funder.
+const OWN_PHONES = new Set(["9547375692"]);
+
+// Normalize any phone string to 10 US digits (strip non-digits, drop a leading
+// country "1"). Returns null if it isn't a plausible 10-digit US number.
+function normPhone(raw?: string | null): string | null {
+  let d = String(raw ?? "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+  return d.length === 10 ? d : null;
+}
+
+// Common stored formats for a 10-digit number, so an exact-match customers
+// lookup catches the merchant regardless of how their phone was saved.
+function phoneVariants(p: string): string[] {
+  const a = p.slice(0, 3), b = p.slice(3, 6), c = p.slice(6);
+  return [
+    p, `1${p}`, `+1${p}`, `+1 ${p}`,
+    `(${a}) ${b}-${c}`, `${a}-${b}-${c}`, `${a}.${b}.${c}`, `${a} ${b} ${c}`,
+    `+1 (${a}) ${b}-${c}`, `+1${a}${b}${c}`, `1 (${a}) ${b}-${c}`, `+1 ${a}-${b}-${c}`,
+  ];
+}
+
 // Real-time reconciler hook: given an inbound sender's contactId (and, when we
 // can get it, their email), match the sender's email DOMAIN to a lender. If that
 // lender isn't linked to a GHL contact yet, LINK it (set ghl_contact_id) and
@@ -295,6 +321,83 @@ async function linkFunderByDomain(
   return { id: lender.id as string, company_name: lender.company_name as string };
 }
 
+// Real-time reconciler hook (phone twin of linkFunderByDomain): an inbound CALL
+// or TEXT arrived from a contact we've never linked to a funder. Match the
+// caller/sender PHONE against every lender's phones (primary_contact_phone +
+// contacts[].phone + contacts[].text_phone). On a unique match, LINK the lender
+// (set ghl_contact_id) and append a phone-sourced contact — so this and every
+// future call/text from that number auto-associates. Best-effort/guarded: any
+// failure returns null and the caller falls back to its existing behavior.
+// Returns the resolved lender (linked or already-matching) or null.
+async function linkFunderByPhone(
+  db: DB, contactId: string, phoneHint: string, source: string,
+): Promise<{ id: string; company_name: string } | null> {
+  let phone = normPhone(phoneHint);
+  let name = "";
+  try {
+    if (!phone && contactId) {
+      const cfg = await getGhlConfig(db);
+      const c = await getContact(cfg, contactId);
+      const ct = (c.data?.contact ?? {}) as Record<string, unknown>;
+      phone = normPhone(String(ct.phone ?? ""));
+      name = [ct.firstName, ct.lastName].filter(Boolean).join(" ").trim();
+    }
+  } catch { /* couldn't load the contact — give up quietly */ }
+  if (!phone) return null;
+  if (OWN_PHONES.has(phone)) return null;
+
+  // Never link a number that belongs to a merchant.
+  const { data: merchant } = await db.from("customers")
+    .select("id").in("phone", phoneVariants(phone)).limit(1).maybeSingle();
+  if (merchant) return null;
+
+  // Build a phone → {lender ids} map from all lenders' phones.
+  const { data: lenders } = await db.from("lenders")
+    .select("id, company_name, ghl_contact_id, contacts, primary_contact_phone, primary_contact_name");
+  const byPhone = new Map<string, Set<string>>();
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const l of (lenders ?? []) as Array<Record<string, unknown>>) {
+    byId.set(l.id as string, l);
+    const nums: Array<string | null | undefined> = [l.primary_contact_phone as string];
+    const arr = Array.isArray(l.contacts) ? (l.contacts as Array<Record<string, unknown>>) : [];
+    for (const c of arr) { nums.push(c.phone as string); nums.push(c.text_phone as string); }
+    for (const raw of nums) {
+      const n = normPhone(raw);
+      if (!n) continue;
+      if (!byPhone.has(n)) byPhone.set(n, new Set());
+      byPhone.get(n)!.add(l.id as string);
+    }
+  }
+
+  const matches = byPhone.get(phone);
+  if (!matches || matches.size === 0) return null;
+  // Shared line (a toll-free answering service, or a duplicated number) → don't
+  // guess. A number unique to one lender is fine, even when it's toll-free.
+  if (matches.size > 1) return null;
+  const lender = byId.get([...matches][0])!;
+
+  // Mirror linkFunderByDomain: only mutate when not yet linked to a GHL contact.
+  if (!lender.ghl_contact_id && contactId) {
+    const patch: Record<string, unknown> = { ghl_contact_id: contactId };
+    const arr = Array.isArray(lender.contacts) ? (lender.contacts as Array<Record<string, unknown>>) : [];
+    const exists = arr.some((c) =>
+      normPhone(c.phone as string) === phone || normPhone(c.text_phone as string) === phone);
+    if (!exists) {
+      arr.push({
+        name: name || null, title: null, email: null, phone,
+        source: "phone_match", ghl_contact_id: contactId, added_at: new Date().toISOString(),
+      });
+      patch.contacts = arr;
+    }
+    if (!lender.primary_contact_phone) patch.primary_contact_phone = phone;
+    if (!lender.primary_contact_name && name) patch.primary_contact_name = name;
+    await db.from("lenders").update(patch).eq("id", lender.id as string);
+    await log(db, "lender", lender.id as string, "ghl:funder-linked",
+      { via: `inbound-phone-match:${source}`, phone, contactId });
+  }
+  return { id: lender.id as string, company_name: lender.company_name as string };
+}
+
 async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promise<InboundResult> {
   const cd = (evt.customData ?? {}) as Record<string, unknown>;
   const contact = (evt.contact ?? {}) as Record<string, unknown>;
@@ -307,9 +410,32 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
 
   if (!contactId) return { outcome: "ignored", detail: "inbound message without contact id", result: { handled: false } };
 
-  // Funders were emailed, so only email replies matter. Skip clearly non-email
-  // channels; still process when the type is unknown (workflow may omit it).
+  // Funders were emailed, so only email replies drive submission stamping. Skip
+  // clearly non-email channels; still process when the type is unknown (workflow
+  // may omit it). But an inbound CALL or TEXT from a funder still lets us tie
+  // that funder to this GHL contact by phone number (best-effort, guarded).
   if (messageType && !/email/i.test(messageType)) {
+    if (/sms|text|call|voice/i.test(messageType)) {
+      try {
+        // Only when this contact isn't already linked to any funder.
+        const { data: alreadyLinked } = await db.from("lenders")
+          .select("id").eq("ghl_contact_id", contactId).maybeSingle();
+        if (!alreadyLinked) {
+          const phoneHint = String(
+            evt.phone ?? contact.phone ?? cd.phone ?? cd.from ?? evt.from ??
+            evt.fromNumber ?? cd.fromNumber ?? evt.callerId ?? cd.callerId ?? "",
+          );
+          const linked = await linkFunderByPhone(db, contactId, phoneHint, messageType);
+          if (linked) {
+            return {
+              outcome: "processed",
+              detail: `inbound ${messageType} tied funder ${linked.company_name} to contact ${contactId} by phone`,
+              result: { handled: true, lender: linked.company_name, linkedBy: "phone", channel: messageType },
+            };
+          }
+        }
+      } catch { /* guarded — fall through to the ignore below */ }
+    }
     return { outcome: "ignored", detail: `inbound ${messageType} — not an email reply`, result: { handled: false } };
   }
 
