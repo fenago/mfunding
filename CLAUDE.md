@@ -33,6 +33,12 @@ For ANY GoHighLevel work in this project, always use the **`mfunding-ghl`** skil
 
 ---
 
+## ⚙️ WORKFLOW — USE SUB-AGENTS FOR MULTI-STEP WORK
+
+**Any task that has multiple steps or multiple goals must be done with sub-agents, not serially in the main thread.** For each independent unit of work (a feature build, a bug diagnosis+fix, a funder-record update from a doc, a research sweep), launch an Agent (background when the work can run unattended) with full context — the management-API `curl/8` template, relevant IDs, the edge-function deploy + git push steps, and the accurate-only rule (never fabricate; verify against the real DB/code). Coordinate and verify results as they land. This is a hard preference from the owner: throughput matters and serial grinding is disliked. See the `parallelize-with-subagents` memory.
+
+---
+
 ## INDUSTRY HIERARCHY
 
 ```
