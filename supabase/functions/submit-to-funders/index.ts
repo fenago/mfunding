@@ -172,8 +172,10 @@ Deno.serve(async (req) => {
     /** "courtesy_decline" → send a short thank-you to a funder that PASSED on
      * this file (relationship upkeep). Only ever sends on a declined submission.
      * "message_funder" → compose a free-form email to a funder with deal docs
-     * attached (e.g. reply to a stip request from the Step 7 board). */
-    action?: "courtesy_decline" | "message_funder";
+     * attached (e.g. reply to a stip request from the Step 7 board).
+     * "withdraw" → pull the file back from a funder with a courteous "no longer
+     * moving forward on this one" note (relationship-safe cancellation). */
+    action?: "courtesy_decline" | "message_funder" | "withdraw";
     subject?: string;
     body?: string;
     cc?: string[];
@@ -187,7 +189,8 @@ Deno.serve(async (req) => {
   const testMode = !!payload.test_email;
   const courtesyMode = payload.action === "courtesy_decline";
   const messageFunderMode = payload.action === "message_funder";
-  if (!courtesyMode && !messageFunderMode && lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
+  const withdrawMode = payload.action === "withdraw";
+  if (!courtesyMode && !messageFunderMode && !withdrawMode && lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
   if (!testMode && !payload.dealId) return json({ error: "dealId is required" }, 400);
 
   const db = serviceClient();
@@ -285,6 +288,83 @@ Deno.serve(async (req) => {
     await db.from("deal_submissions").update({ courtesy_sent_at: sentIso }).eq("id", sub.id);
     await logActivity(db, dealId, lenderId, lender.company_name as string, { courtesy: true, to });
     return json({ ok: true, sent: true, courtesy_sent_at: sentIso });
+  }
+
+  // ---------- WITHDRAW: pull the file back from a funder ----------
+  // A courteous cancellation — "we're no longer moving forward together on this
+  // one, thank you for your time." Sends a short professional note, flips the
+  // submission to 'withdrawn' + stamps withdrawn_at, and audits it so the Step 7
+  // board can parse the trail. Idempotent (a re-click returns alreadyWithdrawn),
+  // and it refuses to withdraw a funded submission.
+  if (withdrawMode) {
+    const dealId = payload.dealId;
+    const lenderId = payload.lenderId ?? lenderIds[0];
+    if (!dealId || !lenderId) return json({ error: "dealId and lenderId are required" }, 400);
+
+    // Closers may only act on their own deals (same guard as normal mode).
+    if (callerRole === "closer") {
+      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    }
+
+    const { data: sub } = await db
+      .from("deal_submissions")
+      .select("id, status, withdrawn_at")
+      .eq("deal_id", dealId).eq("lender_id", lenderId).maybeSingle();
+    if (!sub) return json({ error: "No submission found for this funder on this deal" }, 404);
+    if (sub.status === "funded") {
+      return json({ error: "Can't withdraw a funded submission." }, 422);
+    }
+    if (sub.withdrawn_at) {
+      return json({ ok: true, alreadyWithdrawn: true, withdrawn_at: sub.withdrawn_at });
+    }
+
+    const { data: dealRow } = await db
+      .from("deals").select("id, deal_number, customer_id").eq("id", dealId).maybeSingle();
+    const { data: cust } = dealRow?.customer_id
+      ? await db.from("customers").select("business_name").eq("id", dealRow.customer_id).maybeSingle()
+      : { data: null };
+    const { data: lender } = await db
+      .from("lenders").select("id, company_name, submission_email, ghl_contact_id").eq("id", lenderId).maybeSingle();
+    if (!lender) return json({ error: "Funder not found" }, 404);
+
+    let wCfg: Awaited<ReturnType<typeof getGhlConfig>> | null = null;
+    let wErr: string | undefined;
+    try { wCfg = await getGhlConfig(db); } catch (e) { wErr = e instanceof Error ? e.message : String(e); }
+    if (!wCfg) return json({ error: `GHL not configured: ${wErr ?? "missing credentials"}` }, 502);
+
+    const to = (lender.submission_email as string) || "";
+    let contactId = (lender.ghl_contact_id as string | null) ?? null;
+    if (!contactId && !to) return json({ error: "No email or GHL contact on file for this funder" }, 422);
+    if (!contactId && to) {
+      const cr = await upsertContact(wCfg, { email: to, firstName: lender.company_name as string, tags: ["funder"], source: "Withdrawal Notice" });
+      contactId = cr.data?.contact?.id ?? null;
+      if (contactId && contactId !== lender.ghl_contact_id) {
+        await db.from("lenders").update({ ghl_contact_id: contactId }).eq("id", lenderId);
+      }
+    }
+    if (!contactId) return json({ error: "Could not resolve the funder's GHL contact" }, 502);
+
+    const biz = (cust?.business_name as string) || "this file";
+    const dealNo = (dealRow?.deal_number as string) || "—";
+    const closerName = closer.name || "Momentum Funding";
+    const subject = `Withdrawing our submission — ${biz} (Deal ${dealNo})`;
+    const bodyText =
+      `We're pulling this file back — we won't be moving forward together on this one. ` +
+      `Thank you for your time and the look; we appreciate it and we'll be in touch on future files.\n\n` +
+      `— ${closerName}, Agentic Voice, Inc. dba Momentum Funding · (954) 737-5692`;
+    const bodyHtml = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
+
+    // Thread it as a reply into the funder's existing conversation when one exists.
+    let replyMessageId: string | undefined;
+    try { replyMessageId = (await latestEmailMessageId(wCfg, contactId)) ?? undefined; } catch { /* best-effort */ }
+    const sr = await sendEmailToContact(wCfg, contactId, subject, bodyHtml, { text: bodyText, emailCc: ALWAYS_CC, replyMessageId });
+    if (!sr.ok) return json({ error: `GHL send failed: ${sr.error}` }, 502);
+
+    const withdrawnIso = new Date().toISOString();
+    await db.from("deal_submissions").update({ status: "withdrawn", withdrawn_at: withdrawnIso }).eq("id", sub.id);
+    await logActivity(db, dealId, lenderId, lender.company_name as string, { withdrawn: true, to });
+    return json({ ok: true, withdrawn: true, withdrawn_at: withdrawnIso });
   }
 
   // ---------- MESSAGE FUNDER: free-form email to a funder, docs attached ----------
@@ -812,11 +892,14 @@ async function logActivity(
   detail: Record<string, unknown>,
 ) {
   try {
-    const d = detail as { courtesy?: boolean; portal?: boolean; resubmit?: boolean; to?: string; emailError?: string };
-    // Courtesy thank-yous log separately; submissions log as a board-parseable
-    // "funder:sent — <name>" so they render on that funder's Step 7 card.
-    const subject = d.courtesy ? `funder:courtesy — ${name}` : `funder:sent — ${name}`;
-    const verb = d.courtesy ? "Sent a thank-you"
+    const d = detail as { courtesy?: boolean; withdrawn?: boolean; portal?: boolean; resubmit?: boolean; to?: string; emailError?: string };
+    // Courtesy thank-yous and withdrawals log separately; submissions log as a
+    // board-parseable "funder:sent — <name>" so they render on the Step 7 card.
+    const subject = d.withdrawn ? `funder:withdrawn — ${name}`
+      : d.courtesy ? `funder:courtesy — ${name}`
+      : `funder:sent — ${name}`;
+    const verb = d.withdrawn ? "Withdrew the submission"
+      : d.courtesy ? "Sent a thank-you"
       : d.emailError ? "Attempted send (failed)"
       : d.portal ? (d.resubmit ? "↻ Re-submitted via portal" : "📤 Submitted via portal")
       : (d.resubmit ? "↻ Re-sent the package" : "📤 Submitted the package");

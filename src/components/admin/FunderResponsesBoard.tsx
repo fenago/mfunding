@@ -17,6 +17,7 @@ import {
   CheckCircleIcon,
   HandThumbDownIcon,
   ArrowPathIcon,
+  ArrowUturnLeftIcon,
   XMarkIcon,
   InboxArrowDownIcon,
   PaperAirplaneIcon,
@@ -123,6 +124,7 @@ interface SubRow {
   totalPayback: number | null;
   declineReason: string | null;
   courtesySentAt: string | null;
+  withdrawnAt: string | null;
   // AI reply classification (from poll-funder-replies; may be null).
   responseType: string | null;
   responseSummary: string | null;
@@ -130,11 +132,13 @@ interface SubRow {
   requestedItems: string[];
 }
 
-type StateKey = "awaiting" | "replied" | "offer" | "accepted" | "merchant_declined" | "funder_declined";
+type StateKey = "awaiting" | "replied" | "offer" | "accepted" | "merchant_declined" | "funder_declined" | "withdrawn";
 
 // One place the card's badge + accents come from, derived from the row's status
 // and which economics fields are populated.
 function stateOf(s: SubRow): { key: StateKey; emoji: string; label: string; cls: string } {
+  if (s.status === "withdrawn")
+    return { key: "withdrawn", emoji: "↩", label: "Withdrawn", cls: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300" };
   if (s.status === "offer_accepted")
     return { key: "accepted", emoji: "✅", label: "Accepted", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" };
   if (s.status === "offer_declined")
@@ -159,7 +163,7 @@ function isLive(s: SubRow): boolean {
     !!s.submittedAt ||
     !!s.responseAt ||
     s.offerAmount != null ||
-    ["submitted", "under_review", "approved", "offer_made", "offer_accepted", "offer_declined", "declined"].includes(s.status)
+    ["submitted", "under_review", "approved", "offer_made", "offer_accepted", "offer_declined", "declined", "withdrawn"].includes(s.status)
   );
 }
 
@@ -225,7 +229,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   // is the fixed submission contact, resolved server-side, so it has no menu.)
   const [contactMenuFor, setContactMenuFor] = useState<"cc" | "bcc" | null>(null);
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note"; openedAt: string | null }[]>([]);
+  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note" | "withdrawn"; openedAt: string | null }[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
@@ -509,7 +513,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .from("activity_log")
       .select("created_at, subject, content")
       .eq("entity_type", "deal").eq("entity_id", deal.id)
-      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%,subject.like.funder:note%")
+      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%,subject.like.funder:note%,subject.like.funder:withdrawn%")
       .order("created_at", { ascending: false }).limit(20);
     const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
@@ -522,20 +526,22 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
       if (m) { re = m[1] === "merchant" ? null : m[1]; snippet = snippet.slice(m[0].length); }
       const rawSubject = String(r.subject ?? "");
-      const kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note" =
+      const kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note" | "withdrawn" =
         rawSubject.startsWith("funder:note") ? "note"
+        : rawSubject.startsWith("funder:withdrawn") ? "withdrawn"
         : rawSubject.startsWith("funder:email") ? "funder"
         : rawSubject.startsWith("merchant:reply") ? "reply"
         : rawSubject.startsWith("ghl:funder-reply") ? "funder_reply"
         : rawSubject.startsWith("funder:sent") ? "sent"
         : "merchant";
-      if (kind === "funder_reply" || kind === "sent" || kind === "note") re = rawSubject.split("— ")[1]?.trim() || null;
+      if (kind === "funder_reply" || kind === "sent" || kind === "note" || kind === "withdrawn") re = rawSubject.split("— ")[1]?.trim() || null;
       const resent = kind === "sent" && /re-?sent|re-?submitted/i.test(snippet);
       return {
         at: r.created_at as string,
         subject: kind === "reply" ? "Merchant replied"
           : kind === "funder_reply" ? "Funder replied"
           : kind === "sent" ? (resent ? "Re-sent to funder" : "Submitted to funder")
+          : kind === "withdrawn" ? "Withdrawn from funder"
           : kind === "note" ? "Note"
           : rawSubject.replace(/^(merchant|funder):email — /, ""),
         snippet, re, kind, openedAt,
@@ -557,7 +563,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     try {
       const { data, error: qErr } = await supabase
         .from("deal_submissions")
-        .select("id, lender_id, status, submitted_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, response_type, response_summary, response_data, lender:lenders!lender_id ( company_name )")
+        .select("id, lender_id, status, submitted_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason, courtesy_sent_at, withdrawn_at, response_type, response_summary, response_data, lender:lenders!lender_id ( company_name )")
         .eq("deal_id", deal.id);
       if (qErr) throw qErr;
       const mapped: SubRow[] = ((data ?? []) as unknown as Array<Record<string, unknown>>).map((r) => {
@@ -580,6 +586,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           totalPayback: (r.total_payback as number | null) ?? null,
           declineReason: (r.decline_reason as string | null) ?? null,
           courtesySentAt: (r.courtesy_sent_at as string | null) ?? null,
+          withdrawnAt: (r.withdrawn_at as string | null) ?? null,
           responseType: (r.response_type as string | null) ?? null,
           responseSummary: (r.response_summary as string | null) ?? null,
           declineCategory: (parsed?.decline_reason_category as string | null) ?? null,
@@ -726,6 +733,29 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     }
   }
 
+  // Pull the file back from a funder (submit-to-funders action=withdraw). Sends a
+  // courteous "no longer moving forward" note, flips the row to 'withdrawn', and
+  // audits it. Idempotent server-side; we reload the board to reflect the state.
+  async function withdrawSubmission(s: SubRow) {
+    if (!window.confirm(`Withdraw this submission and email ${s.lenderName} that we're pulling the file? This can't be auto-undone.`)) return;
+    setRowBusy(s.id);
+    setCourtesyMsg((m) => ({ ...m, [s.id]: "" }));
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
+        body: { action: "withdraw", dealId: deal.id, lenderId: s.lenderId },
+      });
+      if (fnErr) throw fnErr;
+      if (data?.error) throw new Error(data.error);
+      setCourtesyMsg((m) => ({ ...m, [s.id]: data?.alreadyWithdrawn ? "Already withdrawn." : "Submission withdrawn." }));
+      await load();
+      await loadSentLog();
+    } catch (e) {
+      setCourtesyMsg((m) => ({ ...m, [s.id]: e instanceof Error ? e.message : "Could not withdraw the submission." }));
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
   async function sendThankYou(s: SubRow) {
     setRowBusy(s.id);
     setCourtesyMsg((m) => ({ ...m, [s.id]: "" }));
@@ -832,12 +862,17 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
             const b = burden(payment, freq, monthlyRevenue);
             const busy = rowBusy === s.id;
             const isFunderDeclined = st.key === "funder_declined";
-            const isTerminal = ["accepted", "merchant_declined", "funder_declined"].includes(st.key);
+            const isWithdrawn = st.key === "withdrawn";
+            const isFunded = s.status === "funded";
+            const isTerminal = ["accepted", "merchant_declined", "funder_declined", "withdrawn"].includes(st.key);
+            // "Pull back" is available while a submission is live and not already
+            // withdrawn / funded (you can't un-fund by withdrawing).
+            const canWithdraw = !isWithdrawn && !isFunded && !s.withdrawnAt;
             const typeMeta = s.responseType ? (RESPONSE_TYPE_META[s.responseType] ?? RESPONSE_TYPE_META.other) : null;
             // Message-the-merchant CTA belongs on replied / stip-request / declined cards.
             const showMsgButton = st.key === "replied" || s.responseType === "stip_request" || isFunderDeclined;
             return (
-              <div key={s.id} className={`rounded-md border p-2.5 text-[11px] space-y-2 ${isBest ? "border-emerald-400 bg-emerald-50/70 dark:bg-emerald-900/15" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"} ${st.key === "merchant_declined" ? "opacity-60" : ""}`}>
+              <div key={s.id} className={`rounded-md border p-2.5 text-[11px] space-y-2 ${isBest ? "border-emerald-400 bg-emerald-50/70 dark:bg-emerald-900/15" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"} ${st.key === "merchant_declined" || st.key === "withdrawn" ? "opacity-60" : ""}`}>
                 {/* Header: funder + state badge */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {isBest && <TrophyIcon className="w-3.5 h-3.5 text-emerald-500" />}
@@ -895,6 +930,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                 )}
                 {isFunderDeclined && (
                   <p className="text-rose-600 dark:text-rose-400">Funder declined{s.declineReason ? ` — ${s.declineReason}` : ""}.</p>
+                )}
+                {isWithdrawn && (
+                  <p className="text-gray-500 dark:text-gray-400 inline-flex items-center gap-1">
+                    <ArrowUturnLeftIcon className="w-3.5 h-3.5" /> Submission withdrawn{s.withdrawnAt ? ` ${relTime(s.withdrawnAt)}` : ""} — funder notified.
+                  </p>
                 )}
 
                 {/* Inline offer form */}
@@ -1006,6 +1046,12 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     <button type="button" onClick={() => openFunderMessage(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 inline-flex items-center gap-1">
                       <BuildingOffice2Icon className="w-3.5 h-3.5" /> Message funder
                     </button>
+                    {/* Pull back — withdraw the submission with a courteous note to the funder */}
+                    {canWithdraw && (
+                      <button type="button" disabled={busy} onClick={() => withdrawSubmission(s)} title={`Withdraw this submission and email ${s.lenderName} that we're pulling the file`} className="text-[10px] font-semibold px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 disabled:opacity-50 inline-flex items-center gap-1">
+                        {busy ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <ArrowUturnLeftIcon className="w-3.5 h-3.5" />} Pull back
+                      </button>
+                    )}
                     {/* Add a free-form note tied to THIS funder (e.g. "texted Curt 7:21a") */}
                     <button type="button" onClick={() => { setNoteFor(s.id); setNoteText(""); setDeclineFor(null); setOfferFormFor(null); }} className="text-[10px] font-semibold px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 inline-flex items-center gap-1">
                       <PencilSquareIcon className="w-3.5 h-3.5" /> Add note
@@ -1037,6 +1083,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                       const isFunderReply = m.kind === "funder_reply";
                       const isSent = m.kind === "sent";
                       const isNote = m.kind === "note";
+                      const isWithdrawnLog = m.kind === "withdrawn";
                       const isResend = isSent && /re-?sent|re-?submitted/i.test(m.subject);
                       return (
                         <li key={i} className={`text-[10.5px] cursor-pointer ${isReply ? "text-emerald-700 dark:text-emerald-300 font-medium pl-2" : isFunderReply ? "text-rose-700 dark:text-rose-300 font-medium pl-2" : isSent ? "text-blue-700 dark:text-blue-300 font-medium" : isNote ? "text-amber-700 dark:text-amber-300" : "text-gray-500 dark:text-gray-400"}`} onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
@@ -1046,12 +1093,14 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                               ? <span className="mr-0.5">⬅</span>
                               : isSent
                                 ? <span className="mr-0.5">{isResend ? "↻" : "📤"}</span>
+                              : isWithdrawnLog
+                                ? <ArrowUturnLeftIcon className="w-3 h-3 inline mr-0.5 text-rose-500" />
                               : isNote
                                 ? <PencilSquareIcon className="w-3 h-3 inline mr-0.5 text-amber-500" />
                               : isFunder
                                 ? <BuildingOffice2Icon className="w-3 h-3 inline mr-0.5 text-indigo-500" />
                                 : <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />}
-                          {isReply ? "Merchant REPLIED" : isFunderReply ? "Funder REPLIED" : isSent ? (isResend ? "RE-SENT to funder" : "Submitted to funder") : isNote ? "Note" : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : isFunderReply ? "text-rose-500" : isSent ? "text-blue-500" : isNote ? "text-amber-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                          {isReply ? "Merchant REPLIED" : isFunderReply ? "Funder REPLIED" : isSent ? (isResend ? "RE-SENT to funder" : "Submitted to funder") : isWithdrawnLog ? "Withdrawn from funder" : isNote ? "Note" : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : isFunderReply ? "text-rose-500" : isSent ? "text-blue-500" : isNote ? "text-amber-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {isFunder && <span className="ml-1 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 px-1 py-px text-[9px] font-semibold">to funder</span>}
                           {isNote ? (<>{" · "}<span className="text-gray-700 dark:text-gray-200 whitespace-pre-wrap">{m.snippet}</span></>) : (<>{" · "}<span className={isReply ? "" : "font-medium text-gray-700 dark:text-gray-200"}>{isReply ? (m.snippet.split(":")[0] || m.subject) : m.subject}</span></>)}
                           <OpenedChip at={m.openedAt} />
