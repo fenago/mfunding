@@ -232,7 +232,7 @@ export default function RealTimeDashboardPage() {
                     color: "#F0F6FC",
                   }}
                   labelFormatter={(h) => formatHour(Number(h))}
-                  formatter={(value: number | undefined) => [value ?? 0, "Leads"]}
+                  formatter={(value) => [Number(value) || 0, "Leads"]}
                 />
                 <Bar dataKey="count" fill="#007EA7" radius={[4, 4, 0, 0]} />
               </BarChart>

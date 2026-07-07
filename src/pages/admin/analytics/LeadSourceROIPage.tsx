@@ -148,8 +148,8 @@ export default function LeadSourceROIPage() {
                 />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
-                  formatter={(value: number | undefined, name?: string) => {
-                    const v = value ?? 0;
+                  formatter={(value, name) => {
+                    const v = Number(value) || 0;
                     if (name === "spend") return [`$${v.toLocaleString()}`, "Spend"];
                     if (name === "revenue") return [`$${v.toLocaleString()}`, "Revenue"];
                     return [v, name || ""];

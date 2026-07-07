@@ -61,8 +61,8 @@ export default function TrendLineChart({
             color: "#F0F6FC",
           }}
           labelFormatter={(l) => `Date: ${l}`}
-          formatter={(value: number | undefined) => [
-            formatValue ? formatValue(value ?? 0) : (value ?? 0).toLocaleString(),
+          formatter={(value) => [
+            formatValue ? formatValue(Number(value) || 0) : (Number(value) || 0).toLocaleString(),
             label,
           ]}
         />

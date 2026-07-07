@@ -265,7 +265,7 @@ function FunderDetail({ f }: { f: FunderAnalyticsRow }) {
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.15} horizontal={false} />
               <XAxis type="number" tick={{ fontSize: 10, fill: "#9CA3AF" }} allowDecimals={false} />
               <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11, fill: "#9CA3AF" }} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number | undefined) => [v ?? 0, "Declines"]} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => [Number(v) || 0, "Declines"]} />
               <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                 {declineData.map((_, i) => (
                   <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -466,7 +466,7 @@ function DeclineIntelligence({ data }: { data: FunderAnalytics }) {
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.15} horizontal={false} />
               <XAxis type="number" tick={{ fontSize: 11, fill: "#9CA3AF" }} allowDecimals={false} />
               <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11, fill: "#9CA3AF" }} />
-              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number | undefined) => [v ?? 0, "Declines"]} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => [Number(v) || 0, "Declines"]} />
               <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                 {totalData.map((_, i) => (
                   <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />

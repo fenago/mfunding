@@ -30,3 +30,4 @@ supabase/.branches/
 
 # Local MCP config (contains tokens — keep out of git)
 .mcp.json
+deno.lock

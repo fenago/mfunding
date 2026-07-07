@@ -259,7 +259,7 @@ export default function DealAnalyticsPage() {
               />
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
-                formatter={(value: number | undefined) => [`${value ?? 0} days`, "Avg Days"]}
+                formatter={(value) => [`${Number(value) || 0} days`, "Avg Days"]}
               />
               <Bar dataKey="days" fill="#007EA7" radius={[4, 4, 0, 0]} />
             </BarChart>
@@ -290,7 +290,7 @@ export default function DealAnalyticsPage() {
                 />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
-                  formatter={(value: number | undefined) => [`${value ?? 0}%`, "Close Rate"]}
+                  formatter={(value) => [`${Number(value) || 0}%`, "Close Rate"]}
                 />
                 <Line
                   type="monotone"
@@ -332,8 +332,8 @@ export default function DealAnalyticsPage() {
                 />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
-                  formatter={(value: number | undefined, name?: string) => [
-                    name === "revenue" ? `$${(value ?? 0).toLocaleString()}` : (value ?? 0),
+                  formatter={(value, name) => [
+                    name === "revenue" ? `$${(Number(value) || 0).toLocaleString()}` : (Number(value) || 0),
                     name === "revenue" ? "Revenue" : "Deals",
                   ]}
                 />

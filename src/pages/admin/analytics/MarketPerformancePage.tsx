@@ -111,8 +111,8 @@ export default function MarketPerformancePage() {
                 <YAxis tick={{ fontSize: 11, fill: "#9CA3AF" }} allowDecimals={false} />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
-                  formatter={(value: number | undefined, name?: string) => {
-                    const v = value ?? 0;
+                  formatter={(value, name) => {
+                    const v = Number(value) || 0;
                     if (name === "leads") return [v, "Leads"];
                     if (name === "funded") return [v, "Funded"];
                     return [`$${v.toLocaleString()}`, "Revenue"];

@@ -67,7 +67,7 @@ export default function LeadSourcePieChart({
             fontSize: "12px",
             color: "#F0F6FC",
           }}
-          formatter={(value: number | undefined) => [(value ?? 0).toLocaleString(), "Leads"]}
+          formatter={(value) => [(Number(value) || 0).toLocaleString(), "Leads"]}
         />
         <Legend
           wrapperStyle={{ fontSize: "12px", color: "#8B949E" }}
