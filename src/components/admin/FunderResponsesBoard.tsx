@@ -24,6 +24,8 @@ import {
   PaperClipIcon,
   ArrowUpTrayIcon,
   ExclamationCircleIcon,
+  ChevronDownIcon,
+  UserPlusIcon,
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
@@ -160,6 +162,31 @@ function isLive(s: SubRow): boolean {
   );
 }
 
+// Small pop-over listing a funder's saved contacts. Clicking one calls onPick with
+// its email so the caller can append it to the CC or BCC field. Empty state nudges
+// that contacts show up here once the reply reconciler captures them.
+function ContactMenu({ contacts, onPick }: { contacts: { label: string; email: string }[]; onPick: (email: string) => void }) {
+  return (
+    <div className="absolute z-10 mt-1 w-64 max-h-56 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg">
+      {contacts.length === 0 ? (
+        <p className="px-3 py-2 text-[11px] text-gray-400">No saved contacts — they'll appear here once we capture them.</p>
+      ) : (
+        contacts.map((c) => (
+          <button
+            key={c.email}
+            type="button"
+            onClick={() => onPick(c.email)}
+            className="block w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            <span className="block text-[12px] font-medium text-gray-900 dark:text-white truncate">{c.label}</span>
+            <span className="block text-[11px] text-gray-500 truncate">{c.email}</span>
+          </button>
+        ))
+      )}
+    </div>
+  );
+}
+
 export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: DealWithCustomer; mode?: "board" | "accepted" }) {
   const { session } = useSession();
   const { profile } = useUserProfile();
@@ -185,6 +212,13 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [msgBody, setMsgBody] = useState("");
   const [msgCc, setMsgCc] = useState("");
   const [msgBcc, setMsgBcc] = useState("");
+  // The messaged funder's known contacts (from lenders.contacts + primary + submission
+  // email), de-duped by email. Populated when the funder message modal opens so the
+  // closer can CC/To/BCC an ISO rep without leaving the screen.
+  const [funderContacts, setFunderContacts] = useState<{ label: string; email: string }[]>([]);
+  // Which "add a contact" menu is open — the CC or BCC field, or null. (Funder "To"
+  // is the fixed submission contact, resolved server-side, so it has no menu.)
+  const [contactMenuFor, setContactMenuFor] = useState<"cc" | "bcc" | null>(null);
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
   const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent"; openedAt: string | null }[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
@@ -286,6 +320,8 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
     setMsgBcc("");
     setSelectedDocIds({});
     setDocs([]);
+    setFunderContacts([]);
+    setContactMenuFor(null);
     setAdhocUploads([]);
     setAttachError(null);
     setDropActive(false);
@@ -298,6 +334,50 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .eq("customer_id", deal.customer_id)
       .order("created_at", { ascending: false });
     setDocs((data ?? []) as { id: string; filename: string | null; document_type: string; created_at: string }[]);
+    // Load the funder's known contacts so the closer can CC/BCC an ISO rep inline.
+    setFunderContacts(await loadFunderContacts(s.lenderId));
+  }
+
+  // Fetch the lender's saved contacts (contacts[] jsonb + primary contact fields +
+  // submission email), de-dupe by lowercased email, and return {label, email} rows.
+  // Entries without an email are skipped — you can't CC someone with no address.
+  async function loadFunderContacts(lenderId: string): Promise<{ label: string; email: string }[]> {
+    const { data } = await supabase
+      .from("lenders")
+      .select("contacts, primary_contact_name, primary_contact_email, submission_email")
+      .eq("id", lenderId)
+      .maybeSingle();
+    if (!data) return [];
+    const out: { label: string; email: string }[] = [];
+    const seen = new Set<string>();
+    const push = (email: string | null | undefined, name?: string | null, title?: string | null) => {
+      const addr = (email ?? "").trim();
+      if (!addr) return;
+      const key = addr.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const label = [name?.trim(), title?.trim()].filter(Boolean).join(" — ") || addr;
+      out.push({ label, email: addr });
+    };
+    const contacts = Array.isArray(data.contacts) ? data.contacts : [];
+    for (const c of contacts as { name?: string; title?: string; email?: string }[]) {
+      push(c?.email, c?.name, c?.title);
+    }
+    push(data.primary_contact_email, data.primary_contact_name, "Primary contact");
+    push(data.submission_email, null, "Submissions");
+    return out;
+  }
+
+  // Append an email to the CC or BCC field, using the same comma delimiter the send
+  // path splits on, and skipping it if it's already present in that field.
+  function addContactToField(field: "cc" | "bcc", email: string) {
+    const setter = field === "cc" ? setMsgCc : setMsgBcc;
+    setter((cur) => {
+      const existing = cur.split(/[,;\s]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+      if (existing.includes(email.toLowerCase())) return cur;
+      return cur.trim() ? `${cur.trim()}, ${email}` : email;
+    });
+    setContactMenuFor(null);
   }
 
   // Upload one ad-hoc file to the SAME bucket/path scheme the app uses (mirrors
@@ -1009,12 +1089,46 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                 </div>
               )}
               <div className="grid grid-cols-2 gap-2">
-                <label className="block text-[11px] font-medium text-gray-500">CC
-                  <input type="text" value={msgCc} onChange={(e) => setMsgCc(e.target.value)} placeholder="email, email…" className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
-                </label>
-                <label className="block text-[11px] font-medium text-gray-500">BCC
-                  <input type="text" value={msgBcc} onChange={(e) => setMsgBcc(e.target.value)} placeholder="email, email…" className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
-                </label>
+                <div className="relative">
+                  <label className="block text-[11px] font-medium text-gray-500">CC
+                    <input type="text" value={msgCc} onChange={(e) => setMsgCc(e.target.value)} placeholder="email, email…" className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
+                  </label>
+                  {msgMode === "funder" && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setContactMenuFor((f) => (f === "cc" ? null : "cc"))}
+                        className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300"
+                      >
+                        <UserPlusIcon className="w-3.5 h-3.5" /> CC a contact
+                        <ChevronDownIcon className="w-3 h-3" />
+                      </button>
+                      {contactMenuFor === "cc" && (
+                        <ContactMenu contacts={funderContacts} onPick={(email) => addContactToField("cc", email)} />
+                      )}
+                    </>
+                  )}
+                </div>
+                <div className="relative">
+                  <label className="block text-[11px] font-medium text-gray-500">BCC
+                    <input type="text" value={msgBcc} onChange={(e) => setMsgBcc(e.target.value)} placeholder="email, email…" className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
+                  </label>
+                  {msgMode === "funder" && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setContactMenuFor((f) => (f === "bcc" ? null : "bcc"))}
+                        className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300"
+                      >
+                        <UserPlusIcon className="w-3.5 h-3.5" /> BCC a contact
+                        <ChevronDownIcon className="w-3 h-3" />
+                      </button>
+                      {contactMenuFor === "bcc" && (
+                        <ContactMenu contacts={funderContacts} onPick={(email) => addContactToField("bcc", email)} />
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
               <label className="block text-[11px] font-medium text-gray-500">Subject
                 <input type="text" value={msgSubject} onChange={(e) => setMsgSubject(e.target.value)} className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white" />
