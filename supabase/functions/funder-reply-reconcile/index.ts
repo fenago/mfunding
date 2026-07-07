@@ -574,6 +574,169 @@ async function matchPhones(db: SupabaseClient, cfg: GhlConfig): Promise<PhoneMat
   return { scanned: conversations.length, phone_matches: phoneMatches, linked, conflicts, samples };
 }
 
+// ── UNMATCHED INBOUND NUMBERS (manual tie) ───────────────────────────────────
+// The auto phone-match (matchPhones) ties a call/text to a lender only when the
+// caller number is ALREADY on file. When a funder rep calls/texts from a line we
+// don't have (a cell, a different desk), it stays a loose GHL contact forever.
+// This lists those UNKNOWN inbound numbers so an admin can MANUALLY tie one to a
+// funder; tie-phone then saves the number, which makes every FUTURE call/text
+// from it auto-associate via the same phone map.
+
+interface UnmatchedPhone {
+  contactId: string;
+  phone: string;            // formatted "(305) 851-0900"
+  contactName: string;
+  lastMessageAt: string | null;
+  snippet: string;
+}
+
+async function listUnmatchedPhones(db: SupabaseClient, cfg: GhlConfig): Promise<{ scanned: number; unmatched: UnmatchedPhone[] }> {
+  const { data: lenders } = await db.from("lenders")
+    .select("id, company_name, website, submission_email, primary_contact_email, primary_contact_name, primary_contact_phone, ghl_contact_id, contacts");
+  const rows = (lenders ?? []) as LenderRow[];
+  const { map } = buildPhoneMap(rows); // known funder numbers → exclude them
+
+  // Contacts already tied to a funder (never offer them for a manual tie).
+  const linkedContactIds = new Set<string>();
+  for (const l of rows) {
+    if (l.ghl_contact_id) linkedContactIds.add(l.ghl_contact_id);
+    for (const c of contactsArray(l.contacts)) {
+      const id = String(c.ghl_contact_id ?? "").trim();
+      if (id) linkedContactIds.add(id);
+    }
+  }
+
+  // Merchant phones — a call/text from a merchant is never a funder POC.
+  const merchantDigits = new Set<string>();
+  const { data: custs } = await db.from("customers").select("phone");
+  for (const c of (custs ?? []) as Array<{ phone: string | null }>) {
+    const d = phoneDigits(c.phone);
+    if (d) merchantDigits.add(d);
+  }
+
+  // Our own numbers (the static blocklist + the location's own line).
+  const ownDigits = new Set(OWN_PHONE_DIGITS);
+  try {
+    const loc = await ghlFetch<{ location?: Record<string, unknown> } & Record<string, unknown>>(
+      cfg, "GET", `/locations/${cfg.locationId}`,
+    );
+    const lp = ((loc.data?.location as Record<string, unknown> | undefined)?.phone ?? loc.data?.phone) as string | undefined;
+    const d = phoneDigits(lp);
+    if (d) ownDigits.add(d);
+  } catch { /* best-effort */ }
+
+  const convRes = await ghlFetch<{ conversations?: Array<Record<string, unknown>> }>(
+    cfg, "GET", `/conversations/search?locationId=${cfg.locationId}&limit=100&sortBy=last_message_date`,
+  );
+  const conversations = convRes.data?.conversations ?? [];
+
+  const unmatched: UnmatchedPhone[] = [];
+  const seenContact = new Set<string>();
+  const seenDigits = new Set<string>(); // dedupe by number, most-recent first
+
+  for (const c of conversations) {
+    const contactId = String(c.contactId ?? "");
+    if (!contactId || seenContact.has(contactId)) continue;
+
+    // Skip a pure-email conversation with no phone of its own — this list is for
+    // calls/texts, not the email path (which scan/apply handles by domain).
+    const lmt = String(c.lastMessageType ?? c.type ?? "").toUpperCase();
+    if (lmt.includes("EMAIL") && !String(c.phone ?? "").trim()) continue;
+
+    // The caller phone — prefer the conversation's, else the contact record.
+    let phoneRaw = String(c.phone ?? "").trim();
+    if (!phoneRaw) {
+      const cr = await getContact(cfg, contactId);
+      phoneRaw = String((cr.data?.contact as Record<string, unknown> | undefined)?.phone ?? "").trim();
+    }
+    const digits = phoneDigits(phoneRaw);
+    if (!digits) continue;
+    if (ownDigits.has(digits) || merchantDigits.has(digits)) continue;
+    if (map.has(digits)) continue;                 // already a known funder number
+    if (linkedContactIds.has(contactId)) continue; // contact already tied to a funder
+
+    seenContact.add(contactId);
+    if (seenDigits.has(digits)) continue;
+    seenDigits.add(digits);
+
+    unmatched.push({
+      contactId,
+      phone: normalizePhone(digits)!, // digits already validated → non-null
+      contactName: String(c.fullName ?? c.contactName ?? "").trim(),
+      lastMessageAt: String(c.lastMessageDate ?? c.dateUpdated ?? "") || null,
+      snippet: String(c.lastMessageBody ?? "").replace(/\s+/g, " ").trim().slice(0, 160),
+    });
+  }
+
+  return { scanned: conversations.length, unmatched };
+}
+
+// ── TIE PHONE (manual) ───────────────────────────────────────────────────────
+interface TieItem { contactId: string; phone: string; lenderId: string; name?: string; contactName?: string }
+interface TieResult { ok: boolean; lenderName?: string; contactAdded?: boolean; linked?: boolean; primarySet?: boolean; error?: string }
+
+async function tiePhone(db: SupabaseClient, item: TieItem): Promise<TieResult> {
+  if (!item?.lenderId || !item?.contactId) return { ok: false, error: "missing lenderId/contactId" };
+  const formatted = normalizePhone(item.phone);
+  if (!formatted) return { ok: false, error: "invalid phone" };
+
+  const { data: lender } = await db.from("lenders")
+    .select("id, company_name, primary_contact_name, primary_contact_phone, ghl_contact_id, contacts")
+    .eq("id", item.lenderId).maybeSingle();
+  if (!lender) return { ok: false, error: "lender not found" };
+
+  const l = lender as unknown as LenderRow;
+  const name = (item.name?.trim() || item.contactName?.trim() || "(manual)");
+
+  // 1) Append the number to contacts (dedupe by phone).
+  const arr = contactsArray(l.contacts);
+  let contactAdded = false;
+  if (!hasContact(l, "", formatted)) {
+    arr.push({
+      name,
+      title: null,
+      email: null,
+      phone: formatted,
+      source: "manual_tie",
+      ghl_contact_id: item.contactId,
+      added_at: new Date().toISOString(),
+    });
+    contactAdded = true;
+  }
+
+  const patch: Record<string, unknown> = {};
+  if (contactAdded) patch.contacts = arr;
+
+  // 2) Link the lender to this GHL contact if not linked yet — closes the loop so
+  //    the phone map (and ghl-webhook) auto-associates every future call/text.
+  let linked = false;
+  if (!l.ghl_contact_id) { patch.ghl_contact_id = item.contactId; linked = true; }
+
+  // 3) Fill primary_* only when empty.
+  let primarySet = false;
+  if (!l.primary_contact_phone) { patch.primary_contact_phone = formatted; primarySet = true; }
+  if (!l.primary_contact_name && item.name?.trim()) { patch.primary_contact_name = item.name.trim(); primarySet = true; }
+
+  if (Object.keys(patch).length) {
+    const { error } = await db.from("lenders").update(patch).eq("id", l.id);
+    if (error) return { ok: false, lenderName: l.company_name, error: error.message };
+  }
+
+  // 4) Audit (interaction_type must be a valid enum — 'note').
+  try {
+    await db.from("activity_log").insert({
+      entity_type: "lender", entity_id: l.id, interaction_type: "note",
+      subject: "funder-reply-reconcile",
+      content: `Manually tied inbound number ${formatted}` +
+        (name && name !== "(manual)" ? ` (${name})` : "") +
+        `${contactAdded ? " · contact saved" : ""}${linked ? " · GHL contact linked" : ""}${primarySet ? " · primary set" : ""}` +
+        ` [ghl:${item.contactId}]`,
+    });
+  } catch { /* audit is best-effort */ }
+
+  return { ok: true, lenderName: l.company_name, contactAdded, linked, primarySet };
+}
+
 // ── SCAN ─────────────────────────────────────────────────────────────────────
 async function scan(db: SupabaseClient, cfg: GhlConfig): Promise<{ proposals: Proposal[]; conflicts: string[]; scanned: number }> {
   const { data: lenders } = await db.from("lenders")
@@ -739,6 +902,16 @@ Deno.serve(async (req) => {
     if (action === "match-phones") {
       const r = await matchPhones(db, cfg);
       return json({ ok: true, action: "match-phones", ...r });
+    }
+
+    if (action === "list-unmatched-phones") {
+      const r = await listUnmatchedPhones(db, cfg);
+      return json({ ok: true, action: "list-unmatched-phones", ...r });
+    }
+
+    if (action === "tie-phone") {
+      const r = await tiePhone(db, payload as unknown as TieItem);
+      return json({ ...r, action: "tie-phone" }, r.ok ? 200 : 400);
     }
 
     if (action === "apply") {
