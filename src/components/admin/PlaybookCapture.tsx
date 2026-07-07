@@ -50,7 +50,13 @@ const PLAYBOOK_DEFAULTS: Record<
 // are captured INLINE at the step where the closer asks them — no scrolling.
 // Statuses where a deal is finished — a new deal for the same customer is
 // legitimate (renewal / comeback). Anything else counts as an open deal.
-const CLOSED_STATUSES = ["funded", "declined", "dead", "nurture", "renewal_eligible", "restructure_executed", "servicing"];
+// A deal in one of these statuses is "done" for dedup purposes — picking the
+// customer again starts a FRESH deal (renewal after funding, comeback after
+// declined/dead). NOTE: "nurture" is deliberately NOT here — a nurtured lead is
+// still active (long re-engagement sequence), so picking them must RESUME the
+// nurture deal, not mint a duplicate (that was the "new lead created out of an
+// existing nurture" bug).
+const CLOSED_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "restructure_executed", "servicing"];
 
 const emptyForm = {
   first_name: "",
