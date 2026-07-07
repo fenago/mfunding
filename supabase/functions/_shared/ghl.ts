@@ -172,6 +172,14 @@ export interface BusinessInput {
   postalCode?: string | null;
 }
 
+/** List the location's GHL Businesses (companies). Used to find one by name
+ * before creating a duplicate. Returns { businesses: [{ id, name, website }] }. */
+export async function listBusinesses(cfg: GhlConfig) {
+  return await ghlFetch<{ businesses: Array<{ id: string; name: string; website?: string | null }> }>(
+    cfg, "GET", `/businesses/?locationId=${cfg.locationId}`,
+  );
+}
+
 /** Create a GHL Business (company) that contacts can be grouped under. */
 export async function createBusiness(cfg: GhlConfig, input: BusinessInput) {
   const payload: Record<string, unknown> = { locationId: cfg.locationId };

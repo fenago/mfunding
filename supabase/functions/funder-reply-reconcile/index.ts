@@ -26,7 +26,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
-  corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact, type GhlConfig,
+  corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact,
+  upsertContact, addContactTags, listBusinesses, createBusiness, linkContactToBusiness,
+  type GhlConfig,
 } from "../_shared/ghl.ts";
 import { callLLM } from "../_shared/llm.ts";
 
@@ -456,6 +458,7 @@ interface PhoneMatchResult {
   linked: number;
   conflicts: string[];
   samples: Array<{ lender: string; phone: string; contactName: string }>;
+  linkedLenderIds: string[]; // lenders whose contacts changed → sync inline
 }
 
 async function matchPhones(db: SupabaseClient, cfg: GhlConfig): Promise<PhoneMatchResult> {
@@ -502,6 +505,7 @@ async function matchPhones(db: SupabaseClient, cfg: GhlConfig): Promise<PhoneMat
 
   let phoneMatches = 0, linked = 0;
   const samples: Array<{ lender: string; phone: string; contactName: string }> = [];
+  const touchedLenderIds = new Set<string>();
   const seen = new Set<string>(); // one pass per contact per run
 
   for (const c of conversations) {
@@ -557,6 +561,7 @@ async function matchPhones(db: SupabaseClient, cfg: GhlConfig): Promise<PhoneMat
     const { error } = await db.from("lenders").update(patch).eq("id", lender.id);
     if (error) continue;
     linkedContactIds.add(contactId);
+    touchedLenderIds.add(lender.id);
     linked++;
     if (samples.length < 12) samples.push({ lender: lender.company_name, phone: formatted, contactName: contactName || lender.company_name });
 
@@ -571,7 +576,7 @@ async function matchPhones(db: SupabaseClient, cfg: GhlConfig): Promise<PhoneMat
     } catch { /* audit is best-effort */ }
   }
 
-  return { scanned: conversations.length, phone_matches: phoneMatches, linked, conflicts, samples };
+  return { scanned: conversations.length, phone_matches: phoneMatches, linked, conflicts, samples, linkedLenderIds: [...touchedLenderIds] };
 }
 
 // ── UNMATCHED INBOUND NUMBERS (manual tie) ───────────────────────────────────
@@ -856,6 +861,142 @@ async function applyOne(db: SupabaseClient, item: ApproveItem): Promise<ApplyRes
   return { lenderId: l.id, ok: true, lenderName: l.company_name, contactAdded, primarySet, linked };
 }
 
+// ── SYNC FUNDER CONTACTS → GHL BUSINESS ──────────────────────────────────────
+// Close the last gap: every funder contact we store in lenders.contacts must also
+// exist in GHL/VibeReach AS a contact LINKED to a GHL Business representing that
+// funder — so GHL email/SMS/call automations can target a funder's people.
+//
+// For a lender: ensure a GHL Business (reuse ghl_business_id, else find one whose
+// name case-insensitively equals company_name, else create it), then for each
+// contact ensure a GHL contact exists (upsert the manually-added ones that carry
+// no ghl_contact_id) and link it under the business. Idempotent + best-effort:
+// each GHL call is guarded so one bad contact never aborts the rest, and a re-run
+// creates 0 new businesses/contacts (ids are cached back).
+interface SyncResult {
+  lenderId: string;
+  company_name: string;
+  business_id: string | null;
+  business_created: boolean;
+  contacts_synced: number;
+  contacts_linked: number;
+  created_contacts: number;
+  error?: string;
+}
+
+async function syncLenderContactsToGhl(
+  cfg: GhlConfig, db: SupabaseClient, lender: { id: string },
+): Promise<SyncResult> {
+  // Re-fetch fresh so we act on the latest contacts — inline callers (apply,
+  // tie-phone, match-phones) just wrote to lenders.contacts, and cron re-reads.
+  const { data: row } = await db.from("lenders")
+    .select("id, company_name, website, ghl_business_id, contacts")
+    .eq("id", lender.id).maybeSingle();
+  const l = row as
+    | { id: string; company_name: string; website: string | null; ghl_business_id: string | null; contacts: unknown }
+    | null;
+  const base: SyncResult = {
+    lenderId: lender.id, company_name: l?.company_name ?? "", business_id: l?.ghl_business_id ?? null,
+    business_created: false, contacts_synced: 0, contacts_linked: 0, created_contacts: 0,
+  };
+  if (!l) return { ...base, error: "lender not found" };
+
+  const contacts = contactsArray(l.contacts);
+  if (contacts.length === 0) return base;
+
+  // 1) Ensure a GHL Business for this lender.
+  let businessId = String(l.ghl_business_id ?? "").trim();
+  if (!businessId) {
+    try {
+      const want = l.company_name.trim().toLowerCase();
+      const list = await listBusinesses(cfg);
+      const found = (list.data?.businesses ?? []).find(
+        (b) => String(b.name ?? "").trim().toLowerCase() === want,
+      );
+      if (found?.id) businessId = found.id;
+    } catch { /* best-effort — fall through to create */ }
+  }
+  if (!businessId && l.company_name.trim()) {
+    try {
+      const created = await createBusiness(cfg, { name: l.company_name, website: l.website });
+      if (created.ok && created.data?.business?.id) {
+        businessId = created.data.business.id;
+        base.business_created = true;
+      }
+    } catch { /* best-effort */ }
+  }
+  if (businessId && businessId !== l.ghl_business_id) {
+    await db.from("lenders").update({ ghl_business_id: businessId }).eq("id", l.id);
+  }
+  base.business_id = businessId || null;
+  if (!businessId) return base; // can't link contacts without a business
+
+  // 2) Ensure each contact exists in GHL + is linked under the business.
+  let mutated = false;
+  for (const c of contacts) {
+    try {
+      let contactId = String(c.ghl_contact_id ?? "").trim();
+      const email = String(c.email ?? "").trim() || null;
+      const phone = String(c.phone ?? "").trim() || null;
+      const rawName = String(c.name ?? "").trim();
+
+      if (!contactId) {
+        // Manually added (e.g. "Curt") — no GHL contact yet. Upsert by email/phone.
+        if (!email && !phone) continue; // nothing to dedupe on → skip
+        const parts = rawName.split(/\s+/).filter(Boolean);
+        const firstName = parts.length ? parts[0] : null;
+        const lastName = parts.length > 1 ? parts.slice(1).join(" ") : null;
+        const up = await upsertContact(cfg, {
+          email, phone, firstName, lastName,
+          companyName: l.company_name, tags: ["funder"],
+        });
+        contactId = up.data?.contact?.id ?? "";
+        if (!contactId) continue;
+        c.ghl_contact_id = contactId; // cache back so re-runs are no-ops
+        mutated = true;
+        base.created_contacts++;
+      } else {
+        // Already a GHL contact (it emailed/called us) — stamp company + tag.
+        if (l.company_name.trim()) {
+          await ghlFetch(cfg, "PUT", `/contacts/${contactId}`, { companyName: l.company_name });
+        }
+        try { await addContactTags(cfg, contactId, ["funder"]); } catch { /* best-effort */ }
+      }
+
+      base.contacts_synced++;
+      const linked = await linkContactToBusiness(cfg, contactId, businessId);
+      if (linked.ok) base.contacts_linked++;
+    } catch { /* best-effort per contact — never abort the lender */ }
+  }
+
+  if (mutated) await db.from("lenders").update({ contacts }).eq("id", l.id);
+  return base;
+}
+
+// Sync a set of lenders' contacts to their GHL Business; returns a rolled-up
+// summary + per-lender results. Used by the "sync-ghl" action + the cron safety
+// net + the inline hooks after apply/tie-phone/match-phones.
+async function syncLenders(cfg: GhlConfig, db: SupabaseClient, lenderIds: string[]) {
+  const results: SyncResult[] = [];
+  for (const id of lenderIds) results.push(await syncLenderContactsToGhl(cfg, db, { id }));
+  return {
+    lenders: results.length,
+    businesses_ensured: results.filter((r) => r.business_id).length,
+    businesses_created: results.filter((r) => r.business_created).length,
+    created_contacts: results.reduce((n, r) => n + r.created_contacts, 0),
+    contacts_synced: results.reduce((n, r) => n + r.contacts_synced, 0),
+    contacts_linked: results.reduce((n, r) => n + r.contacts_linked, 0),
+    results,
+  };
+}
+
+// The ids of every lender that currently carries at least one contact.
+async function lenderIdsWithContacts(db: SupabaseClient): Promise<string[]> {
+  const { data } = await db.from("lenders").select("id, contacts");
+  return ((data ?? []) as Array<{ id: string; contacts: unknown }>)
+    .filter((l) => contactsArray(l.contacts).length > 0)
+    .map((l) => l.id);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -901,7 +1042,18 @@ Deno.serve(async (req) => {
 
     if (action === "match-phones") {
       const r = await matchPhones(db, cfg);
-      return json({ ok: true, action: "match-phones", ...r });
+      // Inline: sync the lenders this run just linked, so their new contacts land
+      // under the funder's GHL Business immediately (not only on the next cron).
+      const ghl_sync = r.linkedLenderIds.length ? await syncLenders(cfg, db, r.linkedLenderIds) : null;
+      return json({ ok: true, action: "match-phones", ...r, ghl_sync });
+    }
+
+    if (action === "sync-ghl") {
+      // Remediate/keep-synced: one lender ({lenderId}) or every lender with contacts.
+      const one = String(payload.lenderId ?? "").trim();
+      const ids = one ? [one] : await lenderIdsWithContacts(db);
+      const r = await syncLenders(cfg, db, ids);
+      return json({ ok: true, action: "sync-ghl", ...r });
     }
 
     if (action === "list-unmatched-phones") {
@@ -910,7 +1062,10 @@ Deno.serve(async (req) => {
     }
 
     if (action === "tie-phone") {
-      const r = await tiePhone(db, payload as unknown as TieItem);
+      const item = payload as unknown as TieItem;
+      const r = await tiePhone(db, item);
+      // Inline: sync the just-tied lender's contacts to its GHL Business.
+      if (r.ok && item?.lenderId) { try { await syncLenderContactsToGhl(cfg, db, { id: item.lenderId }); } catch { /* best-effort */ } }
       return json({ ...r, action: "tie-phone" }, r.ok ? 200 : 400);
     }
 
@@ -921,6 +1076,9 @@ Deno.serve(async (req) => {
         if (!item?.lenderId || !item?.contactId) { results.push({ lenderId: String(item?.lenderId ?? ""), ok: false, error: "missing lenderId/contactId" }); continue; }
         results.push(await applyOne(db, item));
       }
+      // Inline: sync each lender we just added a funder contact to.
+      const touched = [...new Set(results.filter((r) => r.ok).map((r) => r.lenderId))];
+      if (touched.length) { try { await syncLenders(cfg, db, touched); } catch { /* best-effort */ } }
       return json({ ok: true, action: "apply", applied: results.filter((r) => r.ok).length, results });
     }
 
@@ -939,6 +1097,10 @@ Deno.serve(async (req) => {
       const pendingReview = r.proposals.filter((p) => !p.extracted.name && !p.alreadyLinked).length;
       // Also tie inbound calls/texts to funders by phone number (see matchPhones).
       const ph = await matchPhones(db, cfg);
+      // Safety net: re-sync EVERY lender that has contacts to its GHL Business, so
+      // contacts added ANY way (app, tie-phone, reconciler, or raw SQL like Curt)
+      // land under the funder's business within one cron cycle. Idempotent.
+      const ghl_sync = await syncLenders(cfg, db, await lenderIdsWithContacts(db));
       return json({
         ok: true, action: "cron", scanned: r.scanned, proposals: r.proposals.length,
         auto_applied: results.filter((x) => x.ok).length,
@@ -946,6 +1108,11 @@ Deno.serve(async (req) => {
         phone_match: {
           scanned: ph.scanned, phone_matches: ph.phone_matches, linked: ph.linked,
           conflicts: ph.conflicts, samples: ph.samples,
+        },
+        ghl_sync: {
+          lenders: ghl_sync.lenders, businesses_ensured: ghl_sync.businesses_ensured,
+          businesses_created: ghl_sync.businesses_created, created_contacts: ghl_sync.created_contacts,
+          contacts_synced: ghl_sync.contacts_synced, contacts_linked: ghl_sync.contacts_linked,
         },
       });
     }
