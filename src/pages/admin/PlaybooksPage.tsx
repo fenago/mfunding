@@ -91,6 +91,9 @@ export default function PlaybooksPage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busyStep, setBusyStep] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // The close-deal modal is lifted to the page so BOTH the top context bar and
+  // every playbook step can open the SAME flow. Rendered once at the bottom.
+  const [showCloseDeal, setShowCloseDeal] = useState(false);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
   const { isSuperAdmin } = useUserProfile();
@@ -351,7 +354,7 @@ export default function PlaybooksPage() {
 
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
         {dealMatchesPlaybook && deal ? (<>
-          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} onCloseDeal={closeDeal} splits={splits} hasCloser={hasCloser} />
+          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} openCloseDeal={() => setShowCloseDeal(true)} splits={splits} hasCloser={hasCloser} />
           {deal.merchant_reply_at && Date.now() - Date.parse(deal.merchant_reply_at) < 3 * 24 * 60 * 60 * 1000 && (
             <div className="mt-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-800 dark:text-emerald-200 flex flex-wrap items-center gap-1.5">
               <span className="font-semibold">💬 Merchant replied {(() => { const m = Math.round((Date.now() - Date.parse(deal.merchant_reply_at!)) / 60000); return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; })()}</span>
@@ -420,6 +423,7 @@ export default function PlaybooksPage() {
                 busy={busyStep === s.n}
                 onComplete={completeStep}
                 onDocChecklistChange={onDocChecklistChange}
+                onCloseDeal={() => setShowCloseDeal(true)}
               />
             );
           })}
@@ -429,6 +433,19 @@ export default function PlaybooksPage() {
 
       {/* Live funnel */}
       <FunnelBoard />
+
+      {/* Shared close-deal modal — opened from the top context bar OR from any
+          playbook step. Single instance, single close flow. */}
+      {showCloseDeal && deal && (
+        <CloseDealModal
+          dealName={dealName(deal)}
+          onCancel={() => setShowCloseDeal(false)}
+          onConfirm={async (outcome, reason, note) => {
+            await closeDeal(outcome, reason, note);
+            setShowCloseDeal(false);
+          }}
+        />
+      )}
 
       {/* Deal-closed confirmation toast */}
       {toast && (
@@ -536,12 +553,11 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, onClear, onAdvance, onCloseDeal, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; onCloseDeal: (outcome: DealStatus, reason: string, note: string) => Promise<void>; splits: CloserSplits; hasCloser: boolean }) {
+function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; splits: CloserSplits; hasCloser: boolean }) {
   const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
   const idx = stages.findIndex((s) => s.key === deal.status);
   const cfg = DEAL_STATUS_CONFIG[deal.status];
   const terminal = TERMINAL.includes(deal.status);
-  const [closing, setClosing] = useState(false);
   const inPlay = expectedCommissionInPlay(deal.amount_requested, deal.is_renewal);
   // Company-lead split is the assumed default here (lead-source-aware later).
   const myCut = inPlay * (splits.company_lead_split / 100);
@@ -583,7 +599,7 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, onCloseDeal, split
           </Link>
           {!terminal && (
             <button
-              onClick={() => setClosing(true)}
+              onClick={openCloseDeal}
               title="Close this deal — nurture, declined, or dead"
               className="text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700"
             >
@@ -600,16 +616,6 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, onCloseDeal, split
         </div>
       </div>
 
-      {closing && (
-        <CloseDealModal
-          dealName={dealName(deal)}
-          onCancel={() => setClosing(false)}
-          onConfirm={async (outcome, reason, note) => {
-            await onCloseDeal(outcome, reason, note);
-            setClosing(false);
-          }}
-        />
-      )}
       {/* Animated pipeline — shows where the lead is; click a stage to move it there (fires the GHL automation). */}
       <div className="mt-4 rounded-lg bg-white/70 dark:bg-gray-800/60 border border-emerald-200 dark:border-emerald-800 px-3 py-3">
         <div className="flex items-center justify-between mb-2">
@@ -972,6 +978,7 @@ function StepCard({
   busy,
   onComplete,
   onDocChecklistChange,
+  onCloseDeal,
 }: {
   step: PlaybookStep;
   last: boolean;
@@ -985,6 +992,7 @@ function StepCard({
   busy: boolean;
   onComplete: (step: PlaybookStep, values: Record<string, string>, note: string, outcome: string, checked: string[], advance?: boolean) => void;
   onDocChecklistChange: (next: Record<string, boolean>) => void;
+  onCloseDeal: () => void;
 }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
 
@@ -1386,6 +1394,22 @@ function StepCard({
           <Link to={step.route.to} className="mt-3 inline-flex items-center gap-1 text-sm text-ocean-blue hover:underline">
             {step.route.label} <ArrowRightIcon className="w-3.5 h-3.5" />
           </Link>
+        )}
+
+        {/* A deal can die at ANY step — let the closer close it from right here.
+            Opens the SAME shared close-deal flow the top context bar uses. Live
+            deals only (hidden in reference/browse mode). */}
+        {interactive && (
+          <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-700 flex justify-end">
+            <button
+              type="button"
+              onClick={onCloseDeal}
+              title="Deal died here? Close it — nurture, declined, or dead"
+              className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+            >
+              <XMarkIcon className="w-3.5 h-3.5" /> Close deal
+            </button>
+          </div>
         )}
         </>)}
       </div>
