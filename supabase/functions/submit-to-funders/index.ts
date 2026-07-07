@@ -566,7 +566,7 @@ Deno.serve(async (req) => {
     // URL at send time). Oversized sets fall back to link-only so a send never
     // fails on the ~25MB email cap. ---
     const attachSlugs = recipe?.attach_docs?.length ? recipe.attach_docs : ["application", "bank_statement"];
-    const mode = recipe?.attachment_mode ?? "links";
+    const mode = recipe?.attachment_mode ?? "both";
     const wantAttach = mode === "attachments" || mode === "both";
     const wantLinks = mode === "links" || mode === "both";
     const docLinkLines: string[] = [];

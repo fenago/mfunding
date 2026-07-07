@@ -55,7 +55,7 @@ interface RecipeForm {
 
 const EMPTY: RecipeForm = {
   method: "email", to_email: "", cc_emails: "", subject_template: "",
-  body_template: "", attach_docs: [], attachment_mode: "links",
+  body_template: "", attach_docs: [], attachment_mode: "both",
   max_statement_months: "4", portal_url: "", portal_steps: "",
   portal_credentials_hint: "", required_stips: [], special_instructions: "", internal_notes: "",
   active: true,
@@ -85,7 +85,7 @@ export default function FunderRecipeCard({ lenderId, submissionEmail }: { lender
           subject_template: data.subject_template ?? "",
           body_template: data.body_template ?? "",
           attach_docs: data.attach_docs ?? [],
-          attachment_mode: (data.attachment_mode as AttachmentMode) ?? "links",
+          attachment_mode: (data.attachment_mode as AttachmentMode) ?? "both",
           max_statement_months: data.max_statement_months != null ? String(data.max_statement_months) : "4",
           portal_url: data.portal_url ?? "",
           portal_steps: (data.portal_steps ?? []).join("\n"),
