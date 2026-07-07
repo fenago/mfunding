@@ -60,6 +60,10 @@ const DEFAULT_SETTINGS = {
   negative_days_flag: 3,
   debt_service_flag_pct: 20,
   min_avg_daily_balance: null as number | null,
+  // How to treat recurring third-party PAYROLL paid to the OWNER's own name — a
+  // judgment call between business commission income and personal W-2 pay.
+  // 'count' | 'flag_and_discount' (default: count but flag + compute downside) | 'exclude'.
+  owner_payroll_treatment: "flag_and_discount" as "count" | "flag_and_discount" | "exclude",
   extraction_model: "claude-sonnet-4-6",
   judge_model: "claude-opus-4-8",
 };
@@ -101,11 +105,19 @@ interface PerStatement {
   min_balance: number | null;
   negative_days: number | null;
   nsf_count: number | null;
+  account_last4: string | null;
   deposits: Array<{ date?: string; desc?: string; amount?: number; classified_type?: string }>;
   padding_deposits: Array<{ date?: string; desc?: string; amount?: number; category?: string }>;
+  // Recurring third-party PAYROLL paid to the OWNER's own name (and similar
+  // owner-personal-income patterns) — a distinct bucket from padding. Whether it
+  // counts as true revenue is a judgment call resolved by owner_payroll_treatment.
+  questionable_deposits: Array<{ date?: string; desc?: string; amount?: number; source?: string; reason?: string }>;
   mca_debits: Array<{ date?: string; desc?: string; amount?: number; cadence?: string }>;
   _filename?: string;
   _error?: string;
+  // Provenance for post-extraction period dedup (not sent to Claude / persisted for
+  // debugging only): how many source files collapsed into this unique period.
+  _dupe_count?: number;
 }
 
 function extractionSystem(enabledCategories: string[]): string {
@@ -125,14 +137,21 @@ function extractionSystem(enabledCategories: string[]): string {
     "debit credited back; round_number = suspiciously round large deposits inconsistent with sales; " +
     "same_day_in_out = money deposited and withdrawn same day (wash). If a category is NOT in the enabled " +
     "list, do NOT treat that type as padding. " +
+    "SEPARATELY from padding, list QUESTIONABLE deposits: recurring third-party PAYROLL deposits paid to the " +
+    "OWNER's own name (e.g. an ACH labeled 'DES:PAYROLL' / 'PAYROLL' with 'INDN:<owner name>', or similar " +
+    "owner-personal-income patterns like recurring W-2-style direct deposits to the owner). These are AMBIGUOUS: " +
+    "they may be legitimate business commission income OR personal employment pay — do NOT put them in " +
+    "padding_deposits and do NOT silently drop them; capture each with the paying source and why it's ambiguous. " +
     "Also list MCA/advance DEBITS — recurring daily or weekly fixed withdrawals that look like an existing " +
     "merchant cash advance / receivables purchase remittance (cadence: 'daily' | 'weekly' | 'unknown'). " +
+    "Also return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
     "Return ONLY this JSON object, no prose: " +
-    '{"month":string|null,"opening_balance":number|null,"closing_balance":number|null,' +
+    '{"month":string|null,"account_last4":string|null,"opening_balance":number|null,"closing_balance":number|null,' +
     '"total_deposits":number|null,"total_withdrawals":number|null,"avg_daily_balance":number|null,' +
     '"min_balance":number|null,"negative_days":number|null,"nsf_count":number|null,' +
     '"deposits":[{"date":string,"desc":string,"amount":number,"classified_type":string}],' +
     '"padding_deposits":[{"date":string,"desc":string,"amount":number,"category":string}],' +
+    '"questionable_deposits":[{"date":string,"desc":string,"amount":number,"source":string,"reason":string}],' +
     '"mca_debits":[{"date":string,"desc":string,"amount":number,"cadence":string}]}'
   );
 }
@@ -273,52 +292,108 @@ Deno.serve(async (req) => {
     // series would blow the edge-function wall-clock; in parallel it's one round
     // trip's latency. Each task never throws (errors become an _error statement).
     const exSystem = extractionSystem(enabledCategories);
-    const extractOne = async (d: Any): Promise<PerStatement> => {
+
+    // Step 1: fetch each bank doc, compute a content hash, and base64-encode it —
+    // then DROP the raw bytes (keeping only the b64 string) to stay within the edge
+    // worker's memory wall on a many-statement deal. The hash lets us DEDUP
+    // byte-identical uploads BEFORE spending a Claude call: if a merchant uploads the
+    // exact same file twice (even renamed), we send it to Claude once and reuse the
+    // extraction for every copy.
+    const loadOne = async (d: Any): Promise<{ filename: string; hash: string | null; b64: string | null; err?: string }> => {
       const filename = (d.filename as string) || "statement.pdf";
       const isPdf = /pdf/i.test((d.mime_type as string) || "") || /\.pdf$/i.test(filename);
-      // Only PDFs are sent as native document blocks. (Image statements could be
-      // added later; for now non-PDF bank docs are noted and skipped from extraction.)
-      if (!isPdf) return emptyStatement(filename, "not a PDF — skipped from extraction");
+      if (!isPdf) return { filename, hash: null, b64: null, err: "not a PDF — skipped from extraction" };
       const { data: signed } = await db.storage.from(DOC_BUCKET).createSignedUrl(d.storage_path, SIGNED_URL_TTL);
       const url = signed?.signedUrl;
-      if (!url) return emptyStatement(filename, "could not sign URL");
-      let b64: string;
+      if (!url) return { filename, hash: null, b64: null, err: "could not sign URL" };
       try {
         const bin = await fetch(url);
-        if (!bin.ok) return emptyStatement(filename, `fetch ${bin.status}`);
+        if (!bin.ok) return { filename, hash: null, b64: null, err: `fetch ${bin.status}` };
         const bytes = new Uint8Array(await bin.arrayBuffer());
-        if (!bytes.length) return emptyStatement(filename, "empty file");
-        b64 = base64FromBytes(bytes);
+        if (!bytes.length) return { filename, hash: null, b64: null, err: "empty file" };
+        const hash = `${bytes.length}:${hashBytes(bytes)}`;
+        const b64 = base64FromBytes(bytes);
+        return { filename, hash, b64 }; // raw bytes go out of scope here.
       } catch (e) {
-        return emptyStatement(filename, `fetch error: ${e instanceof Error ? e.message : e}`);
-      }
-      try {
-        const text = await callAnthropicBlocks(
-          db,
-          settings.extraction_model,
-          [
-            { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
-            { type: "text", text: "Extract this bank statement per your instructions. Return ONLY the JSON object." },
-          ],
-          { system: exSystem, maxTokens: 4096, temperature: 0, jsonMode: true },
-        );
-        const parsed = safeParseJson(text);
-        if (!parsed) return emptyStatement(filename, "could not parse extraction JSON");
-        return normalizeStatement(parsed, filename);
-      } catch (e) {
-        return emptyStatement(filename, `extraction error: ${e instanceof Error ? e.message : e}`);
+        return { filename, hash: null, b64: null, err: `fetch error: ${e instanceof Error ? e.message : e}` };
       }
     };
-    const perStatement: PerStatement[] = await Promise.all(bankDocs.map(extractOne));
+    const loaded = await Promise.all(bankDocs.map(loadOne));
+
+    // Group by the byte fingerprint. Byte-identical files share one Claude extraction;
+    // the result is fanned back to every copy.
+    const groups = new Map<string, { b64: string; filenames: string[] }>();
+    for (const l of loaded) {
+      if (!l.b64 || !l.hash) continue; // non-PDF / fetch errors: handled individually below.
+      const g = groups.get(l.hash);
+      if (g) g.filenames.push(l.filename);
+      else groups.set(l.hash, { b64: l.b64, filenames: [l.filename] });
+    }
+
+    const extractGroup = async (g: { b64: string; filenames: string[] }): Promise<PerStatement> => {
+      const filename = g.filenames[0];
+      // Transient failures are common on real runs — the API overloads (HTTP 529/429)
+      // or the model returns a JSON near-miss. One short retry recovers most of them
+      // without pushing the whole (concurrent) run past the worker wall-clock/CPU wall.
+      const MAX_ATTEMPTS = 2;
+      let lastErr = "extraction failed";
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const text = await callAnthropicBlocks(
+            db,
+            settings.extraction_model,
+            [
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: g.b64 } },
+              { type: "text", text: "Extract this bank statement per your instructions. Return ONLY the JSON object." },
+            ],
+            // A busy month has a long deposits/mca_debits array — 4096 tokens can
+            // truncate the JSON mid-array and fail parsing, so give extraction room.
+            { system: exSystem, maxTokens: 8192, temperature: 0, jsonMode: true },
+          );
+          const parsed = safeParseJson(text);
+          if (!parsed) { lastErr = "could not parse extraction JSON"; }
+          else {
+            const st = normalizeStatement(parsed, filename);
+            // A byte-identical duplicate uploaded twice yields the SAME result as once.
+            st._dupe_count = g.filenames.length;
+            return st;
+          }
+        } catch (e) {
+          lastErr = `extraction error: ${e instanceof Error ? e.message : e}`;
+        }
+        if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 600));
+      }
+      return emptyStatement(filename, lastErr);
+    };
+
+    // Extract one statement per unique byte-set, plus carry through the non-PDF /
+    // fetch-error docs as _error statements (so extraction_gaps still counts them).
+    const errorStatements = loaded
+      .filter((l) => !l.b64)
+      .map((l) => emptyStatement(l.filename, l.err ?? "could not load file"));
+    const extracted = await Promise.all(Array.from(groups.values()).map(extractGroup));
+    let perStatement: PerStatement[] = [...extracted, ...errorStatements];
+
+    // Post-extraction PERIOD dedup: even non-byte-identical files can be the same
+    // statement (re-scanned, re-exported, renamed). Dedup successful extractions by
+    // (account, period); keep the richer extraction (more line items), first on tie.
+    // Net effect: the same statement uploaded twice produces the same result as once.
+    perStatement = dedupByPeriod(perStatement);
 
     // ---- PASS B: AGGREGATION (deterministic — no AI) ----
+    // Aggregation runs over the UNIQUE set only, so months_covered /
+    // statements_analyzed / all revenue math never double-count a duplicate.
     const analyzed = perStatement.filter((s) => !s._error);
     const monthsCovered = analyzed.length;
 
     const perMonthReported: number[] = [];
     const perMonthPadding: number[] = [];
+    // Owner-payroll ("questionable") revenue per month — deposits that ARE credited
+    // as true revenue by default but are a judgment call (see owner_payroll_treatment).
+    const perMonthQuestionable: number[] = [];
     const perMonthNet: number[] = [];
     const paddingByCategory: Record<string, number> = {};
+    const questionableBySource: Record<string, number> = {};
     let nsfTotal = 0;
     let negativeDays = 0;
     const balances: number[] = [];
@@ -334,9 +409,22 @@ Deno.serve(async (req) => {
         if (p.category) paddingByCategory[p.category] = (paddingByCategory[p.category] ?? 0) + amt;
         return sum + amt;
       }, 0);
+      const questionable = (s.questionable_deposits ?? []).reduce((sum, q) => {
+        const amt = Math.abs(numOr0(q.amount));
+        // Collapse case/whitespace variants of the same payer (e.g. "Your Health
+        // Quot" vs "YOUR HEALTH QUOT") so the by-source breakdown doesn't split one
+        // source into two lines.
+        const src = (q.source || q.desc || "owner payroll").toString().trim().toUpperCase().replace(/\s+/g, " ").slice(0, 80);
+        questionableBySource[src] = (questionableBySource[src] ?? 0) + amt;
+        return sum + amt;
+      }, 0);
+      // "net" (true revenue) = deposits − padding. Questionable owner-payroll is NOT
+      // padding, so by default it stays IN net (the 'count' / 'flag_and_discount'
+      // behavior). It is subtracted below only when treatment == 'exclude'.
       const net = Math.max(0, reported - padding);
       perMonthReported.push(reported);
       perMonthPadding.push(padding);
+      perMonthQuestionable.push(questionable);
       perMonthNet.push(net);
       nsfTotal += numOr0(s.nsf_count);
       negativeDays += numOr0(s.negative_days);
@@ -356,9 +444,25 @@ Deno.serve(async (req) => {
 
     const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
     const reportedAvgMonthlyRevenue = round2(avg(perMonthReported));
-    const trueAvgMonthlyRevenue = round2(avg(perMonthNet));
     const paddingTotal = round2(perMonthPadding.reduce((a, b) => a + b, 0));
-    const avgNetRetained = trueAvgMonthlyRevenue; // deposits − padding (retained real revenue)
+
+    // Owner-payroll ("questionable") treatment. 'count'/'flag_and_discount' leave it
+    // IN true revenue; 'exclude' removes it. The conservative figure (revenue if the
+    // questionable income were personal/W-2 rather than business) is always computed
+    // so the judge + assumptions can state the downside without a merchant round-trip.
+    const ownerPayrollTreatment = ((settings.owner_payroll_treatment as string) || "flag_and_discount");
+    const questionableTotal = round2(perMonthQuestionable.reduce((a, b) => a + b, 0));
+    const avgQuestionableMonthly = round2(avg(perMonthQuestionable));
+    // per-month net EXCLUDING questionable income = the conservative revenue series.
+    const perMonthNetConservative = perMonthNet.map((n, i) => Math.max(0, n - (perMonthQuestionable[i] ?? 0)));
+    const conservativeAvgMonthlyRevenue = round2(avg(perMonthNetConservative));
+
+    // Effective net series feeding the affordability math depends on the treatment:
+    //   count / flag_and_discount → keep questionable in (base case)
+    //   exclude                   → drop it (use the conservative series)
+    const effPerMonthNet = ownerPayrollTreatment === "exclude" ? perMonthNetConservative : perMonthNet;
+    const trueAvgMonthlyRevenue = round2(avg(effPerMonthNet));
+    const avgNetRetained = trueAvgMonthlyRevenue; // deposits − padding (− questionable if excluded)
     const revenueQualityPct = reportedAvgMonthlyRevenue > 0
       ? round2((trueAvgMonthlyRevenue / reportedAvgMonthlyRevenue) * 100)
       : 100;
@@ -383,7 +487,7 @@ Deno.serve(async (req) => {
       (num(deal.vcf_active_positions) ?? 0) || (existingDailyDebit > 0 ? 1 : 0);
 
     // Revenue trend across the analyzed months (first vs last third).
-    const revenueTrend = trendOf(perMonthNet);
+    const revenueTrend = trendOf(effPerMonthNet);
 
     // Deposit concentration — largest single sales deposit vs total deposits
     // (a proxy for one-customer dependency). Computed across all analyzed months.
@@ -404,6 +508,14 @@ Deno.serve(async (req) => {
     const avgDailyBalance = balances.length ? round2(avg(balances)) : null;
     const minBalance = minBalances.length ? round2(Math.min(...minBalances)) : null;
 
+    // Conservative sensitivity: what the affordability looks like if the questionable
+    // owner-payroll income turned out to be personal (excluded). Always computed so
+    // the judge can state base-vs-conservative even under 'count'/'flag_and_discount'.
+    const consDailyRevenue = conservativeAvgMonthlyRevenue / BIZ_DAYS_PER_MONTH;
+    const consSafeDailyCapacity = round2(Math.max(0, consDailyRevenue * holdbackFraction - existingDailyDebit));
+    const conservativeMaxAffordableAdvance = round2(consSafeDailyCapacity * TERM_BIZ_DAYS);
+    const hasQuestionable = questionableTotal > 0;
+
     const metrics = {
       statements_analyzed: monthsCovered,
       months_covered: monthsCovered,
@@ -414,7 +526,16 @@ Deno.serve(async (req) => {
       padding_by_category: Object.fromEntries(
         Object.entries(paddingByCategory).map(([k, v]) => [k, round2(v)]),
       ),
-      net_retained_by_month: perMonthNet.map(round2),
+      // Owner-payroll ("questionable") income — the base-vs-conservative sensitivity.
+      owner_payroll_treatment: ownerPayrollTreatment,
+      questionable_revenue_total: questionableTotal,
+      questionable_revenue_monthly: avgQuestionableMonthly,
+      questionable_revenue_by_source: Object.fromEntries(
+        Object.entries(questionableBySource).map(([k, v]) => [k, round2(v)]),
+      ),
+      conservative_avg_monthly_revenue: conservativeAvgMonthlyRevenue,
+      conservative_max_affordable_advance: conservativeMaxAffordableAdvance,
+      net_retained_by_month: effPerMonthNet.map(round2),
       avg_net_retained: round2(avgNetRetained),
       avg_daily_balance: avgDailyBalance,
       min_balance: minBalance,
@@ -478,8 +599,11 @@ Deno.serve(async (req) => {
     if (settings.min_avg_daily_balance != null && avgDailyBalance != null && avgDailyBalance < numOr0(settings.min_avg_daily_balance)) {
       flags.push({ code: "low_balance", severity: "warn", message: `Average daily balance ${money(avgDailyBalance)} is below the ${money(numOr0(settings.min_avg_daily_balance))} floor.` });
     }
-    if (analyzed.length < bankDocs.length) {
-      flags.push({ code: "extraction_gaps", severity: "info", message: `${bankDocs.length - analyzed.length} of ${bankDocs.length} statement file(s) could not be analyzed.` });
+    // Extraction gaps count only genuine FAILURES (couldn't load/parse a file) — NOT
+    // duplicates removed by dedup, which are expected and harmless.
+    const failedStatements = perStatement.filter((s) => s._error).length;
+    if (failedStatements > 0) {
+      flags.push({ code: "extraction_gaps", severity: "info", message: `${failedStatements} of ${bankDocs.length} statement file(s) could not be analyzed.` });
     }
 
     // ---- Affordability rating (capacity vs. amount requested) ----
@@ -497,6 +621,57 @@ Deno.serve(async (req) => {
       affordabilityRating = "tight";
     } else {
       affordabilityRating = "unaffordable";
+    }
+
+    // ---- ASSUMPTIONS: the judgment calls the underwriter made from the docs alone ----
+    // So underwriting is COMPLETE before funder submission — no merchant round-trip.
+    // Each: { item, assumed, basis, impact_if_wrong }. Also surfaced as flags so the
+    // existing UI renders them with no frontend change.
+    const assumptions: Array<{ item: string; assumed: string; basis: string; impact_if_wrong: string }> = [];
+
+    if (hasQuestionable) {
+      const topSource = Object.entries(questionableBySource).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "owner payroll";
+      const counted = ownerPayrollTreatment !== "exclude";
+      const item = `${money(avgQuestionableMonthly)}/mo '${topSource}' owner-payroll deposits`;
+      const assumed = counted
+        ? "business commission/1099 income (counted as true revenue)"
+        : "personal W-2 pay (excluded from true revenue)";
+      const basis = "recurring third-party ACH labeled PAYROLL paid to the owner's own name";
+      const affordableBase = amountRequested != null && amountRequested > 0
+        ? (maxAffordableAdvance >= amountRequested ? "affordable" : "already tight")
+        : "supported";
+      const affordableCons = amountRequested != null && amountRequested > 0
+        ? (conservativeMaxAffordableAdvance >= amountRequested ? "still affordable" : "UNAFFORDABLE")
+        : `capacity drops to ${money(conservativeMaxAffordableAdvance)}`;
+      const impact = counted
+        ? `if personal W-2, true revenue falls from ${money(trueAvgMonthlyRevenue)} to ~${money(conservativeAvgMonthlyRevenue)}/mo` +
+          (amountRequested != null && amountRequested > 0
+            ? ` — the ${money(amountRequested)} ask goes from ${affordableBase} to ${affordableCons}${affordableCons === "UNAFFORDABLE" ? " → decline" : ""}`
+            : ` and max affordable advance falls to ${money(conservativeMaxAffordableAdvance)}`)
+        : `if it IS business income, true revenue would be ~${money(trueAvgMonthlyRevenue + avgQuestionableMonthly)}/mo and capacity higher`;
+      assumptions.push({ item, assumed, basis, impact_if_wrong: impact });
+
+      const sev: "warn" | "info" = ownerPayrollTreatment === "flag_and_discount" ? "warn" : "info";
+      flags.push({
+        code: "owner_payroll_assumption",
+        severity: sev,
+        message: `Assumption: ${item} treated as ${assumed}. Basis: ${basis}. If wrong: ${impact}.`,
+      });
+    }
+
+    if (failedStatements > 0) {
+      const item = `${failedStatements} of ${bankDocs.length} statement file(s) unreadable`;
+      assumptions.push({
+        item,
+        assumed: `underwrote on the ${monthsCovered} readable statement(s) only`,
+        basis: "PDF could not be fetched or parsed",
+        impact_if_wrong: "the unread month(s) could shift average revenue, NSF/negative-day counts, or reveal additional stacking",
+      });
+      flags.push({
+        code: "partial_docs_assumption",
+        severity: "info",
+        message: `Assumption: underwrote on ${monthsCovered} readable statement(s); ${failedStatements} unreadable file(s) not counted.`,
+      });
     }
 
     // ---- PASS C: JUDGE (Claude — narrative + risk_rating + funder-fit note) ----
@@ -526,10 +701,15 @@ Deno.serve(async (req) => {
       "what is given. Consider whether this merchant's TRUE revenue clears the funder revenue floors in the " +
       "network and, roughly, what paper grade (A/B/C/D) the profile suggests (A = clean/high revenue/low " +
       "stacking; D = heavily stacked/low quality). " +
+      "This is INTERNAL underwriting done BEFORE funder submission from the submitted docs ALONE — you must " +
+      "NOT ask the merchant anything. Where a judgment call was made (see ASSUMPTIONS), STATE the key " +
+      "assumption(s) in the narrative and give the SENSITIVITY: the base case (assumption holds) vs. the " +
+      "conservative case (assumption is wrong), using the base and conservative numbers provided. Then still " +
+      "land on ONE clear recommendation so the read is complete without a merchant round-trip. " +
       "Return ONLY strict JSON: " +
       '{"risk_rating":"low"|"medium"|"high","narrative":string,"funder_fit_note":string}. ' +
-      "narrative = 2-5 sentences a closer can act on. funder_fit_note = one line on which revenue floors this " +
-      "clears and the likely paper grade.";
+      "narrative = 3-6 sentences a closer can act on, including the assumption + base-vs-conservative sensitivity " +
+      "when one exists. funder_fit_note = one line on which revenue floors this clears and the likely paper grade.";
 
     const judgeUser =
       "MERCHANT: " + JSON.stringify({
@@ -543,7 +723,15 @@ Deno.serve(async (req) => {
       "\n\nAFFORDABILITY METRICS (computed deterministically from the bank statements):\n" +
       JSON.stringify(metrics, null, 2) +
       "\n\nFLAGS:\n" + JSON.stringify(flags, null, 2) +
-      "\n\nAFFORDABILITY RATING (code-derived): " + affordabilityRating +
+      "\n\nASSUMPTIONS THE UNDERWRITER MADE (state these + the sensitivity in the narrative):\n" +
+      JSON.stringify(assumptions, null, 2) +
+      (hasQuestionable
+        ? `\n\nSENSITIVITY on owner-payroll income (treatment='${ownerPayrollTreatment}'): ` +
+          `BASE CASE true revenue ${money(trueAvgMonthlyRevenue)}/mo, max affordable ${money(maxAffordableAdvance)}. ` +
+          `CONSERVATIVE CASE (owner-payroll is personal, excluded): true revenue ${money(conservativeAvgMonthlyRevenue)}/mo, ` +
+          `max affordable ${money(conservativeMaxAffordableAdvance)}.`
+        : "") +
+      "\n\nAFFORDABILITY RATING (code-derived, base case): " + affordabilityRating +
       "\n\nFUNDER NETWORK MONTHLY-REVENUE FLOORS (distinct, USD): " +
       (revenueFloors.length ? revenueFloors.map((f) => `$${f.toLocaleString("en-US")}`).join(", ") : "none on file") +
       ` (${funderMinimums.length} active MCA programs).` +
@@ -597,6 +785,7 @@ Deno.serve(async (req) => {
         per_statement: perStatement,
         metrics,
         flags,
+        assumptions,
         risk_rating: riskRating,
         affordability_rating: affordabilityRating,
         ai_narrative: narrativeOut,
@@ -621,6 +810,7 @@ Deno.serve(async (req) => {
       ai_narrative: narrativeOut,
       metrics,
       flags,
+      assumptions,
       per_statement: perStatement,
       extraction_model: settings.extraction_model,
       judge_model: settings.judge_model,
@@ -635,10 +825,10 @@ Deno.serve(async (req) => {
 
 function emptyStatement(filename: string, err: string): PerStatement {
   return {
-    month: null, opening_balance: null, closing_balance: null,
+    month: null, account_last4: null, opening_balance: null, closing_balance: null,
     total_deposits: null, total_withdrawals: null, avg_daily_balance: null,
     min_balance: null, negative_days: null, nsf_count: null,
-    deposits: [], padding_deposits: [], mca_debits: [],
+    deposits: [], padding_deposits: [], questionable_deposits: [], mca_debits: [],
     _filename: filename, _error: err,
   };
 }
@@ -647,6 +837,7 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
   const arr = (v: unknown) => (Array.isArray(v) ? v : []);
   return {
     month: p.month ?? null,
+    account_last4: p.account_last4 != null ? String(p.account_last4) : null,
     opening_balance: num(p.opening_balance),
     closing_balance: num(p.closing_balance),
     total_deposits: num(p.total_deposits),
@@ -657,9 +848,51 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
     nsf_count: num(p.nsf_count),
     deposits: arr(p.deposits),
     padding_deposits: arr(p.padding_deposits),
+    questionable_deposits: arr(p.questionable_deposits),
     mca_debits: arr(p.mca_debits),
     _filename: filename,
   };
+}
+
+// FNV-1a hash over raw bytes → stable short hex. Used to detect BYTE-IDENTICAL
+// bank-statement uploads so the same file (even renamed) is sent to Claude once.
+function hashBytes(bytes: Uint8Array): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+// Post-extraction dedup by the statement PERIOD Claude read from INSIDE each PDF
+// (month + account_last4) — NOT the filename. Two files covering the same period
+// for the same account collapse to one; keep the richer extraction (more line
+// items), first on a tie. Error statements and periodless statements pass through
+// untouched. Net effect: the same statement uploaded twice == uploaded once.
+function dedupByPeriod(statements: PerStatement[]): PerStatement[] {
+  const richness = (s: PerStatement) =>
+    (s.deposits?.length ?? 0) + (s.padding_deposits?.length ?? 0) +
+    (s.questionable_deposits?.length ?? 0) + (s.mca_debits?.length ?? 0);
+  const byPeriod = new Map<string, number>(); // period key → index in `out`
+  const out: PerStatement[] = [];
+  for (const s of statements) {
+    const period = (s.month ?? "").toString().trim().toLowerCase();
+    if (s._error || !period) { out.push(s); continue; }
+    const key = `${s.account_last4 ?? "?"}|${period}`;
+    const existingIdx = byPeriod.get(key);
+    if (existingIdx == null) {
+      byPeriod.set(key, out.length);
+      out.push(s);
+    } else if (richness(s) > richness(out[existingIdx])) {
+      // Prefer the richer extraction; carry a merged dupe_count for provenance.
+      s._dupe_count = (out[existingIdx]._dupe_count ?? 1) + (s._dupe_count ?? 1);
+      out[existingIdx] = s;
+    } else {
+      out[existingIdx]._dupe_count = (out[existingIdx]._dupe_count ?? 1) + (s._dupe_count ?? 1);
+    }
+  }
+  return out;
 }
 
 // First-third vs last-third average of the monthly net-revenue series.
