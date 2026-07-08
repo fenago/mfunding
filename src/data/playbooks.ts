@@ -337,23 +337,22 @@ export const PLAYBOOKS: Playbook[] = [
       screen: "THIS page — start the lead in the green box the second you pick up",
       route: "/admin/playbooks",
       appNote:
-        "There's no customer yet — you create one live, right here. Type their first name + phone into the capture box at the top AS YOU TALK and hit Save lead: that creates the customer + the MCA deal AND pushes the contact into GoHighLevel (fires Speed-to-Lead). Then just work the steps below — the qualify answers, the doc send, everything happens on this page.",
+        "You don't know who they are yet — so the intake at the top IS the script. Read each line and type the answer in the box right under it (name → business → cell → email); the greeting ASKS for the name, it doesn't assume it. Save lead creates the customer + MCA deal and pushes them into GoHighLevel (fires Speed-to-Lead), then you roll straight into the qualifying steps on this page.",
     },
     steps: [
       {
         n: 1,
-        title: "Pick up AND start the lead above (0–15s)",
+        title: "Greet + capture live — the intake IS the script (0–15s)",
         stageKey: "new",
         sla: "First touch < 60 seconds — you're already on the call",
         tone: "speed",
         do: [
           "Pick up energized — the merchant is LIVE and expecting you; treat it like you called them.",
-          "In the green capture box at the top of this page: type their first name + phone AS YOU TALK, set Lead Source = Live Transfer and pick the Campaign (e.g. '$3,000 Live Leads — June'), assign yourself as Closer, and hit Save lead.",
-          "That one save creates the customer + deal and pushes them into GoHighLevel — the steps below light up and you work everything from here.",
-          "Confirm you're speaking with the owner before you invest the pitch.",
+          "Work the intake at the top top-to-bottom: read each scripted line, type the answer in the box under it. Each line ASKS (you don't know their name yet) — name → business → cell → email.",
+          "Name + cell is enough to hit Save lead — that creates the customer + deal and pushes to GoHighLevel; the qualifying step lights up next. Set the Campaign under 'More details' if you get a beat.",
         ],
-        say: "Hi, is this [First Name]? This is [Closer] with Momentum Funding — I see you're looking for working capital. Quick question: are you the owner of [Business Name]?",
-        note: "Tagging the Campaign at save is what makes the cost-per-funded math work in Admin → Campaigns.",
+        say: "Hi — this is [Closer] with Momentum Funding, thanks for holding! Who do I have the pleasure of speaking with? … Great to meet you — and what's the name of your business? … Perfect, what's the best cell and email so I can get your application right over?",
+        note: "The greeting asks for the name — never assume it. Tagging the Campaign at save is what makes the cost-per-funded math work in Admin → Campaigns.",
       },
       {
         n: 2,

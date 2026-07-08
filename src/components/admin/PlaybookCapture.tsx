@@ -75,16 +75,11 @@ const emptyForm = {
 export default function PlaybookCapture({
   playbook,
   onCreated,
-  intakeScript,
 }: {
   playbook: Playbook;
   /** When provided, the parent takes over after creation (loads the deal into
    * the guided workspace) and this component does NOT show its own success card. */
   onCreated?: (deal: Deal) => void;
-  /** On live-transfer intakes, the opening script rendered ABOVE the "+ New lead"
-   * fields so the closer reads the greeting while typing the caller's details.
-   * Pulled from the playbook's Step 1 (single source of truth). */
-  intakeScript?: React.ReactNode;
 }) {
   const isVcf = playbook.pipeline === "vcf";
   const defaults = PLAYBOOK_DEFAULTS[playbook.id];
@@ -456,24 +451,40 @@ export default function PlaybookCapture({
                 // Live-transfer intake: the opening script sits right above a
                 // minimal capture — name + phone (required) and business name +
                 // business email (prompted). Read the greeting while you type.
-                <div className="space-y-3">
-                  {intakeScript}
-                  <div className="grid sm:grid-cols-2 gap-3">
-                    <Field label="Name *">
-                      <input className="input-field w-full" value={form.first_name} onChange={(e) => set("first_name", e.target.value)} placeholder="Jane" autoFocus />
-                    </Field>
-                    <Field label="Phone *">
-                      <input className="input-field w-full" type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="(555) 123-4567" />
-                    </Field>
-                    <Field label="Business name">
-                      <input className="input-field w-full" value={form.business_name} onChange={(e) => set("business_name", e.target.value)} placeholder="Acme Co." />
-                    </Field>
-                    <Field label="Business email">
-                      <input className="input-field w-full" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="jane@acme.com" />
-                    </Field>
+                // Live-transfer intake: the merchant is ALREADY on the line and you
+                // don't know anything yet — so each script line ASKS for the piece,
+                // and the box to type it sits right under that line. Read top to
+                // bottom; name + cell is enough to Save (~15s).
+                <div className="space-y-2.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-mint-green">
+                    Read each line out loud — type the answer in the box under it. Name + cell = Save (~15s).
+                  </p>
+                  <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
+                      “Hi — this is <span className="font-semibold">[you]</span> with Momentum Funding, thanks for holding! <span className="text-mint-green font-semibold">Who do I have the pleasure of speaking with?</span>”
+                    </p>
+                    <input className="input-field w-full" value={form.first_name} onChange={(e) => set("first_name", e.target.value)} placeholder="Type their first name" autoFocus />
+                  </div>
+                  <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
+                      “Great to meet you{form.first_name.trim() ? `, ${form.first_name.trim()}` : ""} — <span className="text-mint-green font-semibold">and what’s the name of your business?</span>”
+                    </p>
+                    <input className="input-field w-full" value={form.business_name} onChange={(e) => set("business_name", e.target.value)} placeholder="Business name" />
+                  </div>
+                  <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
+                      “Perfect. <span className="text-mint-green font-semibold">What’s the best cell for you?</span> I’ll text your application link right there so it’s in your hand.”
+                    </p>
+                    <input className="input-field w-full" type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="Cell phone" />
+                  </div>
+                  <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
+                      “And <span className="text-mint-green font-semibold">the best email</span> to send your application and secure upload link?”
+                    </p>
+                    <input className="input-field w-full" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="Business email" />
                   </div>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    Name + phone is all you need to Save. Business email lets the app + upload link reach them — grab it if you can.
+                    Hit <span className="font-medium">Save lead</span> the moment you’ve got name + cell — keep talking; the deal loads right here and you roll into the qualifying questions.
                   </p>
                 </div>
               ) : (
