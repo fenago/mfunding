@@ -33,7 +33,7 @@ import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import PipelineFlow from "../../components/shared/PipelineFlow";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDeal } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -285,7 +285,11 @@ export default function PlaybooksPage() {
   // Load a deal picked from the "My Day" queue: switch to the playbook tab that
   // matches its pipeline (preferring the Renewal flow for renewal deals when the
   // user may work them), then load the deal into the workspace.
-  function pickFromQueue(d: QueueDeal) {
+  // Used by BOTH My Day and the ResumePicker so loading a deal ALWAYS lands on
+  // the flow matching how the lead arrived (a website lead must never render
+  // under the Live Transfer tab's step numbering just because that tab is the
+  // default).
+  function pickFromQueue(d: DealWithCustomer) {
     const pipe = pipelineOf(d.deal_type);
     let target = visiblePlaybooks.find((p) => p.pipeline === pipe) ?? active;
     // Prefer the playbook that matches the deal's lead_source (real-time, web
@@ -442,7 +446,7 @@ export default function PlaybooksPage() {
               playbook={active}
               onCreated={(d: Deal) => refreshDeal(d.id)}
             />
-            <ResumePicker pipeline={active.pipeline} onPick={(d) => setDeal(d)} />
+            <ResumePicker pipeline={active.pipeline} onPick={pickFromQueue} />
           </div>
         )}
 
