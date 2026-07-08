@@ -457,34 +457,56 @@ export default function PlaybookCapture({
                 // bottom; name + cell is enough to Save (~15s).
                 <div className="space-y-2.5">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-mint-green">
-                    Read each line out loud — type the answer in the box under it. Name + cell = Save (~15s).
+                    Read each line out loud — type the answer in the box under it. <span className="text-red-500">*</span> = needed to Save (~15s).
                   </p>
+                  {/* 1 — greeting ASKS for the name; first required, last optional */}
                   <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
                     <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
                       “Hi — this is <span className="font-semibold">[you]</span> with Momentum Funding, thanks for holding! <span className="text-mint-green font-semibold">Who do I have the pleasure of speaking with?</span>”
                     </p>
-                    <input className="input-field w-full" value={form.first_name} onChange={(e) => set("first_name", e.target.value)} placeholder="Type their first name" autoFocus />
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400">First name <span className="text-red-500">*</span></span>
+                        <input className="input-field w-full" value={form.first_name} onChange={(e) => set("first_name", e.target.value)} placeholder="Jane" autoFocus />
+                      </label>
+                      <label className="block">
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400">Last name <span className="text-gray-400">(optional)</span></span>
+                        <input className="input-field w-full" value={form.last_name} onChange={(e) => set("last_name", e.target.value)} placeholder="Doe" />
+                      </label>
+                    </div>
                   </div>
+                  {/* 2 — business name (optional) */}
                   <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
                     <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
                       “Great to meet you{form.first_name.trim() ? `, ${form.first_name.trim()}` : ""} — <span className="text-mint-green font-semibold">and what’s the name of your business?</span>”
                     </p>
-                    <input className="input-field w-full" value={form.business_name} onChange={(e) => set("business_name", e.target.value)} placeholder="Business name" />
+                    <label className="block">
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400">Business name <span className="text-gray-400">(optional)</span></span>
+                      <input className="input-field w-full" value={form.business_name} onChange={(e) => set("business_name", e.target.value)} placeholder="Acme Co." />
+                    </label>
                   </div>
+                  {/* 3 — cell (required) */}
                   <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
                     <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
                       “Perfect. <span className="text-mint-green font-semibold">What’s the best cell for you?</span> I’ll text your application link right there so it’s in your hand.”
                     </p>
-                    <input className="input-field w-full" type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="Cell phone" />
+                    <label className="block">
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400">Cell phone <span className="text-red-500">*</span></span>
+                      <input className="input-field w-full" type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="(555) 123-4567" />
+                    </label>
                   </div>
+                  {/* 4 — email (optional) */}
                   <div className="rounded-lg bg-white/70 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 p-3">
                     <p className="text-sm text-gray-800 dark:text-gray-100 mb-2">
                       “And <span className="text-mint-green font-semibold">the best email</span> to send your application and secure upload link?”
                     </p>
-                    <input className="input-field w-full" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="Business email" />
+                    <label className="block">
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400">Business email <span className="text-gray-400">(optional)</span></span>
+                      <input className="input-field w-full" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="jane@acme.com" />
+                    </label>
                   </div>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    Hit <span className="font-medium">Save lead</span> the moment you’ve got name + cell — keep talking; the deal loads right here and you roll into the qualifying questions.
+                    First name + cell (the <span className="text-red-500">*</span> fields) is all you need — hit <span className="font-medium">Save lead</span> and keep talking; the deal loads here and you roll into qualifying. Full legal name comes on the application.
                   </p>
                 </div>
               ) : (
