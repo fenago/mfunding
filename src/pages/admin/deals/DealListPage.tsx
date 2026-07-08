@@ -28,6 +28,8 @@ export default function DealListPage() {
   const [stats, setStats] = useState<{ total: number; byStatus: Record<string, number>; totalPipeline: number; totalFunded: number; commissionInPlay: number } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [closers, setClosers] = useState<{ id: string; first_name: string | null; last_name: string | null }[]>([]);
+  const [reactivatingId, setReactivatingId] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
 
   useEffect(() => {
     fetchDeals();
@@ -38,6 +40,12 @@ export default function DealListPage() {
   useEffect(() => {
     fetchDeals();
   }, [filters]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 4000);
+    return () => clearTimeout(t);
+  }, [flash]);
 
   const fetchDeals = async () => {
     setIsLoading(true);
@@ -74,14 +82,21 @@ export default function DealListPage() {
     fetchStats();
   };
 
+  // Bring back is safe + reversible (just re-park it), so no confirmation gate —
+  // one click does it, with an in-app toast instead of a native browser popup.
   const handleReactivate = async (dealId: string) => {
-    if (!window.confirm("Bring this deal back into the pipeline?")) return;
+    setReactivatingId(dealId);
+    setFlash(null);
     try {
-      await reactivateDeal(dealId);
-      fetchDeals();
+      const deal = await reactivateDeal(dealId);
+      await fetchDeals();
       fetchStats();
+      const label = DEAL_STATUS_CONFIG[deal.status as DealStatus]?.label ?? "the pipeline";
+      setFlash({ msg: `Brought back to ${label}.`, kind: "ok" });
     } catch (e) {
-      alert(`Could not bring this deal back: ${e instanceof Error ? e.message : "Unknown error"}`);
+      setFlash({ msg: `Couldn't bring it back: ${e instanceof Error ? e.message : "unknown error"}`, kind: "err" });
+    } finally {
+      setReactivatingId(null);
     }
   };
 
@@ -95,6 +110,14 @@ export default function DealListPage() {
 
   return (
     <div className="p-6">
+      {flash && (
+        <div
+          className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white ${flash.kind === "ok" ? "bg-emerald-600" : "bg-red-600"}`}
+          role="status"
+        >
+          {flash.msg}
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -325,11 +348,12 @@ export default function DealListPage() {
                           {["nurture", "declined", "dead"].includes(deal.status) && (
                             <button
                               onClick={() => handleReactivate(deal.id)}
+                              disabled={reactivatingId === deal.id}
                               title="Bring this deal back into the active pipeline"
-                              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-ocean-blue border border-ocean-blue/40 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-ocean-blue border border-ocean-blue/40 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50"
                             >
                               <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
-                              Bring back
+                              {reactivatingId === deal.id ? "Bringing back…" : "Bring back"}
                             </button>
                           )}
                         </div>
