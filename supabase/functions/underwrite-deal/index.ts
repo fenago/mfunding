@@ -833,10 +833,42 @@ function emptyStatement(filename: string, err: string): PerStatement {
   };
 }
 
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const MONTH_ABBR = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const capMonth = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// Parse a consistent "Month YYYY" out of any string (a filename, or the AI's
+// month field in whatever format it returned — "2026-03", "June 2026", "Jun 26").
+function monthFromText(s: string): string | null {
+  const t = (s || "").toLowerCase();
+  if (!t) return null;
+  const ym = t.match(/\b(20\d{2})\b/);
+  const year = ym ? ym[1] : null;
+  for (let i = 0; i < 12; i++) {
+    if (new RegExp(`\\b${MONTH_NAMES[i]}\\b`).test(t) || new RegExp(`\\b${MONTH_ABBR[i]}\\b`).test(t)) {
+      return year ? `${capMonth(MONTH_NAMES[i])} ${year}` : null;
+    }
+  }
+  let m = t.match(/\b(20\d{2})[-/.](\d{1,2})\b/); // 2026-03
+  if (m) { const mi = parseInt(m[2], 10) - 1; if (mi >= 0 && mi < 12) return `${capMonth(MONTH_NAMES[mi])} ${m[1]}`; }
+  m = t.match(/\b(\d{1,2})[-/.](20\d{2})\b/); // 03/2026
+  if (m) { const mi = parseInt(m[1], 10) - 1; if (mi >= 0 && mi < 12) return `${capMonth(MONTH_NAMES[mi])} ${m[2]}`; }
+  return null;
+}
+
+// The statement's month, consistent + accurate. The FILENAME wins when it names
+// a month (merchants/closers name them "February 2026 Statement.pdf" — that's
+// authoritative and beats a mis-parsed statement period). Otherwise normalize
+// the AI's month. Fixes both the format drift ("2026-03") and mis-reads (a Feb
+// statement the AI called "January").
+function deriveMonth(aiMonth: unknown, filename: string): string | null {
+  return monthFromText(filename) ?? monthFromText(String(aiMonth ?? "")) ?? (aiMonth ? String(aiMonth) : null);
+}
+
 function normalizeStatement(p: Any, filename: string): PerStatement {
   const arr = (v: unknown) => (Array.isArray(v) ? v : []);
   return {
-    month: p.month ?? null,
+    month: deriveMonth(p.month, filename),
     account_last4: p.account_last4 != null ? String(p.account_last4) : null,
     opening_balance: num(p.opening_balance),
     closing_balance: num(p.closing_balance),
