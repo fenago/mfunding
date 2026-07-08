@@ -231,6 +231,7 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
 // realtime intake; a purchased web lead opens the web-lead intake; etc.
 export const LEAD_SOURCE_TO_PLAYBOOK: Record<string, Playbook["id"]> = {
   website: "website",
+  website_apply: "website", // the /apply form stamps this — it's a website lead
   live_transfer: "live-transfer",
   web_purchased: "web-lead",
   aged_transfer: "aged-transfer",

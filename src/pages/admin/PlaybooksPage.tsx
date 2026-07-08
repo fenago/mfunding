@@ -291,7 +291,14 @@ export default function PlaybooksPage() {
   // default).
   function pickFromQueue(d: DealWithCustomer) {
     const pipe = pipelineOf(d.deal_type);
-    let target = visiblePlaybooks.find((p) => p.pipeline === pipe) ?? active;
+    // Fallback for an UNMAPPED lead source must be deliberate — the generic
+    // inbound flow ("website") for MCA — NOT "the first tab in the sorted list".
+    // (When Live Transfer became the first/default tab, the old first-tab
+    // fallback silently rendered unmapped website_apply deals as live transfers.)
+    let target =
+      (pipe === "mca" ? visiblePlaybooks.find((p) => p.id === "website") : undefined) ??
+      visiblePlaybooks.find((p) => p.pipeline === pipe) ??
+      active;
     // Prefer the playbook that matches the deal's lead_source (real-time, web
     // lead, aged transfer, cold outreach/email, live transfer…), so the closer
     // lands on the RIGHT intake for how this lead arrived — not just any MCA tab.
@@ -422,6 +429,28 @@ export default function PlaybooksPage() {
 
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
         {dealMatchesPlaybook && deal ? (<>
+          {/* Floating escape hatch — deep in the steps there was no way to switch
+              leads without a page refresh (the ✕ lives in the non-sticky context
+              bar at the top). Fixed bottom-right: jump to top, or clear the deal
+              and land back on the picker. z-40 so modals (z-50) stay above. */}
+          <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-2">
+            <button
+              type="button"
+              onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+              title="Scroll to the top"
+              className="rounded-full shadow-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              ↑ Top
+            </button>
+            <button
+              type="button"
+              onClick={() => { setDeal(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              title="Clear this lead and pick another"
+              className="rounded-full shadow-lg bg-ocean-blue px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+            >
+              ⇄ Switch lead
+            </button>
+          </div>
           <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} openCloseDeal={() => setShowCloseDeal(true)} openEditLead={() => setShowEditLead(true)} splits={splits} hasCloser={hasCloser} />
           {deal.merchant_reply_at && Date.now() - Date.parse(deal.merchant_reply_at) < 3 * 24 * 60 * 60 * 1000 && (
             <div className="mt-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-800 dark:text-emerald-200 flex flex-wrap items-center gap-1.5">
