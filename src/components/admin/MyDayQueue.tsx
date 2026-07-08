@@ -73,18 +73,15 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   if (deal.status === "submitted_to_funder" && deal.submitted_at && !anyResponded && now - Date.parse(deal.submitted_at) > 2 * DAY) {
     return { rank: 5, badge: "📤 Nudge funders", why: "Submitted 48h+ ago, still silent — nudge them.", since: deal.submitted_at, tone: "blue" };
   }
-  // 5 — a new lead untouched. Temperature sets how fast it surfaces: WARM/warmer
-  // (purchased web + aged transfer) must be worked within minutes; cold/unknown
-  // after an hour. (Hot leads are caught by rank 0 above with a countdown.)
+  // 5 — a new lead. It surfaces IMMEDIATELY: a just-created lead is the very
+  // definition of "needs first contact", so it must never be invisible while it
+  // ages (that hid brand-new leads from the closer AND admins for up to an hour).
+  // Temperature only sets the badge/urgency. (Hot leads are caught by rank 0.)
   if (deal.status === "new" && deal.created_at) {
-    const age = now - Date.parse(deal.created_at);
     const warm = WARM.has(deal.temperature ?? "");
-    const threshold = warm ? 5 * 60_000 : HOUR;
-    if (age > threshold) {
-      return warm
-        ? { rank: 5.5, badge: "🌤️ Warm lead — call now", why: "Purchased/qualified lead sitting 5m+ — these decay fast.", since: deal.created_at, tone: "amber" }
-        : { rank: 6, badge: "🆕 Untouched lead", why: "New lead sitting 1h+ — make first contact.", since: deal.created_at, tone: "gray" };
-    }
+    return warm
+      ? { rank: 5.5, badge: "🌤️ Warm lead — call now", why: "Purchased/qualified lead — these decay fast, call now.", since: deal.created_at, tone: "amber" }
+      : { rank: 6, badge: "🆕 New lead — make first contact", why: "Newly created lead — make first contact.", since: deal.created_at, tone: "gray" };
   }
   return null;
 }
