@@ -299,6 +299,16 @@ export default function MerchantApplicationModal({
     try {
       const id = await persist("sent");
 
+      // CRITICAL: push the application into the merchant's GHL contact custom
+      // fields (the source the e-sign document MERGES from) BEFORE anything else.
+      // If this fails we STOP — advancing the stage fires the GHL doc automation,
+      // and without this push the merchant would e-sign a BLANK application.
+      const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
+        body: { dealId: deal.id },
+      });
+      if (pushErr) throw pushErr;
+      if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
+
       const firstName = form.owner_first_name || cust?.first_name || "there";
       const biz = form.business_legal_name || cust?.business_name || "your business";
       const amt = form.amount_requested ? `$${Number(form.amount_requested).toLocaleString()}` : "your requested amount";

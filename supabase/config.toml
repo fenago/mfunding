@@ -66,6 +66,11 @@ verify_jwt = true
 [functions.send-merchant-email]
 verify_jwt = true
 
+# Pushes the closer-filled MCA application into the merchant's GHL contact custom
+# fields (document merge source) — staff-only + closer-owns-deal enforced in code.
+[functions.push-application-to-ghl]
+verify_jwt = true
+
 # Bulk CSV lead importer — ops-only. Runs service-role; JWT gate keeps it internal.
 [functions.bulk-lead-import]
 verify_jwt = true
