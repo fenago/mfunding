@@ -167,6 +167,10 @@ export default function MerchantApplicationModal({
   onSent: () => void;
 }) {
   const [form, setForm] = useState<AppForm>(EMPTY);
+  // A saved draft freezes contact info at save time. If the LEAD's email/phone
+  // was edited afterwards (Edit lead info), the draft is stale — surface it and
+  // offer a one-click sync instead of silently keeping the old value.
+  const [drift, setDrift] = useState<{ email?: string; phone?: string } | null>(null);
   const [tab, setTab] = useState<Tab>("business");
   const [loading, setLoading] = useState(true);
   const [existingId, setExistingId] = useState<string | null>(null);
@@ -200,6 +204,15 @@ export default function MerchantApplicationModal({
           next[k] = BOOLEAN_KEYS.includes(k) ? (v ? "yes" : "no") : String(v);
         }
         setForm(next);
+        // Drift check: the customer's CURRENT contact info vs what the saved
+        // application row holds. (e.g. closer fixed the email via Edit lead info
+        // AFTER the draft was saved — the draft still has the old address.)
+        const norm = (s?: string | null) => (s ?? "").trim().toLowerCase();
+        const digits = (s?: string | null) => (s ?? "").replace(/\D/g, "");
+        const d: { email?: string; phone?: string } = {};
+        if (cust?.email && norm(cust.email) !== norm(next.business_email)) d.email = cust.email;
+        if (cust?.phone && digits(cust.phone) !== digits(next.business_phone)) d.phone = cust.phone;
+        setDrift(d.email || d.phone ? d : null);
       } else {
         // Fresh — seed from what we already have on the customer + deal.
         setForm({
@@ -443,6 +456,39 @@ export default function MerchantApplicationModal({
             })}
           </nav>
         </div>
+
+        {/* Stale-contact drift banner — the lead's email/phone was edited AFTER
+            this application was saved; one click pulls the fresh values in. */}
+        {drift && (
+          <div className="mx-5 mt-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-[13px] text-amber-800 dark:text-amber-200 flex flex-wrap items-center gap-2">
+            <span>
+              ⚠ The lead's contact info changed after this application was saved:
+              {drift.email && <> email is now <b>{drift.email}</b>{form.business_email ? <> (app still has <b>{form.business_email}</b>)</> : null}</>}
+              {drift.email && drift.phone && ";"}
+              {drift.phone && <> phone is now <b>{drift.phone}</b></>}
+              .
+            </span>
+            <span className="ml-auto flex gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setForm((f) => ({
+                    ...f,
+                    ...(drift.email ? { business_email: drift.email, owner_email: drift.email } : {}),
+                    ...(drift.phone ? { business_phone: drift.phone, owner_phone: drift.phone } : {}),
+                  }));
+                  setDrift(null);
+                }}
+                className="px-2.5 py-1 rounded bg-amber-600 text-white font-semibold hover:bg-amber-700"
+              >
+                Use updated info
+              </button>
+              <button type="button" onClick={() => setDrift(null)} className="px-2 py-1 rounded text-amber-700 dark:text-amber-300 underline">
+                keep as-is
+              </button>
+            </span>
+          </div>
+        )}
 
         {/* Body */}
         <div className="p-5 overflow-y-auto flex-1">
