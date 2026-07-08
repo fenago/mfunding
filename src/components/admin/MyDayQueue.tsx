@@ -137,6 +137,24 @@ function nameOf(d: QueueDeal): string {
   );
 }
 
+// Color-code each card by HOW the lead arrived, so the queue reads at a glance:
+// live transfers pop red (they're the time-critical ones), web-form leads blue,
+// etc. Left edge carries the color; a tiny chip names the source.
+const SOURCE_STYLE: Record<string, { edge: string; chip: string; label: string }> = {
+  live_transfer: { edge: "border-l-red-500", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "Live transfer" },
+  realtime_appt: { edge: "border-l-red-400", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "Real-time" },
+  website: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
+  website_apply: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
+  web_purchased: { edge: "border-l-amber-500", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", label: "Web lead" },
+  aged_transfer: { edge: "border-l-orange-500", chip: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300", label: "Aged" },
+  cold_email: { edge: "border-l-purple-500", chip: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300", label: "Cold email" },
+  cold_email_landing: { edge: "border-l-purple-500", chip: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300", label: "Cold email" },
+  renewal: { edge: "border-l-emerald-500", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300", label: "Renewal" },
+  referral: { edge: "border-l-teal-500", chip: "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300", label: "Referral" },
+};
+const SOURCE_FALLBACK = { edge: "border-l-gray-300 dark:border-l-gray-600", chip: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300", label: "Other" };
+const sourceStyle = (d: QueueDeal) => SOURCE_STYLE[d.lead_source ?? ""] ?? SOURCE_FALLBACK;
+
 /**
  * "My Day" — the ranked work queue at the top of the Revenue Playbook. Clicking
  * a card loads that deal into the workspace (via onPick, which also switches to
@@ -251,21 +269,27 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         <p className="text-sm text-gray-500 dark:text-gray-400 py-2">Queue clear — work the funnel below 🎉</p>
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
-          {items.map(({ deal, u }) => (
-            <button
-              key={deal.id}
-              onClick={() => onPick(deal)}
-              title={`Load ${nameOf(deal)} into the playbook`}
-              className="shrink-0 w-60 text-left rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md transition p-3"
-            >
-              <div className="flex items-center justify-between gap-2 mb-1.5">
-                <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
-                <span className="text-[11px] text-gray-400 shrink-0">{ago(u.since, now)}</span>
-              </div>
-              <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">{u.why}</p>
-            </button>
-          ))}
+          {items.map(({ deal, u }) => {
+            const src = sourceStyle(deal);
+            return (
+              <button
+                key={deal.id}
+                onClick={() => onPick(deal)}
+                title={`Load ${nameOf(deal)} into the playbook`}
+                className={`shrink-0 w-60 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md transition p-3`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
+                  <span className="text-[11px] text-gray-400 shrink-0">{ago(u.since, now)}</span>
+                </div>
+                <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
+                <div className="flex items-center justify-between gap-2 mt-0.5">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{u.why}</p>
+                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
+                </div>
+              </button>
+            );
+          })}
         </div>
       ))}
     </div>
