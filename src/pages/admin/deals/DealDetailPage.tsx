@@ -124,15 +124,16 @@ export default function DealDetailPage() {
     }
   };
 
+  // Bring back is safe + reversible — no confirmation gate, no native popup. The
+  // status badge updates in place, which is the confirmation.
   const handleReactivate = async () => {
     if (!id) return;
-    if (!window.confirm("Bring this deal back into the pipeline?")) return;
     try {
       const updated = await reactivateDeal(id);
       setDeal((prev) => (prev ? { ...prev, ...updated } : null));
       fetchDeal();
     } catch (e) {
-      alert(`Could not bring this deal back: ${e instanceof Error ? e.message : "Unknown error"}`);
+      console.error("Could not bring this deal back:", e);
     }
   };
 

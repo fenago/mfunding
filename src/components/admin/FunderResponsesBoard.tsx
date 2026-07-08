@@ -36,6 +36,7 @@ import { updateSubmission } from "../../services/dealService";
 import { useSession } from "../../context/SessionContext";
 import { useUserProfile } from "../../context/UserProfileContext";
 import type { DealWithCustomer } from "../../types/deals";
+import ConfirmModal from "../shared/ConfirmModal";
 
 // No concrete "Bank Statements & Documents Upload" form URL is stored in the repo
 // or DB yet, so stip-request prefills use this placeholder — the closer swaps in
@@ -196,6 +197,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const { session } = useSession();
   const { profile } = useUserProfile();
   const [rows, setRows] = useState<SubRow[]>([]);
+  const [confirmWithdraw, setConfirmWithdraw] = useState<SubRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
@@ -736,8 +738,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   // Pull the file back from a funder (submit-to-funders action=withdraw). Sends a
   // courteous "no longer moving forward" note, flips the row to 'withdrawn', and
   // audits it. Idempotent server-side; we reload the board to reflect the state.
-  async function withdrawSubmission(s: SubRow) {
-    if (!window.confirm(`Withdraw this submission and email ${s.lenderName} that we're pulling the file? This can't be auto-undone.`)) return;
+  function withdrawSubmission(s: SubRow) {
+    setConfirmWithdraw(s); // styled confirm — this emails the funder and can't be auto-undone
+  }
+
+  async function doWithdraw(s: SubRow) {
     setRowBusy(s.id);
     setCourtesyMsg((m) => ({ ...m, [s.id]: "" }));
     try {
@@ -1336,6 +1341,18 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
             </div>
           </div>
         </div>
+      )}
+      {confirmWithdraw && (
+        <ConfirmModal
+          isOpen
+          variant="warning"
+          title="Pull back this submission?"
+          message={`We'll email ${confirmWithdraw.lenderName} that we're pulling the file, and mark it withdrawn. This can't be auto-undone.`}
+          confirmText="Pull back"
+          cancelText="Keep it"
+          onClose={() => setConfirmWithdraw(null)}
+          onConfirm={() => { const s = confirmWithdraw; setConfirmWithdraw(null); void doWithdraw(s); }}
+        />
       )}
     </div>
   );
