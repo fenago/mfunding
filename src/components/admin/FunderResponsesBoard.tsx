@@ -540,12 +540,23 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   }
 
   async function loadSentLog() {
-    const { data } = await supabase
-      .from("activity_log")
-      .select("created_at, subject, content")
-      .eq("entity_type", "deal").eq("entity_id", deal.id)
-      .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%,subject.like.funder:note%,subject.like.funder:withdrawn%")
-      .order("created_at", { ascending: false }).limit(20);
+    // NO arbitrary cap — this trail is the closer's audit record, so it loads the
+    // deal's ENTIRE history, paging until exhausted. (A previous .limit(20)
+    // silently dropped the oldest funders' submits/replies on busy deals, which
+    // read as lost audit data. Never truncate this.)
+    const PAGE = 1000;
+    const data: { created_at: string; subject: string | null; content: string | null }[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data: page } = await supabase
+        .from("activity_log")
+        .select("created_at, subject, content")
+        .eq("entity_type", "deal").eq("entity_id", deal.id)
+        .or("subject.like.merchant:email%,subject.like.funder:email%,subject.like.merchant:reply%,subject.like.ghl:funder-reply%,subject.like.funder:sent%,subject.like.funder:note%,subject.like.funder:withdrawn%")
+        .order("created_at", { ascending: false })
+        .range(from, from + PAGE - 1);
+      data.push(...(page ?? []));
+      if (!page || page.length < PAGE) break;
+    }
     const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
       // Pull the open-flag AND the email/message ids out first, then scrub EVERY
