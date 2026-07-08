@@ -625,12 +625,21 @@ Deno.serve(async (req) => {
             classified_at: new Date().toISOString(),
             response_data: { raw: replyText, from: replyFrom, parsed: classification },
           };
-          if (classification.type === "decline" && newest.status !== "declined") {
+          // Only auto-move the STATUS from an OPEN/active state, and never
+          // downgrade a further-along one: a decline/offer that lands after the
+          // card has already advanced (accepted/funded/withdrawn/declined) is a
+          // no-op on status (we still stamp response_type/summary above). The
+          // pending query already scopes to submitted/offer_made, so this is a
+          // belt-and-suspenders guard that also keeps a second offer from
+          // re-writing an already-offer_made row's status.
+          const OPEN_STATUSES = ["submitted", "pending", "under_review"];
+          const isOpen = OPEN_STATUSES.includes(String(newest.status));
+          if (classification.type === "decline" && isOpen) {
             patch.status = "declined";
             patch.decline_reason = classification.summary ||
               (classification.decline_reason_category ?? "declined").replace(/_/g, " ");
             applied = "Card auto-marked DECLINED.";
-          } else if (classification.type === "offer") {
+          } else if (classification.type === "offer" && isOpen) {
             patch.status = "offer_made";
             const t = classification.offer_terms;
             const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : null);
