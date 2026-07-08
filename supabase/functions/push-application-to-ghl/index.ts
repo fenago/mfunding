@@ -316,15 +316,17 @@ Deno.serve(async (req) => {
   let enrollDirect = false;
   if (blank) {
     // ── PATH 1 (SELF-FILL): the fillable doc, sent by MCA 04. Clear any prefill
-    // routing first (path 2 → path 1 crossing): stop 04B and drop the tag so
-    // MCA 04's gate lets them through.
+    // routing first (path 2 → path 1 crossing): stop 04B and drop the tag.
+    // ALWAYS enroll directly — doc delivery must never depend on the pipeline
+    // stage trigger (which double-sends against the prefill path and misses
+    // opportunity-less deals). With GHL re-enrollment off, a direct enroll
+    // dedupes against any still-active stage trigger, so exactly ONE send.
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {}); // best-effort
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG] }); // best-effort
-    enrollDirect = resend || noOpportunity;
-    if (enrollDirect) {
-      const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
-      reenrolled = wf.ok;
-    }
+    enrollDirect = true;
+    if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // allow re-fire
+    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
+    reenrolled = wf.ok;
   } else {
     // ── PATH 2 (PREFILL): the merged doc, sent by MCA 04B. The doc send ALWAYS
     // comes from a direct 04B enrollment (04B has no stage trigger); the caller's
