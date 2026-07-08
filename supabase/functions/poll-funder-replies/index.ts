@@ -164,8 +164,11 @@ async function findMerchantReply(
     );
     const list = msgs.data?.messages?.messages ?? [];
     const afterMs = Date.parse(afterIso);
+    // Do NOT gate on the message-level direction: a TYPE_EMAIL message bundles a
+    // whole thread of email records and its top-level direction can be null/outbound
+    // while a nested record is the merchant's inbound reply. We judge inbound-ness by
+    // the RECORD's own direction below, exactly like the funder path.
     const candidates = list.filter((m) =>
-      String(m.direction ?? "") === "inbound" &&
       /email/i.test(String(m.messageType ?? "")) &&
       Date.parse(String(m.dateAdded ?? "")) > afterMs,
     );
@@ -538,166 +541,186 @@ Deno.serve(async (req) => {
       );
       for (const c of conv.data?.conversations ?? []) conversations.push(c);
     }
+    // Pull every conversation's messages once, and (as before) capture our own
+    // outbound replies typed in GHL Conversations. IMPORTANT: the message-level
+    // \`body\` and \`direction\` are NOT reliable — a single TYPE_EMAIL message
+    // bundles a whole thread of email RECORDS (meta.email.messageIds), and its
+    // top-level direction can be null/outbound while a nested record is inbound
+    // (esp. replies from a sibling address). So we resolve EACH record and judge
+    // inbound-ness + recency by the RECORD itself, never the message.
+    const allMessages: Array<Record<string, unknown>> = [];
+    const nResp = (newest as { response_at?: string | null }).response_at;
     for (const c of conversations) {
       const msgs = await ghlFetch<{ messages?: { messages?: Array<Record<string, unknown>> } }>(
-        cfg, "GET", `/conversations/${c.id}/messages?limit=15`,
+        cfg, "GET", `/conversations/${c.id}/messages?limit=20`,
       );
       const list = msgs.data?.messages?.messages ?? [];
-      // Candidate inbound messages. IMPORTANT: the message-level \`body\` is NOT
-      // the reply — GHL fills it with the quoted original. The real reply text
-      // lives in the linked email record (meta.email.messageIds), so we resolve
-      // that and judge authenticity by the email record's from-address.
-      // Capture our OUTBOUND replies typed in GHL Conversations into the thread
-      // (Gap: replies not sent through the app were invisible on the Step-7 board).
-      // Only AFTER the funder replied — anything earlier is the submission email
-      // itself, which is already logged as funder:sent.
-      const nResp = (newest as { response_at?: string | null }).response_at;
+      // Capture OUTBOUND replies typed in Conversations (only after the funder
+      // replied — earlier ones are the submission email, already funder:sent).
       if (nResp) {
         const outLogged = await captureOutboundFunderEmails(
           db, cfg, lender.company_name, newest.deal_id, list, Date.parse(nResp),
         );
         if (outLogged) details.push(`${lender.company_name} ← ${outLogged} reply (Conversations)`);
       }
-
-      const baselineMs = Date.parse(
-        String((newest as { response_at?: string | null }).response_at ?? newest.submitted_at),
-      );
-      const candidates = list.filter((m) =>
-        String(m.direction ?? "") === "inbound" &&
-        /email/i.test(String(m.messageType ?? "")) &&
-        Date.parse(String(m.dateAdded ?? "")) > baselineMs,
-      );
-
-      let replyText = "";
-      let replyFrom = "";
-      let replyAt = "";
-      let replyEid = ""; // GHL email-record id → lets the board open the FULL email
-      for (const m of candidates) {
-        const meta = m.meta as { email?: { messageIds?: string[] } } | undefined;
-        const ids = meta?.email?.messageIds ?? [];
-        for (const eid of ids) {
-          const emailRes = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
-            cfg, "GET", `/conversations/messages/email/${eid}`,
-          );
-          const e = (emailRes.data?.emailMessage ?? emailRes.data ?? {}) as Record<string, unknown>;
-          if (String(e.direction ?? "") !== "inbound") continue;
-          const from = String(e.from ?? "").toLowerCase();
-          // Self-loop guard: our own sender bounced back is not a funder reply.
-          if (from.includes("send.mfunding.net") || from.includes("socrates73@gmail.com")) continue;
-          let text = String(e.body ?? "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
-            .replace(/\s+/g, " ").trim();
-          // Trim the quoted original ("On <date> ... wrote:") so alerts carry
-          // only what the funder actually said.
-          const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
-          if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
-          if (!text) text = "(reply received — open the conversation to read it)";
-          replyText = text;
-          replyFrom = String(e.from ?? "");
-          replyAt = String(m.dateAdded ?? "");
-          replyEid = String(eid);
-          break;
-        }
-        if (replyText) break;
-      }
-      if (!replyText) continue;
-
-      // Forward-only stamp with the reply's own timestamp: idempotent because
-      // the baseline filter above only surfaces inbound newer than response_at.
-      if (!replyAt || Date.parse(replyAt) <= baselineMs) continue;
-      const { data: stamped } = await db.from("deal_submissions")
-        .update({ response_at: replyAt }).eq("id", newest.id)
-        .select("id");
-      if (!stamped?.length) break;
-
-      replies++;
-      const { data: deal } = await db.from("deals")
-        .select("deal_number, customer_id").eq("id", newest.deal_id).maybeSingle();
-      const dealNumber = (deal?.deal_number as string) ?? newest.deal_id;
-      const snippet = replyText.slice(0, 300);
-
-      // Classify the reply and APPLY it to the card (best-effort — NEVER blocks
-      // the stamp/alert): a decline marks the submission declined with the
-      // reason; stated offer terms populate the offer fields for review.
-      let classification: ReplyClassification | null = null;
-      let applied = "";
-      try {
-        classification = await classifyReply(db, replyText);
-        if (classification) {
-          const patch: Record<string, unknown> = {
-            response_type: classification.type,
-            response_summary: classification.summary || null,
-            classified_at: new Date().toISOString(),
-            response_data: { raw: replyText, from: replyFrom, parsed: classification },
-          };
-          // Only auto-move the STATUS from an OPEN/active state, and never
-          // downgrade a further-along one: a decline/offer that lands after the
-          // card has already advanced (accepted/funded/withdrawn/declined) is a
-          // no-op on status (we still stamp response_type/summary above). The
-          // pending query already scopes to submitted/offer_made, so this is a
-          // belt-and-suspenders guard that also keeps a second offer from
-          // re-writing an already-offer_made row's status.
-          const OPEN_STATUSES = ["submitted", "pending", "under_review"];
-          const isOpen = OPEN_STATUSES.includes(String(newest.status));
-          if (classification.type === "decline" && isOpen) {
-            patch.status = "declined";
-            patch.decline_reason = classification.summary ||
-              (classification.decline_reason_category ?? "declined").replace(/_/g, " ");
-            applied = "Card auto-marked DECLINED.";
-          } else if (classification.type === "offer" && isOpen) {
-            patch.status = "offer_made";
-            const t = classification.offer_terms;
-            const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : null);
-            if (t && num(t.amount)) patch.offer_amount = num(t.amount);
-            if (t && num(t.factor)) patch.factor_rate = num(t.factor);
-            applied = "Card auto-marked OFFER — verify the parsed terms and log any missing ones.";
-          }
-          await db.from("deal_submissions").update(patch).eq("id", newest.id);
-        }
-      } catch { /* classification is best-effort; the stamp is the record */ }
-
-      await db.from("activity_log").insert({
-        entity_type: "deal", entity_id: newest.deal_id, interaction_type: "email",
-        subject: `ghl:funder-reply — ${lender.company_name}`,
-        // [emsg:<id>] lets the Step 7 board fetch the FULL email on "view email"
-        // (and lets phase 3 stamp [opened:…]).
-        content: `${classification?.type ?? "reply"}: "${snippet.slice(0, 180)}" (${replyFrom})` +
-          (replyEid ? ` [emsg:${replyEid}]` : ""),
-      });
-
-      // Internal alert — owner only.
-      try {
-        const owner = await upsertContact(cfg, {
-          email: OWNER_EMAIL, firstName: "Momentum", lastName: "Funding",
-          tags: ["staff"], source: "Funder Reply Alert",
-        });
-        const ownerId = owner.data?.contact?.id;
-        if (ownerId) {
-          const typeLabel: Record<string, string> = {
-            stip_request: "Stip request", decline: "Decline", offer: "Offer",
-            question: "Question", acknowledgment: "Acknowledgment", other: "Reply",
-          };
-          const classLine = classification
-            ? `Type: ${typeLabel[classification.type] ?? classification.type}` +
-              (classification.decline_reason_category ? ` (${classification.decline_reason_category.replace(/_/g, " ")})` : "") +
-              (classification.requested_items.length ? `\nNeeds: ${classification.requested_items.join(", ")}` : "") +
-              (classification.summary ? `\n${classification.summary}` : "") + `\n\n`
-            : "";
-          const subj = `Funder replied: ${lender.company_name} on ${dealNumber}`;
-          const bodyText =
-            `${lender.company_name} (${replyFrom}) replied on ${dealNumber}.\n\n` +
-            classLine +
-            (snippet ? `"${snippet}"\n\n` : "") +
-            (applied ? `${applied}\n\n` : "") +
-            `Read + respond in GHL → Conversations, or from the deal's Step 7 board.`;
-          await sendEmailToContact(cfg, ownerId, subj,
-            `<div style="font-family:Arial;font-size:14px;white-space:pre-wrap">${esc(bodyText)}</div>`,
-            { text: bodyText });
-        }
-      } catch { /* alert is best-effort; the stamp is the record */ }
-
-      details.push(`${lender.company_name} → ${dealNumber}`);
-      break; // one stamp per funder per run
+      for (const m of list) allMessages.push(m);
     }
+
+    // Dedupe against what we've already logged: every funder:email / ghl:funder-reply
+    // row carries an [emsg:<id>] marker, so a record already in the thread is skipped
+    // BEFORE we spend an API call fetching it. This is what makes re-polls a no-op.
+    const { data: markedRows } = await db.from("activity_log")
+      .select("content").eq("entity_type", "deal").eq("entity_id", newest.deal_id)
+      .like("content", "%[emsg:%");
+    const markedEids = new Set<string>();
+    for (const r of markedRows ?? []) {
+      for (const mm of String((r as { content?: string }).content ?? "").matchAll(/\[emsg:([^\]]+)\]/g)) {
+        markedEids.add(mm[1]);
+      }
+    }
+
+    // Candidate email-record ids from every TYPE_EMAIL message, newest message
+    // first (rough order — the record's own date decides the winner), skipping
+    // any already-marked id. Cap fetches so a huge thread can't blow up cost.
+    const refs: Array<{ eid: string; msgDate: string }> = [];
+    const refSeen = new Set<string>();
+    for (const m of allMessages) {
+      if (!/email/i.test(String(m.messageType ?? ""))) continue;
+      const ids = (m.meta as { email?: { messageIds?: string[] } } | undefined)?.email?.messageIds ?? [];
+      for (const eid of ids) {
+        const id = String(eid);
+        if (markedEids.has(id) || refSeen.has(id)) continue;
+        refSeen.add(id);
+        refs.push({ eid: id, msgDate: String(m.dateAdded ?? "") });
+      }
+    }
+    refs.sort((a, b) => Date.parse(b.msgDate) - Date.parse(a.msgDate));
+
+    // Resolve the UNSEEN records and keep the newest inbound reply (by the record's
+    // OWN dateAdded). Processing the newest means a decline that lands after an ack
+    // is what gets classified + flips the status; the older ack, still unseen, is
+    // logged on a later run without downgrading the status (open-status guard).
+    let replyText = "";
+    let replyFrom = "";
+    let replyAt = "";
+    let replyEid = "";
+    let fetched = 0;
+    for (const ref of refs) {
+      if (fetched >= 25) break;
+      fetched++;
+      const emailRes = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
+        cfg, "GET", `/conversations/messages/email/${ref.eid}`,
+      );
+      const e = (emailRes.data?.emailMessage ?? emailRes.data ?? {}) as Record<string, unknown>;
+      if (String(e.direction ?? "") !== "inbound") continue;
+      const from = String(e.from ?? "").toLowerCase();
+      // Self-loop guard: our own sender bounced back is not a funder reply.
+      if (from.includes("send.mfunding.net") || from.includes("socrates73@gmail.com")) continue;
+      let text = String(e.body ?? "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ")
+        .replace(/\s+/g, " ").trim();
+      const quoteIdx = text.search(/\bOn\s.{4,80}\swrote:/);
+      if (quoteIdx > 0) text = text.slice(0, quoteIdx).trim();
+      if (!text) text = "(reply received — open the conversation to read it)";
+      // Prefer the record's own dateAdded (reliable) over the message's (re-stamped).
+      const at = String(e.dateAdded ?? e.date ?? ref.msgDate);
+      if (!replyAt || Date.parse(at) > Date.parse(replyAt)) {
+        replyText = text; replyFrom = String(e.from ?? ""); replyAt = at; replyEid = ref.eid;
+      }
+    }
+    if (!replyText) continue; // nothing new for this funder → no-op
+
+    // Forward-only stamp: only advance response_at (never rewind if a later run
+    // happens to process an older unseen record). The [emsg:] dedupe — not the
+    // timestamp — is what guarantees we don't re-log.
+    if (replyAt && (!nResp || Date.parse(replyAt) > Date.parse(String(nResp)))) {
+      await db.from("deal_submissions").update({ response_at: replyAt }).eq("id", newest.id);
+    }
+
+    replies++;
+    const { data: deal } = await db.from("deals")
+      .select("deal_number, customer_id").eq("id", newest.deal_id).maybeSingle();
+    const dealNumber = (deal?.deal_number as string) ?? newest.deal_id;
+    const snippet = replyText.slice(0, 300);
+
+    // Classify the reply and APPLY it to the card (best-effort — NEVER blocks the
+    // log/alert): a decline marks the submission declined with the reason; stated
+    // offer terms populate the offer fields for review.
+    let classification: ReplyClassification | null = null;
+    let applied = "";
+    try {
+      classification = await classifyReply(db, replyText);
+      if (classification) {
+        const patch: Record<string, unknown> = {
+          response_type: classification.type,
+          response_summary: classification.summary || null,
+          classified_at: new Date().toISOString(),
+          response_data: { raw: replyText, from: replyFrom, parsed: classification },
+        };
+        // Only auto-move the STATUS from an OPEN/active state, and never downgrade
+        // a further-along one: a decline/offer that lands after the card has already
+        // advanced (accepted/funded/withdrawn/declined) is a no-op on status. This
+        // also means an older ack processed on a later run can't revert a decline.
+        const OPEN_STATUSES = ["submitted", "pending", "under_review"];
+        const isOpen = OPEN_STATUSES.includes(String(newest.status));
+        if (classification.type === "decline" && isOpen) {
+          patch.status = "declined";
+          patch.decline_reason = classification.summary ||
+            (classification.decline_reason_category ?? "declined").replace(/_/g, " ");
+          applied = "Card auto-marked DECLINED.";
+        } else if (classification.type === "offer" && isOpen) {
+          patch.status = "offer_made";
+          const t = classification.offer_terms;
+          const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : null);
+          if (t && num(t.amount)) patch.offer_amount = num(t.amount);
+          if (t && num(t.factor)) patch.factor_rate = num(t.factor);
+          applied = "Card auto-marked OFFER — verify the parsed terms and log any missing ones.";
+        }
+        await db.from("deal_submissions").update(patch).eq("id", newest.id);
+      }
+    } catch { /* classification is best-effort; the log is the record */ }
+
+    await db.from("activity_log").insert({
+      entity_type: "deal", entity_id: newest.deal_id, interaction_type: "email",
+      subject: `ghl:funder-reply — ${lender.company_name}`,
+      // [emsg:<id>] lets the Step 7 board fetch the FULL email on "view email",
+      // lets phase 3 stamp [opened:…], AND is the dedupe key that keeps re-polls
+      // from re-logging this record.
+      content: `${classification?.type ?? "reply"}: "${snippet.slice(0, 180)}" (${replyFrom})` +
+        (replyEid ? ` [emsg:${replyEid}]` : ""),
+    });
+
+    // Internal alert — owner only.
+    try {
+      const owner = await upsertContact(cfg, {
+        email: OWNER_EMAIL, firstName: "Momentum", lastName: "Funding",
+        tags: ["staff"], source: "Funder Reply Alert",
+      });
+      const ownerId = owner.data?.contact?.id;
+      if (ownerId) {
+        const typeLabel: Record<string, string> = {
+          stip_request: "Stip request", decline: "Decline", offer: "Offer",
+          question: "Question", acknowledgment: "Acknowledgment", other: "Reply",
+        };
+        const classLine = classification
+          ? `Type: ${typeLabel[classification.type] ?? classification.type}` +
+            (classification.decline_reason_category ? ` (${classification.decline_reason_category.replace(/_/g, " ")})` : "") +
+            (classification.requested_items.length ? `\nNeeds: ${classification.requested_items.join(", ")}` : "") +
+            (classification.summary ? `\n${classification.summary}` : "") + `\n\n`
+          : "";
+        const subj = `Funder replied: ${lender.company_name} on ${dealNumber}`;
+        const bodyText =
+          `${lender.company_name} (${replyFrom}) replied on ${dealNumber}.\n\n` +
+          classLine +
+          (snippet ? `"${snippet}"\n\n` : "") +
+          (applied ? `${applied}\n\n` : "") +
+          `Read + respond in GHL → Conversations, or from the deal's Step 7 board.`;
+        await sendEmailToContact(cfg, ownerId, subj,
+          `<div style="font-family:Arial;font-size:14px;white-space:pre-wrap">${esc(bodyText)}</div>`,
+          { text: bodyText });
+      }
+    } catch { /* alert is best-effort; the log is the record */ }
+
+    details.push(`${lender.company_name} → ${dealNumber}`);
   }
 
   const mp = await runMerchantPhase(db, cfg);
