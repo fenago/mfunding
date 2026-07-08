@@ -558,10 +558,103 @@ export default function PlaybooksPage() {
 // ───────────────────── Docs back from the merchant ─────────────────────
 // Live e-sign + upload status pulled from GHL (ghl-docs-status function):
 // what's signed (with view links + timestamps) and what files they uploaded.
+type GhlDoc = { name: string; status: string; signed: boolean; updatedAt: string | null; url: string | null };
+type DocGroup = { key: string; latest: GhlDoc; older: GhlDoc[]; count: number };
+
+// GHL re-sends the same document when a closer edits/re-issues it (e.g. fields
+// were filled in late), so the raw list can carry several copies of the same
+// doc — some stale, some signed. Collapse copies of the SAME document into one
+// group so the closer sees a single, unambiguous "latest" status instead of a
+// flat pile with no hierarchy.
+const normalizeDocName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+const docTs = (d: GhlDoc) => (d.updatedAt ? new Date(d.updatedAt).getTime() : 0);
+function groupDocs(docs: GhlDoc[]): DocGroup[] {
+  const map = new Map<string, GhlDoc[]>(); // insertion order = first-appearance order (stable)
+  for (const d of docs) {
+    const key = normalizeDocName(d.name);
+    (map.get(key) ?? map.set(key, []).get(key)!).push(d);
+  }
+  return [...map.entries()].map(([key, arr]) => {
+    const sorted = [...arr].sort((a, b) => docTs(b) - docTs(a)); // newest first
+    return { key, latest: sorted[0], older: sorted.slice(1), count: sorted.length };
+  });
+}
+
+const ghlDocsUrl = `https://app.vibereach.io/v2/location/${GHL_LOCATION}/payments/proposals-estimates`;
+
+// One document group: the latest copy up top, older copies collapsed underneath.
+// The loud case is an amber warning — the newest copy is unsigned but an older
+// copy WAS signed, so it's ambiguous whether anything still needs a signature.
+function DocGroupRow({ group }: { group: DocGroup }) {
+  const [open, setOpen] = useState(false);
+  const { latest, older, count } = group;
+  const olderSigned = older.some((o) => o.signed);
+  const warn = !latest.signed && olderSigned; // newest unsigned, an older one signed
+  return (
+    <div className="text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span>{latest.signed ? "✅" : warn ? "⚠️" : "⏳"}</span>
+        <span className="font-medium text-gray-800 dark:text-gray-100">{latest.name}</span>
+        {count > 1 && (
+          <span className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 text-[10px] text-gray-500 dark:text-gray-300">
+            sent {count}×
+          </span>
+        )}
+        <span className={latest.signed ? "text-emerald-600 font-semibold" : warn ? "text-amber-700 font-semibold" : "text-amber-600"}>
+          {latest.signed ? "Signed" : latest.status}
+        </span>
+        {latest.updatedAt && <span className="text-gray-400">· {fmtWhen(latest.updatedAt)}</span>}
+        {/* The doc's own link is the SIGNER's (permission-bound to the merchant) —
+            staff view the signed copy in the GHL dashboard instead. */}
+        <a
+          href={ghlDocsUrl}
+          target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline"
+          title={latest.signed ? "Opens GHL → Documents & Contracts → Completed tab" : "Opens GHL → Documents & Contracts"}
+        >
+          View in GHL{latest.signed ? " (Completed tab)" : ""} ↗
+        </a>
+      </div>
+      {warn && (
+        <div className="mt-1 flex items-start gap-1.5 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+          <span>⚠</span>
+          <span>Newest copy is unsigned — the merchant signed an older version. Confirm which copy is valid before advancing.</span>
+        </div>
+      )}
+      {older.length > 0 && (
+        <div className="mt-1 ml-6">
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className="text-[11px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:underline"
+          >
+            {open ? "Hide earlier copies ▲" : `${older.length} earlier ${older.length === 1 ? "copy" : "copies"} ▼`}
+          </button>
+          {open && (
+            <div className="mt-1 space-y-1 border-l-2 border-gray-200 dark:border-gray-700 pl-2">
+              {older.map((o, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-1.5 text-[11px] text-gray-400">
+                  <span className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5 text-[9px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    Superseded
+                  </span>
+                  <span>{o.signed ? "Signed" : o.status}</span>
+                  {o.updatedAt && <span>· {fmtWhen(o.updatedAt)}</span>}
+                  <a href={ghlDocsUrl} target="_blank" rel="noreferrer" className="text-ocean-blue/70 hover:underline">
+                    View in GHL ↗
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [docs, setDocs] = useState<{ name: string; status: string; signed: boolean; updatedAt: string | null; url: string | null }[]>([]);
+  const [docs, setDocs] = useState<GhlDoc[]>([]);
   const [uploads, setUploads] = useState<{ field: string; files: { name: string; url: string | null }[] }[]>([]);
 
   async function load() {
@@ -598,24 +691,8 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
       ) : (
         <div className="space-y-2">
           {docs.length === 0 && <p className="text-xs text-gray-400">No documents sent yet.</p>}
-          {docs.map((d, i) => (
-            <div key={i} className="flex flex-wrap items-center gap-2 text-xs">
-              <span>{d.signed ? "✅" : "⏳"}</span>
-              <span className="font-medium text-gray-800 dark:text-gray-100">{d.name}</span>
-              <span className={d.signed ? "text-emerald-600 font-semibold" : "text-amber-600"}>
-                {d.signed ? "Signed" : d.status}
-              </span>
-              {d.updatedAt && <span className="text-gray-400">· {fmtWhen(d.updatedAt)}</span>}
-              {/* The doc's own link is the SIGNER's (permission-bound to the merchant) —
-                  staff view the signed copy in the GHL dashboard instead. */}
-              <a
-                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/payments/proposals-estimates`}
-                target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline"
-                title={d.signed ? "Opens GHL → Documents & Contracts → Completed tab" : "Opens GHL → Documents & Contracts"}
-              >
-                View in GHL{d.signed ? " (Completed tab)" : ""} ↗
-              </a>
-            </div>
+          {groupDocs(docs).map((g) => (
+            <DocGroupRow key={g.key} group={g} />
           ))}
           {uploads.length > 0 && (
             <div className="pt-2 border-t border-gray-100 dark:border-gray-700">
