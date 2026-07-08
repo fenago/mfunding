@@ -19,6 +19,8 @@ import {
   LockClosedIcon,
   PencilSquareIcon,
   DocumentTextIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
@@ -34,8 +36,9 @@ import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDea
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
-import type { DealWithCustomer, DealStatus, Deal } from "../../types/deals";
-import { DEAL_STATUS_CONFIG } from "../../types/deals";
+import type { DealWithCustomer, DealStatus, Deal, Market } from "../../types/deals";
+import { DEAL_STATUS_CONFIG, MARKET_CONFIG } from "../../types/deals";
+import { listCampaigns, type Campaign } from "../../services/campaignService";
 import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commissions";
 import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -728,8 +731,28 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
   const [businessName, setBusinessName] = useState(c?.business_name ?? "");
   const [email, setEmail] = useState(c?.email ?? "");
   const [phone, setPhone] = useState(c?.phone ?? "");
+  // Advanced (deal) fields — these live on the DEAL, not the customer.
+  const [market, setMarket] = useState<Market | "">((deal.market as Market | null) ?? "");
+  const [leadSource, setLeadSource] = useState(deal.lead_source ?? "");
+  const [campaignId, setCampaignId] = useState(deal.campaign_id ?? "");
+  const [closerId, setCloserId] = useState(deal.assigned_closer_id ?? "");
+  const [moreOpen, setMoreOpen] = useState(false);
+  // Option sources for the advanced selects (loaded on open, mirroring the intake).
+  const [closers, setClosers] = useState<{ id: string; user_id: string | null; first_name: string | null; last_name: string | null }[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Load closers + campaigns the same way PlaybookCapture does.
+  useEffect(() => {
+    listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
+    supabase
+      .from("closers")
+      .select("id, user_id, first_name, last_name")
+      .eq("status", "active")
+      .order("first_name", { ascending: true })
+      .then(({ data }) => setClosers(data || []));
+  }, []);
 
   // Same required set as the intake — plus last name (confirmed required to save).
   const canSave =
@@ -743,6 +766,7 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
     setSaving(true);
     setError(null);
     try {
+      // Customer identity → customers table.
       await mustWrite(
         "update lead",
         supabase
@@ -755,6 +779,19 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
             phone: phone.trim(),
           })
           .eq("id", deal.customer_id),
+      );
+      // Attribution / routing → the DEAL (market, lead_source, campaign, closer).
+      await mustWrite(
+        "update deal routing",
+        supabase
+          .from("deals")
+          .update({
+            market: market || null,
+            lead_source: leadSource || null,
+            campaign_id: campaignId || null,
+            assigned_closer_id: closerId || null,
+          })
+          .eq("id", deal.id),
       );
       onSaved();
     } catch (e) {
@@ -806,6 +843,65 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Cell phone <Req /></span>
             <input className="input-field w-full mt-1" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 123-4567" />
           </label>
+
+          {/* Advanced routing/attribution — these save to the DEAL, not the
+              customer. Collapsed by default so identity stays the fast path. */}
+          <button
+            type="button"
+            onClick={() => setMoreOpen((o) => !o)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
+          >
+            {moreOpen ? <ChevronUpIcon className="w-4 h-4" /> : <ChevronDownIcon className="w-4 h-4" />}
+            More details (closer, campaign, market, source) — optional
+          </button>
+
+          {moreOpen && (
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Assigned closer</span>
+                <select className="input-field w-full mt-1" value={closerId} onChange={(e) => setCloserId(e.target.value)}>
+                  <option value="">Unassigned</option>
+                  {closers.filter((cl) => cl.user_id).map((cl) => (
+                    // value MUST be the profile id (deals.assigned_closer_id → profiles.id).
+                    <option key={cl.id} value={cl.user_id!}>{cl.first_name} {cl.last_name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Campaign</span>
+                <select className="input-field w-full mt-1" value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
+                  <option value="">No campaign</option>
+                  {campaigns.map((cp) => (
+                    <option key={cp.id} value={cp.id}>{cp.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Market</span>
+                <select className="input-field w-full mt-1" value={market} onChange={(e) => setMarket(e.target.value as Market | "")}>
+                  <option value="">Select market</option>
+                  {Object.entries(MARKET_CONFIG).map(([v, cfg]) => (
+                    <option key={v} value={v}>{cfg.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Lead source</span>
+                <select className="input-field w-full mt-1" value={leadSource} onChange={(e) => setLeadSource(e.target.value)}>
+                  <option value="">Select source</option>
+                  <option value="live_transfer">Live Transfer</option>
+                  <option value="google_ads">Google Ads</option>
+                  <option value="website">Website</option>
+                  <option value="aged_lead">Aged Lead</option>
+                  <option value="ucc_lead">UCC Filing</option>
+                  <option value="referral">Referral</option>
+                  <option value="cold_call">Cold Call</option>
+                  <option value="repeat_customer">Repeat Customer</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+            </div>
+          )}
         </div>
 
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
