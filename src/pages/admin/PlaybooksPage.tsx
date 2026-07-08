@@ -373,7 +373,12 @@ export default function PlaybooksPage() {
                 <button onClick={() => setDeal(null)} className="shrink-0 underline">Clear</button>
               </div>
             )}
-            <PlaybookCapture key={active.id} playbook={active} onCreated={(d: Deal) => refreshDeal(d.id)} />
+            <PlaybookCapture
+              key={active.id}
+              playbook={active}
+              onCreated={(d: Deal) => refreshDeal(d.id)}
+              intakeScript={<IntakeScript playbook={active} />}
+            />
             <ResumePicker pipeline={active.pipeline} onPick={(d) => setDeal(d)} />
           </div>
         )}
@@ -547,6 +552,41 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ───────────────────────── Intake script ─────────────────────────
+// On a live-transfer intake the merchant is ALREADY on the phone, so the
+// opening greeting has to sit right next to the capture fields — the closer
+// reads it while typing name + phone, not after the record exists. Pulls the
+// words straight from the playbook's first step (say + its do bullets) so
+// playbooks.ts stays the single source of truth. Renders nothing for a step
+// with no script (so it's safe to pass for any flow).
+
+function IntakeScript({ playbook }: { playbook: Playbook }) {
+  const step = playbook.steps[0];
+  if (!step || (!step.say && !step.do?.length)) return null;
+  return (
+    <div className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <ChatBubbleLeftRightIcon className="w-4 h-4 text-ocean-blue shrink-0" />
+        <span className="text-xs font-semibold text-gray-900 dark:text-white">
+          Step 1 · {step.title} — say this as you start the record
+        </span>
+      </div>
+      {step.say && (
+        <p className="text-sm italic text-gray-800 dark:text-gray-100 border-l-4 border-ocean-blue pl-3">
+          "{step.say}"
+        </p>
+      )}
+      {step.do?.length ? (
+        <ul className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300 list-disc pl-5">
+          {step.do.map((d, i) => (
+            <li key={i}>{d}</li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

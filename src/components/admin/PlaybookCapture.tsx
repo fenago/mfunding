@@ -75,16 +75,29 @@ const emptyForm = {
 export default function PlaybookCapture({
   playbook,
   onCreated,
+  intakeScript,
 }: {
   playbook: Playbook;
   /** When provided, the parent takes over after creation (loads the deal into
    * the guided workspace) and this component does NOT show its own success card. */
   onCreated?: (deal: Deal) => void;
+  /** On live-transfer intakes, the opening script rendered ABOVE the "+ New lead"
+   * fields so the closer reads the greeting while typing the caller's details.
+   * Pulled from the playbook's Step 1 (single source of truth). */
+  intakeScript?: React.ReactNode;
 }) {
   const isVcf = playbook.pipeline === "vcf";
   const defaults = PLAYBOOK_DEFAULTS[playbook.id];
+  // Live-transfer intake: the merchant is already on the phone, so the "+ New
+  // lead" form leads with the OPENING SCRIPT + a minimal name/phone/business-email
+  // capture; the rest of the routing fields fold into "More details".
+  const isLiveIntake = defaults.isLiveTransfer;
 
   const [open, setOpen] = useState(true);
+  // "More details" (market / source / campaign / closer / notes) — collapsed by
+  // default on a live-transfer intake so name + phone + business email is the
+  // fast path; always expanded on non-live flows (unchanged behavior).
+  const [moreOpen, setMoreOpen] = useState(false);
   const [mode, setMode] = useState<"new" | "existing">("new");
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerSearch, setCustomerSearch] = useState("");
@@ -310,7 +323,9 @@ export default function PlaybookCapture({
         <span className="flex items-center gap-2">
           <UserPlusIcon className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
           <span className="font-semibold text-gray-900 dark:text-white">
-            Start the lead — name &amp; phone is all you need
+            {isLiveIntake
+              ? "Start the call — read the script, type name & phone as you talk"
+              : "Start the lead — name & phone is all you need"}
           </span>
         </span>
         <span className="flex items-center gap-2">
@@ -355,9 +370,14 @@ export default function PlaybookCapture({
           ) : (
             <form onSubmit={handleSave} className="space-y-4">
               <p className="text-sm text-gray-600 dark:text-gray-300">
-                Just get them into the system: Saving creates the {isVcf ? "VCF" : "MCA"} deal and pushes the contact into
-                GoHighLevel. Then work the steps below — <span className="font-medium">each question you ask has its
-                own field right there</span>, so you capture answers without scrolling back up.
+                {isLiveIntake && mode === "new" ? (
+                  <>They're on the line — <span className="font-medium">read the greeting below and type their name &amp; phone as you talk</span>.
+                  Saving creates the {isVcf ? "VCF" : "MCA"} deal, pushes them to GoHighLevel, and opens the Qualify step so you keep going.</>
+                ) : (
+                  <>Just get them into the system: Saving creates the {isVcf ? "VCF" : "MCA"} deal and pushes the contact into
+                  GoHighLevel. Then work the steps below — <span className="font-medium">each question you ask has its
+                  own field right there</span>, so you capture answers without scrolling back up.</>
+                )}
               </p>
 
               {error && (
@@ -432,6 +452,30 @@ export default function PlaybookCapture({
                     with their market / source / closer carried over.
                   </p>
                 </div>
+              ) : isLiveIntake ? (
+                // Live-transfer intake: the opening script sits right above a
+                // minimal capture — name + phone (required) and business name +
+                // business email (prompted). Read the greeting while you type.
+                <div className="space-y-3">
+                  {intakeScript}
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <Field label="Name *">
+                      <input className="input-field w-full" value={form.first_name} onChange={(e) => set("first_name", e.target.value)} placeholder="Jane" autoFocus />
+                    </Field>
+                    <Field label="Phone *">
+                      <input className="input-field w-full" type="tel" value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="(555) 123-4567" />
+                    </Field>
+                    <Field label="Business name">
+                      <input className="input-field w-full" value={form.business_name} onChange={(e) => set("business_name", e.target.value)} placeholder="Acme Co." />
+                    </Field>
+                    <Field label="Business email">
+                      <input className="input-field w-full" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="jane@acme.com" />
+                    </Field>
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    Name + phone is all you need to Save. Business email lets the app + upload link reach them — grab it if you can.
+                  </p>
+                </div>
               ) : (
                 <div className="grid sm:grid-cols-2 gap-3">
                   <Field label="First name *">
@@ -453,11 +497,31 @@ export default function PlaybookCapture({
               )}
 
               {mode === "new" && (<>
-              {/* Qualifiers are captured inline at the Qualify step — not here. */}
-              <p className="text-xs text-gray-500 dark:text-gray-400 rounded-md bg-white/60 dark:bg-gray-800/60 border border-dashed border-gray-300 dark:border-gray-600 px-3 py-2">
-                Name + phone is all you need to start. You'll capture {isVcf ? "positions, balances and daily debit" : "revenue, amount requested and time-in-business"} right inside the <span className="font-medium">Qualify</span> step below — as you ask each question, so you're never scrolling back up here.
-              </p>
+              {/* Qualifiers are captured inline at the Qualify step — not here.
+                  On a live intake this note is redundant with the minimal-capture
+                  hint above, so it's hidden there. */}
+              {!isLiveIntake && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 rounded-md bg-white/60 dark:bg-gray-800/60 border border-dashed border-gray-300 dark:border-gray-600 px-3 py-2">
+                  Name + phone is all you need to start. You'll capture {isVcf ? "positions, balances and daily debit" : "revenue, amount requested and time-in-business"} right inside the <span className="font-medium">Qualify</span> step below — as you ask each question, so you're never scrolling back up here.
+                </p>
+              )}
 
+              {/* On a live intake, market/source/campaign/closer fold into "More
+                  details" so name + phone + business email stays the fast path —
+                  the Save button is reachable without scrolling past routing. On
+                  every other flow these fields show inline (unchanged). */}
+              {isLiveIntake && (
+                <button
+                  type="button"
+                  onClick={() => setMoreOpen((o) => !o)}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
+                >
+                  {moreOpen ? <ChevronUpIcon className="w-4 h-4" /> : <ChevronDownIcon className="w-4 h-4" />}
+                  More details (market, campaign, closer) — optional
+                </button>
+              )}
+
+              {(!isLiveIntake || moreOpen) && (<>
               {/* Routing */}
               <div className="grid sm:grid-cols-2 gap-3">
                 <Field label="Market">
@@ -505,10 +569,13 @@ export default function PlaybookCapture({
               <Field label="Notes">
                 <textarea className="input-field w-full h-16" value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Anything the next person should know…" />
               </Field>
+              </>)}
 
               <div className="flex items-center justify-between gap-3 pt-1">
                 <p className="text-xs text-gray-400">
-                  Tagging the campaign here is what makes the cost-per-funded math work.
+                  {isLiveIntake
+                    ? "Save now to start the call; tag the campaign under “More details” so the cost-per-funded math works."
+                    : "Tagging the campaign here is what makes the cost-per-funded math work."}
                 </p>
                 <button type="submit" disabled={saving} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
                   {saving ? "Saving…" : isVcf ? "Save VCF lead" : "Save lead"}
