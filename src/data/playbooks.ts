@@ -341,20 +341,6 @@ export const PLAYBOOKS: Playbook[] = [
     },
     steps: [
       {
-        n: 1,
-        title: "Greet + capture live — the intake IS the script (0–15s)",
-        stageKey: "new",
-        sla: "First touch < 60 seconds — you're already on the call",
-        tone: "speed",
-        do: [
-          "Pick up energized — the merchant is LIVE and expecting you; treat it like you called them.",
-          "Work the intake at the top top-to-bottom: read each scripted line, type the answer in the box under it. Each line ASKS (you don't know their name yet) — name → business → cell → email.",
-          "Name + cell is enough to hit Save lead — that creates the customer + deal and pushes to GoHighLevel; the qualifying step lights up next. Set the Campaign under 'More details' if you get a beat.",
-        ],
-        say: "Hi — this is [Closer] with Momentum Funding, thanks for holding! Who do I have the pleasure of speaking with? … Great to meet you — and what's the name of your business? … Perfect, what's the best cell and email so I can get your application right over?",
-        note: "The greeting asks for the name — never assume it. Tagging the Campaign at save is what makes the cost-per-funded math work in Admin → Campaigns.",
-      },
-      {
         n: 2,
         title: "Qualify + lock it in (30s)",
         stageKey: "qualifying",

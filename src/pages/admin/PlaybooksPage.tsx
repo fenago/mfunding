@@ -126,12 +126,12 @@ export default function PlaybooksPage() {
       return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
 
-  // Live Transfer: the greeting (Step 1) already happens IN the intake capture
-  // when the closer creates the lead, so it's redundant in the guided steps —
-  // drop it and renumber the rest so the flow starts clean at Qualify.
+  // Live Transfer: the greeting already happens IN the intake capture when the
+  // closer creates the lead, so its step is removed from the data entirely — here
+  // we just renumber so the guided steps read 1..n starting at Qualify.
   const flowSteps =
     active.id === "live-transfer"
-      ? active.steps.slice(1).map((s, idx) => ({ ...s, n: idx + 1 }))
+      ? active.steps.map((s, idx) => ({ ...s, n: idx + 1 }))
       : active.steps;
 
   // The deal is "live" in this playbook only when its pipeline matches the open tab.
