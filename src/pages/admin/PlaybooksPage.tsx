@@ -425,12 +425,12 @@ export default function PlaybooksPage() {
           <span className="font-semibold text-gray-900 dark:text-white">
             {flowOpen ? "Hide" : "View"} the {active.name} flow
           </span>
-          <span className="text-xs text-gray-400">{active.steps.length} steps</span>
+          <span className="text-xs text-gray-400">{flowSteps.length} steps</span>
         </button>
 
         {flowOpen && (
         <ol className="relative space-y-4 mt-4">
-          {active.steps.map((s, i) => {
+          {flowSteps.map((s, i) => {
             const stageIdx = s.stageKey ? order.indexOf(s.stageKey) : -1;
             const done = dealMatchesPlaybook && stageIdx >= 0 && stageIdx <= currentIdx;
             const current =
@@ -439,7 +439,7 @@ export default function PlaybooksPage() {
               <StepCard
                 key={s.n}
                 step={s}
-                last={i === active.steps.length - 1}
+                last={i === flowSteps.length - 1}
                 stageLabel={s.stageKey ? STAGE_LABELS[active.pipeline][s.stageKey] : undefined}
                 stageNum={s.stageKey ? order.indexOf(s.stageKey) + 1 : undefined}
                 interactive={dealMatchesPlaybook}
