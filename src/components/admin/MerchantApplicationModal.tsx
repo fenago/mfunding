@@ -412,6 +412,63 @@ export default function MerchantApplicationModal({
     }
   }
 
+  // PATH 1 — SELF-FILL: send the ORIGINAL fillable application (the merchant
+  // types everything themselves; MCA 04). No required-field gating — there's
+  // nothing to pre-fill. Two-click arm/confirm so it can't fire accidentally.
+  const [blankArmed, setBlankArmed] = useState(false);
+  async function sendBlank() {
+    if (!blankArmed) { setBlankArmed(true); setTimeout(() => setBlankArmed(false), 6000); return; }
+    setBlankArmed(false);
+    if (!merchantEmail) {
+      setError("This merchant has no email yet — add one via 'Edit lead info' first.");
+      return;
+    }
+    const isResend = !!sentAt || !!deal.application_sent_at || deal.status === "application_sent";
+    setBusy("send");
+    setError(null);
+    try {
+      // blank:true → the server clears any prefill routing (removes 04B + tag)
+      // and runs the classic MCA 04 self-fill path.
+      const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
+        body: { dealId: deal.id, blank: true, resend: isResend },
+      });
+      if (pushErr) throw pushErr;
+      if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
+
+      const firstName = form.owner_first_name || cust?.first_name || "there";
+      const biz = form.business_legal_name || cust?.business_name || "your business";
+      const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
+        body: {
+          dealId: deal.id,
+          subject: `Your funding application for ${biz}`,
+          body:
+            `Hi ${firstName},\n\n` +
+            `Thanks for your time. I'm sending over your funding application for ${biz} now.\n\n` +
+            `You'll receive a separate email with:\n` +
+            `  1. Your funding application to fill out and e-sign\n` +
+            `  2. A quick compensation disclosure to e-sign\n` +
+            `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
+            `Reply here if you have any questions.\n\nTalk soon.`,
+          regarding: "MCA application (self-fill)",
+        },
+      });
+      if (fnErr) throw fnErr;
+      if ((data as { error?: string })?.error) throw new Error((data as { error?: string }).error);
+
+      if (!isResend) {
+        try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
+      } else if ((pushData as { reenrolled?: boolean })?.reenrolled === false) {
+        setError("Cover note sent, but GHL did NOT re-send the fillable docs — MCA 04 re-enrollment was rejected. Turn on 'Allow re-enrollment' in MCA 04, or re-send from GHL → Documents & Contracts.");
+        setBusy(null);
+        return;
+      }
+      onSent();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send the blank application.");
+      setBusy(null);
+    }
+  }
+
   const TABS: { id: Tab; label: string }[] = [
     { id: "business", label: "Business" },
     { id: "owner", label: "Owner" },
@@ -710,6 +767,20 @@ export default function MerchantApplicationModal({
                 {busy === "send" ? "Sending…" : "Send to merchant to e-sign"}
               </button>
             </div>
+          </div>
+          {/* PATH 1 escape hatch — send the classic fillable application instead
+              (merchant completes it themselves). Two clicks to fire. */}
+          <div className="mt-2 text-right">
+            <button
+              type="button"
+              onClick={sendBlank}
+              disabled={busy !== null || loading}
+              className={`text-xs underline disabled:opacity-50 ${blankArmed ? "text-red-600 font-semibold" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"}`}
+            >
+              {blankArmed
+                ? "Click again to confirm — sends the BLANK application (merchant fills it out)"
+                : "…or send the blank application for the merchant to fill out themselves"}
+            </button>
           </div>
         </div>
       </div>
