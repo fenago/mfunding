@@ -30,6 +30,7 @@ import FunderPicker from "../../components/admin/FunderPicker";
 import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
 import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabilityChecklist";
 import DocumentChecklist from "../../components/admin/DocumentChecklist";
+import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, type QueueDeal } from "../../services/dealService";
@@ -1597,6 +1598,24 @@ function StepCard({
           deal.deal_type === "mca" && (
             <DocumentChecklist deal={deal} onChange={onDocChecklistChange} />
           )}
+
+        {/* Internal AI underwriter — right where it matters: statements are in,
+            and the NEXT step is submitting to funders. Run it here to get the
+            affordability verdict + red flags + funder fit BEFORE burning
+            submissions. Collapsible so the step stays scannable. */}
+        {step.stageKey === "bank_statements" && interactive && deal && deal.deal_type === "mca" && (
+          <details className="mt-4 rounded-lg border border-ocean-blue/40 bg-white dark:bg-gray-800">
+            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              🧠 Internal AI underwriter — run BEFORE you submit
+              <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+                reads the statements → affordability, padding, red flags, funder fit
+              </span>
+            </summary>
+            <div className="px-4 pb-4">
+              <AIUnderwritingPanel dealId={deal.id} />
+            </div>
+          </details>
+        )}
 
         {/* Funder availability — as docs come in and at the submission step, show
             which live MCA funders are READY to submit vs NEED which docs, from the

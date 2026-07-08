@@ -161,6 +161,7 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
       "Get the stips + last 4 months of bank statements via the secure 'Bank Statements & Documents Upload' link.",
       "Review what's in via Admin → Doc Review (/admin/documents) and the deal's Documents tab.",
       "Move Status → Docs Collected, then → Bank Statements as items arrive. The Sequence A email cadence chases anything missing.",
+      "Statements in? Run the Internal AI underwriter below — it reads the statements and gives you the affordability verdict, revenue-padding read, red flags, and funder fit BEFORE you burn submissions.",
     ],
     collect: ["Merchant Funding Application (completed + e-signed)", "Broker Compensation Disclosure (e-signed)", "Owner photo ID", "Voided business check", "Proof of business ownership", "Last 4 months bank statements (upload)"],
     say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Upload your last 4 statements with the secure link in my email, or reply with photos.",
