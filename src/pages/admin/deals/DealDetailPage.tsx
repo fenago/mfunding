@@ -11,10 +11,11 @@ import {
   XCircleIcon,
   ClockIcon,
   DocumentCheckIcon,
+  ArrowUturnLeftIcon,
 } from "@heroicons/react/24/outline";
 import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import supabase from "../../../supabase";
-import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission } from "../../../services/dealService";
+import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission, reactivateDeal } from "../../../services/dealService";
 import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
 import { tagFundersForSubmission } from "../../../services/ghlService";
@@ -123,6 +124,18 @@ export default function DealDetailPage() {
     }
   };
 
+  const handleReactivate = async () => {
+    if (!id) return;
+    if (!window.confirm("Bring this deal back into the pipeline?")) return;
+    try {
+      const updated = await reactivateDeal(id);
+      setDeal((prev) => (prev ? { ...prev, ...updated } : null));
+      fetchDeal();
+    } catch (e) {
+      alert(`Could not bring this deal back: ${e instanceof Error ? e.message : "Unknown error"}`);
+    }
+  };
+
   const handleSubmitToFunder = async () => {
     if (!id || !submittingLenderId) return;
     try {
@@ -218,6 +231,8 @@ export default function DealDetailPage() {
   const marketConfig = deal.market ? MARKET_CONFIG[deal.market] : null;
 
   const isTerminal = ["declined", "dead", "renewal_eligible"].includes(deal.status);
+  // Parked deals (off-pipeline) can be pulled back in with one click.
+  const isParked = ["nurture", "declined", "dead"].includes(deal.status);
 
   // Offers that have amounts (for comparison table)
   const offersWithAmounts = submissions.filter(
@@ -264,6 +279,16 @@ export default function DealDetailPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {isParked && (
+              <button
+                onClick={handleReactivate}
+                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-ocean-blue rounded-lg hover:bg-ocean-blue/90"
+                title="Bring this deal back into the active pipeline"
+              >
+                <ArrowUturnLeftIcon className="w-4 h-4" />
+                Bring back
+              </button>
+            )}
             <SyncToGHLButton entity="deal" id={deal.id} onSynced={() => fetchDeal()} />
             {deal.customer && (
               <Link

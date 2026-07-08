@@ -17,6 +17,10 @@ import { COMMISSION_DEFAULTS, expectedCommissionInPlay } from "../types/commissi
 import { PIPELINES } from "../data/pipelines";
 import type { CommissionLeadSource, Commission } from "../types/commissions";
 
+// Parked (off-pipeline) statuses shared by both product lines. A deal in one of
+// these is "on the bench" and can be pulled back with reactivateDeal().
+const PARKED_STATUSES: DealStatus[] = ["nurture", "declined", "dead"];
+
 // Stage → timestamp column mapping
 const STATUS_TIMESTAMP_MAP: Partial<Record<DealStatus, string>> = {
   contacted: "contacted_at",
@@ -211,29 +215,31 @@ export async function updateDeal(id: string, data: UpdateDealData): Promise<Deal
 }
 
 export async function updateDealStatus(id: string, newStatus: DealStatus): Promise<Deal> {
+  const { data: cur } = await supabase.from("deals").select("status, deal_type").eq("id", id).single();
+  const curStatus = cur?.status as DealStatus | undefined;
+
   // ── Backward-move lock ────────────────────────────────────────────────
-  // Moving a deal BACKWARD (or reviving a closed deal into the pipeline)
-  // re-fires that stage's GHL automations at the merchant — a trainee doing
-  // it by accident emails a real customer. Forward moves and moves INTO a
-  // terminal state (declined / dead / nurture) are always allowed; anything
-  // else requires a super_admin.
-  {
-    const { data: cur } = await supabase.from("deals").select("status, deal_type").eq("id", id).single();
-    if (cur && cur.status !== newStatus) {
-      const order = PIPELINES[cur.deal_type === "vcf" ? "vcf" : "mca"].stages.map((s) => s.key);
-      const fromIdx = order.indexOf(cur.status);
-      const toIdx = order.indexOf(newStatus);
-      const backward = toIdx !== -1 && (fromIdx === -1 || toIdx < fromIdx);
-      if (backward) {
-        const { data: auth } = await supabase.auth.getUser();
-        const { data: prof } = auth?.user
-          ? await supabase.from("profiles").select("role").eq("id", auth.user.id).single()
-          : { data: null };
-        if (prof?.role !== "super_admin") {
-          throw new Error(
-            "Backward stage moves are locked — they re-send that stage's automated emails to the merchant. Ask a super admin if this deal really needs to move back.",
-          );
-        }
+  // Moving a deal BACKWARD re-fires that stage's GHL automations at the
+  // merchant — a trainee doing it by accident emails a real customer. Forward
+  // moves and moves INTO a terminal state (declined / dead / nurture) are
+  // always allowed; anything else requires a super_admin. Pulling a PARKED deal
+  // back into the pipeline ("Bring back") is an intentional revive, so it's
+  // exempt — the whole point is to restore the stage it left from.
+  const revivingFromParked = curStatus != null && PARKED_STATUSES.includes(curStatus) && !PARKED_STATUSES.includes(newStatus);
+  if (cur && curStatus !== newStatus && !revivingFromParked) {
+    const order = PIPELINES[cur.deal_type === "vcf" ? "vcf" : "mca"].stages.map((s) => s.key);
+    const fromIdx = order.indexOf(cur.status);
+    const toIdx = order.indexOf(newStatus);
+    const backward = toIdx !== -1 && (fromIdx === -1 || toIdx < fromIdx);
+    if (backward) {
+      const { data: auth } = await supabase.auth.getUser();
+      const { data: prof } = auth?.user
+        ? await supabase.from("profiles").select("role").eq("id", auth.user.id).single()
+        : { data: null };
+      if (prof?.role !== "super_admin") {
+        throw new Error(
+          "Backward stage moves are locked — they re-send that stage's automated emails to the merchant. Ask a super admin if this deal really needs to move back.",
+        );
       }
     }
   }
@@ -244,6 +250,27 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
   const timestampCol = STATUS_TIMESTAMP_MAP[newStatus];
   if (timestampCol) {
     updateData[timestampCol] = new Date().toISOString();
+  }
+
+  // Parking an ACTIVE deal → remember where it was so "Bring back" can restore
+  // the exact stage. Don't touch previous_status when it's already parked or
+  // when moving between active stages.
+  if (
+    curStatus &&
+    PARKED_STATUSES.includes(newStatus) &&
+    !PARKED_STATUSES.includes(curStatus)
+  ) {
+    updateData.previous_status = curStatus;
+  }
+
+  // Reactivating a parked deal → clear the nurture timestamp so it doesn't read
+  // as still-on-the-bench once it's back in the pipeline.
+  if (
+    curStatus &&
+    PARKED_STATUSES.includes(curStatus) &&
+    !PARKED_STATUSES.includes(newStatus)
+  ) {
+    updateData.nurture_at = null;
   }
 
   const rows = await mustWrite<Deal>("update deal status", supabase.from("deals").update(updateData).eq("id", id));
@@ -272,6 +299,68 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
   }
 
   return deal as Deal;
+}
+
+// Active MCA stages, in order, for inferring where a reactivated deal should land.
+const ACTIVE_MCA_STAGES: DealStatus[] = [
+  "new", "contacted", "qualifying", "application_sent", "docs_collected",
+  "bank_statements", "submitted_to_funder", "offer_received", "offer_presented",
+  "offer_accepted", "funded",
+];
+
+/**
+ * "Bring back" — pull a parked deal (nurture / declined / dead) back into the
+ * active pipeline, restoring the LAST ACTIVE stage it was in.
+ *
+ * Target stage:
+ *   1. previous_status, if it's an active stage (captured when the deal was parked).
+ *   2. Otherwise inferred from the deal's funder submissions / progress:
+ *      - any submission that produced an offer → offer_received
+ *      - else any still-open submission (submitted / pending) → submitted_to_funder
+ *      - else the deal already had an app / docs → application_sent
+ *      - else → qualifying
+ *
+ * Routes through updateDealStatus so stage timestamps, GHL sync, and the
+ * nurture_at clear all apply.
+ */
+export async function reactivateDeal(id: string): Promise<Deal> {
+  const { data: deal, error } = await supabase
+    .from("deals")
+    .select("status, previous_status, application_sent_at, docs_collected_at, doc_checklist")
+    .eq("id", id)
+    .single();
+  if (error || !deal) {
+    console.error("reactivateDeal: deal not found", error);
+    throw error ?? new Error("Deal not found");
+  }
+
+  let target: DealStatus | null = null;
+
+  // 1. Trust the remembered stage if it's a real active stage.
+  const prev = deal.previous_status as DealStatus | null;
+  if (prev && ACTIVE_MCA_STAGES.includes(prev)) {
+    target = prev;
+  } else {
+    // 2. Infer from submissions.
+    const { data: subs } = await supabase
+      .from("deal_submissions")
+      .select("status")
+      .eq("deal_id", id);
+    const rows = (subs ?? []) as { status: SubmissionStatus }[];
+    const hasOffer = rows.some((s) =>
+      ["offer_made", "offer_accepted", "approved"].includes(s.status),
+    );
+    const hasOpen = rows.some((s) => ["submitted", "pending", "under_review"].includes(s.status));
+    const hasAppOrDocs = !!deal.application_sent_at || !!deal.docs_collected_at ||
+      Object.values((deal.doc_checklist as Record<string, boolean> | null) ?? {}).some(Boolean);
+
+    if (hasOffer) target = "offer_received";
+    else if (hasOpen) target = "submitted_to_funder";
+    else if (hasAppOrDocs) target = "application_sent";
+    else target = "qualifying";
+  }
+
+  return await updateDealStatus(id, target);
 }
 
 /**

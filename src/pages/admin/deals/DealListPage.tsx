@@ -7,9 +7,10 @@ import {
   CurrencyDollarIcon,
   DocumentTextIcon,
   ArrowDownTrayIcon,
+  ArrowUturnLeftIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
-import { getAllDeals, getDealStats } from "../../../services/dealService";
+import { getAllDeals, getDealStats, reactivateDeal } from "../../../services/dealService";
 import { exportToCsv } from "../../../lib/csv";
 import type { DealWithCustomer, DealFilters, DealStatus, DealType, Market } from "../../../types/deals";
 import {
@@ -71,6 +72,17 @@ export default function DealListPage() {
     setIsCreateModalOpen(false);
     fetchDeals();
     fetchStats();
+  };
+
+  const handleReactivate = async (dealId: string) => {
+    if (!window.confirm("Bring this deal back into the pipeline?")) return;
+    try {
+      await reactivateDeal(dealId);
+      fetchDeals();
+      fetchStats();
+    } catch (e) {
+      alert(`Could not bring this deal back: ${e instanceof Error ? e.message : "Unknown error"}`);
+    }
   };
 
   if (isLoading && deals.length === 0) {
@@ -306,9 +318,21 @@ export default function DealListPage() {
                         </Link>
                       </td>
                       <td className="px-6 py-4">
-                        <span className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>
-                          {statusConfig.label}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>
+                            {statusConfig.label}
+                          </span>
+                          {["nurture", "declined", "dead"].includes(deal.status) && (
+                            <button
+                              onClick={() => handleReactivate(deal.id)}
+                              title="Bring this deal back into the active pipeline"
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-ocean-blue border border-ocean-blue/40 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                            >
+                              <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
+                              Bring back
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
                         {typeConfig.shortLabel}

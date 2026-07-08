@@ -59,6 +59,9 @@ export interface Deal {
   deal_number: string | null;
   deal_type: DealType;
   status: DealStatus;
+  /** The last ACTIVE stage this deal was in before it got parked (nurture/declined/dead),
+   *  captured on the way out so "Bring back" can restore it. */
+  previous_status: DealStatus | null;
   amount_requested: number | null;
   amount_funded: number | null;
   use_of_funds: string | null;
