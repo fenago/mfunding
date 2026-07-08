@@ -17,10 +17,14 @@ import {
   UserCircleIcon,
   XMarkIcon,
   LockClosedIcon,
+  PencilSquareIcon,
+  DocumentTextIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
+import CustomerEditModal from "../../components/customers/CustomerEditModal";
+import MerchantApplicationModal from "../../components/admin/MerchantApplicationModal";
 import FunderPicker from "../../components/admin/FunderPicker";
 import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
 import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabilityChecklist";
@@ -98,6 +102,10 @@ export default function PlaybooksPage() {
   // The close-deal modal is lifted to the page so BOTH the top context bar and
   // every playbook step can open the SAME flow. Rendered once at the bottom.
   const [showCloseDeal, setShowCloseDeal] = useState(false);
+  // Edit-lead + fill-application modals are lifted to the page so the top context
+  // bar AND the "Send the application" step can both open them.
+  const [showEditLead, setShowEditLead] = useState(false);
+  const [showApplication, setShowApplication] = useState(false);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
   const { isSuperAdmin } = useUserProfile();
@@ -377,7 +385,7 @@ export default function PlaybooksPage() {
 
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
         {dealMatchesPlaybook && deal ? (<>
-          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} openCloseDeal={() => setShowCloseDeal(true)} splits={splits} hasCloser={hasCloser} />
+          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} openCloseDeal={() => setShowCloseDeal(true)} openEditLead={() => setShowEditLead(true)} splits={splits} hasCloser={hasCloser} />
           {deal.merchant_reply_at && Date.now() - Date.parse(deal.merchant_reply_at) < 3 * 24 * 60 * 60 * 1000 && (
             <div className="mt-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-800 dark:text-emerald-200 flex flex-wrap items-center gap-1.5">
               <span className="font-semibold">💬 Merchant replied {(() => { const m = Math.round((Date.now() - Date.parse(deal.merchant_reply_at!)) / 60000); return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; })()}</span>
@@ -452,6 +460,7 @@ export default function PlaybooksPage() {
                 onComplete={completeStep}
                 onDocChecklistChange={onDocChecklistChange}
                 onCloseDeal={() => setShowCloseDeal(true)}
+                onFillApplication={() => setShowApplication(true)}
               />
             );
           })}
@@ -472,6 +481,28 @@ export default function PlaybooksPage() {
             await closeDeal(outcome, reason, note);
             setShowCloseDeal(false);
           }}
+        />
+      )}
+
+      {/* Edit lead info — reuses the Customers-page CustomerEditModal. The deal
+          only carries a slim customer projection, so the wrapper fetches the FULL
+          customer record before opening, then refreshes the deal on save. */}
+      {showEditLead && deal && (
+        <EditLeadModal
+          customerId={deal.customer_id}
+          onClose={() => setShowEditLead(false)}
+          onSaved={() => { setShowEditLead(false); refreshDeal(deal.id); }}
+        />
+      )}
+
+      {/* Fill the MCA application in-app (pre-filled from the customer + deal),
+          then send it to the merchant to e-sign — replaces the old "open the GHL
+          contact" busywork on the Send-the-application step. */}
+      {showApplication && deal && (
+        <MerchantApplicationModal
+          deal={deal}
+          onClose={() => setShowApplication(false)}
+          onSent={() => { setShowApplication(false); refreshDeal(deal.id); }}
         />
       )}
 
@@ -589,7 +620,7 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; splits: CloserSplits; hasCloser: boolean }) {
+function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, openEditLead, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean }) {
   const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
   const idx = stages.findIndex((s) => s.key === deal.status);
   const cfg = DEAL_STATUS_CONFIG[deal.status];
@@ -603,9 +634,21 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, spl
         <div className="flex items-center gap-3">
           <UserCircleIcon className="w-9 h-9 text-emerald-600 dark:text-emerald-400" />
           <div>
-            <p className="font-semibold text-gray-900 dark:text-white">{dealName(deal)}</p>
+            <div className="flex items-center gap-2">
+              <p className="font-semibold text-gray-900 dark:text-white">{dealName(deal)}</p>
+              <button
+                onClick={openEditLead}
+                title="Fix or add the lead's info — name, business name, email, phone"
+                className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-white dark:hover:bg-gray-700"
+              >
+                <PencilSquareIcon className="w-3.5 h-3.5" /> Edit lead info
+              </button>
+            </div>
             <p className="text-xs text-gray-500 dark:text-gray-400">
               {[deal.customer?.phone, deal.customer?.email].filter(Boolean).join(" · ") || "No contact info yet"}
+              {!deal.customer?.email && (
+                <span className="ml-1 text-amber-600 dark:text-amber-400">— add an email so you can send the application</span>
+              )}
             </p>
           </div>
         </div>
@@ -668,6 +711,52 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, spl
         click a stage above to jump the lead there.
       </p>
     </div>
+  );
+}
+
+// ───────────────────────── Edit lead modal wrapper ─────────────────────────
+// The playbook loads a deal with only a slim customer projection (getDealById),
+// but CustomerEditModal needs the FULL customer row. This wrapper fetches it,
+// then hands it to the shared modal so a closer can fix/add the lead's info
+// (wrong business name, a missing email, etc.) without leaving the flow.
+function EditLeadModal({ customerId, onClose, onSaved }: { customerId: string; onClose: () => void; onSaved: () => void }) {
+  const [customer, setCustomer] = useState<Record<string, unknown> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    supabase
+      .from("customers")
+      .select("*")
+      .eq("id", customerId)
+      .single()
+      .then(({ data, error }) => {
+        if (!alive) return;
+        if (error || !data) setError(error?.message ?? "Could not load this lead.");
+        else setCustomer(data as Record<string, unknown>);
+      });
+    return () => { alive = false; };
+  }, [customerId]);
+
+  if (error) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+        <div className="rounded-xl bg-white dark:bg-gray-800 p-5 max-w-sm" onClick={(e) => e.stopPropagation()}>
+          <p className="text-sm text-red-600">{error}</p>
+          <button onClick={onClose} className="mt-3 text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600">Close</button>
+        </div>
+      </div>
+    );
+  }
+  if (!customer) return null;
+
+  return (
+    <CustomerEditModal
+      isOpen
+      onClose={onClose}
+      onSave={onSaved}
+      customer={customer as never}
+    />
   );
 }
 
@@ -1019,6 +1108,7 @@ function StepCard({
   onComplete,
   onDocChecklistChange,
   onCloseDeal,
+  onFillApplication,
 }: {
   step: PlaybookStep;
   last: boolean;
@@ -1034,6 +1124,7 @@ function StepCard({
   onComplete: (step: PlaybookStep, values: Record<string, string>, note: string, outcome: string, checked: string[], advance?: boolean) => void;
   onDocChecklistChange: (next: Record<string, boolean>) => void;
   onCloseDeal: () => void;
+  onFillApplication: () => void;
 }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
 
@@ -1203,24 +1294,26 @@ function StepCard({
           </details>
         )}
 
-        {/* White-glove option — fill the app FOR them BEFORE sending, so it arrives signature-only */}
+        {/* Fill the application IN-APP, then send it to e-sign. This is the real
+            work of this step — the closer fills as much as they can while the
+            merchant is on the phone (pre-filled from what we know), saves it to
+            our own system, and one click sends it out (and moves the deal to
+            Application Sent). Replaces the old "open the GHL contact" busywork. */}
         {step.stageKey === "application_sent" && interactive && !done && (
-          <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-3 text-xs text-amber-800 dark:text-amber-200">
+          <div className="mt-3 rounded-md bg-ocean-blue/5 dark:bg-ocean-blue/10 border border-ocean-blue/30 px-3 py-3 text-xs text-gray-700 dark:text-gray-200">
             <p>
-              <span className="font-semibold">Optional white-glove:</span> want the app to arrive pre-filled? Before you
-              hit Send, enter the app fields (SSN, DOB, driver's license, home address, bank) on their contact as they
-              read them to you — then all they do is <b>tap to sign</b>. Otherwise just hit Send and they fill it
-              themselves.
+              <span className="font-semibold text-ocean-blue">Do it here:</span> fill the merchant's application while
+              they're on the phone — it comes pre-filled with everything we already know, so you're just confirming and
+              adding SSN, DOB, driver's license, and address as they read them to you. Then send it and all they do is{" "}
+              <b>tap to sign</b>.
             </p>
-            {deal?.ghl_contact_id && (
-              <a
-                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${deal.ghl_contact_id}`}
-                target="_blank" rel="noreferrer"
-                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-ocean-blue px-3 py-1.5 text-ocean-blue font-semibold hover:bg-ocean-blue/10"
-              >
-                Pre-fill it — open their contact ↗
-              </a>
-            )}
+            <button
+              type="button"
+              onClick={onFillApplication}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-white font-semibold hover:opacity-90"
+            >
+              <DocumentTextIcon className="w-4 h-4" /> Fill the application &amp; send to e-sign
+            </button>
           </div>
         )}
 
