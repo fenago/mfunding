@@ -935,6 +935,37 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
           })
           .eq("id", deal.id),
       );
+
+      // Push the edited identity to the deal's EXISTING GHL contact so delivery
+      // (the MCA 04 e-sign automation, cover notes) follows the fix — GHL is the
+      // delivery system. This UPDATES the linked contact by id (never upsert-by-
+      // email, which forks a second contact). If GHL rejects the email because
+      // another contact already holds it, we surface that clearly WITHOUT rolling
+      // back the DB save (the local record is correct; only GHL couldn't follow).
+      try {
+        const { data: sync, error: syncErr } = await supabase.functions.invoke("sync-lead-to-ghl", {
+          body: { customerId: deal.customer_id, dealId: deal.id },
+        });
+        if (syncErr) throw syncErr;
+        const sres = sync as { error?: string; warning?: string } | null;
+        if (sres?.error) throw new Error(sres.error);
+        if (sres?.warning) {
+          // Saved, but GHL couldn't take one field (e.g. a phone another contact
+          // squats on). Keep the modal open so the closer sees it.
+          setError(`Saved. Heads up: ${sres.warning}`);
+          setSaving(false);
+          return;
+        }
+      } catch (ge) {
+        // DB save already landed — do NOT roll back. Tell the closer GHL didn't
+        // follow so they know delivery may still go to the old contact/email.
+        setError(
+          `Saved locally, but the change didn't sync to GoHighLevel: ${ge instanceof Error ? ge.message : String(ge)} — GHL delivery (e-sign docs, emails) may still use the old info until this is resolved.`,
+        );
+        setSaving(false);
+        return;
+      }
+
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the lead. Please try again.");

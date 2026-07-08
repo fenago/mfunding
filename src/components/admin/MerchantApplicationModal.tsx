@@ -328,6 +328,14 @@ export default function MerchantApplicationModal({
       if (firstTab) setTab(firstTab);
       return;
     }
+    // RE-SEND detection: the docs already went out once (sent_to_merchant_at
+    // stamped, or the deal already reached Application Sent). The GHL MCA 04
+    // automation fires on the deal MOVING INTO Application Sent — so on a re-send
+    // the stage move is a no-op and NOTHING re-sends. Instead we ask the server to
+    // re-ENROLL the contact into MCA 04 directly (resend:true), which re-fires the
+    // doc send even from a stalled stage.
+    const isResend = !!sentAt || !!deal.application_sent_at || deal.status === "application_sent";
+
     setBusy("send");
     setError(null);
     try {
@@ -337,8 +345,9 @@ export default function MerchantApplicationModal({
       // fields (the source the e-sign document MERGES from) BEFORE anything else.
       // If this fails we STOP — advancing the stage fires the GHL doc automation,
       // and without this push the merchant would e-sign a BLANK application.
+      // On a re-send we also re-enroll the contact into MCA 04 (see isResend).
       const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
-        body: { dealId: deal.id },
+        body: { dealId: deal.id, resend: isResend },
       });
       if (pushErr) throw pushErr;
       if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
@@ -375,9 +384,26 @@ export default function MerchantApplicationModal({
           .eq("id", id),
       );
 
-      // Advance the deal → Application Sent (fires MCA 04). Forward-only guard in
-      // updateDealStatus is fine; if it's already past this stage it no-ops.
-      try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
+      if (isResend) {
+        // No stage move on a re-send (it's a no-op). The re-fire happened via the
+        // MCA 04 re-enrollment inside push-application-to-ghl. If GHL rejected the
+        // re-enrollment (workflow re-enrollment turned off), be HONEST: the cover
+        // note went out but the e-sign docs did NOT — tell the closer how to fix
+        // it rather than letting them believe the docs re-sent.
+        if ((pushData as { reenrolled?: boolean })?.reenrolled === false) {
+          setError(
+            "Cover note re-sent, but GHL did NOT re-send the e-sign docs — MCA 04 re-enrollment was rejected. " +
+            "Turn on 'Allow re-enrollment' in the MCA 04 workflow settings and send again, or re-send the document " +
+            "manually from GHL → Documents & Contracts (move the old doc to Draft first).",
+          );
+          setBusy(null);
+          return;
+        }
+      } else {
+        // First send: advancing to Application Sent is what FIRES MCA 04 and sends
+        // the docs. Forward-only guard in updateDealStatus is fine here.
+        try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
+      }
 
       onSent();
     } catch (e) {
