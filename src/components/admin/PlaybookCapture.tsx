@@ -35,7 +35,11 @@ const PLAYBOOK_DEFAULTS: Record<
   // opens on the existing-customer picker ("Work this lead"), with "+ New lead"
   // still one click away; Live Transfer opens on the "+ New lead" form.
   website: { leadSource: "website", startStatus: "new", isLiveTransfer: false, defaultMode: "existing" },
-  "live-transfer": { leadSource: "live_transfer", startStatus: "new", isLiveTransfer: true, defaultMode: "new" },
+  // A live transfer is CONTACTED the instant the lead is created — the merchant
+  // is on the phone and you've greeted them in the intake. Born at "contacted"
+  // so the pipeline flows contacted → qualifying (merged Qualify step) cleanly,
+  // with no skipped stage and no Speed-to-Lead "call in 5 min" nudge.
+  "live-transfer": { leadSource: "live_transfer", startStatus: "contacted", isLiveTransfer: true, defaultMode: "new" },
   "web-lead": { leadSource: "web_purchased", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true, manualEntry: false },
