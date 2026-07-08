@@ -1489,29 +1489,45 @@ function StepCard({
           <DocsBackPanel ghlContactId={deal.ghl_contact_id} />
         )}
 
-        {/* Docs receipt — when the send-docs step fired, show when + where to view them */}
+        {/* Docs receipt — when the send-docs step fired. "Sent" only means it LEFT
+            our system; the DocsBackPanel above is the source of truth for whether
+            the merchant actually got it. Always offer a Resend (first send skipped,
+            merchant lost the email, wrong contact fixed, etc.). */}
         {step.stageKey === "application_sent" && done && (
-          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs">
-            <span className="font-medium text-emerald-700 dark:text-emerald-300">
-              📨 Docs sent{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — application + disclosure + upload link
-            </span>
-            {deal?.ghl_contact_id ? (
-              <a
-                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${deal.ghl_contact_id}`}
-                target="_blank" rel="noreferrer"
-                className="text-ocean-blue hover:underline font-medium"
+          <div className="mt-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs space-y-1.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                📨 Application sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — app + disclosure + upload link
+              </span>
+              <button
+                type="button"
+                onClick={onFillApplication}
+                title="Re-send the application + disclosure + upload link (e.g. it never arrived, or you fixed their email)"
+                className="inline-flex items-center gap-1 rounded-lg border border-ocean-blue/50 text-ocean-blue px-2.5 py-1 font-semibold hover:bg-ocean-blue/5"
               >
-                View the docs on their GHL contact ↗
-              </a>
-            ) : (
-              <a
-                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/payments/proposals-estimates`}
-                target="_blank" rel="noreferrer"
-                className="text-ocean-blue hover:underline font-medium"
-              >
-                View in GHL → Documents &amp; Contracts ↗
-              </a>
-            )}
+                ↻ Resend
+              </button>
+              {deal?.ghl_contact_id ? (
+                <a
+                  href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${deal.ghl_contact_id}`}
+                  target="_blank" rel="noreferrer"
+                  className="text-ocean-blue hover:underline font-medium"
+                >
+                  View the docs on their GHL contact ↗
+                </a>
+              ) : (
+                <a
+                  href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/payments/proposals-estimates`}
+                  target="_blank" rel="noreferrer"
+                  className="text-ocean-blue hover:underline font-medium"
+                >
+                  View in GHL → Documents &amp; Contracts ↗
+                </a>
+              )}
+            </div>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+              “Sent” means it left our system — <b>confirm the merchant actually received it</b> in the live status above. If nothing shows there or they never got it, hit <b>Resend</b>.
+            </p>
           </div>
         )}
 

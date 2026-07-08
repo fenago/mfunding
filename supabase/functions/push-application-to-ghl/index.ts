@@ -196,26 +196,34 @@ Deno.serve(async (req) => {
   // the submit/email engines). Persist a newly-created id for later comms.
   const appRow = app as App;
   const merchantEmail = s(appRow.business_email) || s(appRow.owner_email) || s(customer.email);
-  let contactId = (deal.ghl_contact_id as string | null) ?? (customer.ghl_contact_id as string | null) ?? null;
-  if (!contactId) {
-    if (!merchantEmail) return json({ error: "This merchant has no email — add one before sending." }, 422);
-    const cr = await upsertContact(cfg, {
-      email: merchantEmail,
-      firstName: (customer.first_name as string | null) ?? undefined,
-      lastName: (customer.last_name as string | null) ?? undefined,
-      companyName: (customer.business_name as string | null) ?? undefined,
-      phone: (customer.phone as string | null) ?? undefined,
-      tags: ["merchant"],
-      source: "MCA Application",
-    });
-    contactId = cr.data?.contact?.id ?? null;
-    if (!contactId) return json({ error: `GHL upsert failed: ${cr.error ?? "no contact id"}` }, 502);
-    if ((customer.ghl_contact_id ?? null) !== contactId) {
-      await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);
-    }
-    if ((deal.ghl_contact_id ?? null) !== contactId) {
-      await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
-    }
+  // HARD GUARD: the GHL contact MCA 04 fires against MUST carry an email, or the
+  // doc-send + email actions silently SKIP and the merchant gets nothing (while
+  // the app shows "sent"). So require an email up front — regardless of whether a
+  // contact is already linked — and refuse to advance without one.
+  if (!merchantEmail) {
+    return json({ error: "This merchant has no email on file. MCA 04 can't e-mail the application for e-signature without one, so the send is blocked. Add the merchant's email, then send." }, 422);
+  }
+  // ALWAYS upsert BY EMAIL (GHL dedupes on it) rather than trusting the stored
+  // ghl_contact_id. This: (a) guarantees the resolved contact actually HAS the
+  // email; (b) collapses an emailless duplicate/orphan onto the canonical record;
+  // (c) self-heals a deal still pointing at a deleted/mismatched contact. We then
+  // re-link the deal + customer to whatever contact owns this email.
+  const cr = await upsertContact(cfg, {
+    email: merchantEmail,
+    firstName: (customer.first_name as string | null) ?? undefined,
+    lastName: (customer.last_name as string | null) ?? undefined,
+    companyName: (customer.business_name as string | null) ?? undefined,
+    phone: (customer.phone as string | null) ?? undefined,
+    tags: ["merchant"],
+    source: "MCA Application",
+  });
+  const contactId = cr.data?.contact?.id ?? null;
+  if (!contactId) return json({ error: `GHL upsert failed: ${cr.error ?? "no contact id"}` }, 502);
+  if ((customer.ghl_contact_id ?? null) !== contactId) {
+    await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);
+  }
+  if ((deal.ghl_contact_id ?? null) !== contactId) {
+    await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
   }
 
   // Push the merge fields.
