@@ -19,8 +19,13 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields,
+  corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields, ghlFetch,
 } from "../_shared/ghl.ts";
+
+// MCA 04 — Application Sent (Send App + Docs). Re-enrolling the contact here is
+// how a "resend" re-fires the doc send even when the deal is already at
+// Application Sent (a stage move wouldn't re-trigger). ID from the live workflow.
+const MCA_04_WORKFLOW_ID = "076bee21-5667-4cdf-83ae-caf50bea44e2";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -140,10 +145,14 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let payload: { dealId?: string };
+  let payload: { dealId?: string; blank?: boolean; resend?: boolean };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const dealId = payload.dealId;
   if (!dealId) return json({ error: "dealId is required" }, 400);
+  // blank = "send the original docs, no prefill" (the merchant fills it out).
+  // resend = re-fire the send even if the deal is already at Application Sent.
+  const blank = payload.blank === true;
+  const resend = payload.resend === true;
 
   const db = serviceClient();
 
@@ -178,7 +187,9 @@ Deno.serve(async (req) => {
   const { data: app, error: aErr } = await db
     .from("mca_applications").select("*").eq("deal_id", dealId).maybeSingle();
   if (aErr) return json({ error: `could not load application: ${aErr.message}` }, 500);
-  if (!app) return json({ error: "No application on this deal to push." }, 404);
+  // Only the PREFILL path needs a saved application. The blank "send original
+  // docs" path has nothing to merge — the merchant fills it in the doc itself.
+  if (!app && !blank) return json({ error: "No application on this deal to push." }, 404);
 
   const { data: customer } = await db
     .from("customers")
@@ -194,7 +205,7 @@ Deno.serve(async (req) => {
 
   // Resolve the merchant's GHL contact (create via upsert if missing — same as
   // the submit/email engines). Persist a newly-created id for later comms.
-  const appRow = app as App;
+  const appRow = (app ?? {}) as App;
   const merchantEmail = s(appRow.business_email) || s(appRow.owner_email) || s(customer.email);
   // HARD GUARD: the GHL contact MCA 04 fires against MUST carry an email, or the
   // doc-send + email actions silently SKIP and the merchant gets nothing (while
@@ -226,12 +237,22 @@ Deno.serve(async (req) => {
     await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
   }
 
-  // Push the merge fields.
-  const fields = buildFields(appRow);
-  if (fields.length === 0) return json({ error: "Nothing to push — the application is empty." }, 422);
-  const res = await updateContactCustomFields(cfg, contactId, fields);
-  if (!res.ok) {
-    return json({ error: `GHL custom-field update failed: ${res.error}` }, 502);
+  // Push the merge fields — only for the PREFILL path. The blank "send original
+  // docs" path pushes nothing (the merchant fills the doc themselves).
+  const fields = blank ? [] : buildFields(appRow);
+  if (!blank && fields.length === 0) return json({ error: "Nothing to push — the application is empty." }, 422);
+  if (fields.length > 0) {
+    const res = await updateContactCustomFields(cfg, contactId, fields);
+    if (!res.ok) return json({ error: `GHL custom-field update failed: ${res.error}` }, 502);
+  }
+
+  // Resend: re-enroll the contact into MCA 04 so the doc send re-fires even when
+  // the deal is already at Application Sent (a stage move wouldn't re-trigger).
+  // Best-effort — surface if it fails so the UI can tell the closer.
+  let reenrolled: boolean | undefined;
+  if (resend) {
+    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
+    reenrolled = wf.ok;
   }
 
   // Audit trail (best-effort).
@@ -241,10 +262,12 @@ Deno.serve(async (req) => {
       entity_id: dealId,
       interaction_type: "note",
       subject: "application:pushed-to-ghl",
-      content: `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`,
+      content: blank
+        ? `Sent the original application docs (no prefill) — merchant fills + e-signs.${resend ? ` Re-enrolled in MCA 04 (${reenrolled ? "ok" : "failed"}).` : ""}`
+        : `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`,
       logged_by: caller.id,
     });
   } catch { /* best-effort */ }
 
-  return json({ ok: true, dealId, contactId, fieldsPushed: fields.length });
+  return json({ ok: true, dealId, contactId, fieldsPushed: fields.length, blank, reenrolled });
 });

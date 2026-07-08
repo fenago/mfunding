@@ -180,6 +180,36 @@ export default function PlaybooksPage() {
     }
   }
 
+  // "Send the ORIGINAL docs" path — no prefill. The merchant gets the blank
+  // application + disclosure + upload link and fills it themselves (the way it
+  // worked before the in-app fill flow). resend=true re-fires MCA 04 even if the
+  // deal is already at Application Sent. Either way the email guard runs server
+  // side (push-application-to-ghl blocks + heals an emailless/mismatched contact).
+  async function sendDocs(resend: boolean) {
+    if (!deal) return;
+    const verb = resend ? "Resend the original application + docs (no prefill)" : "Send the application + docs now — the merchant fills it out";
+    if (!window.confirm(`${verb} to ${dealName(deal)}?`)) return;
+    try {
+      const { data, error } = await supabase.functions.invoke("push-application-to-ghl", {
+        body: { dealId: deal.id, blank: true, resend },
+      });
+      if (error) throw error;
+      const res = data as { error?: string; reenrolled?: boolean };
+      if (res?.error) throw new Error(res.error);
+      // First send: advancing to Application Sent fires MCA 04 via the stage move.
+      // Resend: the server already re-enrolled the contact, so don't move the stage.
+      if (!resend) await updateDealStatus(deal.id, "application_sent");
+      await refreshDeal(deal.id);
+      if (resend && res?.reenrolled === false) {
+        alert("Contact is ready, but MCA 04 re-enrollment was rejected by GHL — turn on 'Allow re-enrollment' in the MCA 04 workflow settings, then resend.");
+      } else {
+        alert(resend ? "Original docs re-sent — the merchant will get the application to fill + e-sign." : "Docs sent — the merchant will fill and e-sign.");
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not send the docs.");
+    }
+  }
+
   // Persist a step's structured fields + checklist + note, log it, and advance
   // the stage — everything in one click, without leaving the page.
   async function completeStep(
@@ -463,6 +493,7 @@ export default function PlaybooksPage() {
                 onDocChecklistChange={onDocChecklistChange}
                 onCloseDeal={() => setShowCloseDeal(true)}
                 onFillApplication={() => setShowApplication(true)}
+                onSendDocs={sendDocs}
               />
             );
           })}
@@ -1276,6 +1307,7 @@ function StepCard({
   onDocChecklistChange,
   onCloseDeal,
   onFillApplication,
+  onSendDocs,
 }: {
   step: PlaybookStep;
   last: boolean;
@@ -1292,6 +1324,7 @@ function StepCard({
   onDocChecklistChange: (next: Record<string, boolean>) => void;
   onCloseDeal: () => void;
   onFillApplication: () => void;
+  onSendDocs: (resend: boolean) => void;
 }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
 
@@ -1474,13 +1507,29 @@ function StepCard({
               adding SSN, DOB, driver's license, and address as they read them to you. Then send it and all they do is{" "}
               <b>tap to sign</b>.
             </p>
-            <button
-              type="button"
-              onClick={onFillApplication}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-white font-semibold hover:opacity-90"
-            >
-              <DocumentTextIcon className="w-4 h-4" /> Fill the application &amp; send to e-sign
-            </button>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {/* Path 1 — send the ORIGINAL docs, no prefill (the merchant fills it). */}
+              <button
+                type="button"
+                onClick={() => onSendDocs(false)}
+                title="Send the application + disclosure + upload link as-is — the merchant fills it out and e-signs. No prefilling."
+                className="inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-white font-semibold hover:opacity-90"
+              >
+                📨 Send the docs now <span className="font-normal opacity-90">(they fill it out)</span>
+              </button>
+              {/* Path 2 — white-glove: closer fills it, then sends to sign. */}
+              <button
+                type="button"
+                onClick={onFillApplication}
+                title="Fill the application for the merchant (pre-filled from what we know), then send — all they do is tap to sign."
+                className="inline-flex items-center gap-1.5 rounded-lg border border-ocean-blue/50 text-ocean-blue px-3 py-1.5 font-semibold hover:bg-ocean-blue/5"
+              >
+                <DocumentTextIcon className="w-4 h-4" /> Fill it in for them first
+              </button>
+            </div>
+            <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+              Two ways to send: <b>Send the docs now</b> emails the blank application for them to complete — the original, simplest path. <b>Fill it in for them first</b> pre-fills it so they just sign.
+            </p>
           </div>
         )}
 
@@ -1501,11 +1550,19 @@ function StepCard({
               </span>
               <button
                 type="button"
-                onClick={onFillApplication}
-                title="Re-send the application + disclosure + upload link (e.g. it never arrived, or you fixed their email)"
+                onClick={() => onSendDocs(true)}
+                title="Re-send the ORIGINAL application + disclosure + upload link, no prefill (e.g. it never arrived, or you fixed their email)"
                 className="inline-flex items-center gap-1 rounded-lg border border-ocean-blue/50 text-ocean-blue px-2.5 py-1 font-semibold hover:bg-ocean-blue/5"
               >
-                ↻ Resend
+                ↻ Resend original docs
+              </button>
+              <button
+                type="button"
+                onClick={onFillApplication}
+                title="Edit / pre-fill the application, then re-send it to sign"
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 px-2.5 py-1 font-semibold hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                ✍️ Fill &amp; resend
               </button>
               {deal?.ghl_contact_id ? (
                 <a
