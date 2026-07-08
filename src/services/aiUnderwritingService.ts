@@ -24,7 +24,10 @@ export interface UWMetrics {
   revenue_quality_pct: number;
   padding_total: number;
   padding_by_category: Record<string, number>;
-  net_retained_by_month: { month: string; net_retained: number }[];
+  // The edge function writes this as a PLAIN number[] (one value per statement,
+  // same order as per_statement); older assumptions of {month, net_retained}
+  // objects are tolerated for safety. Month labels come from per_statement.
+  net_retained_by_month: (number | { month?: string; net_retained?: number })[];
   avg_net_retained: number;
   avg_daily_balance: number;
   min_balance: number;

@@ -259,10 +259,23 @@ function ResultView({ r }: { r: DealUnderwriting }) {
   const m = (r.metrics ?? {}) as Partial<UWMetrics>;
   const flags = r.flags ?? [];
   const paddingCats = m.padding_by_category ?? {};
-  const chartData = (m.net_retained_by_month ?? []).map((d) => ({
-    month: d.month,
-    net_retained: d.net_retained,
-  }));
+  // net_retained_by_month is a PLAIN number[] from the edge function, indexed to
+  // per_statement (which is in UPLOAD order, not calendar order) — zip the month
+  // labels in, then sort chronologically so the trend reads left-to-right.
+  const stmtMonths = (r.per_statement ?? []).map((s) => (s as { month?: string } | null)?.month ?? "");
+  const chartData = (m.net_retained_by_month ?? [])
+    .map((d, i) => {
+      const isObj = typeof d === "object" && d !== null;
+      return {
+        month: (isObj ? (d as { month?: string }).month : undefined) ?? stmtMonths[i] ?? `Month ${i + 1}`,
+        net_retained: Number(isObj ? (d as { net_retained?: number }).net_retained ?? 0 : d) || 0,
+      };
+    })
+    .sort((a, b) => {
+      const ta = Date.parse(`1 ${a.month}`);
+      const tb = Date.parse(`1 ${b.month}`);
+      return Number.isNaN(ta) || Number.isNaN(tb) ? 0 : ta - tb;
+    });
 
   return (
     <div className="space-y-6">
