@@ -167,7 +167,7 @@ function qualification(
   return { qualifies: dq.length === 0, disqualifiers: dq };
 }
 
-function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null, readiness?: DocReadiness, qual?: Qualification) {
+function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null, readiness?: DocReadiness, qual?: Qualification, qualVerified?: Qualification | null) {
   const out: Record<string, unknown> = {
     lender_id: l.id,
     lender_name: l.company_name,
@@ -203,6 +203,14 @@ function lenderForPrompt(l: Lender, program?: Record<string, unknown> | null, re
     out.qualification_status = qual.qualifies
       ? "QUALIFIES"
       : { status: "DISQUALIFIED", reasons: qual.disqualifiers };
+  }
+  // Parallel verdict on bank-statement-VERIFIED revenue (when an underwriting
+  // run exists). The hard gate stays on stated revenue; this is the "what the
+  // funder will actually compute" view — the AI must surface flips loudly.
+  if (qualVerified) {
+    out.qualification_status_verified_revenue = qualVerified.qualifies
+      ? "QUALIFIES"
+      : { status: "WOULD_BE_DISQUALIFIED", reasons: qualVerified.disqualifiers };
   }
   return out;
 }
@@ -282,18 +290,62 @@ Deno.serve(async (req) => {
       return json({ error: "No funders with usable criteria in the network yet." }, 422);
     }
 
+    // Latest AI-underwriting run for this deal (bank-statement-verified numbers).
+    // Verified revenue is what funders will COMPUTE from the statements — but the
+    // hard gate below still runs on STATED revenue (no silent source-of-truth
+    // flip); the verified qualification is computed IN PARALLEL and shown side by
+    // side so the closer sees both and where a funder would flip.
+    const { data: uwRow } = await db
+      .from("deal_underwriting")
+      .select("version, metrics, risk_rating, affordability_rating, created_at")
+      .eq("deal_id", dealId)
+      .order("version", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const uwM = (uwRow?.metrics ?? null) as Record<string, unknown> | null;
+    const numOrNull = (v: unknown) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+    const verifiedRev = uwM ? (numOrNull(uwM.true_avg_monthly_revenue) || null) : null;
+    const statedRev = Number.isFinite(Number(cust.monthly_revenue)) ? Number(cust.monthly_revenue) : null;
+    const underwriting = uwRow && uwM
+      ? {
+        version: uwRow.version as number,
+        run_at: uwRow.created_at as string,
+        months_covered: numOrNull(uwM.months_covered),
+        stated_monthly_revenue: statedRev,
+        verified_monthly_revenue: verifiedRev,
+        // + = merchant stated MORE than the statements verify (overstated).
+        revenue_delta_pct: statedRev && verifiedRev ? Math.round(((statedRev - verifiedRev) / verifiedRev) * 100) : null,
+        nsf_total: numOrNull(uwM.nsf_total),
+        negative_days: numOrNull(uwM.negative_days),
+        est_open_positions: numOrNull(uwM.est_open_positions),
+        existing_daily_debit: numOrNull(uwM.existing_daily_debit),
+        max_affordable_advance: numOrNull(uwM.max_affordable_advance),
+        avg_daily_balance: numOrNull(uwM.avg_daily_balance),
+        min_balance: numOrNull(uwM.min_balance),
+        revenue_trend: (uwM.revenue_trend as string) ?? null,
+        risk_rating: (uwRow.risk_rating as string) ?? null,
+        affordability_rating: (uwRow.affordability_rating as string) ?? null,
+      }
+      : null;
+
     // Per-funder doc readiness (ground truth, computed here — not by the AI).
     const readinessMap = new Map<string, DocReadiness>();
     // Per-funder qualification against hard minimums (revenue / TIB / amount).
     const merchantNums = {
-      monthlyRev: Number.isFinite(Number(cust.monthly_revenue)) ? Number(cust.monthly_revenue) : null,
+      monthlyRev: statedRev,
       tibMonths: Number.isFinite(Number(cust.time_in_business)) ? Number(cust.time_in_business) : null,
       amount: Number.isFinite(Number(deal.amount_requested)) ? Number(deal.amount_requested) : null,
     };
     const qualMap = new Map<string, Qualification>();
+    // Parallel qualification on VERIFIED (bank-statement) revenue — only revenue
+    // differs; TIB and amount are the same inputs.
+    const qualVerifiedMap = new Map<string, Qualification>();
     for (const l of lenders) {
       readinessMap.set(l.id, docReadiness(docReqMap.get(l.id), docsOnFile));
       qualMap.set(l.id, qualification(docReqMap.get(l.id), merchantNums));
+      if (verifiedRev != null) {
+        qualVerifiedMap.set(l.id, qualification(docReqMap.get(l.id), { ...merchantNums, monthlyRev: verifiedRev }));
+      }
     }
 
     // 3) Merchant profile + which fields are missing (be honest about gaps).
@@ -353,6 +405,18 @@ Deno.serve(async (req) => {
       "order docs-ready strong fits first among equals. NEVER lower a funder's fit because of a doc gap. " +
       'The "advisory" items (voided check, conditional/if-applicable docs) must NEVER lower fit and NEVER be ' +
       "treated as blocking — a voided check is satisfied by a bank-portal screenshot; mention advisories only lightly if at all. " +
+      "VERIFIED UNDERWRITING (when a VERIFIED UNDERWRITING block is provided): those numbers come from the merchant's " +
+      "ACTUAL bank statements — verified revenue is what funders will COMPUTE for themselves from the statements, so treat " +
+      "it as the more predictive number. Some funders also carry \"qualification_status_verified_revenue\": when it says " +
+      "WOULD_BE_DISQUALIFIED while qualification_status says QUALIFIES, the merchant passes on stated revenue but will " +
+      "likely be DECLINED once the funder reads the statements — keep the code-gated fit but add a prominent watch_out " +
+      "(e.g. \"Qualifies on stated $X/mo but verified revenue is $Y/mo — below this funder's floor; expect a decline\"). " +
+      "If stated and verified revenue differ materially, call the discrepancy out in the summary. Use the risk signals " +
+      "(NSFs, negative days, existing positions, daily debit, max affordable advance, revenue trend) as CONTEXT and " +
+      "watch_outs — e.g. if the amount requested exceeds the max affordable advance, say what a realistic approval looks " +
+      "like; if positions exist, flag funders whose stacking policy conflicts. Risk signals are NEVER auto-disqualifiers. " +
+      "The business_summary must use VERIFIED revenue when available (funders will verify it anyway) and stay clean of any " +
+      "internal discrepancy talk. " +
       "Recommend 3 to 7 funders, best first. " +
       'A "strong" fit clearly meets the stated criteria; "possible" is plausible but has gaps or unknowns; ' +
       '"poor" is a likely mismatch (include only if few good options exist). ' +
@@ -366,11 +430,17 @@ Deno.serve(async (req) => {
       `MERCHANT PROFILE (product requested: ${productLabel}):\n` +
       JSON.stringify(profile, null, 2) +
       (missing_fields.length ? `\n\nMissing/unknown merchant fields: ${missing_fields.join(", ")}.` : "") +
+      (underwriting
+        ? `\n\nVERIFIED UNDERWRITING (from ${underwriting.months_covered ?? "?"} months of actual bank statements, run v${underwriting.version}):\n` +
+          JSON.stringify(underwriting, null, 2) +
+          `\nStated vs verified monthly revenue: ${money(statedRev)} stated vs ${money(verifiedRev)} verified` +
+          (underwriting.revenue_delta_pct != null ? ` (stated is ${underwriting.revenue_delta_pct > 0 ? "+" : ""}${underwriting.revenue_delta_pct}% vs verified).` : ".")
+        : "\n\nVERIFIED UNDERWRITING: no bank-statement analysis has been run yet for this deal — all revenue figures are merchant-stated.") +
       `\n\nDOCS ON FILE for this merchant: ${docsOnFileLabels.length ? docsOnFileLabels.join(", ") : "none yet"}.` +
       `\n\nFUNDER NETWORK (${lenders.length} funders; only populated criteria are shown per funder. ` +
       `Each funder's "mca_approval_matrix" is the authoritative approval criteria — rank primarily against it. ` +
       `Each funder's "doc_status" is the ground-truth doc readiness for THIS merchant — factor it in per the rules above):\n` +
-      JSON.stringify(lenders.map((l) => lenderForPrompt(l, programMap.get(l.id), readinessMap.get(l.id), qualMap.get(l.id))), null, 2) +
+      JSON.stringify(lenders.map((l) => lenderForPrompt(l, programMap.get(l.id), readinessMap.get(l.id), qualMap.get(l.id), qualVerifiedMap.get(l.id) ?? null)), null, 2) +
       `\n\nReturn the ranked JSON now.`;
 
     // 4) Call the active LLM provider (task "recommend_lenders"). callLLM
@@ -419,14 +489,21 @@ Deno.serve(async (req) => {
         const readiness = readinessMap.get(r.lender_id) ??
           { docsReady: true, docsMissing: [], docsAdvisory: [] };
         const qual = qualMap.get(r.lender_id) ?? { qualifies: true, disqualifiers: [] };
+        const qualV = qualVerifiedMap.get(r.lender_id) ?? null;
         return {
           lender_id: r.lender_id as string,
           lender_name: validIds.get(r.lender_id) as string,
           // HARD GATE: a merchant failing a funder minimum is NOT a fit,
-          // regardless of what the model said.
+          // regardless of what the model said. (Gate runs on STATED revenue —
+          // the verified verdict rides alongside, it does not flip the gate.)
           fit: qual.qualifies ? (fits.has(r.fit) ? r.fit : "possible") : "poor",
           qualifies: qual.qualifies,
           disqualifiers: qual.disqualifiers,
+          // Side-by-side verdict on bank-statement-VERIFIED revenue (null when
+          // no underwriting run exists). flip = the two verdicts disagree.
+          qualifiesVerified: qualV ? qualV.qualifies : null,
+          disqualifiersVerified: qualV ? qualV.disqualifiers : [],
+          flip: qualV ? qualV.qualifies !== qual.qualifies : false,
           reasons: Array.isArray(r.reasons) ? r.reasons.filter((x: unknown) => typeof x === "string") : [],
           watch_outs: Array.isArray(r.watch_outs) ? r.watch_outs.filter((x: unknown) => typeof x === "string") : [],
           docsReady: readiness.docsReady,
@@ -442,12 +519,16 @@ Deno.serve(async (req) => {
       const q = qualMap.get(l.id);
       if (!q || q.qualifies || shown.has(l.id)) continue;
       const readiness = readinessMap.get(l.id) ?? { docsReady: true, docsMissing: [], docsAdvisory: [] };
+      const qv = qualVerifiedMap.get(l.id) ?? null;
       recommendations.push({
         lender_id: l.id,
         lender_name: l.company_name as string,
         fit: "poor",
         qualifies: false,
         disqualifiers: q.disqualifiers,
+        qualifiesVerified: qv ? qv.qualifies : null,
+        disqualifiersVerified: qv ? qv.disqualifiers : [],
+        flip: qv ? qv.qualifies !== q.qualifies : false,
         reasons: ["Merchant does not meet this funder's minimum criteria."],
         watch_outs: [],
         docsReady: readiness.docsReady,
@@ -461,16 +542,25 @@ Deno.serve(async (req) => {
     const aiSummary = typeof parsed.summary === "string" ? parsed.summary : "";
     const businessSummary = typeof (parsed as { business_summary?: unknown }).business_summary === "string"
       ? (parsed as { business_summary?: string }).business_summary!.trim() : "";
-    const summary = submitNow > 0
-      ? `${submitNow} funder${submitNow === 1 ? " is a" : "s are"} strong fit${submitNow === 1 ? "" : "s"} AND docs-ready — submit now.` +
-        (aiSummary ? ` ${aiSummary}` : "")
-      : aiSummary;
+    // How many funders FLIP between stated- and verified-revenue qualification —
+    // the closer must see this before submitting.
+    const flips = recommendations.filter((r) => r.flip).length;
+    const flipNote = flips > 0
+      ? `⚠ ${flips} funder${flips === 1 ? "" : "s"} flip${flips === 1 ? "s" : ""} between stated and bank-verified revenue — check both columns before submitting.`
+      : "";
+    const summary = [
+      submitNow > 0
+        ? `${submitNow} funder${submitNow === 1 ? " is a" : "s are"} strong fit${submitNow === 1 ? "" : "s"} AND docs-ready — submit now.`
+        : "",
+      flipNote,
+      aiSummary,
+    ].filter(Boolean).join(" ");
 
     // Persist the ENRICHED recs (with doc-readiness fields) — additive, so the
     // UI reading ai_lender_recommendations keeps working. These cost tokens; the
     // picker rehydrates from the deal so a reload never throws them away.
     await db.from("deals").update({
-      ai_lender_recommendations: { summary, recommendations },
+      ai_lender_recommendations: { summary, recommendations, underwriting },
       ...(businessSummary ? { ai_business_summary: businessSummary } : {}),
       ai_recommended_at: new Date().toISOString(),
     }).eq("id", dealId);
@@ -482,6 +572,7 @@ Deno.serve(async (req) => {
       model,
       summary,
       recommendations,
+      underwriting,
       missing_fields,
       considered: lenders.length,
       submit_now: submitNow,

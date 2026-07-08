@@ -64,7 +64,27 @@ interface AiRec {
   // a missing doc (which is just a stipulation to collect).
   qualifies?: boolean;
   disqualifiers?: string[];
+  // Parallel verdict on bank-statement-VERIFIED revenue (null / absent when no
+  // underwriting run exists). flip = stated and verified verdicts disagree.
+  qualifiesVerified?: boolean | null;
+  disqualifiersVerified?: string[];
+  flip?: boolean;
   docsAdvisory?: string[];
+}
+
+// Snapshot of the latest AI-underwriting run, attached by recommend-lenders so
+// the closer sees stated vs verified side by side.
+interface UwSnapshot {
+  version: number;
+  months_covered: number | null;
+  stated_monthly_revenue: number | null;
+  verified_monthly_revenue: number | null;
+  revenue_delta_pct: number | null;
+  nsf_total: number | null;
+  negative_days: number | null;
+  est_open_positions: number | null;
+  max_affordable_advance: number | null;
+  risk_rating: string | null;
 }
 
 interface FunderResult {
@@ -194,6 +214,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // AI funder recommendations (analyst short-list rendered above the checkboxes).
   const [aiRecs, setAiRecs] = useState<AiRec[]>([]);
   const [aiSummary, setAiSummary] = useState<string>("");
+  const [aiUw, setAiUw] = useState<UwSnapshot | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiRan, setAiRan] = useState(false);
@@ -201,10 +222,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // Rehydrate persisted AI analysis (saved on the deal by recommend-lenders)
   // so a page reload never throws away paid tokens.
   useEffect(() => {
-    const saved = deal.ai_lender_recommendations as { summary?: string; recommendations?: AiRec[] } | null;
+    const saved = deal.ai_lender_recommendations as { summary?: string; recommendations?: AiRec[]; underwriting?: UwSnapshot | null } | null;
     if (saved && (saved.recommendations?.length || saved.summary)) {
       setAiRecs((saved.recommendations ?? []) as AiRec[]);
       setAiSummary(saved.summary ?? "");
+      setAiUw(saved.underwriting ?? null);
       setAiRan(true);
     }
   }, [deal.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -421,6 +443,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
       const recs = (data?.recommendations ?? []) as AiRec[];
       setAiSummary(typeof data?.summary === "string" ? data.summary : "");
       setAiRecs(recs);
+      setAiUw((data?.underwriting ?? null) as UwSnapshot | null);
       setAiRan(true);
       // Auto-check the strong fits that are actually selectable right now.
       setSelected((prev) => {
@@ -834,6 +857,35 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                 </summary>
                 <div className="px-3 pb-3 space-y-2">
                   {aiSummary && <p className="text-[12px] text-gray-700 dark:text-gray-200">{aiSummary}</p>}
+                  {/* Stated vs bank-verified revenue, side by side. The hard gate runs on
+                      STATED; the verified column shows what funders will compute from the
+                      statements — loud when they disagree. */}
+                  {aiUw && aiUw.verified_monthly_revenue != null && (() => {
+                    const fmt$ = (n: number | null) => (n == null ? "—" : `$${Math.round(n).toLocaleString()}`);
+                    const bigDelta = aiUw.revenue_delta_pct != null && Math.abs(aiUw.revenue_delta_pct) >= 15;
+                    return (
+                      <div className={`rounded-md border px-3 py-2 text-[11px] ${bigDelta ? "border-amber-300 bg-amber-50 dark:bg-amber-900/20" : "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900"}`}>
+                        <span className="font-semibold text-gray-800 dark:text-gray-100">📊 Revenue — stated vs bank-verified:</span>{" "}
+                        <span className="text-gray-700 dark:text-gray-200">
+                          stated <b>{fmt$(aiUw.stated_monthly_revenue)}/mo</b> · verified <b>{fmt$(aiUw.verified_monthly_revenue)}/mo</b>
+                          {aiUw.revenue_delta_pct != null && (
+                            <span className={bigDelta ? "text-amber-700 dark:text-amber-300 font-semibold" : ""}>
+                              {" "}(stated {aiUw.revenue_delta_pct > 0 ? "+" : ""}{aiUw.revenue_delta_pct}% vs verified)
+                            </span>
+                          )}
+                        </span>
+                        <span className="block mt-0.5 text-gray-500 dark:text-gray-400">
+                          From {aiUw.months_covered ?? "?"} mo of statements (underwriting v{aiUw.version})
+                          {aiUw.nsf_total != null && ` · NSFs ${aiUw.nsf_total}`}
+                          {aiUw.negative_days != null && ` · negative days ${aiUw.negative_days}`}
+                          {aiUw.est_open_positions != null && ` · open positions ${aiUw.est_open_positions}`}
+                          {aiUw.max_affordable_advance != null && ` · max affordable ${fmt$(aiUw.max_affordable_advance)}`}
+                          {aiUw.risk_rating && ` · risk ${aiUw.risk_rating}`}
+                          {" "}— each funder below shows BOTH verdicts.
+                        </span>
+                      </div>
+                    );
+                  })()}
                   {aiRecs.map((r) => {
                     const fit = FIT_STYLE[r.fit];
                     const checkable = isSelectable(r.lender_id);
@@ -849,10 +901,27 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                           <span className="font-medium text-gray-900 dark:text-white">{r.lender_name}</span>
                           <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${fit.cls}`}>{fit.label}</span>
                           {/* Ground-truth doc readiness (from recommend-lenders). */}
-                          {r.qualifies === false && (
-                            <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" title={(r.disqualifiers ?? []).join("; ")}>
-                              ✕ doesn't qualify
-                            </span>
+                          {/* Dual verdict when an underwriting run exists: stated vs verified. */}
+                          {r.qualifiesVerified != null ? (
+                            <>
+                              <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${r.qualifies !== false ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"}`} title={(r.disqualifiers ?? []).join("; ") || "Meets minimums on stated revenue"}>
+                                stated {r.qualifies !== false ? "✓" : "✕"}
+                              </span>
+                              <span className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full ${r.qualifiesVerified ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"}`} title={(r.disqualifiersVerified ?? []).join("; ") || "Meets minimums on bank-verified revenue"}>
+                                verified {r.qualifiesVerified ? "✓" : "✕"}
+                              </span>
+                              {r.flip && (
+                                <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 font-semibold">
+                                  ⚠ flips on verified
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            r.qualifies === false && (
+                              <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" title={(r.disqualifiers ?? []).join("; ")}>
+                                ✕ doesn't qualify
+                              </span>
+                            )
                           )}
                           {r.docsReady === true && r.qualifies !== false && (
                             <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">docs ready</span>
@@ -871,7 +940,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
                           )}
                           {(r.disqualifiers?.length ?? 0) > 0 && (
                             <ul className="mt-1 list-disc pl-4 text-[11px] text-rose-600 dark:text-rose-400 space-y-0.5">
-                              {r.disqualifiers!.map((s, i) => <li key={i}>✕ {s}</li>)}
+                              {r.disqualifiers!.map((s, i) => <li key={i}>✕ {s} <span className="text-gray-400">(stated revenue)</span></li>)}
+                            </ul>
+                          )}
+                          {(r.disqualifiersVerified?.length ?? 0) > 0 && (
+                            <ul className="mt-1 list-disc pl-4 text-[11px] text-rose-600 dark:text-rose-400 space-y-0.5">
+                              {r.disqualifiersVerified!.map((s, i) => <li key={i}>✕ {s} <span className="text-gray-400">(bank-verified revenue)</span></li>)}
                             </ul>
                           )}
                           {r.watch_outs.length > 0 && (
