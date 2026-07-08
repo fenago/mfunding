@@ -79,6 +79,24 @@ const F = {
   avg_monthly_revenue_num: "XM1zs3a1LuiZcv9IEYlb", // Avg Monthly Revenue ($) (MONETORY)
   active_mca_positions: "iqp4xxbM71Qkpn8xTQrK",   // Active MCA Positions (NUMERICAL)
   total_outstanding_mca_balance: "ChoLJU0EuLh22zHkVfO2", // Total Outstanding MCA Balance (MONETORY)
+
+  // Business financials (the PDF's "Business Financial Information" section).
+  annual_gross_revenue_doc: "q7bLalmdbBVkpFWf97Ik", // Annual Gross Revenue (Doc) (TEXT)
+  annual_gross_revenue_num: "E4q0GUonhOKtzyNBIhy6", // Annual Gross Revenue (MONETORY)
+  avg_monthly_deposits_doc: "rn1Is6Bg5yn4cM3QKi9Z", // Avg Monthly Deposits (Doc) (TEXT)
+  avg_monthly_deposits_num: "41DkL0Wz3kvuxXuJts7B", // Average Monthly Deposits (MONETORY)
+  number_of_employees_doc: "Elu4SI1XCNuqFupQhYJA", // Number of Employees (Doc) (TEXT)
+  number_of_employees_num: "hR4DxjGNp2uSRpw8LH30", // Number of Employees (NUMERICAL)
+  // Derogatory disclosures. The RADIOs are written ONLY with EXACT option values
+  // (a bad option value rejects the whole PUT). Tax liens is a clean Yes/No, so we
+  // map the boolean directly. Bankruptcy History's "Yes" options are "Yes -
+  // discharged" / "Yes - active" — we can't tell which from a single boolean, so
+  // we only write the radio for a definite "No" and otherwise rely on the details
+  // TEXT field (which always gets written when there's content).
+  bankruptcy_history_radio: "m0szKaJ6b238TmB5sxS6", // Bankruptcy History (RADIO: No | Yes - discharged | Yes - active)
+  bankruptcy_details: "IxvevRxrPbgboHA5AMJo",       // Bankruptcy Details (TEXT)
+  tax_liens_radio: "BZATgeXZTImXxCm2yPyb",          // Tax Liens or Judgments (RADIO: No | Yes)
+  tax_lien_details: "aGs110pozxr3o8ICU2In",         // Tax Lien Details (TEXT)
 } as const;
 
 type App = Record<string, unknown>;
@@ -137,6 +155,26 @@ function buildFields(app: App): Array<{ id: string; value: string | number }> {
   if (s(app.monthly_revenue)) push(F.avg_monthly_revenue_num, Number(app.monthly_revenue));
   if (s(app.existing_positions)) push(F.active_mca_positions, Number(app.existing_positions));
   if (s(app.existing_balance)) push(F.total_outstanding_mca_balance, Number(app.existing_balance));
+
+  // Business financials
+  push(F.annual_gross_revenue_doc, s(app.annual_gross_revenue));
+  if (s(app.annual_gross_revenue)) push(F.annual_gross_revenue_num, Number(app.annual_gross_revenue));
+  push(F.avg_monthly_deposits_doc, s(app.average_monthly_deposits));
+  if (s(app.average_monthly_deposits)) push(F.avg_monthly_deposits_num, Number(app.average_monthly_deposits));
+  push(F.number_of_employees_doc, s(app.number_of_employees));
+  if (s(app.number_of_employees)) push(F.number_of_employees_num, Number(app.number_of_employees));
+
+  // Derogatory disclosures. RADIOs get ONLY exact valid option values.
+  //  · Tax Liens or Judgments: options are exactly "No" / "Yes" → map the boolean.
+  //  · Bankruptcy History: "Yes" is split into "Yes - discharged" / "Yes - active"
+  //    (unknown from a single bool), so only a definite false → "No" is safe; a
+  //    true is conveyed via the Bankruptcy Details TEXT field instead.
+  if (typeof app.has_tax_liens === "boolean") {
+    push(F.tax_liens_radio, app.has_tax_liens ? "Yes" : "No");
+  }
+  push(F.tax_lien_details, s(app.tax_lien_details));
+  if (app.has_bankruptcy === false) push(F.bankruptcy_history_radio, "No");
+  push(F.bankruptcy_details, s(app.bankruptcy_details));
 
   return out;
 }

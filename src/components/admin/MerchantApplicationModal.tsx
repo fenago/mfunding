@@ -63,6 +63,14 @@ interface AppForm {
   average_daily_balance: string;
   existing_positions: string;
   existing_balance: string;
+  // Business financials (from the PDF's "Business Financial Information" section)
+  annual_gross_revenue: string;
+  average_monthly_deposits: string;
+  number_of_employees: string;
+  has_bankruptcy: string;      // "" | "yes" | "no"
+  bankruptcy_details: string;
+  has_tax_liens: string;       // "" | "yes" | "no"
+  tax_lien_details: string;
   notes: string;
 }
 
@@ -75,15 +83,21 @@ const EMPTY: AppForm = {
   owner_home_state: "", owner_home_zip: "", owner_dl_number: "", owner_dl_state: "",
   bank_name: "", bank_routing_number: "", bank_account_number: "",
   amount_requested: "", use_of_funds: "", monthly_revenue: "", average_daily_balance: "",
-  existing_positions: "", existing_balance: "", notes: "",
+  existing_positions: "", existing_balance: "",
+  annual_gross_revenue: "", average_monthly_deposits: "", number_of_employees: "",
+  has_bankruptcy: "", bankruptcy_details: "", has_tax_liens: "", tax_lien_details: "",
+  notes: "",
 };
 
 // Numeric columns — sent to the DB as numbers (or null), not strings.
 const NUMERIC_KEYS: (keyof AppForm)[] = [
   "owner_ownership_pct", "amount_requested", "monthly_revenue", "average_daily_balance", "existing_balance",
+  "annual_gross_revenue", "average_monthly_deposits",
 ];
-const INTEGER_KEYS: (keyof AppForm)[] = ["existing_positions"];
+const INTEGER_KEYS: (keyof AppForm)[] = ["existing_positions", "number_of_employees"];
 const DATE_KEYS: (keyof AppForm)[] = ["business_start_date", "owner_dob"];
+// Boolean columns — the form holds "yes"/"no", coerced to true/false (or null).
+const BOOLEAN_KEYS: (keyof AppForm)[] = ["has_bankruptcy", "has_tax_liens"];
 
 type Tab = "business" | "owner" | "banking" | "funding";
 
@@ -132,7 +146,11 @@ const FIELD_LABEL: Record<keyof AppForm, string> = {
   bank_name: "Bank name", bank_routing_number: "Routing number", bank_account_number: "Account number",
   amount_requested: "Amount requested", use_of_funds: "Use of funds", monthly_revenue: "Monthly revenue",
   average_daily_balance: "Average daily balance", existing_positions: "# of existing positions",
-  existing_balance: "Existing MCA balance", notes: "Notes",
+  existing_balance: "Existing MCA balance",
+  annual_gross_revenue: "Annual gross revenue", average_monthly_deposits: "Average monthly deposits",
+  number_of_employees: "Number of employees", has_bankruptcy: "Prior bankruptcy",
+  bankruptcy_details: "Bankruptcy details", has_tax_liens: "Tax liens / judgments",
+  tax_lien_details: "Tax lien details", notes: "Notes",
 };
 
 const TAB_LABEL: Record<Tab, string> = {
@@ -177,7 +195,9 @@ export default function MerchantApplicationModal({
         const next = { ...EMPTY };
         for (const k of Object.keys(EMPTY) as (keyof AppForm)[]) {
           const v = (data as Record<string, unknown>)[k];
-          next[k] = v === null || v === undefined ? "" : String(v);
+          if (v === null || v === undefined) { next[k] = ""; continue; }
+          // Boolean columns are stored as true/false; the form uses "yes"/"no".
+          next[k] = BOOLEAN_KEYS.includes(k) ? (v ? "yes" : "no") : String(v);
         }
         setForm(next);
       } else {
@@ -234,6 +254,7 @@ export default function MerchantApplicationModal({
       if (raw === "") { out[k] = null; continue; }
       if (NUMERIC_KEYS.includes(k)) out[k] = Number(raw);
       else if (INTEGER_KEYS.includes(k)) out[k] = parseInt(raw, 10);
+      else if (BOOLEAN_KEYS.includes(k)) out[k] = raw === "yes"; // "yes"/"no" → bool
       else if (DATE_KEYS.includes(k)) out[k] = raw; // yyyy-mm-dd
       else out[k] = raw;
     }
@@ -523,7 +544,43 @@ export default function MerchantApplicationModal({
                     <input type="number" className={inputCls} placeholder="0" value={form.existing_positions} onChange={(e) => set("existing_positions", e.target.value)} /></div>
                   <div><Label>Existing MCA balance ($)</Label>
                     <input type="number" className={inputCls} value={form.existing_balance} onChange={(e) => set("existing_balance", e.target.value)} /></div>
-                  <div className="sm:col-span-2"><Label req>Use of funds</Label>
+
+                  {/* Business financials — the PDF's "Business Financial Information"
+                      section. All optional (fill-ins on the real application). */}
+                  <div className="sm:col-span-2 mt-1 pt-3 border-t border-gray-200 dark:border-gray-700">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Business financials</h4>
+                  </div>
+                  <div><Label>Annual gross revenue ($)</Label>
+                    <input type="number" className={inputCls} placeholder="300000" value={form.annual_gross_revenue} onChange={(e) => set("annual_gross_revenue", e.target.value)} /></div>
+                  <div><Label>Average monthly deposits ($)</Label>
+                    <input type="number" className={inputCls} placeholder="25000" value={form.average_monthly_deposits} onChange={(e) => set("average_monthly_deposits", e.target.value)} /></div>
+                  <div><Label>Number of employees</Label>
+                    <input type="number" className={inputCls} placeholder="0" value={form.number_of_employees} onChange={(e) => set("number_of_employees", e.target.value)} /></div>
+                  <div className="hidden sm:block" />
+                  <div><Label>Prior bankruptcy?</Label>
+                    <select className={inputCls} value={form.has_bankruptcy} onChange={(e) => set("has_bankruptcy", e.target.value)}>
+                      <option value="">—</option>
+                      <option value="no">No</option>
+                      <option value="yes">Yes</option>
+                    </select></div>
+                  {form.has_bankruptcy === "yes" && (
+                    <div><Label>Bankruptcy details</Label>
+                      <input className={inputCls} placeholder="Year / chapter / status" value={form.bankruptcy_details} onChange={(e) => set("bankruptcy_details", e.target.value)} /></div>
+                  )}
+                  {form.has_bankruptcy !== "yes" && <div className="hidden sm:block" />}
+                  <div><Label>Tax liens / judgments?</Label>
+                    <select className={inputCls} value={form.has_tax_liens} onChange={(e) => set("has_tax_liens", e.target.value)}>
+                      <option value="">—</option>
+                      <option value="no">No</option>
+                      <option value="yes">Yes</option>
+                    </select></div>
+                  {form.has_tax_liens === "yes" && (
+                    <div><Label>Tax lien details</Label>
+                      <input className={inputCls} placeholder="Amount / payment plan" value={form.tax_lien_details} onChange={(e) => set("tax_lien_details", e.target.value)} /></div>
+                  )}
+                  {form.has_tax_liens !== "yes" && <div className="hidden sm:block" />}
+
+                  <div className="sm:col-span-2 pt-1"><Label req>Use of funds</Label>
                     <input className={inputCls} placeholder="Working capital, payroll, inventory…" value={form.use_of_funds} onChange={(e) => set("use_of_funds", e.target.value)} /></div>
                   <div className="sm:col-span-2"><Label>Notes</Label>
                     <textarea className={`${inputCls} h-20`} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></div>
