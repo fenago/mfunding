@@ -4,7 +4,6 @@ import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 
 type CustomerStatus = "lead" | "contacted" | "application_submitted" | "in_review" | "approved" | "funded" | "renewed" | "declined" | "follow_up";
-type LeadSource = "website" | "live_transfer" | "aged_lead" | "referral" | "cold_call" | "partner" | "marketing" | "other";
 type ApplicationType = "mini_app" | "full_app" | "";
 
 interface MarketingVendorOption {
@@ -28,7 +27,6 @@ interface CustomerFormData {
   industry: string;
   business_type: string;
   status: CustomerStatus;
-  lead_source: LeadSource;
   amount_requested: string;
   next_follow_up_date: string;
   follow_up_notes: string;
@@ -55,7 +53,6 @@ interface Customer {
   industry: string | null;
   business_type: string | null;
   status: CustomerStatus;
-  lead_source: LeadSource | null;
   amount_requested: number | null;
   next_follow_up_date: string | null;
   follow_up_notes: string | null;
@@ -82,17 +79,6 @@ const STATUS_OPTIONS: { value: CustomerStatus; label: string }[] = [
   { value: "renewed", label: "Renewed" },
   { value: "declined", label: "Declined" },
   { value: "follow_up", label: "Follow Up" },
-];
-
-const LEAD_SOURCE_OPTIONS: { value: LeadSource; label: string }[] = [
-  { value: "website", label: "Website" },
-  { value: "live_transfer", label: "Live Transfer" },
-  { value: "aged_lead", label: "Aged Lead" },
-  { value: "referral", label: "Referral" },
-  { value: "cold_call", label: "Cold Call" },
-  { value: "partner", label: "Partner" },
-  { value: "marketing", label: "Marketing" },
-  { value: "other", label: "Other" },
 ];
 
 const BUSINESS_TYPES = [
@@ -134,7 +120,6 @@ const initialFormData: CustomerFormData = {
   industry: "",
   business_type: "",
   status: "lead",
-  lead_source: "website",
   amount_requested: "",
   next_follow_up_date: "",
   follow_up_notes: "",
@@ -184,7 +169,6 @@ export default function CustomerEditModal({
         industry: customer.industry || "",
         business_type: customer.business_type || "",
         status: customer.status || "lead",
-        lead_source: customer.lead_source || "website",
         amount_requested: customer.amount_requested?.toString() || "",
         next_follow_up_date: customer.next_follow_up_date?.split("T")[0] || "",
         follow_up_notes: customer.follow_up_notes || "",
@@ -221,7 +205,6 @@ export default function CustomerEditModal({
         industry: formData.industry || null,
         business_type: formData.business_type || null,
         status: formData.status,
-        lead_source: formData.lead_source || null,
         amount_requested: formData.amount_requested ? parseFloat(formData.amount_requested) : null,
         next_follow_up_date: formData.next_follow_up_date || null,
         follow_up_notes: formData.follow_up_notes || null,
@@ -423,25 +406,6 @@ export default function CustomerEditModal({
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Lead Source
-                    </label>
-                    <select
-                      value={formData.lead_source}
-                      onChange={(e) => setFormData({ ...formData, lead_source: e.target.value as LeadSource })}
-                      className="input-field"
-                    >
-                      {LEAD_SOURCE_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                       Source Vendor

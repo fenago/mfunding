@@ -23,7 +23,6 @@ import {
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
-import CustomerEditModal from "../../components/customers/CustomerEditModal";
 import MerchantApplicationModal from "../../components/admin/MerchantApplicationModal";
 import FunderPicker from "../../components/admin/FunderPicker";
 import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
@@ -484,12 +483,13 @@ export default function PlaybooksPage() {
         />
       )}
 
-      {/* Edit lead info — reuses the Customers-page CustomerEditModal. The deal
-          only carries a slim customer projection, so the wrapper fetches the FULL
-          customer record before opening, then refreshes the deal on save. */}
+      {/* Edit lead info — a LIGHTWEIGHT modal that edits exactly the intake fields
+          (name / business / email / cell), mirroring the live-transfer capture.
+          NOT the heavy CustomerEditModal: closers just need to fix or add the same
+          fields they'd type when starting a lead. Refreshes the deal on save. */}
       {showEditLead && deal && (
-        <EditLeadModal
-          customerId={deal.customer_id}
+        <LeadQuickEditModal
+          deal={deal}
           onClose={() => setShowEditLead(false)}
           onSaved={() => { setShowEditLead(false); refreshDeal(deal.id); }}
         />
@@ -714,49 +714,120 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, ope
   );
 }
 
-// ───────────────────────── Edit lead modal wrapper ─────────────────────────
-// The playbook loads a deal with only a slim customer projection (getDealById),
-// but CustomerEditModal needs the FULL customer row. This wrapper fetches it,
-// then hands it to the shared modal so a closer can fix/add the lead's info
-// (wrong business name, a missing email, etc.) without leaving the flow.
-function EditLeadModal({ customerId, onClose, onSaved }: { customerId: string; onClose: () => void; onSaved: () => void }) {
-  const [customer, setCustomer] = useState<Record<string, unknown> | null>(null);
+// ───────────────────────── Lead quick-edit modal ─────────────────────────
+// The live-transfer intake captures the bare minimum (first name + cell), so a
+// closer often needs to fix a wrong business name or add the email that later
+// steps require. This edits EXACTLY those intake fields — the same ones on
+// PlaybookCapture (name / business / business email / cell) — nothing else. The
+// deal already carries the slim customer projection with all five, so no extra
+// fetch is needed; we write straight to the customers table and refresh the deal.
+function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer; onClose: () => void; onSaved: () => void }) {
+  const c = deal.customer;
+  const [firstName, setFirstName] = useState(c?.first_name ?? "");
+  const [lastName, setLastName] = useState(c?.last_name ?? "");
+  const [businessName, setBusinessName] = useState(c?.business_name ?? "");
+  const [email, setEmail] = useState(c?.email ?? "");
+  const [phone, setPhone] = useState(c?.phone ?? "");
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    supabase
-      .from("customers")
-      .select("*")
-      .eq("id", customerId)
-      .single()
-      .then(({ data, error }) => {
-        if (!alive) return;
-        if (error || !data) setError(error?.message ?? "Could not load this lead.");
-        else setCustomer(data as Record<string, unknown>);
-      });
-    return () => { alive = false; };
-  }, [customerId]);
+  // Same required set as the intake — plus last name (confirmed required to save).
+  const canSave =
+    firstName.trim() !== "" && lastName.trim() !== "" && email.trim() !== "" && phone.trim() !== "";
 
-  if (error) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-        <div className="rounded-xl bg-white dark:bg-gray-800 p-5 max-w-sm" onClick={(e) => e.stopPropagation()}>
-          <p className="text-sm text-red-600">{error}</p>
-          <button onClick={onClose} className="mt-3 text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600">Close</button>
-        </div>
-      </div>
-    );
+  async function save() {
+    if (!canSave) {
+      setError("First name, last name, business email, and cell phone are all required.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await mustWrite(
+        "update lead",
+        supabase
+          .from("customers")
+          .update({
+            first_name: firstName.trim(),
+            last_name: lastName.trim(),
+            business_name: businessName.trim() || null,
+            email: email.trim(),
+            phone: phone.trim(),
+          })
+          .eq("id", deal.customer_id),
+      );
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the lead. Please try again.");
+      setSaving(false);
+    }
   }
-  if (!customer) return null;
+
+  const Req = () => <span className="text-red-500">*</span>;
 
   return (
-    <CustomerEditModal
-      isOpen
-      onClose={onClose}
-      onSave={onSaved}
-      customer={customer as never}
-    />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-2xl p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <PencilSquareIcon className="w-5 h-5 text-emerald-600" /> Edit lead info
+          </h3>
+          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+          Fix or add what you captured at intake. <Req /> = required to save; the email is how you send the application.
+        </p>
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs font-medium text-gray-600 dark:text-gray-400">First name <Req /></span>
+              <input className="input-field w-full mt-1" value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Jane" autoFocus />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Last name <Req /></span>
+              <input className="input-field w-full mt-1" value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Doe" />
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Business name <span className="text-gray-400">(optional)</span></span>
+            <input className="input-field w-full mt-1" value={businessName} onChange={(e) => setBusinessName(e.target.value)} placeholder="Acme Co." />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Business email <Req /></span>
+            <input className="input-field w-full mt-1" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@acme.com" />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Cell phone <Req /></span>
+            <input className="input-field w-full mt-1" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 123-4567" />
+          </label>
+        </div>
+
+        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="text-sm px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving || !canSave}
+            className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? "Saving…" : "Save lead info"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
