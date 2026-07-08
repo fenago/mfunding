@@ -126,6 +126,14 @@ export default function PlaybooksPage() {
       return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
 
+  // Live Transfer: the greeting (Step 1) already happens IN the intake capture
+  // when the closer creates the lead, so it's redundant in the guided steps —
+  // drop it and renumber the rest so the flow starts clean at Qualify.
+  const flowSteps =
+    active.id === "live-transfer"
+      ? active.steps.slice(1).map((s, idx) => ({ ...s, n: idx + 1 }))
+      : active.steps;
+
   // The deal is "live" in this playbook only when its pipeline matches the open tab.
   const dealMatchesPlaybook = !!deal && pipelineOf(deal.deal_type) === active.pipeline;
   const order = PIPELINES[active.pipeline].stages.map((s) => s.key);
@@ -433,6 +441,7 @@ export default function PlaybooksPage() {
                 step={s}
                 last={i === active.steps.length - 1}
                 stageLabel={s.stageKey ? STAGE_LABELS[active.pipeline][s.stageKey] : undefined}
+                stageNum={s.stageKey ? order.indexOf(s.stageKey) + 1 : undefined}
                 interactive={dealMatchesPlaybook}
                 deal={dealMatchesPlaybook ? deal : null}
                 checklistKey={`${active.id}:${s.n}`}
@@ -999,6 +1008,7 @@ function StepCard({
   step,
   last,
   stageLabel,
+  stageNum,
   interactive,
   deal,
   checklistKey,
@@ -1013,6 +1023,7 @@ function StepCard({
   step: PlaybookStep;
   last: boolean;
   stageLabel?: string;
+  stageNum?: number;
   interactive: boolean;
   deal: DealWithCustomer | null;
   checklistKey: string;
@@ -1148,8 +1159,8 @@ function StepCard({
         {(stageLabel || step.automation) && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {stageLabel && (
-              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue">
-                <Squares2X2Icon className="w-3 h-3" /> Stage: {stageLabel}
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue" title="Where this step sits in the pipeline stepper above">
+                <Squares2X2Icon className="w-3 h-3" /> {stageNum ? `Pipeline stage ${stageNum} · ` : "Stage: "}{stageLabel}
               </span>
             )}
             {step.automation && (
