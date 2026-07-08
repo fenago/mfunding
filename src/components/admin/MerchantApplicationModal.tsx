@@ -87,6 +87,58 @@ const DATE_KEYS: (keyof AppForm)[] = ["business_start_date", "owner_dob"];
 
 type Tab = "business" | "owner" | "banking" | "funding";
 
+// REQUIRED fields, mirroring the real "Merchant Funding Application" the merchant
+// e-signs. Everything the form marks "if any / if applicable" is OPTIONAL and
+// excluded here: business_dba, owner_dl_state, average_daily_balance,
+// existing_positions, existing_balance, notes. The application can't be SENT
+// until every one of these is filled (a Save draft may still be partial).
+const REQUIRED_KEYS: (keyof AppForm)[] = [
+  // Business
+  "business_legal_name", "business_type", "ein", "business_start_date", "industry",
+  "business_phone", "business_email", "business_address", "business_city", "business_state", "business_zip",
+  // Owner / guarantor
+  "owner_first_name", "owner_last_name", "owner_title", "owner_ownership_pct", "owner_ssn", "owner_dob",
+  "owner_dl_number", "owner_email", "owner_phone",
+  "owner_home_address", "owner_home_city", "owner_home_state", "owner_home_zip",
+  // Banking
+  "bank_name", "bank_routing_number", "bank_account_number",
+  // Funding request
+  "amount_requested", "use_of_funds", "monthly_revenue",
+];
+
+// Which tab each required field lives on — powers the per-tab "N missing" badge.
+const TAB_OF: Partial<Record<keyof AppForm, Tab>> = {
+  business_legal_name: "business", business_type: "business", ein: "business", business_start_date: "business",
+  industry: "business", business_phone: "business", business_email: "business", business_address: "business",
+  business_city: "business", business_state: "business", business_zip: "business",
+  owner_first_name: "owner", owner_last_name: "owner", owner_title: "owner", owner_ownership_pct: "owner",
+  owner_ssn: "owner", owner_dob: "owner", owner_dl_number: "owner", owner_email: "owner", owner_phone: "owner",
+  owner_home_address: "owner", owner_home_city: "owner", owner_home_state: "owner", owner_home_zip: "owner",
+  bank_name: "banking", bank_routing_number: "banking", bank_account_number: "banking",
+  amount_requested: "funding", use_of_funds: "funding", monthly_revenue: "funding",
+};
+
+// Human labels for the "what's still missing" message on a blocked send.
+const FIELD_LABEL: Record<keyof AppForm, string> = {
+  business_legal_name: "Business legal name", business_dba: "DBA", business_type: "Entity type", ein: "EIN",
+  business_start_date: "Business start date", business_phone: "Business phone", business_email: "Business email",
+  business_address: "Business street address", business_city: "Business city", business_state: "Business state",
+  business_zip: "Business ZIP", industry: "Industry",
+  owner_first_name: "Owner first name", owner_last_name: "Owner last name", owner_title: "Owner title",
+  owner_ownership_pct: "Ownership %", owner_ssn: "Owner SSN", owner_dob: "Owner date of birth",
+  owner_email: "Owner email", owner_phone: "Owner phone", owner_home_address: "Home address",
+  owner_home_city: "Home city", owner_home_state: "Home state", owner_home_zip: "Home ZIP",
+  owner_dl_number: "Driver's license #", owner_dl_state: "DL state",
+  bank_name: "Bank name", bank_routing_number: "Routing number", bank_account_number: "Account number",
+  amount_requested: "Amount requested", use_of_funds: "Use of funds", monthly_revenue: "Monthly revenue",
+  average_daily_balance: "Average daily balance", existing_positions: "# of existing positions",
+  existing_balance: "Existing MCA balance", notes: "Notes",
+};
+
+const TAB_LABEL: Record<Tab, string> = {
+  business: "Business", owner: "Owner", banking: "Banking", funding: "Funding request",
+};
+
 export default function MerchantApplicationModal({
   deal,
   onClose,
@@ -158,6 +210,22 @@ export default function MerchantApplicationModal({
     [form.business_email, form.owner_email, cust?.email],
   );
 
+  // Required-field validation — the send is BLOCKED until every required field
+  // (per the real application) is filled. Recomputed as the closer types.
+  const missingRequired = useMemo(
+    () => REQUIRED_KEYS.filter((k) => String(form[k] ?? "").trim() === ""),
+    [form],
+  );
+  const missingByTab = useMemo(() => {
+    const counts: Record<Tab, number> = { business: 0, owner: 0, banking: 0, funding: 0 };
+    for (const k of missingRequired) {
+      const t = TAB_OF[k];
+      if (t) counts[t] += 1;
+    }
+    return counts;
+  }, [missingRequired]);
+  const canSend = missingRequired.length === 0;
+
   // Build the DB payload from the form: trim, drop empties to null, coerce types.
   function payload(): Record<string, unknown> {
     const out: Record<string, unknown> = { deal_id: deal.id, customer_id: deal.customer_id };
@@ -212,6 +280,18 @@ export default function MerchantApplicationModal({
     if (!merchantEmail) {
       setError("This merchant has no email yet — add one via 'Edit lead info' first.");
       setTab("business");
+      return;
+    }
+    // Don't let an incomplete application go out. List what's missing and jump
+    // to the first tab that has a gap so the closer can finish it.
+    if (missingRequired.length > 0) {
+      const names = missingRequired.slice(0, 8).map((k) => FIELD_LABEL[k]);
+      const more = missingRequired.length - names.length;
+      setError(
+        `Fill the required (*) fields before sending — missing: ${names.join(", ")}${more > 0 ? ` +${more} more` : ""}.`,
+      );
+      const firstTab = TAB_OF[missingRequired[0]];
+      if (firstTab) setTab(firstTab);
       return;
     }
     setBusy("send");
@@ -271,8 +351,13 @@ export default function MerchantApplicationModal({
 
   const inputCls =
     "input-field w-full";
-  const Label = ({ children }: { children: React.ReactNode }) => (
-    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{children}</label>
+  // Label with an explicit required/optional cue: red * (required) or a muted
+  // "(optional)" tag, matching the live-transfer intake's convention.
+  const Label = ({ children, req }: { children: React.ReactNode; req?: boolean }) => (
+    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+      {children}{" "}
+      {req ? <span className="text-red-500">*</span> : <span className="text-gray-400">(optional)</span>}
+    </label>
   );
 
   return (
@@ -301,21 +386,30 @@ export default function MerchantApplicationModal({
           </button>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs — each shows how many REQUIRED fields are still empty on it, so
+            the closer can see at a glance where the gaps are. */}
         <div className="border-b border-gray-200 dark:border-gray-700 px-5">
           <nav className="flex gap-5">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setTab(t.id)}
-                className={`py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                  tab === t.id ? "border-ocean-blue text-ocean-blue" : "border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
+            {TABS.map((t) => {
+              const miss = missingByTab[t.id];
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={`py-3 text-sm font-medium border-b-2 -mb-px transition-colors inline-flex items-center gap-1.5 ${
+                    tab === t.id ? "border-ocean-blue text-ocean-blue" : "border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                  }`}
+                >
+                  {t.label}
+                  {miss > 0 && (
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300" title={`${miss} required field${miss === 1 ? "" : "s"} still empty`}>
+                      {miss}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </nav>
         </div>
 
@@ -327,30 +421,30 @@ export default function MerchantApplicationModal({
             <>
               {tab === "business" && (
                 <div className="grid sm:grid-cols-2 gap-4">
-                  <div className="sm:col-span-2"><Label>Business legal name</Label>
+                  <div className="sm:col-span-2"><Label req>Business legal name</Label>
                     <input className={inputCls} value={form.business_legal_name} onChange={(e) => set("business_legal_name", e.target.value)} /></div>
                   <div><Label>DBA (if any)</Label>
                     <input className={inputCls} value={form.business_dba} onChange={(e) => set("business_dba", e.target.value)} /></div>
-                  <div><Label>Entity type</Label>
+                  <div><Label req>Entity type</Label>
                     <input className={inputCls} placeholder="LLC, Corp, Sole Prop…" value={form.business_type} onChange={(e) => set("business_type", e.target.value)} /></div>
-                  <div><Label>EIN</Label>
+                  <div><Label req>EIN</Label>
                     <input className={inputCls} placeholder="XX-XXXXXXX" value={form.ein} onChange={(e) => set("ein", e.target.value)} /></div>
-                  <div><Label>Business start date</Label>
+                  <div><Label req>Business start date</Label>
                     <input type="date" className={inputCls} value={form.business_start_date} onChange={(e) => set("business_start_date", e.target.value)} /></div>
-                  <div><Label>Industry</Label>
+                  <div><Label req>Industry</Label>
                     <input className={inputCls} value={form.industry} onChange={(e) => set("industry", e.target.value)} /></div>
-                  <div><Label>Business phone</Label>
+                  <div><Label req>Business phone</Label>
                     <input className={inputCls} value={form.business_phone} onChange={(e) => set("business_phone", e.target.value)} /></div>
-                  <div className="sm:col-span-2"><Label>Business email (where the app is sent)</Label>
+                  <div className="sm:col-span-2"><Label req>Business email (where the app is sent)</Label>
                     <input type="email" className={inputCls} value={form.business_email} onChange={(e) => set("business_email", e.target.value)} /></div>
-                  <div className="sm:col-span-2"><Label>Business street address</Label>
+                  <div className="sm:col-span-2"><Label req>Business street address</Label>
                     <input className={inputCls} value={form.business_address} onChange={(e) => set("business_address", e.target.value)} /></div>
-                  <div><Label>City</Label>
+                  <div><Label req>City</Label>
                     <input className={inputCls} value={form.business_city} onChange={(e) => set("business_city", e.target.value)} /></div>
                   <div className="grid grid-cols-2 gap-3">
-                    <div><Label>State</Label>
+                    <div><Label req>State</Label>
                       <input className={inputCls} maxLength={2} value={form.business_state} onChange={(e) => set("business_state", e.target.value.toUpperCase())} /></div>
-                    <div><Label>ZIP</Label>
+                    <div><Label req>ZIP</Label>
                       <input className={inputCls} value={form.business_zip} onChange={(e) => set("business_zip", e.target.value)} /></div>
                   </div>
                 </div>
@@ -358,33 +452,33 @@ export default function MerchantApplicationModal({
 
               {tab === "owner" && (
                 <div className="grid sm:grid-cols-2 gap-4">
-                  <div><Label>First name</Label>
+                  <div><Label req>First name</Label>
                     <input className={inputCls} value={form.owner_first_name} onChange={(e) => set("owner_first_name", e.target.value)} /></div>
-                  <div><Label>Last name</Label>
+                  <div><Label req>Last name</Label>
                     <input className={inputCls} value={form.owner_last_name} onChange={(e) => set("owner_last_name", e.target.value)} /></div>
-                  <div><Label>Title</Label>
+                  <div><Label req>Title</Label>
                     <input className={inputCls} placeholder="Owner, President…" value={form.owner_title} onChange={(e) => set("owner_title", e.target.value)} /></div>
-                  <div><Label>Ownership %</Label>
+                  <div><Label req>Ownership %</Label>
                     <input type="number" className={inputCls} value={form.owner_ownership_pct} onChange={(e) => set("owner_ownership_pct", e.target.value)} /></div>
-                  <div><Label>SSN</Label>
+                  <div><Label req>SSN</Label>
                     <input className={inputCls} placeholder="•••-••-••••" value={form.owner_ssn} onChange={(e) => set("owner_ssn", e.target.value)} /></div>
-                  <div><Label>Date of birth</Label>
+                  <div><Label req>Date of birth</Label>
                     <input type="date" className={inputCls} value={form.owner_dob} onChange={(e) => set("owner_dob", e.target.value)} /></div>
-                  <div><Label>Email</Label>
+                  <div><Label req>Email</Label>
                     <input type="email" className={inputCls} value={form.owner_email} onChange={(e) => set("owner_email", e.target.value)} /></div>
-                  <div><Label>Phone</Label>
+                  <div><Label req>Cell phone</Label>
                     <input className={inputCls} value={form.owner_phone} onChange={(e) => set("owner_phone", e.target.value)} /></div>
-                  <div className="sm:col-span-2"><Label>Home address</Label>
+                  <div className="sm:col-span-2"><Label req>Home address</Label>
                     <input className={inputCls} value={form.owner_home_address} onChange={(e) => set("owner_home_address", e.target.value)} /></div>
-                  <div><Label>City</Label>
+                  <div><Label req>City</Label>
                     <input className={inputCls} value={form.owner_home_city} onChange={(e) => set("owner_home_city", e.target.value)} /></div>
                   <div className="grid grid-cols-2 gap-3">
-                    <div><Label>State</Label>
+                    <div><Label req>State</Label>
                       <input className={inputCls} maxLength={2} value={form.owner_home_state} onChange={(e) => set("owner_home_state", e.target.value.toUpperCase())} /></div>
-                    <div><Label>ZIP</Label>
+                    <div><Label req>ZIP</Label>
                       <input className={inputCls} value={form.owner_home_zip} onChange={(e) => set("owner_home_zip", e.target.value)} /></div>
                   </div>
-                  <div><Label>Driver's license #</Label>
+                  <div><Label req>Driver's license #</Label>
                     <input className={inputCls} value={form.owner_dl_number} onChange={(e) => set("owner_dl_number", e.target.value)} /></div>
                   <div><Label>DL state</Label>
                     <input className={inputCls} maxLength={2} value={form.owner_dl_state} onChange={(e) => set("owner_dl_state", e.target.value.toUpperCase())} /></div>
@@ -394,14 +488,14 @@ export default function MerchantApplicationModal({
               {tab === "banking" && (
                 <div className="space-y-4">
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Optional — funders confirm banking from the statements. Capture it if the merchant reads it to you.
+                    The application requires the merchant's primary business bank account. Get it while they're on the phone.
                   </p>
-                  <div><Label>Bank name</Label>
+                  <div><Label req>Bank name</Label>
                     <input className={inputCls} value={form.bank_name} onChange={(e) => set("bank_name", e.target.value)} /></div>
                   <div className="grid sm:grid-cols-2 gap-4">
-                    <div><Label>Routing number</Label>
+                    <div><Label req>Routing number</Label>
                       <input className={inputCls} value={form.bank_routing_number} onChange={(e) => set("bank_routing_number", e.target.value)} /></div>
-                    <div><Label>Account number</Label>
+                    <div><Label req>Account number</Label>
                       <input className={inputCls} value={form.bank_account_number} onChange={(e) => set("bank_account_number", e.target.value)} /></div>
                   </div>
                 </div>
@@ -409,9 +503,9 @@ export default function MerchantApplicationModal({
 
               {tab === "funding" && (
                 <div className="grid sm:grid-cols-2 gap-4">
-                  <div><Label>Amount requested ($)</Label>
+                  <div><Label req>Amount requested ($)</Label>
                     <input type="number" className={inputCls} placeholder="50000" value={form.amount_requested} onChange={(e) => set("amount_requested", e.target.value)} /></div>
-                  <div><Label>Monthly revenue ($)</Label>
+                  <div><Label req>Monthly revenue ($)</Label>
                     <input type="number" className={inputCls} placeholder="25000" value={form.monthly_revenue} onChange={(e) => set("monthly_revenue", e.target.value)} /></div>
                   <div><Label>Average daily balance ($)</Label>
                     <input type="number" className={inputCls} value={form.average_daily_balance} onChange={(e) => set("average_daily_balance", e.target.value)} /></div>
@@ -419,7 +513,7 @@ export default function MerchantApplicationModal({
                     <input type="number" className={inputCls} placeholder="0" value={form.existing_positions} onChange={(e) => set("existing_positions", e.target.value)} /></div>
                   <div><Label>Existing MCA balance ($)</Label>
                     <input type="number" className={inputCls} value={form.existing_balance} onChange={(e) => set("existing_balance", e.target.value)} /></div>
-                  <div className="sm:col-span-2"><Label>Use of funds</Label>
+                  <div className="sm:col-span-2"><Label req>Use of funds</Label>
                     <input className={inputCls} placeholder="Working capital, payroll, inventory…" value={form.use_of_funds} onChange={(e) => set("use_of_funds", e.target.value)} /></div>
                   <div className="sm:col-span-2"><Label>Notes</Label>
                     <textarea className={`${inputCls} h-20`} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></div>
@@ -438,10 +532,25 @@ export default function MerchantApplicationModal({
             </p>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs text-gray-500 dark:text-gray-400 max-w-sm">
-              Sending emails the merchant their application to review + e-sign (via GHL Documents & Contracts) and
-              moves the deal to <b>Application Sent</b>.
-            </p>
+            <div className="max-w-md">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                <span className="text-red-500">*</span> required. Sending emails the merchant their application to review +
+                e-sign (via GHL Documents & Contracts) and moves the deal to <b>Application Sent</b>.
+              </p>
+              {!canSend ? (
+                <p className="text-xs font-medium text-red-600 dark:text-red-400 mt-1">
+                  {missingRequired.length} required field{missingRequired.length === 1 ? "" : "s"} left before you can send
+                  {" "}({(["business", "owner", "banking", "funding"] as Tab[])
+                    .filter((t) => missingByTab[t] > 0)
+                    .map((t) => `${TAB_LABEL[t]}: ${missingByTab[t]}`)
+                    .join(" · ")}). Draft saves partial.
+                </p>
+              ) : (
+                <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400 mt-1">
+                  All required fields complete — ready to send.
+                </p>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -454,8 +563,9 @@ export default function MerchantApplicationModal({
               <button
                 type="button"
                 onClick={sendToMerchant}
-                disabled={busy !== null || loading}
-                className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1.5"
+                disabled={busy !== null || loading || !canSend}
+                title={canSend ? "Send the application to the merchant to e-sign" : "Fill all required (*) fields first"}
+                className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
               >
                 <PaperAirplaneIcon className="w-4 h-4" />
                 {busy === "send" ? "Sending…" : "Send to merchant to e-sign"}
