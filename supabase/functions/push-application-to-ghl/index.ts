@@ -209,10 +209,11 @@ Deno.serve(async (req) => {
     return json({ error: "Forbidden — staff only" }, 403);
   }
 
-  // Load the deal + its merchant.
+  // Load the deal + its merchant. ghl_opportunity_id tells us whether the caller's
+  // stage move can be trusted to fire MCA 04, or whether we must enroll directly.
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, customer_id, ghl_contact_id")
+    .select("id, customer_id, ghl_contact_id, ghl_opportunity_id")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
@@ -284,11 +285,24 @@ Deno.serve(async (req) => {
     if (!res.ok) return json({ error: `GHL custom-field update failed: ${res.error}` }, 502);
   }
 
-  // Resend: re-enroll the contact into MCA 04 so the doc send re-fires even when
-  // the deal is already at Application Sent (a stage move wouldn't re-trigger).
-  // Best-effort — surface if it fails so the UI can tell the closer.
+  // Enroll the contact into MCA 04 directly (the deterministic doc-send trigger)
+  // when EITHER:
+  //  · resend — the deal is already at Application Sent, so the caller's stage
+  //    move is a no-op and won't re-trigger the workflow; OR
+  //  · first send on a deal with NO GHL opportunity yet — e.g. a bulk-imported
+  //    web/aged lead (bulk-lead-import creates the deal but never syncs it to
+  //    GHL). The caller's stage move will CREATE the opportunity directly AT the
+  //    Application Sent stage, and a fresh create-into-stage does not reliably
+  //    fire GHL's "stage changed" trigger, so MCA 04 could silently never send.
+  //    Enrolling here guarantees it. Deals that already carry an opportunity
+  //    (live transfer, website /apply, mca-intake) keep relying on the stage move
+  //    exactly as before — no behavior change, no double send. And with GHL
+  //    re-enrollment OFF (the same assumption the resend path makes) a direct
+  //    enroll dedupes against any stage-move trigger, so the merchant gets one send.
+  const noOpportunity = !deal.ghl_opportunity_id;
+  const enrollDirect = resend || noOpportunity;
   let reenrolled: boolean | undefined;
-  if (resend) {
+  if (enrollDirect) {
     const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
     reenrolled = wf.ok;
   }
@@ -300,9 +314,12 @@ Deno.serve(async (req) => {
       entity_id: dealId,
       interaction_type: "note",
       subject: "application:pushed-to-ghl",
-      content: blank
-        ? `Sent the original application docs (no prefill) — merchant fills + e-signs.${resend ? ` Re-enrolled in MCA 04 (${reenrolled ? "ok" : "failed"}).` : ""}`
-        : `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`,
+      content: (blank
+        ? `Sent the original application docs (no prefill) — merchant fills + e-signs.`
+        : `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`)
+        + (enrollDirect
+          ? ` ${resend ? "Re-enrolled" : "Enrolled"} in MCA 04 directly (${reenrolled ? "ok" : "failed"}${!resend ? ", no opportunity yet" : ""}).`
+          : ""),
       logged_by: caller.id,
     });
   } catch { /* best-effort */ }
