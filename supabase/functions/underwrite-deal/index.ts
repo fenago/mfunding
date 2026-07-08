@@ -708,8 +708,19 @@ Deno.serve(async (req) => {
       "land on ONE clear recommendation so the read is complete without a merchant round-trip. " +
       "Return ONLY strict JSON: " +
       '{"risk_rating":"low"|"medium"|"high","narrative":string,"funder_fit_note":string}. ' +
-      "narrative = 3-6 sentences a closer can act on, including the assumption + base-vs-conservative sensitivity " +
-      "when one exists. funder_fit_note = one line on which revenue floors this clears and the likely paper grade.";
+      "FORMAT the narrative as lightweight markdown the closer can scan in 5 seconds — NOT a wall of prose:\n" +
+      "- Open with ONE short headline sentence (the bottom line), no bullet.\n" +
+      "- Then labeled bullet lines, each starting with '- **Label:** ', e.g.:\n" +
+      "  - **True revenue:** stated vs verified numbers + what was stripped\n" +
+      "  - **Key assumption:** the judgment call made (only when one exists)\n" +
+      "  - **Base case (assumption holds):** revenue, capacity, max advance → verdict\n" +
+      "  - **Conservative case (assumption wrong):** same numbers → verdict\n" +
+      "  - **Cash position:** balances, negative days, NSFs, positions\n" +
+      "  - **Recommendation:** the ONE clear action\n" +
+      "Use **bold** for every dollar figure, multiple, and verdict word (decline, approve, counter-offer); " +
+      "use <u>underline</u> ONLY for the single most critical warning in the read (at most one). " +
+      "Keep 4-7 bullets total, each one line where possible. " +
+      "funder_fit_note = one line (plain text, bold key numbers) on which revenue floors this clears and the likely paper grade.";
 
     const judgeUser =
       "MERCHANT: " + JSON.stringify({
@@ -763,7 +774,7 @@ Deno.serve(async (req) => {
       riskRating = crit > 0 ? "high" : warn >= 2 ? "medium" : "low";
       aiNarrative = `AI narrative unavailable (${e instanceof Error ? e.message : e}). Risk derived from flags: ${crit} critical, ${warn} warnings.`;
     }
-    const narrativeOut = funderFitNote ? `${aiNarrative}\n\nFunder fit: ${funderFitNote}` : aiNarrative;
+    const narrativeOut = funderFitNote ? `${aiNarrative}\n- **Funder fit:** ${funderFitNote}` : aiNarrative;
 
     // ---- Persist a new version ----
     const { data: prev } = await db

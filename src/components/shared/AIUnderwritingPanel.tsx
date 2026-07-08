@@ -44,6 +44,44 @@ const num = (n: number | null | undefined) =>
   n == null ? "—" : n.toLocaleString();
 
 // Verdict banner tone by affordability + risk.
+// ── Narrative renderer ─────────────────────────────────────────────────────
+// The underwriter's read arrives as lightweight markdown: an opening headline,
+// then "- **Label:** text" bullets, with **bold** on key numbers/verdicts and
+// at most one <u>critical warning</u>. Render ONLY those tokens (no HTML
+// injection) and fall back gracefully for older plain-prose narratives.
+function inlineNarrative(text: string): React.ReactNode[] {
+  // Split on **bold** and <u>underline</u> tokens, keep delimiters.
+  return text.split(/(\*\*[^*]+\*\*|<u>[^<]*<\/u>)/g).filter(Boolean).map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={i} className="font-semibold text-gray-900 dark:text-white">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("<u>") && part.endsWith("</u>")) {
+      return <u key={i} className="decoration-rose-500 decoration-2 underline-offset-2 font-semibold text-rose-700 dark:text-rose-300">{part.slice(3, -4)}</u>;
+    }
+    return part;
+  });
+}
+
+function NarrativeText({ text }: { text: string }) {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return (
+    <div className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed space-y-1.5">
+      {lines.map((line, i) => {
+        const m = line.match(/^[-•]\s+(.*)$/);
+        if (m) {
+          return (
+            <div key={i} className="flex gap-2 pl-1">
+              <span className="text-ocean-blue mt-0.5 shrink-0">▸</span>
+              <span>{inlineNarrative(m[1])}</span>
+            </div>
+          );
+        }
+        return <p key={i}>{inlineNarrative(line)}</p>;
+      })}
+    </div>
+  );
+}
+
 function verdictTone(aff: AffordabilityRating | null, risk: RiskRating | null): string {
   if (aff === "unaffordable" || risk === "high")
     return "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200";
@@ -346,9 +384,7 @@ function ResultView({ r }: { r: DealUnderwriting }) {
           <h4 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-3">
             <SparklesIcon className="w-4 h-4 text-ocean-blue" /> Underwriter's read
           </h4>
-          <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-            {r.ai_narrative}
-          </p>
+          <NarrativeText text={r.ai_narrative} />
         </div>
       )}
 
