@@ -353,7 +353,7 @@ export default function DealDetailPage() {
           {/* Bank Analysis (manual entry; Plaid optional) */}
           <BankAnalysisCard dealId={deal.id} customerId={deal.customer_id} />
           {/* Internal underwriting (reads bank analysis) */}
-          <UnderwritingCard deal={deal} onDecision={fetchDeal} />
+          <UnderwritingCard deal={deal} onDecision={fetchDeal} onSeeFullAnalysis={() => setActiveTab("underwriting")} />
           {/* Deal Info */}
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
             <h3 className="font-semibold text-gray-900 dark:text-white mb-4">Deal Details</h3>
