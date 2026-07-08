@@ -228,6 +228,13 @@ export default function PlaybookCapture({
           setSaving(false);
           return;
         }
+        // On a live transfer, email is REQUIRED — it's how we send the merchant
+        // their application, so we can't finish the deal without it.
+        if (isLiveIntake && !form.email.trim()) {
+          setError("Grab a business email before saving — on a live transfer it's how we send the application.");
+          setSaving(false);
+          return;
+        }
         let created: { id: string } | undefined;
         try {
           created = (await mustWrite<{ id: string }>("create lead", supabase
@@ -505,12 +512,12 @@ export default function PlaybookCapture({
                       “And <span className="text-mint-green font-semibold">the best email</span> to send your application and secure upload link?”
                     </p>
                     <label className="block">
-                      <span className="text-[11px] text-gray-500 dark:text-gray-400">Business email <span className="text-gray-400">(optional)</span></span>
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400">Business email <span className="text-red-500">*</span></span>
                       <input className="input-field w-full" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="jane@acme.com" />
                     </label>
                   </div>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    First name + cell (the <span className="text-red-500">*</span> fields) is all you need — hit <span className="font-medium">Save lead</span> and keep talking; the deal loads here and you roll into qualifying. Full legal name comes on the application.
+                    First name, cell + email (the <span className="text-red-500">*</span> fields) are required — the email is how we send their application. Hit <span className="font-medium">Save lead</span> and keep talking; the deal loads here and you roll into qualifying. Full legal name comes on the application.
                   </p>
                 </div>
               ) : (
