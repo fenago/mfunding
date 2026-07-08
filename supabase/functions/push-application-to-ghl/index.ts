@@ -19,13 +19,25 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields, ghlFetch,
+  corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields, ghlFetch, addContactTags,
 } from "../_shared/ghl.ts";
 
-// MCA 04 — Application Sent (Send App + Docs). Re-enrolling the contact here is
-// how a "resend" re-fires the doc send even when the deal is already at
-// Application Sent (a stage move wouldn't re-trigger). ID from the live workflow.
+// TWO PARALLEL DOC PATHS (parallel GHL workflows):
+//  · MCA 04  — SELF-FILL: sends the original fillable application; the merchant
+//    types everything themselves. Fires on the Application Sent stage move (and
+//    direct enrollment below). Its first step is an If/Else gate: contacts
+//    tagged "app-prefilled" EXIT immediately, so a prefilled deal that moves
+//    stage never gets the fillable doc on top.
+//  · MCA 04B — PREFILL: sends "04B MCA PREFILL" (native-text template whose
+//    {{contact.*}} merge tags render the values this function pushes) + the
+//    disclosure + upload link. NO stage trigger — fired ONLY by direct
+//    enrollment here, so self-fill deals can never receive it.
+// PATH CROSSING: a merchant being chased down path 1 whom the closer later
+// prefill-sends is REMOVED from MCA 04, tagged, and enrolled in 04B (and the
+// reverse on a blank send) — exactly one path active at a time.
 const MCA_04_WORKFLOW_ID = "076bee21-5667-4cdf-83ae-caf50bea44e2";
+const MCA_04B_WORKFLOW_ID = "afc21762-6879-4de1-89a2-82cc77479bfa";
+const PREFILL_TAG = "app-prefilled";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -300,11 +312,32 @@ Deno.serve(async (req) => {
   //    re-enrollment OFF (the same assumption the resend path makes) a direct
   //    enroll dedupes against any stage-move trigger, so the merchant gets one send.
   const noOpportunity = !deal.ghl_opportunity_id;
-  const enrollDirect = resend || noOpportunity;
   let reenrolled: boolean | undefined;
-  if (enrollDirect) {
-    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
+  let enrollDirect = false;
+  if (blank) {
+    // ── PATH 1 (SELF-FILL): the fillable doc, sent by MCA 04. Clear any prefill
+    // routing first (path 2 → path 1 crossing): stop 04B and drop the tag so
+    // MCA 04's gate lets them through.
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {}); // best-effort
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG] }); // best-effort
+    enrollDirect = resend || noOpportunity;
+    if (enrollDirect) {
+      const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
+      reenrolled = wf.ok;
+    }
+  } else {
+    // ── PATH 2 (PREFILL): the merged doc, sent by MCA 04B. The doc send ALWAYS
+    // comes from a direct 04B enrollment (04B has no stage trigger); the caller's
+    // stage move only syncs the pipeline, and MCA 04's tag gate exits.
+    enrollDirect = true;
+    await addContactTags(cfg, contactId, [PREFILL_TAG]); // gate MCA 04 out
+    // Path 1 → path 2 crossing: stop the fillable-app chase mid-flight.
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // best-effort
+    // Re-sends must re-fire: remove from 04B first so re-enrollment isn't a no-op.
+    if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {});
+    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {});
     reenrolled = wf.ok;
+    if (!wf.ok) return json({ error: `Could not enroll the merchant into the prefill doc workflow (MCA 04B): ${wf.error ?? "enrollment failed"} — the document was NOT sent.` }, 502);
   }
 
   // Audit trail (best-effort).
