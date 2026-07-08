@@ -84,7 +84,30 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
       ? { rank: 5.5, badge: "🌤️ Warm lead — call now", why: "Purchased/qualified lead — these decay fast, call now.", since: deal.created_at, tone: "amber" }
       : { rank: 6, badge: "🆕 New lead — make first contact", why: "Newly created lead — make first contact.", since: deal.created_at, tone: "gray" };
   }
-  return null;
+  // 6 — CATCH-ALL: any OTHER open deal (terminal statuses are already filtered
+  // out upstream in getOpenDealsForQueue) is still being actively worked, so it
+  // must NEVER silently drop off My Day mid-funnel — that's the bug where a lead
+  // moved to "contacted" (or qualifying, docs, etc.) disappeared from the queue.
+  // Give each stage a nudge; anything unmapped still shows as low-priority
+  // "in progress" so nothing open is ever invisible.
+  const since = deal.updated_at ?? deal.created_at ?? null;
+  switch (deal.status) {
+    case "contacted":
+      return { rank: 7, badge: "☎️ Qualify this lead", why: "You've made contact — run the 3 qualifiers and move them forward.", since, tone: "blue" };
+    case "qualifying":
+      return { rank: 7, badge: "📋 Send the application", why: "Qualified — get the app + upload link out while they're warm.", since, tone: "blue" };
+    case "application_sent":
+      return { rank: 7, badge: "✍️ Chase the signed app", why: "Application sent — nudge them to sign so you can package it.", since, tone: "blue" };
+    case "docs_collected":
+    case "bank_statements":
+      return { rank: 7, badge: "📎 Collect the stips", why: "Docs started — get the rest (bank statements/ID) and submit.", since, tone: "blue" };
+    case "offer_presented":
+      return { rank: 7, badge: "🤝 Close the offer", why: "Offer's in front of them — close it.", since, tone: "amber" };
+    case "offer_accepted":
+      return { rank: 7, badge: "📝 Push to funding", why: "Accepted — drive it to funded.", since, tone: "amber" };
+    default:
+      return { rank: 8, badge: "🔧 In progress", why: "Open deal — keep it moving.", since, tone: "gray" };
+  }
 }
 
 const toneChip: Record<string, string> = {
