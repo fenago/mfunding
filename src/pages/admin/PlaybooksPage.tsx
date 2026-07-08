@@ -82,7 +82,11 @@ const dealName = (d: DealWithCustomer) =>
   "Lead";
 
 export default function PlaybooksPage() {
-  const [active, setActive] = useState<Playbook>(PLAYBOOKS[0]);
+  // Live Transfer is the DEFAULT flow — the merchant is on the line the instant
+  // the page opens, so it must be pre-selected with zero clicks. Speed > all.
+  const [active, setActive] = useState<Playbook>(
+    PLAYBOOKS.find((p) => p.id === "live-transfer") ?? PLAYBOOKS[0],
+  );
   const [deal, setDeal] = useState<DealWithCustomer | null>(null);
   // The flow's step list is an accordion, DEFAULT CLOSED (My Day above stays
   // open). It auto-opens when a deal is loaded — you're here to work it.
@@ -109,7 +113,18 @@ export default function PlaybooksPage() {
   }, [toast]);
 
   // Only render the renewal picker card for users allowed to work renewals.
-  const visiblePlaybooks = PLAYBOOKS.filter((p) => p.id !== "renewal" || canRenew);
+  // Tab order: Live Transfer first, then Website — the speed-critical flows lead
+  // so a closer never burns a click to reach them. The rest keep array order
+  // (V8 sort is stable, so unlisted flows stay in place).
+  const PLAYBOOK_TAB_ORDER = ["live-transfer", "website"];
+  const visiblePlaybooks = PLAYBOOKS
+    .filter((p) => p.id !== "renewal" || canRenew)
+    .slice()
+    .sort((a, b) => {
+      const ai = PLAYBOOK_TAB_ORDER.indexOf(a.id);
+      const bi = PLAYBOOK_TAB_ORDER.indexOf(b.id);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
 
   // The deal is "live" in this playbook only when its pipeline matches the open tab.
   const dealMatchesPlaybook = !!deal && pipelineOf(deal.deal_type) === active.pipeline;
