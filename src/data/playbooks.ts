@@ -652,27 +652,6 @@ export const PLAYBOOKS: Playbook[] = [
       },
       {
         n: 4,
-        title: "The pitch",
-        stageKey: "strategy_proposal",
-        automation: "VCF 04 — Strategy & Proposal",
-        do: [
-          "Explain simply: attorney-led team renegotiates existing advances → one lower payment (often 50–75% less). Optional FDIC bank loan refi. No upfront fees.",
-          "On the deal page move Status → Strategy once they agree to see a plan.",
-        ],
-        say: "You're a strong fit. An attorney-led team renegotiates what you owe with your funders, so instead of crushing daily debits you get one manageable payment — many clients see it drop 50 to 75%. No upfront fees, free review, no obligation. I just need a few documents to build your custom plan, usually within 24 hours. Want me to start today?",
-      },
-      {
-        n: 5,
-        title: "Handle objections",
-        do: [
-          "Is this a loan? → No, the main program reduces what you owe; nothing's added unless it lowers your payment.",
-          "What's the cost? → No upfront out-of-pocket fees.",
-          "Credit impact? → Often no negative impact; the specialist explains your case.",
-          "Is it legit? → Attorney-led, 30+ yrs, $100M+ restructured, free review, decide at the end.",
-        ],
-      },
-      {
-        n: 6,
         title: "Collect the positions",
         stageKey: "positions_analysis",
         automation: "VCF 03 — Positions & Balances Analysis",
@@ -684,6 +663,27 @@ export const PLAYBOOKS: Playbook[] = [
         collect: ["Every current MCA agreement", "2–3 months bank statements showing the debits", "Hardship note (optional)"],
         say: "I'll email you a secure link right now to upload your last few statements and advance agreements. A specialist will call within 24 hours with your plan. What's the best email for that link?",
         route: { to: "/admin/documents", label: "Admin → Doc Review" },
+      },
+      {
+        n: 5,
+        title: "The pitch",
+        stageKey: "strategy_proposal",
+        automation: "VCF 04 — Strategy & Proposal",
+        do: [
+          "Explain simply: attorney-led team renegotiates existing advances → one lower payment (often 50–75% less). Optional FDIC bank loan refi. No upfront fees.",
+          "On the deal page move Status → Strategy once they agree to see a plan.",
+        ],
+        say: "You're a strong fit. An attorney-led team renegotiates what you owe with your funders, so instead of crushing daily debits you get one manageable payment — many clients see it drop 50 to 75%. No upfront fees, free review, no obligation. I just need a few documents to build your custom plan, usually within 24 hours. Want me to start today?",
+      },
+      {
+        n: 6,
+        title: "Handle objections",
+        do: [
+          "Is this a loan? → No, the main program reduces what you owe; nothing's added unless it lowers your payment.",
+          "What's the cost? → No upfront out-of-pocket fees.",
+          "Credit impact? → Often no negative impact; the specialist explains your case.",
+          "Is it legit? → Attorney-led, 30+ yrs, $100M+ restructured, free review, decide at the end.",
+        ],
       },
       {
         n: 7,
