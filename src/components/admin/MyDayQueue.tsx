@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
 import { getOpenDealsForQueue, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
+import supabase from "../../supabase";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -143,8 +144,23 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 60_000);
-    return () => clearInterval(t);
+    // Near-real-time: a fast poll, a refetch when the tab regains focus, and a
+    // live subscription to deal changes — so a lead created by anyone (e.g. a
+    // closer) pops into the queue without a manual refresh.
+    const poll = setInterval(load, 15_000);
+    const onFocus = () => { if (!document.hidden) load(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    const channel = supabase
+      .channel("myday-deals")
+      .on("postgres_changes", { event: "*", schema: "public", table: "deals" }, () => load())
+      .subscribe();
+    return () => {
+      clearInterval(poll);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+      supabase.removeChannel(channel);
+    };
   }, [load]);
 
   // Tick `now` every second so the hot-lead speed-to-lead countdown counts down
