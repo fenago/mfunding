@@ -133,6 +133,33 @@ interface SubRow {
   requestedItems: string[];
 }
 
+type SentLogKind = "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note" | "withdrawn";
+interface SentLogEntry {
+  at: string;
+  subject: string;
+  snippet: string;
+  re: string | null;
+  kind: SentLogKind;
+  openedAt: string | null;
+  // GHL ids parsed out of the log content — either fetches the full email on
+  // "view email" (emailMessageId directly; convMessageId is resolved server-side).
+  emailMessageId: string | null;
+  convMessageId: string | null;
+}
+
+// The "view email" modal's fetch state (from get-funder-email).
+interface EmailView {
+  loading: boolean;
+  error: string | null;
+  fromLabel: string; // funder / merchant name for the header
+  subject: string;
+  from: string;
+  to: string;
+  date: string;
+  html: string;
+  text: string;
+}
+
 type StateKey = "awaiting" | "replied" | "offer" | "accepted" | "merchant_declined" | "funder_declined" | "withdrawn";
 
 // One place the card's badge + accents come from, derived from the row's status
@@ -231,8 +258,10 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   // is the fixed submission contact, resolved server-side, so it has no menu.)
   const [contactMenuFor, setContactMenuFor] = useState<"cc" | "bcc" | null>(null);
   const [msgRe, setMsgRe] = useState<string | null>(null); // lender name the message is about (internal only)
-  const [sentLog, setSentLog] = useState<{ at: string; subject: string; snippet: string; re: string | null; kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note" | "withdrawn"; openedAt: string | null }[]>([]);
+  const [sentLog, setSentLog] = useState<SentLogEntry[]>([]);
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
+  // "View email" modal — fetches ONE email's full body from GHL (get-funder-email).
+  const [emailView, setEmailView] = useState<EmailView | null>(null);
   const [msgBusy, setMsgBusy] = useState(false);
   const [msgError, setMsgError] = useState<string | null>(null);
   const [msgToast, setMsgToast] = useState<string | null>(null);
@@ -519,16 +548,21 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       .order("created_at", { ascending: false }).limit(20);
     const parsed = (data ?? []).map((r) => {
       let snippet = String(r.content ?? "");
-      // Pull the open-flag out first, then scrub EVERY machine marker
-      // ([opened:…], [msg:…], [emsg:…]) so none of them ever render in a snippet.
+      // Pull the open-flag AND the email/message ids out first, then scrub EVERY
+      // machine marker ([opened:…], [msg:…], [emsg:…]) so none render in a snippet.
+      // The ids are kept so a reply line can fetch its FULL email on "view email".
       const openedM = snippet.match(/\[opened:([^\]]+)\]/);
       const openedAt = openedM ? openedM[1] : null;
+      const emsgM = snippet.match(/\[emsg:([^\]]+)\]/);
+      const emailMessageId = emsgM ? emsgM[1] : null;
+      const msgM = snippet.match(/\[msg:([^\]]+)\]/);
+      const convMessageId = msgM ? msgM[1] : null;
       snippet = snippet.replace(/\s*\[(?:opened|msg|emsg):[^\]]+\]/g, "").trim();
       let re: string | null = null;
       const m = snippet.match(/^\[re: ([^\]]+)\]\s*/);
       if (m) { re = m[1] === "merchant" ? null : m[1]; snippet = snippet.slice(m[0].length); }
       const rawSubject = String(r.subject ?? "");
-      const kind: "merchant" | "funder" | "reply" | "funder_reply" | "sent" | "note" | "withdrawn" =
+      const kind: SentLogKind =
         rawSubject.startsWith("funder:note") ? "note"
         : rawSubject.startsWith("funder:withdrawn") ? "withdrawn"
         : rawSubject.startsWith("funder:email") ? "funder"
@@ -546,7 +580,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           : kind === "withdrawn" ? "Withdrawn from funder"
           : kind === "note" ? "Note"
           : rawSubject.replace(/^(merchant|funder):email — /, ""),
-        snippet, re, kind, openedAt,
+        snippet, re, kind, openedAt, emailMessageId, convMessageId,
       };
     });
     // A reply belongs to whichever funder we messaged the merchant about last —
@@ -557,6 +591,36 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
       else if (e.kind === "reply" && !e.re) e.re = lastMerchantRe;
     }
     setSentLog(parsed);
+  }
+
+  // Fetch and open ONE email's full body from GHL (get-funder-email). Called when
+  // the closer clicks "view email" on a reply/message trail line that carries a
+  // GHL id. Renders in a modal (sandboxed iframe) so the whole thread is readable
+  // without leaving the board.
+  async function openEmailView(m: SentLogEntry) {
+    if (!m.emailMessageId && !m.convMessageId) return;
+    const fromLabel = m.kind === "reply" ? merchantName : (m.re ?? "Funder");
+    setEmailView({ loading: true, error: null, fromLabel, subject: m.subject, from: "", to: "", date: m.at, html: "", text: "" });
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("get-funder-email", {
+        body: m.emailMessageId ? { messageId: m.emailMessageId } : { conversationMessageId: m.convMessageId },
+      });
+      if (fnErr) throw fnErr;
+      if (data?.error) throw new Error(data.error);
+      setEmailView({
+        loading: false,
+        error: null,
+        fromLabel,
+        subject: (data?.subject as string) || m.subject || "(no subject)",
+        from: (data?.from as string) || "",
+        to: (data?.to as string) || "",
+        date: (data?.date as string) || m.at,
+        html: (data?.html as string) || "",
+        text: (data?.text as string) || "",
+      });
+    } catch (e) {
+      setEmailView((cur) => cur && { ...cur, loading: false, error: e instanceof Error ? e.message : "Could not load the email." });
+    }
   }
 
   async function load() {
@@ -873,7 +937,17 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
             // "Pull back" is available while a submission is live and not already
             // withdrawn / funded (you can't un-fund by withdrawing).
             const canWithdraw = !isWithdrawn && !isFunded && !s.withdrawnAt;
-            const typeMeta = s.responseType ? (RESPONSE_TYPE_META[s.responseType] ?? RESPONSE_TYPE_META.other) : null;
+            // The classification box reflects the card's CURRENT state, not a stale
+            // earlier reply: a card that's been marked funder-declined shows the
+            // DECLINE (with its reason), even when the newest AUTO-classified reply
+            // was an acknowledgment (e.g. an "ISO manager looping in underwriting"
+            // note that landed after the decision). Otherwise show the newest
+            // classified reply as before.
+            const boxType = isFunderDeclined ? "decline" : s.responseType;
+            const typeMeta = boxType ? (RESPONSE_TYPE_META[boxType] ?? RESPONSE_TYPE_META.other) : null;
+            const boxSummary = isFunderDeclined
+              ? (s.declineReason || (s.responseType === "decline" ? s.responseSummary : null))
+              : s.responseSummary;
             // Message-the-merchant CTA belongs on replied / stip-request / declined cards.
             const showMsgButton = st.key === "replied" || s.responseType === "stip_request" || isFunderDeclined;
             return (
@@ -905,7 +979,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                         </span>
                       )}
                     </div>
-                    {s.requestedItems.length > 0 && (
+                    {!isFunderDeclined && s.requestedItems.length > 0 && (
                       <div className="flex items-center gap-1 flex-wrap">
                         {s.requestedItems.map((it, i) => (
                           <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
@@ -914,7 +988,7 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                         ))}
                       </div>
                     )}
-                    {s.responseSummary && <p className="text-gray-600 dark:text-gray-300 italic">{s.responseSummary}</p>}
+                    {boxSummary && <p className="text-gray-600 dark:text-gray-300 italic">{boxSummary}</p>}
                   </div>
                 )}
 
@@ -932,9 +1006,6 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                   <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full font-medium ${b.hot ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"}`}>
                     {b.pct.toFixed(0)}% of monthly revenue{b.hot ? " ⚠" : ""}
                   </span>
-                )}
-                {isFunderDeclined && (
-                  <p className="text-rose-600 dark:text-rose-400">Funder declined{s.declineReason ? ` — ${s.declineReason}` : ""}.</p>
                 )}
                 {isWithdrawn && (
                   <p className="text-gray-500 dark:text-gray-400 inline-flex items-center gap-1">
@@ -1090,6 +1161,8 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                       const isNote = m.kind === "note";
                       const isWithdrawnLog = m.kind === "withdrawn";
                       const isResend = isSent && /re-?sent|re-?submitted/i.test(m.subject);
+                      // Any line carrying a GHL id can pull its FULL email on demand.
+                      const canView = !!(m.emailMessageId || m.convMessageId);
                       return (
                         <li key={i} className={`text-[10.5px] cursor-pointer ${isReply ? "text-emerald-700 dark:text-emerald-300 font-medium pl-2" : isFunderReply ? "text-rose-700 dark:text-rose-300 font-medium pl-2" : isSent ? "text-blue-700 dark:text-blue-300 font-medium" : isNote ? "text-amber-700 dark:text-amber-300" : "text-gray-500 dark:text-gray-400"}`} onClick={() => setExpandedMsg(expandedMsg === key ? null : key)}>
                           {isReply
@@ -1107,8 +1180,22 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                                 : <EnvelopeIcon className="w-3 h-3 inline mr-0.5 text-ocean-blue" />}
                           {isReply ? "Merchant REPLIED" : isFunderReply ? "Funder REPLIED" : isSent ? (isResend ? "RE-SENT to funder" : "Submitted to funder") : isWithdrawnLog ? "Withdrawn from funder" : isNote ? "Note" : isFunder ? "Funder messaged" : "Merchant messaged"} <span className={isReply ? "text-emerald-500" : isFunderReply ? "text-rose-500" : isSent ? "text-blue-500" : isNote ? "text-amber-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                           {isFunder && <span className="ml-1 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 px-1 py-px text-[9px] font-semibold">to funder</span>}
-                          {isNote ? (<>{" · "}<span className="text-gray-700 dark:text-gray-200 whitespace-pre-wrap">{m.snippet}</span></>) : (<>{" · "}<span className={isReply ? "" : "font-medium text-gray-700 dark:text-gray-200"}>{isReply ? (m.snippet.split(":")[0] || m.subject) : m.subject}</span></>)}
+                          {isNote
+                            ? (<>{" · "}<span className="text-gray-700 dark:text-gray-200 whitespace-pre-wrap">{m.snippet}</span></>)
+                            : (isReply || isFunderReply)
+                              // Inbound replies: show what they actually said, not just "REPLIED".
+                              ? (m.snippet && <>{" · "}<span className="text-gray-700 dark:text-gray-200">{m.snippet.length > 160 ? `${m.snippet.slice(0, 160)}…` : m.snippet}</span></>)
+                              : (<>{" · "}<span className="font-medium text-gray-700 dark:text-gray-200">{m.subject}</span></>)}
                           <OpenedChip at={m.openedAt} />
+                          {canView && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); void openEmailView(m); }}
+                              className="ml-1.5 inline-flex items-center gap-0.5 rounded border border-ocean-blue/40 text-ocean-blue hover:bg-ocean-blue/5 px-1.5 py-px text-[9px] font-semibold align-middle"
+                            >
+                              <EnvelopeIcon className="w-2.5 h-2.5" /> view email
+                            </button>
+                          )}
                           {expandedMsg === key && (
                             <span className="block mt-1 whitespace-pre-wrap text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/60 rounded p-1.5">{m.snippet}</span>
                           )}
@@ -1150,6 +1237,15 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                 <span className={m.kind === "reply" ? "text-emerald-500" : "text-gray-400"}>{new Date(m.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                 {" · "}<span className="font-medium text-gray-800 dark:text-gray-100">{m.subject}</span>
                 <OpenedChip at={m.openedAt} />
+                {(m.emailMessageId || m.convMessageId) && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); void openEmailView(m); }}
+                    className="ml-1.5 inline-flex items-center gap-0.5 rounded border border-ocean-blue/40 text-ocean-blue hover:bg-ocean-blue/5 px-1.5 py-px text-[9px] font-semibold align-middle"
+                  >
+                    <EnvelopeIcon className="w-2.5 h-2.5" /> view email
+                  </button>
+                )}
                 {expandedMsg === `all-${m.at}`
                   ? <span className="block mt-1 whitespace-pre-wrap bg-white dark:bg-gray-800 rounded p-2 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200">{m.snippet}</span>
                   : (m.snippet && <span className="text-gray-400"> — {m.snippet.slice(0, 90)}{m.snippet.length > 90 ? "…" : ""}</span>)}
@@ -1353,6 +1449,48 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
           onClose={() => setConfirmWithdraw(null)}
           onConfirm={() => { const s = confirmWithdraw; setConfirmWithdraw(null); void doWithdraw(s); }}
         />
+      )}
+
+      {/* "View email" modal — the FULL email fetched from GHL (get-funder-email).
+          The body is funder/merchant-controlled HTML, so it renders inside a
+          locked-down iframe (sandbox="" → no scripts, forms, or navigation) — never
+          via dangerouslySetInnerHTML. A plain-text fallback covers empty HTML. */}
+      {emailView && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setEmailView(null)}>
+          <div className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-lg bg-white dark:bg-gray-800 shadow-xl border border-gray-200 dark:border-gray-700" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{emailView.subject || "(no subject)"}</p>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                  {emailView.from ? <>From <span className="font-medium text-gray-700 dark:text-gray-200">{emailView.from}</span></> : <span className="font-medium">{emailView.fromLabel}</span>}
+                  {emailView.to && <> · To {emailView.to}</>}
+                  {emailView.date && <> · {new Date(emailView.date).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</>}
+                </p>
+              </div>
+              <button type="button" onClick={() => setEmailView(null)} className="text-gray-400 hover:text-gray-600 flex-shrink-0">
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden p-1.5">
+              {emailView.loading ? (
+                <p className="p-4 text-sm text-gray-400 inline-flex items-center gap-2"><ArrowPathIcon className="w-4 h-4 animate-spin" /> Loading the full email…</p>
+              ) : emailView.error ? (
+                <p className="p-4 text-sm text-red-600 dark:text-red-400">{emailView.error}</p>
+              ) : emailView.html ? (
+                <iframe
+                  title="Email body"
+                  sandbox=""
+                  className="w-full h-[60vh] rounded bg-white"
+                  srcDoc={`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank"><style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:14px;color:#0f172a;margin:12px;word-wrap:break-word}img{max-width:100%;height:auto}</style></head><body>${emailView.html}</body></html>`}
+                />
+              ) : emailView.text ? (
+                <pre className="w-full h-[60vh] overflow-auto whitespace-pre-wrap rounded bg-gray-50 dark:bg-gray-900/40 p-3 text-[13px] text-gray-700 dark:text-gray-200 font-sans">{emailView.text}</pre>
+              ) : (
+                <p className="p-4 text-sm text-gray-500">This email has no readable body.</p>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

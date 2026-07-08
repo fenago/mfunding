@@ -66,6 +66,11 @@ verify_jwt = true
 [functions.send-merchant-email]
 verify_jwt = true
 
+# Read-only: fetches ONE email's full body from GHL for the Step 7 "view email"
+# affordance — staff-only enforced in code.
+[functions.get-funder-email]
+verify_jwt = true
+
 # Pushes the closer-filled MCA application into the merchant's GHL contact custom
 # fields (document merge source) — staff-only + closer-owns-deal enforced in code.
 [functions.push-application-to-ghl]

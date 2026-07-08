@@ -152,12 +152,12 @@ async function findMerchantReply(
   cfg: Awaited<ReturnType<typeof getGhlConfig>>,
   contactId: string,
   afterIso: string,
-): Promise<{ text: string; from: string; at: string; attachments: string[] } | null> {
+): Promise<{ text: string; from: string; at: string; attachments: string[]; eid: string } | null> {
   const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
     cfg, "GET",
     `/conversations/search?locationId=${cfg.locationId}&contactId=${contactId}`,
   );
-  let best: { text: string; from: string; at: string } | null = null;
+  let best: { text: string; from: string; at: string; attachments: string[]; eid: string } | null = null;
   for (const c of conv.data?.conversations ?? []) {
     const msgs = await ghlFetch<{ messages?: { messages?: Array<Record<string, unknown>> } }>(
       cfg, "GET", `/conversations/${c.id}/messages?limit=15`,
@@ -187,7 +187,7 @@ async function findMerchantReply(
         if (!text) text = "(reply received — open the conversation to read it)";
         const attachments = Array.isArray(e.attachments)
           ? (e.attachments as unknown[]).filter((u) => typeof u === "string") as string[] : [];
-        best = { text, from: String(e.from ?? ""), at, attachments };
+        best = { text, from: String(e.from ?? ""), at, attachments, eid: String(eid) };
         break;
       }
     }
@@ -282,7 +282,7 @@ async function runMerchantPhase(
     // Baseline: only ever look for inbound newer than what we've already seen
     // (or, on the first pass, newer than the deal's creation).
     const afterIso = (deal.merchant_reply_at as string | null) ?? (deal.created_at as string);
-    let reply: { text: string; from: string; at: string } | null = null;
+    let reply: { text: string; from: string; at: string; attachments: string[]; eid: string } | null = null;
     try {
       reply = await findMerchantReply(cfg, cust.ghl_contact_id, afterIso);
     } catch { /* transient GHL error — try again next run */ }
@@ -352,8 +352,10 @@ async function runMerchantPhase(
     await db.from("activity_log").insert({
       entity_type: "deal", entity_id: deal.id, interaction_type: "email",
       subject: "merchant:reply",
+      // [emsg:<id>] lets the Step 7 board open the FULL merchant email on "view email".
       content: `[re: merchant] ${summary ?? "Merchant replied"}: "${snippet.slice(0, 180)}"` +
-        (filedNames.length ? ` [auto-filed: ${filedNames.join(", ")}]` : ""),
+        (filedNames.length ? ` [auto-filed: ${filedNames.join(", ")}]` : "") +
+        (reply.eid ? ` [emsg:${reply.eid}]` : ""),
     });
 
     // Internal alert — owner only. NEVER email the merchant.
@@ -569,6 +571,7 @@ Deno.serve(async (req) => {
       let replyText = "";
       let replyFrom = "";
       let replyAt = "";
+      let replyEid = ""; // GHL email-record id → lets the board open the FULL email
       for (const m of candidates) {
         const meta = m.meta as { email?: { messageIds?: string[] } } | undefined;
         const ids = meta?.email?.messageIds ?? [];
@@ -591,6 +594,7 @@ Deno.serve(async (req) => {
           replyText = text;
           replyFrom = String(e.from ?? "");
           replyAt = String(m.dateAdded ?? "");
+          replyEid = String(eid);
           break;
         }
         if (replyText) break;
@@ -654,7 +658,10 @@ Deno.serve(async (req) => {
       await db.from("activity_log").insert({
         entity_type: "deal", entity_id: newest.deal_id, interaction_type: "email",
         subject: `ghl:funder-reply — ${lender.company_name}`,
-        content: `${classification?.type ?? "reply"}: "${snippet.slice(0, 180)}" (${replyFrom})`,
+        // [emsg:<id>] lets the Step 7 board fetch the FULL email on "view email"
+        // (and lets phase 3 stamp [opened:…]).
+        content: `${classification?.type ?? "reply"}: "${snippet.slice(0, 180)}" (${replyFrom})` +
+          (replyEid ? ` [emsg:${replyEid}]` : ""),
       });
 
       // Internal alert — owner only.
