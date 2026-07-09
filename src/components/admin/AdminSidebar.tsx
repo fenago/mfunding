@@ -73,6 +73,9 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/todos", // Task Board
   "/admin/resources",
   "/admin/renewals", // shown per closers.renewals_enabled (handled in canSee)
+  // Visible through the lens but still role-gated below — so an ADMIN who also
+  // has a closer row (e.g. Carlos) gets it, while pure closers never do.
+  "/admin/lead-partner", // Lead Partner (Synergy)
 ]);
 
 const navGroups: NavGroup[] = [
