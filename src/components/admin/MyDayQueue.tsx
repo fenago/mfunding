@@ -137,6 +137,27 @@ function nameOf(d: QueueDeal): string {
   );
 }
 
+// Compact deal size for the card ("$25K ask"). Omitted entirely when there's no
+// requested amount on the row.
+function amountOf(d: QueueDeal): string | null {
+  const a = d.amount_requested;
+  if (!a || a <= 0) return null;
+  return a >= 1000 ? `$${Math.round(a / 1000)}K ask` : `$${a} ask`;
+}
+
+// How long an item may sit at its `since` timestamp before it's "overdue". Keyed
+// off the classification rank so we don't re-derive the situation: funder/merchant
+// replies go stale fast (4h), a new/warm lead must be worked within the hour, and
+// the active-stage nudges (rank 7) get a full business day. Ranks with their own
+// clock (rank 0's countdown) or that are already time-gated in classify() (offers,
+// stale docs, silent funders) return null — no separate overdue flag.
+function slaMs(rank: number): number | null {
+  if (rank === 1 || rank === 2) return 4 * HOUR;
+  if (rank === 5.5 || rank === 6) return HOUR;
+  if (rank === 7) return DAY;
+  return null;
+}
+
 // Color-code each card by HOW the lead arrived, so the queue reads at a glance:
 // live transfers pop red (they're the time-critical ones), web-form leads blue,
 // etc. Left edge carries the color; a tiny chip names the source.
@@ -271,21 +292,32 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
           {items.map(({ deal, u }) => {
             const src = sourceStyle(deal);
+            const amount = amountOf(deal);
+            const sla = slaMs(u.rank);
+            const overdue = sla !== null && now - Date.parse(u.since) > sla;
             return (
               <button
                 key={deal.id}
                 onClick={() => onPick(deal)}
                 title={`Load ${nameOf(deal)} into the playbook`}
-                className={`shrink-0 w-60 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md transition p-3`}
+                className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3`}
               >
                 <div className="flex items-center justify-between gap-2 mb-1.5">
                   <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
-                  <span className="text-[11px] text-gray-400 shrink-0">{ago(u.since, now)}</span>
+                  {overdue ? (
+                    <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">overdue</span>
+                  ) : (
+                    <span className="text-[11px] text-gray-400 shrink-0">{ago(u.since, now)}</span>
+                  )}
                 </div>
-                <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
-                <div className="flex items-center justify-between gap-2 mt-0.5">
-                  <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{u.why}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
+                  {amount && <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 shrink-0">{amount}</span>}
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-3 mt-0.5">{u.why}</p>
+                <div className="flex items-center justify-between gap-2 mt-1.5">
                   <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
+                  <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
                 </div>
               </button>
             );
