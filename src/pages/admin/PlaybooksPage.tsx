@@ -228,6 +228,23 @@ export default function PlaybooksPage() {
 
   const currentIdx = deal ? order.indexOf(deal.status) : -1;
 
+  // The step a closer should be working (the one focus mode expands): the FIRST
+  // step whose stage comes AFTER the deal's current status — being AT a stage
+  // means that stage's step is finished, so the work is the step that ADVANCES
+  // the deal. This is NOT simply "current stage + 1": a pipeline stage can have
+  // no dedicated step (MCA's docs_collected sits between application_sent and the
+  // bank_statements step), so +1 would land on a stageless gap and nothing would
+  // expand. If the deal is at/after the final stage, focus the last stage-bearing
+  // step. Steps with no stageKey are never auto-focused (they stay teasers).
+  const activeStepN: number | null = (() => {
+    if (!dealMatchesPlaybook || currentIdx < 0) return null;
+    const next = flowSteps.find((s) => s.stageKey && order.indexOf(s.stageKey) > currentIdx);
+    if (next) return next.n;
+    const staged = flowSteps.filter((s) => s.stageKey);
+    if (staged.length) return staged[staged.length - 1].n;
+    return flowSteps.length ? flowSteps[flowSteps.length - 1].n : null;
+  })();
+
   async function refreshDeal(id: string) {
     const res = await getDealById(id);
     if (res) setDeal(res.deal);
@@ -646,8 +663,10 @@ export default function PlaybooksPage() {
           {flowSteps.map((s, i) => {
             const stageIdx = s.stageKey ? order.indexOf(s.stageKey) : -1;
             const done = dealMatchesPlaybook && stageIdx >= 0 && stageIdx <= currentIdx;
-            const current =
-              dealMatchesPlaybook && stageIdx >= 0 && stageIdx === currentIdx + 1;
+            // The active step = the next actionable one (computed above), so the
+            // "You're here" highlight and focus-mode expansion land on the step
+            // that advances the deal — not on a stageless gap after the current one.
+            const current = dealMatchesPlaybook && s.n === activeStepN;
             return (
               <StepCard
                 key={s.n}
