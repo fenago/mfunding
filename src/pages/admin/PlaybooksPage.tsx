@@ -2345,55 +2345,75 @@ function FunnelBoard() {
       {loading ? (
         <p className="text-sm text-gray-400">Loading funnel…</p>
       ) : (
+        <>
+        {/* Bars never reflow — the clicked stage's deals render in a single fixed
+            area BELOW the chart (see below), not inserted between the bars. */}
         <div className="space-y-1.5">
           {coreStages.map((s) => {
             const c = counts[s.key] ?? 0;
             const pct = Math.round((c / max) * 100);
             const open = openStage === s.key;
             return (
-              <div key={s.key}>
-                <button
-                  onClick={() => openStageDeals(s.key)}
-                  className="w-full group flex items-center gap-3 text-left"
-                >
-                  <span className="w-36 shrink-0 text-sm text-gray-700 dark:text-gray-200 truncate">{s.label}</span>
-                  <span className="flex-1 h-7 rounded bg-gray-100 dark:bg-gray-900 overflow-hidden relative">
-                    <span
-                      className={`absolute inset-y-0 left-0 rounded ${open ? "bg-ocean-blue" : "bg-ocean-blue/70 group-hover:bg-ocean-blue"}`}
-                      style={{ width: `${Math.max(pct, c > 0 ? 8 : 0)}%` }}
-                    />
-                  </span>
-                  <span className="w-10 shrink-0 text-right text-sm font-semibold text-gray-900 dark:text-white">{c}</span>
-                </button>
-
-                {open && (
-                  <div className="ml-36 mt-1 mb-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-2">
-                    {dealsLoading ? (
-                      <p className="text-xs text-gray-400 px-2 py-1">Loading…</p>
-                    ) : stageDeals.length === 0 ? (
-                      <p className="text-xs text-gray-400 px-2 py-1">No deals in this stage.</p>
-                    ) : (
-                      <ul className="divide-y divide-gray-200 dark:divide-gray-700">
-                        {stageDeals.map((d) => (
-                          <li key={d.id}>
-                            <Link to={`/admin/deals/${d.id}`} className="flex items-center justify-between gap-2 px-2 py-1.5 text-sm hover:bg-white dark:hover:bg-gray-800 rounded">
-                              <span className="text-gray-700 dark:text-gray-200 truncate">
-                                {d.customer?.business_name || [d.customer?.first_name, d.customer?.last_name].filter(Boolean).join(" ") || d.deal_number}
-                              </span>
-                              <span className="text-xs text-gray-400 shrink-0">
-                                {d.amount_requested ? `$${Math.round(d.amount_requested).toLocaleString()}` : ""} →
-                              </span>
-                            </Link>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                )}
-              </div>
+              <button
+                key={s.key}
+                onClick={() => openStageDeals(s.key)}
+                className={`w-full group flex items-center gap-3 text-left rounded ${open ? "ring-1 ring-ocean-blue/40 bg-ocean-blue/5" : ""}`}
+              >
+                <span className={`w-36 shrink-0 text-sm truncate ${open ? "font-semibold text-ocean-blue" : "text-gray-700 dark:text-gray-200"}`}>{s.label}</span>
+                <span className="flex-1 h-7 rounded bg-gray-100 dark:bg-gray-900 overflow-hidden relative">
+                  <span
+                    className={`absolute inset-y-0 left-0 rounded ${open ? "bg-ocean-blue" : "bg-ocean-blue/70 group-hover:bg-ocean-blue"}`}
+                    style={{ width: `${Math.max(pct, c > 0 ? 8 : 0)}%` }}
+                  />
+                </span>
+                <span className="w-10 shrink-0 text-right text-sm font-semibold text-gray-900 dark:text-white">{c}</span>
+              </button>
             );
           })}
         </div>
+
+        {/* Single expansion area below the whole chart — appears/disappears here so
+            the bars above stay put. Empty stages get a subtle note, not a panel. */}
+        {openStage && (() => {
+          const label = coreStages.find((s) => s.key === openStage)?.label ?? openStage;
+          return (
+            <div className="mt-3 rounded-lg border border-ocean-blue/30 bg-gray-50 dark:bg-gray-900 p-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                  Leads in <span className="text-ocean-blue">{label}</span>
+                </span>
+                <button
+                  onClick={() => setOpenStage(null)}
+                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                  title="Close"
+                >
+                  <XMarkIcon className="w-4 h-4" />
+                </button>
+              </div>
+              {dealsLoading ? (
+                <p className="text-xs text-gray-400 px-1 py-1">Loading…</p>
+              ) : stageDeals.length === 0 ? (
+                <p className="text-xs text-gray-400 italic px-1 py-1">No leads in this stage right now.</p>
+              ) : (
+                <ul className="max-h-64 overflow-y-auto divide-y divide-gray-200 dark:divide-gray-700">
+                  {stageDeals.map((d) => (
+                    <li key={d.id}>
+                      <Link to={`/admin/deals/${d.id}`} className="flex items-center justify-between gap-2 px-2 py-1.5 text-sm hover:bg-white dark:hover:bg-gray-800 rounded">
+                        <span className="text-gray-700 dark:text-gray-200 truncate">
+                          {d.customer?.business_name || [d.customer?.first_name, d.customer?.last_name].filter(Boolean).join(" ") || d.deal_number}
+                        </span>
+                        <span className="text-xs text-gray-400 shrink-0">
+                          {d.amount_requested ? `$${Math.round(d.amount_requested).toLocaleString()}` : ""} →
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })()}
+        </>
       )}
       <p className="mt-4 text-xs text-gray-400">
         Stages shown exclude Nurture / Declined / Dead. Open a deal to see its full pipeline and next action.
