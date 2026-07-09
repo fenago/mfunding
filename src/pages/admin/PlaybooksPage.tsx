@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   MapIcon,
@@ -88,6 +88,19 @@ const dealName = (d: DealWithCustomer) =>
   d.deal_number ||
   "Lead";
 
+// Single source of truth for the "money in play + where in the pipeline" numbers
+// so the green context bar, the sticky money bar, and the momentum toasts all
+// show the SAME figures. Company-lead split is the assumed default here.
+function dealMoneyStats(deal: DealWithCustomer, pipeline: "mca" | "vcf", splits: CloserSplits) {
+  const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
+  const idx = stages.findIndex((s) => s.key === deal.status);
+  const cfg = DEAL_STATUS_CONFIG[deal.status];
+  const inPlay = expectedCommissionInPlay(deal.amount_requested, deal.is_renewal);
+  const myCut = inPlay * (splits.company_lead_split / 100);
+  return { stages, stageCount: stages.length, idx, cfg, inPlay, myCut };
+}
+const money0 = (n: number) => `$${Math.round(n).toLocaleString()}`;
+
 export default function PlaybooksPage() {
   // Live Transfer is the DEFAULT flow — the merchant is on the line the instant
   // the page opens, so it must be pre-selected with zero clicks. Speed > all.
@@ -101,7 +114,39 @@ export default function PlaybooksPage() {
   // Flow picker (the grid of flow cards) is an accordion, DEFAULT CLOSED.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busyStep, setBusyStep] = useState<number | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  // Bottom-right status notifications (deal closed, errors). Replaces the native
+  // alert() calls this page used to fire.
+  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
+  const notify = (text: string, tone: "ok" | "error" = "ok") => setToast({ text, tone });
+  // Bottom-center momentum toast + confetti for a stage advance / funding.
+  const [celebrate, setCelebrate] = useState<string | null>(null);
+  const [confetti, setConfetti] = useState(false);
+  // Promise-free confirm dialog (replaces window.confirm) — the action lives in
+  // onConfirm; the dialog closes itself once it resolves.
+  const [confirmState, setConfirmState] = useState<
+    | { title: string; body?: string; confirmLabel: string; onConfirm: () => void | Promise<void> }
+    | null
+  >(null);
+  // Focus mode: when a deal is loaded, only the active step is expanded. A closer
+  // can flip to the old "everything expanded" view; the preference persists.
+  const [expandAll, setExpandAll] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("playbooks:expandAll") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("playbooks:expandAll", expandAll ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [expandAll]);
+  // Sticky money bar visibility — driven by an IntersectionObserver on the green
+  // context bar (below).
+  const [showSticky, setShowSticky] = useState(false);
+  const contextBarRef = useRef<HTMLDivElement>(null);
   // The close-deal modal is lifted to the page so BOTH the top context bar and
   // every playbook step can open the SAME flow. Rendered once at the bottom.
   const [showCloseDeal, setShowCloseDeal] = useState(false);
@@ -122,6 +167,18 @@ export default function PlaybooksPage() {
     const t = setTimeout(() => setToast(null), 4500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Momentum toast (bottom-center) auto-clears; confetti self-removes sooner.
+  useEffect(() => {
+    if (!celebrate) return;
+    const t = setTimeout(() => setCelebrate(null), 3500);
+    return () => clearTimeout(t);
+  }, [celebrate]);
+  useEffect(() => {
+    if (!confetti) return;
+    const t = setTimeout(() => setConfetti(false), 2500);
+    return () => clearTimeout(t);
+  }, [confetti]);
 
   // Only render the renewal picker card for users allowed to work renewals.
   // Tab order: Live Transfer first, then Website — the speed-critical flows lead
@@ -154,6 +211,21 @@ export default function PlaybooksPage() {
   useEffect(() => {
     if (deal) setFlowOpen(true);
   }, [deal?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Show the slim sticky money bar once the green context bar scrolls out of view.
+  useEffect(() => {
+    const el = contextBarRef.current;
+    if (!el || !dealMatchesPlaybook) {
+      setShowSticky(false);
+      return;
+    }
+    const obs = new IntersectionObserver(([entry]) => setShowSticky(!entry.isIntersecting), {
+      threshold: 0,
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [deal?.id, dealMatchesPlaybook]);
+
   const currentIdx = deal ? order.indexOf(deal.status) : -1;
 
   async function refreshDeal(id: string) {
@@ -169,16 +241,43 @@ export default function PlaybooksPage() {
 
   // Click a pipeline stage to move the lead there — updates the deal + syncs GHL,
   // which fires that stage's automation (e.g. Application Sent → MCA 04 sends the docs).
-  async function advanceDeal(stageKey: string) {
+  function advanceDeal(stageKey: string) {
     if (!deal || stageKey === deal.status) return;
     const label = STAGE_LABELS[active.pipeline][stageKey] ?? stageKey;
-    if (!window.confirm(`Move ${dealName(deal)} to "${label}"?\n\nThis updates the deal and fires the GoHighLevel automation for that stage.`)) return;
-    try {
-      await updateDealStatus(deal.id, stageKey as DealStatus);
-      await refreshDeal(deal.id);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Could not move the deal. Please try again.");
+    const prevIdx = currentIdx;
+    setConfirmState({
+      title: `Move ${dealName(deal)} to "${label}"?`,
+      body: "This updates the deal and fires the GoHighLevel automation for that stage.",
+      confirmLabel: "Move the deal",
+      onConfirm: async () => {
+        try {
+          await updateDealStatus(deal.id, stageKey as DealStatus);
+          await refreshDeal(deal.id);
+          celebrateAdvance(stageKey, prevIdx);
+        } catch (e) {
+          notify(e instanceof Error ? e.message : "Could not move the deal. Please try again.", "error");
+        }
+      },
+    });
+  }
+
+  // Fire the momentum toast (+ confetti on funding) for a forward stage move.
+  // Shared by the pipeline stepper (advanceDeal) and the step buttons (completeStep).
+  function celebrateAdvance(stageKey: string, prevIdx: number) {
+    const core = PIPELINES[active.pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
+    const newNum = core.findIndex((s) => s.key === stageKey) + 1;
+    if (newNum <= 0) return; // terminal / off-pipeline move — no momentum toast
+    const prevKey = order[prevIdx];
+    const prevNum = prevKey ? core.findIndex((s) => s.key === prevKey) + 1 : 0;
+    const label = STAGE_LABELS[active.pipeline][stageKey] ?? stageKey;
+    const cut = deal ? expectedCommissionInPlay(deal.amount_requested, deal.is_renewal) * (splits.company_lead_split / 100) : 0;
+    if (stageKey === "funded") {
+      setCelebrate(`FUNDED 🎉${cut > 0 ? ` your cut ≈ ${money0(cut)}` : ""}`);
+      setConfetti(true);
+      return;
     }
+    const from = prevNum > 0 ? `Stage ${prevNum} → ${newNum}` : `Stage ${newNum}`;
+    setCelebrate(`${from} · ${label} ✓${cut > 0 ? ` · closer to your ≈ ${money0(cut)}` : ""}`);
   }
 
   // "Send the ORIGINAL docs" path — no prefill. The merchant gets the blank
@@ -186,29 +285,42 @@ export default function PlaybooksPage() {
   // worked before the in-app fill flow). resend=true re-fires MCA 04 even if the
   // deal is already at Application Sent. Either way the email guard runs server
   // side (push-application-to-ghl blocks + heals an emailless/mismatched contact).
-  async function sendDocs(resend: boolean) {
+  function sendDocs(resend: boolean) {
     if (!deal) return;
     const verb = resend ? "Resend the original application + docs (no prefill)" : "Send the application + docs now — the merchant fills it out";
-    if (!window.confirm(`${verb} to ${dealName(deal)}?`)) return;
-    try {
-      const { data, error } = await supabase.functions.invoke("push-application-to-ghl", {
-        body: { dealId: deal.id, blank: true, resend },
-      });
-      if (error) throw error;
-      const res = data as { error?: string; reenrolled?: boolean };
-      if (res?.error) throw new Error(res.error);
-      // First send: advancing to Application Sent fires MCA 04 via the stage move.
-      // Resend: the server already re-enrolled the contact, so don't move the stage.
-      if (!resend) await updateDealStatus(deal.id, "application_sent");
-      await refreshDeal(deal.id);
-      if (resend && res?.reenrolled === false) {
-        alert("Contact is ready, but MCA 04 re-enrollment was rejected by GHL — turn on 'Allow re-enrollment' in the MCA 04 workflow settings, then resend.");
-      } else {
-        alert(resend ? "Original docs re-sent — the merchant will get the application to fill + e-sign." : "Docs sent — the merchant will fill and e-sign.");
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Could not send the docs.");
-    }
+    const prevIdx = currentIdx;
+    setConfirmState({
+      title: `${verb} to ${dealName(deal)}?`,
+      body: "MCA 04 emails the merchant the application to e-sign plus the secure upload link.",
+      confirmLabel: resend ? "Resend the docs" : "Send the docs",
+      onConfirm: async () => {
+        try {
+          const { data, error } = await supabase.functions.invoke("push-application-to-ghl", {
+            body: { dealId: deal.id, blank: true, resend },
+          });
+          if (error) throw error;
+          const res = data as { error?: string; reenrolled?: boolean };
+          if (res?.error) throw new Error(res.error);
+          // First send: advancing to Application Sent fires MCA 04 via the stage move.
+          // Resend: the server already re-enrolled the contact, so don't move the stage.
+          if (!resend) await updateDealStatus(deal.id, "application_sent");
+          await refreshDeal(deal.id);
+          if (resend && res?.reenrolled === false) {
+            notify(
+              "Contact is ready, but MCA 04 re-enrollment was rejected by GHL — turn on 'Allow re-enrollment' in the MCA 04 workflow settings, then resend.",
+              "error",
+            );
+          } else if (resend) {
+            notify("Original docs re-sent — the merchant will get the application to fill + e-sign.");
+          } else {
+            notify("Docs sent — the merchant will fill and e-sign.");
+            celebrateAdvance("application_sent", prevIdx);
+          }
+        } catch (e) {
+          notify(e instanceof Error ? e.message : "Could not send the docs.", "error");
+        }
+      },
+    });
   }
 
   // Persist a step's structured fields + checklist + note, log it, and advance
@@ -268,15 +380,21 @@ export default function PlaybooksPage() {
 
       // Advance the stage (forward only) — this also syncs GHL and, on Funded,
       // auto-creates the commission. Skipped for "Save note"-only touches.
+      const prevIdx = currentIdx;
+      let didAdvance = false;
       if (advance && step.stageKey) {
         const tgt = order.indexOf(step.stageKey);
-        if (tgt > currentIdx) await updateDealStatus(deal.id, step.stageKey as DealStatus);
+        if (tgt > currentIdx) {
+          await updateDealStatus(deal.id, step.stageKey as DealStatus);
+          didAdvance = true;
+        }
       }
 
       await refreshDeal(deal.id);
+      if (didAdvance && step.stageKey) celebrateAdvance(step.stageKey, prevIdx);
     } catch (e) {
       console.error("completeStep failed:", e);
-      alert(e instanceof Error ? e.message : "Could not save this step. Please try again.");
+      notify(e instanceof Error ? e.message : "Could not save this step. Please try again.", "error");
     } finally {
       setBusyStep(null);
     }
@@ -338,13 +456,13 @@ export default function PlaybooksPage() {
           .join("\n"),
       });
       setDeal(null);
-      setToast(
+      notify(
         outcome === "nurture"
           ? `${name} moved to Nurture — the re-engage drip will keep working it.`
           : `${name} closed as ${label}.`,
       );
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Could not close the deal. Please try again.");
+      notify(e instanceof Error ? e.message : "Could not close the deal. Please try again.", "error");
     }
   }
 
@@ -355,10 +473,11 @@ export default function PlaybooksPage() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
             <MapIcon className="w-6 h-6 text-ocean-blue" /> Revenue Playbooks
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">
-            Pick a flow, start or load a lead, then just fill in each step as you talk — the page saves the data, logs the
-            call, advances the stage, and updates GoHighLevel for you.
-          </p>
+          {!deal && (
+            <p className="text-gray-500 dark:text-gray-400 mt-1">
+              Work each deal step-by-step — it saves, logs, advances the stage, and syncs GoHighLevel.
+            </p>
+          )}
         </div>
         {/* The Pipeline Playbook is the stage-by-stage reference/onboarding map
             (MCA web, MCA live-transfer, VCF) — kept as a companion to this
@@ -451,7 +570,10 @@ export default function PlaybooksPage() {
               ⇄ Switch lead
             </button>
           </div>
-          <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} openCloseDeal={() => setShowCloseDeal(true)} openEditLead={() => setShowEditLead(true)} splits={splits} hasCloser={hasCloser} />
+          {showSticky && <StickyMoneyBar deal={deal} pipeline={active.pipeline} splits={splits} />}
+          <div ref={contextBarRef}>
+            <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} openCloseDeal={() => setShowCloseDeal(true)} openEditLead={() => setShowEditLead(true)} splits={splits} hasCloser={hasCloser} />
+          </div>
           {deal.merchant_reply_at && Date.now() - Date.parse(deal.merchant_reply_at) < 3 * 24 * 60 * 60 * 1000 && (
             <div className="mt-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-800 dark:text-emerald-200 flex flex-wrap items-center gap-1.5">
               <span className="font-semibold">💬 Merchant replied {(() => { const m = Math.round((Date.now() - Date.parse(deal.merchant_reply_at!)) / 60000); return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; })()}</span>
@@ -479,28 +601,45 @@ export default function PlaybooksPage() {
           </div>
         )}
 
-        {/* Grounding note (reference) */}
-        <div className="mb-6 rounded-xl border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-4">
-          <div className="flex items-center gap-2">
-            <ComputerDesktopIcon className="w-5 h-5 text-ocean-blue" />
-            <span className="text-sm font-semibold text-gray-900 dark:text-white">{active.workFrom.screen}</span>
+        {/* Grounding note (reference) — onboarding text, so it only shows while
+            browsing. Once a deal is loaded the closer is working, not reading. */}
+        {!deal && (
+          <div className="mb-6 rounded-xl border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-4">
+            <div className="flex items-center gap-2">
+              <ComputerDesktopIcon className="w-5 h-5 text-ocean-blue" />
+              <span className="text-sm font-semibold text-gray-900 dark:text-white">{active.workFrom.screen}</span>
+            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{active.workFrom.appNote}</p>
           </div>
-          <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{active.workFrom.appNote}</p>
-        </div>
+        )}
 
         {/* The step-by-step flow is an accordion — DEFAULT CLOSED so the page
             leads with My Day + the flow picker; expand (or load a deal) to work. */}
-        <button
-          type="button"
-          onClick={() => setFlowOpen((o) => !o)}
-          className="w-full flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-3 text-left"
-        >
-          <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${flowOpen ? "rotate-90" : ""}`} />
-          <span className="font-semibold text-gray-900 dark:text-white">
-            {flowOpen ? "Hide" : "View"} the {active.name} flow
-          </span>
-          <span className="text-xs text-gray-400">{flowSteps.length} steps</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFlowOpen((o) => !o)}
+            className="flex-1 flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-4 py-3 text-left"
+          >
+            <ArrowRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${flowOpen ? "rotate-90" : ""}`} />
+            <span className="font-semibold text-gray-900 dark:text-white">
+              {flowOpen ? "Hide" : "View"} the {active.name} flow
+            </span>
+            <span className="text-xs text-gray-400">{flowSteps.length} steps</span>
+          </button>
+          {/* Focus mode shows only the live step; a closer can flip to the old
+              "everything expanded" view. Only relevant while working a deal. */}
+          {dealMatchesPlaybook && flowOpen && (
+            <button
+              type="button"
+              onClick={() => setExpandAll((v) => !v)}
+              title={expandAll ? "Focus on just the current step" : "Show every step expanded"}
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-3 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+            >
+              {expandAll ? "Focus mode" : "Expand all"}
+            </button>
+          )}
+        </div>
 
         {flowOpen && (
         <ol className="relative space-y-4 mt-4">
@@ -517,6 +656,7 @@ export default function PlaybooksPage() {
                 stageLabel={s.stageKey ? STAGE_LABELS[active.pipeline][s.stageKey] : undefined}
                 stageNum={s.stageKey ? order.indexOf(s.stageKey) + 1 : undefined}
                 interactive={dealMatchesPlaybook}
+                focus={dealMatchesPlaybook && !expandAll}
                 deal={dealMatchesPlaybook ? deal : null}
                 checklistKey={`${active.id}:${s.n}`}
                 done={done}
@@ -574,16 +714,164 @@ export default function PlaybooksPage() {
         />
       )}
 
-      {/* Deal-closed confirmation toast */}
+      {/* Status toast (deal closed, errors) — bottom-right */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 max-w-sm rounded-lg bg-gray-900 dark:bg-gray-700 text-white shadow-xl px-4 py-3 flex items-start gap-3">
-          <CheckCircleIcon className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-          <p className="text-sm">{toast}</p>
+          {toast.tone === "error" ? (
+            <ExclamationTriangleIcon className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+          ) : (
+            <CheckCircleIcon className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          )}
+          <p className="text-sm">{toast.text}</p>
           <button onClick={() => setToast(null)} className="shrink-0 text-gray-400 hover:text-white">
             <XMarkIcon className="w-4 h-4" />
           </button>
         </div>
       )}
+
+      {/* Momentum toast — bottom-center, celebrates a stage advance / funding */}
+      {celebrate && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-full bg-emerald-600 text-white shadow-2xl px-5 py-2.5 text-sm font-semibold flex items-center gap-2">
+          {celebrate}
+        </div>
+      )}
+
+      {/* Confetti burst on funding — no dependency, self-removes */}
+      {confetti && <Confetti />}
+
+      {/* Confirm dialog — replaces window.confirm for stage moves / doc sends */}
+      {confirmState && (
+        <ConfirmDialog
+          title={confirmState.title}
+          body={confirmState.body}
+          confirmLabel={confirmState.confirmLabel}
+          onCancel={() => setConfirmState(null)}
+          onConfirm={async () => {
+            await confirmState.onConfirm();
+            setConfirmState(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ───────────────────────── Confetti + momentum ─────────────────────────
+// ~36 absolutely-positioned pieces animated by an inline keyframe — no library.
+// The parent unmounts it after ~2.5s.
+function Confetti() {
+  const pieces = useMemo(() => {
+    const colors = ["#059669", "#0ea5e9", "#f59e0b", "#ef4444", "#8b5cf6", "#10b981"];
+    return Array.from({ length: 36 }, (_, i) => ({
+      left: Math.random() * 100,
+      delay: Math.random() * 0.35,
+      dur: 1.8 + Math.random() * 0.9,
+      rot: Math.random() * 360,
+      bg: colors[i % colors.length],
+      w: 6 + Math.round(Math.random() * 6),
+    }));
+  }, []);
+  return (
+    <div className="pointer-events-none fixed inset-0 z-[60] overflow-hidden">
+      <style>{`@keyframes confetti-fall{0%{transform:translateY(-12vh) rotate(0);opacity:1}100%{transform:translateY(112vh) rotate(720deg);opacity:.9}}`}</style>
+      {pieces.map((p, i) => (
+        <span
+          key={i}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: `${p.left}%`,
+            width: p.w,
+            height: p.w * 1.6,
+            background: p.bg,
+            borderRadius: 1,
+            transform: `rotate(${p.rot}deg)`,
+            animation: `confetti-fall ${p.dur}s ${p.delay}s ease-in forwards`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ───────────────────────── Sticky money bar ─────────────────────────
+// Appears when the green context bar scrolls out of view — keeps the deal name,
+// where it is in the pipeline, and the closer's cut in front of them. Sticks to
+// the top of the content scroll area; z below modals (z-50) and floating buttons.
+function StickyMoneyBar({ deal, pipeline, splits }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; splits: CloserSplits }) {
+  const { idx, stageCount, cfg, myCut } = dealMoneyStats(deal, pipeline, splits);
+  return (
+    <div className="sticky top-0 z-30 -mx-5 mb-4 flex items-center gap-2 border-b border-emerald-300 dark:border-emerald-800 bg-emerald-50/95 dark:bg-emerald-900/40 px-5 py-2 backdrop-blur">
+      <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{dealName(deal)}</span>
+      {idx >= 0 && (
+        <span className="shrink-0 text-xs text-gray-600 dark:text-gray-300">
+          · Stage {idx + 1} of {stageCount} — {cfg?.label ?? deal.status}
+        </span>
+      )}
+      {myCut > 0 && (
+        <span className="shrink-0 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+          · your cut ≈ {money0(myCut)}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        title="Jump to the top"
+        className="ml-auto shrink-0 rounded-md border border-emerald-300 dark:border-emerald-700 px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-white dark:hover:bg-gray-800"
+      >
+        ▲
+      </button>
+    </div>
+  );
+}
+
+// ───────────────────────── Confirm dialog ─────────────────────────
+function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  body?: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <div
+        className="w-full max-w-sm rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-2xl p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-base font-bold text-gray-900 dark:text-white">{title}</h3>
+        {body && <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{body}</p>}
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="text-sm px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onConfirm();
+              } finally {
+                setBusy(false);
+              }
+            }}
+            disabled={busy}
+            className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? "Working…" : confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -766,13 +1054,8 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
 // ───────────────────────── Deal context bar ─────────────────────────
 
 function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, openEditLead, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean }) {
-  const stages = PIPELINES[pipeline].stages.filter((s) => !TERMINAL.includes(s.key));
-  const idx = stages.findIndex((s) => s.key === deal.status);
-  const cfg = DEAL_STATUS_CONFIG[deal.status];
+  const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
-  const inPlay = expectedCommissionInPlay(deal.amount_requested, deal.is_renewal);
-  // Company-lead split is the assumed default here (lead-source-aware later).
-  const myCut = inPlay * (splits.company_lead_split / 100);
   return (
     <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -812,8 +1095,8 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, ope
             </>
           ) : null}
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${cfg?.bgColor} ${cfg?.color}`}>
+            {idx >= 0 ? `Stage ${idx + 1} of ${stageCount} — ` : ""}
             {cfg?.label ?? deal.status}
-            {idx >= 0 ? ` · ${idx + 1}/${stages.length}` : ""}
           </span>
           <Link
             to={`/admin/deals/${deal.id}`}
@@ -1439,6 +1722,7 @@ function StepCard({
   stageLabel,
   stageNum,
   interactive,
+  focus,
   deal,
   checklistKey,
   done,
@@ -1456,6 +1740,7 @@ function StepCard({
   stageLabel?: string;
   stageNum?: number;
   interactive: boolean;
+  focus: boolean;
   deal: DealWithCustomer | null;
   checklistKey: string;
   done: boolean;
@@ -1484,15 +1769,38 @@ function StepCard({
   const explains = step.explain ? (Array.isArray(step.explain) ? step.explain : [step.explain]) : [];
   const [showExplain, setShowExplain] = useState<number | null>(null);
 
-  // Accordion. Working a deal: completed steps fold up so the closer lands on the
-  // live one (all flows). Browsing (no lead): ORIGINAL flows stay fully expanded
-  // (untouched). Only the NEW lead paths (foldCloseOnBrowse) fold the SHARED close
-  // (4–9) and keep the unique intake (1–3) open, so they read as their distinctive
-  // part. Click any title to toggle.
+  // The step-level `note` (onboarding prose) hides behind a per-step toggle so it
+  // doesn't wall off the happy path. Closed by default; open state is local only.
+  const [showNote, setShowNote] = useState(false);
+
+  // Accordion. FOCUS MODE (working a deal, focus on): only the ACTIVE step is
+  // expanded — completed steps collapse to a receipt, future steps to a teaser.
+  // Expand-all (interactive, focus off): completed fold, everything else open —
+  // the previous working view. Browsing: ORIGINAL flows stay fully expanded; the
+  // NEW lead paths fold the SHARED close (4–9) and keep the unique intake (1–3).
   const [openCard, setOpenCard] = useState(true);
   useEffect(() => {
-    setOpenCard(interactive ? (!done || current) : (foldCloseOnBrowse ? step.n <= 3 : true));
-  }, [interactive, done, current, deal?.id, step.n, foldCloseOnBrowse]); // eslint-disable-line react-hooks/exhaustive-deps
+    setOpenCard(
+      focus
+        ? current
+        : interactive
+          ? !done || current
+          : foldCloseOnBrowse
+            ? step.n <= 3
+            : true,
+    );
+  }, [interactive, focus, done, current, deal?.id, step.n, foldCloseOnBrowse]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When a step becomes the active one (auto-advance), scroll it into view. Skips
+  // the initial mount so loading a deal doesn't yank the page around.
+  const liRef = useRef<HTMLLIElement>(null);
+  const wasCurrent = useRef(current);
+  useEffect(() => {
+    if (focus && current && !wasCurrent.current) {
+      liRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    wasCurrent.current = current;
+  }, [current, focus]);
 
   // Prefill structured fields + the saved "collected" chips from the loaded
   // deal so captured data shows through. The note clears after each save (it's
@@ -1517,8 +1825,12 @@ function StepCard({
       ? "bg-ocean-blue ring-4 ring-ocean-blue/20"
       : "bg-ocean-blue";
 
+  // In focus mode a collapsed, not-yet-reached step is a muted teaser; a collapsed
+  // completed step stays full-strength (it's a green-check receipt).
+  const teaser = focus && !openCard && !done && !current;
+
   return (
-    <li className="relative pl-12">
+    <li ref={liRef} className={`relative pl-12 ${teaser ? "opacity-60 hover:opacity-100 transition-opacity" : ""}`}>
       {!last && <span className="absolute left-[18px] top-9 bottom-[-16px] w-px bg-gray-200 dark:bg-gray-700" />}
       <span className={`absolute left-0 top-0 flex items-center justify-center w-9 h-9 rounded-full text-white text-sm font-bold ${circle}`}>
         {done ? <CheckCircleIcon className="w-5 h-5" /> : step.n}
@@ -1617,7 +1929,18 @@ function StepCard({
           </div>
         )}
 
-        {step.note && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{step.note}</p>}
+        {step.note && (
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setShowNote((v) => !v)}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            >
+              ⓘ why this matters {showNote ? "▲" : "▼"}
+            </button>
+            {showNote && <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{step.note}</p>}
+          </div>
+        )}
 
         {/* Fold-out how-to for rare-but-important maneuvers */}
         {step.howto && (
