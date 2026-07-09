@@ -405,10 +405,10 @@ export const routes: RouteObject[] = [
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <FunderMatrixPage /> }],
               },
-              // Cold-email (Instantly) dashboard + strategy (super_admin only)
+              // Cold-email (Instantly) dashboard + strategy (admins + super_admin)
               {
                 path: "email",
-                element: <SuperAdminProtectedRoute />,
+                element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <EmailPage /> }],
               },
               // Cold email planner — capacity model + warmup tracker (admin+)

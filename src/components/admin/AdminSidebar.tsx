@@ -74,8 +74,9 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/resources",
   "/admin/renewals", // shown per closers.renewals_enabled (handled in canSee)
   // Visible through the lens but still role-gated below — so an ADMIN who also
-  // has a closer row (e.g. Carlos) gets it, while pure closers never do.
+  // has a closer row (e.g. Carlos) gets these, while pure closers never do.
   "/admin/lead-partner", // Lead Partner (Synergy)
+  "/admin/email", // Email (Instantly)
 ]);
 
 const navGroups: NavGroup[] = [
@@ -107,7 +108,7 @@ const navGroups: NavGroup[] = [
     items: [
       { name: "Lead Partner (Synergy)", path: "/admin/lead-partner", icon: BuildingOffice2Icon, roles: ADMIN },
       { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
-      { name: "Email (Instantly)", path: "/admin/email", icon: EnvelopeIcon, roles: SUPER },
+      { name: "Email (Instantly)", path: "/admin/email", icon: EnvelopeIcon, roles: ADMIN },
       { name: "Cold Email Planner", path: "/admin/cold-email", icon: RocketLaunchIcon, roles: ADMIN },
       { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
       { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
