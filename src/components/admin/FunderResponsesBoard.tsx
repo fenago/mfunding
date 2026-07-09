@@ -28,6 +28,7 @@ import {
   ChevronDownIcon,
   UserPlusIcon,
   PencilSquareIcon,
+  EllipsisHorizontalIcon,
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
@@ -228,6 +229,8 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
+  // Which card's ⋯ overflow menu is open (one at a time).
+  const [menuFor, setMenuFor] = useState<string | null>(null);
 
   // Inline form state (one open at a time, keyed by submission id).
   const [offerFormFor, setOfferFormFor] = useState<string | null>(null);
@@ -1081,69 +1084,105 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                     </div>
                   </div>
                 ) : (
-                  /* Row actions */
-                  <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
-                    {/* Offer cards: accept / merchant-declined */}
-                    {hasOffer && !isTerminal && (
-                      <>
-                        <button type="button" disabled={busy} onClick={() => setOfferOutcome(s, "offer_accepted")} className="text-[10px] font-semibold px-2 py-1 rounded bg-emerald-600 text-white hover:opacity-90 disabled:opacity-50">Mark accepted</button>
-                        <button type="button" disabled={busy} onClick={() => setOfferOutcome(s, "offer_declined")} className="text-[10px] font-semibold px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 disabled:opacity-50">Merchant declined</button>
-                      </>
-                    )}
-                    {/* Awaiting / replied cards: log the reply */}
-                    {!isTerminal && (
-                      <button type="button" onClick={() => openOfferForm(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 inline-flex items-center gap-1">
-                        <CurrencyDollarIcon className="w-3.5 h-3.5" /> {hasOffer ? "Edit offer" : "Log offer"}
-                      </button>
-                    )}
-                    {!isTerminal && !hasOffer && (
-                      <button type="button" onClick={() => { setDeclineFor(s.id); setDeclineReason(""); setOfferFormFor(null); }} className="text-[10px] font-semibold px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 inline-flex items-center gap-1">
-                        <HandThumbDownIcon className="w-3.5 h-3.5" /> Funder declined
-                      </button>
-                    )}
-                    {/* Funder-declined cards: courtesy thank-you (idempotent) */}
-                    {isFunderDeclined && (
-                      <button type="button" disabled={busy} onClick={() => reopenSubmission(s)} title="Overrule the decline — e.g. after a call where the funder agreed to take another look" className="text-[10px] font-semibold px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 inline-flex items-center gap-1">
-                        ↺ Reopen
-                      </button>
-                    )}
-                    {isFunderDeclined && (
-                      s.courtesySentAt ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
-                          <CheckCircleIcon className="w-3.5 h-3.5" /> Thank-you sent
-                        </span>
-                      ) : (
-                        <button type="button" disabled={busy} onClick={() => sendThankYou(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 disabled:opacity-50 inline-flex items-center gap-1">
-                          {busy ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <EnvelopeIcon className="w-3.5 h-3.5" />} Send thank-you
+                  /* Row actions — ONE primary action + a ⋯ overflow menu, so every
+                     card is short. Availability of each action is unchanged; only
+                     the layout (which one is promoted) differs by state. */
+                  (() => {
+                    type Item = { key: string; label: string; Icon: typeof CheckCircleIcon; onClick: () => void; danger?: boolean };
+                    const items: Item[] = [];
+                    if (hasOffer && !isTerminal) {
+                      items.push({ key: "accept", label: "Mark accepted", Icon: CheckCircleIcon, onClick: () => setOfferOutcome(s, "offer_accepted") });
+                      items.push({ key: "mdecline", label: "Merchant declined", Icon: HandThumbDownIcon, onClick: () => setOfferOutcome(s, "offer_declined") });
+                    }
+                    if (!isTerminal) {
+                      items.push({ key: "offer", label: hasOffer ? "Edit offer" : "Log offer", Icon: CurrencyDollarIcon, onClick: () => openOfferForm(s) });
+                    }
+                    if (!isTerminal && !hasOffer) {
+                      items.push({ key: "fdecline", label: "Funder declined", Icon: HandThumbDownIcon, onClick: () => { setDeclineFor(s.id); setDeclineReason(""); setOfferFormFor(null); } });
+                    }
+                    if (isFunderDeclined || st.key === "merchant_declined" || st.key === "accepted") {
+                      items.push({ key: "reopen", label: "Reopen", Icon: ArrowPathIcon, onClick: () => reopenSubmission(s) });
+                    }
+                    if (isFunderDeclined && !s.courtesySentAt) {
+                      items.push({ key: "thankyou", label: "Send thank-you", Icon: EnvelopeIcon, onClick: () => sendThankYou(s) });
+                    }
+                    if (showMsgButton || st.key === "accepted") {
+                      items.push({ key: "msgmerchant", label: "Message merchant", Icon: EnvelopeIcon, onClick: () => openMessage(s) });
+                    }
+                    items.push({ key: "msgfunder", label: "Message funder", Icon: BuildingOffice2Icon, onClick: () => openFunderMessage(s) });
+                    if (canWithdraw) {
+                      items.push({ key: "pullback", label: "Pull back", Icon: ArrowUturnLeftIcon, danger: true, onClick: () => withdrawSubmission(s) });
+                    }
+                    items.push({ key: "note", label: "Add note", Icon: PencilSquareIcon, onClick: () => { setNoteFor(s.id); setNoteText(""); setDeclineFor(null); setOfferFormFor(null); } });
+
+                    // Most action-forward move per state (see report). Others go to ⋯.
+                    const primaryKey =
+                      st.key === "offer" ? "accept"           // an offer is on the table → accept the winner
+                      : st.key === "replied" ? "offer"        // a reply landed → turn it into a logged offer
+                      : st.key === "accepted" ? "msgmerchant" // coordinate signing / next steps
+                      : "msgfunder";                          // awaiting/funder_declined/merchant_declined/withdrawn → nudge/clarify
+                    const primary = items.find((i) => i.key === primaryKey) ?? items[0];
+                    const overflow = items.filter((i) => i !== primary);
+                    const PrimaryIcon = primary.Icon;
+                    const primaryCls =
+                      primary.key === "accept" ? "bg-emerald-600 text-white hover:opacity-90"
+                      : primary.key === "msgfunder" ? "bg-indigo-600 text-white hover:opacity-90"
+                      : "bg-ocean-blue text-white hover:opacity-90";
+
+                    return (
+                      <div className="flex items-center gap-1.5 pt-0.5">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={primary.onClick}
+                          className={`text-[10px] font-semibold px-2.5 py-1 rounded inline-flex items-center gap-1 disabled:opacity-50 ${primaryCls}`}
+                        >
+                          {busy ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <PrimaryIcon className="w-3.5 h-3.5" />} {primary.label}
                         </button>
-                      )
-                    )}
-                    {(st.key === "merchant_declined" || st.key === "accepted") && (
-                      <button type="button" disabled={busy} onClick={() => reopenSubmission(s)} title="Overrule — put this funder back to active/submitted" className="text-[10px] font-semibold px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 inline-flex items-center gap-1">
-                        ↺ Reopen
-                      </button>
-                    )}
-                    {/* Message the merchant — prefilled from this card's context */}
-                    {showMsgButton && (
-                      <button type="button" onClick={() => openMessage(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 inline-flex items-center gap-1">
-                        <EnvelopeIcon className="w-3.5 h-3.5" /> Message merchant
-                      </button>
-                    )}
-                    {/* Message the funder — reply with docs attached (any state) */}
-                    <button type="button" onClick={() => openFunderMessage(s)} className="text-[10px] font-semibold px-2 py-1 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 inline-flex items-center gap-1">
-                      <BuildingOffice2Icon className="w-3.5 h-3.5" /> Message funder
-                    </button>
-                    {/* Pull back — withdraw the submission with a courteous note to the funder */}
-                    {canWithdraw && (
-                      <button type="button" disabled={busy} onClick={() => withdrawSubmission(s)} title={`Withdraw this submission and email ${s.lenderName} that we're pulling the file`} className="text-[10px] font-semibold px-2 py-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 disabled:opacity-50 inline-flex items-center gap-1">
-                        {busy ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <ArrowUturnLeftIcon className="w-3.5 h-3.5" />} Pull back
-                      </button>
-                    )}
-                    {/* Add a free-form note tied to THIS funder (e.g. "texted Curt 7:21a") */}
-                    <button type="button" onClick={() => { setNoteFor(s.id); setNoteText(""); setDeclineFor(null); setOfferFormFor(null); }} className="text-[10px] font-semibold px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 inline-flex items-center gap-1">
-                      <PencilSquareIcon className="w-3.5 h-3.5" /> Add note
-                    </button>
-                  </div>
+                        {isFunderDeclined && s.courtesySentAt && (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+                            <CheckCircleIcon className="w-3.5 h-3.5" /> Thank-you sent
+                          </span>
+                        )}
+                        {overflow.length > 0 && (
+                          <div className="relative ml-auto">
+                            <button
+                              type="button"
+                              onClick={() => setMenuFor(menuFor === s.id ? null : s.id)}
+                              title="More actions"
+                              aria-label="More actions"
+                              className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-200 rounded border border-gray-300 dark:border-gray-600 px-1.5 py-1 inline-flex items-center"
+                            >
+                              <EllipsisHorizontalIcon className="w-4 h-4" />
+                            </button>
+                            {menuFor === s.id && (
+                              <>
+                                {/* click-away catcher — no native popup */}
+                                <div className="fixed inset-0 z-10" onClick={() => setMenuFor(null)} />
+                                <ul className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg py-1">
+                                  {overflow.map((it) => {
+                                    const ItIcon = it.Icon;
+                                    return (
+                                      <li key={it.key}>
+                                        <button
+                                          type="button"
+                                          disabled={busy}
+                                          onClick={() => { setMenuFor(null); it.onClick(); }}
+                                          className={`w-full text-left px-3 py-1.5 text-[11px] inline-flex items-center gap-2 disabled:opacity-50 hover:bg-gray-100 dark:hover:bg-gray-700 ${it.danger ? "text-rose-600 dark:text-rose-400" : "text-gray-700 dark:text-gray-200"}`}
+                                        >
+                                          <ItIcon className="w-3.5 h-3.5" /> {it.label}
+                                        </button>
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
                 )}
                 {noteFor === s.id && (
                   <div className="mt-1.5 space-y-1.5">
