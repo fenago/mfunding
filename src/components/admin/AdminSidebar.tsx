@@ -102,7 +102,7 @@ const navGroups: NavGroup[] = [
   {
     title: "Leads & Marketing",
     items: [
-      { name: "Lead Partner (Synergy)", path: "/admin/lead-partner", icon: BuildingOffice2Icon, roles: SUPER },
+      { name: "Lead Partner (Synergy)", path: "/admin/lead-partner", icon: BuildingOffice2Icon, roles: ADMIN },
       { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
       { name: "Email (Instantly)", path: "/admin/email", icon: EnvelopeIcon, roles: SUPER },
       { name: "Cold Email Planner", path: "/admin/cold-email", icon: RocketLaunchIcon, roles: ADMIN },

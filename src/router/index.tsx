@@ -546,10 +546,10 @@ export const routes: RouteObject[] = [
                 path: "lead-tools",
                 element: <LeadToolsPage />,
               },
-              // Synergy — primary lead partner (super_admin only)
+              // Synergy — primary lead partner (admins + super_admin)
               {
                 path: "lead-partner",
-                element: <SuperAdminProtectedRoute />,
+                element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <LeadPartnerPage /> }],
               },
               // Business Model Canvas (super_admin only)
