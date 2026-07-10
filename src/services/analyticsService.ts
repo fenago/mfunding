@@ -39,75 +39,50 @@ function getDateRangeFilter(dateRange?: DateRange) {
 export async function fetchFunnelData(dateRange?: DateRange): Promise<FunnelData> {
   const filter = getDateRangeFilter(dateRange);
 
-  const statuses = [
-    "lead", "contacted", "application_submitted", "in_review",
-    "approved", "funded", "renewed", "declined",
-  ];
+  // Deal lifecycle now lives in `deals` (the playbook system), NOT `customers`.
+  // Nothing syncs customer.status anymore, so the old customers-based funnel showed
+  // everything at $0. We bucket current deal statuses into the legacy FunnelData shape:
+  //   lead      ← new
+  //   contacted ← contacted + qualifying
+  //   mini_app  ← application_sent            (application started)
+  //   full_app  ← docs_collected + bank_statements (application complete w/ docs)
+  //   in_review ← submitted_to_funder
+  //   approved  ← offer_received + offer_presented + offer_accepted
+  //   funded    ← funded
+  //   renewed   ← renewal_eligible
+  //   declined  ← declined + dead
+  // (nurture and the VCF-specific stages have no MCA-funnel bucket and are excluded.)
+  let query = supabase.from("deals").select("status");
+  if (filter) {
+    query = query.gte("created_at", filter.start).lte("created_at", filter.end);
+  }
+  const { data, error } = await query;
 
   const funnel: FunnelData = {
     lead: 0, contacted: 0, mini_app: 0, full_app: 0,
     in_review: 0, approved: 0, funded: 0, renewed: 0, declined: 0,
   };
+  if (error || !data) return funnel;
 
-  // Fetch all counts in parallel
-  const promises = statuses.map(async (status) => {
-    let query = supabase
-      .from("customers")
-      .select("*", { count: "exact", head: true })
-      .eq("status", status);
-
-    if (filter) {
-      query = query.gte("created_at", filter.start).lte("created_at", filter.end);
-    }
-
-    const { count } = await query;
-    return { status, count: count || 0 };
-  });
-
-  // Also fetch mini_app and full_app counts
-  const miniAppPromise = (async () => {
-    let query = supabase
-      .from("customers")
-      .select("*", { count: "exact", head: true })
-      .eq("application_type", "mini_app")
-      .neq("status", "lead");
-
-    if (filter) {
-      query = query.gte("created_at", filter.start).lte("created_at", filter.end);
-    }
-
-    const { count } = await query;
-    return count || 0;
-  })();
-
-  const fullAppPromise = (async () => {
-    let query = supabase
-      .from("customers")
-      .select("*", { count: "exact", head: true })
-      .eq("application_type", "full_app");
-
-    if (filter) {
-      query = query.gte("created_at", filter.start).lte("created_at", filter.end);
-    }
-
-    const { count } = await query;
-    return count || 0;
-  })();
-
-  const [results, miniApp, fullApp] = await Promise.all([
-    Promise.all(promises),
-    miniAppPromise,
-    fullAppPromise,
-  ]);
-
-  for (const { status, count } of results) {
-    if (status in funnel) {
-      (funnel as unknown as Record<string, number>)[status] = count;
+  for (const row of data) {
+    switch (row.status) {
+      case "new": funnel.lead++; break;
+      case "contacted":
+      case "qualifying": funnel.contacted++; break;
+      case "application_sent": funnel.mini_app++; break;
+      case "docs_collected":
+      case "bank_statements": funnel.full_app++; break;
+      case "submitted_to_funder": funnel.in_review++; break;
+      case "offer_received":
+      case "offer_presented":
+      case "offer_accepted": funnel.approved++; break;
+      case "funded": funnel.funded++; break;
+      case "renewal_eligible": funnel.renewed++; break;
+      case "declined":
+      case "dead": funnel.declined++; break;
+      default: break; // nurture + VCF stages: not part of the MCA funnel
     }
   }
-
-  funnel.mini_app = miniApp;
-  funnel.full_app = fullApp;
 
   return funnel;
 }
@@ -115,79 +90,75 @@ export async function fetchFunnelData(dateRange?: DateRange): Promise<FunnelData
 export async function fetchKPIMetrics(dateRange?: DateRange): Promise<KPIMetrics> {
   const filter = getDateRangeFilter(dateRange);
 
-  // Fetch total leads
-  let leadsQuery = supabase.from("customers").select("*", { count: "exact", head: true });
-  if (filter) leadsQuery = leadsQuery.gte("created_at", filter.start).lte("created_at", filter.end);
-  const { count: totalLeads } = await leadsQuery;
+  // Deal lifecycle lives in `deals` now (customers.status is no longer maintained by the
+  // playbook), so all funnel/lifecycle KPIs read `deals`. Legacy customer-status → deal-status:
+  //   funded    → funded
+  //   approved  → offer_received | offer_presented | offer_accepted
+  //   in_review → submitted_to_funder
+  //   declined  → declined | dead
+  //   renewed   → renewal_eligible
+  // total leads = every deal in range; avg days to fund = funded_at - created_at on the deal.
+  // Pull the deals in range once and bucket in JS (cheaper than 6 count round-trips).
+  let dealsQuery = supabase
+    .from("deals")
+    .select("status, amount_funded, amount_requested, created_at, funded_at");
+  if (filter) dealsQuery = dealsQuery.gte("created_at", filter.start).lte("created_at", filter.end);
+  const { data: dealsData } = await dealsQuery;
+  const deals = dealsData ?? [];
 
-  // Fetch funded deals
-  let fundedQuery = supabase.from("customers").select("amount_funded, created_at, funded_at").eq("status", "funded");
-  if (filter) fundedQuery = fundedQuery.gte("created_at", filter.start).lte("created_at", filter.end);
-  const { data: fundedData } = await fundedQuery;
+  const APPROVED_STATUSES = new Set(["offer_received", "offer_presented", "offer_accepted"]);
+  // Mid-funnel "pipeline" = in_review (submitted) + approved (offer) analog.
+  const PIPELINE_STATUSES = new Set([
+    "submitted_to_funder", "offer_received", "offer_presented", "offer_accepted",
+  ]);
 
-  // Fetch approved count
-  let approvedQuery = supabase.from("customers").select("*", { count: "exact", head: true }).eq("status", "approved");
-  if (filter) approvedQuery = approvedQuery.gte("created_at", filter.start).lte("created_at", filter.end);
-  const { count: approvedCount } = await approvedQuery;
+  const fundedDeals = deals.filter((d) => d.status === "funded");
+  const approvedCount = deals.filter((d) => APPROVED_STATUSES.has(d.status as string)).length;
+  const declinedCount = deals.filter((d) => d.status === "declined" || d.status === "dead").length;
+  const renewedCount = deals.filter((d) => d.status === "renewal_eligible").length;
+  const pipelineDeals = deals.filter((d) => PIPELINE_STATUSES.has(d.status as string));
 
-  // Fetch declined count
-  let declinedQuery = supabase.from("customers").select("*", { count: "exact", head: true }).eq("status", "declined");
-  if (filter) declinedQuery = declinedQuery.gte("created_at", filter.start).lte("created_at", filter.end);
-  const { count: declinedCount } = await declinedQuery;
-
-  // Fetch renewed count
-  let renewedQuery = supabase.from("customers").select("*", { count: "exact", head: true }).eq("status", "renewed");
-  if (filter) renewedQuery = renewedQuery.gte("created_at", filter.start).lte("created_at", filter.end);
-  const { count: renewedCount } = await renewedQuery;
-
-  // Fetch pipeline value (in_review + approved)
-  let pipelineQuery = supabase.from("customers").select("amount_requested").in("status", ["in_review", "approved"]);
-  if (filter) pipelineQuery = pipelineQuery.gte("created_at", filter.start).lte("created_at", filter.end);
-  const { data: pipelineData } = await pipelineQuery;
-
-  // Fetch vendor spend
+  // Vendor spend/revenue still come from marketing_vendors (the real cost/revenue ledger).
   const { data: vendorData } = await supabase.from("marketing_vendors").select("total_spend, total_revenue");
 
-  const totalFunded = fundedData?.length || 0;
-  const totalFundedAmount = fundedData?.reduce((sum, d) => sum + (d.amount_funded || 0), 0) || 0;
+  const totalLeads = deals.length;
+  const totalFunded = fundedDeals.length;
+  const totalFundedAmount = fundedDeals.reduce((sum, d) => sum + (d.amount_funded || 0), 0);
   const totalSpend = vendorData?.reduce((sum, v) => sum + (v.total_spend || 0), 0) || 0;
   const totalRevenue = vendorData?.reduce((sum, v) => sum + (v.total_revenue || 0), 0) || 0;
-  const pipelineValue = pipelineData?.reduce((sum, d) => sum + (d.amount_requested || 0), 0) || 0;
+  const pipelineValue = pipelineDeals.reduce((sum, d) => sum + (d.amount_requested || 0), 0);
 
-  const totalDecisions = totalFunded + (approvedCount || 0) + (declinedCount || 0);
+  const totalDecisions = totalFunded + approvedCount + declinedCount;
 
-  // Calculate avg days to fund
+  // Calculate avg days to fund (funded_at - created_at on the deal)
   let avgDaysToFund = 0;
-  if (fundedData && fundedData.length > 0) {
-    const daysArr = fundedData
-      .filter((d) => d.funded_at && d.created_at)
-      .map((d) => {
-        const created = new Date(d.created_at).getTime();
-        const funded = new Date(d.funded_at).getTime();
-        return (funded - created) / (1000 * 60 * 60 * 24);
-      })
-      .filter((d) => d >= 0);
-
-    if (daysArr.length > 0) {
-      avgDaysToFund = daysArr.reduce((a, b) => a + b, 0) / daysArr.length;
-    }
+  const daysArr = fundedDeals
+    .filter((d) => d.funded_at && d.created_at)
+    .map((d) => {
+      const created = new Date(d.created_at).getTime();
+      const funded = new Date(d.funded_at as string).getTime();
+      return (funded - created) / (1000 * 60 * 60 * 24);
+    })
+    .filter((d) => d >= 0);
+  if (daysArr.length > 0) {
+    avgDaysToFund = daysArr.reduce((a, b) => a + b, 0) / daysArr.length;
   }
 
   return {
-    totalLeads: totalLeads || 0,
+    totalLeads,
     totalFunded,
     totalRevenue,
     totalSpend,
-    costPerLead: (totalLeads || 0) > 0 ? totalSpend / (totalLeads || 1) : 0,
+    costPerLead: totalLeads > 0 ? totalSpend / totalLeads : 0,
     costPerAcquisition: totalFunded > 0 ? totalSpend / totalFunded : 0,
-    leadToFundRate: (totalLeads || 0) > 0 ? (totalFunded / (totalLeads || 1)) * 100 : 0,
+    leadToFundRate: totalLeads > 0 ? (totalFunded / totalLeads) * 100 : 0,
     avgDealSize: totalFunded > 0 ? totalFundedAmount / totalFunded : 0,
-    revenuePerLead: (totalLeads || 0) > 0 ? totalRevenue / (totalLeads || 1) : 0,
+    revenuePerLead: totalLeads > 0 ? totalRevenue / totalLeads : 0,
     avgDaysToFund,
-    approvalRate: totalDecisions > 0 ? ((totalFunded + (approvedCount || 0)) / totalDecisions) * 100 : 0,
-    declineRate: totalDecisions > 0 ? ((declinedCount || 0) / totalDecisions) * 100 : 0,
+    approvalRate: totalDecisions > 0 ? ((totalFunded + approvedCount) / totalDecisions) * 100 : 0,
+    declineRate: totalDecisions > 0 ? (declinedCount / totalDecisions) * 100 : 0,
     pipelineValue,
-    renewalRate: totalFunded > 0 ? ((renewedCount || 0) / totalFunded) * 100 : 0,
+    renewalRate: totalFunded > 0 ? (renewedCount / totalFunded) * 100 : 0,
   };
 }
 
@@ -252,7 +223,10 @@ export async function fetchTrendData(
   granularity: "daily" | "weekly" | "monthly",
   dateRange?: DateRange
 ): Promise<TrendDataPoint[]> {
-  let query = supabase.from("customers").select("created_at, funded_at, amount_funded, status");
+  // Lifecycle trend now reads `deals` (customers.status/funded_at are no longer maintained,
+  // so a customers-based funded/revenue trend would flat-line at 0). "leads" = deals created;
+  // "funded"/"revenue" key off deal status "funded" (+ renewal_eligible) and amount_funded.
+  let query = supabase.from("deals").select("created_at, funded_at, amount_funded, status");
 
   const filter = getDateRangeFilter(dateRange);
   if (filter) {
@@ -261,6 +235,8 @@ export async function fetchTrendData(
 
   const { data } = await query;
   if (!data || data.length === 0) return [];
+
+  const isFunded = (status: string) => status === "funded" || status === "renewal_eligible";
 
   // Group by date bucket
   const buckets = new Map<string, number>();
@@ -281,9 +257,9 @@ export async function fetchTrendData(
 
     if (metric === "leads") {
       buckets.set(dateStr, (buckets.get(dateStr) || 0) + 1);
-    } else if (metric === "funded" && row.status === "funded") {
+    } else if (metric === "funded" && isFunded(row.status)) {
       buckets.set(dateStr, (buckets.get(dateStr) || 0) + 1);
-    } else if (metric === "revenue" && row.status === "funded") {
+    } else if (metric === "revenue" && isFunded(row.status)) {
       buckets.set(dateStr, (buckets.get(dateStr) || 0) + (row.amount_funded || 0));
     }
   }
@@ -296,62 +272,69 @@ export async function fetchTrendData(
 export async function fetchTodayStats(): Promise<TodayStats> {
   const todayStart = toISODate(startOfDay(new Date()));
 
+  // All lifecycle reads now hit `deals` (the playbook system), not `customers`. Mapping:
+  //   in_review        → status submitted_to_funder
+  //   applications     → deals that reached application_sent (deals.application_sent_at)
+  //   approved today   → deals that received a first offer today (deals.offer_received_at)
+  //   pipeline value   → amount_requested for submitted_to_funder + offer_* (in_review+approved)
+  // "Live transfer" is a lead_source value on the deal (deals has no is_live_transfer flag).
+
   // Fetch today's leads
   const { count: newLeadsToday } = await supabase
-    .from("customers")
+    .from("deals")
     .select("*", { count: "exact", head: true })
     .gte("created_at", todayStart);
 
   // Live transfers today
   const { count: liveTransfersToday } = await supabase
-    .from("customers")
+    .from("deals")
     .select("*", { count: "exact", head: true })
     .gte("created_at", todayStart)
-    .eq("is_live_transfer", true);
+    .eq("lead_source", "live_transfer");
 
-  // Live transfer conversions (started application or beyond)
+  // Live transfer conversions (moved past the initial "new" stage)
   const { count: liveTransferConversions } = await supabase
-    .from("customers")
+    .from("deals")
     .select("*", { count: "exact", head: true })
     .gte("created_at", todayStart)
-    .eq("is_live_transfer", true)
-    .neq("status", "lead");
+    .eq("lead_source", "live_transfer")
+    .neq("status", "new");
 
   // Applications started today
   const { count: applicationsStartedToday } = await supabase
-    .from("customers")
+    .from("deals")
     .select("*", { count: "exact", head: true })
-    .gte("application_submitted_at", todayStart);
+    .gte("application_sent_at", todayStart);
 
-  // Deals in review (all time, current state)
+  // Deals in review (all time, current state) → submitted to funder
   const { count: dealsInReview } = await supabase
-    .from("customers")
+    .from("deals")
     .select("*", { count: "exact", head: true })
-    .eq("status", "in_review");
+    .eq("status", "submitted_to_funder");
 
-  // Approved today
+  // Approved today (first offer received today)
   const { count: dealsApprovedToday } = await supabase
-    .from("customers")
+    .from("deals")
     .select("*", { count: "exact", head: true })
-    .gte("approved_at", todayStart);
+    .gte("offer_received_at", todayStart);
 
   // Funded today
   const { count: dealsFundedToday } = await supabase
-    .from("customers")
+    .from("deals")
     .select("*", { count: "exact", head: true })
     .gte("funded_at", todayStart);
 
-  // Pipeline value
+  // Pipeline value (in_review + approved analog)
   const { data: pipelineData } = await supabase
-    .from("customers")
+    .from("deals")
     .select("amount_requested")
-    .in("status", ["in_review", "approved"]);
+    .in("status", ["submitted_to_funder", "offer_received", "offer_presented", "offer_accepted"]);
 
   const totalPipelineValue = pipelineData?.reduce((sum, d) => sum + (d.amount_requested || 0), 0) || 0;
 
   // Hourly breakdown for today
   const { data: todayLeads } = await supabase
-    .from("customers")
+    .from("deals")
     .select("created_at")
     .gte("created_at", todayStart);
 

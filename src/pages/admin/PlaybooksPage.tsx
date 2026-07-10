@@ -19,6 +19,9 @@ import {
   LockClosedIcon,
   PencilSquareIcon,
   DocumentTextIcon,
+  DocumentArrowUpIcon,
+  ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
   ChevronUpIcon,
   ChevronDownIcon,
 } from "@heroicons/react/24/outline";
@@ -37,6 +40,8 @@ import { getDealStats, getAllDeals, getDealById, updateDealStatus } from "../../
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
+import { useSession } from "../../context/SessionContext";
+import { hasSignedApplicationOnFile, uploadSignedApplication } from "../../services/signedApplication";
 import type { DealWithCustomer, DealStatus, Deal, Market } from "../../types/deals";
 import { DEAL_STATUS_CONFIG, MARKET_CONFIG } from "../../types/deals";
 import { listCampaigns, type Campaign } from "../../services/campaignService";
@@ -991,11 +996,90 @@ function DocGroupRow({ group }: { group: DocGroup }) {
   );
 }
 
-function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
+// Step 5's UNMISSABLE step: the merchant e-signs the application in GHL, but that
+// signed PDF lives ONLY in GHL and the API can't fetch it — so a human must
+// download it and re-upload it here, or submit-to-funders HARD-BLOCKS the fan-out
+// (funder emails attach docs from OUR storage, not GHL). Loud amber until it's on
+// file; flips green once it is. Renders directly under the application doc's row.
+function SignedAppActionBanner({ customerId, attached, onUploaded }: { customerId: string; attached: boolean; onUploaded: () => void }) {
+  const { session } = useSession();
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function doUpload() {
+    if (!file) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await uploadSignedApplication({ file, customerId, uploadedBy: session?.user?.id });
+      setFile(null);
+      onUploaded();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (attached) {
+    return (
+      <div className="mt-1.5 ml-6 flex items-center gap-1.5 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] font-medium text-emerald-800 dark:text-emerald-200">
+        <CheckCircleIcon className="w-4 h-4 shrink-0" />
+        Signed application attached — it now goes out with every funder submission.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 ml-6 rounded-md border-2 border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/25 px-3 py-2.5 space-y-2">
+      <p className="text-[12px] font-semibold text-amber-900 dark:text-amber-200 flex items-start gap-1.5">
+        <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+        Signed application is in GHL but NOT attached in the system — funder submissions are BLOCKED until it's uploaded.
+      </p>
+      <ol className="list-decimal pl-5 text-[11px] text-amber-800 dark:text-amber-300 space-y-0.5">
+        <li>Open in GHL → Completed</li>
+        <li>Download the signed PDF</li>
+        <li>Upload it here</li>
+      </ol>
+      <div className="flex flex-wrap items-center gap-2">
+        <a
+          href={ghlDocsUrl}
+          target="_blank" rel="noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5"
+        >
+          Open in GHL (Completed tab) <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+        </a>
+        <input
+          type="file"
+          accept="application/pdf"
+          onChange={(e) => { setFile(e.target.files?.[0] ?? null); setErr(null); }}
+          className="text-[11px] text-gray-600 dark:text-gray-300 file:mr-2 file:rounded file:border-0 file:bg-ocean-blue/10 file:px-2 file:py-1 file:text-ocean-blue"
+        />
+        <button
+          type="button"
+          disabled={!file || busy}
+          onClick={doUpload}
+          className="text-[11px] font-semibold px-2 py-1 rounded bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+        >
+          {busy ? <ArrowPathIcon className="w-3 h-3 animate-spin" /> : <DocumentArrowUpIcon className="w-3 h-3" />}
+          {busy ? "Uploading…" : "Upload signed PDF"}
+        </button>
+      </div>
+      {err && <p className="text-[11px] text-red-600 dark:text-red-400">{err}</p>}
+    </div>
+  );
+}
+
+function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; customerId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<GhlDoc[]>([]);
   const [uploads, setUploads] = useState<{ field: string; files: { name: string; url: string | null }[] }[]>([]);
+  // Whether the signed application is attached APP-SIDE (customer_documents) —
+  // ground truth for the action banner. Null until the first check resolves, so
+  // the LOUD banner never flashes before we know.
+  const [appAttached, setAppAttached] = useState<boolean | null>(null);
 
   async function load() {
     setLoading(true);
@@ -1012,7 +1096,16 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
     }
     setLoading(false);
   }
-  useEffect(() => { load(); }, [ghlContactId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // App-side attachment is checked independently of the GHL peek so a GHL error
+  // never hides the banner (and vice-versa).
+  async function checkAttached() {
+    try {
+      setAppAttached(await hasSignedApplicationOnFile(customerId));
+    } catch {
+      /* leave prior value; the banner just won't flip until the next check */
+    }
+  }
+  useEffect(() => { load(); checkAttached(); }, [ghlContactId, customerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fileCount = uploads.reduce((n, u) => n + u.files.length, 0);
 
@@ -1031,9 +1124,21 @@ function DocsBackPanel({ ghlContactId }: { ghlContactId: string }) {
       ) : (
         <div className="space-y-2">
           {docs.length === 0 && <p className="text-xs text-gray-400">No documents sent yet.</p>}
-          {groupDocs(docs).map((g) => (
-            <DocGroupRow key={g.key} group={g} />
-          ))}
+          {groupDocs(docs).map((g) => {
+            // The application group's LATEST copy signed in GHL is the trigger for
+            // the unmissable "upload it here" banner (only once the check resolves,
+            // so the LOUD state never flashes). Not-signed-yet shows no banner — the
+            // doc-chase sequence handles that.
+            const isAppGroup = /application/i.test(g.latest.name);
+            return (
+              <div key={g.key} className="space-y-1">
+                <DocGroupRow group={g} />
+                {isAppGroup && g.latest.signed && appAttached !== null && (
+                  <SignedAppActionBanner customerId={customerId} attached={appAttached} onUploaded={checkAttached} />
+                )}
+              </div>
+            );
+          })}
           {uploads.length > 0 && (
             <div className="pt-2 border-t border-gray-100 dark:border-gray-700">
               <p className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
@@ -2019,7 +2124,7 @@ function StepCard({
 
         {/* Live doc status — what's signed + what they uploaded, straight from GHL */}
         {(step.stageKey === "application_sent" || step.stageKey === "bank_statements") && interactive && deal?.ghl_contact_id && (
-          <DocsBackPanel ghlContactId={deal.ghl_contact_id} />
+          <DocsBackPanel ghlContactId={deal.ghl_contact_id} customerId={deal.customer_id} />
         )}
 
         {/* Docs receipt — when the send-docs step fired. "Sent" only means it LEFT

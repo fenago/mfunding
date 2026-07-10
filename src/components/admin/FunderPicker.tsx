@@ -26,6 +26,7 @@ import { mustWrite, tryWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
 import { getMatchingLenders } from "../../services/lenderMatchingService";
 import { updateSubmission } from "../../services/dealService";
+import { uploadSignedApplication } from "../../services/signedApplication";
 import type { DealWithCustomer } from "../../types/deals";
 
 // GHL Documents & Contracts (Completed e-sign) for the MFunding sub-account —
@@ -323,32 +324,17 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     setAppDocs(new Set(((data ?? []) as { document_type: string }[]).map((d) => d.document_type)));
   }
 
-  // Upload the signed application PDF the closer downloaded from GHL. Mirrors the
-  // shared DocumentUploader conventions exactly: same bucket, same path shape,
-  // same customer_documents insert — so the submit-to-funders engine picks it up
-  // automatically and attaches it (as an expiring link) to every funder.
+  // Upload the signed application PDF the closer downloaded from GHL. The shared
+  // helper owns the storage-path + customer_documents conventions (same ones the
+  // Step 5 action banner uses) so the submit-to-funders engine picks it up
+  // automatically and attaches it to every funder.
   async function uploadSignedApp() {
     const file = signedAppFile;
     if (!file || !deal.customer_id) return;
     setUploadingApp(true);
     setUploadAppError(null);
     try {
-      const ext = file.name.split(".").pop();
-      const path = `customer/${deal.customer_id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
-      const { error: upErr } = await supabase.storage.from("customer-documents").upload(path, file, {
-        cacheControl: "3600",
-        upsert: false,
-      });
-      if (upErr) throw upErr;
-      await mustWrite("upload signed application doc", supabase.from("customer_documents").insert({
-        document_type: "application",
-        filename: file.name,
-        storage_path: path,
-        file_size: file.size,
-        mime_type: file.type,
-        uploaded_by: session?.user?.id,
-        customer_id: deal.customer_id,
-      }));
+      await uploadSignedApplication({ file, customerId: deal.customer_id, uploadedBy: session?.user?.id });
       setSignedAppFile(null);
       await reloadAppDocs();
     } catch (e) {
@@ -962,6 +948,22 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               </details>
             )}
           </div>
+
+          {/* Pre-emptive block notice — the submit-to-funders engine hard-rejects
+              a fan-out when the signed application isn't attached app-side, so say
+              so BEFORE the click (not after). Loud red when it's signed in GHL and
+              just needs uploading; softer red when it isn't signed yet. */}
+          {!signedAppInApp && (
+            <div className="rounded-md border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 text-[12px] text-rose-700 dark:text-rose-300 flex items-start gap-2">
+              <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>
+                <span className="font-semibold">Submissions blocked</span> — the signed application isn't attached in the system.{" "}
+                {signedAppInGhl
+                  ? "It's signed in GHL — upload it in the slot below to unblock every funder submission."
+                  : "Once the merchant e-signs it, upload it in the slot below. Nothing goes out to funders until it's on file."}
+              </span>
+            </div>
+          )}
 
           {/* Funder checkboxes */}
           <div className="space-y-1.5">
