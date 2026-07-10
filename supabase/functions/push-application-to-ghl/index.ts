@@ -317,16 +317,30 @@ Deno.serve(async (req) => {
   if (blank) {
     // ── PATH 1 (SELF-FILL): the fillable doc, sent by MCA 04. Clear any prefill
     // routing first (path 2 → path 1 crossing): stop 04B and drop the tag.
-    // ALWAYS enroll directly — doc delivery must never depend on the pipeline
-    // stage trigger (which double-sends against the prefill path and misses
-    // opportunity-less deals). With GHL re-enrollment off, a direct enroll
-    // dedupes against any still-active stage trigger, so exactly ONE send.
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {}); // best-effort
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG] }); // best-effort
-    enrollDirect = true;
-    if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // allow re-fire
-    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
-    reenrolled = wf.ok;
+    // MCA 04 has a PIPELINE-STAGE trigger (Application Sent). The caller advances
+    // the deal to Application Sent right after this returns, which moves the GHL
+    // opportunity into that stage and fires the trigger. If we ALSO enroll directly
+    // here, that's TWO signals into the same workflow — deduped only by GHL's
+    // "Allow re-enrollment = OFF", a fragile setting we must never depend on (and
+    // our own guidance used to tell closers to flip it ON, which would double-email
+    // the merchant). So enroll directly ONLY when the stage trigger can't be
+    // trusted to fire:
+    //  · noOpportunity — the deal has no GHL opportunity yet (e.g. a bulk-imported
+    //    web/aged lead), so the caller's stage move CREATES the opportunity straight
+    //    into Application Sent, and a fresh create-into-stage does not reliably fire
+    //    the "stage changed" trigger; OR
+    //  · resend — the deal is already at Application Sent, so the stage move is a
+    //    no-op and won't re-trigger; the closer explicitly asked to re-fire.
+    // Otherwise the stage move alone delivers the doc — skip the direct enroll so
+    // the merchant gets exactly ONE send.
+    if (noOpportunity || resend) {
+      enrollDirect = true;
+      if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // allow re-fire
+      const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
+      reenrolled = wf.ok;
+    }
   } else {
     // ── PATH 2 (PREFILL): the merged doc, sent by MCA 04B. The doc send ALWAYS
     // comes from a direct 04B enrollment (04B has no stage trigger); the caller's
@@ -353,11 +367,17 @@ Deno.serve(async (req) => {
         ? `Sent the original application docs (no prefill) — merchant fills + e-signs.`
         : `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`)
         + (enrollDirect
-          ? ` ${resend ? "Re-enrolled" : "Enrolled"} in MCA 04 directly (${reenrolled ? "ok" : "failed"}${!resend ? ", no opportunity yet" : ""}).`
-          : ""),
+          ? ` ${resend ? "Re-enrolled" : "Enrolled"} in ${blank ? "MCA 04" : "MCA 04B"} directly (${reenrolled ? "ok" : "failed"}${!resend && blank ? ", no opportunity yet" : ""}).`
+          : ` Delivery left to the Application Sent stage trigger to fire MCA 04 (deal already has an opportunity).`),
       logged_by: caller.id,
     });
   } catch { /* best-effort */ }
 
-  return json({ ok: true, dealId, contactId, fieldsPushed: fields.length, blank, reenrolled });
+  // enrolled_via tells the caller how the doc was (or will be) delivered:
+  //  · "direct"        — we enrolled the contact into the workflow ourselves
+  //  · "stage_trigger" — the caller's move to Application Sent will fire MCA 04
+  return json({
+    ok: true, dealId, contactId, fieldsPushed: fields.length, blank, reenrolled,
+    enrolled_via: enrollDirect ? "direct" : "stage_trigger",
+  });
 });

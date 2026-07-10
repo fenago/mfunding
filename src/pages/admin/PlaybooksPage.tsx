@@ -106,6 +106,22 @@ function dealMoneyStats(deal: DealWithCustomer, pipeline: "mca" | "vcf", splits:
 }
 const money0 = (n: number) => `$${Math.round(n).toLocaleString()}`;
 
+// supabase.functions.invoke stashes a non-2xx response's JSON body in
+// error.context (a Response) — which no caller reads, so the closer sees the
+// generic "Edge Function returned a non-2xx status code" instead of the server's
+// hand-written message (the 422 no-email block, the 502 "the document was NOT
+// sent"). This pulls the server's { error } out of that body (falling back to the
+// raw message) and throws it, so the real reason reaches the closer verbatim.
+// Call it on any functions.invoke error path: `if (err) await invokeThrow(err)`.
+async function invokeThrow(error: unknown): Promise<never> {
+  const ctx = (error as { context?: { json?: () => Promise<unknown> } } | null)?.context;
+  if (ctx && typeof ctx.json === "function") {
+    const body = (await ctx.json().catch(() => null)) as { error?: string } | null;
+    if (body?.error) throw new Error(body.error);
+  }
+  throw new Error((error as { message?: string } | null)?.message ?? "Request failed.");
+}
+
 export default function PlaybooksPage() {
   // Live Transfer is the DEFAULT flow — the merchant is on the line the instant
   // the page opens, so it must be pre-selected with zero clicks. Speed > all.
@@ -320,7 +336,7 @@ export default function PlaybooksPage() {
           const { data, error } = await supabase.functions.invoke("push-application-to-ghl", {
             body: { dealId: deal.id, blank: true, resend },
           });
-          if (error) throw error;
+          if (error) await invokeThrow(error);
           const res = data as { error?: string; reenrolled?: boolean };
           if (res?.error) throw new Error(res.error);
           // First send: advancing to Application Sent fires MCA 04 via the stage move.
@@ -329,7 +345,7 @@ export default function PlaybooksPage() {
           await refreshDeal(deal.id);
           if (resend && res?.reenrolled === false) {
             notify(
-              "Contact is ready, but MCA 04 re-enrollment was rejected by GHL — turn on 'Allow re-enrollment' in the MCA 04 workflow settings, then resend.",
+              "Contact is ready, but GHL rejected the MCA 04 re-enrollment, so the docs did NOT re-send. Re-send the document manually from GHL → Documents & Contracts (move the old doc to Draft first).",
               "error",
             );
           } else if (resend) {
@@ -1088,7 +1104,8 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
       const { data, error } = await supabase.functions.invoke("ghl-docs-status", {
         body: { ghl_contact_id: ghlContactId },
       });
-      if (error || data?.error) throw new Error(data?.error || error?.message);
+      if (data?.error) throw new Error(data.error);
+      if (error) await invokeThrow(error);
       setDocs(data?.documents ?? []);
       setUploads(data?.uploads ?? []);
     } catch (e) {
@@ -1353,7 +1370,7 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
         const { data: sync, error: syncErr } = await supabase.functions.invoke("sync-lead-to-ghl", {
           body: { customerId: deal.customer_id, dealId: deal.id },
         });
-        if (syncErr) throw syncErr;
+        if (syncErr) await invokeThrow(syncErr);
         const sres = sync as { error?: string; warning?: string } | null;
         if (sres?.error) throw new Error(sres.error);
         if (sres?.warning) {

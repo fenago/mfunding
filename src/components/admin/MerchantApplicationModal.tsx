@@ -22,6 +22,22 @@ import { mustWrite, tryWrite } from "@/supabase/writes";
 import { updateDealStatus } from "../../services/dealService";
 import type { DealWithCustomer } from "../../types/deals";
 
+// supabase.functions.invoke stashes a non-2xx response's JSON body in
+// error.context (a Response) — which no caller reads, so the closer sees the
+// generic "Edge Function returned a non-2xx status code" instead of the server's
+// hand-written message (the 422 no-email block, the 502 "the document was NOT
+// sent"). This pulls the server's { error } out of that body (falling back to the
+// raw message) and throws it, so the real reason reaches the closer verbatim.
+// Call it on any functions.invoke error path: `if (err) await invokeThrow(err)`.
+async function invokeThrow(error: unknown): Promise<never> {
+  const ctx = (error as { context?: { json?: () => Promise<unknown> } } | null)?.context;
+  if (ctx && typeof ctx.json === "function") {
+    const body = (await ctx.json().catch(() => null)) as { error?: string } | null;
+    if (body?.error) throw new Error(body.error);
+  }
+  throw new Error((error as { message?: string } | null)?.message ?? "Request failed.");
+}
+
 // The application fields we capture. Keys match mca_applications columns.
 interface AppForm {
   // Business
@@ -349,7 +365,7 @@ export default function MerchantApplicationModal({
       const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
         body: { dealId: deal.id, resend: isResend },
       });
-      if (pushErr) throw pushErr;
+      if (pushErr) await invokeThrow(pushErr);
       if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
 
       const firstName = form.owner_first_name || cust?.first_name || "there";
@@ -371,7 +387,7 @@ export default function MerchantApplicationModal({
       const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
         body: { dealId: deal.id, subject, body: emailBody, regarding: "MCA application" },
       });
-      if (fnErr) throw fnErr;
+      if (fnErr) await invokeThrow(fnErr);
       if ((data as { error?: string })?.error) throw new Error((data as { error?: string }).error);
 
       // Stamp who/when sent (best-effort — the send already went out).
@@ -393,8 +409,7 @@ export default function MerchantApplicationModal({
         if ((pushData as { reenrolled?: boolean })?.reenrolled === false) {
           setError(
             "Cover note re-sent, but GHL did NOT re-send the e-sign docs — MCA 04 re-enrollment was rejected. " +
-            "Turn on 'Allow re-enrollment' in the MCA 04 workflow settings and send again, or re-send the document " +
-            "manually from GHL → Documents & Contracts (move the old doc to Draft first).",
+            "Re-send the document manually from GHL → Documents & Contracts (move the old doc to Draft first).",
           );
           setBusy(null);
           return;
@@ -432,7 +447,7 @@ export default function MerchantApplicationModal({
       const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
         body: { dealId: deal.id, blank: true, resend: isResend },
       });
-      if (pushErr) throw pushErr;
+      if (pushErr) await invokeThrow(pushErr);
       if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
 
       const firstName = form.owner_first_name || cust?.first_name || "there";
@@ -452,13 +467,13 @@ export default function MerchantApplicationModal({
           regarding: "MCA application (self-fill)",
         },
       });
-      if (fnErr) throw fnErr;
+      if (fnErr) await invokeThrow(fnErr);
       if ((data as { error?: string })?.error) throw new Error((data as { error?: string }).error);
 
       if (!isResend) {
         try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
       } else if ((pushData as { reenrolled?: boolean })?.reenrolled === false) {
-        setError("Cover note sent, but GHL did NOT re-send the fillable docs — MCA 04 re-enrollment was rejected. Turn on 'Allow re-enrollment' in MCA 04, or re-send from GHL → Documents & Contracts.");
+        setError("Cover note sent, but GHL did NOT re-send the fillable docs — MCA 04 re-enrollment was rejected. Re-send the document manually from GHL → Documents & Contracts (move the old doc to Draft first).");
         setBusy(null);
         return;
       }
