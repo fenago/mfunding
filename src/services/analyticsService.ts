@@ -112,7 +112,10 @@ export async function fetchKPIMetrics(dateRange?: DateRange): Promise<KPIMetrics
     "submitted_to_funder", "offer_received", "offer_presented", "offer_accepted",
   ]);
 
-  const fundedDeals = deals.filter((d) => d.status === "funded");
+  // renewal_eligible is a POST-funded state (a funded deal at 40%+ paydown) — it
+  // still counts as funded, or Total Funded would DROP when a deal becomes
+  // renewal-eligible. Keeps KPI in lockstep with fetchTrendData's isFunded().
+  const fundedDeals = deals.filter((d) => d.status === "funded" || d.status === "renewal_eligible");
   const approvedCount = deals.filter((d) => APPROVED_STATUSES.has(d.status as string)).length;
   const declinedCount = deals.filter((d) => d.status === "declined" || d.status === "dead").length;
   const renewedCount = deals.filter((d) => d.status === "renewal_eligible").length;
