@@ -14,6 +14,9 @@ interface Urgency {
   /** ISO timestamp that drives the card's age + the intra-rank sort. */
   since: string;
   tone: string;
+  /** When set, the card corner shows a LIVE speed-to-lead countdown to this ISO
+   * timestamp ("⏱ 4:32 left"), flipping to "SLA MISSED — call anyway" past it. */
+  countdownDue?: string;
 }
 
 // mm:ss countdown from a millisecond delta.
@@ -36,12 +39,20 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   // The most time-critical thing on the board: the merchant expects a call NOW.
   if (deal.status === "new" && deal.first_call_due_at && HOT.has(deal.temperature ?? "")) {
     const dueMs = Date.parse(deal.first_call_due_at) - now;
+    // Live transfers get their own loud label + a corner countdown (below); the
+    // clock isn't jammed into the badge so both read cleanly at a glance.
+    const isLiveTransfer = deal.lead_source === "live_transfer";
     return {
       rank: 0,
-      badge: dueMs > 0 ? `🔴 CALL NOW · ${countdown(dueMs)}` : "🔴 CALL NOW · OVERDUE",
+      badge: isLiveTransfer
+        ? "🔴 LIVE TRANSFER — CALL NOW"
+        : (dueMs > 0 ? `🔴 CALL NOW · ${countdown(dueMs)}` : "🔴 CALL NOW · OVERDUE"),
       why: dueMs > 0 ? "Real-time lead — call before the clock runs out." : "Real-time lead PAST its call window — call immediately.",
       since: deal.created_at,
       tone: "red",
+      // Only live transfers surface the corner countdown; other real-time leads
+      // keep their existing badge-embedded clock so nothing changes for them.
+      countdownDue: isLiveTransfer ? deal.first_call_due_at : undefined,
     };
   }
 
@@ -304,7 +315,15 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
               >
                 <div className="flex items-center justify-between gap-2 mb-1.5">
                   <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
-                  {overdue ? (
+                  {u.countdownDue ? (
+                    (Date.parse(u.countdownDue) - now) > 0 ? (
+                      <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0 tabular-nums">
+                        ⏱ {countdown(Date.parse(u.countdownDue) - now)} left
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">SLA MISSED — call anyway</span>
+                    )
+                  ) : overdue ? (
                     <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">overdue</span>
                   ) : (
                     <span className="text-[11px] text-gray-400 shrink-0">{ago(u.since, now)}</span>
