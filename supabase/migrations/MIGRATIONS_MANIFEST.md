@@ -1,8 +1,31 @@
 # Migration history — drift notice & manifest (audit #16)
 
-**Status (2026-06-30):** the **live** database has **67** applied migrations; this
-repo's `supabase/migrations/` directory has **~38** `.sql` files with ad-hoc names.
-The two sets do not line up 1:1 (repo files predate the CLI-managed naming).
+**Status (2026-07-10):** the **live** database has **95** applied migrations
+(`supabase_migrations.schema_migrations`); this repo's `supabase/migrations/`
+directory has ~58 `.sql` files with date-only names. The two sets do not line up
+1:1 (repo files predate the CLI-managed naming and use `YYYYMMDD_name.sql`, while
+the ledger stores full `YYYYMMDDHHMMSS` versions).
+
+**Repo→ledger naming convention:** committed files are date-only
+(`20260710_commissions_deal_id_unique.sql`); the matching recorded version carries
+a full timestamp (`20260710155142`). Filenames are therefore intentionally NOT
+renamed to the full version — the date prefix + name is the join key.
+
+### Ledger drift closed (2026-07-10)
+Two files whose schema was already live (applied earlier via `execute_sql`, not
+`apply_migration`) were previously **missing** from the ledger and are now recorded
+as bookkeeping-only rows (no DDL re-run — the live schema was untouched):
+
+| Repo file | Recorded version | Recorded name |
+|-----------|------------------|---------------|
+| `20260710_campaigns_reimagined.sql` | `20260710143000` | `campaigns_reimagined` |
+| `20260710_underwriter_affordability.sql` | `20260710150000` | `underwriter_affordability` |
+
+Both versions sort after the prior recorded `20260705232511` and before the
+`20260710155142` (`commissions_deal_id_unique`) work, reflecting real apply order.
+Verified live: `campaign_analyses` table present, `campaigns.code/partner/
+cost_per_lead_contracted/setup_checklist` present, 5 campaign rows, and
+`underwriting_settings.max_payment_pct_of_revenue` (+4 sibling knobs) present.
 
 **The live database is the source of truth.** Every schema change this session was
 applied via MCP and the corresponding `.sql` was also committed here, but the
