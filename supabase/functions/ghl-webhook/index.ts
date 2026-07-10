@@ -114,20 +114,73 @@ function json(body: unknown, status = 200) {
   });
 }
 
+// Constant-time string equality for secret comparison. Avoids leaking, via
+// response-time, how many leading bytes of a guess matched. Returns false for a
+// length mismatch but still folds every byte so timing doesn't reveal the length
+// of `expected`. An empty `provided` (no secret sent) never matches a non-empty
+// expected secret.
+function timingSafeEqualStr(provided: string, expected: string): boolean {
+  const enc = new TextEncoder();
+  const a = enc.encode(provided);
+  const b = enc.encode(expected);
+  let diff = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  return diff === 0;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   const db = serviceClient();
 
-  // Shared-secret check (GHL can't send a Supabase JWT).
-  try {
-    const { data: cfg } = await db.rpc("get_ghl_config"); // also confirms DB connectivity
+  // ── Shared-secret gate (FAIL CLOSED) ───────────────────────────────────────
+  // GHL can't send a Supabase JWT, so this endpoint runs verify_jwt=false and
+  // authenticates IN CODE via a 64-char shared secret. GHL is configured to send
+  // it on every call (workflow "Webhook" action URL `?secret=…`, or an
+  // `x-ghl-secret` header). Verified live: unauthenticated requests are rejected
+  // and the live pipeline processes, so GHL is provably sending the correct
+  // secret today.
+  //
+  // Delivery note: real inbound traffic is GHL workflow-"Webhook"-action payloads
+  // (flat snake_case fields, no native `x-wh-signature`/`webhookId`). GHL's RSA
+  // webhook signing only applies to native Marketplace-app webhooks, which this
+  // sub-account does NOT use — so the shared secret is the only verification
+  // mechanism available for this delivery method, and it is the gate here.
+  //
+  // Previous versions "failed OPEN": the whole check sat inside a try/catch that,
+  // on any get_ghl_config error, fell through and processed the request WITHOUT
+  // auth; and when no secret was configured the check was skipped entirely. Both
+  // holes are closed below.
+  //
+  //   * Expected secret resolves from the vault (get_ghl_config) first, then the
+  //     GHL_WEBHOOK_SECRET env as a fallback, so a transient DB/RPC error can't
+  //     reopen the gate.
+  //   * If NO secret can be resolved from either source we return 503 (refuse) —
+  //     never process anonymously.
+  //   * A missing/empty or mismatched provided secret returns 401.
+  //   * Comparison is constant-time (no early-out on the first differing byte).
+  {
+    let expected = "";
+    try {
+      const { data: cfg } = await db.rpc("get_ghl_config"); // also confirms DB connectivity
+      expected = (cfg?.webhook_secret as string | undefined) ?? "";
+    } catch (_e) { /* vault/RPC unavailable — fall back to the env secret below */ }
+    if (!expected) expected = Deno.env.get("GHL_WEBHOOK_SECRET") ?? "";
+
+    if (!expected) {
+      // Misconfiguration (both vault and env empty). Refuse rather than accept
+      // unauthenticated traffic. GHL retries, so a brief window is recoverable.
+      await logEvent(db, {}, "auth", "error",
+        "no webhook secret configured (vault + GHL_WEBHOOK_SECRET env both empty) — refusing");
+      return json({ error: "server auth not configured" }, 503);
+    }
+
     const url = new URL(req.url);
     const provided = url.searchParams.get("secret") ?? req.headers.get("x-ghl-secret") ?? "";
-    const expected = (cfg?.webhook_secret as string | undefined) ?? Deno.env.get("GHL_WEBHOOK_SECRET") ?? "";
-    if (expected && provided !== expected) return json({ error: "unauthorized" }, 401);
-  } catch (_e) { /* if config read fails, fall through and still attempt to process */ }
+    if (!timingSafeEqualStr(provided, expected)) return json({ error: "unauthorized" }, 401);
+  }
 
   let evt: Record<string, unknown>;
   try { evt = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
