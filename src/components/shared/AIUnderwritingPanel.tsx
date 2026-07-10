@@ -7,7 +7,8 @@ import {
 } from "@heroicons/react/24/outline";
 import {
   getUnderwritingHistory, runUnderwriting,
-  type DealUnderwriting, type UWFlag, type UWMetrics, type AffordabilityRating, type RiskRating,
+  type DealUnderwriting, type UWFlag, type UWMetrics, type UWPerMonth, type UWAffordability,
+  type AffordabilityRating, type RiskRating,
 } from "../../services/aiUnderwritingService";
 import { useUserProfile } from "../../context/UserProfileContext";
 
@@ -319,6 +320,9 @@ function ResultView({ r }: { r: DealUnderwriting }) {
         </div>
       </div>
 
+      {/* Affordability — the headline read, directly under the verdict */}
+      {m.affordability && <AffordabilitySection a={m.affordability} />}
+
       {/* Metric cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
         <Metric label="Avg daily balance" value={money(m.avg_daily_balance)} />
@@ -333,6 +337,9 @@ function ResultView({ r }: { r: DealUnderwriting }) {
         <Metric label="Deposit concentration" value={pct(m.deposit_concentration_pct)} tone={(m.deposit_concentration_pct ?? 0) >= 40 ? "bad" : undefined} />
         <Metric label="Revenue trend" value={m.revenue_trend ? (trendLabel[m.revenue_trend] ?? m.revenue_trend) : "—"} />
       </div>
+
+      {/* Explicit per-month metrics table */}
+      {m.per_month && m.per_month.length > 0 && <PerMonthTable rows={m.per_month} />}
 
       {/* Net retained by month chart */}
       {chartData.length > 0 && (
@@ -453,6 +460,112 @@ function ResultView({ r }: { r: DealUnderwriting }) {
           </div>
         </details>
       )}
+    </div>
+  );
+}
+
+// ── Affordability: max sustainable DAILY vs WEEKLY payment → advance size ─────
+function AffordabilitySection({ a }: { a: UWAffordability }) {
+  const verdictWord = (ok: boolean | null) =>
+    ok == null ? "—" : ok ? "affordable" : "unaffordable";
+  const verdictTint = (ok: boolean | null) =>
+    ok == null ? "text-gray-500" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400";
+  const hasAsk = a.amount_requested != null && a.amount_requested > 0;
+  const cons = a.conservative;
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Affordability</h4>
+        <span className="text-xs text-gray-400">
+          net of {money(a.existing_daily_debit)}/day existing debits
+        </span>
+      </div>
+
+      {/* Daily vs weekly structures */}
+      <div className="grid sm:grid-cols-2 gap-4">
+        {[
+          { label: "Daily structure", pay: a.max_daily_payment, per: "/day", adv: a.max_advance_daily, bind: a.binding_constraint_daily },
+          { label: "Weekly structure", pay: a.max_weekly_payment, per: "/wk", adv: a.max_advance_weekly, bind: a.binding_constraint_weekly },
+        ].map((s) => (
+          <div key={s.label} className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+            <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">{s.label}</div>
+            <div className="text-2xl font-bold text-gray-900 dark:text-white">
+              {money(s.pay)}<span className="text-sm font-normal text-gray-500">{s.per} max payment</span>
+            </div>
+            <div className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+              → max advance <span className="font-semibold text-gray-900 dark:text-white">{money(s.adv)}</span>
+            </div>
+            <div className="text-xs text-gray-400 mt-1">bound by {s.bind === "balance" ? "balance buffer" : "revenue cap"}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Requested-amount verdict */}
+      {hasAsk && (
+        <div className="mt-4 text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+          Requested <span className="font-semibold">{money(a.amount_requested)}</span> needs{" "}
+          <span className="font-semibold">{money(a.required_daily_payment)}/day</span> or{" "}
+          <span className="font-semibold">{money(a.required_weekly_payment)}/week</span> →{" "}
+          daily <span className={`font-semibold ${verdictTint(a.affordable_daily)}`}>{verdictWord(a.affordable_daily)}</span>,{" "}
+          weekly <span className={`font-semibold ${verdictTint(a.affordable_weekly)}`}>{verdictWord(a.affordable_weekly)}</span>.{" "}
+          Max advance ≈ <span className="font-semibold">{money(a.max_advance_daily)}</span> (daily) /{" "}
+          <span className="font-semibold">{money(a.max_advance_weekly)}</span> (weekly).
+        </div>
+      )}
+
+      {/* Conservative sensitivity (owner-payroll excluded) */}
+      {cons && (
+        <div className="mt-3 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-700 pt-3">
+          <span className="font-medium">Conservative case</span> (owner-payroll excluded, revenue {money(cons.monthly_revenue_basis)}/mo):
+          max {money(cons.max_daily_payment)}/day → advance {money(cons.max_advance_daily)}; {money(cons.max_weekly_payment)}/wk → advance {money(cons.max_advance_weekly)}
+          {hasAsk && <> — daily <span className={verdictTint(cons.affordable_daily)}>{verdictWord(cons.affordable_daily)}</span>, weekly <span className={verdictTint(cons.affordable_weekly)}>{verdictWord(cons.affordable_weekly)}</span></>}.
+        </div>
+      )}
+
+      {/* Assumptions */}
+      <p className="mt-3 text-xs text-gray-400">
+        Assumes payment ≤ {pct(a.max_payment_pct_of_revenue)} of true monthly revenue ({money(a.monthly_revenue_basis)}/mo),
+        balance buffer {pct(a.balance_buffer_pct)}{a.balance_basis != null ? ` of worst-month avg balance (${money(a.balance_basis)})` : ""},
+        {" "}{a.factor_rate}× factor, {num(a.term_daily_biz_days)} biz-days daily / {num(a.term_weekly_weeks)} weeks weekly.
+      </p>
+    </div>
+  );
+}
+
+// ── Explicit per-month metrics table (chronological) ─────────────────────────
+function PerMonthTable({ rows }: { rows: UWPerMonth[] }) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 overflow-x-auto">
+      <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Per-month metrics</h4>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
+            <th className="text-left py-2 pr-4 font-medium">Month</th>
+            <th className="text-right py-2 px-4 font-medium"># Deposits</th>
+            <th className="text-right py-2 px-4 font-medium">True deposits</th>
+            <th className="text-right py-2 px-4 font-medium">Ending balance</th>
+            <th className="text-right py-2 px-4 font-medium">Avg daily balance</th>
+            <th className="text-right py-2 pl-4 font-medium">Negative days</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
+              <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white">{r.month ?? `Month ${i + 1}`}</td>
+              <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{num(r.deposit_count)}</td>
+              <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(r.true_deposits)}</td>
+              <td className={`py-2 px-4 text-right ${(r.ending_balance ?? 0) < 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+                {money(r.ending_balance)}
+              </td>
+              <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(r.average_daily_balance)}</td>
+              <td className={`py-2 pl-4 text-right ${r.negative_days > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+                {num(r.negative_days)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

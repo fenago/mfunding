@@ -41,9 +41,14 @@ const SIGNED_URL_TTL = 10 * 60; // 10 min — just long enough to fetch the byte
 
 // Business-day assumptions used across the affordability math (documented once):
 //   ~21 business days per month → daily revenue = monthly / 21.
-//   ~110 business days ≈ a 5–6 month MCA term → max affordable advance is roughly
-//   the safe daily debit capacity sustained over that term.
+//   ~4.33 weeks per month (52/12) → weekly figures convert monthly ÷ 4.33.
+//   ~110 business days ≈ a 5–6 month MCA term → the LEGACY max affordable advance is
+//   roughly the safe daily debit capacity sustained over that term. (The first-class
+//   affordability block below uses the admin-tunable term_daily_biz_days /
+//   term_weekly_weeks + factor instead — this constant stays for backward compat.)
 const BIZ_DAYS_PER_MONTH = 21;
+const WEEKS_PER_MONTH = 52 / 12; // 4.333…
+const BIZ_DAYS_PER_WEEK = 5;
 const TERM_BIZ_DAYS = 110;
 
 // Coded fallback settings — used when no underwriting_settings row exists (the
@@ -60,6 +65,19 @@ const DEFAULT_SETTINGS = {
   negative_days_flag: 3,
   debt_service_flag_pct: 20,
   min_avg_daily_balance: null as number | null,
+  // ── First-class affordability knobs (see 20260710 migration). ──
+  // Total debt-service ceiling (existing positions + new advance) as a % of TRUE
+  // monthly revenue. Industry MCA sizing is 8–15%; 10% = middle of the band.
+  max_payment_pct_of_revenue: 10,
+  // Second, independent guard: the NEW payment may not exceed this % of the worst
+  // month's average daily balance (a thin-balance merchant can't be sized on
+  // revenue math alone).
+  balance_buffer_pct: 50,
+  // Assumed MCA structure used to convert a sustainable payment → an advance size
+  // (advance = payment × term ÷ factor). Shown for BOTH daily and weekly remits.
+  affordability_factor_rate: 1.35,
+  term_daily_biz_days: 120,
+  term_weekly_weeks: 26,
   // How to treat recurring third-party PAYROLL paid to the OWNER's own name — a
   // judgment call between business commission income and personal W-2 pay.
   // 'count' | 'flag_and_discount' (default: count but flag + compute downside) | 'exclude'.
@@ -105,6 +123,10 @@ interface PerStatement {
   min_balance: number | null;
   negative_days: number | null;
   nsf_count: number | null;
+  // Count of TRUE operating sales-revenue deposits in the month (credits that are
+  // real revenue — EXCLUDING padding/transfers/owner deposits). Distinct from the
+  // dollar figures; surfaced per-month in the UI.
+  deposit_count: number | null;
   account_last4: string | null;
   deposits: Array<{ date?: string; desc?: string; amount?: number; classified_type?: string }>;
   padding_deposits: Array<{ date?: string; desc?: string; amount?: number; category?: string }>;
@@ -145,10 +167,14 @@ function extractionSystem(enabledCategories: string[]): string {
     "Also list MCA/advance DEBITS — recurring daily or weekly fixed withdrawals that look like an existing " +
     "merchant cash advance / receivables purchase remittance (cadence: 'daily' | 'weekly' | 'unknown'). " +
     "Also return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
+    "Also return deposit_count = the COUNT of TRUE operating sales-revenue deposits (credits) posted in this " +
+    "statement month — count only real revenue deposits and EXCLUDE the padding/transfer/owner deposits you " +
+    "listed above (do not count internal transfers, P2P app transfers in, owner capital, reversals, etc.). " +
+    "Return an integer (0 if none). " +
     "Return ONLY this JSON object, no prose: " +
     '{"month":string|null,"account_last4":string|null,"opening_balance":number|null,"closing_balance":number|null,' +
     '"total_deposits":number|null,"total_withdrawals":number|null,"avg_daily_balance":number|null,' +
-    '"min_balance":number|null,"negative_days":number|null,"nsf_count":number|null,' +
+    '"min_balance":number|null,"negative_days":number|null,"nsf_count":number|null,"deposit_count":number|null,' +
     '"deposits":[{"date":string,"desc":string,"amount":number,"classified_type":string}],' +
     '"padding_deposits":[{"date":string,"desc":string,"amount":number,"category":string}],' +
     '"questionable_deposits":[{"date":string,"desc":string,"amount":number,"source":string,"reason":string}],' +
@@ -386,6 +412,16 @@ Deno.serve(async (req) => {
     const analyzed = perStatement.filter((s) => !s._error);
     const monthsCovered = analyzed.length;
 
+    // Explicit per-month table rows (chronologically sortable in the UI):
+    // month | true deposit count | true-deposit $ | ending balance | avg daily balance | negative days.
+    const perMonth: Array<{
+      month: string | null;
+      deposit_count: number | null;
+      true_deposits: number;
+      ending_balance: number | null;
+      average_daily_balance: number | null;
+      negative_days: number;
+    }> = [];
     const perMonthReported: number[] = [];
     const perMonthPadding: number[] = [];
     // Owner-payroll ("questionable") revenue per month — deposits that ARE credited
@@ -427,9 +463,25 @@ Deno.serve(async (req) => {
       perMonthQuestionable.push(questionable);
       perMonthNet.push(net);
       nsfTotal += numOr0(s.nsf_count);
-      negativeDays += numOr0(s.negative_days);
+      const monthNegDays = numOr0(s.negative_days);
+      negativeDays += monthNegDays;
       if (s.avg_daily_balance != null) balances.push(numOr0(s.avg_daily_balance));
       if (s.min_balance != null) minBalances.push(numOr0(s.min_balance));
+
+      // Per-month row. deposit_count is the model's TRUE (non-padding) deposit
+      // count; fall back to (listed deposits − padding items) when the model
+      // omitted it. true_deposits $ = reported − padding (the month's net revenue).
+      const depositCount = s.deposit_count != null
+        ? Math.round(numOr0(s.deposit_count))
+        : Math.max(0, (s.deposits?.length ?? 0) - (s.padding_deposits?.length ?? 0)) || null;
+      perMonth.push({
+        month: s.month,
+        deposit_count: depositCount,
+        true_deposits: round2(net),
+        ending_balance: s.closing_balance != null ? round2(numOr0(s.closing_balance)) : null,
+        average_daily_balance: s.avg_daily_balance != null ? round2(numOr0(s.avg_daily_balance)) : null,
+        negative_days: monthNegDays,
+      });
 
       for (const dbt of (s.mca_debits ?? [])) {
         const amt = Math.abs(numOr0(dbt.amount));
@@ -516,6 +568,111 @@ Deno.serve(async (req) => {
     const conservativeMaxAffordableAdvance = round2(consSafeDailyCapacity * TERM_BIZ_DAYS);
     const hasQuestionable = questionableTotal > 0;
 
+    // Chronological per-month table (upload order is arbitrary — sort by month).
+    perMonth.sort((a, b) => {
+      const ta = Date.parse(`1 ${a.month ?? ""}`);
+      const tb = Date.parse(`1 ${b.month ?? ""}`);
+      return Number.isNaN(ta) || Number.isNaN(tb) ? 0 : ta - tb;
+    });
+
+    // ── FIRST-CLASS AFFORDABILITY (deterministic — daily vs weekly) ──
+    // Two independent ceilings, we take the tighter:
+    //   1) REVENUE ceiling — total debt service (existing positions + new advance)
+    //      must stay within max_payment_pct_of_revenue of TRUE monthly revenue.
+    //      New capacity = pct×revenue − existing debits, spread over the month.
+    //   2) BALANCE ceiling — the new payment may not exceed balance_buffer_pct of
+    //      the WORST month's average daily balance, so a thin-balance merchant
+    //      can't be sized on revenue math alone.
+    // Then advance = sustainable payment × term ÷ factor, for BOTH a daily remit
+    // (term_daily_biz_days) and a weekly remit (term_weekly_weeks).
+    const maxPayPct = numOr0(settings.max_payment_pct_of_revenue) / 100;
+    const bufferPct = numOr0(settings.balance_buffer_pct) / 100;
+    const factorRate = numOr0(settings.affordability_factor_rate) || 1.35;
+    const termDailyDays = numOr0(settings.term_daily_biz_days) || 120;
+    const termWeeklyWeeks = numOr0(settings.term_weekly_weeks) || 26;
+    const existingMonthlyDebt = round2(existingDailyDebit * BIZ_DAYS_PER_MONTH);
+    // Worst-month avg daily balance drives the balance guard (fallback: overall avg).
+    const perMonthAvgBalances = perMonth
+      .map((r) => r.average_daily_balance)
+      .filter((x): x is number => x != null);
+    const worstMonthAvgBalance = perMonthAvgBalances.length
+      ? Math.min(...perMonthAvgBalances)
+      : avgDailyBalance;
+
+    // Builds an affordability read for a given true-monthly-revenue figure.
+    const affordabilityFor = (monthlyRevenue: number) => {
+      const allowedTotalMonthly = maxPayPct * Math.max(0, monthlyRevenue);
+      const allowedNewMonthly = Math.max(0, allowedTotalMonthly - existingMonthlyDebt);
+      const revDaily = allowedNewMonthly / BIZ_DAYS_PER_MONTH;
+      const revWeekly = allowedNewMonthly / WEEKS_PER_MONTH;
+      // Balance guard: cap the daily pull at a fraction of the worst avg balance.
+      const balDaily = worstMonthAvgBalance != null && worstMonthAvgBalance > 0
+        ? bufferPct * worstMonthAvgBalance
+        : (worstMonthAvgBalance != null ? 0 : Infinity); // <=0 balance ⇒ no room; unknown ⇒ no cap
+      const balWeekly = balDaily === Infinity ? Infinity : balDaily * BIZ_DAYS_PER_WEEK;
+      const maxDaily = round2(Math.max(0, Math.min(revDaily, balDaily)));
+      const maxWeekly = round2(Math.max(0, Math.min(revWeekly, balWeekly)));
+      const bindingDaily = balDaily < revDaily ? "balance" : "revenue";
+      const bindingWeekly = balWeekly < revWeekly ? "balance" : "revenue";
+      return {
+        max_daily_payment: maxDaily,
+        max_weekly_payment: maxWeekly,
+        max_advance_daily: round2((maxDaily * termDailyDays) / factorRate),
+        max_advance_weekly: round2((maxWeekly * termWeeklyWeeks) / factorRate),
+        binding_daily: bindingDaily,
+        binding_weekly: bindingWeekly,
+      };
+    };
+
+    const affBase = affordabilityFor(trueAvgMonthlyRevenue);
+    const affCons = affordabilityFor(conservativeAvgMonthlyRevenue);
+    // What the requested amount WOULD demand as a daily / weekly pull.
+    const reqDailyPayment = amountRequested != null && amountRequested > 0
+      ? round2((amountRequested * factorRate) / termDailyDays) : null;
+    const reqWeeklyPayment = amountRequested != null && amountRequested > 0
+      ? round2((amountRequested * factorRate) / termWeeklyWeeks) : null;
+    const affordableDaily = reqDailyPayment == null ? null : affBase.max_daily_payment >= reqDailyPayment;
+    const affordableWeekly = reqWeeklyPayment == null ? null : affBase.max_weekly_payment >= reqWeeklyPayment;
+
+    const affordability = {
+      // knobs used (surfaced as assumptions text in the UI)
+      max_payment_pct_of_revenue: numOr0(settings.max_payment_pct_of_revenue),
+      balance_buffer_pct: numOr0(settings.balance_buffer_pct),
+      factor_rate: factorRate,
+      term_daily_biz_days: termDailyDays,
+      term_weekly_weeks: termWeeklyWeeks,
+      // inputs
+      monthly_revenue_basis: trueAvgMonthlyRevenue,
+      existing_daily_debit: existingDailyDebit,
+      existing_monthly_debt_service: existingMonthlyDebt,
+      balance_basis: worstMonthAvgBalance != null ? round2(worstMonthAvgBalance) : null,
+      // base-case results
+      max_daily_payment: affBase.max_daily_payment,
+      max_weekly_payment: affBase.max_weekly_payment,
+      max_advance_daily: affBase.max_advance_daily,
+      max_advance_weekly: affBase.max_advance_weekly,
+      binding_constraint_daily: affBase.binding_daily,
+      binding_constraint_weekly: affBase.binding_weekly,
+      // requested-amount comparison
+      amount_requested: amountRequested,
+      required_daily_payment: reqDailyPayment,
+      required_weekly_payment: reqWeeklyPayment,
+      affordable_daily: affordableDaily,
+      affordable_weekly: affordableWeekly,
+      // conservative sensitivity (owner-payroll excluded) — only meaningful when present
+      conservative: hasQuestionable
+        ? {
+            monthly_revenue_basis: conservativeAvgMonthlyRevenue,
+            max_daily_payment: affCons.max_daily_payment,
+            max_weekly_payment: affCons.max_weekly_payment,
+            max_advance_daily: affCons.max_advance_daily,
+            max_advance_weekly: affCons.max_advance_weekly,
+            affordable_daily: reqDailyPayment == null ? null : affCons.max_daily_payment >= reqDailyPayment,
+            affordable_weekly: reqWeeklyPayment == null ? null : affCons.max_weekly_payment >= reqWeeklyPayment,
+          }
+        : null,
+    };
+
     const metrics = {
       statements_analyzed: monthsCovered,
       months_covered: monthsCovered,
@@ -549,6 +706,10 @@ Deno.serve(async (req) => {
       amount_requested: amountRequested,
       revenue_trend: revenueTrend,
       deposit_concentration_pct: depositConcentrationPct,
+      // Explicit per-month table + first-class affordability block (both additive;
+      // old rows lack them and the UI hides those sections).
+      per_month: perMonth,
+      affordability,
     };
 
     // ---- Flags from the admin-tunable thresholds ----
@@ -742,6 +903,16 @@ Deno.serve(async (req) => {
           `CONSERVATIVE CASE (owner-payroll is personal, excluded): true revenue ${money(conservativeAvgMonthlyRevenue)}/mo, ` +
           `max affordable ${money(conservativeMaxAffordableAdvance)}.`
         : "") +
+      "\n\nAFFORDABILITY (deterministic, DAILY vs WEEKLY structure — factor " + factorRate +
+        `, ${termDailyDays} biz-days daily / ${termWeeklyWeeks} weeks weekly, payment cap ` +
+        `${affordability.max_payment_pct_of_revenue}% of revenue, balance buffer ${affordability.balance_buffer_pct}%): ` +
+        `max sustainable DAILY payment ${money(affBase.max_daily_payment)} → max advance ${money(affBase.max_advance_daily)}; ` +
+        `max sustainable WEEKLY payment ${money(affBase.max_weekly_payment)} → max advance ${money(affBase.max_advance_weekly)}. ` +
+        `Existing debits netted out: ${money(existingDailyDebit)}/day (${money(existingMonthlyDebt)}/mo). ` +
+        (reqDailyPayment != null
+          ? `Requested ${money(amountRequested ?? 0)} needs ${money(reqDailyPayment)}/day or ${money(reqWeeklyPayment ?? 0)}/week → ` +
+            `daily ${affordableDaily ? "AFFORDABLE" : "UNAFFORDABLE"}, weekly ${affordableWeekly ? "AFFORDABLE" : "UNAFFORDABLE"}.`
+          : "No requested amount on file.") +
       "\n\nAFFORDABILITY RATING (code-derived, base case): " + affordabilityRating +
       "\n\nFUNDER NETWORK MONTHLY-REVENUE FLOORS (distinct, USD): " +
       (revenueFloors.length ? revenueFloors.map((f) => `$${f.toLocaleString("en-US")}`).join(", ") : "none on file") +
@@ -838,7 +1009,7 @@ function emptyStatement(filename: string, err: string): PerStatement {
   return {
     month: null, account_last4: null, opening_balance: null, closing_balance: null,
     total_deposits: null, total_withdrawals: null, avg_daily_balance: null,
-    min_balance: null, negative_days: null, nsf_count: null,
+    min_balance: null, negative_days: null, nsf_count: null, deposit_count: null,
     deposits: [], padding_deposits: [], questionable_deposits: [], mca_debits: [],
     _filename: filename, _error: err,
   };
@@ -889,6 +1060,7 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
     min_balance: num(p.min_balance),
     negative_days: num(p.negative_days),
     nsf_count: num(p.nsf_count),
+    deposit_count: num(p.deposit_count),
     deposits: arr(p.deposits),
     padding_deposits: arr(p.padding_deposits),
     questionable_deposits: arr(p.questionable_deposits),

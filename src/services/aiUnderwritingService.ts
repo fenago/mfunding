@@ -18,6 +18,51 @@ export interface UWFlag {
   message: string;
 }
 
+// One chronologically-ordered row of the explicit per-month metrics table.
+export interface UWPerMonth {
+  month: string | null;
+  deposit_count: number | null;   // count of TRUE (non-padding) deposits
+  true_deposits: number;          // deposits − padding, in dollars
+  ending_balance: number | null;
+  average_daily_balance: number | null;
+  negative_days: number;
+}
+
+// First-class affordability block: max sustainable DAILY vs WEEKLY payment, each
+// converted to an advance size, netted of existing debits, compared to the ask.
+// `null` conservative means there was no owner-payroll sensitivity to model.
+export interface UWAffordability {
+  max_payment_pct_of_revenue: number;
+  balance_buffer_pct: number;
+  factor_rate: number;
+  term_daily_biz_days: number;
+  term_weekly_weeks: number;
+  monthly_revenue_basis: number;
+  existing_daily_debit: number;
+  existing_monthly_debt_service: number;
+  balance_basis: number | null;
+  max_daily_payment: number;
+  max_weekly_payment: number;
+  max_advance_daily: number;
+  max_advance_weekly: number;
+  binding_constraint_daily: "revenue" | "balance";
+  binding_constraint_weekly: "revenue" | "balance";
+  amount_requested: number | null;
+  required_daily_payment: number | null;
+  required_weekly_payment: number | null;
+  affordable_daily: boolean | null;
+  affordable_weekly: boolean | null;
+  conservative: {
+    monthly_revenue_basis: number;
+    max_daily_payment: number;
+    max_weekly_payment: number;
+    max_advance_daily: number;
+    max_advance_weekly: number;
+    affordable_daily: boolean | null;
+    affordable_weekly: boolean | null;
+  } | null;
+}
+
 export interface UWMetrics {
   reported_avg_monthly_revenue: number;
   true_avg_monthly_revenue: number;
@@ -43,6 +88,9 @@ export interface UWMetrics {
   deposit_concentration_pct: number;
   statements_analyzed: number;
   months_covered: number;
+  // Additive (older runs won't have these — render conditionally).
+  per_month?: UWPerMonth[];
+  affordability?: UWAffordability;
 }
 
 export interface UWPerStatement {
@@ -55,6 +103,7 @@ export interface UWPerStatement {
   min_balance: number;
   negative_days: number;
   nsf_count: number;
+  deposit_count?: number | null;
   deposits: unknown[];
   padding_deposits: unknown[];
   mca_debits: unknown[];
@@ -91,6 +140,12 @@ export interface UnderwritingSettings {
   negative_days_flag: number | null;
   debt_service_flag_pct: number | null;
   min_avg_daily_balance: number | null;
+  // First-class affordability knobs (20260710 migration).
+  max_payment_pct_of_revenue: number | null;
+  balance_buffer_pct: number | null;
+  affordability_factor_rate: number | null;
+  term_daily_biz_days: number | null;
+  term_weekly_weeks: number | null;
   extraction_model: string | null;
   judge_model: string | null;
   updated_at: string | null;
