@@ -21,6 +21,9 @@ verify_jwt = false
 [functions.ghl-webhook]
 verify_jwt = false   # public inbound webhook — auth enforced in-code via fail-closed shared-secret gate (audit #3 hardened)
 
+[functions.live-transfer-intake]
+verify_jwt = false   # GHL live-transfer webhook / Zapier — auth enforced in-code via fail-closed shared-secret gate (?secret=)
+
 [functions.process-document]
 verify_jwt = false
 
