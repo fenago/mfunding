@@ -19,7 +19,7 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.ghl-webhook]
-verify_jwt = false   # secret-checked inbound webhook (see audit #3 — harden separately)
+verify_jwt = false   # public inbound webhook — auth enforced in-code via fail-closed shared-secret gate (audit #3 hardened)
 
 [functions.process-document]
 verify_jwt = false
@@ -97,4 +97,17 @@ verify_jwt = true
 # AI performance read on ONE lead-gen campaign (verdict + recommendations).
 # Staff-only enforced in code (getUser + profiles.role check).
 [functions.analyze-campaign]
+verify_jwt = true
+
+# AI sales recommendations for ONE customer/lead. Moves the old client-side Gemini
+# call server-side (audit #4 — VITE_GEMINI_API_KEY was in the bundle). Staff-only
+# enforced in code (getUser + profiles.role check). Key from vault via callLLM.
+[functions.recommend-customer]
+verify_jwt = true
+
+# Scrapes a lender website + AI-extracts structured funder data. Moves the old
+# client-side Firecrawl+Gemini pipeline server-side (audit #4 — VITE_FIRECRAWL_API_KEY
+# / VITE_GEMINI_API_KEY were in the bundle). Staff-only enforced in code; keys from
+# the vault (Deno.env FIRECRAWL_API_KEY + callLLM provider key).
+[functions.lender-extract]
 verify_jwt = true

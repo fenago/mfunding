@@ -929,8 +929,8 @@ Use Claude Code Agent Teams (experimental, now enabled in settings.json). The le
 | Service | Environment Variable | Status |
 |---|---|---|
 | Supabase | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Active |
-| Google Gemini AI | `VITE_GEMINI_API_KEY` | Active |
-| Firecrawl | `VITE_FIRECRAWL_API_KEY` | Active |
+| Google Gemini AI | Supabase vault `llm_provider_keys` (server-side via callLLM) | Active — moved off client (audit #4) |
+| Firecrawl | Supabase secret `FIRECRAWL_API_KEY` (edge functions only) | Active — moved off client (audit #4) |
 | Hyperbrowser | `VITE_HYPERBROWSER_API_KEY` | Active |
 
 ### Must Get Before Build Starts

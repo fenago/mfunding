@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   SparklesIcon,
-  CpuChipIcon,
   ClipboardDocumentIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -16,17 +15,11 @@ import {
   generateCustomerRecommendation,
   CustomerRecommendation,
   CustomerProfile,
-  GeminiModel,
 } from "../../lib/gemini";
 
 interface CustomerAIRecommendationProps {
   customer: CustomerProfile;
 }
-
-const GEMINI_MODELS: { value: GeminiModel; label: string }[] = [
-  { value: "gemini-2.0-flash", label: "Flash (Fast)" },
-  { value: "gemini-2.0-pro-exp", label: "Pro (Quality)" },
-];
 
 const PRODUCT_COLORS: Record<string, string> = {
   mca: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
@@ -42,8 +35,6 @@ export default function CustomerAIRecommendation({ customer }: CustomerAIRecomme
   const [recommendation, setRecommendation] = useState<CustomerRecommendation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>("gemini-2.0-flash");
-  const [showModelSelect, setShowModelSelect] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     products: true,
     script: true,
@@ -60,7 +51,7 @@ export default function CustomerAIRecommendation({ customer }: CustomerAIRecomme
     setError(null);
 
     try {
-      const result = await generateCustomerRecommendation(customer, selectedModel);
+      const result = await generateCustomerRecommendation(customer);
       setRecommendation(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate recommendations");
@@ -149,38 +140,6 @@ export default function CustomerAIRecommendation({ customer }: CustomerAIRecomme
                 <SparklesIcon className="w-4 h-4" />
                 Generate Recommendations
               </button>
-
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowModelSelect(!showModelSelect)}
-                  className="p-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
-                  title="Select AI Model"
-                >
-                  <CpuChipIcon className="w-5 h-5" />
-                </button>
-
-                {showModelSelect && (
-                  <div className="absolute top-full right-0 mt-1 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-10">
-                    {GEMINI_MODELS.map((model) => (
-                      <button
-                        key={model.value}
-                        onClick={() => {
-                          setSelectedModel(model.value);
-                          setShowModelSelect(false);
-                        }}
-                        className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 first:rounded-t-lg last:rounded-b-lg ${
-                          selectedModel === model.value
-                            ? "bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
-                            : "text-gray-700 dark:text-gray-300"
-                        }`}
-                      >
-                        {model.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
 
             {error && (

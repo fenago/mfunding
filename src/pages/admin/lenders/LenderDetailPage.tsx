@@ -8,7 +8,6 @@ import {
   UserIcon,
   SparklesIcon,
   ArrowPathIcon,
-  CpuChipIcon,
   CheckIcon,
   TrashIcon,
   ChevronDownIcon,
@@ -31,9 +30,7 @@ import DocumentList from "../../../components/shared/DocumentList";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 import {
-  extractLenderInfo,
-  fetchWebsiteContent,
-  type GeminiModel,
+  extractLenderFromWebsite,
   type LenderExtraction,
 } from "../../../lib/gemini";
 
@@ -95,11 +92,6 @@ interface LenderDocument {
   status: string;
   created_at: string;
 }
-
-const GEMINI_MODELS: { value: GeminiModel; label: string }[] = [
-  { value: "gemini-2.0-flash", label: "Flash (Fast)" },
-  { value: "gemini-2.0-pro-exp", label: "Pro (Quality)" },
-];
 
 type LenderStatus = "potential" | "application_submitted" | "processing" | "approved" | "live_vendor" | "affiliate_referral" | "rejected" | "inactive";
 
@@ -224,8 +216,6 @@ export default function LenderDetailPage() {
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [extractSuccess, setExtractSuccess] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>("gemini-2.0-flash");
-  const [showModelSelect, setShowModelSelect] = useState(false);
   const [extractedData, setExtractedData] = useState<LenderExtraction | null>(null);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [isApplyingData, setIsApplyingData] = useState(false);
@@ -491,11 +481,10 @@ export default function LenderDetailPage() {
         url = "https://" + url;
       }
 
-      const websiteContent = await fetchWebsiteContent(url);
-      const extracted = await extractLenderInfo(websiteContent, selectedModel);
+      const extracted = await extractLenderFromWebsite(url);
 
       setExtractedData(extracted);
-      setExtractSuccess(`Successfully extracted info using ${selectedModel === "gemini-2.0-flash" ? "Gemini Flash" : "Gemini Pro"}`);
+      setExtractSuccess("Successfully extracted info from website");
     } catch (error) {
       console.error("Extraction error:", error);
       setExtractError(error instanceof Error ? error.message : "Failed to extract information");
@@ -1665,38 +1654,6 @@ export default function LenderDetailPage() {
                         )}
                         {isExtracting ? "Extracting..." : "Extract from Website"}
                       </button>
-
-                      <div className="relative">
-                        <button
-                          type="button"
-                          onClick={() => setShowModelSelect(!showModelSelect)}
-                          className="p-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
-                          title="Select AI Model"
-                        >
-                          <CpuChipIcon className="w-5 h-5" />
-                        </button>
-
-                        {showModelSelect && (
-                          <div className="absolute top-full left-0 mt-1 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-10">
-                            {GEMINI_MODELS.map((model) => (
-                              <button
-                                key={model.value}
-                                onClick={() => {
-                                  setSelectedModel(model.value);
-                                  setShowModelSelect(false);
-                                }}
-                                className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 first:rounded-t-lg last:rounded-b-lg ${
-                                  selectedModel === model.value
-                                    ? "bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
-                                    : "text-gray-700 dark:text-gray-300"
-                                }`}
-                              >
-                                {model.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
                     </div>
 
                     {extractError && (
