@@ -93,3 +93,8 @@ verify_jwt = false
 # shared-secret check inside grants the auto-apply path.
 [functions.funder-reply-reconcile]
 verify_jwt = true
+
+# AI performance read on ONE lead-gen campaign (verdict + recommendations).
+# Staff-only enforced in code (getUser + profiles.role check).
+[functions.analyze-campaign]
+verify_jwt = true
