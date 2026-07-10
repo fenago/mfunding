@@ -48,6 +48,34 @@ const STATUS_BY_STAGE: Record<string, string> = {
   "nurture / re-engage": "nurture",
 };
 
+// Deal status → its stage-timestamp column. Mirrors STATUS_TIMESTAMP_MAP in
+// src/services/dealService.ts — when this webhook moves a deal into one of these
+// statuses we stamp the matching *_at (only if still null, so a real earlier
+// timestamp is never clobbered). Statuses with no timestamp column (VCF stages,
+// "new", "renewal_eligible") simply don't stamp.
+const STATUS_TIMESTAMP_MAP: Record<string, string> = {
+  contacted: "contacted_at",
+  qualifying: "qualified_at",
+  application_sent: "application_sent_at",
+  docs_collected: "docs_collected_at",
+  bank_statements: "bank_statements_at",
+  submitted_to_funder: "submitted_at",
+  offer_received: "offer_received_at",
+  offer_presented: "offer_presented_at",
+  offer_accepted: "offer_accepted_at",
+  funded: "funded_at",
+  nurture: "nurture_at",
+  declined: "declined_at",
+};
+
+// Commission economics — mirrors COMMISSION_DEFAULTS in src/types/commissions.ts.
+// Kept in sync by hand (edge functions can't import from src/).
+const NEW_DEAL_POINTS = 8;
+const RENEWAL_POINTS = 6;
+const COMPANY_LEAD_SPLIT = 30;
+const SELF_GEN_SPLIT = 65;
+const RENEWAL_SPLIT = 30;
+
 // We auto-create deals for opportunities in these two pipelines.
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
 const VCF_PIPELINE_ID = "nsmH6jIeVA0SsZMMq4LC";
@@ -828,7 +856,11 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   // Monetary value: native (monetaryValue) or flat (lead_value).
   const monetary = (o.monetaryValue ?? evt.lead_value ?? null) as number | null;
 
-  const { data: deal } = await db.from("deals").select("id,status,customer_id").eq("ghl_opportunity_id", oppId).maybeSingle();
+  // Pull the fields the stage-mirror needs to (a) stamp timestamps only-if-null
+  // and (b) create the funded commission with this deal's real splits.
+  const { data: deal } = await db.from("deals")
+    .select("id, status, customer_id, deal_number, amount_funded, amount_requested, assigned_closer_id, is_renewal, lead_source, contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, offer_accepted_at, funded_at, declined_at, nurture_at")
+    .eq("ghl_opportunity_id", oppId).maybeSingle();
 
   // ── Gap A: create the deal if this opportunity isn't linked to one yet ──
   if (!deal) {
@@ -874,21 +906,220 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       ghl_opportunity_id: oppId,
       lead_source: "ghl_other",
     };
+    // Stamp the stage timestamp for whatever status this opportunity was created
+    // at (it's a fresh row, so the column is null by definition).
+    const createTsCol = STATUS_TIMESTAMP_MAP[status];
+    if (createTsCol) insert[createTsCol] = new Date().toISOString();
     if (status === "funded" && monetary != null) insert.amount_funded = monetary;
     const { data: newDeal } = await db.from("deals").insert(insert).select("id").maybeSingle();
-    if (newDeal) await log(db, "deal", newDeal.id, `ghl:${evtTypeLabel(evt)}:created`, { stage: mapped, evt });
+    if (newDeal) {
+      await log(db, "deal", newDeal.id, `ghl:${evtTypeLabel(evt)}:created`, { stage: mapped, evt });
+      // An opportunity created straight at Funded still owes a commission.
+      if (status === "funded") {
+        await createCommissionForFundedDeal(db, {
+          id: newDeal.id as string,
+          amount_funded: (insert.amount_funded as number | null) ?? null,
+          amount_requested: monetary,
+          assigned_closer_id: null,
+          is_renewal: false,
+          lead_source: "ghl_other",
+        }, monetary);
+      }
+    }
     return;
   }
 
   // ── Existing deal: mirror the stage change from GHL ──
+  const d = deal as Record<string, unknown>;
   const patch: Record<string, unknown> = {};
-  if (mapped && mapped !== deal.status) patch.status = mapped;
+  const movedStatus = mapped && mapped !== deal.status;
+  if (movedStatus) {
+    patch.status = mapped;
+    // Stamp the matching stage timestamp, but only if it's still null so an
+    // earlier real timestamp (e.g. the deal was already funded once) is kept.
+    const tsCol = STATUS_TIMESTAMP_MAP[mapped as string];
+    if (tsCol && !d[tsCol]) patch[tsCol] = new Date().toISOString();
+    // Funded with no known amount yet → capture the opportunity's value so
+    // funded-by-month analytics (and the commission below) aren't blind.
+    if (mapped === "funded" && d.amount_funded == null && monetary != null) {
+      patch.amount_funded = monetary;
+    }
+  }
   if (monetary != null) patch.amount_requested = monetary;
 
   if (Object.keys(patch).length) {
     await db.from("deals").update(patch).eq("id", deal.id);
     await log(db, "deal", deal.id, `ghl:${evtTypeLabel(evt)}`, { from: deal.status, to: patch.status, evt });
   }
+
+  // A deal dragged to Funded inside GHL owes a commission — the mirror used to
+  // skip this entirely. Idempotent + best-effort; never breaks webhook processing.
+  if (mapped === "funded") {
+    await createCommissionForFundedDeal(db, {
+      id: deal.id as string,
+      amount_funded: (patch.amount_funded as number | null) ?? (d.amount_funded as number | null) ?? null,
+      amount_requested: (d.amount_requested as number | null) ?? null,
+      assigned_closer_id: (d.assigned_closer_id as string | null) ?? null,
+      is_renewal: !!d.is_renewal,
+      lead_source: (d.lead_source as string | null) ?? null,
+    }, monetary);
+  }
+}
+
+// ── Server-side commission on funded (GHL stage mirror) ──────────────────────
+// Mirrors autoCreateCommissionForFundedDeal in src/services/dealService.ts. The
+// inbound stage-mirror had no path to create a commission, so a deal funded
+// inside GHL got a status change but no commission row. Idempotent (no-ops when a
+// commission already exists for the deal) and fully guarded — a failure here logs
+// but never throws, so it can't break webhook processing.
+interface MirrorDealForCommission {
+  id: string;
+  amount_funded?: number | null;
+  amount_requested?: number | null;
+  assigned_closer_id?: string | null;
+  is_renewal?: boolean | null;
+  lead_source?: string | null;
+}
+
+async function createCommissionForFundedDeal(
+  db: DB,
+  deal: MirrorDealForCommission,
+  monetaryFallback: number | null,
+): Promise<void> {
+  try {
+    // Idempotency guard: never create a second commission for the same deal.
+    const { data: existing } = await db.from("commissions").select("id").eq("deal_id", deal.id).limit(1);
+    if (existing && existing.length > 0) return;
+
+    // Funded amount: explicit amount_funded, else the opportunity's monetaryValue,
+    // else the requested amount. If none are usable, flag for manual review rather
+    // than writing a zero-amount commission.
+    const amountFunded = firstPositive(deal.amount_funded, monetaryFallback, deal.amount_requested);
+    if (amountFunded == null) {
+      await log(db, "deal", deal.id, "commission-needs-review", {
+        reason: "deal funded via GHL stage mirror but no amount_funded / monetaryValue / amount_requested to base commission on",
+      });
+      return;
+    }
+
+    // Map the assigned closer (profiles.id) → its closers record for this closer's
+    // individual splits; fall back to platform defaults when unmapped.
+    let closerId: string | null = null;
+    let closerSplits: { company: number; self: number; renewal: number } | null = null;
+    if (deal.assigned_closer_id) {
+      const { data: closer } = await db.from("closers")
+        .select("id, company_lead_split, self_gen_split, renewal_split")
+        .eq("user_id", deal.assigned_closer_id).maybeSingle();
+      if (closer) {
+        closerId = closer.id as string;
+        closerSplits = {
+          company: Number(closer.company_lead_split),
+          self: Number(closer.self_gen_split),
+          renewal: Number(closer.renewal_split),
+        };
+      }
+    }
+
+    const isRenewal = !!deal.is_renewal;
+    const commissionPoints = isRenewal ? RENEWAL_POINTS : NEW_DEAL_POINTS;
+    const leadSource: "company" | "self_generated" | "renewal" = isRenewal
+      ? "renewal"
+      : deal.lead_source && /self/i.test(deal.lead_source)
+        ? "self_generated"
+        : "company";
+
+    const closerSplitPercentage = closerSplits
+      ? leadSource === "renewal"
+        ? closerSplits.renewal
+        : leadSource === "self_generated"
+          ? closerSplits.self
+          : closerSplits.company
+      : undefined;
+
+    const calc = calcMirrorCommission({
+      amountFunded, commissionPoints, closerId, closerSplitPercentage, leadSource, isRenewal,
+    });
+
+    const { error } = await db.from("commissions").insert({
+      deal_id: deal.id,
+      deal_submission_id: null,
+      gross_commission: calc.grossCommission,
+      commission_points: calc.commissionPoints,
+      closer_id: closerId,
+      closer_split_percentage: calc.closerSplitPercentage,
+      closer_amount: calc.closerAmount,
+      company_amount: calc.companyAmount,
+      sub_iso_id: null,
+      override_points: 0,
+      override_amount: 0,
+      manager_override_percentage: null,
+      manager_override_amount: 0,
+      payment_status: "pending",
+      funder_paid_at: null,
+      closer_paid_at: null,
+      clawback_amount: 0,
+      clawback_reason: null,
+      notes: "Auto-generated on deal funded (GHL stage mirror)",
+    });
+    if (error) {
+      await log(db, "deal", deal.id, "commission-create-failed", { error: error.message });
+    }
+  } catch (e) {
+    try {
+      await log(db, "deal", deal.id, "commission-create-failed",
+        { error: e instanceof Error ? e.message : String(e) });
+    } catch { /* best-effort — commission failure must never break the webhook */ }
+  }
+}
+
+// First finite, positive number among the candidates, else null.
+function firstPositive(...nums: Array<number | null | undefined>): number | null {
+  for (const n of nums) {
+    const v = typeof n === "number" ? n : NaN;
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  return null;
+}
+
+// Commission split math for the mirror. Mirrors calculateCommission() in
+// src/services/commissionService.ts for the no-Sub-ISO case (the inbound mirror
+// never carries a Sub-ISO). closerAmount comes off the full gross; company keeps
+// the remainder.
+function calcMirrorCommission(params: {
+  amountFunded: number;
+  commissionPoints: number;
+  closerId: string | null;
+  closerSplitPercentage?: number;
+  leadSource: "company" | "self_generated" | "renewal";
+  isRenewal: boolean;
+}): {
+  grossCommission: number;
+  commissionPoints: number;
+  closerSplitPercentage: number;
+  closerAmount: number;
+  companyAmount: number;
+} {
+  const { amountFunded, commissionPoints, closerId, closerSplitPercentage, leadSource, isRenewal } = params;
+  const grossCommission = (amountFunded * commissionPoints) / 100;
+
+  let effectiveSplit = 0;
+  if (closerId) {
+    if (closerSplitPercentage !== undefined) effectiveSplit = closerSplitPercentage;
+    else if (isRenewal || leadSource === "renewal") effectiveSplit = RENEWAL_SPLIT;
+    else if (leadSource === "self_generated") effectiveSplit = SELF_GEN_SPLIT;
+    else effectiveSplit = COMPANY_LEAD_SPLIT;
+  }
+
+  const closerAmount = closerId ? (grossCommission * effectiveSplit) / 100 : 0;
+  const companyAmount = grossCommission - closerAmount;
+
+  return {
+    grossCommission,
+    commissionPoints,
+    closerSplitPercentage: effectiveSplit,
+    closerAmount,
+    companyAmount,
+  };
 }
 
 // Best-effort event-type label for activity logging (native type or workflow customData.type).
