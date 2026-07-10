@@ -203,7 +203,17 @@ export async function callAnthropicBlocks(
   db: SupabaseClient,
   model: string,
   content: AnthropicContentBlock[],
-  opts: { system?: string; maxTokens?: number; temperature?: number; jsonMode?: boolean } = {},
+  opts: {
+    system?: string;
+    maxTokens?: number;
+    temperature?: number;
+    jsonMode?: boolean;
+    // Force a single structured tool call so required fields can't be omitted.
+    // When `tools` is set, the tool_use input is returned as JSON text (so the
+    // caller can safeParseJson it exactly like a jsonMode reply).
+    tools?: AnthropicContentBlock[];
+    toolChoice?: AnthropicContentBlock;
+  } = {},
 ): Promise<string> {
   const key = await getKey(db, "anthropic");
   const body: Record<string, unknown> = {
@@ -213,6 +223,8 @@ export async function callAnthropicBlocks(
   };
   if (opts.system) body.system = opts.system;
   if (opts.temperature != null) body.temperature = opts.temperature;
+  if (opts.tools) body.tools = opts.tools;
+  if (opts.toolChoice) body.tool_choice = opts.toolChoice;
 
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
@@ -225,7 +237,14 @@ export async function callAnthropicBlocks(
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${bodyPrefix(text)}`);
-  const jsonRes = JSON.parse(text) as { content?: Array<{ type?: string; text?: string }> };
+  const jsonRes = JSON.parse(text) as {
+    content?: Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
+  };
+  // Forced tool use: return the tool input as JSON text.
+  if (opts.tools) {
+    const toolUse = (jsonRes.content ?? []).find((b) => b?.type === "tool_use");
+    if (toolUse && toolUse.input != null) return JSON.stringify(toolUse.input);
+  }
   const out = (jsonRes.content ?? [])
     .filter((b) => b?.type === "text")
     .map((b) => b?.text ?? "")

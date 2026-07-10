@@ -123,9 +123,9 @@ interface PerStatement {
   min_balance: number | null;
   negative_days: number | null;
   nsf_count: number | null;
-  // Count of TRUE operating sales-revenue deposits in the month (credits that are
-  // real revenue — EXCLUDING padding/transfers/owner deposits). Distinct from the
-  // dollar figures; surfaced per-month in the UI.
+  // TOTAL count of deposit/credit transactions posted in the month (every credit
+  // line). The "true" (non-padding) deposit count shown per-month is derived
+  // deterministically in aggregation as deposit_count − padding items.
   deposit_count: number | null;
   account_last4: string | null;
   deposits: Array<{ date?: string; desc?: string; amount?: number; classified_type?: string }>;
@@ -166,21 +166,87 @@ function extractionSystem(enabledCategories: string[]): string {
     "padding_deposits and do NOT silently drop them; capture each with the paying source and why it's ambiguous. " +
     "Also list MCA/advance DEBITS — recurring daily or weekly fixed withdrawals that look like an existing " +
     "merchant cash advance / receivables purchase remittance (cadence: 'daily' | 'weekly' | 'unknown'). " +
-    "Also return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
-    "Also return deposit_count = the COUNT of TRUE operating sales-revenue deposits (credits) posted in this " +
-    "statement month — count only real revenue deposits and EXCLUDE the padding/transfer/owner deposits you " +
-    "listed above (do not count internal transfers, P2P app transfers in, owner capital, reversals, etc.). " +
-    "Return an integer (0 if none). " +
-    "Return ONLY this JSON object, no prose: " +
-    '{"month":string|null,"account_last4":string|null,"opening_balance":number|null,"closing_balance":number|null,' +
-    '"total_deposits":number|null,"total_withdrawals":number|null,"avg_daily_balance":number|null,' +
-    '"min_balance":number|null,"negative_days":number|null,"nsf_count":number|null,"deposit_count":number|null,' +
-    '"deposits":[{"date":string,"desc":string,"amount":number,"classified_type":string}],' +
-    '"padding_deposits":[{"date":string,"desc":string,"amount":number,"category":string}],' +
-    '"questionable_deposits":[{"date":string,"desc":string,"amount":number,"source":string,"reason":string}],' +
-    '"mca_debits":[{"date":string,"desc":string,"amount":number,"cadence":string}]}'
+    "Return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
+    "You MUST fill every field of the report_statement tool for THIS statement — do not omit any. " +
+    "Every real bank statement shows an ENDING balance and a statement period, so closing_balance and month are " +
+    "ALWAYS present, never null. Provide avg_daily_balance from the statement's average-daily-balance line if " +
+    "printed, otherwise estimate it from the running daily ledger balances (do not leave it null). " +
+    "negative_days = the number of days the ledger balance was below zero (0 if none). " +
+    "deposit_count = the TOTAL number of deposit/credit transactions posted in the month — count EVERY credit " +
+    "line item (sales, transfers, owner deposits, everything). It must be >= the number of deposits you list and " +
+    "must NEVER be 0 when the statement has any deposits. Padding is handled separately via padding_deposits — do " +
+    "NOT subtract padding from deposit_count. " +
+    "Call the report_statement tool with your findings (do not also write prose)."
   );
 }
+
+// The extraction tool — a structured schema whose required fields the model cannot
+// omit. Forcing a single tool call is what guarantees the four owner-mandated
+// per-statement fields (deposit_count, ending/closing balance, avg daily balance,
+// negative_days) are always present, unlike a free-form JSON prompt where the model
+// silently dropped deposit_count on some statements.
+const EXTRACTION_TOOL = {
+  name: "report_statement",
+  description: "Report the extracted figures for exactly one business bank statement.",
+  input_schema: {
+    type: "object",
+    properties: {
+      month: { type: ["string", "null"], description: "Statement period, e.g. 'March 2026'. Always present on a real statement." },
+      account_last4: { type: ["string", "null"] },
+      opening_balance: { type: ["number", "null"] },
+      closing_balance: { type: "number", description: "Ending balance shown on the statement. Always present." },
+      total_deposits: { type: ["number", "null"], description: "Sum of all deposits/credits for the month." },
+      total_withdrawals: { type: ["number", "null"] },
+      avg_daily_balance: { type: "number", description: "Average daily balance — from the statement if printed, else estimated from daily ledger balances." },
+      min_balance: { type: ["number", "null"] },
+      negative_days: { type: "integer", description: "Count of days the balance was negative (0 if none)." },
+      nsf_count: { type: ["integer", "null"] },
+      deposit_count: { type: "integer", description: "TOTAL count of deposit/credit transactions this month; never 0 when deposits exist." },
+      deposits: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" },
+            classified_type: { type: "string" },
+          },
+        },
+      },
+      padding_deposits: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" }, category: { type: "string" },
+          },
+        },
+      },
+      questionable_deposits: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" },
+            source: { type: "string" }, reason: { type: "string" },
+          },
+        },
+      },
+      mca_debits: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" }, cadence: { type: "string" },
+          },
+        },
+      },
+    },
+    required: [
+      "month", "closing_balance", "avg_daily_balance", "negative_days", "deposit_count",
+      "total_deposits", "deposits", "padding_deposits", "questionable_deposits", "mca_debits",
+    ],
+  },
+};
 
 // Decode a JWT's payload and return its "role" claim (no signature check — used
 // ONLY to recognize a service_role token for trusted server-side auto calls; the
@@ -370,11 +436,16 @@ Deno.serve(async (req) => {
             settings.extraction_model,
             [
               { type: "document", source: { type: "base64", media_type: "application/pdf", data: g.b64 } },
-              { type: "text", text: "Extract this bank statement per your instructions. Return ONLY the JSON object." },
+              { type: "text", text: "Extract this bank statement per your instructions and call the report_statement tool." },
             ],
             // A busy month has a long deposits/mca_debits array — 4096 tokens can
-            // truncate the JSON mid-array and fail parsing, so give extraction room.
-            { system: exSystem, maxTokens: 8192, temperature: 0, jsonMode: true },
+            // truncate the tool JSON mid-array and fail parsing, so give it room.
+            // Forcing report_statement guarantees the required per-statement fields.
+            {
+              system: exSystem, maxTokens: 8192, temperature: 0, jsonMode: true,
+              tools: [EXTRACTION_TOOL],
+              toolChoice: { type: "tool", name: "report_statement" },
+            },
           );
           const parsed = safeParseJson(text);
           if (!parsed) { lastErr = "could not parse extraction JSON"; }
@@ -434,6 +505,10 @@ Deno.serve(async (req) => {
     let negativeDays = 0;
     const balances: number[] = [];
     const minBalances: number[] = [];
+    // Statements whose owner-mandated per-month fields had to be repaired/inferred
+    // (e.g. the model returned deposit_count 0 despite deposits, or omitted a
+    // balance). Surfaced as a data_quality flag — never silently stored.
+    const dataQualityIssues: string[] = [];
     let mcaDebitTotal = 0;
     let mcaDebitDaily = 0; // best estimate of existing daily debit
     const openPositionKeys = new Set<string>();
@@ -468,15 +543,26 @@ Deno.serve(async (req) => {
       if (s.avg_daily_balance != null) balances.push(numOr0(s.avg_daily_balance));
       if (s.min_balance != null) minBalances.push(numOr0(s.min_balance));
 
-      // Per-month row. deposit_count is the model's TRUE (non-padding) deposit
-      // count; fall back to (listed deposits − padding items) when the model
-      // omitted it. true_deposits $ = reported − padding (the month's net revenue).
-      const depositCount = s.deposit_count != null
-        ? Math.round(numOr0(s.deposit_count))
-        : Math.max(0, (s.deposits?.length ?? 0) - (s.padding_deposits?.length ?? 0)) || null;
+      // Per-month row.
+      const label = s.month ?? s._filename ?? "a statement";
+      const listedDeposits = s.deposits?.length ?? 0;
+      const paddingItems = s.padding_deposits?.length ?? 0;
+      // TOTAL credit count from the model. Repair when it's missing or implausibly
+      // zero while deposits clearly exist — fall back to the listed-deposit count
+      // and record a data-quality note (never silently store a 0).
+      let totalDepositCount: number | null =
+        s.deposit_count != null ? Math.max(0, Math.round(numOr0(s.deposit_count))) : null;
+      if ((totalDepositCount == null || totalDepositCount === 0) && (listedDeposits > 0 || reported > 0)) {
+        totalDepositCount = listedDeposits > 0 ? listedDeposits : null;
+        dataQualityIssues.push(`${label}: deposit count came back 0 despite $${Math.round(reported).toLocaleString("en-US")} in deposits — inferred ${totalDepositCount ?? "n/a"} from line items`);
+      }
+      // TRUE (revenue) deposit count = total credits − padding transactions.
+      const trueDepositCount = totalDepositCount != null ? Math.max(0, totalDepositCount - paddingItems) : null;
+      if (s.closing_balance == null) dataQualityIssues.push(`${label}: no ending balance extracted`);
+      if (s.avg_daily_balance == null) dataQualityIssues.push(`${label}: no average daily balance extracted`);
       perMonth.push({
         month: s.month,
-        deposit_count: depositCount,
+        deposit_count: trueDepositCount,
         true_deposits: round2(net),
         ending_balance: s.closing_balance != null ? round2(numOr0(s.closing_balance)) : null,
         average_daily_balance: s.avg_daily_balance != null ? round2(numOr0(s.avg_daily_balance)) : null,
@@ -765,6 +851,13 @@ Deno.serve(async (req) => {
     const failedStatements = perStatement.filter((s) => s._error).length;
     if (failedStatements > 0) {
       flags.push({ code: "extraction_gaps", severity: "info", message: `${failedStatements} of ${bankDocs.length} statement file(s) could not be analyzed.` });
+    }
+    if (dataQualityIssues.length > 0) {
+      flags.push({
+        code: "data_quality",
+        severity: "warn",
+        message: `Per-month data repaired on ${dataQualityIssues.length} field(s): ${dataQualityIssues.join("; ")}.`,
+      });
     }
 
     // ---- Affordability rating (capacity vs. amount requested) ----
