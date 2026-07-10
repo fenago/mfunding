@@ -29,6 +29,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, ghlFetch,
   upsertContact, createOpportunity, listPipelines, sendEmailToContact,
+  listCustomFields, updateContactCustomFields,
   type GhlConfig,
 } from "../_shared/ghl.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -290,6 +291,62 @@ async function newestInboundEmail(
   return null;
 }
 
+// ── GHL custom fields ─────────────────────────────────────────────────────────
+// EVERY fact from the live-transfer email is mirrored onto the merchant's GHL
+// contact so nothing is lost on the GHL side. Fields are resolved by NAME against
+// the location's existing custom fields (reusing ~8 that already fit); the 10
+// live-transfer-specific facts that had no home are created once (lazy, idempotent
+// — a create only fires if the named field is missing). dataType is used only when
+// a field must be created. Values go out as {id, value} via updateContactCustomFields.
+const CUSTOM_FIELD_PLAN: Array<{ name: string; dataType: string; get: (l: Lead) => string | number | "" }> = [
+  // Reused existing fields (exact names from the location's custom-field set).
+  { name: "Business Name", dataType: "TEXT", get: (l) => l.business },
+  { name: "Owner Full Name", dataType: "TEXT", get: (l) => `${l.first} ${l.last}`.trim() },
+  { name: "Industry (Doc)", dataType: "TEXT", get: (l) => l.industry },
+  { name: "Average Monthly Deposits", dataType: "MONETORY", get: (l) => l.monthlyDeposits ?? "" },
+  { name: "Funding Amount Requested", dataType: "MONETORY", get: (l) => l.requestedAmount ?? "" },
+  { name: "Use of Funds (Doc)", dataType: "TEXT", get: (l) => l.useOfFunds },
+  { name: "Total Outstanding MCA Balance", dataType: "MONETORY", get: (l) => l.positionsBalance ?? "" },
+  { name: "Active MCA Positions", dataType: "NUMERICAL", get: (l) => l.openPositions ?? "" },
+  // New live-transfer-specific fields (created if missing).
+  { name: "Best Time To Reach", dataType: "TEXT", get: (l) => l.bestTime },
+  { name: "Years As Owner", dataType: "TEXT", get: (l) => l.timeAsOwner },
+  { name: "Needs Money Right Away", dataType: "TEXT", get: (l) => l.needMoneyNow },
+  { name: "Difficulty Getting Approved", dataType: "TEXT", get: (l) => l.difficultyApproved },
+  { name: "Processes Credit Cards", dataType: "TEXT", get: (l) => l.processesCc },
+  { name: "FICO (Self-Reported)", dataType: "NUMERICAL", get: (l) => l.fico ?? "" },
+  { name: "Has Equity", dataType: "TEXT", get: (l) => l.hasEquity },
+  { name: "Property 50%+ Paid", dataType: "TEXT", get: (l) => l.propertyPaidDown },
+  { name: "Lead Agent / Source Company", dataType: "TEXT", get: (l) => l.agent },
+  { name: "Fax", dataType: "TEXT", get: (l) => l.raw["fax"] ?? "" },
+];
+
+async function writeContactCustomFields(
+  cfg: GhlConfig, contactId: string, lead: Lead,
+): Promise<{ written: number; created: string[]; ok: boolean; error?: string }> {
+  const cf = await listCustomFields(cfg);
+  const byName = new Map((cf.data?.customFields ?? []).map((f) => [f.name.toLowerCase(), f.id]));
+  const fields: Array<{ id: string; value: string | number }> = [];
+  const created: string[] = [];
+  for (const spec of CUSTOM_FIELD_PLAN) {
+    const val = spec.get(lead);
+    if (val === "" || val === null || val === undefined) continue;
+    let id = byName.get(spec.name.toLowerCase());
+    if (!id) {
+      const cr = await ghlFetch<{ customField?: { id: string } }>(
+        cfg, "POST", `/locations/${cfg.locationId}/customFields`,
+        { name: spec.name, dataType: spec.dataType, model: "contact" },
+      );
+      id = cr.data?.customField?.id;
+      if (id) { created.push(spec.name); byName.set(spec.name.toLowerCase(), id); }
+    }
+    if (id) fields.push({ id, value: val });
+  }
+  if (!fields.length) return { written: 0, created, ok: true };
+  const res = await updateContactCustomFields(cfg, contactId, fields);
+  return { written: fields.length, created, ok: res.ok, error: res.error };
+}
+
 // ── Handler ──────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -482,6 +539,8 @@ Deno.serve(async (req) => {
   let ghlContactId: string | null = null;
   let ghlOpportunityId: string | null = null;
   let ghlWarning: string | undefined;
+  let customFieldsWritten = 0;
+  let customFieldsCreated: string[] = [];
   if (cfg) {
     try {
       const cr = await upsertContact(cfg, {
@@ -501,6 +560,16 @@ Deno.serve(async (req) => {
       } else {
         await db.from("customers").update({ ghl_contact_id: ghlContactId }).eq("id", customerId);
         await db.from("deals").update({ ghl_contact_id: ghlContactId }).eq("id", dealId);
+        // Mirror EVERY email fact onto the contact (standard fields above +
+        // custom fields here) so nothing is lost on the GHL side.
+        try {
+          const cfr = await writeContactCustomFields(cfg, ghlContactId, lead);
+          customFieldsWritten = cfr.written;
+          customFieldsCreated = cfr.created;
+          if (!cfr.ok) ghlWarning = `custom fields: ${cfr.error}`;
+        } catch (e) {
+          ghlWarning = `custom fields: ${e instanceof Error ? e.message : String(e)}`;
+        }
         const pl = await listPipelines(cfg);
         const mca = pl.data?.pipelines?.find((p) => p.id === MCA_PIPELINE_ID)
           ?? pl.data?.pipelines?.find((p) => {
@@ -515,6 +584,15 @@ Deno.serve(async (req) => {
             monetaryValue: lead.requestedAmount ?? undefined,
           });
           ghlOpportunityId = opp.data?.opportunity?.id ?? null;
+          // GHL allows only ONE opportunity per contact; a repeat transfer of the
+          // same merchant 400s with the existing opportunity's id — reuse it so the
+          // deal is still linked rather than orphaned.
+          if (!ghlOpportunityId && opp.error) {
+            try {
+              const m = JSON.parse(opp.error) as { meta?: { existingId?: string } };
+              if (m?.meta?.existingId) ghlOpportunityId = m.meta.existingId;
+            } catch { /* not a JSON error body */ }
+          }
           if (ghlOpportunityId) await db.from("deals").update({ ghl_opportunity_id: ghlOpportunityId }).eq("id", dealId);
         }
       }
@@ -586,6 +664,8 @@ Deno.serve(async (req) => {
     campaignId,
     ghlContactId,
     ghlOpportunityId,
+    customFieldsWritten,
+    customFieldsCreated,
     ghlWarning,
     alertSent,
     alertWarning,
