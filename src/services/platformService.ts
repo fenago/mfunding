@@ -67,3 +67,48 @@ export const DEFAULT_LEAD_ASSIGNMENT: LeadAssignmentSetting = {
 export const getLeadAssignment = () =>
   getSetting<LeadAssignmentSetting>("lead_assignment", DEFAULT_LEAD_ASSIGNMENT);
 export const saveLeadAssignment = (s: LeadAssignmentSetting) => saveSetting("lead_assignment", s);
+
+// --- Closer document merge settings -------------------------------------------
+// The company-side values that get substituted into every closer legal document
+// before it is sent: [COMPANY], [SIGNATORY NAME, TITLE], [STATE], the clawback
+// window, the renewal override, and the Schedule A §4 draw treatment.
+//
+// Read SERVER-SIDE by send-closer-onboarding-package at merge time, so a change
+// here applies to the next document sent with no redeploy.
+//
+// NOTE: two screens edit this one key — the draw treatment lives on
+// /admin/platform-config (it's an admin policy flag), the rest live on
+// /admin/closer-docs (they're document fields). Both load the whole object and
+// save the whole object, so neither clobbers the other's fields.
+
+export type { DrawTreatment } from "@/lib/closerDocMerge";
+import { DEFAULT_DRAW_TREATMENT, type DrawTreatment, type MergeSettings } from "@/lib/closerDocMerge";
+
+export type CloserDocSettings = MergeSettings;
+
+export const DRAW_TREATMENTS: { value: DrawTreatment; label: string; help: string }[] = [
+  {
+    value: "repayable",
+    label: "Repayable (default)",
+    help: "If the draw period ends with drawn amounts exceeding earned commission, the closer owes the balance back.",
+  },
+  {
+    value: "forgiven",
+    label: "Forgiven",
+    help: "Any unrecovered draw balance is written off when the draw period ends.",
+  },
+];
+
+export const DEFAULT_CLOSER_DOC_SETTINGS: CloserDocSettings = {
+  company_legal_name: "MFunding, LLC d/b/a Momentum Funding",
+  company_signatory: null,
+  governing_state: "Florida",
+  clawback_window_days: null,
+  renewal_override_pct: null,
+  draw_unrecovered_treatment: DEFAULT_DRAW_TREATMENT,
+  payment_method: "direct deposit (ACH)",
+};
+
+export const getCloserDocSettings = () =>
+  getSetting<CloserDocSettings>("closer_docs", DEFAULT_CLOSER_DOC_SETTINGS);
+export const saveCloserDocSettings = (s: CloserDocSettings) => saveSetting("closer_docs", s);

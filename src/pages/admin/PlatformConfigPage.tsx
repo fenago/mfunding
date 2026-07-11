@@ -5,6 +5,8 @@ import {
   getBranding, saveBranding, DEFAULT_BRANDING, type Branding,
   getLeadAssignment, saveLeadAssignment, DEFAULT_LEAD_ASSIGNMENT,
   LEAD_ASSIGNMENT_STRATEGIES, type LeadAssignmentSetting, type LeadAssignmentStrategy,
+  getCloserDocSettings, saveCloserDocSettings, DEFAULT_CLOSER_DOC_SETTINGS,
+  DRAW_TREATMENTS, type CloserDocSettings, type DrawTreatment,
 } from "../../services/platformService";
 import {
   getActiveScorecard, saveScorecard, DEFAULT_SCORECARD, type ScorecardConfig,
@@ -32,6 +34,7 @@ export default function PlatformConfigPage() {
   const [branding, setBranding] = useState<Branding>(DEFAULT_BRANDING);
   const [scorecard, setScorecard] = useState<ScorecardConfig>(DEFAULT_SCORECARD);
   const [leadAssignment, setLeadAssignment] = useState<LeadAssignmentSetting>(DEFAULT_LEAD_ASSIGNMENT);
+  const [docSettings, setDocSettings] = useState<CloserDocSettings>(DEFAULT_CLOSER_DOC_SETTINGS);
   const [closers, setClosers] = useState<Closer[]>([]);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -44,6 +47,7 @@ export default function PlatformConfigPage() {
     getBranding().then(setBranding).catch(() => {});
     getActiveScorecard().then(setScorecard).catch(() => {});
     getLeadAssignment().then(setLeadAssignment).catch(() => {});
+    getCloserDocSettings().then(setDocSettings).catch(() => {});
     getAllClosers().then(setClosers).catch(() => {});
   }, []);
 
@@ -71,8 +75,20 @@ export default function PlatformConfigPage() {
     } finally { setBusy(false); }
   }
 
+  // Loads the whole closer_docs object and saves the whole object, so it can't
+  // clobber the document fields edited over on /admin/closer-docs.
+  async function persistDrawTreatment() {
+    setBusy(true);
+    try {
+      await saveCloserDocSettings(docSettings);
+      flash("Draw treatment saved");
+    } finally { setBusy(false); }
+  }
+
   const specificMissing =
     leadAssignment.strategy === "specific_closer" && !leadAssignment.specific_closer_profile_id;
+
+  const drawTreatment: DrawTreatment = docSettings.draw_unrecovered_treatment ?? "repayable";
 
   return (
     <div className="p-6 space-y-6">
@@ -150,6 +166,48 @@ export default function PlatformConfigPage() {
           className="btn-primary text-sm mt-4 disabled:opacity-60"
         >
           Save lead assignment
+        </button>
+      </div>
+
+      {/* Closer draw treatment (Schedule A §4) */}
+      <div className={card}>
+        <h2 className="font-semibold text-gray-900 dark:text-white mb-1">Closer draw treatment</h2>
+        <p className="text-xs text-gray-500 mb-4">
+          Schedule A §4 asks what happens when a closer&apos;s ramp-up draw exceeds the commission they earn.
+          This flag answers it. It is merged into every Schedule A before it goes out, so the document a closer
+          signs states <span className="font-medium">one unambiguous term</span> — never an unticked box.
+        </p>
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <label className="text-sm">
+            <span className="text-gray-500">Unrecovered draw balance is…</span>
+            <select
+              value={drawTreatment}
+              onChange={(e) =>
+                setDocSettings({
+                  ...docSettings,
+                  draw_unrecovered_treatment: e.target.value as DrawTreatment,
+                })
+              }
+              className={input}
+            >
+              {DRAW_TREATMENTS.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-gray-400">
+              {DRAW_TREATMENTS.find((t) => t.value === drawTreatment)?.help}
+            </span>
+          </label>
+        </div>
+
+        <p className="mt-4 text-xs text-gray-500">
+          Applies to Schedule A documents sent from here on. Documents already sent keep the term they were frozen with —
+          see <Link to="/admin/closer-docs" className="text-ocean-blue hover:underline">Closer Documents</Link>.
+        </p>
+
+        <button onClick={persistDrawTreatment} disabled={busy} className="btn-primary text-sm mt-4 disabled:opacity-60">
+          Save draw treatment
         </button>
       </div>
 

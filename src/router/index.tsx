@@ -122,6 +122,8 @@ const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDet
 const CloserListPage = lazyWithReload(() => import("../pages/admin/closers/CloserListPage.tsx"));
 const MyEarningsPage = lazyWithReload(() => import("../pages/admin/closers/MyEarningsPage.tsx"));
 const CloserDetailPage = lazyWithReload(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
+const CloserDocsPage = lazyWithReload(() => import("../pages/admin/closers/CloserDocsPage.tsx"));
+const CloserDocViewerPage = lazyWithReload(() => import("../pages/admin/closers/CloserDocViewerPage.tsx"));
 const SubISOListPage = lazyWithReload(() => import("../pages/admin/sub-isos/SubISOListPage.tsx"));
 const CommissionDashboardPage = lazyWithReload(() => import("../pages/admin/commissions/CommissionDashboardPage.tsx"));
 
@@ -358,6 +360,18 @@ export const routes: RouteObject[] = [
                     path: ":id",
                     element: <CloserDetailPage />,
                   },
+                ],
+              },
+              // Closer onboarding documents.
+              // NOT super-admin-gated: a closer has to be able to open and sign
+              // their own paperwork. The page renders the manager view only for
+              // admin/super_admin, and RLS means a closer can only ever read
+              // their OWN tracker rows and signatures.
+              {
+                path: "closer-docs",
+                children: [
+                  { index: true, element: <CloserDocsPage /> },
+                  { path: ":slug", element: <CloserDocViewerPage /> },
                 ],
               },
               // Sub-ISOs (super_admin only)

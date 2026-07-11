@@ -80,6 +80,9 @@ export const ACCESS_GROUPS: AccessGroup[] = [
     title: "Team & Partners",
     items: [
       { name: "Closers", roles: SUPER },
+      // Closers see ONLY their own documents + their own signing status (RLS).
+      // Admins/super see every closer's checklist and can send the package.
+      { name: "Closer Documents", roles: OPS },
       { name: "Sub-ISOs", roles: SUPER },
     ],
   },
