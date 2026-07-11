@@ -401,24 +401,49 @@ function CampaignDetail({
 // Read-only view of the attribution identifiers, sitting beside the checklist so
 // it's obvious whether the dedicated email/number has been recorded yet.
 function TrackingSummary({ campaign: c, onEdit }: { campaign: Campaign; onEdit: () => void }) {
-  const unset = <span className="text-gray-400 italic">not set — add in Edit campaign</span>;
+  const unset = <span className="text-gray-400 italic">not set</span>;
+  const InfoDot = ({ hint }: { hint: string }) => (
+    <span
+      title={hint}
+      aria-label={hint}
+      className="cursor-help select-none inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-gray-300 dark:border-gray-500 text-[9px] font-semibold text-gray-400 hover:text-ocean-blue hover:border-ocean-blue"
+    >
+      i
+    </span>
+  );
+  const missingBoth = !c.tracking_email && !c.tracking_phone;
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Attribution identifiers</h3>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+          Attribution identifiers
+          <InfoDot hint="These are how leads get COUNTED to this campaign automatically. Give each campaign its own inbound email and/or phone number; any lead that arrives on that identifier is credited to this campaign — no guessing, and you can run several campaigns on the same channel without mixing up their numbers." />
+        </h3>
         <button onClick={onEdit} className="text-xs text-ocean-blue hover:underline">Edit</button>
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
         <div>
-          <div className="text-[11px] text-gray-400">Tracking email</div>
+          <div className="text-[11px] text-gray-400 flex items-center gap-1.5">
+            Tracking email
+            <InfoDot hint="For emailed leads (real-time transfers): create a dedicated inbound address for this campaign (e.g. synergy-rt@send.mfunding.net), have the vendor deliver leads TO that address, and save it here. Every lead delivered to it auto-attributes to this campaign." />
+          </div>
           <div className="text-sm font-mono text-gray-800 dark:text-gray-100 break-all">{c.tracking_email || unset}</div>
         </div>
         <div>
-          <div className="text-[11px] text-gray-400">Tracking phone</div>
+          <div className="text-[11px] text-gray-400 flex items-center gap-1.5">
+            Tracking phone
+            <InfoDot hint="For live-transfer calls: buy a dedicated GHL tracking number for this campaign (GHL → Settings → Phone Numbers), give it to the vendor as the transfer number, and save it here. Calls to that number identify this campaign." />
+          </div>
           <div className="text-sm font-mono text-gray-800 dark:text-gray-100">{c.tracking_phone || unset}</div>
         </div>
       </div>
-      <p className="text-[11px] text-gray-400 mt-2">Leads delivered to the tracking email auto-attribute to this campaign regardless of channel.</p>
+      {missingBoth ? (
+        <div className="mt-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+          ⚠ <b>Action needed for precise tracking:</b> set at least one identifier. Emailed leads (real-time) → create the dedicated inbound address with your vendor and save it under Edit. Live-transfer calls → get a dedicated GHL number and save it here. Until then, leads are attributed by channel (fine while this is the ONLY active {c.channel?.replace("_", " ")} campaign — ambiguous the moment you run two).
+        </div>
+      ) : (
+        <p className="text-[11px] text-gray-400 mt-2">Leads delivered to the tracking email auto-attribute to this campaign regardless of channel.</p>
+      )}
     </div>
   );
 }

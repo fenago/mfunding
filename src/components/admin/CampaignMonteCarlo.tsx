@@ -192,6 +192,7 @@ interface SimResult {
   n: number;
   seed: number;
   ms: number;
+  ranAt: string;
   spend: number;
   impliedOverallClose: number; // % funded / leads at the knob midpoints
   funded: { p10: number; p50: number; p90: number };
@@ -368,6 +369,7 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
     n: N,
     seed,
     ms: Math.round((performance.now() - t0) * 10) / 10,
+    ranAt: new Date().toLocaleTimeString(),
     spend,
     impliedOverallClose,
     funded: {
@@ -474,16 +476,26 @@ export default function CampaignMonteCarlo({ campaign, metrics }: { campaign: Ca
             </div>
 
             <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
-              <Knob label="# simulations" value={knobs.simulations} min={500} max={50000} step={500} onChange={(v) => set({ simulations: Math.min(50000, Math.max(500, v)) })} />
-              <Knob label="Lead volume" value={knobs.leadVolume} min={0} onChange={(v) => set({ leadVolume: Math.max(0, v) })} />
-              <Knob label="Cost per lead ($)" value={knobs.costPerLead} min={0} onChange={(v) => set({ costPerLead: Math.max(0, v) })} />
-              <Knob label="Avg funded ($)" value={knobs.avgFunded} min={0} onChange={(v) => set({ avgFunded: Math.max(0, v) })} />
-              <Knob label="Contact rate (%)" value={knobs.contactRate} min={0} max={100} source={defaults.meta.contactRate.source} onChange={(v) => set({ contactRate: clampPct(v) })} />
-              <Knob label="Qualify rate (%)" value={knobs.qualifyRate} min={0} max={100} source={defaults.meta.qualifyRate.source} onChange={(v) => set({ qualifyRate: clampPct(v) })} />
-              <Knob label="Application rate (%)" value={knobs.appRate} min={0} max={100} source={defaults.meta.appRate.source} onChange={(v) => set({ appRate: clampPct(v) })} />
-              <Knob label="Submission rate (%)" value={knobs.submissionRate} min={0} max={100} source={defaults.meta.submissionRate.source} onChange={(v) => set({ submissionRate: clampPct(v) })} />
-              <Knob label="Close: submit→fund (%)" value={knobs.closeRate} min={0} max={100} source={defaults.meta.closeRate.source} onChange={(v) => set({ closeRate: clampPct(v) })} />
-              <Knob label="Commission points" value={knobs.points} min={0} max={20} onChange={(v) => set({ points: Math.max(0, v) })} />
+              <Knob label="# simulations" value={knobs.simulations} min={500} max={200000} step={500} onChange={(v) => set({ simulations: Math.min(200000, Math.max(500, v)) })}
+                hint="How many simulated futures of this campaign to run. More sims = smoother, more stable estimates (and a slightly longer run). 5,000 is plenty for a gut check; crank it up for final numbers." />
+              <Knob label="Lead volume" value={knobs.leadVolume} min={0} onChange={(v) => set({ leadVolume: Math.max(0, v) })}
+                hint="How many leads this campaign will deliver (e.g. the number of transfers you ordered)." />
+              <Knob label="Cost per lead ($)" value={knobs.costPerLead} min={0} onChange={(v) => set({ costPerLead: Math.max(0, v) })}
+                hint="What you pay per lead. Synergy examples: live transfers $20–40, real-time $10–20, aged $0.01–0.05." />
+              <Knob label="Avg funded ($)" value={knobs.avgFunded} min={0} onChange={(v) => set({ avgFunded: Math.max(0, v) })}
+                hint="Typical funded advance size. Your book's average deal is ~$50,000; a clean first position funds ≈ one month of the merchant's revenue." />
+              <Knob label="Contact rate (%)" value={knobs.contactRate} min={0} max={100} source={defaults.meta.contactRate.source} onChange={(v) => set({ contactRate: clampPct(v) })}
+                hint="Of the leads you get, how many you actually reach on the phone. Target: 65%+. Live transfers are ~100% by definition (they're already on the line); cold/aged lists run much lower." />
+              <Knob label="Qualify rate (%)" value={knobs.qualifyRate} min={0} max={100} source={defaults.meta.qualifyRate.source} onChange={(v) => set({ qualifyRate: clampPct(v) })}
+                hint="Of the people you reach, how many actually qualify — enough monthly revenue ($15K+), time in business (6+ months), a real funding need. Target: 55–65%." />
+              <Knob label="Application rate (%)" value={knobs.appRate} min={0} max={100} source={defaults.meta.appRate.source} onChange={(v) => set({ appRate: clampPct(v) })}
+                hint="Of qualified merchants, how many complete + sign the application. Target: 65–75% — best done on the first call while they're hot." />
+              <Knob label="Submission rate (%)" value={knobs.submissionRate} min={0} max={100} source={defaults.meta.submissionRate.source} onChange={(v) => set({ submissionRate: clampPct(v) })}
+                hint="Of signed applications, how many get their bank statements/docs in so you can submit to funders. Target: 50–60% — this is the #1 leak in the funnel (doc chasing)." />
+              <Knob label="Close: submit→fund (%)" value={knobs.closeRate} min={0} max={100} source={defaults.meta.closeRate.source} onChange={(v) => set({ closeRate: clampPct(v) })}
+                hint="Of submitted files, how many end up FUNDED (funder approves → merchant accepts → money moves). Target: ~65%. Combined with the other rates, a healthy campaign closes 8–12% of all leads." />
+              <Knob label="Commission points" value={knobs.points} min={0} max={20} onChange={(v) => set({ points: Math.max(0, v) })}
+                hint="Your commission as % of the funded amount. Standard: 8 points on new deals ($4,000 on a $50K deal), 6 on renewals." />
             </div>
             <p className="text-[11px] text-gray-400 mt-2">
               Spend at risk ={" "}
@@ -557,7 +569,7 @@ export default function CampaignMonteCarlo({ campaign, metrics }: { campaign: Ca
                     Commission revenue distribution
                   </h4>
                   <span className="text-[11px] text-gray-400">
-                    {result.n.toLocaleString()} sims · seed {result.seed} · {result.ms} ms
+                    {result.n.toLocaleString()} sims · seed {result.seed} · {result.ms} ms · ran {result.ranAt}
                   </span>
                 </div>
                 <div className="w-full overflow-x-auto">
@@ -651,6 +663,7 @@ function Knob({
   max,
   step,
   source,
+  hint,
 }: {
   label: string;
   value: number;
@@ -659,11 +672,21 @@ function Knob({
   max?: number;
   step?: number;
   source?: Source;
+  hint?: string;
 }) {
   return (
     <label className="block text-[11px] text-gray-500 dark:text-gray-400">
       <span className="flex items-center gap-1.5">
         {label}
+        {hint && (
+          <span
+            title={hint}
+            className="cursor-help select-none inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-gray-300 dark:border-gray-500 text-[9px] font-semibold text-gray-400 hover:text-ocean-blue hover:border-ocean-blue"
+            aria-label={hint}
+          >
+            i
+          </span>
+        )}
         {source && (
           <span
             className={`text-[9px] font-semibold px-1 py-0.5 rounded uppercase ${
@@ -676,16 +699,48 @@ function Knob({
           </span>
         )}
       </span>
-      <input
-        type="number"
-        value={value}
-        min={min}
-        max={max}
-        step={step ?? 1}
-        onChange={(e) => onChange(Number(e.target.value) || 0)}
-        className="mt-1 w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100"
-      />
+      <KnobInput value={value} min={min} max={max} step={step} onChange={onChange} />
     </label>
+  );
+}
+
+// Free-typing numeric input: holds a local DRAFT while focused so the user can
+// clear the field and type any number (e.g. "200000") without min/max clamping
+// rewriting every keystroke. The clamped value commits on blur or Enter.
+function KnobInput({
+  value,
+  onChange,
+  min,
+  max,
+  step,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = (raw: string) => {
+    let v = Number(raw);
+    if (!Number.isFinite(v) || raw.trim() === "") v = value;
+    if (min != null) v = Math.max(min, v);
+    if (max != null) v = Math.min(max, v);
+    onChange(v);
+    setDraft(null);
+  };
+  return (
+    <input
+      type="number"
+      value={draft ?? value}
+      min={min}
+      max={max}
+      step={step ?? 1}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => commit(e.target.value)}
+      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+      className="mt-1 w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100"
+    />
   );
 }
 
