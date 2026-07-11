@@ -232,15 +232,14 @@ function MergeSettingsPanel({
         <div className="px-5 pb-5 border-t border-gray-200 dark:border-gray-700 pt-4 space-y-4">
           <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2">
             <p className="text-xs text-amber-800 dark:text-amber-200">
-              <strong className="font-semibold">Confirm the legal entity name.</strong> The project docs describe the
-              company as both <strong>MFunding, LLC</strong> and a <strong>Florida C-Corp</strong>, and Schedule A&apos;s
-              own text says &ldquo;a Florida corporation.&rdquo; Whatever you type here is what appears on every executed
-              document — set it to the exact name on the formation paperwork.
+              <strong className="font-semibold">This is what prints on every executed contract.</strong> The entity is
+              set to <strong>Agentic Voice Inc. d/b/a MFunding.net | Momentum Funding</strong> — verify it matches the
+              formation paperwork exactly before any closer signs.
             </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {field("Company legal name — [COMPANY]", "company_legal_name", "MFunding, LLC d/b/a Momentum Funding")}
+            {field("Company legal name — [COMPANY]", "company_legal_name", "Agentic Voice Inc. d/b/a MFunding.net | Momentum Funding")}
             {field("Company signatory — [SIGNATORY NAME, TITLE]", "company_signatory", "Ernesto Lee, President")}
             {field("Governing-law state — [STATE]", "governing_state", "Florida")}
             {field("Clawback window (days) — [#]", "clawback_window_days", "90", "number")}

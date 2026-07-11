@@ -100,7 +100,9 @@ export const DRAW_TREATMENTS: { value: DrawTreatment; label: string; help: strin
 ];
 
 export const DEFAULT_CLOSER_DOC_SETTINGS: CloserDocSettings = {
-  company_legal_name: "MFunding, LLC d/b/a Momentum Funding",
+  // The entity that prints on every executed contract. Owner-confirmed 2026-07-11.
+  // The saved DB value wins; this fallback must never be a stale//wrong entity.
+  company_legal_name: "Agentic Voice Inc. d/b/a MFunding.net | Momentum Funding",
   company_signatory: null,
   governing_state: "Florida",
   clawback_window_days: null,
