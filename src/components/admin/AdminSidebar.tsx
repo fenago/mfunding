@@ -73,6 +73,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/todos", // Task Board
   "/admin/resources",
   "/admin/closer-comp", // their comp offer sheet + payout calculator (OPS)
+  "/admin/my-earnings", // 💰 their own commissions + projected pipeline (OPS)
   "/admin/renewals", // shown per closers.renewals_enabled (handled in canSee)
   // Visible through the lens but still role-gated below — so an ADMIN who also
   // has a closer row (e.g. Carlos) gets these, while pure closers never do.
@@ -132,6 +133,7 @@ const navGroups: NavGroup[] = [
   {
     title: "Team & Money",
     items: [
+      { name: "My Earnings", path: "/admin/my-earnings", icon: BanknotesIcon, roles: OPS },
       { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
       { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
       { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },

@@ -120,6 +120,7 @@ const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDet
 
 // Commission & Financial Engine pages
 const CloserListPage = lazyWithReload(() => import("../pages/admin/closers/CloserListPage.tsx"));
+const MyEarningsPage = lazyWithReload(() => import("../pages/admin/closers/MyEarningsPage.tsx"));
 const CloserDetailPage = lazyWithReload(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
 const SubISOListPage = lazyWithReload(() => import("../pages/admin/sub-isos/SubISOListPage.tsx"));
 const CommissionDashboardPage = lazyWithReload(() => import("../pages/admin/commissions/CommissionDashboardPage.tsx"));
@@ -523,6 +524,11 @@ export const routes: RouteObject[] = [
               {
                 path: "closer-comp",
                 element: <CloserCompPage />,
+              },
+              // My Earnings (all staff) — self-scoped by RLS to the signed-in closer
+              {
+                path: "my-earnings",
+                element: <MyEarningsPage />,
               },
               // Live Transfer ROI (super_admin only)
               {

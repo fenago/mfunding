@@ -1,6 +1,7 @@
 import supabase from "../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
 import type {
+  Closer,
   Commission,
   CommissionWithDetails,
   CommissionSummary,
@@ -402,4 +403,128 @@ export async function getMonthlyCommissionData(months = 12): Promise<MonthlyComm
 
 export async function deleteCommission(id: string) {
   await mustWrite("delete commission", supabase.from("commissions").delete().eq("id", id));
+}
+
+// ---------------------------------------------------------------------------
+// "My Earnings" — read-only, self-scoped helpers for the signed-in closer.
+// RLS does the real enforcement (a closer can only SELECT commissions whose
+// closer_id maps to their own closers row); these helpers just shape the data.
+// ---------------------------------------------------------------------------
+
+/** Deal statuses that are no longer "on the table" — funded or dead. */
+const CLOSED_DEAL_STATUSES = ['funded', 'declined', 'dead', 'renewal_eligible', 'servicing', 'restructure_executed'];
+
+export interface ProjectedCommission {
+  dealId: string;
+  dealNumber: string | null;
+  businessName: string | null;
+  status: string;
+  dealType: string | null;
+  isRenewal: boolean;
+  leadSource: string | null;
+  /** The amount the merchant asked for — the basis of the projection. */
+  amountRequested: number;
+  /** 8 for new deals, 6 for renewals. */
+  points: number;
+  /** amountRequested × points% — the whole pool before the split. */
+  projectedGross: number;
+  /** The closer's split % that applies to THIS deal (renewal / self-gen / company). */
+  splitPercentage: number;
+  /** projectedGross × splitPercentage% — what the closer would take home. */
+  projectedPayout: number;
+  updatedAt: string | null;
+}
+
+/** Which of the closer's three split rates applies to a given deal. */
+export function splitForDeal(
+  closer: Pick<Closer, 'company_lead_split' | 'self_gen_split' | 'renewal_split'>,
+  opts: { isRenewal?: boolean | null; leadSource?: string | null },
+): { splitPercentage: number; splitLabel: string } {
+  if (opts.isRenewal) {
+    return { splitPercentage: Number(closer.renewal_split) || 0, splitLabel: 'Renewal split' };
+  }
+  const src = (opts.leadSource || '').toLowerCase();
+  if (src === 'self_generated' || src === 'self_gen' || src === 'referral') {
+    return { splitPercentage: Number(closer.self_gen_split) || 0, splitLabel: 'Self-gen split' };
+  }
+  return { splitPercentage: Number(closer.company_lead_split) || 0, splitLabel: 'Company-lead split' };
+}
+
+/**
+ * Resolve the signed-in user to their closers row. Returns null when the user
+ * has no closer profile (e.g. an admin who never set one up).
+ * `userId` lets callers pass the effective (impersonated) user id.
+ */
+export async function getMyCloserRecord(userId: string): Promise<Closer | null> {
+  const { data, error } = await supabase
+    .from("closers")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data as Closer | null) ?? null;
+}
+
+/** The closer's OWN commission rows (RLS-scoped), newest first. */
+export async function getMyCommissions(closerId: string): Promise<CommissionWithDetails[]> {
+  const { data, error } = await supabase
+    .from("commissions")
+    .select(`
+      *,
+      deal:deals(deal_number, amount_funded, market, deal_type, customer_id)
+    `)
+    .eq("closer_id", closerId)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as CommissionWithDetails[];
+}
+
+/**
+ * "On the table" — the closer's OPEN deals with a projected payout on each.
+ * amount_requested × points (8 new / 6 renewal) = projected gross pool,
+ * × the closer's applicable split % = their projected cut. PROJECTION ONLY.
+ */
+export async function getMyProjectedPipeline(
+  closer: Closer,
+  userId: string,
+): Promise<ProjectedCommission[]> {
+  // assigned_closer_id historically holds either the closers.id or the auth user id.
+  const { data, error } = await supabase
+    .from("deals")
+    .select("id, deal_number, status, deal_type, is_renewal, lead_source, amount_requested, updated_at, customer:customers(business_name)")
+    .or(`assigned_closer_id.eq.${closer.id},assigned_closer_id.eq.${userId}`)
+    .not("status", "in", `(${CLOSED_DEAL_STATUSES.join(',')})`)
+    .order("updated_at", { ascending: false });
+
+  if (error) throw error;
+
+  const one = <T,>(v: unknown): T | null =>
+    (Array.isArray(v) ? (v[0] ?? null) : (v ?? null)) as T | null;
+
+  return (data || []).map((d) => {
+    const isRenewal = Boolean(d.is_renewal);
+    const points = isRenewal ? COMMISSION_DEFAULTS.RENEWAL_POINTS : COMMISSION_DEFAULTS.NEW_DEAL_POINTS;
+    const amountRequested = Number(d.amount_requested) || 0;
+    const projectedGross = (amountRequested * points) / 100;
+    const { splitPercentage } = splitForDeal(closer, { isRenewal, leadSource: d.lead_source });
+    const customer = one<{ business_name: string | null }>(d.customer);
+
+    return {
+      dealId: d.id,
+      dealNumber: d.deal_number,
+      businessName: customer?.business_name ?? null,
+      status: d.status,
+      dealType: d.deal_type,
+      isRenewal,
+      leadSource: d.lead_source,
+      amountRequested,
+      points,
+      projectedGross,
+      splitPercentage,
+      projectedPayout: (projectedGross * splitPercentage) / 100,
+      updatedAt: d.updated_at ?? null,
+    } satisfies ProjectedCommission;
+  });
 }
