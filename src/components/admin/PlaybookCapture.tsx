@@ -108,6 +108,7 @@ export default function PlaybookCapture({
   const [form, setForm] = useState({ ...emptyForm, lead_source: defaults.leadSource });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [matchNotice, setMatchNotice] = useState<string | null>(null);
   const [saved, setSaved] = useState<Deal | null>(null);
   // Whether the closer has hand-picked a campaign. While false, the campaign
   // field re-derives its smart default as the lead source changes; once the
@@ -236,6 +237,7 @@ export default function PlaybookCapture({
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setMatchNotice(null);
 
     // Campaign attribution is effectively required — every manual lead must be
     // tracked. Block only when there's actually an active campaign to pick (never
@@ -262,26 +264,59 @@ export default function PlaybookCapture({
           setSaving(false);
           return;
         }
-        let created: { id: string } | undefined;
+        // Dedupe: reuse an existing customer that matches on digits-only phone OR
+        // lower(email) instead of minting a duplicate (merchant self-serve + manual
+        // capture both create leads, so collisions are real). Non-blocking notice.
+        const digits = form.phone.replace(/\D/g, "");
+        const emailNorm = form.email.trim().toLowerCase();
+        let matched: { id: string; first_name: string | null; last_name: string | null; business_name: string | null } | null = null;
         try {
-          created = (await mustWrite<{ id: string }>("create lead", supabase
-            .from("customers")
-            .insert({
-              first_name: form.first_name.trim(),
-              last_name: form.last_name.trim() || null,
-              business_name: form.business_name.trim() || null,
-              email: form.email.trim() || null,
-              phone: form.phone.trim(),
-              status: "lead",
-              source: "other",
-              is_live_transfer: defaults.isLiveTransfer,
-            })))[0];
-        } catch (e) {
-          setError(`Could not create the lead: ${e instanceof Error ? e.message : "unknown error"}`);
-          setSaving(false);
-          return;
+          const orClauses: string[] = [];
+          if (emailNorm) orClauses.push(`email.ilike.${emailNorm}`);
+          if (digits) orClauses.push(`phone.ilike.%${digits.slice(-10)}%`);
+          if (orClauses.length > 0) {
+            const { data: candidates } = await supabase
+              .from("customers")
+              .select("id, first_name, last_name, business_name, phone, email")
+              .or(orClauses.join(","))
+              .order("created_at", { ascending: true })
+              .limit(10);
+            matched = (candidates ?? []).find((c) => {
+              const cDigits = (c.phone ?? "").replace(/\D/g, "");
+              const phoneHit = digits.length >= 10 && cDigits.length >= 10 && cDigits.slice(-10) === digits.slice(-10);
+              const emailHit = !!emailNorm && (c.email ?? "").trim().toLowerCase() === emailNorm;
+              return phoneHit || emailHit;
+            }) ?? null;
+          }
+        } catch { /* dedupe is best-effort — fall through to insert on lookup error */ }
+
+        if (matched) {
+          customerId = matched.id;
+          const nm = [matched.first_name, matched.last_name].filter(Boolean).join(" ").trim() ||
+            matched.business_name || "existing customer";
+          setMatchNotice(`Matched existing customer ${nm} — reusing their record instead of creating a duplicate.`);
+        } else {
+          let created: { id: string } | undefined;
+          try {
+            created = (await mustWrite<{ id: string }>("create lead", supabase
+              .from("customers")
+              .insert({
+                first_name: form.first_name.trim(),
+                last_name: form.last_name.trim() || null,
+                business_name: form.business_name.trim() || null,
+                email: form.email.trim() || null,
+                phone: form.phone.trim(),
+                status: "lead",
+                source: "other",
+                is_live_transfer: defaults.isLiveTransfer,
+              })))[0];
+          } catch (e) {
+            setError(`Could not create the lead: ${e instanceof Error ? e.message : "unknown error"}`);
+            setSaving(false);
+            return;
+          }
+          customerId = created.id;
         }
-        customerId = created.id;
       } else if (!customerId) {
         setError("Pick an existing customer, or switch to “New lead”.");
         setSaving(false);
@@ -416,6 +451,12 @@ export default function PlaybookCapture({
               {error && (
                 <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg text-sm text-red-700 dark:text-red-300">
                   {error}
+                </div>
+              )}
+
+              {matchNotice && (
+                <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg text-sm text-amber-800 dark:text-amber-300">
+                  {matchNotice}
                 </div>
               )}
 

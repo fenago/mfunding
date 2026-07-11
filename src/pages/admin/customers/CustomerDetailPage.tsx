@@ -19,6 +19,7 @@ import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
 import StatusBadge from "../../../components/shared/StatusBadge";
 import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
+import PortalInviteButton from "../../../components/admin/PortalInviteButton";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 interface Customer {
@@ -293,6 +294,9 @@ export default function CustomerDetailPage() {
                   </div>
                 </div>
               )}
+              <div className="pt-3 border-t border-gray-100 dark:border-gray-700">
+                <PortalInviteButton customerId={customer.id} />
+              </div>
             </div>
           </div>
 

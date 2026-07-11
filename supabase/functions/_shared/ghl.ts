@@ -289,6 +289,16 @@ export async function sendEmailToContact(
   );
 }
 
+/** Send an SMS to a contact via LeadConnector (lands in the contact's
+ * Conversations thread). The contact must have a valid phone on file; GHL
+ * returns an error otherwise. Used as the on-call invite path (closer clicks,
+ * merchant's phone buzzes). */
+export async function sendSmsToContact(cfg: GhlConfig, contactId: string, message: string) {
+  return await ghlFetch<{ messageId?: string; conversationId?: string }>(
+    cfg, "POST", "/conversations/messages", { type: "SMS", contactId, message },
+  );
+}
+
 /** Machine marker to append to an activity_log content string so the opens
  * harvester (poll-funder-replies phase 3) can later resolve THIS send's GHL
  * email record and stamp it opened. Prefers the email-record id (directly

@@ -1,23 +1,27 @@
 import { useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { useSession } from "../../context/SessionContext";
+import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
+import LoadingPage from "../LoadingPage";
 import { SignInPageSEO } from "../../components/seo/SEO";
 
 const SignInPage = () => {
-  // ==============================
-  // If user is already logged in, redirect to home
-  // This logic is being repeated in SignIn and SignUp..
   const { session } = useSession();
-  if (session) return <Navigate to="/" />;
-  // maybe we can create a wrapper component for these pages
-  // just like the ./router/AuthProtectedRoute.tsx? up to you.
-  // ==============================
+  const { isStaff, isLoading: profileLoading } = useUserProfile();
   const [status, setStatus] = useState("");
   const [formValues, setFormValues] = useState({
     email: "",
     password: "",
   });
+
+  // Already signed in → route by role: staff to the admin app, merchants
+  // (role `user`) to their portal. Wait for the profile so we don't send a
+  // staffer to /portal (or vice versa) on a race.
+  if (session) {
+    if (profileLoading) return <LoadingPage />;
+    return <Navigate to={isStaff ? "/admin" : "/portal"} replace />;
+  }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormValues({ ...formValues, [e.target.name]: e.target.value });

@@ -25,6 +25,27 @@ Deno.serve(async (req) => {
     if (!ghl_contact_id) return json({ error: "ghl_contact_id is required" }, 400);
 
     const db = serviceClient();
+
+    // --- Auth: staff (closer/admin/super_admin), OR the merchant asking about
+    //     their OWN GHL contact. verify_jwt = true gates the gateway; this adds
+    //     the role/ownership check. ---
+    const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+    if (!token) return json({ error: "Missing authorization" }, 401);
+    const { data: userData, error: userErr } = await db.auth.getUser(token);
+    const caller = userData?.user;
+    if (userErr || !caller) return json({ error: "Invalid session" }, 401);
+    const { data: prof } = await db.from("profiles").select("role").eq("id", caller.id).single();
+    const role = prof?.role as string | undefined;
+    const isStaff = !!role && ["closer", "admin", "super_admin"].includes(role);
+    if (!isStaff) {
+      const { data: owned } = await db
+        .from("customers").select("id")
+        .eq("ghl_contact_id", ghl_contact_id)
+        .eq("user_id", caller.id)
+        .limit(1).maybeSingle();
+      if (!owned) return json({ error: "Forbidden" }, 403);
+    }
+
     const cfg = await getGhlConfig(db);
 
     // 1) E-sign documents for this contact.

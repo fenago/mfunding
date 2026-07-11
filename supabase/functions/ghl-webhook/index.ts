@@ -469,7 +469,8 @@ async function linkFunderByPhone(
 
   // Never link a number that belongs to a merchant.
   const { data: merchant } = await db.from("customers")
-    .select("id").in("phone", phoneVariants(phone)).limit(1).maybeSingle();
+    .select("id").in("phone", phoneVariants(phone))
+    .order("created_at", { ascending: true }).limit(1).maybeSingle();
   if (merchant) return null;
 
   // Build a phone → {lender ids} map from all lenders' phones.
@@ -733,11 +734,13 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
   // Match existing customer by ghl_contact_id, then email.
   let existing: { id: string } | null = null;
   if (ghlId) {
-    const { data } = await db.from("customers").select("id").eq("ghl_contact_id", ghlId).maybeSingle();
+    const { data } = await db.from("customers").select("id").eq("ghl_contact_id", ghlId)
+      .order("created_at", { ascending: true }).limit(1).maybeSingle();
     existing = data;
   }
   if (!existing && email) {
-    const { data } = await db.from("customers").select("id").eq("email", email).maybeSingle();
+    const { data } = await db.from("customers").select("id").eq("email", email)
+      .order("created_at", { ascending: true }).limit(1).maybeSingle();
     existing = data;
   }
 
@@ -952,7 +955,8 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     // Find the customer by ghl_contact_id; create a minimal one if missing
     // (a Contact event will enrich it later).
     let customerId: string | null = null;
-    const { data: cust } = await db.from("customers").select("id").eq("ghl_contact_id", contactId).maybeSingle();
+    const { data: cust } = await db.from("customers").select("id").eq("ghl_contact_id", contactId)
+      .order("created_at", { ascending: true }).limit(1).maybeSingle();
     if (cust) {
       customerId = cust.id;
     } else {

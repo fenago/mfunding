@@ -29,6 +29,7 @@ import {
 } from "../../../types/deals";
 import InteractionTimeline from "../../../components/shared/InteractionTimeline";
 import SyncToGHLButton from "../../../components/shared/SyncToGHLButton";
+import PortalInviteButton from "../../../components/admin/PortalInviteButton";
 import BankAnalysisCard from "../../../components/shared/BankAnalysisCard";
 import UnderwritingCard from "../../../components/shared/UnderwritingCard";
 import AIUnderwritingPanel from "../../../components/shared/AIUnderwritingPanel";
@@ -549,6 +550,9 @@ export default function DealDetailPage() {
                       {deal.customer.email}
                     </a>
                   )}
+                </div>
+                <div className="pt-3 border-t border-gray-100 dark:border-gray-700">
+                  <PortalInviteButton customerId={deal.customer_id} />
                 </div>
               </div>
             ) : (

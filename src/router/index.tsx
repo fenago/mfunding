@@ -1,6 +1,7 @@
 import { lazy, type ComponentType } from "react";
-import type { RouteObject } from "react-router-dom";
+import { Navigate, type RouteObject } from "react-router-dom";
 import HomePage from "../pages/HomePage.tsx";
+import { IS_PORTAL_HOST } from "../config.ts";
 
 // After a new deploy, chunk filenames change. A tab opened before the deploy
 // will request an old hashed chunk that no longer exists ("Failed to fetch
@@ -24,6 +25,7 @@ function lazyWithReload<T extends { default: ComponentType<unknown> }>(
 }
 import SignInPage from "../pages/auth/SignInPage.tsx";
 import SignUpPage from "../pages/auth/SignUpPage.tsx";
+import MerchantAuthPage from "../pages/auth/MerchantAuthPage.tsx";
 import ProtectedPage from "../pages/ProtectedPage.tsx";
 import NotFoundPage from "../pages/404Page.tsx";
 import PrivacyPolicyPage from "../pages/PrivacyPolicyPage.tsx";
@@ -99,7 +101,6 @@ const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEco
 const LeadToolsPage = lazyWithReload(() => import("../pages/admin/LeadToolsPage.tsx"));
 const LeadPartnerPage = lazyWithReload(() => import("../pages/admin/LeadPartnerPage.tsx"));
 const LiveTransferROIPage = lazyWithReload(() => import("../pages/admin/LiveTransferROIPage.tsx"));
-const PortalEstimatesPage = lazyWithReload(() => import("../pages/portal/PortalEstimatesPage.tsx"));
 const CompliancePage = lazyWithReload(() => import("../pages/admin/CompliancePage.tsx"));
 const RenewalsPage = lazyWithReload(() => import("../pages/admin/RenewalsPage.tsx"));
 const DocumentReviewPage = lazyWithReload(() => import("../pages/admin/DocumentReviewPage.tsx"));
@@ -140,10 +141,13 @@ export const routes: RouteObject[] = [
     path: "/",
     element: <Providers />,
     children: [
-      // Public routes
+      // Public routes.
+      // On the dedicated portal subdomain (my.mfunding.net) the root is the
+      // merchant portal, not the marketing site. IS_PORTAL_HOST is a stable
+      // runtime hostname check — same bundle serves either host.
       {
         path: "/",
-        element: <HomePage />,
+        element: IS_PORTAL_HOST ? <Navigate to="/portal" replace /> : <HomePage />,
       },
       {
         path: "/auth/sign-in",
@@ -152,6 +156,11 @@ export const routes: RouteObject[] = [
       {
         path: "/auth/sign-up",
         element: <SignUpPage />,
+      },
+      {
+        // Magic-link landing for merchants (Supabase OTP redirect → /portal).
+        path: "/auth/merchant",
+        element: <MerchantAuthPage />,
       },
       {
         path: "/privacy",
@@ -291,10 +300,6 @@ export const routes: RouteObject[] = [
               {
                 path: "documents",
                 element: <PortalDocumentsPage />,
-              },
-              {
-                path: "estimates",
-                element: <PortalEstimatesPage />,
               },
               {
                 path: "inbox",

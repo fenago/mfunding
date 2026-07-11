@@ -122,3 +122,13 @@ verify_jwt = true
 # own (closer_owns_deal RPC). Key from the vault via callLLM.
 [functions.deal-assistant]
 verify_jwt = true
+
+# Sends a merchant a passwordless magic-link portal invite. Signed-in staff only
+# (in-code role check); closers limited to their own customers.
+[functions.merchant-invite]
+verify_jwt = true
+
+# Live "docs back from the merchant" status. Staff, OR the merchant asking about
+# their OWN GHL contact (in-code ownership check).
+[functions.ghl-docs-status]
+verify_jwt = true
