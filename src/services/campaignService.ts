@@ -98,6 +98,62 @@ export const CHANNEL_LABELS: Record<CampaignChannel, string> = Object.fromEntrie
   Object.entries(CHANNEL_META).map(([k, v]) => [k, v.label]),
 ) as Record<CampaignChannel, string>;
 
+// ── Lead-source → campaign-channel matching ──────────────────────────────────
+// Maps a deal's lead_source slug (from the playbook intake) to the campaign
+// channels that plausibly deliver it, in priority order. Drives the intake's
+// smart default: pick the newest ACTIVE campaign whose channel is in this list;
+// an empty list means "no channel preference — fall back to any active".
+export function channelsForLeadSource(leadSource: string): CampaignChannel[] {
+  switch (leadSource) {
+    case "live_transfer":
+      return ["live_transfer"];
+    case "realtime_appt":
+    case "real_time":
+    case "realtime_transfer":
+      return ["realtime_transfer", "real_time"];
+    case "website":
+    case "web_purchased":
+    case "google_ads":
+      return ["web_purchased", "google_ads"];
+    case "aged_transfer":
+    case "aged_lead":
+    case "aged":
+      return ["aged", "aged_leads", "aged_transfer"];
+    case "cold_email":
+    case "email":
+      return ["email", "cold_email"];
+    case "ucc_lead":
+    case "ucc":
+      return ["ucc"];
+    case "referral":
+      return ["referral"];
+    default:
+      return []; // renewal / cold_call / repeat_customer / other → any active
+  }
+}
+
+/** Short label for a campaign — its code when it has one, else the name. */
+export function campaignLabel(c: Pick<Campaign, "code" | "name">): string {
+  return c.code || c.name;
+}
+
+/**
+ * The campaign to auto-attach for a given lead source: the newest ACTIVE
+ * campaign whose channel matches the source, else the newest active campaign
+ * (so a manual entry is never left untracked when a live campaign exists).
+ * `campaigns` is assumed newest-first (listCampaigns order). Returns "" when no
+ * active campaign exists — the caller then shows the "no campaigns" warning.
+ */
+export function defaultCampaignIdForSource(campaigns: Campaign[], leadSource: string): string {
+  const active = campaigns.filter((c) => c.status === "active");
+  if (active.length === 0) return "";
+  for (const ch of channelsForLeadSource(leadSource)) {
+    const match = active.find((c) => c.channel === ch);
+    if (match) return match.id;
+  }
+  return active[0].id;
+}
+
 // Channels offered in the "New campaign" picker (canonical set, no legacy dupes).
 export const SELECTABLE_CHANNELS: CampaignChannel[] = [
   "realtime_transfer", "live_transfer", "ucc", "aged", "email",

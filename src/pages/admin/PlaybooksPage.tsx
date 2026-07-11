@@ -24,6 +24,7 @@ import {
   ArrowTopRightOnSquareIcon,
   ChevronUpIcon,
   ChevronDownIcon,
+  MegaphoneIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
@@ -45,7 +46,7 @@ import { useSession } from "../../context/SessionContext";
 import { hasSignedApplicationOnFile, uploadSignedApplication } from "../../services/signedApplication";
 import type { DealWithCustomer, DealStatus, Deal, Market } from "../../types/deals";
 import { DEAL_STATUS_CONFIG, MARKET_CONFIG } from "../../types/deals";
-import { listCampaigns, type Campaign } from "../../services/campaignService";
+import { listCampaigns, campaignLabel, type Campaign } from "../../services/campaignService";
 import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commissions";
 import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -177,6 +178,13 @@ export default function PlaybooksPage() {
   const [showEditLead, setShowEditLead] = useState(false);
   const [showApplication, setShowApplication] = useState(false);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
+  // Campaigns — loaded once so the context bar can show the loaded deal's
+  // campaign code (or the loud "no campaign" prompt when it's missing).
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  useEffect(() => {
+    listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
+  }, []);
+  const dealCampaign = deal ? campaigns.find((c) => c.id === deal.campaign_id) ?? null : null;
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
   const { isSuperAdmin, profile, effectiveUserId } = useUserProfile();
   // Renewals are gated per closer: super_admin always, a closer by their flag,
@@ -633,11 +641,12 @@ export default function PlaybooksPage() {
               ⇄ Switch lead
             </button>
           </div>
-          {showSticky && <StickyMoneyBar deal={deal} pipeline={active.pipeline} splits={splits} />}
+          {showSticky && <StickyMoneyBar deal={deal} pipeline={active.pipeline} splits={splits} campaign={dealCampaign} />}
           <div ref={contextBarRef}>
             <DealContextBar
               deal={deal}
               pipeline={active.pipeline}
+              campaign={dealCampaign}
               onClear={() => setDeal(null)}
               onAdvance={advanceDeal}
               openCloseDeal={() => setShowCloseDeal(true)}
@@ -881,11 +890,22 @@ function Confetti() {
 // Appears when the green context bar scrolls out of view — keeps the deal name,
 // where it is in the pipeline, and the closer's cut in front of them. Sticks to
 // the top of the content scroll area; z below modals (z-50) and floating buttons.
-function StickyMoneyBar({ deal, pipeline, splits }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; splits: CloserSplits }) {
+function StickyMoneyBar({ deal, pipeline, splits, campaign }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; splits: CloserSplits; campaign: Campaign | null }) {
   const { idx, stageCount, cfg, myCut } = dealMoneyStats(deal, pipeline, splits);
   return (
     <div className="sticky top-0 z-30 -mx-5 mb-4 flex items-center gap-2 border-b border-emerald-300 dark:border-emerald-800 bg-emerald-50/95 dark:bg-emerald-900/40 px-5 py-2 backdrop-blur">
       <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{dealName(deal)}</span>
+      {/* Tiny attribution marker — mirrors the context-bar chip so a scrolled
+          closer still sees when a deal is untracked. */}
+      {campaign ? (
+        <span className="shrink-0 text-[11px] font-medium text-gray-500 dark:text-gray-400" title={campaign.name}>
+          · {campaignLabel(campaign)}
+        </span>
+      ) : (
+        <span className="shrink-0 text-[11px] font-semibold text-amber-700 dark:text-amber-300" title="No campaign attached — this deal isn't tracked">
+          · ⚠ no campaign
+        </span>
+      )}
       {idx >= 0 && (
         <span className="shrink-0 text-xs text-gray-600 dark:text-gray-300">
           · Stage {idx + 1} of {stageCount} — {cfg?.label ?? deal.status}
@@ -1237,7 +1257,7 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
+function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
   const closerName = deal.closer
@@ -1312,6 +1332,26 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, ope
                     </option>
                   ))}
                 </select>
+              )}
+
+              {/* Campaign attribution — a subtle chip with the code when it's
+                  attached, a loud amber prompt (opens Edit lead → campaign picker)
+                  when it isn't, so no deal quietly goes untracked. */}
+              {campaign ? (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                  title={`Attributed to ${campaign.name}`}
+                >
+                  <MegaphoneIcon className="w-3 h-3" /> {campaignLabel(campaign)}
+                </span>
+              ) : (
+                <button
+                  onClick={openEditLead}
+                  title="This deal isn't attributed to any campaign — attach one so it's tracked"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-900/60"
+                >
+                  <ExclamationTriangleIcon className="w-3 h-3" /> No campaign — attach one
+                </button>
               )}
             </div>
           </div>
@@ -1415,13 +1455,26 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
       .then(({ data }) => setClosers(data || []));
   }, []);
 
-  // Same required set as the intake — plus last name (confirmed required to save).
+  // Attachable campaigns are the active ones. Editing keeps whatever campaign is
+  // already on the deal (no smart re-derive here — we don't want to silently swap
+  // an intentional attribution), but a deal with none must get one when active
+  // campaigns exist — same required-with-sanity rule as the intake.
+  const activeCampaigns = useMemo(() => campaigns.filter((cp) => cp.status === "active"), [campaigns]);
+  const campaignRequired = activeCampaigns.length > 0;
+
+  // Same required set as the intake — plus last name (confirmed required to save)
+  // and the campaign when there's an active one to attach.
   const canSave =
-    firstName.trim() !== "" && lastName.trim() !== "" && email.trim() !== "" && phone.trim() !== "";
+    firstName.trim() !== "" && lastName.trim() !== "" && email.trim() !== "" && phone.trim() !== "" &&
+    (!campaignRequired || campaignId !== "");
 
   async function save() {
     if (!canSave) {
-      setError("First name, last name, business email, and cell phone are all required.");
+      setError(
+        campaignRequired && campaignId === ""
+          ? "Attach a campaign — every lead must be tracked. Pick one below, or create it under Campaigns."
+          : "First name, last name, business email, and cell phone are all required.",
+      );
       return;
     }
     setSaving(true);
@@ -1536,6 +1589,36 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
             <input className="input-field w-full mt-1" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 123-4567" />
           </label>
 
+          {/* Campaign — promoted OUT of "More details" so a deal that arrived
+              untracked is fixed right here. Required when an active campaign
+              exists; we keep whatever's already attached (no smart re-derive). */}
+          <div className="rounded-lg border-2 border-ocean-blue/40 dark:border-ocean-blue/50 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-3">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-gray-900 dark:text-white">
+                <MegaphoneIcon className="w-4 h-4 text-ocean-blue" /> Campaign {campaignRequired && <Req />}
+              </span>
+              <Link to="/admin/campaigns" className="text-[11px] font-medium text-ocean-blue hover:underline">
+                Manage campaigns ↗
+              </Link>
+            </div>
+            {activeCampaigns.length > 0 ? (
+              <select className="input-field w-full" value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
+                <option value="">Select a campaign…</option>
+                {activeCampaigns.map((cp) => (
+                  <option key={cp.id} value={cp.id}>{cp.code ? `${cp.code} — ${cp.name}` : cp.name}</option>
+                ))}
+              </select>
+            ) : (
+              <div className="flex items-start gap-1.5 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300">
+                <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  No active campaigns — this lead won't be tracked.{" "}
+                  <Link to="/admin/campaigns" className="underline font-medium">Create one in Campaigns</Link>.
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* Advanced routing/attribution — these save to the DEAL, not the
               customer. Collapsed by default so identity stays the fast path. */}
           <button
@@ -1544,7 +1627,7 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
             className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
           >
             {moreOpen ? <ChevronUpIcon className="w-4 h-4" /> : <ChevronDownIcon className="w-4 h-4" />}
-            More details (closer, campaign, market, source) — optional
+            More details (closer, market, source) — optional
           </button>
 
           {moreOpen && (
@@ -1556,15 +1639,6 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
                   {closers.filter((cl) => cl.user_id).map((cl) => (
                     // value MUST be the profile id (deals.assigned_closer_id → profiles.id).
                     <option key={cl.id} value={cl.user_id!}>{cl.first_name} {cl.last_name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Campaign</span>
-                <select className="input-field w-full mt-1" value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
-                  <option value="">No campaign</option>
-                  {campaigns.map((cp) => (
-                    <option key={cp.id} value={cp.id}>{cp.name}</option>
                   ))}
                 </select>
               </label>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   CheckCircleIcon,
@@ -6,11 +6,13 @@ import {
   ChevronUpIcon,
   ArrowRightIcon,
   UserPlusIcon,
+  MegaphoneIcon,
+  ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { createDeal } from "../../services/dealService";
-import { listCampaigns, type Campaign } from "../../services/campaignService";
+import { listCampaigns, defaultCampaignIdForSource, type Campaign } from "../../services/campaignService";
 import { MARKET_CONFIG } from "../../types/deals";
 import type { Deal, Market, DealStatus, CreateDealData } from "../../types/deals";
 import type { Playbook } from "../../data/playbooks";
@@ -107,6 +109,14 @@ export default function PlaybookCapture({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Deal | null>(null);
+  // Whether the closer has hand-picked a campaign. While false, the campaign
+  // field re-derives its smart default as the lead source changes; once the
+  // closer picks one it stays put (no surprise re-selection).
+  const [campaignDirty, setCampaignDirty] = useState(false);
+
+  // Only ACTIVE campaigns can be attached / drive the smart default. When there
+  // are none, we don't hard-block the closer — we warn and let the save through.
+  const activeCampaigns = useMemo(() => campaigns.filter((c) => c.status === "active"), [campaigns]);
 
   // Whether this flow ever creates a lead by hand. Import/email/pool paths never
   // do — the lead already exists, so the closer only ever loads an existing one.
@@ -117,9 +127,18 @@ export default function PlaybookCapture({
     setForm({ ...emptyForm, lead_source: defaults.leadSource });
     setSaved(null);
     setError(null);
+    setCampaignDirty(false);
     setMode(allowsManualEntry ? (defaults.defaultMode ?? "new") : "existing");
     setExistingId("");
   }, [playbook.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Smart default: attach the newest active campaign that matches the lead
+  // source (re-derives when the source changes), until the closer picks one.
+  useEffect(() => {
+    if (campaignDirty) return;
+    const id = defaultCampaignIdForSource(campaigns, form.lead_source);
+    setForm((f) => (f.campaign_id === id ? f : { ...f, campaign_id: id }));
+  }, [campaigns, form.lead_source, campaignDirty]);
 
   useEffect(() => {
     listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
@@ -217,6 +236,14 @@ export default function PlaybookCapture({
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+
+    // Campaign attribution is effectively required — every manual lead must be
+    // tracked. Block only when there's actually an active campaign to pick (never
+    // hard-block the business on missing config; the amber warning covers that).
+    if (activeCampaigns.length > 0 && !form.campaign_id) {
+      setError("Attach a campaign — every lead must be tracked. Pick one below, or create it under Campaigns.");
+      return;
+    }
 
     // Resolve the customer — existing pick or a brand-new lead created inline.
     let customerId = existingId;
@@ -550,10 +577,51 @@ export default function PlaybookCapture({
                 </p>
               )}
 
-              {/* On a live intake, market/source/campaign/closer fold into "More
-                  details" so name + phone + business email stays the fast path —
-                  the Save button is reachable without scrolling past routing. On
-                  every other flow these fields show inline (unchanged). */}
+              {/* Campaign — promoted OUT of "More details" so it's front-and-center
+                  on every flow (it was buried and leads saved untracked). Required
+                  with a red * whenever an active campaign exists; the smart default
+                  pre-picks the closest active match and the closer can change it. */}
+              <div className="rounded-lg border-2 border-ocean-blue/40 dark:border-ocean-blue/50 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-3">
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-gray-900 dark:text-white">
+                    <MegaphoneIcon className="w-4 h-4 text-ocean-blue" /> Campaign <span className="text-red-500">*</span>
+                  </span>
+                  <Link to="/admin/campaigns" className="text-[11px] font-medium text-ocean-blue hover:underline">
+                    Manage campaigns ↗
+                  </Link>
+                </div>
+                {activeCampaigns.length > 0 ? (
+                  <>
+                    <select
+                      className="input-field w-full"
+                      value={form.campaign_id}
+                      onChange={(e) => { set("campaign_id", e.target.value); setCampaignDirty(true); }}
+                    >
+                      <option value="">Select a campaign…</option>
+                      {activeCampaigns.map((c) => (
+                        <option key={c.id} value={c.id}>{c.code ? `${c.code} — ${c.name}` : c.name}</option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                      Every lead attaches to a campaign so cost-per-funded is real — we pre-picked the closest active match; change it if it's wrong.
+                    </p>
+                  </>
+                ) : (
+                  <div className="flex items-start gap-1.5 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300">
+                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      No active campaigns — this lead won't be tracked.{" "}
+                      <Link to="/admin/campaigns" className="underline font-medium">Create one in Campaigns</Link> so cost-per-funded works.
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* On a live intake, market/source/closer fold into "More details"
+                  so name + phone + business email stays the fast path — the Save
+                  button is reachable without scrolling past routing. On every other
+                  flow these fields show inline (unchanged). Campaign now lives
+                  above, outside the fold. */}
               {isLiveIntake && (
                 <button
                   type="button"
@@ -561,7 +629,7 @@ export default function PlaybookCapture({
                   className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
                 >
                   {moreOpen ? <ChevronUpIcon className="w-4 h-4" /> : <ChevronDownIcon className="w-4 h-4" />}
-                  More details (market, campaign, closer) — optional
+                  More details (market, closer) — optional
                 </button>
               )}
 
@@ -590,14 +658,6 @@ export default function PlaybookCapture({
                     <option value="other">Other</option>
                   </select>
                 </Field>
-                <Field label="Campaign">
-                  <select className="input-field w-full" value={form.campaign_id} onChange={(e) => set("campaign_id", e.target.value)}>
-                    <option value="">No campaign</option>
-                    {campaigns.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </Field>
                 <Field label="Assigned closer">
                   <select className="input-field w-full" value={form.assigned_closer_id} onChange={(e) => set("assigned_closer_id", e.target.value)}>
                     <option value="">Unassigned</option>
@@ -618,8 +678,8 @@ export default function PlaybookCapture({
               <div className="flex items-center justify-between gap-3 pt-1">
                 <p className="text-xs text-gray-400">
                   {isLiveIntake
-                    ? "Save now to start the call; tag the campaign under “More details” so the cost-per-funded math works."
-                    : "Tagging the campaign here is what makes the cost-per-funded math work."}
+                    ? "Confirm the campaign above, then Save to start the call — the attribution is what makes cost-per-funded real."
+                    : "The campaign above is what makes the cost-per-funded math work."}
                 </p>
                 <button type="submit" disabled={saving} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
                   {saving ? "Saving…" : isVcf ? "Save VCF lead" : "Save lead"}
