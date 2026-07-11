@@ -39,20 +39,25 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   // The most time-critical thing on the board: the merchant expects a call NOW.
   if (deal.status === "new" && deal.first_call_due_at && HOT.has(deal.temperature ?? "")) {
     const dueMs = Date.parse(deal.first_call_due_at) - now;
-    // Live transfers get their own loud label + a corner countdown (below); the
-    // clock isn't jammed into the badge so both read cleanly at a glance.
+    // Live transfers and Synergy real-time leads each get their own loud label +
+    // a corner countdown (below); the clock isn't jammed into the badge so both
+    // read cleanly at a glance.
     const isLiveTransfer = deal.lead_source === "live_transfer";
+    const isRealtime = deal.lead_source === "realtime_appt";
+    const hasCornerCountdown = isLiveTransfer || isRealtime;
     return {
       rank: 0,
       badge: isLiveTransfer
         ? "🔴 LIVE TRANSFER — CALL NOW"
-        : (dueMs > 0 ? `🔴 CALL NOW · ${countdown(dueMs)}` : "🔴 CALL NOW · OVERDUE"),
+        : isRealtime
+          ? "🔴 REAL-TIME LEAD — CALL NOW"
+          : (dueMs > 0 ? `🔴 CALL NOW · ${countdown(dueMs)}` : "🔴 CALL NOW · OVERDUE"),
       why: dueMs > 0 ? "Real-time lead — call before the clock runs out." : "Real-time lead PAST its call window — call immediately.",
       since: deal.created_at,
       tone: "red",
-      // Only live transfers surface the corner countdown; other real-time leads
-      // keep their existing badge-embedded clock so nothing changes for them.
-      countdownDue: isLiveTransfer ? deal.first_call_due_at : undefined,
+      // Live transfers + real-time leads surface the corner countdown; any other
+      // hot lead keeps its existing badge-embedded clock so nothing changes for it.
+      countdownDue: hasCornerCountdown ? deal.first_call_due_at : undefined,
     };
   }
 

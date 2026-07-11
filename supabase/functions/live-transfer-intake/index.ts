@@ -1,12 +1,20 @@
-// live-transfer-intake — AUTO-INTAKE for Synergy (Double-Verified) live-transfer leads.
+// live-transfer-intake — AUTO-INTAKE for Synergy (Double-Verified) leads.
 //
-// A live-transfer email lands at sales@send.mfunding.net (GHL Conversations),
-// FROM Info@Double-Verified.com, subject "Live Transfer! …". A GHL workflow fires
-// a Webhook → this function → the lead is parsed, a customer + MCA deal are
-// auto-created, a PROPER GHL contact (the merchant, e.g. "Kyle Read" — NOT the
-// junk sender contact) + an MCA-pipeline opportunity are created, the deal is
-// born HOT with a 5-minute speed-to-lead clock (surfaces at the top of My Day),
-// and the team is emailed an urgent "call within 5 min" alert.
+// Handles TWO Synergy lead products off the SAME sales@send.mfunding.net inbox:
+//   • LIVE TRANSFER — subject "Live Transfer! …". A merchant is being phone-
+//     transferred to a closer right now.
+//   • REAL-TIME / APPOINTMENT — a pre-qualified merchant Synergy emails in the
+//     instant they hang up (subject varies: "Real Time", "Appointment", "New
+//     Lead", etc.). Same qualification data, same speed-to-lead urgency.
+//
+// A GHL workflow fires on ANY inbound email from the lt-source-tagged sender
+// (Info@Double-Verified.com) → Webhook → this function. We classify the email,
+// parse the label/value table, auto-create a customer + MCA deal, a PROPER GHL
+// contact (the merchant — NOT the junk sender contact) + an MCA-pipeline
+// opportunity, mirror every fact onto the contact's custom fields, born HOT with
+// a 5-minute speed-to-lead clock (top of My Day), and email the team an urgent
+// "call within 5 min" alert. A trusted-sender email that ISN'T a parseable lead
+// (e.g. a human reply from Synergy) is skipped gracefully.
 //
 // Deployed with verify_jwt = false (GHL workflow webhooks can't send a Supabase
 // JWT). Authenticates IN CODE via a shared secret (?secret=… or x-lt-secret),
@@ -20,6 +28,7 @@
 //   • a direct structured POST (future Zapier): { company, first_name, last_name,
 //     phone, email, state, industry, monthly_deposits, requested_amount,
 //     use_of_funds, fico, open_positions, positions_balance, best_time, agent }.
+//     Structured posts default to live_transfer unless { kind: "realtime" }.
 //
 // Compliance: MCA = purchase of future receivables, NOT a loan. This function
 // creates internal records + an internal team alert only — no merchant-facing
@@ -35,13 +44,14 @@ import {
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config (kept simple, top of file) ────────────────────────────────────────
-// Identifying rule for a live transfer: subject starts with "Live Transfer!"
-// AND/OR the sender is @double-verified.com.
-const LIVE_TRANSFER_SUBJECT_PREFIX = "live transfer!";
+// A "Live Transfer!" subject (or, when the webhook carries no subject, the same
+// marker in the body head) is what distinguishes a live transfer from a real-time
+// lead — everything else about the two emails is identical.
+const LIVE_TRANSFER_SUBJECT_MARKER = "live transfer";
 const LIVE_TRANSFER_FROM_DOMAIN = "double-verified.com";
 // Canonical MFunding MCA pipeline (same id ghl-webhook keys off, so stage changes round-trip).
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
-// Speed-to-lead SLA: the closer must call within 5 minutes.
+// Speed-to-lead SLA: the closer must call within 5 minutes (both lead kinds).
 const FIRST_CALL_SLA_MS = 5 * 60 * 1000;
 // Urgent internal alert recipients.
 const TEAM_ALERT_TO = "socrates73@gmail.com";
@@ -49,6 +59,60 @@ const TEAM_ALERT_CC = ["cmarq2k8@gmail.com"];
 const PLAYBOOK_URL = "https://mfunding.net/admin/playbooks";
 // Dedupe window: same phone/email within this many days → no duplicate deal.
 const DEDUPE_WINDOW_DAYS = 30;
+
+// ── Lead-kind configuration ───────────────────────────────────────────────────
+// The two products share ALL the machinery below; only these strings differ.
+// customerSource must be a valid value of the `lead_source` Postgres enum
+// (customers.source is that enum). The enum has NO realtime value, and the manual
+// capture path already stamps 'other' for every Synergy lead, so real-time
+// customers get 'other'. The DEAL's lead_source (free text) carries 'realtime_appt'
+// — that's what LEAD_SOURCE_TO_PLAYBOOK keys off to open the Real-Time playbook.
+type LeadKind = "live_transfer" | "realtime";
+interface KindConfig {
+  kind: LeadKind;
+  leadSource: string;        // deals.lead_source (text) — routes the playbook
+  customerSource: string;    // customers.source (lead_source enum) — MUST be a valid enum value
+  campaignChannel: string;   // campaigns.channel to attribute against
+  detailPrefix: string;      // deals.lead_source_detail prefix
+  notesHeader: string;       // first line of the deal notes
+  activitySubject: string;   // activity_log subject marker (queryable)
+  ghlTags: string[];
+  ghlSource: string;
+  alertSubjectPrefix: string;
+  alertHeaderHtml: string;
+  alertHeaderText: string;
+  alertIntro: string;        // one-line intro in the alert body (HTML allowed)
+}
+const LIVE_TRANSFER_CFG: KindConfig = {
+  kind: "live_transfer",
+  leadSource: "live_transfer",
+  customerSource: "live_transfer",
+  campaignChannel: "live_transfer",
+  detailPrefix: "Synergy live transfer",
+  notesHeader: "Live transfer — Synergy (Double-Verified).",
+  activitySubject: "live-transfer:intake",
+  ghlTags: ["live-transfer", "synergy", "merchant"],
+  ghlSource: "Live Transfer",
+  alertSubjectPrefix: "🔴 LIVE TRANSFER",
+  alertHeaderHtml: "🔴 LIVE TRANSFER — CALL WITHIN 5 MINUTES",
+  alertHeaderText: "LIVE TRANSFER — CALL WITHIN 5 MINUTES",
+  alertIntro: "A Synergy live-transfer lead just came in. The merchant is expecting a call <b>right now</b>.",
+};
+const REALTIME_CFG: KindConfig = {
+  kind: "realtime",
+  leadSource: "realtime_appt",
+  customerSource: "other",
+  campaignChannel: "realtime_transfer",
+  detailPrefix: "Synergy real-time",
+  notesHeader: "Real-time lead — Synergy (Double-Verified).",
+  activitySubject: "realtime:intake",
+  ghlTags: ["real-time", "synergy", "merchant"],
+  ghlSource: "Real-Time Lead",
+  alertSubjectPrefix: "🔴 REAL-TIME LEAD",
+  alertHeaderHtml: "🔴 REAL-TIME LEAD — CALL WITHIN 5 MINUTES",
+  alertHeaderText: "REAL-TIME LEAD — CALL WITHIN 5 MINUTES",
+  alertIntro: "A Synergy real-time lead just came in — the merchant just finished with Synergy and expects a call <b>right now</b>.",
+};
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -246,6 +310,22 @@ function extractBodyText(b: Record<string, unknown>): string {
   return "";
 }
 
+// Pull an email SUBJECT out of a GHL webhook payload. Body-embedded mode carries
+// no subject on its own, but we need it to tell a live transfer from a real-time
+// lead — so check every shape the workflow might send it in.
+function extractSubject(b: Record<string, unknown>): string {
+  for (const k of ["subject", "email_subject", "emailSubject", "mailSubject", "title"]) {
+    const v = b[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  for (const nest of ["message", "email", "customData"]) {
+    const o = b[nest] as Record<string, unknown> | undefined;
+    const v = o?.subject;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
 function pickId(b: Record<string, unknown>, keys: string[]): string {
   for (const k of keys) {
     const v = b[k];
@@ -290,12 +370,12 @@ async function newestInboundEmail(
 }
 
 // ── GHL custom fields ─────────────────────────────────────────────────────────
-// EVERY fact from the live-transfer email is mirrored onto the merchant's GHL
-// contact so nothing is lost on the GHL side. Fields are resolved by NAME against
-// the location's existing custom fields (reusing ~8 that already fit); the 10
-// live-transfer-specific facts that had no home are created once (lazy, idempotent
-// — a create only fires if the named field is missing). dataType is used only when
-// a field must be created. Values go out as {id, value} via updateContactCustomFields.
+// EVERY fact from the Synergy email is mirrored onto the merchant's GHL contact so
+// nothing is lost on the GHL side. Fields are resolved by NAME against the
+// location's existing custom fields (reusing ~8 that already fit); the 10
+// Synergy-specific facts that had no home are created once (lazy, idempotent — a
+// create only fires if the named field is missing). dataType is used only when a
+// field must be created. Values go out as {id, value} via updateContactCustomFields.
 const CUSTOM_FIELD_PLAN: Array<{ name: string; dataType: string; get: (l: Lead) => string | number | "" }> = [
   // Reused existing fields (exact names from the location's custom-field set).
   { name: "Business Name", dataType: "TEXT", get: (l) => l.business },
@@ -306,7 +386,7 @@ const CUSTOM_FIELD_PLAN: Array<{ name: string; dataType: string; get: (l: Lead) 
   { name: "Use of Funds (Doc)", dataType: "TEXT", get: (l) => l.useOfFunds },
   { name: "Total Outstanding MCA Balance", dataType: "MONETORY", get: (l) => l.positionsBalance ?? "" },
   { name: "Active MCA Positions", dataType: "NUMERICAL", get: (l) => l.openPositions ?? "" },
-  // New live-transfer-specific fields (created if missing).
+  // New Synergy-specific fields (created if missing).
   { name: "Best Time To Reach", dataType: "TEXT", get: (l) => l.bestTime },
   { name: "Years As Owner", dataType: "TEXT", get: (l) => l.timeAsOwner },
   { name: "Needs Money Right Away", dataType: "TEXT", get: (l) => l.needMoneyNow },
@@ -383,12 +463,14 @@ Deno.serve(async (req) => {
   let sourceMode: "structured" | "email-body" | "ghl-fetch";
   let emailSubject = "";
   let emailFrom = "";
+  let bodyForMarker = ""; // raw body text used to sniff the "Live Transfer" marker
 
   if (looksStructured(body)) {
     sourceMode = "structured";
     fields = Object.fromEntries(Object.entries(body).map(([k, v]) => [k, v == null ? "" : String(v)]));
   } else {
     let bodyText = extractBodyText(body);
+    emailSubject = extractSubject(body);
     if (bodyText) {
       sourceMode = "email-body";
     } else {
@@ -398,9 +480,12 @@ Deno.serve(async (req) => {
       const contactId = pickId(body, ["contactId", "contact_id", "id"]);
       const fetched = await newestInboundEmail(cfg, { conversationId, contactId });
       if (!fetched) return json({ error: "no inbound email body found (payload carried no body and no resolvable conversation/contact id)" }, 422);
-      bodyText = fetched.body; emailSubject = fetched.subject; emailFrom = fetched.from;
+      bodyText = fetched.body;
+      emailSubject = fetched.subject || emailSubject;
+      emailFrom = fetched.from;
       sourceMode = "ghl-fetch";
     }
+    bodyForMarker = bodyText;
     fields = parseLabelValue(htmlToSegments(bodyText));
   }
 
@@ -408,19 +493,52 @@ Deno.serve(async (req) => {
   if (emailSubject) lead.raw["_email_subject"] = emailSubject;
   if (emailFrom) lead.raw["_email_from"] = emailFrom;
 
-  // Soft identity check (advisory only — the secret is the real gate).
-  const looksLikeLiveTransfer =
-    emailSubject.toLowerCase().startsWith(LIVE_TRANSFER_SUBJECT_PREFIX) ||
-    emailFrom.toLowerCase().includes(LIVE_TRANSFER_FROM_DOMAIN) ||
-    sourceMode === "structured" ||
-    Object.keys(fields).length >= 3;
-
-  if (!lead.email && !lead.phone) {
-    return json({ error: "could not parse a phone or email from the lead", parsed: lead.raw, mode: sourceMode }, 422);
+  // ── CLASSIFY: live transfer vs real-time ──
+  // The ONLY discriminator is the "Live Transfer!" subject (checked in the body
+  // head too, since body-embedded webhooks carry no subject). Anything else from
+  // the trusted sender that parses into a lead is a real-time / appointment lead.
+  const subjLower = emailSubject.toLowerCase();
+  let isLiveTransfer: boolean;
+  if (sourceMode === "structured") {
+    // Structured posts are the (future) Zapier path; default to live_transfer to
+    // preserve existing behavior, unless the caller explicitly says realtime.
+    const explicit = String(body.kind ?? body.lead_kind ?? body.lead_type ?? "").toLowerCase();
+    isLiveTransfer = explicit ? explicit.includes("live") : true;
+  } else {
+    isLiveTransfer =
+      subjLower.includes(LIVE_TRANSFER_SUBJECT_MARKER) ||
+      (!emailSubject && /live\s*transfer/i.test(bodyForMarker.slice(0, 400)));
   }
-  const fullName = `${lead.first} ${lead.last}`.trim() || lead.business || "Live Transfer Lead";
+  const kcfg = isLiveTransfer ? LIVE_TRANSFER_CFG : REALTIME_CFG;
 
-  // ── DEDUPE: same phone/email with a live_transfer deal in the last 30 days ──
+  // ── Parseability gate ──
+  // A live transfer must have at least a phone/email (loud 422 if not — a live
+  // transfer that won't parse is a real problem). A real-time candidate that
+  // doesn't parse into a lead (name + a way to reach them) is almost certainly a
+  // human reply from Synergy — skip it gracefully rather than erroring.
+  const hasContact = Boolean(lead.phone || lead.email);
+  const hasIdentity = Boolean(lead.first || lead.last || lead.business);
+  if (isLiveTransfer) {
+    if (!hasContact) {
+      return json({ error: "could not parse a phone or email from the lead", parsed: lead.raw, mode: sourceMode, kind: kcfg.kind }, 422);
+    }
+  } else if (!(hasContact && hasIdentity)) {
+    return json({
+      ok: true, skipped: true, kind: kcfg.kind,
+      reason: "trusted sender but not a parseable lead (likely a human reply) — skipped",
+      parsed: lead.raw, mode: sourceMode,
+    });
+  }
+  const fullName = `${lead.first} ${lead.last}`.trim() || lead.business || (isLiveTransfer ? "Live Transfer Lead" : "Real-Time Lead");
+
+  // Tolerance flag (never LOSE a lead): a real-time email in an unexpected format
+  // still becomes a lead, but we mark it for a human to eyeball the parse.
+  const parsedCount = Object.keys(fields).length;
+  const variantFlag = (!isLiveTransfer && parsedCount < 5)
+    ? " ⚠️ format variant — review parse (fewer fields than a standard Synergy lead)."
+    : "";
+
+  // ── DEDUPE: same phone/email with a same-kind deal in the last 30 days ──
   const sinceIso = new Date(Date.now() - DEDUPE_WINDOW_DAYS * 24 * 3600 * 1000).toISOString();
   const candIds = new Set<string>();
   if (lead.email) {
@@ -436,7 +554,7 @@ Deno.serve(async (req) => {
     const { data: dup } = await db.from("deals")
       .select("id, deal_number, customer_id, created_at")
       .in("customer_id", [...candIds])
-      .eq("lead_source", "live_transfer")
+      .eq("lead_source", kcfg.leadSource)
       .gte("created_at", sinceIso)
       .order("created_at", { ascending: false })
       .limit(1).maybeSingle();
@@ -444,10 +562,10 @@ Deno.serve(async (req) => {
       await db.from("activity_log").insert({
         entity_type: "deal", entity_id: dup.id,
         interaction_type: "note",
-        subject: "live-transfer:dedupe",
-        content: `Duplicate live-transfer intake suppressed (same ${lead.email ? "email" : "phone"} within ${DEDUPE_WINDOW_DAYS}d). Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.`,
+        subject: kcfg.activitySubject.replace(":intake", ":dedupe"),
+        content: `Duplicate ${kcfg.kind} intake suppressed (same ${lead.email ? "email" : "phone"} within ${DEDUPE_WINDOW_DAYS}d). Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.`,
       }).then(() => {}, () => {});
-      return json({ ok: true, deduped: true, dealId: dup.id, dealNumber: dup.deal_number, customerId: dup.customer_id });
+      return json({ ok: true, deduped: true, kind: kcfg.kind, dealId: dup.id, dealNumber: dup.deal_number, customerId: dup.customer_id });
     }
   }
 
@@ -463,7 +581,7 @@ Deno.serve(async (req) => {
     monthly_revenue: lead.monthlyDeposits,
     amount_requested: lead.requestedAmount,
     use_of_funds: lead.useOfFunds || null,
-    source: "live_transfer",
+    source: kcfg.customerSource,
     is_live_transfer: true,
     temperature: "hot",
     lead_qual: lead.raw,
@@ -472,7 +590,7 @@ Deno.serve(async (req) => {
   if (existingCustomerId) {
     // Only fill gaps — never blank out existing data.
     const { data: cur } = await db.from("customers").select("*").eq("id", existingCustomerId).maybeSingle();
-    const merged: Record<string, unknown> = { is_live_transfer: true, temperature: "hot", lead_qual: lead.raw, source: "live_transfer" };
+    const merged: Record<string, unknown> = { is_live_transfer: true, temperature: "hot", lead_qual: lead.raw };
     for (const [k, v] of Object.entries(custPatch)) {
       if (v == null || v === "") continue;
       if (cur && (cur[k] == null || cur[k] === "")) merged[k] = v;
@@ -486,16 +604,15 @@ Deno.serve(async (req) => {
   }
 
   // ── Resolve the attribution campaign DYNAMICALLY ──
-  // Newest ACTIVE campaign on the live_transfer channel (Synergy partner preferred).
-  // The old hardcoded code (SYN-LT-2026-001) was deleted, so never hardcode it.
-  // If no active live-transfer campaign exists, campaign_id stays null — attribution
-  // must NEVER fail the intake; we just note it in the activity log.
+  // Newest ACTIVE campaign on THIS lead kind's channel (Synergy partner preferred).
+  // Never hardcode a code — the codes rotate. If no active campaign exists on the
+  // channel, campaign_id stays null; attribution must NEVER fail the intake.
   let campaignId: string | null = null;
   let attributionNote = "";
   {
     const { data: camps } = await db.from("campaigns")
       .select("id, code, partner, created_at")
-      .eq("channel", "live_transfer")
+      .eq("channel", kcfg.campaignChannel)
       .eq("status", "active")
       .order("created_at", { ascending: false });
     const list = camps ?? [];
@@ -503,8 +620,8 @@ Deno.serve(async (req) => {
     const chosen = synergy ?? list[0] ?? null;
     campaignId = (chosen?.id as string | undefined) ?? null;
     attributionNote = chosen
-      ? `Attributed to active live-transfer campaign ${chosen.code ?? chosen.id}${synergy ? " (Synergy)" : ""}.`
-      : "No active live-transfer campaign found — deal left unattributed (campaign_id null).";
+      ? `Attributed to active ${kcfg.campaignChannel} campaign ${chosen.code ?? chosen.id}${synergy ? " (Synergy)" : ""}.`
+      : `No active ${kcfg.campaignChannel} campaign found — deal left unattributed (campaign_id null).`;
   }
 
   // ── Create the DEAL — born HOT with a 5-minute call clock ──
@@ -513,8 +630,8 @@ Deno.serve(async (req) => {
     customer_id: customerId,
     deal_type: "mca",
     status: "new",
-    lead_source: "live_transfer",
-    lead_source_detail: `Synergy live transfer${lead.agent ? ` · ${lead.agent}` : ""}`,
+    lead_source: kcfg.leadSource,
+    lead_source_detail: `${kcfg.detailPrefix}${lead.agent ? ` · ${lead.agent}` : ""}`,
     amount_requested: lead.requestedAmount,
     use_of_funds: lead.useOfFunds || null,
     campaign_id: campaignId,
@@ -523,7 +640,7 @@ Deno.serve(async (req) => {
     first_call_due_at: new Date(now + FIRST_CALL_SLA_MS).toISOString(),
     lead_qual: lead.raw,
     notes: [
-      `Live transfer — Synergy (Double-Verified).`,
+      kcfg.notesHeader,
       lead.business && `Business: ${lead.business}`,
       lead.state && `State: ${lead.state}`,
       lead.industry && `Industry: ${lead.industry}`,
@@ -544,8 +661,8 @@ Deno.serve(async (req) => {
   await db.from("activity_log").insert({
     entity_type: "deal", entity_id: dealId,
     interaction_type: "note",
-    subject: "live-transfer:intake",
-    content: `Auto-created from ${sourceMode} live transfer. ${attributionNote}\n${JSON.stringify(lead.raw, null, 2)}`,
+    subject: kcfg.activitySubject,
+    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}\n${JSON.stringify(lead.raw, null, 2)}`,
   }).then(() => {}, () => {});
 
   // ── GHL: proper merchant contact + MCA opportunity at "New Lead" ──
@@ -564,8 +681,8 @@ Deno.serve(async (req) => {
         phone: lead.phone || null,
         companyName: lead.business || null,
         state: lead.state || null,
-        tags: ["live-transfer", "synergy", "merchant"],
-        source: "Live Transfer",
+        tags: kcfg.ghlTags,
+        source: kcfg.ghlSource,
       });
       ghlContactId = cr.data?.contact?.id ?? null;
       if (!ghlContactId) {
@@ -612,7 +729,7 @@ Deno.serve(async (req) => {
     } catch (e) {
       ghlWarning = e instanceof Error ? e.message : String(e);
     }
-    if (ghlWarning) console.error("live-transfer-intake: GHL sync issue", { dealId, ghlWarning });
+    if (ghlWarning) console.error(`live-transfer-intake: GHL sync issue (${kcfg.kind})`, { dealId, ghlWarning });
   } else {
     ghlWarning = `GHL not configured: ${cfgErr || "missing credentials"}`;
   }
@@ -626,7 +743,7 @@ Deno.serve(async (req) => {
       // the team. No name fields on the upsert so we never clobber an existing
       // contact record for that address.
       const alert = await upsertContact(cfg, {
-        email: TEAM_ALERT_TO, tags: ["internal-alerts"], source: "Live Transfer Alert",
+        email: TEAM_ALERT_TO, tags: ["internal-alerts"], source: `${kcfg.ghlSource} Alert`,
       });
       const alertContactId = alert.data?.contact?.id;
       if (!alertContactId) {
@@ -650,14 +767,14 @@ Deno.serve(async (req) => {
           ([k, v]) => `<tr><td style="padding:4px 12px 4px 0;color:#64748b;white-space:nowrap">${k}</td><td style="padding:4px 0;color:#0f172a;font-weight:600">${v}</td></tr>`,
         ).join("");
         const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px">
-<div style="background:#dc2626;color:#fff;font-size:16px;font-weight:700;padding:12px 16px;border-radius:8px 8px 0 0">🔴 LIVE TRANSFER — CALL WITHIN 5 MINUTES</div>
+<div style="background:#dc2626;color:#fff;font-size:16px;font-weight:700;padding:12px 16px;border-radius:8px 8px 0 0">${kcfg.alertHeaderHtml}</div>
 <div style="border:1px solid #e2e8f0;border-top:0;border-radius:0 0 8px 8px;padding:16px">
-<p style="margin:0 0 10px;font-size:14px;color:#0f172a">A Synergy live-transfer lead just came in. The merchant is expecting a call <b>right now</b>.</p>
+<p style="margin:0 0 10px;font-size:14px;color:#0f172a">${kcfg.alertIntro}</p>
 <table style="font-size:14px;border-collapse:collapse">${trs}</table>
 <p style="margin:14px 0 0"><a href="${PLAYBOOK_URL}" style="background:#2563eb;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:6px;display:inline-block">Open the Playbook →</a></p>
 </div></div>`;
-        const text = `LIVE TRANSFER — CALL WITHIN 5 MINUTES\n\n${rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n")}\n\nOpen the playbook: ${PLAYBOOK_URL}`;
-        const subject = `🔴 LIVE TRANSFER: ${fullName} / ${lead.business || "—"} — CALL WITHIN 5 MIN`;
+        const text = `${kcfg.alertHeaderText}\n\n${rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n")}\n\nOpen the playbook: ${PLAYBOOK_URL}`;
+        const subject = `${kcfg.alertSubjectPrefix}: ${fullName} / ${lead.business || "—"} — CALL WITHIN 5 MIN`;
         const sr = await sendEmailToContact(cfg, alertContactId, subject, html, { text, emailCc: TEAM_ALERT_CC });
         alertSent = sr.ok;
         if (!sr.ok) alertWarning = sr.error;
@@ -665,12 +782,14 @@ Deno.serve(async (req) => {
     } catch (e) {
       alertWarning = e instanceof Error ? e.message : String(e);
     }
-    if (alertWarning) console.error("live-transfer-intake: alert email issue", { dealId, alertWarning });
+    if (alertWarning) console.error(`live-transfer-intake: alert email issue (${kcfg.kind})`, { dealId, alertWarning });
   }
 
   return json({
     ok: true,
     deduped: false,
+    kind: kcfg.kind,
+    leadSource: kcfg.leadSource,
     dealId,
     dealNumber,
     customerId,
@@ -683,7 +802,7 @@ Deno.serve(async (req) => {
     alertSent,
     alertWarning,
     mode: sourceMode,
-    looksLikeLiveTransfer,
-    parsedFields: Object.keys(fields).length,
+    variant: variantFlag ? true : false,
+    parsedFields: parsedCount,
   });
 });
