@@ -35,6 +35,7 @@ import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabili
 import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
+import DealAssistant from "../../components/admin/DealAssistant";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
@@ -650,6 +651,10 @@ export default function PlaybooksPage() {
               myProfileId={effectiveUserId}
             />
           </div>
+          {/* Deal-desk AI — scoped to THIS deal. The closer is often on the phone
+              with a funder who's asking for things; this answers instantly from
+              the deal's full record (stips, funders + what they said, pipeline). */}
+          <DealAssistant deal={deal} />
           {deal.merchant_reply_at && Date.now() - Date.parse(deal.merchant_reply_at) < 3 * 24 * 60 * 60 * 1000 && (
             <div className="mt-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-800 dark:text-emerald-200 flex flex-wrap items-center gap-1.5">
               <span className="font-semibold">💬 Merchant replied {(() => { const m = Math.round((Date.now() - Date.parse(deal.merchant_reply_at!)) / 60000); return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; })()}</span>

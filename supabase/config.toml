@@ -114,3 +114,11 @@ verify_jwt = true
 # the vault (Deno.env FIRECRAWL_API_KEY + callLLM provider key).
 [functions.lender-extract]
 verify_jwt = true
+
+# Deal-desk AI chat scoped to ONE deal, mounted in the Revenue Playbook. Answers
+# "the funder is asking for X" instantly from the deal's full context (merchant,
+# financials, stage, doc checklist, every funder + what they said, underwriting,
+# activity). Staff-only enforced in code; a CLOSER may only ask about a deal they
+# own (closer_owns_deal RPC). Key from the vault via callLLM.
+[functions.deal-assistant]
+verify_jwt = true
