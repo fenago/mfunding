@@ -8,9 +8,34 @@ import {
   PencilSquareIcon,
   TrashIcon,
   XMarkIcon,
+  ArrowPathIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+  BanknotesIcon,
+  BoltIcon,
+  SignalIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
+// Reuse the shared live-Instantly warmup model so the two pages agree on what
+// "warmed" means (single source of truth — do not fork this logic).
+import { groupDomains, WARM_TONE, type DomainGroup, type Overview } from "@/lib/instantlyWarmup";
+
+// ── Live Instantly analytics (action "analytics") ────────────────────────────
+interface InstantlyAnalytics {
+  ok?: boolean;
+  warning?: string;
+  totals?: {
+    sent?: number;
+    opened?: number;
+    replied?: number;
+    leads?: number;
+    opportunities?: number;
+    bounced?: number;
+  };
+  campaigns?: { id?: string; name?: string; sent?: number; opened?: number; replied?: number; leads?: number }[];
+  error?: string;
+}
 
 // ============================================================================
 // Cold Email Planner
@@ -189,6 +214,9 @@ export default function ColdEmailPlannerPage() {
   // Funnel assumptions
   const [replyRate, setReplyRate] = useState(3); // % of sends that reply
   const [positiveToLead, setPositiveToLead] = useState(30); // % of replies that become a lead
+  // Financial assumptions (platform economics: 8 points on a ~$50K advance = $4,000)
+  const [leadToFunded, setLeadToFunded] = useState(8); // % of leads that fund
+  const [avgCommission, setAvgCommission] = useState(4000); // $ commission per funded deal
 
   const safePerMailbox = Math.max(1, perMailbox);
   const safePerDomain = Math.max(1, perDomain);
@@ -214,6 +242,24 @@ export default function ColdEmailPlannerPage() {
     const leads = replies * (positiveToLead / 100);
     return { replies, leads };
   }, [calcA.monthly, replyRate, positiveToLead]);
+
+  // --- Financial projection (from the modeled leads) ------------------------
+  const financials = useMemo(() => {
+    const leads = funnel.leads;
+    const funded = leads * (leadToFunded / 100);
+    const revenue = funded * avgCommission;
+    const cost = calcA.cost; // mailboxes × $/mailbox/mo
+    const net = revenue - cost;
+    return {
+      funded,
+      revenue,
+      cost,
+      net,
+      roi: cost > 0 ? net / cost : NaN, // net ROI multiple on spend
+      costPerLead: leads > 0 ? cost / leads : NaN,
+      costPerFunded: funded > 0 ? cost / funded : NaN,
+    };
+  }, [funnel.leads, leadToFunded, avgCommission, calcA.cost]);
 
   // --- Scaling table -------------------------------------------------------
   const scaleRows = useMemo(
@@ -259,28 +305,132 @@ export default function ColdEmailPlannerPage() {
     void loadDomains();
   }, []);
 
-  // Safe cold sending capacity RIGHT NOW = sum over cold domains that are at
-  // least 21 days seasoned of (mailbox_count × perMailbox/day). Ties Section 2
-  // back to the per-mailbox rate from Section 1.
-  const safeCapacityNow = useMemo(() => {
-    return domains.reduce((sum, d) => {
-      if (d.purpose !== "cold" || !d.warmup_started_at) return sum;
-      const s = computeSeasoning(d.warmup_started_at);
-      if (s.days < MIN_WARMUP_DAYS) return sum;
-      return sum + d.mailbox_count * safePerMailbox;
-    }, 0);
-  }, [domains, safePerMailbox]);
+  // ── Live Instantly (real data — the source of truth) ─────────────────────
+  const [overview, setOverview] = useState<Overview | null>(null);
+  const [analytics, setAnalytics] = useState<InstantlyAnalytics | null>(null);
+  const [liveLoading, setLiveLoading] = useState(true);
+  const [liveError, setLiveError] = useState<string | null>(null);
 
-  const seasonedColdDomains = useMemo(
+  const loadLive = async () => {
+    setLiveLoading(true);
+    setLiveError(null);
+    const [ov, an] = await Promise.all([
+      supabase.functions.invoke("instantly", { body: { action: "overview" } }),
+      supabase.functions.invoke("instantly", { body: { action: "analytics" } }),
+    ]);
+    if (ov.error) setLiveError(ov.error.message || "Failed to reach Instantly");
+    else if ((ov.data as { error?: string } | undefined)?.error)
+      setLiveError((ov.data as { error?: string }).error ?? null);
+    else setOverview(ov.data as Overview);
+    // Analytics is best-effort — never hard-fail the page on it.
+    if (!an.error && an.data && !(an.data as InstantlyAnalytics).error) {
+      setAnalytics(an.data as InstantlyAnalytics);
+    }
+    setLiveLoading(false);
+  };
+
+  useEffect(() => {
+    void loadLive();
+  }, []);
+
+  // Real sending domains grouped from the live Instantly accounts (reuses the
+  // exact grouping/warmup model from EmailPage).
+  const liveGroups = useMemo(
+    () => groupDomains(overview?.accounts ?? [], overview?.forwarding ?? {}, Date.now()),
+    [overview],
+  );
+  const liveDomainSet = useMemo(
+    () => new Set(liveGroups.map((g) => g.domain.trim().toLowerCase())),
+    [liveGroups],
+  );
+  const realSite = overview?.real_site ?? "mfunding.net";
+
+  // Safe cold sending capacity RIGHT NOW, computed from the LIVE seasoned
+  // domains (≥21 real warmup days) × the per-mailbox rate from Section 1.
+  const liveSafe = useMemo(() => {
+    const seasoned = liveGroups.filter((g) => g.ws.days >= MIN_WARMUP_DAYS);
+    return {
+      capacity: seasoned.reduce((sum, g) => sum + g.accts.length * safePerMailbox, 0),
+      count: seasoned.length,
+    };
+  }, [liveGroups, safePerMailbox]);
+
+  // Only show manual rows that are NOT already live in Instantly and are cold.
+  // (Naturally hides the brand row and stops a domain double-showing once live.)
+  const plannedDomains = useMemo(
     () =>
       domains.filter(
-        (d) =>
-          d.purpose === "cold" &&
-          d.warmup_started_at &&
-          computeSeasoning(d.warmup_started_at).days >= MIN_WARMUP_DAYS,
-      ).length,
-    [domains],
+        (d) => d.purpose === "cold" && !liveDomainSet.has(d.domain.trim().toLowerCase()),
+      ),
+    [domains, liveDomainSet],
   );
+
+  // ── Real reply/lead actuals from Instantly analytics ─────────────────────
+  const actuals = useMemo(() => {
+    const t = analytics?.totals;
+    if (!t) return null;
+    const sent = Number(t.sent) || 0;
+    const opened = Number(t.opened) || 0;
+    const replied = Number(t.replied) || 0;
+    const leads = Number(t.leads) || 0;
+    if (sent === 0 && replied === 0 && leads === 0) return null; // no meaningful data yet
+    return {
+      sent,
+      opened,
+      replied,
+      leads,
+      replyRate: sent > 0 ? (replied / sent) * 100 : 0, // real reply rate
+      replyToLead: replied > 0 ? (leads / replied) * 100 : 0, // real reply→lead
+    };
+  }, [analytics]);
+
+  const useActuals = () => {
+    if (!actuals) return;
+    setReplyRate(Number(actuals.replyRate.toFixed(2)));
+    setPositiveToLead(Number(actuals.replyToLead.toFixed(1)));
+  };
+
+  // ── Real cold-email-attributed funded deals from the pipeline ────────────
+  const [realDeals, setRealDeals] = useState<{ funded: number; revenue: number } | null>(null);
+  const [realDealsLoading, setRealDealsLoading] = useState(true);
+
+  const loadRealDeals = async () => {
+    setRealDealsLoading(true);
+    const COLD_SOURCES = new Set(["cold_email", "coldemail", "instantly", "email", "email_outreach"]);
+    const { data: deals, error } = await supabase
+      .from("deals")
+      .select("amount_funded, lead_source, status, campaign_id")
+      .in("status", ["funded", "renewal_eligible"]);
+    if (error || !deals) {
+      setRealDeals({ funded: 0, revenue: 0 });
+      setRealDealsLoading(false);
+      return;
+    }
+    // Campaigns whose channel is email → their funded deals count as cold-sourced.
+    const { data: camps } = await supabase.from("campaigns").select("id, channel");
+    const emailCampaignIds = new Set(
+      (camps ?? [])
+        .filter((c) => ["email", "cold_email"].includes(String((c as { channel?: string }).channel)))
+        .map((c) => (c as { id: string }).id),
+    );
+    let funded = 0;
+    let amount = 0;
+    for (const d of deals as { amount_funded: number | null; lead_source: string | null; campaign_id: string | null }[]) {
+      const src = (d.lead_source ?? "").toString().toLowerCase();
+      const bySource = COLD_SOURCES.has(src);
+      const byCampaign = d.campaign_id != null && emailCampaignIds.has(d.campaign_id);
+      if (bySource || byCampaign) {
+        funded += 1;
+        amount += Number(d.amount_funded) || 0;
+      }
+    }
+    setRealDeals({ funded, revenue: amount * 0.08 }); // 8 points
+    setRealDealsLoading(false);
+  };
+
+  useEffect(() => {
+    void loadRealDeals();
+  }, []);
 
   // --- CRUD ----------------------------------------------------------------
   const openCreate = () => {
@@ -513,6 +663,137 @@ export default function ColdEmailPlannerPage() {
         </div>
       </div>
 
+      {/* Actuals (Instantly) — real reply/lead numbers to calibrate the model */}
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 border border-gray-200 dark:border-gray-700 mb-4">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <SignalIcon className="w-5 h-5 text-ocean-blue" />
+          <h3 className="font-semibold text-gray-900 dark:text-white">Actuals (Instantly)</h3>
+          <span className="text-[11px] text-gray-400">real send performance — the model above is assumptions</span>
+          {actuals && (
+            <button
+              onClick={useActuals}
+              className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-ocean-blue text-white text-xs font-semibold hover:opacity-90"
+              title="Set the funnel's reply rate and reply→lead % from these real numbers"
+            >
+              <ArrowPathIcon className="w-3.5 h-3.5" /> Use my actuals
+            </button>
+          )}
+        </div>
+        {liveLoading && !actuals ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">Loading live analytics…</p>
+        ) : actuals ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <StatCard label="Sent" value={fmtInt(actuals.sent)} />
+            <StatCard label="Opened" value={fmtInt(actuals.opened)} />
+            <StatCard label="Replied" value={fmtInt(actuals.replied)} accent="ocean" />
+            <StatCard label="Leads" value={fmtInt(actuals.leads)} accent="mint" />
+            <StatCard label="Reply rate" value={`${actuals.replyRate.toFixed(1)}%`} sub="replied ÷ sent" />
+            <StatCard label="Reply → lead" value={`${actuals.replyToLead.toFixed(0)}%`} sub="leads ÷ replied" />
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            No live analytics yet — showing your assumptions. Real reply/lead numbers appear here once campaigns start
+            sending.
+          </p>
+        )}
+      </div>
+
+      {/* Financial projection — modeled revenue from the funnel, plus real pipeline */}
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 border border-gray-200 dark:border-gray-700 mb-4">
+        <div className="flex flex-wrap items-center gap-2 mb-1">
+          <BanknotesIcon className="w-5 h-5 text-mint-green" />
+          <h3 className="font-semibold text-gray-900 dark:text-white">Financial projection</h3>
+          <span className="text-[11px] text-gray-400">
+            from {fmtInt(funnel.leads)} modeled leads/mo · cost = {fmtInt(calcA.mailboxes)} mailboxes ×{" "}
+            {fmtMoney(costPerMailbox)}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-4 mt-3">
+          <label className="text-xs text-gray-500 dark:text-gray-400">
+            Lead → funded %
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              value={leadToFunded}
+              onChange={(e) => setLeadToFunded(Math.max(0, Number(e.target.value)))}
+              className={`${numCls} w-24 mt-1`}
+            />
+          </label>
+          <label className="text-xs text-gray-500 dark:text-gray-400">
+            Avg commission $
+            <input
+              type="number"
+              min={0}
+              step={250}
+              value={avgCommission}
+              onChange={(e) => setAvgCommission(Math.max(0, Number(e.target.value)))}
+              className={`${numCls} w-28 mt-1`}
+            />
+          </label>
+          <span className="text-[11px] text-gray-400 mb-1.5">default: 8% of leads fund, 8 points on ~$50K = $4,000</span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+          <StatCard label="Funded deals / mo" value={fmtInt(financials.funded)} accent="mint" />
+          <StatCard label="Revenue / mo" value={fmtMoney(financials.revenue)} accent="ocean" />
+          <StatCard label="Sending cost / mo" value={fmtMoney(financials.cost)} />
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Net profit / mo</p>
+            <p
+              className={`text-3xl font-extrabold mt-1 tabular-nums ${
+                financials.net >= 0 ? "text-mint-green" : "text-red-500"
+              }`}
+            >
+              {fmtMoney(financials.net)}
+            </p>
+            <p className="text-[11px] text-gray-400 mt-0.5">revenue − sending cost</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+          <StatCard
+            label="ROI on send spend"
+            value={Number.isFinite(financials.roi) ? `${financials.roi.toFixed(1)}×` : "—"}
+            sub="net ÷ sending cost"
+          />
+          <StatCard label="Cost / lead" value={fmtMoney(financials.costPerLead)} />
+          <StatCard label="Cost / funded deal" value={fmtMoney(financials.costPerFunded)} sub="target < $1,500" />
+        </div>
+
+        {/* Real pipeline overlay — cold-email-attributed funded deals */}
+        <div className="mt-4 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 p-3">
+          <div className="flex items-center gap-2 mb-1">
+            <BoltIcon className="w-4 h-4 text-ocean-blue" />
+            <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">Real — cold-email-sourced funded deals</p>
+          </div>
+          {realDealsLoading ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400">Checking the pipeline…</p>
+          ) : realDeals && realDeals.funded > 0 ? (
+            <div className="flex flex-wrap items-center gap-6">
+              <div>
+                <p className="text-[11px] text-gray-400">Funded (actual)</p>
+                <p className="text-2xl font-extrabold text-mint-green tabular-nums">{fmtInt(realDeals.funded)}</p>
+              </div>
+              <div>
+                <p className="text-[11px] text-gray-400">Revenue (actual, 8 pts)</p>
+                <p className="text-2xl font-extrabold text-ocean-blue tabular-nums">{fmtMoney(realDeals.revenue)}</p>
+              </div>
+              <p className="text-[11px] text-gray-400 max-w-xs">
+                vs. modeled {fmtInt(financials.funded)} funded / {fmtMoney(financials.revenue)} above. Attributed by
+                lead source or email-channel campaign.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              No cold-email-sourced funded deals yet — projection shown above. Deals attribute here once they fund with
+              a cold-email lead source or an email-channel campaign.
+            </p>
+          )}
+        </div>
+      </div>
+
       {/* Scaling table */}
       <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-x-auto mb-3">
         <table className="w-full text-sm">
@@ -557,13 +838,35 @@ export default function ColdEmailPlannerPage() {
         <div className="ml-auto bg-mint-green/10 border border-mint-green/30 rounded-xl px-4 py-2 text-right">
           <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Safe cold capacity today</p>
           <p className="text-2xl font-extrabold text-mint-green tabular-nums leading-tight">
-            ~{fmtInt(safeCapacityNow)} <span className="text-sm font-semibold">emails/day</span>
+            ~{fmtInt(liveSafe.capacity)} <span className="text-sm font-semibold">emails/day</span>
           </p>
           <p className="text-[11px] text-gray-400">
-            from {seasonedColdDomains} seasoned cold domain{seasonedColdDomains === 1 ? "" : "s"} (≥21d)
+            from {liveSafe.count} live seasoned domain{liveSafe.count === 1 ? "" : "s"} (≥21d, real warmup)
           </p>
         </div>
       </div>
+
+      {/* Live in Instantly — the source of truth (real mailboxes + warmup) */}
+      <LiveInstantlyDomains
+        groups={liveGroups}
+        realSite={realSite}
+        perMailbox={safePerMailbox}
+        loading={liveLoading}
+        error={liveError}
+        onRefresh={loadLive}
+      />
+
+      {/* Planned domains — manual tracker for domains owned but not yet connected */}
+      <div className="flex items-center gap-2 mb-2 mt-8">
+        <h3 className="text-base font-bold text-gray-900 dark:text-white">
+          Planned domains{" "}
+          <span className="font-normal text-gray-400 text-sm">(owned, not yet connected to Instantly)</span>
+        </h3>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Cold domains you're seasoning outside Instantly. Once a domain shows up live above, it drops off this list
+        automatically. Add/edit/delete here as your plan changes.
+      </p>
 
       {loadError && (
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 text-sm text-red-700 dark:text-red-300 mb-4">
@@ -573,11 +876,15 @@ export default function ColdEmailPlannerPage() {
 
       {loading ? (
         <p className="text-gray-500 dark:text-gray-400 text-sm">Loading domains…</p>
-      ) : domains.length === 0 ? (
-        <p className="text-gray-500 dark:text-gray-400 text-sm">No domains yet. Add your first cold domain.</p>
+      ) : plannedDomains.length === 0 ? (
+        <p className="text-gray-500 dark:text-gray-400 text-sm">
+          {domains.length === 0
+            ? "No planned domains yet. Add a cold domain you own but haven't connected to Instantly."
+            : "No planned domains — every cold domain you track is already live in Instantly above."}
+        </p>
       ) : (
         <div className="space-y-3 mb-8">
-          {domains.map((d) => (
+          {plannedDomains.map((d) => (
             <DomainRow key={d.id} d={d} perMailbox={safePerMailbox} onEdit={() => openEdit(d)} onDelete={() => handleDelete(d)} />
           ))}
         </div>
@@ -606,6 +913,129 @@ export default function ColdEmailPlannerPage() {
           }}
           onSave={handleSave}
         />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live in Instantly — real sending domains grouped from the live accounts.
+// Uses EmailPage's groupDomains/warmState output + WARM_TONE so it agrees with
+// the Email page exactly. This is the truth; the manual list below is planning.
+// ---------------------------------------------------------------------------
+
+function LiveInstantlyDomains({
+  groups,
+  realSite,
+  perMailbox,
+  loading,
+  error,
+  onRefresh,
+}: {
+  groups: DomainGroup[];
+  realSite: string;
+  perMailbox: number;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="mb-2">
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        <BoltIcon className="w-5 h-5 text-mint-green" />
+        <h3 className="text-base font-bold text-gray-900 dark:text-white">Live in Instantly</h3>
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-mint-green/15 text-emerald-700 dark:text-mint-green font-semibold">
+          source of truth
+        </span>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-xs text-gray-700 dark:text-gray-200 hover:border-ocean-blue disabled:opacity-60"
+        >
+          <ArrowPathIcon className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+        </button>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Real mailboxes and real warmup days pulled from Instantly — <span className="text-red-600 dark:text-red-400 font-medium">red &lt; 3 wks</span> ·{" "}
+        <span className="text-amber-600 dark:text-amber-400 font-medium">yellow 3–6 wks</span> ·{" "}
+        <span className="text-emerald-600 dark:text-emerald-400 font-medium">green ≥ 6 wks</span>. Forwarding should point to {realSite}.
+      </p>
+
+      {error && (
+        <div className="flex items-start gap-2 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300 mb-3">
+          <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0" />
+          <div>
+            <b>Couldn't load live Instantly data.</b> {error}
+          </div>
+        </div>
+      )}
+
+      {loading && groups.length === 0 ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">Loading live Instantly domains…</p>
+      ) : groups.length === 0 && !error ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No live sending domains in Instantly yet. Connect a domain in the Email page, then it appears here as the
+          source of truth.
+        </p>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {groups.map((g) => {
+            const t = WARM_TONE[g.ws.tone];
+            const seasoned = g.ws.days >= MIN_WARMUP_DAYS;
+            return (
+              <div key={g.domain} className={`rounded-xl border-2 ${t.ring} bg-white dark:bg-gray-800 p-4`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-gray-900 dark:text-white truncate">{g.domain}</span>
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${t.chip}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${t.dot}`} /> {g.ws.tone}
+                  </span>
+                </div>
+
+                <div className="mt-2 flex items-end gap-2">
+                  <span className={`text-3xl font-extrabold tabular-nums ${t.text}`}>{g.ws.started ? g.ws.days : "—"}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 mb-1">days warming</span>
+                </div>
+                <p className={`text-xs font-medium ${t.text}`}>{g.ws.label}</p>
+
+                <div className="mt-2 h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                  <div className={`h-full ${t.bar} transition-all`} style={{ width: `${g.ws.pct}%` }} />
+                </div>
+
+                <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700 space-y-1 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Mailboxes</span>
+                    <span className="text-gray-800 dark:text-gray-200 font-medium">{g.accts.length}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Warmup health</span>
+                    <span className="text-gray-800 dark:text-gray-200 font-medium">{g.avgHealth}%</span>
+                  </div>
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-gray-500">Forwarding</span>
+                    {g.fwd?.ok ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
+                        <CheckCircleIcon className="w-3.5 h-3.5" />
+                        {realSite}
+                      </span>
+                    ) : g.fwd?.target ? (
+                      <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400 font-medium" title={`Should forward to ${realSite}`}>
+                        <ExclamationTriangleIcon className="w-3.5 h-3.5" />→ {g.fwd.target} ✕
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">unknown</span>
+                    )}
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Cold capacity</span>
+                    <span className="text-gray-800 dark:text-gray-200 font-medium">
+                      {seasoned ? `~${fmtInt(g.accts.length * perMailbox)}/day now` : `~${fmtInt(g.accts.length * perMailbox)}/day when seasoned`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
