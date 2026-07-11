@@ -380,6 +380,52 @@ function extractFrom(b: Record<string, unknown>): string {
   return "";
 }
 
+// Pull the DELIVERY address (To/emailTo — the address the inbound lead landed on)
+// out of a GHL webhook payload. This is what identifier attribution matches a
+// campaign's tracking_email against. The email-record fetch path fills this in from
+// the record's `to` field; here we cover the shapes a webhook might send directly.
+function extractTo(b: Record<string, unknown>): string {
+  for (const k of ["to", "emailTo", "email_to", "toEmail", "deliveredTo", "delivered_to", "recipient"]) {
+    const v = b[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (Array.isArray(v) && v.length) return v.map((x) => String(x)).join(", ");
+  }
+  for (const nest of ["message", "email", "customData"]) {
+    const o = b[nest] as Record<string, unknown> | undefined;
+    const v = (o?.to ?? o?.emailTo ?? o?.email_to);
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (Array.isArray(v) && v.length) return v.map((x) => String(x)).join(", ");
+  }
+  return "";
+}
+
+// All bare email addresses in a To/recipient string, lowercased. Handles
+// "Name <a@b.com>, c@d.com" and array-joined forms.
+function extractAddresses(s: string): string[] {
+  const out: string[] = [];
+  const re = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) out.push(m[0].toLowerCase());
+  return out;
+}
+
+// FUTURE HOOK — the GHL tracking number a live-transfer CALL landed on. GHL's
+// inbound-email webhooks do NOT carry this today (the intake is email-driven), so
+// this returns "" in practice; wired so phone attribution activates the moment a
+// call/voice webhook that carries the dialed tracking number is pointed here.
+function extractDeliveryPhone(b: Record<string, unknown>): string {
+  for (const k of ["calledNumber", "called_number", "toNumber", "to_number", "dialedNumber", "trackingNumber", "tracking_number"]) {
+    const v = b[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  for (const nest of ["message", "call", "customData"]) {
+    const o = b[nest] as Record<string, unknown> | undefined;
+    const v = (o?.calledNumber ?? o?.toNumber ?? o?.dialedNumber ?? o?.trackingNumber);
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
 function pickId(b: Record<string, unknown>, keys: string[]): string {
   for (const k of keys) {
     const v = b[k];
@@ -394,7 +440,7 @@ function pickId(b: Record<string, unknown>, keys: string[]): string {
 async function newestInboundEmail(
   cfg: GhlConfig,
   ids: { conversationId?: string; contactId?: string },
-): Promise<{ body: string; subject: string; from: string } | null> {
+): Promise<{ body: string; subject: string; from: string; to: string } | null> {
   let cid = ids.conversationId ?? "";
   if (!cid && ids.contactId) {
     const c = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
@@ -418,7 +464,12 @@ async function newestInboundEmail(
     );
     const em = (e.data?.emailMessage ?? e.data ?? {}) as Record<string, unknown>;
     const body = String(em.body ?? "");
-    if (body) return { body, subject: String(em.subject ?? ""), from: String(em.from ?? "") };
+    // `to` is the delivery address(es) — an array on the email record, or a string.
+    // This is the campaign-dedicated tracking address for identifier attribution.
+    const to = Array.isArray(em.to)
+      ? (em.to as unknown[]).map((x) => String(x)).join(", ")
+      : String(em.to ?? "");
+    if (body) return { body, subject: String(em.subject ?? ""), from: String(em.from ?? ""), to };
   }
   return null;
 }
@@ -583,16 +634,19 @@ Deno.serve(async (req) => {
   let sourceMode: "structured" | "email-body" | "ghl-fetch";
   let emailSubject = "";
   let emailFrom = "";
+  let emailTo = "";   // delivery address (To) — matched against campaigns.tracking_email
   let bodyForMarker = ""; // raw body text used to sniff markers/structure
 
   if (looksStructured(body)) {
     sourceMode = "structured";
     fields = Object.fromEntries(Object.entries(body).map(([k, v]) => [k, v == null ? "" : String(v)]));
     emailFrom = extractFrom(body);
+    emailTo = extractTo(body);
   } else {
     let bodyText = extractBodyText(body);
     emailSubject = extractSubject(body);
     emailFrom = extractFrom(body);
+    emailTo = extractTo(body);
     if (bodyText) {
       sourceMode = "email-body";
     } else {
@@ -604,15 +658,19 @@ Deno.serve(async (req) => {
       bodyText = fetched.body;
       emailSubject = fetched.subject || emailSubject;
       emailFrom = fetched.from || emailFrom;
+      emailTo = fetched.to || emailTo;
       sourceMode = "ghl-fetch";
     }
     bodyForMarker = bodyText;
     fields = parseLabelValue(htmlToSegments(bodyText));
   }
+  // The tracking number a live-transfer call landed on (future hook; empty today).
+  const deliveryPhone = extractDeliveryPhone(body);
 
   const lead = toLead(fields);
   if (emailSubject) lead.raw["_email_subject"] = emailSubject;
   if (emailFrom) lead.raw["_email_from"] = emailFrom;
+  if (emailTo) lead.raw["_email_to"] = emailTo;
 
   // ── CLASSIFY: live transfer vs real-time ──
   // The ONLY discriminator is the "Live Transfer!" subject (checked in the body
@@ -780,25 +838,68 @@ Deno.serve(async (req) => {
     customerId = c.id as string;
   }
 
-  // ── Resolve the attribution campaign DYNAMICALLY ──
-  // Newest ACTIVE campaign on THIS lead kind's channel (Synergy partner preferred).
-  // Never hardcode a code — the codes rotate. If no active campaign exists on the
-  // channel, campaign_id stays null; attribution must NEVER fail the intake.
+  // ── Resolve the attribution campaign ──
+  // Order:
+  //   (a) IDENTIFIER — an active campaign whose tracking_email matches the delivery
+  //       (To) address of this inbound email → use it REGARDLESS of channel. A
+  //       tracking_phone match is the same idea for calls (future hook; the number
+  //       a live transfer dialed isn't in the email webhook today).
+  //   (b) CHANNEL — newest active campaign on this lead kind's channel (Synergy
+  //       partner preferred). The prior behavior, now the fallback.
+  //   (c) NONE — campaign_id stays null. Attribution must NEVER fail the intake.
   let campaignId: string | null = null;
   let attributionNote = "";
+  let attributionRule: "tracking_email" | "tracking_phone" | "channel" | "none" = "none";
   {
-    const { data: camps } = await db.from("campaigns")
-      .select("id, code, partner, created_at")
-      .eq("channel", kcfg.campaignChannel)
-      .eq("status", "active")
-      .order("created_at", { ascending: false });
-    const list = camps ?? [];
-    const synergy = list.find((c) => /synergy/i.test(String(c.partner ?? "")));
-    const chosen = synergy ?? list[0] ?? null;
-    campaignId = (chosen?.id as string | undefined) ?? null;
-    attributionNote = chosen
-      ? `Attributed to active ${kcfg.campaignChannel} campaign ${chosen.code ?? chosen.id}${synergy ? " (Synergy)" : ""}.`
-      : `No active ${kcfg.campaignChannel} campaign found — deal left unattributed (campaign_id null).`;
+    const deliveryAddrs = extractAddresses(emailTo);
+    const deliveryPhoneDigits = deliveryPhone.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+
+    // (a) identifier match — email first, then phone (future hook).
+    if (deliveryAddrs.length || deliveryPhoneDigits) {
+      const { data: idCamps } = await db.from("campaigns")
+        .select("id, code, tracking_email, tracking_phone, created_at")
+        .eq("status", "active")
+        .order("created_at", { ascending: false });
+      const list = idCamps ?? [];
+      const emailMatch = deliveryAddrs.length
+        ? list.find((c) => {
+            const te = String(c.tracking_email ?? "").trim().toLowerCase();
+            return te && deliveryAddrs.includes(te);
+          })
+        : undefined;
+      if (emailMatch) {
+        campaignId = emailMatch.id as string;
+        attributionRule = "tracking_email";
+        attributionNote = `Attributed to ${emailMatch.code ?? emailMatch.id} via tracking email (${emailMatch.tracking_email}).`;
+      } else if (deliveryPhoneDigits) {
+        const phoneMatch = list.find((c) => {
+          const tp = String(c.tracking_phone ?? "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+          return tp && tp === deliveryPhoneDigits;
+        });
+        if (phoneMatch) {
+          campaignId = phoneMatch.id as string;
+          attributionRule = "tracking_phone";
+          attributionNote = `Attributed to ${phoneMatch.code ?? phoneMatch.id} via tracking phone (${phoneMatch.tracking_phone}).`;
+        }
+      }
+    }
+
+    // (b) channel-based fallback.
+    if (!campaignId) {
+      const { data: camps } = await db.from("campaigns")
+        .select("id, code, partner, created_at")
+        .eq("channel", kcfg.campaignChannel)
+        .eq("status", "active")
+        .order("created_at", { ascending: false });
+      const clist = camps ?? [];
+      const synergy = clist.find((c) => /synergy/i.test(String(c.partner ?? "")));
+      const chosen = synergy ?? clist[0] ?? null;
+      campaignId = (chosen?.id as string | undefined) ?? null;
+      attributionRule = chosen ? "channel" : "none";
+      attributionNote = chosen
+        ? `Attributed to active ${kcfg.campaignChannel} campaign ${chosen.code ?? chosen.id}${synergy ? " (Synergy)" : ""} via channel${emailTo ? ` (delivery ${emailTo} matched no tracking email)` : ""}.`
+        : `No active ${kcfg.campaignChannel} campaign found — deal left unattributed (campaign_id null).`;
+    }
   }
 
   // ── Create the DEAL — born HOT with a 5-minute call clock ──
@@ -934,6 +1035,7 @@ Deno.serve(async (req) => {
         ["Open positions", lead.openPositions != null ? String(lead.openPositions) : null],
         ["Best time", lead.bestTime || null],
         ["Deal #", dealNumber],
+        ["Attribution", attributionNote || null],
       ],
     });
     alertSent = r.sent;
@@ -950,6 +1052,7 @@ Deno.serve(async (req) => {
     dealNumber,
     customerId,
     campaignId,
+    attributionRule,
     ghlContactId,
     ghlOpportunityId,
     customFieldsWritten,

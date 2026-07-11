@@ -48,6 +48,11 @@ export interface Campaign {
   clicks: number | null;          // for click channels (Google Ads) → real CPC
   market: string | null;
   vendor_id: string | null;
+  // Identifier-based attribution. When set, live-transfer-intake attributes an
+  // inbound lead to this campaign when the delivery identifier matches — the
+  // email a real-time lead is delivered to, or the number a live transfer calls.
+  tracking_email: string | null;
+  tracking_phone: string | null;
   start_date: string | null;
   end_date: string | null;
   notes: string | null;
@@ -110,13 +115,13 @@ type ChecklistTemplateItem = { key: string; label: string; needs_value?: boolean
 
 const CHECKLIST_TEMPLATES: Partial<Record<CampaignChannel, ChecklistTemplateItem[]>> = {
   live_transfer: [
-    { key: "tracking_number", label: "Create a DEDICATED GHL tracking phone number for this campaign + record it here", needs_value: true },
+    { key: "tracking_number", label: "Create a DEDICATED GHL tracking phone number for this campaign, then save it in the Tracking phone field (Edit campaign)", needs_value: true },
     { key: "qual_specs", label: "Confirm vendor qualification specs (6+ mo TIB, $15K+/mo, owner on line, TCPA, exclusive)" },
     { key: "routing", label: "Set lead routing / round-robin" },
     { key: "billing_policy", label: "Confirm billing / replacement (bad-lead credit) policy" },
   ],
   realtime_transfer: [
-    { key: "inbound_email", label: "Create a dedicated inbound email/alias for this campaign + record it here", needs_value: true },
+    { key: "inbound_email", label: "Create a dedicated inbound email/alias for this campaign, then save it in the Tracking email field (Edit campaign) so leads auto-attribute", needs_value: true },
     { key: "intake_procedure", label: "Define the intake procedure (who enters the emailed lead + speed-to-call SLA < 5 min)" },
     { key: "send_format", label: "Confirm vendor send format + get a test lead through" },
     { key: "attribution_default", label: "Set campaign attribution default (closers pick this campaign at intake)" },
@@ -340,6 +345,8 @@ function normalizeCampaign(row: Record<string, unknown>): Campaign {
     partner: (row.partner as string) ?? "Synergy Direct",
     setup_checklist: Array.isArray(row.setup_checklist) ? (row.setup_checklist as ChecklistItem[]) : [],
     cost_per_lead_contracted: (row.cost_per_lead_contracted as number) ?? null,
+    tracking_email: (row.tracking_email as string) ?? null,
+    tracking_phone: (row.tracking_phone as string) ?? null,
     product_id: (row.product_id as string) ?? null,
     pricing_snapshot: (row.pricing_snapshot as Record<string, unknown>) ?? null,
   };

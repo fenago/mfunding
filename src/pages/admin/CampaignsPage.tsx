@@ -379,6 +379,8 @@ function CampaignDetail({
       {m && <KpiGrid m={m} />}
       {m && <FunnelBars m={m} />}
 
+      <TrackingSummary campaign={c} onEdit={onEdit} />
+
       <div className="grid gap-6 lg:grid-cols-2">
         <ChecklistCard campaign={c} onChanged={onChanged} />
         <AnalysisPanel campaign={c} />
@@ -390,6 +392,31 @@ function CampaignDetail({
           <p className="text-sm text-gray-700 dark:text-gray-200 whitespace-pre-wrap">{c.notes}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+// Read-only view of the attribution identifiers, sitting beside the checklist so
+// it's obvious whether the dedicated email/number has been recorded yet.
+function TrackingSummary({ campaign: c, onEdit }: { campaign: Campaign; onEdit: () => void }) {
+  const unset = <span className="text-gray-400 italic">not set — add in Edit campaign</span>;
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Attribution identifiers</h3>
+        <button onClick={onEdit} className="text-xs text-ocean-blue hover:underline">Edit</button>
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <div>
+          <div className="text-[11px] text-gray-400">Tracking email</div>
+          <div className="text-sm font-mono text-gray-800 dark:text-gray-100 break-all">{c.tracking_email || unset}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-gray-400">Tracking phone</div>
+          <div className="text-sm font-mono text-gray-800 dark:text-gray-100">{c.tracking_phone || unset}</div>
+        </div>
+      </div>
+      <p className="text-[11px] text-gray-400 mt-2">Leads delivered to the tracking email auto-attribute to this campaign regardless of channel.</p>
     </div>
   );
 }
@@ -1129,6 +1156,8 @@ function CampaignEditModal({ campaign, onClose, onSaved }: { campaign: Campaign;
     name: campaign.name,
     status: campaign.status,
     market: campaign.market ?? "",
+    tracking_email: campaign.tracking_email ?? "",
+    tracking_phone: campaign.tracking_phone ?? "",
     budget: String(campaign.budget ?? ""),
     spent: String(campaign.spent ?? ""),
     leads_purchased: campaign.leads_purchased != null ? String(campaign.leads_purchased) : "",
@@ -1148,6 +1177,8 @@ function CampaignEditModal({ campaign, onClose, onSaved }: { campaign: Campaign;
         name: form.name.trim(),
         status: form.status,
         market: form.market.trim() || null,
+        tracking_email: form.tracking_email.trim().toLowerCase() || null,
+        tracking_phone: form.tracking_phone.trim() || null,
         budget: Number(form.budget || 0),
         spent: Number(form.spent || 0),
         leads_purchased: form.leads_purchased === "" ? null : Number(form.leads_purchased),
@@ -1208,6 +1239,28 @@ function CampaignEditModal({ campaign, onClose, onSaved }: { campaign: Campaign;
           <label className="text-sm text-gray-600 dark:text-gray-300">
             End date
             <input type="date" className={input} value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
+          </label>
+          <label className="col-span-2 text-sm text-gray-600 dark:text-gray-300">
+            Tracking email
+            <input
+              type="email"
+              className={input}
+              value={form.tracking_email}
+              onChange={(e) => setForm({ ...form, tracking_email: e.target.value })}
+              placeholder="leads-syn-rt@send.mfunding.net"
+            />
+            <span className="text-[11px] text-gray-400">Inbound leads delivered to this address auto-attribute to this campaign (any channel).</span>
+          </label>
+          <label className="col-span-2 text-sm text-gray-600 dark:text-gray-300">
+            Tracking phone
+            <input
+              type="tel"
+              className={input}
+              value={form.tracking_phone}
+              onChange={(e) => setForm({ ...form, tracking_phone: e.target.value })}
+              placeholder="+1 (555) 000-0000"
+            />
+            <span className="text-[11px] text-gray-400">Dedicated GHL number for live transfers. Reserved for call attribution.</span>
           </label>
           <label className="col-span-2 text-sm text-gray-600 dark:text-gray-300">
             Notes
