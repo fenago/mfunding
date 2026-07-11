@@ -5,6 +5,7 @@ import {
   CheckCircleIcon,
   ExclamationTriangleIcon,
   ArrowPathIcon,
+  NoSymbolIcon,
 } from "@heroicons/react/24/outline";
 import {
   BarChart,
@@ -31,7 +32,16 @@ import {
   getCommissionSummary,
   getMonthlyCommissionData,
   updatePaymentStatus,
+  approveCommission,
+  holdCommission,
+  releaseHold,
 } from "../../../services/commissionService";
+
+// Lifecycle groupings shared by the tabs + filters.
+const PENDING_STATUSES: PaymentStatus[] = ["pending", "approved", "on_hold", "funder_paid"];
+const PAID_STATUSES: PaymentStatus[] = ["closer_paid", "completed"];
+// A commission can be placed on hold from any of these (non-terminal, not already held).
+const HOLDABLE_STATUSES: PaymentStatus[] = ["pending", "approved", "funder_paid"];
 
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -59,6 +69,7 @@ export default function CommissionDashboardPage() {
   const [monthlyData, setMonthlyData] = useState<MonthlyCommissionData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [closerFilter, setCloserFilter] = useState<string>("");
   const [activeTab, setActiveTab] = useState<"pending" | "paid" | "all">("all");
 
   useEffect(() => {
@@ -91,12 +102,77 @@ export default function CommissionDashboardPage() {
     }
   };
 
+  const handleApprove = async (id: string) => {
+    try {
+      await approveCommission(id);
+      loadData();
+    } catch (err) {
+      console.error("Error approving commission:", err);
+    }
+  };
+
+  const handleHold = async (id: string) => {
+    const reason = window.prompt("Reason for placing this commission on hold (required):");
+    if (!reason || !reason.trim()) return;
+    try {
+      await holdCommission(id, reason.trim());
+      loadData();
+    } catch (err) {
+      console.error("Error holding commission:", err);
+    }
+  };
+
+  const handleReleaseHold = async (id: string) => {
+    try {
+      await releaseHold(id);
+      loadData();
+    } catch (err) {
+      console.error("Error releasing hold:", err);
+    }
+  };
+
+  // Closer/source label used by the pie, the per-closer filter, and totals.
+  const closerLabel = (c: CommissionWithDetails): string =>
+    c.closer
+      ? `${c.closer.first_name} ${c.closer.last_name}`
+      : c.sub_iso
+        ? c.sub_iso.company_name
+        : "Direct";
+
+  const closerOptions = Array.from(
+    new Set(commissions.map((c) => closerLabel(c))),
+  ).sort();
+
   const filteredCommissions = commissions.filter((c) => {
-    if (activeTab === "pending" && !["pending", "funder_paid"].includes(c.payment_status)) return false;
-    if (activeTab === "paid" && !["closer_paid", "completed"].includes(c.payment_status)) return false;
+    if (activeTab === "pending" && !PENDING_STATUSES.includes(c.payment_status)) return false;
+    if (activeTab === "paid" && !PAID_STATUSES.includes(c.payment_status)) return false;
     if (statusFilter && c.payment_status !== statusFilter) return false;
+    if (closerFilter && closerLabel(c) !== closerFilter) return false;
     return true;
   });
+
+  // On-hold / unpaid summary (computed client-side; not part of CommissionSummary).
+  const onHoldCommissions = commissions.filter((c) => c.payment_status === "on_hold");
+  const onHoldTotal = onHoldCommissions.reduce((sum, c) => sum + c.gross_commission, 0);
+
+  // Per-closer totals strip (only shown when a closer is selected).
+  const selectedCloserCommissions = closerFilter
+    ? commissions.filter((c) => closerLabel(c) === closerFilter)
+    : [];
+  const closerTotals = {
+    pending: selectedCloserCommissions
+      .filter((c) => c.payment_status === "pending")
+      .reduce((s, c) => s + (c.closer_amount || 0), 0),
+    approved: selectedCloserCommissions
+      .filter((c) => c.payment_status === "approved")
+      .reduce((s, c) => s + (c.closer_amount || 0), 0),
+    paid: selectedCloserCommissions
+      .filter((c) => PAID_STATUSES.includes(c.payment_status))
+      .reduce((s, c) => s + (c.closer_amount || 0), 0),
+    held: selectedCloserCommissions
+      .filter((c) => c.payment_status === "on_hold")
+      .reduce((s, c) => s + (c.closer_amount || 0), 0),
+  };
 
   // Data for closer breakdown pie chart
   const closerBreakdown = commissions.reduce((acc, c) => {
@@ -140,7 +216,7 @@ export default function CommissionDashboardPage() {
 
       {/* Summary Cards */}
       {summary && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
           <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
@@ -149,6 +225,18 @@ export default function CommissionDashboardPage() {
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Pending</p>
                 <p className="text-xl font-bold text-gray-900 dark:text-white">{formatCurrency(summary.totalPending)}</p>
+              </div>
+            </div>
+          </div>
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
+                <NoSymbolIcon className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">On Hold / Unpaid</p>
+                <p className="text-xl font-bold text-red-600">{formatCurrency(onHoldTotal)}</p>
+                <p className="text-xs text-gray-400">{onHoldCommissions.length} held</p>
               </div>
             </div>
           </div>
@@ -302,12 +390,22 @@ export default function CommissionDashboardPage() {
                 {tab === "all"
                   ? commissions.length
                   : tab === "pending"
-                    ? commissions.filter((c) => ["pending", "funder_paid"].includes(c.payment_status)).length
-                    : commissions.filter((c) => ["closer_paid", "completed"].includes(c.payment_status)).length}
+                    ? commissions.filter((c) => PENDING_STATUSES.includes(c.payment_status)).length
+                    : commissions.filter((c) => PAID_STATUSES.includes(c.payment_status)).length}
               </span>
             </button>
           ))}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <select
+              value={closerFilter}
+              onChange={(e) => setCloserFilter(e.target.value)}
+              className="input-field text-sm w-44"
+            >
+              <option value="">All Closers</option>
+              {closerOptions.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
@@ -320,6 +418,19 @@ export default function CommissionDashboardPage() {
             </select>
           </div>
         </div>
+
+        {/* Per-closer totals strip */}
+        {closerFilter && (
+          <div className="flex flex-wrap items-center gap-6 px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/30">
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-200">{closerFilter}</span>
+            <div className="flex flex-wrap gap-6 text-sm">
+              <span className="text-gray-500 dark:text-gray-400">Pending: <span className="font-semibold text-gray-900 dark:text-white">{formatCurrency(closerTotals.pending)}</span></span>
+              <span className="text-gray-500 dark:text-gray-400">Approved: <span className="font-semibold text-indigo-600">{formatCurrency(closerTotals.approved)}</span></span>
+              <span className="text-gray-500 dark:text-gray-400">Paid: <span className="font-semibold text-emerald-600">{formatCurrency(closerTotals.paid)}</span></span>
+              <span className="text-gray-500 dark:text-gray-400">On Hold: <span className="font-semibold text-red-600">{formatCurrency(closerTotals.held)}</span></span>
+            </div>
+          </div>
+        )}
 
         {filteredCommissions.length === 0 ? (
           <div className="p-8 text-center text-gray-500 dark:text-gray-400">
@@ -383,31 +494,57 @@ export default function CommissionDashboardPage() {
                     <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                       {formatDate(comm.created_at)}
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      {comm.payment_status === "pending" && (
-                        <button
-                          onClick={() => handleStatusChange(comm.id, "funder_paid")}
-                          className="text-xs text-ocean-blue hover:underline"
-                        >
-                          Mark Funder Paid
-                        </button>
-                      )}
-                      {comm.payment_status === "funder_paid" && (
-                        <button
-                          onClick={() => handleStatusChange(comm.id, "closer_paid")}
-                          className="text-xs text-ocean-blue hover:underline"
-                        >
-                          Mark Closer Paid
-                        </button>
-                      )}
-                      {comm.payment_status === "closer_paid" && (
-                        <button
-                          onClick={() => handleStatusChange(comm.id, "completed")}
-                          className="text-xs text-emerald-600 hover:underline"
-                        >
-                          Complete
-                        </button>
-                      )}
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-3">
+                        {comm.payment_status === "pending" && (
+                          <button
+                            onClick={() => handleApprove(comm.id)}
+                            className="text-xs font-medium text-indigo-600 hover:underline"
+                          >
+                            Approve
+                          </button>
+                        )}
+                        {(comm.payment_status === "pending" || comm.payment_status === "approved") && (
+                          <button
+                            onClick={() => handleStatusChange(comm.id, "funder_paid")}
+                            className="text-xs text-ocean-blue hover:underline"
+                          >
+                            Mark Funder Paid
+                          </button>
+                        )}
+                        {comm.payment_status === "funder_paid" && (
+                          <button
+                            onClick={() => handleStatusChange(comm.id, "closer_paid")}
+                            className="text-xs text-ocean-blue hover:underline"
+                          >
+                            Mark Closer Paid
+                          </button>
+                        )}
+                        {comm.payment_status === "closer_paid" && (
+                          <button
+                            onClick={() => handleStatusChange(comm.id, "completed")}
+                            className="text-xs text-emerald-600 hover:underline"
+                          >
+                            Complete
+                          </button>
+                        )}
+                        {HOLDABLE_STATUSES.includes(comm.payment_status) && (
+                          <button
+                            onClick={() => handleHold(comm.id)}
+                            className="text-xs text-red-600 hover:underline"
+                          >
+                            Hold
+                          </button>
+                        )}
+                        {comm.payment_status === "on_hold" && (
+                          <button
+                            onClick={() => handleReleaseHold(comm.id)}
+                            className="text-xs text-amber-600 hover:underline"
+                          >
+                            Release hold
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

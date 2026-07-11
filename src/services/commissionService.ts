@@ -1,5 +1,5 @@
 import supabase from "../supabase";
-import { mustWrite } from "@/supabase/writes";
+import { mustWrite, tryWrite } from "@/supabase/writes";
 import type {
   Commission,
   CommissionWithDetails,
@@ -176,6 +176,149 @@ export async function updatePaymentStatus(
     "update commission payment status",
     supabase.from("commissions").update(updateData).eq("id", id),
   );
+
+  // Tell the closer their money is on the way when it actually goes out.
+  if (status === 'closer_paid') {
+    await notifyCloserOfCommission(id, 'paid');
+  }
+  return rows[0];
+}
+
+// ---------------------------------------------------------------------------
+// Approval / hold / notify — super-admin only (enforced by RLS on commissions)
+// ---------------------------------------------------------------------------
+
+type CommissionNotifyKind = 'approved' | 'paid' | 'on_hold' | 'released';
+
+/**
+ * Best-effort in-app notification to the closer behind a commission.
+ * Looks up the closer's linked auth user (closers.user_id) and inserts a row
+ * into `messages`. If the closer has no linked user, we skip the in-app message
+ * and just log — never blocks the status change. Sender is the acting admin.
+ */
+async function notifyCloserOfCommission(
+  commissionId: string,
+  kind: CommissionNotifyKind,
+  extra?: { reason?: string },
+): Promise<void> {
+  try {
+    const { data: comm, error } = await supabase
+      .from("commissions")
+      .select(`
+        closer_amount,
+        deal:deals(deal_number),
+        closer:closers(user_id, first_name)
+      `)
+      .eq("id", commissionId)
+      .single();
+
+    if (error || !comm) {
+      console.warn(`[notifyCloser] could not load commission ${commissionId}: ${error?.message}`);
+      return;
+    }
+
+    // PostgREST embeds can come back as an object or a single-element array.
+    const one = <T,>(v: unknown): T | null =>
+      (Array.isArray(v) ? (v[0] ?? null) : (v ?? null)) as T | null;
+
+    const closer = one<{ user_id: string | null; first_name: string | null }>(comm.closer);
+    if (!closer?.user_id) {
+      console.warn(`[notifyCloser] commission ${commissionId} closer has no linked user_id — skipping in-app notify`);
+      return;
+    }
+
+    const deal = one<{ deal_number: string | null }>(comm.deal);
+    const dealLabel = deal?.deal_number || "your deal";
+    const amount = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(comm.closer_amount || 0);
+
+    let subject: string;
+    let body: string;
+    switch (kind) {
+      case 'approved':
+        subject = `Commission approved — Deal ${dealLabel}`;
+        body = `Your commission for deal ${dealLabel} has been approved. Your payout is ${amount}. You'll be notified when payment is sent.`;
+        break;
+      case 'paid':
+        subject = `Commission paid — Deal ${dealLabel}`;
+        body = `Your commission payout of ${amount} for deal ${dealLabel} has been sent. Thank you!`;
+        break;
+      case 'on_hold':
+        subject = `Commission on hold — Deal ${dealLabel}`;
+        body = `Your commission for deal ${dealLabel} (${amount}) has been placed on hold.${extra?.reason ? ` Reason: ${extra.reason}` : ''} We'll follow up.`;
+        break;
+      case 'released':
+        subject = `Commission hold released — Deal ${dealLabel}`;
+        body = `The hold on your commission for deal ${dealLabel} (${amount}) has been released. It's back in the payout queue.`;
+        break;
+    }
+
+    const { data: auth } = await supabase.auth.getUser();
+    const fromUserId = auth?.user?.id;
+    if (!fromUserId) {
+      console.warn(`[notifyCloser] no authenticated user to send from — skipping notify for ${commissionId}`);
+      return;
+    }
+
+    await tryWrite(
+      "notify closer of commission",
+      supabase.from("messages").insert({
+        from_user_id: fromUserId,
+        to_user_id: closer.user_id,
+        subject,
+        body,
+      }),
+    );
+  } catch (e) {
+    console.warn(`[notifyCloser] unexpected error for commission ${commissionId}:`, e);
+  }
+}
+
+/** Approve a commission for payout, stamp approver + time, and notify the closer. */
+export async function approveCommission(id: string) {
+  const { data: auth } = await supabase.auth.getUser();
+  const rows = await mustWrite<Commission>(
+    "approve commission",
+    supabase
+      .from("commissions")
+      .update({
+        payment_status: 'approved',
+        approved_at: new Date().toISOString(),
+        approved_by: auth?.user?.id ?? null,
+      })
+      .eq("id", id),
+  );
+  await notifyCloserOfCommission(id, 'approved');
+  return rows[0];
+}
+
+/** Place a commission on hold (unpaid) with a required reason, and notify the closer. */
+export async function holdCommission(id: string, reason: string) {
+  const rows = await mustWrite<Commission>(
+    "hold commission",
+    supabase
+      .from("commissions")
+      .update({ payment_status: 'on_hold', hold_reason: reason })
+      .eq("id", id),
+  );
+  await notifyCloserOfCommission(id, 'on_hold', { reason });
+  return rows[0];
+}
+
+/** Release a held commission back to 'pending', clearing the hold reason, and notify the closer. */
+export async function releaseHold(id: string) {
+  const rows = await mustWrite<Commission>(
+    "release commission hold",
+    supabase
+      .from("commissions")
+      .update({ payment_status: 'pending', hold_reason: null })
+      .eq("id", id),
+  );
+  await notifyCloserOfCommission(id, 'released');
   return rows[0];
 }
 

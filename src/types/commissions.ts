@@ -1,6 +1,6 @@
 // Commission & Financial Engine Types
 
-export type PaymentStatus = 'pending' | 'funder_paid' | 'closer_paid' | 'completed' | 'clawback';
+export type PaymentStatus = 'pending' | 'approved' | 'on_hold' | 'funder_paid' | 'closer_paid' | 'completed' | 'clawback';
 export type CloserStatus = 'active' | 'inactive' | 'terminated';
 export type SubISOStatus = 'pending' | 'active' | 'suspended' | 'terminated';
 export type CommissionLeadSource = 'company' | 'self_generated' | 'sub_iso' | 'renewal';
@@ -20,6 +20,8 @@ export const MARKET_LABELS: Record<Market, string> = {
 
 export const PAYMENT_STATUS_CONFIG: Record<PaymentStatus, { label: string; color: string }> = {
   pending: { label: 'Pending', color: 'bg-yellow-100 text-yellow-800' },
+  approved: { label: 'Approved', color: 'bg-indigo-100 text-indigo-800' },
+  on_hold: { label: 'On Hold / Unpaid', color: 'bg-red-100 text-red-800' },
   funder_paid: { label: 'Funder Paid', color: 'bg-blue-100 text-blue-800' },
   closer_paid: { label: 'Closer Paid', color: 'bg-emerald-100 text-emerald-800' },
   completed: { label: 'Completed', color: 'bg-green-100 text-green-800' },
@@ -166,6 +168,9 @@ export interface Commission {
   payment_status: PaymentStatus;
   funder_paid_at: string | null;
   closer_paid_at: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  hold_reason: string | null;
   clawback_amount: number;
   clawback_reason: string | null;
   notes: string | null;
