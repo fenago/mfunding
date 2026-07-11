@@ -7,14 +7,26 @@
 //     instant they hang up (subject varies: "Real Time", "Appointment", "New
 //     Lead", etc.). Same qualification data, same speed-to-lead urgency.
 //
-// A GHL workflow fires on ANY inbound email from the lt-source-tagged sender
-// (Info@Double-Verified.com) → Webhook → this function. We classify the email,
-// parse the label/value table, auto-create a customer + MCA deal, a PROPER GHL
-// contact (the merchant — NOT the junk sender contact) + an MCA-pipeline
-// opportunity, mirror every fact onto the contact's custom fields, born HOT with
-// a 5-minute speed-to-lead clock (top of My Day), and email the team an urgent
-// "call within 5 min" alert. A trusted-sender email that ISN'T a parseable lead
-// (e.g. a human reply from Synergy) is skipped gracefully.
+// A GHL workflow fires on inbound email → Webhook → this function. This endpoint
+// is the REAL gate (fail-closed secret + trusted-delivery-domain + valid-merchant
+// checks), so the workflow can safely fire on ALL inbound email — ordinary mail
+// (funder replies, chatter) is ignored as a cheap no-op that never messages
+// anyone and never writes to activity_log.
+//
+// For a genuine transfer we classify it, parse the label/value table, auto-create
+// a customer + MCA deal, a PROPER GHL contact (the merchant — NOT the junk sender
+// contact) + an MCA-pipeline opportunity, mirror every fact onto the contact's
+// custom fields, born HOT with a 5-minute speed-to-lead clock (top of My Day), and
+// email the team an urgent "call within 5 min" alert.
+//
+// SELF-HEALING: when a NEW sender on a trusted delivery domain emails for the
+// first time, the function itself tags that sender contact `lt-source` and sets
+// all-channel DND — so new Synergy sender addresses are adopted with zero human
+// steps (no more "remember to tag the sender").
+//
+// HARD-REJECT: a transfer that parses to the delivery robot's own address, or with
+// no valid merchant phone, creates NOTHING (never arm a nurture from the robot) —
+// but DOES alert the team so a real lead never dies silently.
 //
 // Deployed with verify_jwt = false (GHL workflow webhooks can't send a Supabase
 // JWT). Authenticates IN CODE via a shared secret (?secret=… or x-lt-secret),
@@ -38,7 +50,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, ghlFetch,
   upsertContact, createOpportunity, listPipelines, sendEmailToContact,
-  listCustomFields, updateContactCustomFields,
+  listCustomFields, updateContactCustomFields, addContactTags, getContact,
   type GhlConfig,
 } from "../_shared/ghl.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -48,7 +60,9 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 // marker in the body head) is what distinguishes a live transfer from a real-time
 // lead — everything else about the two emails is identical.
 const LIVE_TRANSFER_SUBJECT_MARKER = "live transfer";
-const LIVE_TRANSFER_FROM_DOMAIN = "double-verified.com";
+// Trusted lead-delivery domains. A sender on one of these is a Synergy delivery
+// robot; add more domains here as vendors/senders change — no code change needed.
+const TRUSTED_DELIVERY_DOMAINS = ["double-verified.com"];
 // Canonical MFunding MCA pipeline (same id ghl-webhook keys off, so stage changes round-trip).
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
 // Speed-to-lead SLA: the closer must call within 5 minutes (both lead kinds).
@@ -59,6 +73,15 @@ const TEAM_ALERT_CC = ["cmarq2k8@gmail.com"];
 const PLAYBOOK_URL = "https://mfunding.net/admin/playbooks";
 // Dedupe window: same phone/email within this many days → no duplicate deal.
 const DEDUPE_WINDOW_DAYS = 30;
+// Self-healing sender adoption: the tag the LT-intake workflow keys off + the
+// all-channel DND we stamp so a lead-delivery robot is never messaged. Mirrors
+// what was set by hand on the original sender contact.
+const SENDER_ADOPT_TAG = "lt-source";
+const SENDER_DND_SETTINGS = {
+  Email: { status: "active", message: "Lead-delivery robot — never message" },
+  SMS: { status: "active", message: "Lead-delivery robot" },
+  Call: { status: "active", message: "Lead-delivery robot" },
+};
 
 // ── Lead-kind configuration ───────────────────────────────────────────────────
 // The two products share ALL the machinery below; only these strings differ.
@@ -223,6 +246,22 @@ function phoneNorm(raw: string): string {
   return raw.trim();
 }
 
+// Domain of an email address ("Marcus <a@b.com>" → "b.com").
+function emailDomain(addr: string): string {
+  const m = String(addr).toLowerCase().match(/@\s*([a-z0-9.-]+)/);
+  return m ? m[1].replace(/[.>)\s]+$/, "") : "";
+}
+// Is this address on a trusted lead-delivery domain (a Synergy robot)?
+function isTrustedDomain(addr: string): boolean {
+  const d = emailDomain(addr);
+  return !!d && TRUSTED_DELIVERY_DOMAINS.some((t) => d === t || d.endsWith(`.${t}`));
+}
+// A real US merchant phone after normalization (+1 then 10 digits). Rejects the
+// empty/garbage phone a mis-parse leaves behind.
+function isValidMerchantPhone(p: string): boolean {
+  return /^\+1\d{10}$/.test(p);
+}
+
 // The canonical lead shape both intake modes produce.
 interface Lead {
   business: string;
@@ -326,6 +365,21 @@ function extractSubject(b: Record<string, unknown>): string {
   return "";
 }
 
+// Pull the SENDER address out of a GHL webhook payload (for trusted-domain gating
+// + self-heal). The workflow contact IS the sender, so contact.email works too.
+function extractFrom(b: Record<string, unknown>): string {
+  for (const k of ["from", "emailFrom", "email_from", "fromEmail", "sender"]) {
+    const v = b[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  for (const nest of ["message", "email", "customData", "contact"]) {
+    const o = b[nest] as Record<string, unknown> | undefined;
+    const v = (o?.from ?? o?.email ?? o?.emailFrom);
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
 function pickId(b: Record<string, unknown>, keys: string[]): string {
   for (const k of keys) {
     const v = b[k];
@@ -367,6 +421,66 @@ async function newestInboundEmail(
     if (body) return { body, subject: String(em.subject ?? ""), from: String(em.from ?? "") };
   }
   return null;
+}
+
+// ── Self-healing sender adoption ───────────────────────────────────────────────
+// A trusted-domain sender that isn't yet registered gets the lt-source tag + all-
+// channel DND, so a NEW Synergy sender address is adopted the first time it emails.
+// Idempotent: returns adopted=false (no announce) when it was already registered.
+async function adoptSender(
+  cfg: GhlConfig, senderContactId: string,
+): Promise<{ adopted: boolean; address: string; error?: string }> {
+  try {
+    const c = await getContact(cfg, senderContactId);
+    const contact = c.data?.contact as Record<string, unknown> | undefined;
+    if (!contact) return { adopted: false, address: "", error: c.error || "sender contact not found" };
+    const address = String(contact.email ?? "");
+    const tags = ((contact.tags as string[] | undefined) ?? []).map((t) => String(t).toLowerCase());
+    const hasTag = tags.includes(SENDER_ADOPT_TAG);
+    const dndOn = contact.dnd === true;
+    if (hasTag && dndOn) return { adopted: false, address };
+    if (!hasTag) await addContactTags(cfg, senderContactId, [SENDER_ADOPT_TAG]);
+    if (!dndOn) await ghlFetch(cfg, "PUT", `/contacts/${senderContactId}`, { dnd: true, dndSettings: SENDER_DND_SETTINGS });
+    return { adopted: true, address };
+  } catch (e) {
+    return { adopted: false, address: "", error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ── Team alert (shared) ────────────────────────────────────────────────────────
+interface AlertOpts {
+  subject: string;
+  headerHtml: string;
+  headerText: string;
+  intro: string;
+  rows: Array<[string, string | null]>;
+  note?: string;      // e.g. "new Synergy sender auto-registered: …"
+  headerBg?: string;  // default red
+}
+async function sendTeamAlert(cfg: GhlConfig, o: AlertOpts): Promise<{ sent: boolean; error?: string }> {
+  try {
+    // Send through the alerts inbox contact (owner's address); CC the rest of the
+    // team. No name fields on the upsert so we never clobber an existing record.
+    const alert = await upsertContact(cfg, { email: TEAM_ALERT_TO, tags: ["internal-alerts"], source: "Synergy Intake Alert" });
+    const alertContactId = alert.data?.contact?.id;
+    if (!alertContactId) return { sent: false, error: alert.error || "no alert contact id" };
+    const trs = o.rows.filter(([, v]) => v).map(
+      ([k, v]) => `<tr><td style="padding:4px 12px 4px 0;color:#64748b;white-space:nowrap">${k}</td><td style="padding:4px 0;color:#0f172a;font-weight:600">${v}</td></tr>`,
+    ).join("");
+    const noteHtml = o.note ? `<p style="margin:0 0 10px;font-size:13px;color:#7c3aed;font-weight:600">${o.note}</p>` : "";
+    const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px">
+<div style="background:${o.headerBg ?? "#dc2626"};color:#fff;font-size:16px;font-weight:700;padding:12px 16px;border-radius:8px 8px 0 0">${o.headerHtml}</div>
+<div style="border:1px solid #e2e8f0;border-top:0;border-radius:0 0 8px 8px;padding:16px">
+${noteHtml}<p style="margin:0 0 10px;font-size:14px;color:#0f172a">${o.intro}</p>
+${trs ? `<table style="font-size:14px;border-collapse:collapse">${trs}</table>` : ""}
+<p style="margin:14px 0 0"><a href="${PLAYBOOK_URL}" style="background:#2563eb;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:6px;display:inline-block">Open the Playbook →</a></p>
+</div></div>`;
+    const text = `${o.headerText}\n\n${o.note ? o.note + "\n\n" : ""}${o.rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n")}\n\nOpen the playbook: ${PLAYBOOK_URL}`;
+    const sr = await sendEmailToContact(cfg, alertContactId, o.subject, html, { text, emailCc: TEAM_ALERT_CC });
+    return { sent: sr.ok, error: sr.ok ? undefined : sr.error };
+  } catch (e) {
+    return { sent: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // ── GHL custom fields ─────────────────────────────────────────────────────────
@@ -458,31 +572,38 @@ Deno.serve(async (req) => {
   try { body = (await req.json()) as Record<string, unknown>; }
   catch { body = {}; }
 
+  // The sender's own GHL contact (the workflow contact = whoever emailed us). Used
+  // for trusted-domain gating + self-heal — NEVER the merchant contact we create.
+  const senderContactId = pickId(body, ["contactId", "contact_id", "id"]) ||
+    (typeof (body.contact as Record<string, unknown> | undefined)?.id === "string"
+      ? String((body.contact as Record<string, unknown>).id) : "");
+
   // ── Resolve the canonical lead ──
   let fields: Record<string, string>;
   let sourceMode: "structured" | "email-body" | "ghl-fetch";
   let emailSubject = "";
   let emailFrom = "";
-  let bodyForMarker = ""; // raw body text used to sniff the "Live Transfer" marker
+  let bodyForMarker = ""; // raw body text used to sniff markers/structure
 
   if (looksStructured(body)) {
     sourceMode = "structured";
     fields = Object.fromEntries(Object.entries(body).map(([k, v]) => [k, v == null ? "" : String(v)]));
+    emailFrom = extractFrom(body);
   } else {
     let bodyText = extractBodyText(body);
     emailSubject = extractSubject(body);
+    emailFrom = extractFrom(body);
     if (bodyText) {
       sourceMode = "email-body";
     } else {
       // Fetch the newest inbound email from GHL using whatever id the webhook sent.
       if (!cfg) return json({ error: `GHL not configured: ${cfgErr || "missing credentials"}` }, 502);
       const conversationId = pickId(body, ["conversationId", "conversation_id", "conversation"]);
-      const contactId = pickId(body, ["contactId", "contact_id", "id"]);
-      const fetched = await newestInboundEmail(cfg, { conversationId, contactId });
+      const fetched = await newestInboundEmail(cfg, { conversationId, contactId: senderContactId });
       if (!fetched) return json({ error: "no inbound email body found (payload carried no body and no resolvable conversation/contact id)" }, 422);
       bodyText = fetched.body;
       emailSubject = fetched.subject || emailSubject;
-      emailFrom = fetched.from;
+      emailFrom = fetched.from || emailFrom;
       sourceMode = "ghl-fetch";
     }
     bodyForMarker = bodyText;
@@ -511,29 +632,85 @@ Deno.serve(async (req) => {
   }
   const kcfg = isLiveTransfer ? LIVE_TRANSFER_CFG : REALTIME_CFG;
 
-  // ── Parseability gate ──
-  // A live transfer must have at least a phone/email (loud 422 if not — a live
-  // transfer that won't parse is a real problem). A real-time candidate that
-  // doesn't parse into a lead (name + a way to reach them) is almost certainly a
-  // human reply from Synergy — skip it gracefully rather than erroring.
-  const hasContact = Boolean(lead.phone || lead.email);
+  // Trust signal: sender is on a trusted delivery domain, OR the subject marks it a
+  // live transfer. Structured POSTs are an intentional (secret-gated) API call.
+  const senderTrusted = isTrustedDomain(emailFrom);
+  const looksLikeTransfer = isLiveTransfer || senderTrusted || sourceMode === "structured";
+
+  // ── GATE 1 — ordinary inbound (funder reply, chatter, random email) ──
+  // With the workflow now firing on ALL inbound email, THIS endpoint is the gate:
+  // no trust signal + no live-transfer subject → pure no-op. Never messages anyone,
+  // never writes activity_log. Just a log line so firing on everything is harmless.
+  if (!looksLikeTransfer) {
+    console.log("live-transfer-intake: ignored non-transfer inbound", { from: emailFrom, subject: emailSubject, parsedFields: Object.keys(fields).length });
+    return json({ ok: true, ignored: true, reason: "not a Synergy transfer (untrusted sender + no live-transfer subject) — ignored" });
+  }
+
+  // ── SELF-HEAL — adopt a new trusted sender (tag lt-source + DND). Idempotent. ──
+  let adoptNote = "";
+  if (cfg && senderTrusted && senderContactId) {
+    const ad = await adoptSender(cfg, senderContactId);
+    if (ad.adopted) adoptNote = `🆕 New Synergy sender auto-registered: ${ad.address || emailFrom} — lt-source tag + all-channel DND set.`;
+    if (ad.error) console.error("live-transfer-intake: sender adopt issue", { senderContactId, error: ad.error });
+  }
+
+  // ── HARD-REJECT robot-as-lead / invalid merchant BEFORE creating anything ──
+  // If the parser mis-aligned and grabbed the delivery robot's own address as the
+  // lead email, or there's no real merchant phone, we must NOT arm a customer /
+  // deal / opportunity / nurture from the robot. A genuine-looking transfer that
+  // fails this still gets a LOUD alert so a real lead never dies silently; a plain
+  // human reply (no lead structure) is skipped quietly.
+  const leadEmailTrusted = Boolean(lead.email && isTrustedDomain(lead.email));
   const hasIdentity = Boolean(lead.first || lead.last || lead.business);
-  if (isLiveTransfer) {
-    if (!hasContact) {
-      return json({ error: "could not parse a phone or email from the lead", parsed: lead.raw, mode: sourceMode, kind: kcfg.kind }, 422);
+  const validMerchant = isValidMerchantPhone(lead.phone) && hasIdentity && !leadEmailTrusted;
+  const parsedCount = Object.keys(fields).length;
+
+  if (!validMerchant) {
+    const hasLeadStructure = parsedCount >= 2 ||
+      /requested amount|company name|select the company|contact name|deposit per month/i.test(bodyForMarker);
+    const alertOnFailure = isLiveTransfer || hasLeadStructure;
+    let alertSent = false;
+    let alertWarning: string | undefined;
+    if (alertOnFailure && cfg) {
+      const reasonBits = [
+        leadEmailTrusted ? "parsed lead email is the delivery robot's address" : null,
+        !isValidMerchantPhone(lead.phone) ? "no valid merchant phone extracted" : null,
+        !hasIdentity ? "no merchant name/business extracted" : null,
+      ].filter(Boolean).join("; ");
+      const r = await sendTeamAlert(cfg, {
+        subject: "⚠️ SYNERGY TRANSFER — PARSE FAILURE, REVIEW MANUALLY",
+        headerHtml: "⚠️ TRANSFER RECEIVED — COULD NOT EXTRACT A VALID MERCHANT",
+        headerText: "TRANSFER RECEIVED — COULD NOT EXTRACT A VALID MERCHANT",
+        headerBg: "#b45309",
+        intro: `A ${kcfg.kind.replace("_", " ")} email came in but we could not extract a valid merchant (${reasonBits}). NOTHING was created — review this one by hand so a real lead doesn't die silently.`,
+        note: adoptNote || undefined,
+        rows: [
+          ["From", emailFrom || null],
+          ["Subject", emailSubject || null],
+          ["Parsed name", `${lead.first} ${lead.last}`.trim() || lead.business || null],
+          ["Parsed phone", lead.phoneRaw || lead.phone || null],
+          ["Parsed email", lead.email || null],
+          ["Fields parsed", String(parsedCount)],
+        ],
+      });
+      alertSent = r.sent;
+      alertWarning = r.error;
+      if (!r.sent) console.error("live-transfer-intake: parse-failure alert issue", { alertWarning });
     }
-  } else if (!(hasContact && hasIdentity)) {
+    console.log("live-transfer-intake: rejected — no valid merchant", { kind: kcfg.kind, from: emailFrom, leadEmailTrusted, hasIdentity, phoneValid: isValidMerchantPhone(lead.phone) });
     return json({
-      ok: true, skipped: true, kind: kcfg.kind,
-      reason: "trusted sender but not a parseable lead (likely a human reply) — skipped",
-      parsed: lead.raw, mode: sourceMode,
+      ok: true, rejected: true, kind: kcfg.kind,
+      reason: alertOnFailure
+        ? "could not extract a valid merchant — team alerted for manual review"
+        : "trusted sender, no parseable lead (likely a human reply) — skipped",
+      alertSent, adopted: Boolean(adoptNote),
     });
   }
+
   const fullName = `${lead.first} ${lead.last}`.trim() || lead.business || (isLiveTransfer ? "Live Transfer Lead" : "Real-Time Lead");
 
   // Tolerance flag (never LOSE a lead): a real-time email in an unexpected format
   // still becomes a lead, but we mark it for a human to eyeball the parse.
-  const parsedCount = Object.keys(fields).length;
   const variantFlag = (!isLiveTransfer && parsedCount < 5)
     ? " ⚠️ format variant — review parse (fewer fields than a standard Synergy lead)."
     : "";
@@ -662,7 +839,7 @@ Deno.serve(async (req) => {
     entity_type: "deal", entity_id: dealId,
     interaction_type: "note",
     subject: kcfg.activitySubject,
-    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}\n${JSON.stringify(lead.raw, null, 2)}`,
+    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${adoptNote ? `\n${adoptNote}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
   }).then(() => {}, () => {});
 
   // ── GHL: proper merchant contact + MCA opportunity at "New Lead" ──
@@ -738,51 +915,30 @@ Deno.serve(async (req) => {
   let alertSent = false;
   let alertWarning: string | undefined;
   if (cfg) {
-    try {
-      // Send through the alerts inbox contact (owner's address); CC the rest of
-      // the team. No name fields on the upsert so we never clobber an existing
-      // contact record for that address.
-      const alert = await upsertContact(cfg, {
-        email: TEAM_ALERT_TO, tags: ["internal-alerts"], source: `${kcfg.ghlSource} Alert`,
-      });
-      const alertContactId = alert.data?.contact?.id;
-      if (!alertContactId) {
-        alertWarning = alert.error || "no alert contact id";
-      } else {
-        const rows: Array<[string, string | null]> = [
-          ["Contact", fullName],
-          ["Business", lead.business || null],
-          ["Phone", lead.phoneRaw || lead.phone || null],
-          ["Email", lead.email || null],
-          ["State", lead.state || null],
-          ["Industry", lead.industry || null],
-          ["Requested", lead.requestedAmount != null ? `$${lead.requestedAmount.toLocaleString()}` : null],
-          ["Monthly deposits", lead.monthlyDeposits != null ? `$${lead.monthlyDeposits.toLocaleString()}` : null],
-          ["FICO", lead.fico != null ? String(lead.fico) : null],
-          ["Open positions", lead.openPositions != null ? String(lead.openPositions) : null],
-          ["Best time", lead.bestTime || null],
-          ["Deal #", dealNumber],
-        ];
-        const trs = rows.filter(([, v]) => v).map(
-          ([k, v]) => `<tr><td style="padding:4px 12px 4px 0;color:#64748b;white-space:nowrap">${k}</td><td style="padding:4px 0;color:#0f172a;font-weight:600">${v}</td></tr>`,
-        ).join("");
-        const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px">
-<div style="background:#dc2626;color:#fff;font-size:16px;font-weight:700;padding:12px 16px;border-radius:8px 8px 0 0">${kcfg.alertHeaderHtml}</div>
-<div style="border:1px solid #e2e8f0;border-top:0;border-radius:0 0 8px 8px;padding:16px">
-<p style="margin:0 0 10px;font-size:14px;color:#0f172a">${kcfg.alertIntro}</p>
-<table style="font-size:14px;border-collapse:collapse">${trs}</table>
-<p style="margin:14px 0 0"><a href="${PLAYBOOK_URL}" style="background:#2563eb;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:6px;display:inline-block">Open the Playbook →</a></p>
-</div></div>`;
-        const text = `${kcfg.alertHeaderText}\n\n${rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n")}\n\nOpen the playbook: ${PLAYBOOK_URL}`;
-        const subject = `${kcfg.alertSubjectPrefix}: ${fullName} / ${lead.business || "—"} — CALL WITHIN 5 MIN`;
-        const sr = await sendEmailToContact(cfg, alertContactId, subject, html, { text, emailCc: TEAM_ALERT_CC });
-        alertSent = sr.ok;
-        if (!sr.ok) alertWarning = sr.error;
-      }
-    } catch (e) {
-      alertWarning = e instanceof Error ? e.message : String(e);
-    }
-    if (alertWarning) console.error(`live-transfer-intake: alert email issue (${kcfg.kind})`, { dealId, alertWarning });
+    const r = await sendTeamAlert(cfg, {
+      subject: `${kcfg.alertSubjectPrefix}: ${fullName} / ${lead.business || "—"} — CALL WITHIN 5 MIN`,
+      headerHtml: kcfg.alertHeaderHtml,
+      headerText: kcfg.alertHeaderText,
+      intro: kcfg.alertIntro,
+      note: adoptNote || undefined,
+      rows: [
+        ["Contact", fullName],
+        ["Business", lead.business || null],
+        ["Phone", lead.phoneRaw || lead.phone || null],
+        ["Email", lead.email || null],
+        ["State", lead.state || null],
+        ["Industry", lead.industry || null],
+        ["Requested", lead.requestedAmount != null ? `$${lead.requestedAmount.toLocaleString()}` : null],
+        ["Monthly deposits", lead.monthlyDeposits != null ? `$${lead.monthlyDeposits.toLocaleString()}` : null],
+        ["FICO", lead.fico != null ? String(lead.fico) : null],
+        ["Open positions", lead.openPositions != null ? String(lead.openPositions) : null],
+        ["Best time", lead.bestTime || null],
+        ["Deal #", dealNumber],
+      ],
+    });
+    alertSent = r.sent;
+    alertWarning = r.error;
+    if (!r.sent) console.error(`live-transfer-intake: alert email issue (${kcfg.kind})`, { dealId, alertWarning });
   }
 
   return json({
@@ -801,6 +957,7 @@ Deno.serve(async (req) => {
     ghlWarning,
     alertSent,
     alertWarning,
+    adopted: Boolean(adoptNote),
     mode: sourceMode,
     variant: variantFlag ? true : false,
     parsedFields: parsedCount,
