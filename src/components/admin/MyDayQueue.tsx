@@ -19,6 +19,13 @@ interface Urgency {
   countdownDue?: string;
 }
 
+/**
+ * The two lanes of My Day. `followup` = a deal already in motion that needs
+ * chasing (stips, replies, offers, silent funders). `new` = first-touch work
+ * (real-time leads on the clock, warm/new leads never contacted).
+ */
+type Lane = "followup" | "new";
+
 // mm:ss countdown from a millisecond delta.
 function countdown(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -126,6 +133,32 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   }
 }
 
+// ── LANE CLASSIFICATION ─────────────────────────────────────────────────────
+// The single place that decides which lane an item lands in. It reads ONLY the
+// rank produced by classify() above, so the lanes can never drift from the
+// ranking: add a rank there, add it here, done. Anything unmapped falls into
+// "followup" (an open deal we're already working is the safe default — a new
+// lead is always rank 0 / 5.5 / 6 and explicitly listed).
+//
+//   rank 0   🔴 CALL NOW / LIVE TRANSFER / REAL-TIME  → new       (first touch, on the clock)
+//   rank 1   💬 Funder replied                        → followup
+//   rank 2   💬 Merchant replied                      → followup
+//   rank 3   📄 Present offers                        → followup
+//   rank 4   ⏰ Docs stale                            → followup  (chase the stips)
+//   rank 5   📤 Nudge funders                         → followup
+//   rank 5.5 🌤️ Warm lead — call now                 → new       (never contacted)
+//   rank 6   🆕 New lead — make first contact         → new       (never contacted)
+//   rank 7   ☎️/📋/✍️/📎/🤝/📝 active-stage nudges     → followup  (incl. "Collect the stips")
+//   rank 8   🔧 In progress                           → followup
+const NEW_WORK_RANKS = new Set([0, 5.5, 6]);
+
+// FUTURE: when deals.stips_promised_by lands, an item whose promised-by date has
+// passed is by definition follow-up work — add the signal here (and to classify's
+// rank/badge) and both the lane and its urgency follow automatically.
+function laneOf(u: Urgency): Lane {
+  return NEW_WORK_RANKS.has(u.rank) ? "new" : "followup";
+}
+
 const toneChip: Record<string, string> = {
   emerald: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
   amber: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
@@ -192,10 +225,90 @@ const SOURCE_STYLE: Record<string, { edge: string; chip: string; label: string }
 const SOURCE_FALLBACK = { edge: "border-l-gray-300 dark:border-l-gray-600", chip: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300", label: "Other" };
 const sourceStyle = (d: QueueDeal) => SOURCE_STYLE[d.lead_source ?? ""] ?? SOURCE_FALLBACK;
 
+type QueueItem = { deal: QueueDeal; u: Urgency };
+
+/** One work card. Unchanged from the single-list version — same tones, same SLA
+ * countdown, same overdue flag, same onPick. Lifted out so both lanes render it. */
+function QueueCard({ deal, u, now, onPick }: QueueItem & { now: number; onPick: (d: QueueDeal) => void }) {
+  const src = sourceStyle(deal);
+  const amount = amountOf(deal);
+  const sla = slaMs(u.rank);
+  const overdue = sla !== null && now - Date.parse(u.since) > sla;
+  return (
+    <button
+      onClick={() => onPick(deal)}
+      title={`Load ${nameOf(deal)} into the playbook`}
+      className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
+        {u.countdownDue ? (
+          (Date.parse(u.countdownDue) - now) > 0 ? (
+            <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0 tabular-nums">
+              ⏱ {countdown(Date.parse(u.countdownDue) - now)} left
+            </span>
+          ) : (
+            <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">SLA MISSED — call anyway</span>
+          )
+        ) : overdue ? (
+          <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">overdue</span>
+        ) : (
+          <span className="text-[11px] text-gray-400 shrink-0">{ago(u.since, now)}</span>
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
+        {amount && <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 shrink-0">{amount}</span>}
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-3 mt-0.5">{u.why}</p>
+      <div className="flex items-center justify-between gap-2 mt-1.5">
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
+        <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
+      </div>
+    </button>
+  );
+}
+
+/** One lane: a labelled header with a count badge, then the lane's cards in rank
+ * order (or its own empty state). */
+function LaneSection({
+  title, hint, icon, countTone, items, empty, now, onPick,
+}: {
+  title: string;
+  hint: string;
+  icon: string;
+  countTone: string;
+  items: QueueItem[];
+  empty: string;
+  now: number;
+  onPick: (d: QueueDeal) => void;
+}) {
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-sm">{icon}</span>
+        <h3 className="text-xs font-bold uppercase tracking-wide text-gray-700 dark:text-gray-200">{title}</h3>
+        <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-full ${countTone}`}>{items.length}</span>
+        <span className="hidden sm:inline text-[11px] text-gray-400">— {hint}</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="text-xs text-gray-400 dark:text-gray-500 italic pb-1">{empty}</p>
+      ) : (
+        <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+          {items.map((it) => (
+            <QueueCard key={it.deal.id} deal={it.deal} u={it.u} now={now} onPick={onPick} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /**
- * "My Day" — the ranked work queue at the top of the Revenue Playbook. Clicking
- * a card loads that deal into the workspace (via onPick, which also switches to
- * the matching playbook tab). Auto-refreshes every 60s like the funnel board.
+ * "My Day" — the ranked work queue at the top of the Revenue Playbook, split into
+ * TWO lanes: follow-up / chasing stips (deals already in motion) and new work
+ * (first touch). Clicking a card loads that deal into the workspace (via onPick,
+ * which also switches to the matching playbook tab). Auto-refreshes on a poll.
  */
 export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void }) {
   const { effectiveUserId, isAdmin, isSuperAdmin } = useUserProfile();
@@ -257,10 +370,21 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
     });
     return scoped
       .map((d) => ({ deal: d, u: classify(d, now) }))
-      .filter((x): x is { deal: QueueDeal; u: Urgency } => x.u !== null)
+      .filter((x): x is QueueItem => x.u !== null)
       .sort((a, b) => a.u.rank - b.u.rank || Date.parse(a.u.since) - Date.parse(b.u.since));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deals, scope, canToggle, effectiveUserId, now]);
+
+  // Two lanes off the ONE classification. Rank ordering is preserved inside each
+  // lane (items is already sorted; filter keeps that order).
+  const followUps = useMemo(() => items.filter((i) => laneOf(i.u) === "followup"), [items]);
+  const newWork = useMemo(() => items.filter((i) => laneOf(i.u) === "new"), [items]);
+
+  // Follow-up leads (the lane the owner cares most about) — EXCEPT when there's a
+  // 🔴 CALL NOW on the clock, which must never sit below a header. Then new work
+  // goes first so the most urgent card on the board is visible without scrolling.
+  const callNowFirst = newWork.some((i) => i.u.rank === 0);
+  const laneOrder: Lane[] = callNowFirst ? ["new", "followup"] : ["followup", "new"];
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
@@ -275,6 +399,16 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
             </span>
           )}
           <span className="hidden sm:inline text-xs text-gray-400">— what needs you next, most urgent first</span>
+          {!loading && items.length > 0 && (
+            <span className="hidden md:inline-flex items-center gap-1.5 text-[11px]">
+              <span className="font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
+                {followUps.length} to chase
+              </span>
+              <span className="font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                {newWork.length} new
+              </span>
+            </span>
+          )}
         </button>
         <div className="flex items-center gap-2">
           {canToggle && (
@@ -305,47 +439,34 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
       ) : items.length === 0 ? (
         <p className="text-sm text-gray-500 dark:text-gray-400 py-2">Queue clear — work the funnel below 🎉</p>
       ) : (
-        <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
-          {items.map(({ deal, u }) => {
-            const src = sourceStyle(deal);
-            const amount = amountOf(deal);
-            const sla = slaMs(u.rank);
-            const overdue = sla !== null && now - Date.parse(u.since) > sla;
-            return (
-              <button
-                key={deal.id}
-                onClick={() => onPick(deal)}
-                title={`Load ${nameOf(deal)} into the playbook`}
-                className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3`}
-              >
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
-                  {u.countdownDue ? (
-                    (Date.parse(u.countdownDue) - now) > 0 ? (
-                      <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0 tabular-nums">
-                        ⏱ {countdown(Date.parse(u.countdownDue) - now)} left
-                      </span>
-                    ) : (
-                      <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">SLA MISSED — call anyway</span>
-                    )
-                  ) : overdue ? (
-                    <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">overdue</span>
-                  ) : (
-                    <span className="text-[11px] text-gray-400 shrink-0">{ago(u.since, now)}</span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
-                  {amount && <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 shrink-0">{amount}</span>}
-                </div>
-                <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-3 mt-0.5">{u.why}</p>
-                <div className="flex items-center justify-between gap-2 mt-1.5">
-                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
-                  <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
-                </div>
-              </button>
-            );
-          })}
+        <div className="space-y-4">
+          {laneOrder.map((lane) =>
+            lane === "followup" ? (
+              <LaneSection
+                key="followup"
+                icon="📎"
+                title="Follow-up · chasing stips"
+                hint="deals already in motion — chase the docs, the replies, the offers"
+                countTone="bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300"
+                items={followUps}
+                empty="Nothing to chase right now."
+                now={now}
+                onPick={onPick}
+              />
+            ) : (
+              <LaneSection
+                key="new"
+                icon="🆕"
+                title="New work · first touch"
+                hint="brand-new + real-time leads — make first contact"
+                countTone="bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                items={newWork}
+                empty="No new leads waiting."
+                now={now}
+                onPick={onPick}
+              />
+            )
+          )}
         </div>
       ))}
     </div>
