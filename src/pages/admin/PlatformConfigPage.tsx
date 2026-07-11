@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Cog6ToothIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
-import { getBranding, saveBranding, DEFAULT_BRANDING, type Branding } from "../../services/platformService";
+import {
+  getBranding, saveBranding, DEFAULT_BRANDING, type Branding,
+  getLeadAssignment, saveLeadAssignment, DEFAULT_LEAD_ASSIGNMENT,
+  LEAD_ASSIGNMENT_STRATEGIES, type LeadAssignmentSetting, type LeadAssignmentStrategy,
+} from "../../services/platformService";
 import {
   getActiveScorecard, saveScorecard, DEFAULT_SCORECARD, type ScorecardConfig,
 } from "../../services/underwritingService";
+import { getAllClosers } from "../../services/closerService";
+import type { Closer } from "../../types/commissions";
 import { MCA_PIPELINE, VCF_PIPELINE } from "../../data/pipelines";
 
 const input = "mt-1 w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
@@ -25,12 +31,20 @@ const SCORECARD_GROUPS: { title: string; fields: { key: keyof ScorecardConfig; l
 export default function PlatformConfigPage() {
   const [branding, setBranding] = useState<Branding>(DEFAULT_BRANDING);
   const [scorecard, setScorecard] = useState<ScorecardConfig>(DEFAULT_SCORECARD);
+  const [leadAssignment, setLeadAssignment] = useState<LeadAssignmentSetting>(DEFAULT_LEAD_ASSIGNMENT);
+  const [closers, setClosers] = useState<Closer[]>([]);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Only closers who can actually hold a deal: active + linked to a login (user_id).
+  // deals.assigned_closer_id stores the PROFILE id, which is closers.user_id.
+  const eligibleClosers = closers.filter((c) => c.status === "active" && !!c.user_id);
 
   useEffect(() => {
     getBranding().then(setBranding).catch(() => {});
     getActiveScorecard().then(setScorecard).catch(() => {});
+    getLeadAssignment().then(setLeadAssignment).catch(() => {});
+    getAllClosers().then(setClosers).catch(() => {});
   }, []);
 
   function flash(m: string) { setSavedMsg(m); setTimeout(() => setSavedMsg(null), 2500); }
@@ -43,6 +57,22 @@ export default function PlatformConfigPage() {
     setBusy(true);
     try { await saveScorecard(scorecard); flash("Scorecard saved"); } finally { setBusy(false); }
   }
+  async function persistLeadAssignment() {
+    setBusy(true);
+    try {
+      // specific_closer without a closer picked would silently mean "unassigned" — block it.
+      const payload: LeadAssignmentSetting =
+        leadAssignment.strategy === "specific_closer"
+          ? leadAssignment
+          : { ...leadAssignment, specific_closer_profile_id: null };
+      await saveLeadAssignment(payload);
+      setLeadAssignment(payload);
+      flash("Lead assignment saved");
+    } finally { setBusy(false); }
+  }
+
+  const specificMissing =
+    leadAssignment.strategy === "specific_closer" && !leadAssignment.specific_closer_profile_id;
 
   return (
     <div className="p-6 space-y-6">
@@ -54,6 +84,73 @@ export default function PlatformConfigPage() {
           <p className="text-gray-500 dark:text-gray-400 mt-1">White-label branding, underwriting scorecard weights, and pipeline reference.</p>
         </div>
         {savedMsg && <span className="text-sm text-emerald-600 inline-flex items-center gap-1"><CheckCircleIcon className="w-4 h-4" /> {savedMsg}</span>}
+      </div>
+
+      {/* Lead assignment strategy */}
+      <div className={card}>
+        <h2 className="font-semibold text-gray-900 dark:text-white mb-1">Lead assignment</h2>
+        <p className="text-xs text-gray-500 mb-4">
+          How inbound leads are routed to closers. Applied in the database on every new deal, so it covers
+          all intake paths (web application, debt-relief intake, live transfers, GHL, bulk import).
+          Only <span className="font-medium">active</span> closers with a linked login are eligible.
+        </p>
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <label className="text-sm">
+            <span className="text-gray-500">Strategy</span>
+            <select
+              value={leadAssignment.strategy}
+              onChange={(e) =>
+                setLeadAssignment({ ...leadAssignment, strategy: e.target.value as LeadAssignmentStrategy })
+              }
+              className={input}
+            >
+              {LEAD_ASSIGNMENT_STRATEGIES.map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-gray-400">
+              {LEAD_ASSIGNMENT_STRATEGIES.find((s) => s.value === leadAssignment.strategy)?.help}
+            </span>
+          </label>
+
+          {leadAssignment.strategy === "specific_closer" && (
+            <label className="text-sm">
+              <span className="text-gray-500">Assign every lead to</span>
+              <select
+                value={leadAssignment.specific_closer_profile_id ?? ""}
+                onChange={(e) =>
+                  setLeadAssignment({ ...leadAssignment, specific_closer_profile_id: e.target.value || null })
+                }
+                className={input}
+              >
+                <option value="">Select a closer…</option>
+                {eligibleClosers.map((c) => (
+                  <option key={c.id} value={c.user_id!}>{c.first_name} {c.last_name}</option>
+                ))}
+              </select>
+              {specificMissing && (
+                <span className="mt-1 block text-xs text-amber-600">
+                  Pick a closer — otherwise new leads will arrive unassigned.
+                </span>
+              )}
+            </label>
+          )}
+        </div>
+
+        <p className="mt-4 text-xs text-gray-500">
+          Safety net: if no eligible closer resolves (none active, or the chosen closer is deactivated),
+          the lead is saved <span className="font-medium">unassigned</span> rather than rejected — find it with the
+          “Unassigned only” filter on <Link to="/admin/deals" className="text-ocean-blue hover:underline">Deals</Link>.
+        </p>
+
+        <button
+          onClick={persistLeadAssignment}
+          disabled={busy || specificMissing}
+          className="btn-primary text-sm mt-4 disabled:opacity-60"
+        >
+          Save lead assignment
+        </button>
       </div>
 
       {/* Branding */}
