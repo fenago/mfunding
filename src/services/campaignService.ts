@@ -52,6 +52,8 @@ export interface Campaign {
   end_date: string | null;
   notes: string | null;
   setup_checklist: ChecklistItem[];
+  product_id: string | null;                     // Synergy catalog product key
+  pricing_snapshot: Record<string, unknown> | null; // computed selection at create time
   created_at: string;
   updated_at: string;
 }
@@ -338,6 +340,8 @@ function normalizeCampaign(row: Record<string, unknown>): Campaign {
     partner: (row.partner as string) ?? "Synergy Direct",
     setup_checklist: Array.isArray(row.setup_checklist) ? (row.setup_checklist as ChecklistItem[]) : [],
     cost_per_lead_contracted: (row.cost_per_lead_contracted as number) ?? null,
+    product_id: (row.product_id as string) ?? null,
+    pricing_snapshot: (row.pricing_snapshot as Record<string, unknown>) ?? null,
   };
 }
 

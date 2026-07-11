@@ -9,6 +9,11 @@ import {
   SparklesIcon,
   CheckCircleIcon,
   ClockIcon,
+  ChevronRightIcon,
+  ChevronLeftIcon,
+  XMarkIcon,
+  TableCellsIcon,
+  ShoppingCartIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "@/context/UserProfileContext";
 import {
@@ -24,16 +29,24 @@ import {
   listAnalyses,
   analyzeCampaign,
   CHANNEL_META,
-  SELECTABLE_CHANNELS,
   STATUSES,
   type Campaign,
-  type CampaignChannel,
   type CampaignStatus,
   type CampaignMetrics,
   type ChecklistItem,
   type CampaignAnalysis,
   type CampaignAnalysisResult,
 } from "../../services/campaignService";
+import {
+  SYNERGY_PRODUCTS,
+  SYNERGY_MIN_QUALIFICATIONS,
+  getProduct,
+  matchTier,
+  computePlan,
+  suggestCampaignName,
+  type SynergyProduct,
+  type PricingSnapshot,
+} from "@/data/synergyCatalog";
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 const money = (n: number | null | undefined) => (n == null ? "—" : `$${Math.round(n).toLocaleString()}`);
@@ -78,8 +91,9 @@ export default function CampaignsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [formOpen, setFormOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [editing, setEditing] = useState<Campaign | null>(null);
+  const [rateCardOpen, setRateCardOpen] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -120,13 +134,22 @@ export default function CampaignsPage() {
 
   if (selected) {
     return (
-      <CampaignDetail
-        campaign={selected}
-        metrics={metrics[selected.id]}
-        onBack={() => setSelectedId(null)}
-        onEdit={() => { setEditing(selected); setFormOpen(true); }}
-        onChanged={load}
-      />
+      <>
+        <CampaignDetail
+          campaign={selected}
+          metrics={metrics[selected.id]}
+          onBack={() => setSelectedId(null)}
+          onEdit={() => setEditing(selected)}
+          onChanged={load}
+        />
+        {editing && (
+          <CampaignEditModal
+            campaign={editing}
+            onClose={() => setEditing(null)}
+            onSaved={() => { setEditing(null); load(); }}
+          />
+        )}
+      </>
     );
   }
 
@@ -141,9 +164,17 @@ export default function CampaignsPage() {
             One card per lead campaign. Track spend → funnel → funded, with per-channel benchmarks and an AI read on each.
           </p>
         </div>
-        <button onClick={() => { setEditing(null); setFormOpen(true); }} className="btn-primary inline-flex items-center gap-2">
-          <PlusIcon className="w-4 h-4" /> New campaign
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setRateCardOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+          >
+            <TableCellsIcon className="w-4 h-4" /> Synergy rate card
+          </button>
+          <button onClick={() => setWizardOpen(true)} className="btn-primary inline-flex items-center gap-2">
+            <PlusIcon className="w-4 h-4" /> New campaign
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -179,13 +210,22 @@ export default function CampaignsPage() {
       {/* Per-channel head-to-head */}
       {rollups.length > 0 && <ChannelRollupTable rollups={rollups} />}
 
-      {formOpen && (
-        <CampaignFormModal
-          campaign={editing}
-          onClose={() => setFormOpen(false)}
-          onSaved={() => { setFormOpen(false); load(); }}
+      {wizardOpen && (
+        <CampaignWizardModal
+          onClose={() => setWizardOpen(false)}
+          onSaved={() => { setWizardOpen(false); load(); }}
         />
       )}
+
+      {editing && (
+        <CampaignEditModal
+          campaign={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load(); }}
+        />
+      )}
+
+      {rateCardOpen && <RateCardDrawer onClose={() => setRateCardOpen(false)} />}
     </div>
   );
 }
@@ -333,6 +373,8 @@ function CampaignDetail({
           </button>
         </div>
       </div>
+
+      <PurchaseSummary campaign={c} />
 
       {m && <KpiGrid m={m} />}
       {m && <FunnelBars m={m} />}
@@ -612,75 +654,507 @@ function ListBlock({ title, items, tone, numbered }: { title: string; items: str
   );
 }
 
-// ── Create / edit modal ──────────────────────────────────────────────────────
-const BLANK = {
-  name: "",
-  channel: "realtime_transfer" as CampaignChannel,
-  partner: "Synergy Direct",
-  status: "active" as CampaignStatus,
-  budget: "",
-  spent: "",
-  cost_per_lead_contracted: "",
-  leads_target: "",
-  leads_purchased: "",
-  clicks: "",
-  market: "",
-  start_date: "",
-  end_date: "",
-  notes: "",
-};
+// ── "What was purchased" summary (from the pricing snapshot) ─────────────────
+function PurchaseSummary({ campaign: c }: { campaign: Campaign }) {
+  const snap = c.pricing_snapshot as unknown as PricingSnapshot | null;
+  if (!snap || !snap.product_name) return null;
+  const unit = snap.unit_price;
+  const chips: Array<[string, string]> = [];
+  if (snap.tier_label) chips.push(["Tier", snap.tier_label]);
+  if (snap.age_band) chips.push(["Age", `${snap.age_band} days`]);
+  if (snap.quantity != null) chips.push([snap.pricing_model === "hourly" ? "Total hours" : "Quantity", snap.quantity.toLocaleString()]);
+  if (snap.hours_per_week != null && snap.weeks != null) chips.push(["Schedule", `${snap.hours_per_week} hrs/wk × ${snap.weeks} wk`]);
+  if (unit != null) chips.push(["Unit price", unit < 1 ? `$${unit.toFixed(2)}` : money(unit)]);
+  if (snap.bonus_pct) chips.push(["Bonus", `+${snap.bonus_pct}%${snap.bonus_leads ? ` (${snap.bonus_leads.toLocaleString()} leads)` : ""}`]);
 
-function CampaignFormModal({ campaign, onClose, onSaved }: { campaign: Campaign | null; onClose: () => void; onSaved: () => void }) {
-  const editing = !!campaign;
-  const [form, setForm] = useState(() =>
-    campaign
-      ? {
-          name: campaign.name,
-          channel: campaign.channel,
-          partner: campaign.partner,
-          status: campaign.status,
-          budget: String(campaign.budget ?? ""),
-          spent: String(campaign.spent ?? ""),
-          cost_per_lead_contracted: campaign.cost_per_lead_contracted != null ? String(campaign.cost_per_lead_contracted) : "",
-          leads_target: campaign.leads_target != null ? String(campaign.leads_target) : "",
-          leads_purchased: campaign.leads_purchased != null ? String(campaign.leads_purchased) : "",
-          clicks: campaign.clicks != null ? String(campaign.clicks) : "",
-          market: campaign.market ?? "",
-          start_date: campaign.start_date ?? "",
-          end_date: campaign.end_date ?? "",
-          notes: campaign.notes ?? "",
-        }
-      : BLANK,
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+          <ShoppingCartIcon className="w-5 h-5 text-ocean-blue" /> What was purchased
+        </h3>
+        <span className="text-lg font-bold text-gray-900 dark:text-white">{money(snap.budget)}</span>
+      </div>
+      <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+        <span className="font-medium text-gray-900 dark:text-white">{snap.product_name}</span>
+        {snap.math ? <> · {snap.math}</> : null}
+      </p>
+      {chips.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {chips.map(([k, v]) => (
+            <span key={k} className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700/60 px-2 py-1 text-[11px] text-gray-700 dark:text-gray-200">
+              <span className="text-gray-400 uppercase tracking-wide">{k}</span>
+              <span className="font-semibold">{v}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
+}
+
+// ── New-campaign wizard (channel-first, Synergy catalog-driven) ──────────────
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+function CampaignWizardModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [partner, setPartner] = useState("Synergy Direct");
+  const [productId, setProductId] = useState<string | null>(null);
+  const [qty, setQty] = useState("");
+  const [tierOverride, setTierOverride] = useState<string | null>(null);
+  const [ageBand, setAgeBand] = useState("");
+  const [hoursPerWeek, setHoursPerWeek] = useState("");
+  const [weeks, setWeeks] = useState("");
+  const [status, setStatus] = useState<CampaignStatus>("active");
+  const [startDate, setStartDate] = useState(todayISO());
+  const [notes, setNotes] = useState("");
+  const [name, setName] = useState("");
+  const [nameTouched, setNameTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // On a NEW campaign, picking a channel drives the reminder + checklist preview.
-  const previewChecklist = useMemo(() => (editing ? [] : checklistForChannel(form.channel)), [editing, form.channel]);
+  const product = productId ? getProduct(productId) : undefined;
+
+  const plan = useMemo<PricingSnapshot | null>(() => {
+    if (!productId) return null;
+    return computePlan({
+      productId,
+      quantity: qty === "" ? 0 : Number(qty),
+      tierLabel: tierOverride ?? undefined,
+      ageBandValue: ageBand || undefined,
+      hoursPerWeek: hoursPerWeek === "" ? 0 : Number(hoursPerWeek),
+      weeks: weeks === "" ? 0 : Number(weeks),
+    });
+  }, [productId, qty, tierOverride, ageBand, hoursPerWeek, weeks]);
+
+  const suggestedName = productId ? suggestCampaignName(partner, productId, startDate) : "";
+  const effectiveName = nameTouched && name.trim() ? name : suggestedName;
+
+  function pickProduct(p: SynergyProduct) {
+    setProductId(p.id);
+    setTierOverride(null);
+    setQty("");
+    setAgeBand(p.ageBands?.[0]?.value ?? "");
+    setHoursPerWeek(p.pricingModel === "hourly" ? "25" : "");
+    setWeeks("");
+    setStep(2);
+  }
+
+  async function create() {
+    if (!product || !plan) return;
+    setError(null);
+    setSaving(true);
+    try {
+      await saveCampaign(null, {
+        name: effectiveName.trim(),
+        channel: product.channel,
+        partner: partner.trim() || "Synergy Direct",
+        status,
+        budget: Math.round(plan.budget),
+        spent: 0,
+        cost_per_lead_contracted: plan.unit_price,
+        leads_target: plan.pricing_model === "hourly" ? null : plan.quantity,
+        leads_purchased: null,
+        clicks: null,
+        market: null,
+        start_date: startDate || null,
+        end_date: null,
+        notes: notes.trim() || null,
+        product_id: plan.product_id,
+        pricing_snapshot: plan as unknown as Record<string, unknown>,
+        setup_checklist: checklistForChannel(product.channel),
+      });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create campaign");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const input = "mt-1 w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
+  const budgetReady = !!plan && plan.budget > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        {/* Header + step rail */}
+        <div className="flex items-center justify-between px-6 pt-5">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white">New campaign</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><XMarkIcon className="w-5 h-5" /></button>
+        </div>
+        <div className="flex items-center gap-2 px-6 mt-3 text-xs">
+          {(["Product", "Volume & price", "Launch"] as const).map((lbl, i) => {
+            const s = (i + 1) as 1 | 2 | 3;
+            const active = step === s;
+            const done = step > s;
+            return (
+              <div key={lbl} className="flex items-center gap-2">
+                <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full font-medium ${active ? "bg-ocean-blue text-white" : done ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"}`}>
+                  {done ? <CheckCircleIcon className="w-3.5 h-3.5" /> : <span>{s}</span>} {lbl}
+                </span>
+                {s < 3 && <ChevronRightIcon className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="p-6">
+          {/* STEP 1 — partner + product */}
+          {step === 1 && (
+            <div className="space-y-4">
+              <label className="block text-sm text-gray-600 dark:text-gray-300">
+                Partner
+                <input className={input} value={partner} onChange={(e) => setPartner(e.target.value)} placeholder="Synergy Direct" />
+              </label>
+              <div>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Pick a product</p>
+                <p className="text-xs text-gray-400 mb-2">Pricing comes straight from the {partner.split(/\s+/)[0] || "Synergy"} catalog.</p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {SYNERGY_PRODUCTS.map((p) => {
+                    const meta = CHANNEL_META[p.channel] ?? CHANNEL_META.other;
+                    const selected = productId === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => pickProduct(p)}
+                        className={`text-left rounded-xl border p-3 transition-all hover:border-ocean-blue hover:shadow-sm ${selected ? "border-ocean-blue ring-1 ring-ocean-blue bg-ocean-blue/5" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-sm text-gray-900 dark:text-white">{p.name}</span>
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${meta.chip}`}>{meta.short}</span>
+                        </div>
+                        <p className="text-[11px] font-semibold text-ocean-blue mt-0.5">{p.priceRange}</p>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-snug">{p.blurb}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <MinQualsHint />
+            </div>
+          )}
+
+          {/* STEP 2 — product-specific volume + price */}
+          {step === 2 && product && (
+            <div className="space-y-4">
+              <ProductHead product={product} />
+              <ProductInputs
+                product={product}
+                qty={qty} setQty={setQty}
+                tierOverride={tierOverride} setTierOverride={setTierOverride}
+                ageBand={ageBand} setAgeBand={setAgeBand}
+                hoursPerWeek={hoursPerWeek} setHoursPerWeek={setHoursPerWeek}
+                weeks={weeks} setWeeks={setWeeks}
+                input={input}
+              />
+              {/* Live math */}
+              <div className={`rounded-lg border p-3 ${budgetReady ? "border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20" : "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40"}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Planned budget</span>
+                  <span className="text-xl font-bold text-gray-900 dark:text-white">{plan ? money(plan.budget) : "—"}</span>
+                </div>
+                {plan?.math && <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{plan.math}</p>}
+                {plan?.bonus_leads ? (
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-1 font-medium">
+                    +{plan.bonus_pct}% bonus ≈ {plan.bonus_leads.toLocaleString()} extra leads
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {/* STEP 3 — name, date, notes */}
+          {step === 3 && product && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-ocean-blue/5 border border-ocean-blue/20 p-3">
+                <p className="text-sm text-gray-700 dark:text-gray-200 flex items-start gap-2">
+                  <ExclamationTriangleIcon className="w-4 h-4 mt-0.5 text-ocean-blue shrink-0" />
+                  {channelReminder(product.channel)}
+                </p>
+              </div>
+              <label className="block text-sm text-gray-600 dark:text-gray-300">
+                Campaign name
+                <input
+                  className={input}
+                  value={effectiveName}
+                  onChange={(e) => { setNameTouched(true); setName(e.target.value); }}
+                  placeholder={suggestedName}
+                />
+                {!nameTouched && <span className="text-[11px] text-gray-400">Auto-suggested — edit if you like.</span>}
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-sm text-gray-600 dark:text-gray-300">
+                  Start date
+                  <input type="date" className={input} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                </label>
+                <label className="text-sm text-gray-600 dark:text-gray-300">
+                  Status
+                  <select className={input} value={status} onChange={(e) => setStatus(e.target.value as CampaignStatus)}>
+                    {STATUSES.map((s) => <option key={s} value={s} className="capitalize">{s}</option>)}
+                  </select>
+                </label>
+              </div>
+              <label className="block text-sm text-gray-600 dark:text-gray-300">
+                Notes
+                <textarea className={input} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Anything the team should know about this order…" />
+              </label>
+              {/* Order recap */}
+              {plan && (
+                <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3 text-sm">
+                  <div className="flex justify-between"><span className="text-gray-500 dark:text-gray-400">{product.name}</span><span className="font-semibold text-gray-900 dark:text-white">{money(plan.budget)}</span></div>
+                  {plan.math && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{plan.math}</p>}
+                  <p className="text-[11px] text-gray-400 mt-1">Code auto-generates on save (e.g. SYN-{CHANNEL_META[product.channel]?.short}-{new Date(startDate || todayISO()).getFullYear()}-###). The channel checklist attaches automatically.</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+          {/* Footer nav */}
+          <div className="mt-6 flex items-center justify-between">
+            <button
+              onClick={() => (step === 1 ? onClose() : setStep((s) => (s - 1) as 1 | 2 | 3))}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+            >
+              {step === 1 ? "Cancel" : <><ChevronLeftIcon className="w-4 h-4" /> Back</>}
+            </button>
+            {step < 3 ? (
+              <button
+                onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}
+                disabled={step === 1 ? !productId : !budgetReady}
+                className="btn-primary inline-flex items-center gap-1.5 px-5 py-2 text-sm disabled:opacity-50"
+              >
+                Next <ChevronRightIcon className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                onClick={create}
+                disabled={saving || !effectiveName.trim() || !budgetReady}
+                className="btn-primary px-5 py-2 text-sm disabled:opacity-50"
+              >
+                {saving ? "Creating…" : "Create campaign"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProductHead({ product }: { product: SynergyProduct }) {
+  const meta = CHANNEL_META[product.channel] ?? CHANNEL_META.other;
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-gray-900 dark:text-white">{product.name}</span>
+        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${meta.chip}`}>{meta.label}</span>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Includes: {product.includes}</p>
+    </div>
+  );
+}
+
+function ProductInputs({
+  product, qty, setQty, tierOverride, setTierOverride, ageBand, setAgeBand,
+  hoursPerWeek, setHoursPerWeek, weeks, setWeeks, input,
+}: {
+  product: SynergyProduct;
+  qty: string; setQty: (v: string) => void;
+  tierOverride: string | null; setTierOverride: (v: string | null) => void;
+  ageBand: string; setAgeBand: (v: string) => void;
+  hoursPerWeek: string; setHoursPerWeek: (v: string) => void;
+  weeks: string; setWeeks: (v: string) => void;
+  input: string;
+}) {
+  if (product.pricingModel === "hourly") {
+    return (
+      <div className="grid grid-cols-2 gap-3">
+        <label className="text-sm text-gray-600 dark:text-gray-300">
+          Hours per week <span className="text-xs text-gray-400">(min {product.minHours})</span>
+          <input type="number" min={product.minHours} className={input} value={hoursPerWeek} onChange={(e) => setHoursPerWeek(e.target.value)} placeholder={String(product.minHours)} />
+        </label>
+        <label className="text-sm text-gray-600 dark:text-gray-300">
+          Weeks
+          <input type="number" min={1} className={input} value={weeks} onChange={(e) => setWeeks(e.target.value)} placeholder="4" />
+        </label>
+        <p className="col-span-2 text-[11px] text-gray-400">Billed at ${product.hourlyRate}/hour, {product.minHours}-hour weekly minimum.</p>
+      </div>
+    );
+  }
+
+  if (product.pricingModel === "age_band") {
+    return (
+      <div className="grid grid-cols-2 gap-3">
+        <label className="text-sm text-gray-600 dark:text-gray-300">
+          Lead age
+          <select className={input} value={ageBand} onChange={(e) => setAgeBand(e.target.value)}>
+            {product.ageBands?.map((b) => (
+              <option key={b.value} value={b.value}>{b.label} — ${b.unit}/{product.unitLabel}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm text-gray-600 dark:text-gray-300">
+          {product.qtyLabel}
+          <input type="number" min={1} className={input} value={qty} onChange={(e) => setQty(e.target.value)} placeholder="100" />
+        </label>
+        {product.bonusTiers && (
+          <p className="col-span-2 text-[11px] text-gray-400">
+            Spend more, get free leads: {product.bonusTiers.slice().reverse().map((b) => `$${b.minSpend.toLocaleString()} → +${b.pct}%`).join(" · ")}.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // volume_tier — quantity drives the tier; tier is shown and overridable.
+  const matched = matchTier(product, qty === "" ? 0 : Number(qty));
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <label className="text-sm text-gray-600 dark:text-gray-300">
+        {product.qtyLabel}
+        <input type="number" min={1} className={input} value={qty} onChange={(e) => { setQty(e.target.value); setTierOverride(null); }} placeholder="100" />
+      </label>
+      <label className="text-sm text-gray-600 dark:text-gray-300">
+        Price tier <span className="text-xs text-gray-400">(auto)</span>
+        <select
+          className={input}
+          value={tierOverride ?? matched?.label ?? ""}
+          onChange={(e) => setTierOverride(e.target.value || null)}
+        >
+          {!matched && <option value="">Enter a quantity…</option>}
+          {product.tiers?.map((t) => (
+            <option key={t.label} value={t.label}>
+              {t.label} — ${t.unit < 1 ? t.unit.toFixed(2) : t.unit}/{product.unitLabel}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="col-span-2 flex flex-wrap gap-1.5">
+        {product.tiers?.map((t) => {
+          const active = (tierOverride ?? matched?.label) === t.label;
+          return (
+            <span key={t.label} className={`text-[10px] px-1.5 py-0.5 rounded ${active ? "bg-ocean-blue text-white" : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"}`}>
+              {t.label}: ${t.unit < 1 ? t.unit.toFixed(2) : t.unit}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MinQualsHint() {
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1.5">Minimum qualifications (most lead types)</p>
+      <div className="flex flex-wrap gap-1.5">
+        {SYNERGY_MIN_QUALIFICATIONS.map((q) => (
+          <span key={q} className="inline-flex items-center gap-1 rounded-md bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-[11px] text-gray-600 dark:text-gray-300">
+            <CheckCircleIcon className="w-3 h-3 text-emerald-500" /> {q}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Rate-card reference drawer (so the owner never digs for the email) ───────
+function RateCardDrawer({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
+      <div className="w-full max-w-md h-full overflow-y-auto bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700 px-5 py-4 flex items-center justify-between">
+          <h2 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <TableCellsIcon className="w-5 h-5 text-ocean-blue" /> Synergy rate card
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><XMarkIcon className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          {SYNERGY_PRODUCTS.map((p) => {
+            const meta = CHANNEL_META[p.channel] ?? CHANNEL_META.other;
+            return (
+              <div key={p.id} className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-sm text-gray-900 dark:text-white">{p.name}</span>
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${meta.chip}`}>{meta.short}</span>
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{p.blurb}</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {p.tiers?.map((t) => (
+                    <span key={t.label} className="text-[11px] rounded bg-gray-100 dark:bg-gray-700/60 px-1.5 py-0.5 text-gray-700 dark:text-gray-200">
+                      {t.label}: <b>${t.unit < 1 ? t.unit.toFixed(2) : t.unit}</b>
+                    </span>
+                  ))}
+                  {p.ageBands?.map((b) => (
+                    <span key={b.value} className="text-[11px] rounded bg-gray-100 dark:bg-gray-700/60 px-1.5 py-0.5 text-gray-700 dark:text-gray-200">
+                      {b.label}: <b>${b.unit}</b>
+                    </span>
+                  ))}
+                  {p.pricingModel === "hourly" && (
+                    <span className="text-[11px] rounded bg-gray-100 dark:bg-gray-700/60 px-1.5 py-0.5 text-gray-700 dark:text-gray-200">
+                      <b>${p.hourlyRate}/hr</b> · {p.minHours}-hr weekly min
+                    </span>
+                  )}
+                </div>
+                {p.bonusTiers && (
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-1.5">
+                    Bonus: {p.bonusTiers.slice().reverse().map((b) => `$${b.minSpend.toLocaleString()} → +${b.pct}%`).join(" · ")}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1.5">Minimum qualifications</p>
+            <ul className="space-y-1">
+              {SYNERGY_MIN_QUALIFICATIONS.map((q) => (
+                <li key={q} className="flex items-center gap-1.5 text-[12px] text-gray-600 dark:text-gray-300">
+                  <CheckCircleIcon className="w-3.5 h-3.5 text-emerald-500 shrink-0" /> {q}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Edit modal (existing campaign — spend/status/dates, no CPC noise) ────────
+function CampaignEditModal({ campaign, onClose, onSaved }: { campaign: Campaign; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({
+    name: campaign.name,
+    status: campaign.status,
+    market: campaign.market ?? "",
+    budget: String(campaign.budget ?? ""),
+    spent: String(campaign.spent ?? ""),
+    leads_purchased: campaign.leads_purchased != null ? String(campaign.leads_purchased) : "",
+    start_date: campaign.start_date ?? "",
+    end_date: campaign.end_date ?? "",
+    notes: campaign.notes ?? "",
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const meta = CHANNEL_META[campaign.channel] ?? CHANNEL_META.other;
 
   async function save() {
     setError(null);
     setSaving(true);
     try {
-      const payload = {
+      await saveCampaign(campaign.id, {
         name: form.name.trim(),
-        channel: form.channel,
-        partner: form.partner.trim() || "Synergy Direct",
         status: form.status,
+        market: form.market.trim() || null,
         budget: Number(form.budget || 0),
         spent: Number(form.spent || 0),
-        cost_per_lead_contracted: form.cost_per_lead_contracted === "" ? null : Number(form.cost_per_lead_contracted),
-        leads_target: form.leads_target === "" ? null : Number(form.leads_target),
         leads_purchased: form.leads_purchased === "" ? null : Number(form.leads_purchased),
-        clicks: form.clicks === "" ? null : Number(form.clicks),
-        market: form.market || null,
         start_date: form.start_date || null,
         end_date: form.end_date || null,
-        notes: form.notes || null,
-        // Attach the channel checklist only on create; editing keeps existing.
-        ...(editing ? {} : { setup_checklist: checklistForChannel(form.channel) }),
-      };
-      await saveCampaign(campaign?.id ?? null, payload);
+        notes: form.notes.trim() || null,
+      });
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save");
@@ -693,30 +1167,17 @@ function CampaignFormModal({ campaign, onClose, onSaved }: { campaign: Campaign 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <h2 className="text-lg font-bold text-gray-900 dark:text-white">{editing ? "Edit campaign" : "New campaign"}</h2>
-        {!editing && <p className="text-xs text-gray-400 mt-1">The code (e.g. SYN-RT-2026-001) is generated automatically from partner + channel + year.</p>}
+      <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white">Edit campaign</h2>
+          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${meta.chip}`}>{meta.label}</span>
+        </div>
+        <p className="text-xs text-gray-400 mt-1">{campaign.code ?? "—"} · {campaign.partner} · channel fixed at creation</p>
 
         <div className="mt-4 grid grid-cols-2 gap-3">
           <label className="col-span-2 text-sm text-gray-600 dark:text-gray-300">
             Name
-            <input className={input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Synergy — Real-Time Transfers (emailed leads)" />
-          </label>
-          <label className="text-sm text-gray-600 dark:text-gray-300">
-            Partner
-            <input className={input} value={form.partner} onChange={(e) => setForm({ ...form, partner: e.target.value })} placeholder="Synergy Direct" />
-          </label>
-          <label className="text-sm text-gray-600 dark:text-gray-300">
-            Channel
-            <select className={input} value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value as CampaignChannel })} disabled={editing}>
-              {SELECTABLE_CHANNELS.map((ch) => (
-                <option key={ch} value={ch}>{CHANNEL_META[ch].label}</option>
-              ))}
-              {/* Keep a legacy channel selectable when editing an old row. */}
-              {editing && !SELECTABLE_CHANNELS.includes(form.channel) && (
-                <option value={form.channel}>{CHANNEL_META[form.channel]?.label ?? form.channel}</option>
-              )}
-            </select>
+            <input className={input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </label>
           <label className="text-sm text-gray-600 dark:text-gray-300">
             Status
@@ -730,27 +1191,15 @@ function CampaignFormModal({ campaign, onClose, onSaved }: { campaign: Campaign 
           </label>
           <label className="text-sm text-gray-600 dark:text-gray-300">
             Planned budget ($)
-            <input type="number" className={input} value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} placeholder="3000" />
+            <input type="number" className={input} value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
           </label>
           <label className="text-sm text-gray-600 dark:text-gray-300">
             Actual spend ($)
-            <input type="number" className={input} value={form.spent} onChange={(e) => setForm({ ...form, spent: e.target.value })} placeholder="0" />
-          </label>
-          <label className="text-sm text-gray-600 dark:text-gray-300">
-            Contracted CPL ($) <span className="text-xs text-gray-400">vendor quote</span>
-            <input type="number" className={input} value={form.cost_per_lead_contracted} onChange={(e) => setForm({ ...form, cost_per_lead_contracted: e.target.value })} placeholder="60" />
+            <input type="number" className={input} value={form.spent} onChange={(e) => setForm({ ...form, spent: e.target.value })} />
           </label>
           <label className="text-sm text-gray-600 dark:text-gray-300">
             Leads purchased <span className="text-xs text-gray-400">(true CPL)</span>
-            <input type="number" className={input} value={form.leads_purchased} onChange={(e) => setForm({ ...form, leads_purchased: e.target.value })} placeholder="25" />
-          </label>
-          <label className="text-sm text-gray-600 dark:text-gray-300">
-            Expected leads
-            <input type="number" className={input} value={form.leads_target} onChange={(e) => setForm({ ...form, leads_target: e.target.value })} placeholder="40" />
-          </label>
-          <label className="text-sm text-gray-600 dark:text-gray-300">
-            Clicks <span className="text-xs text-gray-400">(click channels → CPC)</span>
-            <input type="number" className={input} value={form.clicks} onChange={(e) => setForm({ ...form, clicks: e.target.value })} placeholder="Google Ads only" />
+            <input type="number" className={input} value={form.leads_purchased} onChange={(e) => setForm({ ...form, leads_purchased: e.target.value })} />
           </label>
           <label className="text-sm text-gray-600 dark:text-gray-300">
             Start date
@@ -766,32 +1215,12 @@ function CampaignFormModal({ campaign, onClose, onSaved }: { campaign: Campaign 
           </label>
         </div>
 
-        {/* Channel-driven reminder + checklist preview (new campaigns) */}
-        {!editing && (
-          <div className="mt-4 rounded-lg bg-ocean-blue/5 border border-ocean-blue/20 p-3">
-            <p className="text-sm text-gray-700 dark:text-gray-200 flex items-start gap-2">
-              <ExclamationTriangleIcon className="w-4 h-4 mt-0.5 text-ocean-blue shrink-0" />
-              {channelReminder(form.channel)}
-            </p>
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mt-3 mb-1">
-              Setup checklist that will be attached
-            </p>
-            <ul className="space-y-1">
-              {previewChecklist.map((it) => (
-                <li key={it.key} className="text-xs text-gray-600 dark:text-gray-300 flex gap-2">
-                  <span className="text-ocean-blue">•</span> {it.label}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
         {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
         <div className="mt-6 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Cancel</button>
           <button onClick={save} disabled={!form.name.trim() || saving} className="btn-primary px-5 py-2 text-sm disabled:opacity-50">
-            {saving ? "Saving…" : editing ? "Save changes" : "Create campaign"}
+            {saving ? "Saving…" : "Save changes"}
           </button>
         </div>
       </div>

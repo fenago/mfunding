@@ -39,8 +39,6 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 // AND/OR the sender is @double-verified.com.
 const LIVE_TRANSFER_SUBJECT_PREFIX = "live transfer!";
 const LIVE_TRANSFER_FROM_DOMAIN = "double-verified.com";
-// The campaign these leads attribute to (looked up by code — never hardcode the uuid).
-const LIVE_TRANSFER_CAMPAIGN_CODE = "SYN-LT-2026-001";
 // Canonical MFunding MCA pipeline (same id ghl-webhook keys off, so stage changes round-trip).
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
 // Speed-to-lead SLA: the closer must call within 5 minutes.
@@ -487,11 +485,26 @@ Deno.serve(async (req) => {
     customerId = c.id as string;
   }
 
-  // ── Resolve the campaign by CODE (never hardcode the uuid) ──
+  // ── Resolve the attribution campaign DYNAMICALLY ──
+  // Newest ACTIVE campaign on the live_transfer channel (Synergy partner preferred).
+  // The old hardcoded code (SYN-LT-2026-001) was deleted, so never hardcode it.
+  // If no active live-transfer campaign exists, campaign_id stays null — attribution
+  // must NEVER fail the intake; we just note it in the activity log.
   let campaignId: string | null = null;
+  let attributionNote = "";
   {
-    const { data: camp } = await db.from("campaigns").select("id").eq("code", LIVE_TRANSFER_CAMPAIGN_CODE).maybeSingle();
-    campaignId = (camp?.id as string | undefined) ?? null;
+    const { data: camps } = await db.from("campaigns")
+      .select("id, code, partner, created_at")
+      .eq("channel", "live_transfer")
+      .eq("status", "active")
+      .order("created_at", { ascending: false });
+    const list = camps ?? [];
+    const synergy = list.find((c) => /synergy/i.test(String(c.partner ?? "")));
+    const chosen = synergy ?? list[0] ?? null;
+    campaignId = (chosen?.id as string | undefined) ?? null;
+    attributionNote = chosen
+      ? `Attributed to active live-transfer campaign ${chosen.code ?? chosen.id}${synergy ? " (Synergy)" : ""}.`
+      : "No active live-transfer campaign found — deal left unattributed (campaign_id null).";
   }
 
   // ── Create the DEAL — born HOT with a 5-minute call clock ──
@@ -532,7 +545,7 @@ Deno.serve(async (req) => {
     entity_type: "deal", entity_id: dealId,
     interaction_type: "note",
     subject: "live-transfer:intake",
-    content: `Auto-created from ${sourceMode} live transfer.\n${JSON.stringify(lead.raw, null, 2)}`,
+    content: `Auto-created from ${sourceMode} live transfer. ${attributionNote}\n${JSON.stringify(lead.raw, null, 2)}`,
   }).then(() => {}, () => {});
 
   // ── GHL: proper merchant contact + MCA opportunity at "New Lead" ──
