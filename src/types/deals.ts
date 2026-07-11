@@ -219,7 +219,12 @@ export interface DealFilters {
   status?: DealStatus;
   market?: Market;
   deal_type?: DealType;
+  /** Profile id of the owning closer (deals.assigned_closer_id → profiles.id).
+   *  NOT closers.id — see CloserOption in dealService. */
   assigned_closer_id?: string;
+  /** Show ONLY deals with no owning closer. Mutually exclusive with
+   *  assigned_closer_id (an unassigned deal has no closer to match). */
+  unassigned?: boolean;
   campaign_id?: string;
   search?: string;
   date_from?: string;

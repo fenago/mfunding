@@ -9,8 +9,7 @@ import {
   ArrowDownTrayIcon,
   ArrowUturnLeftIcon,
 } from "@heroicons/react/24/outline";
-import supabase from "../../../supabase";
-import { getAllDeals, getDealStats, reactivateDeal } from "../../../services/dealService";
+import { getAllDeals, getDealStats, reactivateDeal, listActiveCloserOptions, type CloserOption } from "../../../services/dealService";
 import { exportToCsv } from "../../../lib/csv";
 import type { DealWithCustomer, DealFilters, DealStatus, DealType, Market } from "../../../types/deals";
 import {
@@ -21,13 +20,17 @@ import {
 import DealCreateModal from "./DealCreateModal";
 import { expectedCommissionInPlay } from "../../../types/commissions";
 
+// Sentinel for the closer <select>: "" already means "All Closers", so the
+// unassigned-only view needs its own value (a real profile id can never collide).
+const UNASSIGNED = "__unassigned__";
+
 export default function DealListPage() {
   const [deals, setDeals] = useState<DealWithCustomer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filters, setFilters] = useState<DealFilters>({});
-  const [stats, setStats] = useState<{ total: number; byStatus: Record<string, number>; totalPipeline: number; totalFunded: number; commissionInPlay: number } | null>(null);
+  const [stats, setStats] = useState<{ total: number; byStatus: Record<string, number>; totalPipeline: number; totalFunded: number; commissionInPlay: number; unassigned: number } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [closers, setClosers] = useState<{ id: string; first_name: string | null; last_name: string | null }[]>([]);
+  const [closers, setClosers] = useState<CloserOption[]>([]);
   const [reactivatingId, setReactivatingId] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
 
@@ -67,13 +70,15 @@ export default function DealListPage() {
     }
   };
 
+  // Options come from the service so the <option value> is the PROFILE id.
+  // (This filter used to submit closers.id into a column that holds profiles.id,
+  // so filtering by a closer matched zero deals.)
   const fetchClosers = async () => {
-    const { data } = await supabase
-      .from("closers")
-      .select("id, first_name, last_name")
-      .eq("status", "active")
-      .order("first_name", { ascending: true });
-    setClosers(data || []);
+    try {
+      setClosers(await listActiveCloserOptions());
+    } catch {
+      setClosers([]);
+    }
   };
 
   const handleDealCreated = () => {
@@ -183,6 +188,23 @@ export default function DealListPage() {
         </div>
       )}
 
+      {/* Untagged deals can't pay a closer and don't show up in closer analytics —
+          surface them loudly with a one-click way to go clear them. */}
+      {stats && stats.unassigned > 0 && !filters.unassigned && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3">
+          <p className="text-sm text-red-800 dark:text-red-200">
+            <span className="font-bold">{stats.unassigned}</span>{" "}
+            {stats.unassigned === 1 ? "deal has" : "deals have"} <span className="font-bold">no owning closer</span> — commission and closer analytics can't attribute {stats.unassigned === 1 ? "it" : "them"}.
+          </p>
+          <button
+            onClick={() => setFilters((f) => ({ ...f, unassigned: true, assigned_closer_id: undefined }))}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700"
+          >
+            Show them
+          </button>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-6">
         <div className="relative flex-1 max-w-xs">
@@ -232,14 +254,23 @@ export default function DealListPage() {
           ))}
         </select>
         <select
-          value={filters.assigned_closer_id || ""}
-          onChange={(e) => setFilters((f) => ({ ...f, assigned_closer_id: e.target.value || undefined }))}
-          className="input-field w-40"
+          value={filters.unassigned ? UNASSIGNED : filters.assigned_closer_id || ""}
+          onChange={(e) => {
+            const v = e.target.value;
+            setFilters((f) => ({
+              ...f,
+              // The two are mutually exclusive — an unassigned deal has no closer to match.
+              unassigned: v === UNASSIGNED ? true : undefined,
+              assigned_closer_id: v && v !== UNASSIGNED ? v : undefined,
+            }));
+          }}
+          className="input-field w-44"
         >
           <option value="">All Closers</option>
+          <option value={UNASSIGNED}>⚠ Unassigned only</option>
           {closers.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.first_name} {c.last_name}
+            <option key={c.closerId} value={c.profileId}>
+              {c.name}
             </option>
           ))}
         </select>
@@ -382,9 +413,19 @@ export default function DealListPage() {
                         {marketConfig?.label || "-"}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-700 dark:text-gray-300">
-                        {deal.closer
-                          ? `${deal.closer.first_name || ""} ${deal.closer.last_name || ""}`.trim()
-                          : "-"}
+                        {deal.assigned_closer_id ? (
+                          `${deal.closer?.first_name || ""} ${deal.closer?.last_name || ""}`.trim() || "—"
+                        ) : (
+                          // Never let an untagged deal read as a blank cell — it
+                          // costs the closer their commission and skews analytics.
+                          <Link
+                            to={`/admin/deals/${deal.id}`}
+                            title="No closer owns this deal — commission and closer analytics can't attribute it. Click to assign."
+                            className="inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/60"
+                          >
+                            Unassigned
+                          </Link>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
                         {new Date(deal.created_at).toLocaleDateString()}

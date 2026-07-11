@@ -15,7 +15,8 @@ import {
 } from "@heroicons/react/24/outline";
 import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import supabase from "../../../supabase";
-import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission, reactivateDeal } from "../../../services/dealService";
+import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission, reactivateDeal, listActiveCloserOptions, reassignDealCloser, dealHasCommission, type CloserOption } from "../../../services/dealService";
+import { useUserProfile } from "../../../context/UserProfileContext";
 import { listCampaigns, type Campaign } from "../../../services/campaignService";
 import { getMatchingLenders } from "../../../services/lenderMatchingService";
 import { tagFundersForSubmission } from "../../../services/ghlService";
@@ -60,6 +61,17 @@ export default function DealDetailPage() {
   const [noteText, setNoteText] = useState("");
   const { activities, isLoading: isLoadingActivities, addActivity } = useActivityLog("customer", deal?.customer_id);
 
+  // ── Deal → closer attribution ──────────────────────────────────────────
+  // Arbitrary reassignment is an admin/super_admin power. A closer sees who owns
+  // the deal but cannot hand it to someone else. (Render-gate only — see the RLS
+  // note in the handler.) `employee` is intentionally excluded: useUserProfile's
+  // isAdmin folds employee in, which is too loose for changing who gets paid.
+  const { profile } = useUserProfile();
+  const canReassign = profile?.role === "admin" || profile?.role === "super_admin";
+  const [closerOptions, setCloserOptions] = useState<CloserOption[]>([]);
+  const [isReassigning, setIsReassigning] = useState(false);
+  const [reassignWarning, setReassignWarning] = useState<string | null>(null);
+
   useEffect(() => {
     if (id) fetchDeal();
   }, [id]);
@@ -67,6 +79,40 @@ export default function DealDetailPage() {
   useEffect(() => {
     listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
   }, []);
+
+  useEffect(() => {
+    if (!canReassign) return;
+    listActiveCloserOptions().then(setCloserOptions).catch(() => setCloserOptions([]));
+  }, [canReassign]);
+
+  // Reassign the owning closer. A commission row snapshots the closer + their
+  // split at funding time, so if one already exists we persist the new owner but
+  // LOUDLY flag that the payout still points at the previous closer — we never
+  // silently rewrite money.
+  const handleCloserChange = async (closerProfileId: string | null) => {
+    if (!id || !deal) return;
+    setIsReassigning(true);
+    setReassignWarning(null);
+    try {
+      const hadCommission = await dealHasCommission(id);
+      await reassignDealCloser(id, closerProfileId);
+      const name = closerProfileId
+        ? closerOptions.find((c) => c.profileId === closerProfileId)?.name ?? "the new closer"
+        : null;
+      if (hadCommission) {
+        setReassignWarning(
+          `Reassigned${name ? ` to ${name}` : " to Unassigned"}, but a commission was already created for the previous closer — it was NOT changed. Fix the payout in Commissions.`,
+        );
+      }
+      await fetchDeal();
+    } catch (e) {
+      setReassignWarning(
+        `Couldn't reassign this deal: ${e instanceof Error ? e.message : "unknown error"}`,
+      );
+    } finally {
+      setIsReassigning(false);
+    }
+  };
 
   const handleCampaignChange = async (campaignId: string) => {
     if (!id) return;
@@ -416,14 +462,42 @@ export default function DealDetailPage() {
                   <span className="text-teal-600 font-medium">{deal.renewal_count}</span>
                 </div>
               )}
-              <div className="flex justify-between">
-                <span className="text-gray-500">Closer:</span>
-                <span className="text-gray-900 dark:text-white">
-                  {deal.closer
-                    ? `${deal.closer.first_name || ""} ${deal.closer.last_name || ""}`.trim()
-                    : "Unassigned"}
-                </span>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Assigned closer:</span>
+                {canReassign ? (
+                  <select
+                    value={deal.assigned_closer_id ?? ""}
+                    onChange={(e) => handleCloserChange(e.target.value || null)}
+                    disabled={isReassigning}
+                    title="Who owns this deal — drives commission and closer analytics"
+                    className={`text-sm rounded-md border bg-white dark:bg-gray-900 text-gray-900 dark:text-white px-2 py-1 max-w-[55%] disabled:opacity-50 ${
+                      deal.assigned_closer_id
+                        ? "border-gray-300 dark:border-gray-600"
+                        : "border-red-400 dark:border-red-600"
+                    }`}
+                  >
+                    <option value="">Unassigned</option>
+                    {closerOptions.map((c) => (
+                      <option key={c.closerId} value={c.profileId}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : deal.closer ? (
+                  <span className="text-gray-900 dark:text-white">
+                    {`${deal.closer.first_name || ""} ${deal.closer.last_name || ""}`.trim()}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                    Unassigned
+                  </span>
+                )}
               </div>
+              {reassignWarning && (
+                <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-md px-2 py-1.5">
+                  {reassignWarning}
+                </p>
+              )}
             </div>
           </div>
 

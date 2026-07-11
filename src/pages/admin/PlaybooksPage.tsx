@@ -36,7 +36,7 @@ import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import PipelineFlow from "../../components/shared/PipelineFlow";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -177,7 +177,7 @@ export default function PlaybooksPage() {
   const [showApplication, setShowApplication] = useState(false);
   const { addActivity } = useActivityLog("customer", deal?.customer_id);
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
-  const { isSuperAdmin } = useUserProfile();
+  const { isSuperAdmin, profile, effectiveUserId } = useUserProfile();
   // Renewals are gated per closer: super_admin always, a closer by their flag,
   // anyone without a closer row keeps default access.
   const canRenew = isSuperAdmin || !hasCloser || renewalsEnabled;
@@ -269,6 +269,30 @@ export default function PlaybooksPage() {
   async function refreshDeal(id: string) {
     const res = await getDealById(id);
     if (res) setDeal(res.deal);
+  }
+
+  // ── Attribution from the closer's ONLY screen ──────────────────────────
+  // An unassigned deal pays nobody. Rather than send the closer to another page
+  // to fix it, the context bar claims it inline. A closer may ONLY claim an
+  // unassigned deal for themselves; handing a deal to a DIFFERENT closer is an
+  // admin/super_admin action. (Render-gate — see the RLS note in the report.)
+  const canReassignDeal = profile?.role === "admin" || profile?.role === "super_admin";
+  const isCloserRole = profile?.role === "closer";
+  const [closerOptions, setCloserOptions] = useState<CloserOption[]>([]);
+
+  useEffect(() => {
+    if (!canReassignDeal) return;
+    listActiveCloserOptions().then(setCloserOptions).catch(() => setCloserOptions([]));
+  }, [canReassignDeal]);
+
+  async function assignCloser(dealId: string, closerProfileId: string | null) {
+    try {
+      await reassignDealCloser(dealId, closerProfileId);
+      await refreshDeal(dealId);
+      notify(closerProfileId ? "Closer assigned — this deal is attributed." : "Closer cleared.");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Couldn't assign the closer.", "error");
+    }
   }
 
   // The DocumentChecklist persists doc_checklist itself; this just mirrors the
@@ -610,7 +634,21 @@ export default function PlaybooksPage() {
           </div>
           {showSticky && <StickyMoneyBar deal={deal} pipeline={active.pipeline} splits={splits} />}
           <div ref={contextBarRef}>
-            <DealContextBar deal={deal} pipeline={active.pipeline} onClear={() => setDeal(null)} onAdvance={advanceDeal} openCloseDeal={() => setShowCloseDeal(true)} openEditLead={() => setShowEditLead(true)} splits={splits} hasCloser={hasCloser} />
+            <DealContextBar
+              deal={deal}
+              pipeline={active.pipeline}
+              onClear={() => setDeal(null)}
+              onAdvance={advanceDeal}
+              openCloseDeal={() => setShowCloseDeal(true)}
+              openEditLead={() => setShowEditLead(true)}
+              splits={splits}
+              hasCloser={hasCloser}
+              canReassign={canReassignDeal}
+              closerOptions={closerOptions}
+              canClaim={isCloserRole && !!effectiveUserId}
+              onAssignCloser={(profileId) => assignCloser(deal.id, profileId)}
+              myProfileId={effectiveUserId}
+            />
           </div>
           {deal.merchant_reply_at && Date.now() - Date.parse(deal.merchant_reply_at) < 3 * 24 * 60 * 60 * 1000 && (
             <div className="mt-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-800 dark:text-emerald-200 flex flex-wrap items-center gap-1.5">
@@ -1194,9 +1232,13 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, openEditLead, splits, hasCloser }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean }) {
+function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
+  const closerName = deal.closer
+    ? `${deal.closer.first_name || ""} ${deal.closer.last_name || ""}`.trim()
+    : null;
+  const isMine = !!myProfileId && deal.assigned_closer_id === myProfileId;
   return (
     <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1219,6 +1261,54 @@ function DealContextBar({ deal, pipeline, onClear, onAdvance, openCloseDeal, ope
                 <span className="ml-1 text-amber-600 dark:text-amber-400">— add an email so you can send the application</span>
               )}
             </p>
+
+            {/* Who gets paid for this deal. Unassigned = nobody, so it's a red
+                chip with the fix RIGHT HERE — a closer never leaves this screen. */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {deal.assigned_closer_id ? (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                  title="The closer this deal is attributed to — drives commission and analytics"
+                >
+                  {isMine ? "Yours" : `Closer: ${closerName || "Assigned"}`}
+                </span>
+              ) : (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                  title="No closer owns this deal — it can't pay a commission and won't show in closer analytics"
+                >
+                  ⚠ Unassigned
+                </span>
+              )}
+
+              {/* A closer may CLAIM an unassigned deal — never take someone else's. */}
+              {!deal.assigned_closer_id && canClaim && (
+                <button
+                  onClick={() => onAssignCloser(myProfileId)}
+                  title="Attribute this deal to you — your commission and your numbers"
+                  className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-emerald-400 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-white dark:hover:bg-gray-700"
+                >
+                  This is mine
+                </button>
+              )}
+
+              {/* Admin/super: hand the deal to any active closer. */}
+              {canReassign && (
+                <select
+                  value={deal.assigned_closer_id ?? ""}
+                  onChange={(e) => onAssignCloser(e.target.value || null)}
+                  title="Assign or reassign the owning closer"
+                  className="text-[11px] rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 px-2 py-0.5"
+                >
+                  <option value="">Unassigned</option>
+                  {closerOptions.map((c) => (
+                    <option key={c.closerId} value={c.profileId}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">

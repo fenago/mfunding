@@ -61,7 +61,10 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
   if (filters?.deal_type) {
     query = query.eq("deal_type", filters.deal_type);
   }
-  if (filters?.assigned_closer_id) {
+  if (filters?.unassigned) {
+    // Nothing sits silently untagged: this is the "find the orphans" view.
+    query = query.is("assigned_closer_id", null);
+  } else if (filters?.assigned_closer_id) {
     query = query.eq("assigned_closer_id", filters.assigned_closer_id);
   }
   if (filters?.campaign_id) {
@@ -361,6 +364,92 @@ export async function reactivateDeal(id: string): Promise<Deal> {
   }
 
   return await updateDealStatus(id, target);
+}
+
+// ───────────────────────── Deal → closer attribution ─────────────────────────
+// deals.assigned_closer_id is a FK to **profiles(id)**, NOT closers(id). The
+// closers table is the comp record (splits, status) and links back via
+// closers.user_id → profiles.id. Every dropdown that assigns a closer must
+// therefore submit `user_id`, not `id` — sending closers.id is an FK violation
+// that silently fails the save. CloserOption carries both so callers can't
+// confuse them, and every attribution surface (deal list, deal detail, playbook)
+// loads its options from listActiveCloserOptions().
+
+export interface CloserOption {
+  /** closers.id — the comp record. Use as the React key, NEVER as the value. */
+  closerId: string;
+  /** profiles.id — THE value written to deals.assigned_closer_id. */
+  profileId: string;
+  name: string;
+}
+
+/** Active closers who can actually own a deal (i.e. have a linked profile). */
+export async function listActiveCloserOptions(): Promise<CloserOption[]> {
+  const { data, error } = await supabase
+    .from("closers")
+    .select("id, user_id, first_name, last_name")
+    .eq("status", "active")
+    .order("first_name", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching closer options:", error);
+    throw error;
+  }
+
+  return (data ?? [])
+    // A closer with no user_id has no profile to attribute a deal to — offering
+    // them would just produce an FK violation on save.
+    .filter((c): c is typeof c & { user_id: string } => !!c.user_id)
+    .map((c) => ({
+      closerId: c.id,
+      profileId: c.user_id,
+      name: `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed closer",
+    }));
+}
+
+/**
+ * Reassign (or clear) a deal's owning closer. Focused single-column update —
+ * deliberately NOT routed through updateDeal(), which would also re-run the
+ * funded-deal commission hook.
+ *
+ * @param closerProfileId profiles.id (CloserOption.profileId), or null to unassign.
+ *
+ * Commissions are NOT rewritten here. A commission row snapshots the closer and
+ * their split at funding time; silently repointing it would change what someone
+ * gets paid. Callers should warn via dealHasCommission() first and fix any
+ * existing row in Commissions.
+ */
+export async function reassignDealCloser(
+  dealId: string,
+  closerProfileId: string | null,
+): Promise<Deal> {
+  const rows = await mustWrite<Deal>(
+    "reassign deal closer",
+    supabase
+      .from("deals")
+      .update({
+        assigned_closer_id: closerProfileId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", dealId),
+  );
+  return rows[0];
+}
+
+/** True when a commission row already exists for this deal — reassigning after
+ *  this point leaves the payout pointed at the PREVIOUS closer. */
+export async function dealHasCommission(dealId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("commissions")
+    .select("id")
+    .eq("deal_id", dealId)
+    .limit(1);
+
+  if (error) {
+    console.error("Error checking deal commission:", error);
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
 }
 
 /**
@@ -1023,10 +1112,12 @@ export async function getDealStats(): Promise<{
   totalPipeline: number;
   totalFunded: number;
   commissionInPlay: number;
+  /** Deals with no owning closer — commission + closer analytics can't attribute these. */
+  unassigned: number;
 }> {
   const { data, error } = await supabase
     .from("deals")
-    .select("status, amount_requested, amount_funded, is_renewal");
+    .select("status, amount_requested, amount_funded, is_renewal, assigned_closer_id");
 
   if (error) {
     console.error("Error fetching deal stats:", error);
@@ -1038,9 +1129,11 @@ export async function getDealStats(): Promise<{
   let totalPipeline = 0;
   let totalFunded = 0;
   let commissionInPlay = 0;
+  let unassigned = 0;
 
   for (const deal of deals) {
     byStatus[deal.status] = (byStatus[deal.status] || 0) + 1;
+    if (!deal.assigned_closer_id) unassigned += 1;
     if (!["funded", "declined", "dead"].includes(deal.status)) {
       totalPipeline += deal.amount_requested || 0;
       // Potential gross commission on this open application (amount × points).
@@ -1057,5 +1150,6 @@ export async function getDealStats(): Promise<{
     totalPipeline,
     totalFunded,
     commissionInPlay,
+    unassigned,
   };
 }
