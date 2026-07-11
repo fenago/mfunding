@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Closer Code of Conduct — Do's & Don'ts
 ### [COMPANY] (Momentum Funding) · for 1099 closers
 

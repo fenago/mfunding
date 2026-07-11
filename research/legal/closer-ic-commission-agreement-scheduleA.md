@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Schedule A — Compensation Rate Sheet
 ### To accompany the Independent Contractor Commission Agreement (v2) between [COMPANY] ("Company") and [CLOSER NAME] ("Contractor")
 

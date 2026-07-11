@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Confidentiality & Non-Disclosure Agreement
 ### Between [COMPANY] ("Company") and [CLOSER NAME] ("Recipient")
 

@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # TCPA & Regulatory Compliance Acknowledgment + Script-Adherence Sign-Off
 ### [COMPANY] ("Company") · [CLOSER NAME] ("Contractor")
 

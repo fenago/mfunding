@@ -1,11 +1,7 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use (compliance/HR portions). Not legal advice.**
-
 # Closer Onboarding Checklist & Training SOP
 ### [COMPANY] (Momentum Funding) · New 1099 Closer
 
 **Closer:** [CLOSER NAME]  **Start date:** [DATE]  **Manager/owner:** [NAME]
-
-> This is an operational checklist. The legal documents it references still require attorney review before use.
 
 ## Phase 0 — Paperwork (Day 1, before any merchant contact)
 - [ ] Independent Contractor Commission Agreement (v2) signed

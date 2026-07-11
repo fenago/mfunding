@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Direct Deposit (ACH) Authorization — Commission Payments
 ### [COMPANY] (Momentum Funding) · 1099 Independent Contractor
 

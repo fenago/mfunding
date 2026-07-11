@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Clawback Policy Acknowledgment
 ### [COMPANY] ("Company") · [CLOSER NAME] ("Contractor")
 
