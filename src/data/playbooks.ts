@@ -14,7 +14,9 @@ export type StepTone = "leak" | "win" | "branch" | "speed";
 export interface StepField {
   key: string;
   label: string;
-  kind: "text" | "number" | "money" | "textarea";
+  // "date" renders as a native <input type="date"> and persists an ISO date
+  // string (YYYY-MM-DD) straight into a `date` column.
+  kind: "text" | "number" | "money" | "textarea" | "date";
   target: "customer" | "deal";
   column: string;
   placeholder?: string;
@@ -163,9 +165,13 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
       "Review what's in via Admin → Doc Review (/admin/documents) and the deal's Documents tab.",
       "Move Status → Docs Collected, then → Bank Statements as items arrive. The Sequence A email cadence chases anything missing.",
       "Statements in? Run the Internal AI underwriter below — it reads the statements and gives you the affordability verdict, revenue-padding read, red flags, and funder fit BEFORE you burn submissions.",
+      "ASK FOR THE DATE — don't leave it open-ended. Get them to name a day for the statements, then type it into “Statements promised by” below. That date is your chase clock: My Day flags the deal the moment it slips.",
     ],
     collect: ["Merchant Funding Application (completed + e-signed)", "Broker Compensation Disclosure (e-signed)", "Owner photo ID", "Voided business check", "Proof of business ownership", "Last 4 months bank statements (upload)"],
-    say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Upload your last 4 statements with the secure link in my email, or reply with photos.",
+    fields: [
+      { key: "stips_promised_by", label: "Statements promised by", kind: "date", target: "deal", column: "stips_promised_by", hint: "The day THEY committed to. If it passes with no statements, My Day surfaces this deal as an overdue chase." },
+    ],
+    say: "Quick follow-up [First Name] — I've got a funder reviewing files today and I'd love to get yours in. Upload your last 4 statements with the secure link in my email, or reply with photos. When do you think you can get those bank statements over to me — today, or tomorrow? … Perfect, I'll put you down for [day]. Can I count on that? I'll watch for them and follow up with you that afternoon if anything's missing.",
     route: { to: "/admin/documents", label: "Admin → Doc Review" },
     note: "TWO RAILS for docs coming back: (1) the Merchant Funding Application + Broker Compensation Disclosure return automatically e-signed via GHL Documents & Contracts — signed PDFs attach to the contact. (2) Bank statements + ID + voided check + proof of ownership arrive via the GHL 'Bank Statements & Documents Upload' form. PARTIAL IS FINE: the upload link keeps working and every new submission ADDS files to the same contact — get the e-sign + ID + voided check while they're on the phone, and Sequence A chases whatever's still missing. #1 FUNNEL LEAK — chase fast.",
   },
@@ -662,9 +668,13 @@ export const PLAYBOOKS: Playbook[] = [
         do: [
           "Email the secure upload link. Collect every current MCA agreement + 2–3 months of statements showing the debits.",
           "Track what's in via the deal's Documents tab / Admin → Doc Review; move Status → Positions Analysis. Tally every position, balance, and daily/weekly debit.",
+          "Get a DAY out of them for the statements and type it into “Statements promised by” below — a distressed merchant is the most likely to go quiet, and that date is what My Day chases on.",
         ],
         collect: ["Every current MCA agreement", "2–3 months bank statements showing the debits", "Hardship note (optional)"],
-        say: "I'll email you a secure link right now to upload your last few statements and advance agreements. A specialist will call within 24 hours with your plan. What's the best email for that link?",
+        fields: [
+          { key: "stips_promised_by", label: "Statements promised by", kind: "date", target: "deal", column: "stips_promised_by", hint: "The day THEY committed to. If it passes with no statements, My Day surfaces this deal as an overdue chase." },
+        ],
+        say: "I'll email you a secure link right now to upload your last few statements and advance agreements. A specialist will call within 24 hours with your plan. What's the best email for that link? … And when can you get those statements back to me? Can I count on [day]?",
         route: { to: "/admin/documents", label: "Admin → Doc Review" },
       },
       {
@@ -813,9 +823,13 @@ export const PLAYBOOKS: Playbook[] = [
           "The incumbent funder already has the original application and history, so a renewal typically needs just the 1–2 MOST RECENT months of statements to show current activity — not a fresh 4-month package.",
           "Send the secure 'Bank Statements & Documents Upload' link (same link as a new deal); move Status → Bank Statements as they arrive.",
           "Review what's in via Admin → Doc Review (/admin/documents). Sequence A chases anything missing, but there's far less to chase here.",
+          "Pin them to a day for the statements and type it into “Statements promised by” below — even on an easy renewal, an open-ended “I'll get to it” is how a 48-hour deal turns into a 2-week deal.",
         ],
         collect: ["Last 1–2 months bank statements (upload)", "Updated voided check ONLY if their bank changed"],
-        say: "Almost nothing to gather since you're already in our system — just your last month or two of statements so the funder sees current activity. I'll text you the secure link; upload takes about a minute.",
+        fields: [
+          { key: "stips_promised_by", label: "Statements promised by", kind: "date", target: "deal", column: "stips_promised_by", hint: "The day THEY committed to. If it passes with no statements, My Day surfaces this deal as an overdue chase." },
+        ],
+        say: "Almost nothing to gather since you're already in our system — just your last month or two of statements so the funder sees current activity. I'll email you the secure link; upload takes about a minute. When can you get those over to me? … Great, I'll put you down for [day] — can I count on that?",
         route: { to: "/admin/documents", label: "Admin → Doc Review" },
         note: "Way less friction than a new deal — the funder already holds the original file. Don't over-ask; requesting a full 4-month package on a renewal is the #1 way to stall an easy deal.",
       },

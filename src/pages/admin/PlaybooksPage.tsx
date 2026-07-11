@@ -2454,7 +2454,7 @@ function StepCard({
                     </label>
                     <input
                       className="input-field w-full disabled:opacity-60 disabled:cursor-not-allowed"
-                      type={f.kind === "number" || f.kind === "money" ? "number" : "text"}
+                      type={f.kind === "number" || f.kind === "money" ? "number" : f.kind === "date" ? "date" : "text"}
                       value={values[f.key] ?? ""}
                       onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
                       placeholder={f.placeholder}

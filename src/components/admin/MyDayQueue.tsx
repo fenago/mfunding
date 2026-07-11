@@ -35,6 +35,21 @@ function countdown(ms: number): string {
 const WARM = new Set(["warm", "warmer"]);
 const HOT = new Set(["hot", "hottest"]);
 
+// Stages where the stips are still OUTSTANDING — i.e. a "statements promised by"
+// date still means something. Once a deal is submitted (or past it), the promise
+// is moot and the signal switches itself off.
+const STIPS_PENDING = new Set(["qualifying", "application_sent", "docs_collected", "bank_statements", "positions_analysis"]);
+
+// Whole days between the merchant's promised date (a YYYY-MM-DD `date` column,
+// so it carries no timezone) and today. Positive = the promise is PAST due.
+function daysPastPromise(promised: string, now: number): number | null {
+  const [y, m, d] = promised.slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const due = new Date(y, m - 1, d).setHours(0, 0, 0, 0);
+  const today = new Date(now).setHours(0, 0, 0, 0);
+  return Math.round((today - due) / DAY);
+}
+
 // Ranking rules — the order here IS the priority (0 = most urgent). A deal that
 // matches none of these never enters the queue.
 function classify(deal: QueueDeal, now: number): Urgency | null {
@@ -81,6 +96,36 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   if (deal.status === "offer_received" && deal.offer_received_at && now - Date.parse(deal.offer_received_at) > DAY) {
     return { rank: 3, badge: "📄 Present offers", why: "Offer in hand 24h+ — get it in front of them.", since: deal.offer_received_at, tone: "amber" };
   }
+  // 3.5 / 4.5 / 6.9 — the merchant COMMITTED to a date for their bank statements
+  // (captured in the playbook's docs step) and the stips still aren't in. A broken
+  // promise is the loudest chase signal we have, so it outranks a generic "docs
+  // stale" card; a promise that's due today (or still ahead) rides softer.
+  if (deal.stips_promised_by && STIPS_PENDING.has(deal.status)) {
+    const late = daysPastPromise(deal.stips_promised_by, now);
+    if (late !== null) {
+      const since = new Date(deal.stips_promised_by.slice(0, 10) + "T12:00:00").toISOString();
+      if (late > 0) {
+        return {
+          rank: 3.5,
+          badge: `📎 Promised statements ${late} day${late === 1 ? "" : "s"} ago`,
+          why: "They committed to a date and it passed — call and hold them to it.",
+          since,
+          tone: "red",
+        };
+      }
+      if (late === 0) {
+        return { rank: 4.5, badge: "📎 Statements promised TODAY", why: "They said today — check in before the day gets away.", since, tone: "amber" };
+      }
+      return {
+        rank: 6.9,
+        badge: `📎 Statements due in ${-late} day${late === -1 ? "" : "s"}`,
+        why: "They committed to a date — nothing to chase yet, just keep it warm.",
+        since: deal.updated_at ?? deal.created_at ?? since,
+        tone: "blue",
+      };
+    }
+  }
+
   // 3 — a docs stage stalled 3+ days.
   const staleCol: Record<string, keyof QueueDeal> = {
     application_sent: "application_sent_at",
@@ -144,17 +189,17 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
 //   rank 1   💬 Funder replied                        → followup
 //   rank 2   💬 Merchant replied                      → followup
 //   rank 3   📄 Present offers                        → followup
+//   rank 3.5 📎 Promised statements N days ago        → followup  (broken commitment — loudest chase)
 //   rank 4   ⏰ Docs stale                            → followup  (chase the stips)
+//   rank 4.5 📎 Statements promised TODAY             → followup
 //   rank 5   📤 Nudge funders                         → followup
 //   rank 5.5 🌤️ Warm lead — call now                 → new       (never contacted)
 //   rank 6   🆕 New lead — make first contact         → new       (never contacted)
+//   rank 6.9 📎 Statements due in N days              → followup  (scheduled, soft)
 //   rank 7   ☎️/📋/✍️/📎/🤝/📝 active-stage nudges     → followup  (incl. "Collect the stips")
 //   rank 8   🔧 In progress                           → followup
 const NEW_WORK_RANKS = new Set([0, 5.5, 6]);
 
-// FUTURE: when deals.stips_promised_by lands, an item whose promised-by date has
-// passed is by definition follow-up work — add the signal here (and to classify's
-// rank/badge) and both the lane and its urgency follow automatically.
 function laneOf(u: Urgency): Lane {
   return NEW_WORK_RANKS.has(u.rank) ? "new" : "followup";
 }

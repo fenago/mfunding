@@ -73,6 +73,9 @@ export interface Deal {
   application_sent_at: string | null;
   docs_collected_at: string | null;
   bank_statements_at: string | null;
+  /** The date (YYYY-MM-DD) the merchant COMMITTED to sending their bank
+   * statements. Captured in the playbook's docs step; drives My Day's chase. */
+  stips_promised_by?: string | null;
   offer_accepted_at: string | null;
   nurture_at: string | null;
   merchant_reply_at?: string | null;
