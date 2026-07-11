@@ -14,7 +14,7 @@ This document summarizes the complete strategic planning conversation for MFundi
 
 ## BUSINESS IDENTITY
 
-- **Company:** MFunding (Florida C-Corp)
+- **Company (legal entity):** **Agentic Voice Inc.** d/b/a **MFunding.net | Momentum Funding** — this is the entity name that prints on every executed contract. It is stored as a setting (`platform_settings.closer_docs.company_legal_name`); change it there, not in code.
 - **Website:** mfunding.com
 - **Business model:** ISO (Independent Sales Organization) that brokers business funding products — primarily Merchant Cash Advances (initial focus), with expansion into term loans, SBA loans, lines of credit, and equipment financing
 - **What we do:** Connect small businesses needing capital with funders and lenders who provide working capital, advances, loans, and credit lines
