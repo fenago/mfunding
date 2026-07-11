@@ -736,6 +736,7 @@ function CampaignWizardModal({ onClose, onSaved }: { onClose: () => void; onSave
   const [weeks, setWeeks] = useState("");
   const [status, setStatus] = useState<CampaignStatus>("active");
   const [startDate, setStartDate] = useState(todayISO());
+  const [endDate, setEndDate] = useState("");
   const [notes, setNotes] = useState("");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -787,7 +788,7 @@ function CampaignWizardModal({ onClose, onSaved }: { onClose: () => void; onSave
         clicks: null,
         market: null,
         start_date: startDate || null,
-        end_date: null,
+        end_date: endDate || null,
         notes: notes.trim() || null,
         product_id: plan.product_id,
         pricing_snapshot: plan as unknown as Record<string, unknown>,
@@ -922,6 +923,10 @@ function CampaignWizardModal({ onClose, onSaved }: { onClose: () => void; onSave
                   <select className={input} value={status} onChange={(e) => setStatus(e.target.value as CampaignStatus)}>
                     {STATUSES.map((s) => <option key={s} value={s} className="capitalize">{s}</option>)}
                   </select>
+                </label>
+                <label className="col-span-2 text-sm text-gray-600 dark:text-gray-300">
+                  End date <span className="text-xs text-gray-400">(optional — leave blank for ongoing)</span>
+                  <input type="date" className={input} value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} />
                 </label>
               </div>
               <label className="block text-sm text-gray-600 dark:text-gray-300">
