@@ -16,6 +16,7 @@ import {
   ShoppingCartIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "@/context/UserProfileContext";
+import CampaignMonteCarlo from "@/components/admin/CampaignMonteCarlo";
 import {
   listCampaigns,
   saveCampaign,
@@ -377,6 +378,7 @@ function CampaignDetail({
       <PurchaseSummary campaign={c} />
 
       {m && <KpiGrid m={m} />}
+      <CampaignMonteCarlo campaign={c} metrics={m} />
       {m && <FunnelBars m={m} />}
 
       <TrackingSummary campaign={c} onEdit={onEdit} />
