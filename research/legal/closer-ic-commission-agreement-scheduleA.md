@@ -15,28 +15,29 @@
 - **Commission Pool** — the gross commission Company actually receives from a funder/lender on a funded deal (e.g., 8 points on a $50,000 advance = $4,000). Contractor's share is a percentage of this pool, not of the deal face amount.
 - **Company-Provided Lead** — any lead Company supplies (live transfer, purchased lead, inbound from Company marketing, round-robin assignment, or any contact already in Company's CRM).
 - **Self-Generated Lead** — a lead Contractor sources independently at Contractor's own cost and effort, with no Company lead spend, and logged as self-generated in the CRM **before** first contact.
-- **Renewal** — additional capital funded to a merchant Contractor previously funded, within the funded book.
+- **Renewal** — additional capital funded to a merchant Contractor previously funded on a **Self-Generated Lead**, within Contractor's self-generated funded book. Company-Provided Lead deals are not renewal-eligible for the Contractor.
 
 ## 2. Commission Splits
 | Deal type | Contractor share of Commission Pool | Company retains |
 |---|---|---|
-| Company-Provided Lead | **[COMMISSION %] (default 35%)** | balance |
+| Company-Provided Lead | **[COMMISSION %] (default 30%)** | balance |
 | Self-Generated Lead | **[COMMISSION %] (recommended 65%)** | balance |
-| Renewal on Contractor's funded book | **[COMMISSION %] (recommended 30%)** | balance |
+| Renewal on Contractor's self-generated funded book | **[COMMISSION %] (recommended 30%)** | balance |
 
-**Worked example (Company lead, 35%):** $50,000 advance × 8 points = $4,000 pool → Contractor $1,400, Company $2,600.
+**Worked example (Company lead, 30%):** $50,000 advance × 8 points = $4,000 pool → Contractor $1,200, Company $2,800.
 **Worked example (Self-gen, 65%):** $4,000 pool → Contractor $2,600, Company $1,400.
 
 > Renewals may instead be routed to a dedicated renewals specialist at Company's discretion, in which case the originating Contractor receives **[RENEWAL OVERRIDE % — e.g., 0–10%]**.
 
 ## 3. Performance Escalators (Company-Provided Leads only)
-Measured on Contractor's **total funded volume in a calendar month**:
+Measured on Contractor's **total funded volume in a calendar month** — base 30% escalating to 35% then 40%:
 | Monthly funded volume | Company-lead split rises to |
 |---|---|
-| $250,000+ | **45%** |
-| $500,000+ | **50%** |
+| Base (Momentum Standard) | **30%** |
+| $150,000+ (≈3 funded deals) | **35%** |
+| $300,000+ (≈6 funded deals) | **40%** |
 
-Escalators apply to deals funded **in the qualifying month** and reset monthly. Self-gen and renewal rates are unaffected by escalators.
+Escalators apply to deals funded **in the qualifying month** and reset monthly. Self-gen and renewal rates are unaffected by escalators. Thresholds are business terms set by Company management and may be adjusted.
 
 ## 4. Ramp-Up Draw (optional)
 - Recoverable draw of up to **$[DRAW AMOUNT — recommended $2,500]/month** for the first **[# — recommended 90] days**.

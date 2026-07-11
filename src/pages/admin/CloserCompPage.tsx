@@ -43,7 +43,7 @@ export default function CloserCompPage() {
   const [dealSize, setDealSize] = useState(50000);
   const [points, setPoints] = useState(8); // company commission points
   // Splits
-  const [companyLeadSplit, setCompanyLeadSplit] = useState(35); // % to closer on company leads (Momentum default)
+  const [companyLeadSplit, setCompanyLeadSplit] = useState(30); // % to closer on company leads (Momentum Standard)
   const [selfGenSplit, setSelfGenSplit] = useState(65); // % to closer on self-gen
   // Volume
   const [companyDeals, setCompanyDeals] = useState(6);
@@ -92,7 +92,7 @@ export default function CloserCompPage() {
           what="Your closer comp plan + an interactive payout calculator."
           value="Set splits/draws that attract closers while protecting your margin."
           howToUse="Slide splits, deal size, volume, and draw to see take-home vs what you keep."
-          howToRead="35% company-lead split is the Momentum default; you can set a different rate per closer in Admin → Closers."
+          howToRead="30% is the Momentum Standard company-lead split; you can set a different rate per closer in Admin → Closers."
         />
 
         {/* ============ CALCULATOR ============ */}
@@ -167,16 +167,17 @@ export default function CloserCompPage() {
               </motion.div>
             </div>
 
-            {/* 35% callout */}
+            {/* 30% Momentum Standard callout */}
             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex items-start gap-3">
               <ExclamationTriangleIcon className="w-6 h-6 text-amber-500 flex-shrink-0" />
               <div className="text-sm text-amber-800">
-                <p className="font-semibold mb-1">35% is Momentum's standard company-lead split</p>
+                <p className="font-semibold mb-1">30% is the Momentum Standard company-lead split</p>
                 <p>
-                  On <strong>company-provided leads</strong> the industry runs 30–50%. We start every closer at
-                  <strong> 35%</strong> — paired with a ramp-up draw and renewal upside — and you can raise an individual
-                  closer's rate in <strong>Admin → Closers</strong> as they prove out. Keep <strong>self-generated</strong>
-                  deals higher (60–70%); never use 35% there. Slide the values above to model the trade-off.
+                  On <strong>company-provided leads</strong> we start every closer at the <strong>Momentum Standard
+                  30%</strong> — paired with a ramp-up draw, performance escalators, and renewal upside — and you can raise
+                  an individual closer's rate in <strong>Admin → Closers</strong> as they prove out. Keep
+                  <strong> self-generated</strong> deals higher (60–70%); never use 30% there. Slide the values above to
+                  model the trade-off.
                 </p>
               </div>
             </div>
@@ -197,10 +198,10 @@ export default function CloserCompPage() {
           <Section title="How You Get Paid">
             <ul className="list-disc pl-5 space-y-1.5">
               <li><strong>Commission-only, 1099.</strong> No cap. You earn a share of the commission on every deal you fund.</li>
-              <li><strong>Company-provided leads:</strong> <strong>35%</strong> of the deal commission to you.</li>
+              <li><strong>Company-provided leads:</strong> <strong>30%</strong> of the deal commission to you — the Momentum Standard company-lead split.</li>
               <li><strong>Self-generated leads:</strong> <strong>65%</strong> of the deal commission to you.</li>
-              <li><strong>Renewals</strong> on your funded book: <strong>30%</strong> (or routed to a renewals specialist).</li>
-              <li>Example: $50K advance, 8-point commission = $4,000. Company lead → <strong>you earn $1,400</strong>. Self-gen → <strong>you earn $2,600</strong>.</li>
+              <li><strong>Renewals</strong> on your <strong>self-generated</strong> funded book: <strong>30%</strong> (or routed to a renewals specialist). Renewals apply to your self-gen deals only — company-lead deals are not renewal-eligible for the closer.</li>
+              <li>Example: $50K advance, 8-point commission = $4,000. Company lead → <strong>you earn $1,200</strong>. Self-gen → <strong>you earn $2,600</strong>.</li>
             </ul>
           </Section>
 
@@ -223,11 +224,14 @@ export default function CloserCompPage() {
           </Section>
 
           <Section title="Performance Escalators (grow your split)">
+            <p className="mb-2">Your company-lead split climbs with your monthly funded volume — <strong>30% → 35% → 40%</strong>:</p>
             <ul className="list-disc pl-5 space-y-1.5">
-              <li>Fund <strong>$250K+</strong> in a month → company-lead split rises to <strong>45%</strong>.</li>
-              <li>Fund <strong>$500K+</strong> in a month → company-lead split rises to <strong>50%</strong>.</li>
+              <li><strong>Tier 1 — Base:</strong> <strong>30%</strong> company-lead split (the Momentum Standard).</li>
+              <li><strong>Tier 2:</strong> fund <strong>$150K+</strong> in a month (≈3 funded deals) → company-lead split rises to <strong>35%</strong>.</li>
+              <li><strong>Tier 3:</strong> fund <strong>$300K+</strong> in a month (≈6 funded deals) → company-lead split rises to <strong>40%</strong>.</li>
               <li>Top performers get first pick of premium live transfers.</li>
             </ul>
+            <p className="mt-2 text-xs text-gray-500">Escalators apply to company-lead deals funded in the qualifying month and reset monthly; self-gen and renewal rates are unaffected. Thresholds are set by management and may be adjusted.</p>
           </Section>
 
           <Section title="What We Provide vs. What You Bring">
@@ -235,8 +239,8 @@ export default function CloserCompPage() {
               <div className="rounded-xl bg-mint-green/5 border border-mint-green/20 p-4">
                 <p className="font-semibold text-mint-green mb-2">We provide</p>
                 <ul className="text-sm space-y-1 text-gray-700">
-                  <li>• CRM (GoHighLevel) + dialer + local numbers</li>
-                  <li>• Company leads / live transfers (50% split)</li>
+                  <li>• VibeReach (the CRM) + dialer + local numbers</li>
+                  <li>• Company leads / live transfers (30% company-lead split)</li>
                   <li>• Funder network + submission support</li>
                   <li>• Scripts, training, doc-collection automation</li>
                 </ul>
@@ -263,8 +267,8 @@ export default function CloserCompPage() {
             <p className="font-semibold">The math that matters to you</p>
             <p className="text-white/80 text-sm mt-1">
               Close 8 funded deals/month (6 company + 2 self-gen) at $50K average and you take home about
-              <strong className="text-mint-green"> {fmt(4000 * 0.4 * 6 + 4000 * 0.65 * 2)}/month</strong> — commission-only, no cap,
-              paid 5 days after funding. Top closers do far more.
+              <strong className="text-mint-green"> {fmt(4000 * 0.3 * 6 + 4000 * 0.65 * 2)}/month</strong> — commission-only, no cap,
+              paid 5 days after funding. Hit the escalators and top closers do far more.
             </p>
           </div>
         </div>

@@ -97,7 +97,7 @@ export const ACCESS_GROUPS: AccessGroup[] = [
       { name: "Unit Economics (MCA)", roles: SUPER },
       { name: "Unit Economics (VCF)", roles: SUPER },
       { name: "Live Transfer ROI", roles: SUPER },
-      { name: "Closer Comp", roles: SUPER },
+      { name: "Closer Comp", roles: OPS },
       { name: "Business Model", roles: SUPER },
     ],
   },

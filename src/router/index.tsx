@@ -519,11 +519,10 @@ export const routes: RouteObject[] = [
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <UnitEconomicsVCFPage /> }],
               },
-              // Closer Comp Plan (super_admin only)
+              // Closer Comp Plan (all staff — closer + admin + super_admin)
               {
                 path: "closer-comp",
-                element: <SuperAdminProtectedRoute />,
-                children: [{ index: true, element: <CloserCompPage /> }],
+                element: <CloserCompPage />,
               },
               // Live Transfer ROI (super_admin only)
               {

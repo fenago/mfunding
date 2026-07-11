@@ -72,6 +72,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/documents", // Doc Review
   "/admin/todos", // Task Board
   "/admin/resources",
+  "/admin/closer-comp", // their comp offer sheet + payout calculator (OPS)
   "/admin/renewals", // shown per closers.renewals_enabled (handled in canSee)
   // Visible through the lens but still role-gated below — so an ADMIN who also
   // has a closer row (e.g. Carlos) gets these, while pure closers never do.
@@ -145,7 +146,7 @@ const navGroups: NavGroup[] = [
       { name: "Unit Economics (MCA)", path: "/admin/unit-economics", icon: CalculatorIcon, roles: SUPER },
       { name: "Unit Economics (VCF)", path: "/admin/unit-economics-vcf", icon: CalculatorIcon, roles: SUPER },
       { name: "Live Transfer ROI", path: "/admin/live-transfer-roi", icon: PhoneArrowUpRightIcon, roles: SUPER },
-      { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: SUPER },
+      { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: OPS },
       { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: SUPER },
     ],
   },
