@@ -1097,9 +1097,15 @@ async function createCommissionForFundedDeal(
 
     const isRenewal = !!deal.is_renewal;
     const commissionPoints = isRenewal ? RENEWAL_POINTS : NEW_DEAL_POINTS;
+    // Deno mirror of resolveCommissionLeadSource() in src/types/commissions.ts —
+    // KEEP IN SYNC (this file cannot import from src/). Explicit allow-list, not the
+    // old /self/i regex: `referral` is a COMPANY lead (the company's referral-partner
+    // program bore the acquisition cost, per Schedule A), and the regex would also
+    // have matched any future lead_source merely containing "self". IMPORTANT_TODO #2.
+    const SELF_GEN_LEAD_SOURCES = ["self_generated", "self_gen", "selfgen"];
     const leadSource: "company" | "self_generated" | "renewal" = isRenewal
       ? "renewal"
-      : deal.lead_source && /self/i.test(deal.lead_source)
+      : SELF_GEN_LEAD_SOURCES.includes((deal.lead_source ?? "").trim().toLowerCase())
         ? "self_generated"
         : "company";
 

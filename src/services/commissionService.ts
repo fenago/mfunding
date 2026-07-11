@@ -10,7 +10,7 @@ import type {
   MonthlyCommissionData,
   CommissionLeadSource,
 } from "../types/commissions";
-import { COMMISSION_DEFAULTS } from "../types/commissions";
+import { COMMISSION_DEFAULTS, resolveCommissionLeadSource } from "../types/commissions";
 
 interface CalculateCommissionParams {
   amountFunded: number;
@@ -438,19 +438,26 @@ export interface ProjectedCommission {
   updatedAt: string | null;
 }
 
-/** Which of the closer's three split rates applies to a given deal. */
+/**
+ * Which of the closer's three split rates applies to a given deal.
+ *
+ * MUST use resolveCommissionLeadSource — this is the DISPLAY path (My Earnings), and
+ * it previously disagreed with the two PAYOUT paths on `referral`, showing a closer
+ * 65% on money that was going to pay 30%. Display and payout now derive from the same
+ * classifier by construction, so they cannot drift apart again. (IMPORTANT_TODO #2)
+ */
 export function splitForDeal(
   closer: Pick<Closer, 'company_lead_split' | 'self_gen_split' | 'renewal_split'>,
   opts: { isRenewal?: boolean | null; leadSource?: string | null },
 ): { splitPercentage: number; splitLabel: string } {
-  if (opts.isRenewal) {
-    return { splitPercentage: Number(closer.renewal_split) || 0, splitLabel: 'Renewal split' };
+  switch (resolveCommissionLeadSource(opts)) {
+    case 'renewal':
+      return { splitPercentage: Number(closer.renewal_split) || 0, splitLabel: 'Renewal split' };
+    case 'self_generated':
+      return { splitPercentage: Number(closer.self_gen_split) || 0, splitLabel: 'Self-gen split' };
+    default:
+      return { splitPercentage: Number(closer.company_lead_split) || 0, splitLabel: 'Company-lead split' };
   }
-  const src = (opts.leadSource || '').toLowerCase();
-  if (src === 'self_generated' || src === 'self_gen' || src === 'referral') {
-    return { splitPercentage: Number(closer.self_gen_split) || 0, splitLabel: 'Self-gen split' };
-  }
-  return { splitPercentage: Number(closer.company_lead_split) || 0, splitLabel: 'Company-lead split' };
 }
 
 /**

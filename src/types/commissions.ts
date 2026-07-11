@@ -5,6 +5,39 @@ export type CloserStatus = 'active' | 'inactive' | 'terminated';
 export type SubISOStatus = 'pending' | 'active' | 'suspended' | 'terminated';
 export type CommissionLeadSource = 'company' | 'self_generated' | 'sub_iso' | 'renewal';
 
+/**
+ * THE ONE AUTHORITATIVE DEFINITION of which `deals.lead_source` values are
+ * self-generated. Everything not listed here is a COMPANY-provided lead.
+ *
+ * Why this exists: there used to be three classifiers that disagreed. The display
+ * path (splitForDeal) treated `referral` as self-gen (65%), while BOTH funded-payout
+ * paths (dealService + the ghl-webhook mirror) tested /self/i, which `referral` does
+ * not match — so they paid company (30%). A closer saw ~2.2x the money they were
+ * actually going to be paid. See IMPORTANT_TODO #2.
+ *
+ * Why `referral` is a COMPANY lead: Schedule A defines a Self-Generated Lead as one
+ * the Contractor "sources independently at Contractor's own cost and effort, with no
+ * Company lead spend." A referral comes from the COMPANY's referral-partner program
+ * (the company pays the partner), so the company bore the acquisition cost. It is a
+ * company lead and pays the company-lead split.
+ *
+ * The regex was also fragile — /self/i would match any future lead_source merely
+ * CONTAINING "self". This is an explicit allow-list instead.
+ *
+ * KEEP IN SYNC with the Deno copy in supabase/functions/ghl-webhook/index.ts
+ * (the funded-deal mirror), which cannot import from src/.
+ */
+export const SELF_GEN_LEAD_SOURCES: readonly string[] = ['self_generated', 'self_gen', 'selfgen'];
+
+/** Resolve a deal to the commission lead-source bucket that decides its split. */
+export function resolveCommissionLeadSource(
+  opts: { isRenewal?: boolean | null; leadSource?: string | null },
+): Exclude<CommissionLeadSource, 'sub_iso'> {
+  if (opts.isRenewal) return 'renewal';
+  const src = (opts.leadSource ?? '').trim().toLowerCase();
+  return SELF_GEN_LEAD_SOURCES.includes(src) ? 'self_generated' : 'company';
+}
+
 // Market type is defined in deals.ts — re-export for commission domain consumers
 export type { Market } from './deals';
 import type { Market } from './deals';

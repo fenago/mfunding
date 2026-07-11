@@ -57,9 +57,11 @@
 
 ## 🟠 HIGH
 
-- [ ] **2. Referral deals project a 65% closer split but will pay 30%.**
-  `splitForDeal` (`src/services/commissionService.ts:447`) maps `referral` → self-gen (65%), but both funded payout paths (`dealService.ts:497`, `ghl-webhook/index.ts:1102`) use `/self/i` regex → referral classifies as company (30%). Both live deals (Brideau MF-2026-0013, Marquee MF-2026-0015) are referrals — My Earnings shows ~2.2× the real payout.
-  **Fix:** decide which split referrals get, then make ONE classifier authoritative across all three call sites.
+- [x] **2. ✅ FIXED & DEPLOYED — Referral deals projected a 65% closer split but paid 30%.**
+  `splitForDeal` mapped `referral` → self-gen (65%), while both funded payout paths (`dealService`, `ghl-webhook`) tested `/self/i`, which `referral` does not match → company (30%). Both live deals (Brideau MF-2026-0013, Marquee MF-2026-0015) are referrals, so My Earnings showed ~2.2× the real payout.
+  **Resolution — `referral` is a COMPANY lead (30%).** Schedule A defines a Self-Generated Lead as one the Contractor *"sources independently at Contractor's own cost and effort, with no Company lead spend."* A referral comes from the **company's** referral-partner program (the company pays the partner), so the company bore the acquisition cost. The payout paths were right; the display was wrong.
+  **What changed:** one authoritative classifier — `resolveCommissionLeadSource()` + `SELF_GEN_LEAD_SOURCES` in `src/types/commissions.ts`. All three call sites now derive from it (`commissionService.splitForDeal`, `dealService`, and the Deno mirror in `ghl-webhook`, which carries a KEEP-IN-SYNC comment since it cannot import from `src/`). The fragile `/self/i` regex — which would also have matched any future lead_source merely *containing* "self" — is gone from every call site. Display and payout now derive from the same function **by construction**, so they cannot drift apart again.
+  **Applied:** frontend built + pushed; `ghl-webhook` **redeployed to Supabase (v30)** — the Deno payout path does not change until it is deployed.
 
 - [ ] **3. Campaign "spend" falls back to budget when actual spend is $0.**
   `spendOf = c.spent || c.budget` (`src/services/campaignService.ts:383`) — 0 is falsy, so a budgeted campaign with no logged spend reports the full budget as spent. Live: page shows $3,500 spent vs $1,000 actual (3.5×), poisoning Cost/funded and ROAS.
@@ -230,7 +232,8 @@
 
 - [x] **Closer split column DEFAULTS contradicted the signed contract.** `closers.self_gen_split` defaulted to **70** and `renewal_split` to **35**, while Schedule A says **65 / 30**. Every existing closer row was already correct (30/65/30), so it hadn't bitten — but **the next closer created without explicit splits would silently have received richer terms than the contract they signed.** Defaults now 65 / 30. *(migration `20260711_fix_closer_split_column_defaults.sql`)*
 - [x] **Stale legal entity hardcoded in code.** `platformService.ts` fell back to `"MFunding, LLC d/b/a Momentum Funding"` — for the string that **prints on every executed contract**. Entity is now **Agentic Voice Inc. d/b/a MFunding.net | Momentum Funding**, set in `platform_settings` and matched in code; no stale entity string remains in `src/`. *(Confirm against formation paperwork — see O6.)*
-- [x] **#30 — stale 35% comment in `commissionService.ts`.** Now states 30% (Momentum Standard) and explicitly notes the escalators are a written term the engine does **not** auto-apply (see #17).
+- [x] **#2 — the referral split mismatch (the real `commissionService` bug).** Display said 65%, payout paid 30%. Now ONE classifier (`resolveCommissionLeadSource`) drives display *and* both payout paths; `referral` = company lead (30%) per Schedule A's definition. Frontend pushed; `ghl-webhook` **redeployed (v30)**. Full detail in the HIGH section above. ✍️ *Signed off & approved by the owner, 2026-07-11.*
+- [x] **#30 — stale 35% comment in `commissionService.ts`.** Now states 30% (Momentum Standard) and explicitly notes the escalators are a written term the engine does **not** auto-apply (see #17). *(A comment fix only — #2 above was the actual defect in that file.)*
 - [x] **Escalator thresholds** corrected to **$250K/mo → 35%** and **$500K/mo → 40%** across the Comp page, the Offer Sheet, and Schedule A. *(They are still text-only — see #17.)*
 
 ---

@@ -13,7 +13,7 @@ import type {
 } from "../types/deals";
 import { calculateCommission, createCommission } from "./commissionService";
 import { syncDealToGHL } from "./ghlService";
-import { COMMISSION_DEFAULTS, expectedCommissionInPlay } from "../types/commissions";
+import { COMMISSION_DEFAULTS, expectedCommissionInPlay, resolveCommissionLeadSource } from "../types/commissions";
 import { PIPELINES } from "../data/pipelines";
 import type { CommissionLeadSource, Commission } from "../types/commissions";
 
@@ -492,11 +492,12 @@ export async function autoCreateCommissionForFundedDeal(deal: Deal): Promise<Com
   const commissionPoints = isRenewal
     ? COMMISSION_DEFAULTS.RENEWAL_POINTS
     : COMMISSION_DEFAULTS.NEW_DEAL_POINTS;
-  const leadSource: CommissionLeadSource = isRenewal
-    ? "renewal"
-    : deal.lead_source && /self/i.test(deal.lead_source)
-      ? "self_generated"
-      : "company";
+  // ONE classifier, shared with the display path (My Earnings) so a closer can never
+  // again be shown a split that differs from what actually pays. (IMPORTANT_TODO #2)
+  const leadSource: CommissionLeadSource = resolveCommissionLeadSource({
+    isRenewal,
+    leadSource: deal.lead_source,
+  });
 
   // Resolve the closer's own rate for this lead source (per-closer override).
   const closerSplitPercentage = closerSplits
