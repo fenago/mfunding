@@ -16,6 +16,7 @@
 // *italic*, `code`, [links](url).
 
 import type { ReactNode } from "react";
+import { headingSlugger } from "@/lib/markdownAnchors";
 
 /** Inline tokens: **bold**, *italic*, `code`, [text](url). Text nodes only. */
 function inline(text: string): ReactNode[] {
@@ -71,9 +72,17 @@ const isTableDivider = (l: string) => /^\|[\s:|-]+\|$/.test(l.trim());
 const cells = (l: string) =>
   l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 
-export default function MarkdownDoc({ source }: { source: string }) {
+export default function MarkdownDoc({
+  source,
+  anchors = false,
+}: {
+  source: string;
+  /** Give h2/h3 stable ids so a table of contents can link into the page. */
+  anchors?: boolean;
+}) {
   const lines = source.split("\n");
   const blocks: ReactNode[] = [];
+  const slug = headingSlugger();
   let i = 0;
 
   while (i < lines.length) {
@@ -108,10 +117,21 @@ export default function MarkdownDoc({ source }: { source: string }) {
         blocks.push(
           <h2
             key={i}
-            className="text-lg font-bold text-gray-900 dark:text-white mt-7 mb-2 pb-1 border-b border-gray-200 dark:border-gray-700"
+            id={anchors ? slug(text) : undefined}
+            className="text-lg font-bold text-gray-900 dark:text-white mt-7 mb-2 pb-1 border-b border-gray-200 dark:border-gray-700 scroll-mt-24"
           >
             {inline(text)}
           </h2>,
+        );
+      } else if (level === 3) {
+        blocks.push(
+          <h3
+            key={i}
+            id={anchors ? slug(text) : undefined}
+            className="text-sm font-semibold text-gray-600 dark:text-gray-300 mt-5 mb-2 scroll-mt-24"
+          >
+            {inline(text)}
+          </h3>,
         );
       } else {
         blocks.push(

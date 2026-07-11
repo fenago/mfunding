@@ -122,6 +122,8 @@ const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDet
 const CloserListPage = lazyWithReload(() => import("../pages/admin/closers/CloserListPage.tsx"));
 const MyEarningsPage = lazyWithReload(() => import("../pages/admin/closers/MyEarningsPage.tsx"));
 const CloserDetailPage = lazyWithReload(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
+const DocsIndexPage = lazyWithReload(() => import("../pages/admin/docs/DocsIndexPage.tsx"));
+const DocViewerPage = lazyWithReload(() => import("../pages/admin/docs/DocViewerPage.tsx"));
 const CloserDocsPage = lazyWithReload(() => import("../pages/admin/closers/CloserDocsPage.tsx"));
 const CloserDocViewerPage = lazyWithReload(() => import("../pages/admin/closers/CloserDocViewerPage.tsx"));
 const SubISOListPage = lazyWithReload(() => import("../pages/admin/sub-isos/SubISOListPage.tsx"));
@@ -372,6 +374,18 @@ export const routes: RouteObject[] = [
                 children: [
                   { index: true, element: <CloserDocsPage /> },
                   { path: ":slug", element: <CloserDocViewerPage /> },
+                ],
+              },
+              // Project documentation library (functional + technical).
+              // Every STAFF role reads it — closer, employee, admin, super_admin —
+              // so it carries no extra guard beyond AdminProtectedRoute, whose
+              // isStaff check is exactly that set. Merchants (role `user`) fail
+              // isStaff and are bounced to "/" before this renders.
+              {
+                path: "docs",
+                children: [
+                  { index: true, element: <DocsIndexPage /> },
+                  { path: ":set/:slug", element: <DocViewerPage /> },
                 ],
               },
               // Sub-ISOs (super_admin only)

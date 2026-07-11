@@ -38,6 +38,7 @@ import {
   RocketLaunchIcon,
   ArrowUpTrayIcon,
   AdjustmentsHorizontalIcon,
+  AcademicCapIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -72,6 +73,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/documents", // Doc Review
   "/admin/todos", // Task Board
   "/admin/resources",
+  "/admin/docs", // 📚 how the business + the product work — closers read the functional set
   "/admin/closer-comp", // their comp offer sheet + payout calculator (OPS)
   "/admin/closer-docs", // 📝 their onboarding paperwork — they have to read + e-sign it
   "/admin/my-earnings", // 💰 their own commissions + projected pipeline (OPS)
@@ -104,6 +106,9 @@ const navGroups: NavGroup[] = [
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
       { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
       { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
+      // Documentation — every staff role reads it. OPS here also covers `employee`,
+      // which is mapped onto the "admin" NavRole below.
+      { name: "Documentation", path: "/admin/docs", icon: AcademicCapIcon, roles: OPS },
     ],
   },
   {

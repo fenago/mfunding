@@ -118,6 +118,9 @@ export const ACCESS_GROUPS: AccessGroup[] = [
       { name: "Revenue Playbooks", roles: OPS },
       { name: "Pipeline Playbook", roles: OPS },
       { name: "Resources / Articles", roles: OPS },
+      // Every staff role — closer, employee, admin, super_admin. Merchants never
+      // reach /admin/*, so the docs are staff-only by construction.
+      { name: "Documentation", roles: OPS },
     ],
   },
   {
