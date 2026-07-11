@@ -49,9 +49,8 @@
 
 ## 🔴 CRITICAL
 
-- [ ] **1. Storage buckets leak every merchant's bank statements to any logged-in user.**
-  `storage.objects` policies for `customer-documents` and `lender-documents` gate only on `bucket_id` + authenticated role — no owner/tenant scoping. Any merchant or closer can LIST the bucket via the storage API and download (or DELETE) every other merchant's bank statements, IDs, and voided checks — full account + routing numbers. Bypasses the correctly-scoped `customer_documents` table RLS entirely.
-  **Fix:** scope SELECT/UPDATE/DELETE by ownership (path prefix keyed to owning customer/uid), or force all access through signed URLs minted by a role-checked edge function.
+- [x] **1. ✅ FIXED & APPLIED (Jul 11, Merchant Experience Wave 1) — Storage buckets leaked every merchant's bank statements to any logged-in user.**
+  All 8 permissive any-authenticated policies on `customer-documents` + `lender-documents` DROPPED (verified gone via pg_policies). Replaced with ownership-scoped policies: ops staff ALL, merchants SELECT+INSERT on own-customer objects only (no UPDATE/DELETE), closers scoped via `closer_owns_customer`; lender-documents is ops-only. Key subtlety handled: objects use TWO path conventions (`customer/<uuid>/…` from staff/edge code, `<uuid>/…` from the portal) — helper `public.storage_path_customer_id(text)` resolves both, so every existing code path keeps working. Migration: `supabase/migrations/20260711_storage_bucket_ownership_policies.sql`. *Remaining follow-through: auditor E2E "merchant A cannot read merchant B" test once the first real merchant login exists (tracked in `merchant_experience_final.md`).*
 
 ---
 
@@ -71,17 +70,15 @@
   `underwrite-deal/index.ts:619` legacy `maxAffordableAdvance = safeDailyDebitCapacity × TERM_BIZ_DAYS` with no factor divisor; the rating (`:863–878`) and persisted `metrics.max_affordable_advance` (`:791`) use it, while the correct factor-aware block (`affordabilityFor`, `:706`) is ignored for the rating. A "tight" deal rates "strong"; the UI and judge LLM anchor on the inflated number.
   **Fix:** rate off the factor-correct `affordability.max_advance_daily/weekly`, or divide the legacy figure by the factor rate.
 
-- [ ] **5a. `ghl-docs-status` — zero auth: any logged-in user can pull any contact's signed docs.**
-  `supabase/functions/ghl-docs-status/index.ts` goes `req.json()` → GHL fetch with no getUser/role/ownership check; returns e-signed documents (incl. public viewer links) + uploaded bank-statement files for any `ghl_contact_id`. Also absent from `config.toml` (verify_jwt unpinned).
-  **Fix:** add getUser + is_staff (or closer_owns_deal) gate; pin `verify_jwt = true`.
+- [x] **5a. ✅ FIXED & DEPLOYED (Jul 11, Wave 1) — `ghl-docs-status` had zero auth.**
+  Now Bearer→getUser gated: staff roles (closer/admin/super_admin) OR the merchant who owns the requested `ghl_contact_id` (customers.user_id = auth.uid(), crash-safe limit(1) lookup). `verify_jwt = true` pinned in config.toml. All 3 frontend callers use `supabase.functions.invoke` so the JWT flows automatically — no caller changes needed.
 
 - [ ] **5b. `recommend-lenders` — verify_jwt only, no role/ownership check.**
   `recommend-lenders/index.ts:218,231` reads deal + customer + underwriting via service role for any `deal_id` and returns AI financial summary. `deal-assistant` enforces `closer_owns_deal` for the same class of call — mirror it.
   **Fix:** getUser + is_admin_or_super OR closer_owns_deal.
 
-- [ ] **6. Duplicate customer email crashes the GHL contact webhook → infinite retry storm.**
-  `ghl-webhook/index.ts:740` `.eq("email", …).maybeSingle()` — email index is non-unique, two customers can share an email → "multiple rows" error → 500 → GHL retries forever, sync dead for that contact. Same fragile pattern at `:955` and in `handleInboundMessage`/`linkFunderByDomain`. Made easy by finding #10 (no dedupe in manual capture).
-  **Fix:** ordered `.limit(1).maybeSingle()` (or select-array take `[0]`); consider partial unique index on `customers.email`.
+- [x] **6. ✅ FIXED & DEPLOYED (Jul 11, Wave 1) — duplicate customer email could crash the GHL contact webhook into a retry storm.**
+  The 3 customer identity lookups (`ghl_contact_id` @:736, `email` @:740, `ghl_contact_id` @:955) are now `.order("created_at", asc).limit(1).maybeSingle()` — deterministic oldest-first, crash-proof on duplicates; the phone guard @:471 made deterministic too. ghl-webhook redeployed. *(The optional partial unique index on `customers.email` was NOT added — #11's capture-side dedupe reduces the need; revisit if duplicates appear.)*
 
 - [ ] **7. Intake-vs-webhook race can mint a second deal — and a second commission.**
   `ghl-webhook/index.ts:914–1005` matches deals only by `ghl_opportunity_id` (no unique index — verified); `live-transfer-intake` creates the deal (`:907`) before writing the opportunity id back (`:1004`). An `OpportunityCreate` webhook landing in that window auto-creates a SECOND deal (lead_source `ghl_other`, no campaign, no CALL-NOW clock). If funded, commission dedupe is per-deal so BOTH deals pay.
@@ -103,9 +100,8 @@
   `live-transfer-intake/index.ts:776–805` — concurrent/retried Synergy webhooks both pass the dedupe read → duplicate customer + deal + GHL opportunity + urgent alert. No unique constraint backs it (email index non-unique, no phone index).
   **Fix:** idempotency key from GHL message id, or unique key/advisory lock on normalized phone.
 
-- [ ] **11. PlaybookCapture "New lead" never dedupes by email/phone.**
-  `src/components/admin/PlaybookCapture.tsx:266–284` inserts a fresh customer on every `mode==="new"` submit; the open-deal guard (`:296`) only checks the just-created id. Duplicate person → duplicate email → trips finding #6.
-  **Fix:** match existing customer by normalized phone/email before insert (mirror intake's candidate lookup).
+- [x] **11. ✅ FIXED (Jul 11, Wave 1) — PlaybookCapture "New lead" now dedupes by email/phone.**
+  Before insert it looks up an existing customer by last-10-digits phone OR lower(email) (`.or()` + client-side exact re-match); reuses the existing id when found and shows a non-blocking amber "Matched existing customer <name>" notice. The open-deal guard runs against whichever id is used.
 
 - [ ] **12. Odd phone formats hard-reject real merchants silently.**
   `live-transfer-intake/index.ts:242–263, 723–766` — `isValidMerchantPhone` requires `^\+1\d{10}$`; extensions/intl/formatting quirks → NOTHING created, only a parse-failure alert. Related: `numFrom` (`:229`) garbles ranges — FICO "700-750" → 700750.
