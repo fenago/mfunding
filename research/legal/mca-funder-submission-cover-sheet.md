@@ -1,4 +1,4 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.** (Internal/funder-facing operational template.)
+(Internal/funder-facing operational template.)
 
 # Funder Submission Cover Sheet
 ### [COMPANY] (Momentum Funding) — ISO Submission Package

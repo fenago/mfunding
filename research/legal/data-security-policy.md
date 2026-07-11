@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Data Security & Privacy Policy
 ### [COMPANY] (Momentum Funding) — Internal
 

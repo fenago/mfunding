@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Master Compliance Policy — TCPA, DNC & Litigator-Scrub SOP
 ### [COMPANY] (Momentum Funding)
 

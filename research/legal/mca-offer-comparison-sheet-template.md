@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Offer Comparison Sheet
 ### [COMPANY] (Momentum Funding) — Merchant-Facing
 

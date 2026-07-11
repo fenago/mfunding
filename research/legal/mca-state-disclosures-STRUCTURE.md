@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # State Commercial-Financing Disclosures — STRUCTURE / PLACEHOLDER
 ### [COMPANY] (Momentum Funding)
 

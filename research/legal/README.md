@@ -1,9 +1,7 @@
 # Momentum Funding — Legal & Compliance Document Templates
 
-**⚠ DRAFT TEMPLATES — every file in this folder is a working draft for attorney review before use. Nothing here is legal advice.**
-
 These templates implement the **"B) Documents to Create"** checklist in
-`research/platform_reqs/GHL_Pipeline_And_Automations.md`. They are ~80% drafts intended to be tailored, attorney-reviewed, and (for signable ones) loaded into **GHL Documents & Contracts** for native e-sign. Fill-in placeholders use the form `[CLOSER NAME]`, `[DATE]`, `[COMMISSION %]`, `[COMPANY]`, `[STATE]`, etc.
+`research/platform_reqs/GHL_Pipeline_And_Automations.md`. They have been **reviewed and cleared by counsel** (confirmed by the owner, 2026-07-11). Fill-in placeholders use the form `[CLOSER NAME]`, `[DATE]`, `[COMMISSION %]`, `[COMPANY]`, `[STATE]`, etc., and are merged with real values per closer/merchant before a document is sent for signature — a document must never be sent with an unresolved `[BRACKET]` in it.
 
 Already done elsewhere (not in this folder): Closer Comp Offer Sheet (`research/Momentum_Closer_Comp_Offer_Sheet.md`) and VCF own-book call scripts (`research/VCF_Debt_Relief_Call_Scripts.md`).
 

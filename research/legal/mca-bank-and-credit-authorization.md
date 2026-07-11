@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Bank Verification & Credit Authorization (incl. Plaid Consent)
 ### [COMPANY] (Momentum Funding) — Merchant-Facing
 

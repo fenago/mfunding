@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Broker Compensation Disclosure
 ### [COMPANY] (Momentum Funding) — Merchant-Facing
 

@@ -116,31 +116,44 @@ export default function DealAssistant({ deal }: { deal: DealWithCustomer }) {
   }
 
   return (
-    <div className="mt-3 rounded-xl border border-ocean-blue/30 dark:border-ocean-blue/40 bg-gradient-to-br from-ocean-blue/5 to-mint-green/5 dark:from-ocean-blue/10 dark:to-mint-green/5 overflow-hidden">
-      {/* Header — always visible, states the deal it is scoped to. */}
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-ocean-blue/5 dark:hover:bg-ocean-blue/10 transition"
-      >
-        <span className="grid place-items-center w-7 h-7 rounded-lg bg-ocean-blue text-white shrink-0">
+    // FLOATS bottom-right so it is reachable from ANYWHERE on the page. It used to be
+    // inline under the deal context bar — i.e. only visible at the very top — which is
+    // exactly where a closer is NOT when they're deep in the funder cards on a call.
+    <div className="fixed bottom-28 right-6 z-40 flex flex-col items-end w-[min(26rem,calc(100vw-3rem))] print:hidden">
+      {!open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="flex items-center gap-2 rounded-full bg-ocean-blue px-4 py-2.5 text-sm font-semibold text-white shadow-lg hover:opacity-90"
+        >
           <SparklesIcon className="w-4 h-4" />
-        </span>
-        <span className="min-w-0">
-          <span className="block text-sm font-semibold text-midnight-blue dark:text-white">
-            Ask about this deal
-          </span>
-          <span className="block text-[11px] text-gray-500 dark:text-gray-400 truncate">
-            Knows everything on <b>{merchant}</b> — stips, funders, pipeline. On a call? Ask here.
-          </span>
-        </span>
-        <span className="ml-auto text-xs font-medium text-ocean-blue shrink-0">
-          {open ? "Hide" : "Open"}
-        </span>
-      </button>
+          Ask about this deal
+        </button>
+      )}
 
       {open && (
-        <div className="border-t border-ocean-blue/20 dark:border-ocean-blue/30 px-4 py-3">
+        <div className="w-full flex flex-col max-h-[70vh] rounded-xl border border-ocean-blue/30 dark:border-ocean-blue/40 bg-white dark:bg-gray-900 shadow-2xl overflow-hidden">
+          {/* Header — states the deal it is scoped to. Click to collapse to the pill. */}
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="w-full flex items-center gap-2 px-4 py-3 text-left shrink-0 bg-gradient-to-br from-ocean-blue/5 to-mint-green/5 dark:from-ocean-blue/10 dark:to-mint-green/5 hover:bg-ocean-blue/10 transition"
+          >
+            <span className="grid place-items-center w-7 h-7 rounded-lg bg-ocean-blue text-white shrink-0">
+              <SparklesIcon className="w-4 h-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold text-midnight-blue dark:text-white">
+                Ask about this deal
+              </span>
+              <span className="block text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                Knows everything on <b>{merchant}</b> — stips, funders, pipeline. On a call? Ask here.
+              </span>
+            </span>
+            <span className="ml-auto text-xs font-medium text-ocean-blue shrink-0">Hide</span>
+          </button>
+
+        <div className="border-t border-ocean-blue/20 dark:border-ocean-blue/30 px-4 py-3 overflow-y-auto">
           {/* Transcript */}
           <div
             ref={scrollRef}
@@ -229,6 +242,7 @@ export default function DealAssistant({ deal }: { deal: DealWithCustomer }) {
               <PaperAirplaneIcon className="w-4 h-4" />
             </button>
           </form>
+        </div>
         </div>
       )}
     </div>

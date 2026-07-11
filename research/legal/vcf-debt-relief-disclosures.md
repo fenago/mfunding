@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # Debt-Relief Program Disclosures
 ### [COMPANY] (Momentum Funding) — White-Label Debt-Relief Referral · Client-Facing
 

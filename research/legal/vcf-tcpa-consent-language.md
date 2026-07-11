@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # TCPA / Contact Consent Language — Debt-Relief (Distressed Merchant) Outreach
 ### [COMPANY] (Momentum Funding) — Client-Facing
 

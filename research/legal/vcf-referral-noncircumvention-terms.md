@@ -1,4 +1,4 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.** (Internal — defines [COMPANY]'s referral economics; subordinate to the executed VCF white-label/partner agreement.)
+(Internal — defines [COMPANY]'s referral economics; subordinate to the executed VCF white-label/partner agreement.)
 
 # VCF Referral & Non-Circumvention Terms
 ### [COMPANY] (Momentum Funding) — Internal / Partner-Facing

@@ -1,5 +1,3 @@
-**⚠ DRAFT TEMPLATE — for attorney review before use. Not legal advice.**
-
 # TCPA / Contact Consent Language — MCA & Business Funding
 ### [COMPANY] (Momentum Funding) — Merchant-Facing
 
