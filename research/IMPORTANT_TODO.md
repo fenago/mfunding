@@ -6,7 +6,9 @@
 
 > **Read the top 3 first.** #1 exposes every merchant's bank statements to any logged-in user. #2 means the payout numbers on screen today are ~2.2× wrong. #O1/#O2 are credential rotations only the owner can perform.
 
-**Sections:** [Owner Actions](#-owner-actions--only-the-owner-can-do-these) · [Critical](#-critical) · [High](#-high) · [Medium](#-medium) · [Low](#-low--polish) · [Verified solid](#-verified-solid-no-action--confirmed-correct-by-auditors) · [Fix order](#suggested-fix-order)
+**Sections:** [Owner Actions](#-owner-actions--only-the-owner-can-do-these) · [Critical](#-critical) · [High](#-high) · [Medium](#-medium) · [Low](#-low--polish) · [Doc-audit findings](#-documentation-audit--additional-findings-july-11-2026) · [Fixed](#-fixed-since-this-audit-was-written) · [Verified solid](#-verified-solid-no-action--confirmed-correct-by-auditors) · [Fix order](#suggested-fix-order)
+
+**How to use this file:** every open item is a `- [ ]` checkbox. Each carries **what** it is, **why it matters**, and **how to fix it**. Owner-only items are `O#`, code-audit findings are `#1–37`, documentation-audit findings are `D#`. Tick items off as they land.
 
 ---
 
@@ -193,6 +195,46 @@
 
 ---
 
+## 🟣 DOCUMENTATION AUDIT — additional findings (July 11, 2026)
+*Surfaced while writing `docs/technical/` and `docs/functional/` against the real code + live DB. Numbered `D#` so they don't collide with the code-audit findings above.*
+
+- [ ] **D1. 🔴 Five edge functions are LIVE, PUBLIC, and have no source in this repo.**
+  **What:** `process-document`, `rag-chat`, `gemini-chat`, `process-document-upload`, `rag-chat-pgvector`.
+  **Verified:** none of the five has a directory under `supabase/functions/`, yet all five are deployed and **ACTIVE**, and all five are pinned `verify_jwt = false` in `supabase/config.toml`.
+  **Why it matters:** these are internet-reachable URLs on your project that accept **anonymous** requests, and **nobody can review what they do** — the code exists only inside Supabase. At least two names imply they touch documents and an LLM (i.e. spend money and/or read data). This is the definition of unreviewable attack surface.
+  **Fix:**
+  1. Pull each function's live source: `mcp__supabase__get_edge_function` (or the dashboard) → read what it actually does.
+  2. If dead (likely — they look like leftovers from an earlier RAG/document prototype): **delete them** from Supabase and remove their `[functions.*]` blocks from `config.toml`.
+  3. If any is still used: commit its source to `supabase/functions/`, add auth (`verify_jwt = true` + an in-code role check, mirroring `analyze-campaign`), and redeploy.
+  **Verify:** `mcp__supabase__list_edge_functions` returns no ACTIVE function that lacks a repo directory.
+
+- [ ] **D2. 🟡 "Staff" has three different definitions that don't agree.**
+  **What:** SQL `is_staff()` = closer/admin/super_admin. SQL `is_ops_staff()` = admin/super_admin/**employee**. The client's `isStaff` is a third thing.
+  **Why it matters:** an `employee` passes one gate and fails another; a `closer` the reverse. Any policy written against the "wrong" helper silently grants or denies the wrong people. This is how permission bugs get shipped that nobody notices until data leaks.
+  **Fix:** decide the intended role sets, name them unambiguously (e.g. `is_sales_staff` vs `is_back_office_staff`), and make the client mirror the SQL exactly. Then re-check every policy that calls either helper.
+
+- [ ] **D3. 🟡 Plaid is documented and flagged, but NOT implemented.**
+  **What:** there is a `PLAID_ENABLED` feature flag and empty Plaid tables — but **no edge function, no SDK, no integration**. The real bank-statement path is: documents → Claude (the underwriter).
+  **Why it matters:** CLAUDE.md, the PRD and the marketing copy all promise "60-second Plaid bank verification." It does not exist. Anything that pitches it (or plans around it) is planning on a feature that isn't there.
+  **Fix:** either build it, or remove the flag + the claims from the docs/marketing so nobody sells it.
+
+- [ ] **D4. 🟢 The planning docs (CLAUDE.md, plan_goals.md, research/) are materially stale.**
+  **What (examples):** they describe a **9-stage funnel** (reality: **11 MCA stages** + an entire **8-stage VCF product line**); they say the closer split is 35% (reality: **30%, the Momentum Standard**); they say the AI is "Gemini 2.0" (reality: **Anthropic by default**, via a pluggable provider layer); they don't mention round-robin lead assignment, the escalators, or VCF.
+  **Why it matters:** these files are loaded as context at the start of every session — stale context produces wrong work. It already has.
+  **Fix:** treat **`docs/technical/` + `docs/functional/` as the source of truth** (they're derived from the code + live DB). Prune CLAUDE.md down to durable facts and point it at `docs/`. A full drift register is in `docs/technical/09-doc-drift.md`.
+
+---
+
+## ✅ FIXED since this audit was written
+*Kept here so the checklist stays honest about what has and hasn't been done.*
+
+- [x] **Closer split column DEFAULTS contradicted the signed contract.** `closers.self_gen_split` defaulted to **70** and `renewal_split` to **35**, while Schedule A says **65 / 30**. Every existing closer row was already correct (30/65/30), so it hadn't bitten — but **the next closer created without explicit splits would silently have received richer terms than the contract they signed.** Defaults now 65 / 30. *(migration `20260711_fix_closer_split_column_defaults.sql`)*
+- [x] **Stale legal entity hardcoded in code.** `platformService.ts` fell back to `"MFunding, LLC d/b/a Momentum Funding"` — for the string that **prints on every executed contract**. Entity is now **Agentic Voice Inc. d/b/a MFunding.net | Momentum Funding**, set in `platform_settings` and matched in code; no stale entity string remains in `src/`. *(Confirm against formation paperwork — see O6.)*
+- [x] **#30 — stale 35% comment in `commissionService.ts`.** Now states 30% (Momentum Standard) and explicitly notes the escalators are a written term the engine does **not** auto-apply (see #17).
+- [x] **Escalator thresholds** corrected to **$250K/mo → 35%** and **$500K/mo → 40%** across the Comp page, the Offer Sheet, and Schedule A. *(They are still text-only — see #17.)*
+
+---
+
 ## ✅ Verified solid (no action — confirmed correct by auditors)
 
 - Double-commission protection: partial unique index `commissions_deal_id_uniq` confirmed live in DB; both funding paths guarded and idempotent.
@@ -221,7 +263,8 @@
 **Code fixes:**
 1. **#1** storage buckets (PII exposure — every merchant's bank statements are readable by any logged-in user)
 2. **#2 + #3** referral split mismatch + spend fallback (money numbers on screen today are wrong)
-3. **#5a + #5b** the two ungated functions (quick — same pattern as existing gates)
+3. **#5a + #5b + D1** the ungated functions — the two that lack authz, plus the **five live public functions with no source in the repo**. Same sitting: gate them or delete them.
 4. **#4** affordability factor bug (before real underwriting volume)
 5. **#6 + #7 + #10** the dedupe/race cluster (before real-time lead volume ramps)
-6. **#17** the escalators are text-only — either implement the volume bump or reword the page. It is a written comp promise (30→35→40 at $250K/$500K/mo) that nothing enforces. **#O9** and **#18/#32** are the same class of "one concept, several answers" and are worth doing together.
+6. **#17** the escalators are text-only — either implement the volume bump or reword the page. It is a written comp promise (30→35→40 at $250K/$500K/mo), now also in a **signable Schedule A**, that nothing enforces. Do this before closers start signing.
+7. **#O9 + #18 + #32 + D2** the "one concept, several answers" cluster — closer identity (profiles vs closers), `funder_paid` bucketing, three definitions of "funded", three definitions of "staff". These are the same disease and are cheapest to cure together.
