@@ -927,6 +927,28 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     );
     if (!contactId) return; // can't tie a deal to a merchant without a contact
 
+    // ROBOT GUARD: never auto-create a deal for a lead-delivery mailbox contact
+    // (tagged lt-source — e.g. Synergy's Double-Verified sender). A GHL-side
+    // automation once created an opportunity on that contact and this mirror
+    // dutifully turned it into a junk deal (MF-2026-0017). The REAL lead's deal
+    // is created by live-transfer-intake from the parsed email instead.
+    {
+      const evtTags = ((evt.contact as Record<string, unknown> | undefined)?.tags ?? evt.tags ?? []) as unknown;
+      let isRobot = Array.isArray(evtTags) && evtTags.some((t) => String(t).toLowerCase() === "lt-source");
+      if (!isRobot) {
+        try {
+          const cfg = await getGhlConfig(db);
+          const cRes = await getContact(cfg, contactId);
+          const tags = (cRes.data?.contact?.tags ?? []) as string[];
+          isRobot = tags.some((t) => String(t).toLowerCase() === "lt-source");
+        } catch { /* best-effort — fall through to normal handling */ }
+      }
+      if (isRobot) {
+        await logEvent(db, evt, "OpportunityCreate", "skipped", "lt-source robot contact — no deal auto-created");
+        return;
+      }
+    }
+
     // Find the customer by ghl_contact_id; create a minimal one if missing
     // (a Contact event will enrich it later).
     let customerId: string | null = null;
