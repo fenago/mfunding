@@ -227,8 +227,8 @@ export default function CloserCompPage() {
             <p className="mb-2">Your company-lead split climbs with your monthly funded volume — <strong>30% → 35% → 40%</strong>:</p>
             <ul className="list-disc pl-5 space-y-1.5">
               <li><strong>Tier 1 — Base:</strong> <strong>30%</strong> company-lead split (the Momentum Standard).</li>
-              <li><strong>Tier 2:</strong> fund <strong>$150K+</strong> in a month (≈3 funded deals) → company-lead split rises to <strong>35%</strong>.</li>
-              <li><strong>Tier 3:</strong> fund <strong>$300K+</strong> in a month (≈6 funded deals) → company-lead split rises to <strong>40%</strong>.</li>
+              <li><strong>Tier 2:</strong> fund <strong>$250K+</strong> in a month (≈5 funded deals) → company-lead split rises to <strong>35%</strong>.</li>
+              <li><strong>Tier 3:</strong> fund <strong>$500K+</strong> in a month (≈10 funded deals) → company-lead split rises to <strong>40%</strong>.</li>
               <li>Top performers get first pick of premium live transfers.</li>
             </ul>
             <p className="mt-2 text-xs text-gray-500">Escalators apply to company-lead deals funded in the qualifying month and reset monthly; self-gen and renewal rates are unaffected. Thresholds are set by management and may be adjusted.</p>

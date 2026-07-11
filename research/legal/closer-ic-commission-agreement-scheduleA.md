@@ -34,8 +34,8 @@ Measured on Contractor's **total funded volume in a calendar month** — base 30
 | Monthly funded volume | Company-lead split rises to |
 |---|---|
 | Base (Momentum Standard) | **30%** |
-| $150,000+ (≈3 funded deals) | **35%** |
-| $300,000+ (≈6 funded deals) | **40%** |
+| $250,000+ (≈5 funded deals) | **35%** |
+| $500,000+ (≈10 funded deals) | **40%** |
 
 Escalators apply to deals funded **in the qualifying month** and reset monthly. Self-gen and renewal rates are unaffected by escalators. Thresholds are business terms set by Company management and may be adjusted.
 

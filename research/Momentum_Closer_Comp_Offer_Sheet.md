@@ -25,8 +25,8 @@ If a merchant defaults within the funder's clawback window (typically the first 
 ## Performance Escalators
 Your company-lead split climbs with monthly funded volume — **30% → 35% → 40%**:
 - **Base:** **30%** company-lead split (the Momentum Standard).
-- Fund **$150K+/mo** (≈3 funded deals) → company-lead split rises to **35%**.
-- Fund **$300K+/mo** (≈6 funded deals) → company-lead split rises to **40%**.
+- Fund **$250K+/mo** (≈5 funded deals) → company-lead split rises to **35%**.
+- Fund **$500K+/mo** (≈10 funded deals) → company-lead split rises to **40%**.
 - Top performers get first pick of premium live transfers.
 
 Escalators apply to company-lead deals funded in the qualifying month and reset monthly; self-gen and renewal rates are unaffected. Thresholds are set by management and may be adjusted.
