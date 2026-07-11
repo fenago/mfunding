@@ -69,7 +69,9 @@ function Rendered({ text }: { text: string }) {
 }
 
 export default function DealAssistant({ deal }: { deal: DealWithCustomer }) {
-  const [open, setOpen] = useState(false);
+  // Open by default: the whole point is that a closer with a deal loaded can just
+  // talk to it (often mid-call). Collapsed-by-default made it easy to miss entirely.
+  const [open, setOpen] = useState(true);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
