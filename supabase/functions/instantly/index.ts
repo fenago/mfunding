@@ -14,6 +14,10 @@
 //   "overview" (default) → { accounts, campaigns, key_present }
 //   "accounts"           → { accounts }
 //   "campaigns"          → { campaigns }
+//   "analytics"          → { ok, totals, campaigns[] } cold-email conversion
+//                          metrics (sent/opened/replied/leads/opportunities/
+//                          bounced). Degrades to a zero/warning shape (200) if
+//                          the analytics endpoints are unavailable.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -134,6 +138,80 @@ Deno.serve(async (req) => {
       const r = await instantlyGet(apiKey, "/campaigns?limit=100");
       if (!r.ok) return json({ error: r.error || "campaigns fetch failed" }, r.status || 502);
       return json({ campaigns: items(r.data) });
+    }
+    if (action === "analytics") {
+      // Real cold-email conversion metrics from the Instantly v2 analytics API.
+      //   aggregate rollup  : GET /campaigns/analytics/overview
+      //   per-campaign rows : GET /campaigns/analytics?ids=<uuid>&ids=<uuid>...
+      // The per-campaign endpoint returns [] unless explicit ids are passed
+      // (never-launched campaigns are filtered out), so fetch the campaign list
+      // first and query analytics for those ids. ids MUST be repeated params —
+      // a comma-joined list is rejected (400, each must be a valid uuid).
+      // Field mapping (verified against the live payload):
+      //   sent          <- emails_sent_count
+      //   opened        <- open_count
+      //   replied       <- reply_count
+      //   leads         <- new_leads_contacted_count  (present in both endpoints)
+      //   opportunities <- total_opportunities        (aggregate only)
+      //   bounced       <- bounced_count               (aggregate only)
+      const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : 0);
+
+      const [ov, camp] = await Promise.all([
+        instantlyGet(apiKey, "/campaigns/analytics/overview"),
+        instantlyGet(apiKey, "/campaigns?limit=100"),
+      ]);
+
+      // Per-campaign breakdown (best-effort; degrades independently).
+      const ids = (items(camp.data) as { id?: string }[])
+        .map((c) => c.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
+      let perCampaign: unknown[] = [];
+      let perErr: string | null = null;
+      if (ids.length) {
+        const qs = ids.map((id) => `ids=${encodeURIComponent(id)}`).join("&");
+        const ca = await instantlyGet(apiKey, `/campaigns/analytics?${qs}`);
+        if (ca.ok) perCampaign = items(ca.data);
+        else perErr = ca.error || `status ${ca.status}`;
+      }
+
+      // If the aggregate call failed AND we got no per-campaign rows, the
+      // analytics API is effectively unavailable — return zeros + a warning so
+      // the UI can show "no analytics yet" instead of erroring.
+      if (!ov.ok && !perCampaign.length) {
+        return json({
+          ok: true,
+          totals: { sent: 0, opened: 0, replied: 0, leads: 0, opportunities: 0, bounced: 0 },
+          campaigns: [],
+          warning: ov.error
+            ? `analytics unavailable: ${ov.error}`
+            : "no analytics available for this account yet",
+        });
+      }
+
+      const o = (ov.ok && ov.data && typeof ov.data === "object" ? ov.data : {}) as Record<string, unknown>;
+      const totals = {
+        sent: num(o.emails_sent_count),
+        opened: num(o.open_count),
+        replied: num(o.reply_count),
+        leads: num(o.new_leads_contacted_count),
+        opportunities: num(o.total_opportunities),
+        bounced: num(o.bounced_count),
+      };
+
+      const campaigns = (perCampaign as Record<string, unknown>[]).map((c) => ({
+        id: String(c.campaign_id ?? ""),
+        name: String(c.campaign_name ?? ""),
+        sent: num(c.emails_sent_count),
+        opened: num(c.open_count),
+        replied: num(c.reply_count),
+        leads: num(c.new_leads_contacted_count),
+      }));
+
+      // Surface a partial-degradation note without failing the whole call.
+      const warnings: string[] = [];
+      if (!ov.ok) warnings.push(`aggregate totals degraded: ${ov.error || "unavailable"}`);
+      if (perErr) warnings.push(`per-campaign analytics degraded: ${perErr}`);
+      return json({ ok: true, totals, campaigns, ...(warnings.length ? { warning: warnings.join("; ") } : {}) });
     }
     // default: overview — accounts + campaigns together (each degrades gracefully)
     const [acc, camp] = await Promise.all([
