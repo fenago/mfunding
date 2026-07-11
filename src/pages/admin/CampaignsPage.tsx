@@ -253,7 +253,7 @@ function CampaignCard({ campaign: c, metrics: m, onOpen }: { campaign: Campaign;
 
       {!prog.complete && (
         <div className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
-          <ExclamationTriangleIcon className="w-3.5 h-3.5" /> Setup incomplete · {prog.done}/{prog.total} done
+          <ExclamationTriangleIcon className="w-3.5 h-3.5" /> Setup incomplete · {prog.done}/{prog.total} done — open to finish ›
         </div>
       )}
 
