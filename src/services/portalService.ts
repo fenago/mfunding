@@ -494,6 +494,35 @@ export async function getMyMessages(userId: string): Promise<PortalMessage[]> {
   return (base.data ?? []) as unknown as PortalMessage[];
 }
 
+/** The merchant's full two-way conversation: messages they RECEIVED
+ *  (to_user_id) AND messages they SENT (from_user_id), newest first. Powers the
+ *  inbox thread (the bell + unread stay received-only via getMyMessages). Merchant
+ *  RLS permits reading own send/receive; if the sent-side read is blocked, we
+ *  degrade gracefully to received-only so the inbox never breaks. */
+export async function getMyConversation(userId: string): Promise<PortalMessage[]> {
+  const orFilter = `from_user_id.eq.${userId},to_user_id.eq.${userId}`;
+
+  // Prefer the richer select (notification metadata); fall back to base columns
+  // if kind/action_path don't exist yet; then to received-only if the sent-side
+  // read isn't permitted.
+  const rich = await supabase
+    .from("messages")
+    .select(`${PORTAL_MESSAGE_COLUMNS}, kind, action_path`)
+    .or(orFilter)
+    .order("created_at", { ascending: false });
+  if (!rich.error) return (rich.data ?? []) as unknown as PortalMessage[];
+
+  const base = await supabase
+    .from("messages")
+    .select(PORTAL_MESSAGE_COLUMNS)
+    .or(orFilter)
+    .order("created_at", { ascending: false });
+  if (!base.error) return (base.data ?? []) as unknown as PortalMessage[];
+
+  // Sent-side read blocked (or another error) — fall back to received-only.
+  return getMyMessages(userId);
+}
+
 export class SendMessageError extends Error {}
 
 /** Send a message from the merchant to their funding specialist. The RPC

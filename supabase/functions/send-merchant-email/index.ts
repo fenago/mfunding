@@ -75,7 +75,7 @@ Deno.serve(async (req) => {
 
   const { data: customer } = await db
     .from("customers")
-    .select("id, first_name, last_name, business_name, email, phone, ghl_contact_id")
+    .select("id, user_id, first_name, last_name, business_name, email, phone, ghl_contact_id")
     .eq("id", deal.customer_id).maybeSingle();
   if (!customer) return json({ error: "This deal has no merchant on file." }, 404);
 
@@ -132,5 +132,30 @@ Deno.serve(async (req) => {
     });
   } catch { /* best-effort */ }
 
-  return json({ ok: true, dealId, to: merchantEmail, messageId: sr.data?.messageId ?? null });
+  // In-portal parity (best-effort): if this merchant has claimed a portal
+  // profile, also drop a person-to-person messages row so the reply lands in
+  // their portal inbox/notification bell — kind + action_path NULL marks it as a
+  // human message (not a system notification). If they haven't claimed a portal
+  // (user_id null), this is a no-op and behavior is exactly as before.
+  let portalMessaged = false;
+  const merchantUserId = (customer.user_id as string | null) ?? null;
+  if (merchantUserId) {
+    try {
+      const { error: mErr } = await db.from("messages").insert({
+        from_user_id: caller.id,
+        to_user_id: merchantUserId,
+        subject,
+        body: bodyText,
+        related_customer_id: customer.id,
+        status: "unread",
+        // kind + action_path intentionally omitted (NULL) — this is a person message.
+      });
+      portalMessaged = !mErr;
+      if (mErr) console.warn("[send-merchant-email] portal message insert failed:", mErr.message);
+    } catch (e) {
+      console.warn("[send-merchant-email] portal message insert threw:", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return json({ ok: true, dealId, to: merchantEmail, messageId: sr.data?.messageId ?? null, portalMessaged });
 });

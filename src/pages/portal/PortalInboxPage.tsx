@@ -11,7 +11,7 @@ import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
 import { tryWrite } from "@/supabase/writes";
 import {
-  getMyMessages,
+  getMyConversation,
   getMyPortalDeals,
   sendMessageToAdvisor,
   SendMessageError,
@@ -56,7 +56,7 @@ export default function PortalInboxPage() {
     setIsLoading(true);
     try {
       const [msgs, dls] = await Promise.all([
-        getMyMessages(uid),
+        getMyConversation(uid),
         getMyPortalDeals(uid).catch(() => [] as PortalDeal[]),
       ]);
       setMessages(msgs);
@@ -70,7 +70,8 @@ export default function PortalInboxPage() {
   };
 
   const markRead = async (m: PortalMessage) => {
-    if (m.status !== "unread") return;
+    // Only inbound messages (addressed TO the merchant) are theirs to mark read.
+    if (m.to_user_id !== uid || m.status !== "unread") return;
     setMessages((prev) =>
       prev.map((x) => (x.id === m.id ? { ...x, status: "read" as const } : x)),
     );
@@ -139,7 +140,10 @@ export default function PortalInboxPage() {
     }
   };
 
-  const unreadCount = messages.filter((m) => m.status === "unread").length;
+  // Unread is received-only (outbound messages carry the closer's read state).
+  const unreadCount = messages.filter(
+    (m) => m.to_user_id === uid && m.status === "unread",
+  ).length;
 
   if (isLoading) {
     return (
@@ -228,6 +232,21 @@ export default function PortalInboxPage() {
       ) : (
         <div className="space-y-3">
           {messages.map((m) => {
+            // Merchant's own sent messages render as right-aligned "you" bubbles.
+            if (m.from_user_id === uid) {
+              return (
+                <div key={m.id} className="flex justify-end">
+                  <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-mint-green text-white px-4 py-2.5">
+                    <p className="text-[11px] font-semibold opacity-80">You</p>
+                    <p className="text-sm whitespace-pre-wrap">{m.body}</p>
+                    <p className="text-[11px] opacity-70 mt-1 text-right">
+                      {relativeTime(m.created_at)}
+                    </p>
+                  </div>
+                </div>
+              );
+            }
+
             const { Icon, isNotification, deepLink } = classifyMessage(m);
             const expanded = expandedId === m.id;
             const unread = m.status === "unread";
