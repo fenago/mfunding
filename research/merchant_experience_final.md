@@ -168,7 +168,7 @@ Phase 6 (renewal mode) — anytime after Phase 1
 - [x] Logged-out /portal/* → redirect to /auth/sign-in (with bounce-back location state) *(shipped Jul 11)*
 
 **Team lead:**
-- [ ] Subdomain `my.mfunding.net` (DNS + hosting alias + app awareness)
+- [x] Subdomain `my.mfunding.net` (DNS + hosting alias + app awareness) *(LIVE + validated Jul 11: owner fixed the GoDaddy CNAME (was accidentally pointed at GHL's sites.ludicrous.cloud) → mfunding.netlify.app; propagated ~50 min; Netlify cert renewed to cover my.mfunding.net; HTTP 200 serving the app; IS_PORTAL_HOST routes '/' → /portal on this host. Minor owner tidy-up: remove my.mfunding.net from GHL → Settings → Domains so GHL stops thinking it owns it)*
 - [x] Compliance review of all Wave 1 merchant-facing copy *(ALL PASS, Jul 11 — zero loan-language violations, timeframes hedged, no guarantees, terminal states respectful)*
 - [x] Review, commit, deploy Wave 1 *(commit 54a226e pushed Jul 11; edge functions + migrations already live; Netlify deploys from main)*
 
