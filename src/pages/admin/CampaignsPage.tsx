@@ -235,7 +235,7 @@ export default function CampaignsPage() {
 function CampaignCard({ campaign: c, metrics: m, onOpen }: { campaign: Campaign; metrics?: CampaignMetrics; onOpen: () => void }) {
   const meta = CHANNEL_META[c.channel] ?? CHANNEL_META.other;
   const prog = checklistProgress(c);
-  const spent = m?.spent ?? c.spent ?? c.budget ?? 0;
+  const spent = m?.spent ?? Number(c.spent ?? 0) ?? 0; // ACTUAL only — never c.budget (IMPORTANT_TODO #3)
   return (
     <button
       onClick={onOpen}

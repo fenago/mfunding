@@ -249,7 +249,9 @@ export function channelReminder(channel: CampaignChannel): string {
 
 // ── KPIs ─────────────────────────────────────────────────────────────────────
 export interface CampaignMetrics {
-  spent: number;
+  spent: number;                 // ACTUAL logged spend. Never the budget. See spendOf().
+  budget: number;                // PLANNED spend. Shown alongside, never substituted for spent.
+  spendLogged: boolean;          // false = no actual spend recorded yet -> cost metrics are null, not $0.
   leads: number;                 // attributed deals (leads that entered the pipeline)
   leadsPurchased: number | null; // leads we bought (from the campaign record)
   // Cumulative funnel counts (via stage timestamps).
@@ -351,10 +353,23 @@ function foldDeal(a: Acc, d: DealRow) {
   }
 }
 
-function metricsFromAcc(a: Acc, spent: number, leadsPurchased: number | null, clicks: number | null): CampaignMetrics {
+function metricsFromAcc(
+  a: Acc,
+  spent: number,
+  leadsPurchased: number | null,
+  clicks: number | null,
+  budget = 0,
+): CampaignMetrics {
   const estCommission = a.fundedAmount * COMMISSION_RATE;
+  // No actual spend logged => every cost-per-X is UNKNOWN, not zero. Returning $0
+  // would read as "these deals were free", which is how the budget-fallback bug got
+  // introduced in the first place (see IMPORTANT_TODO #3): someone swapped a $0 lie
+  // for a budget lie. Both are wrong; the honest answer is "—".
+  const paid = spent > 0;
   return {
     spent,
+    budget,
+    spendLogged: paid,
     leads: a.leads,
     leadsPurchased,
     contacted: a.contacted, qualified: a.qualified, appSent: a.appSent,
@@ -368,19 +383,32 @@ function metricsFromAcc(a: Acc, spent: number, leadsPurchased: number | null, cl
     applicationPct: rate(a.appSent, a.qualified),
     submissionPct: rate(a.submitted, a.appSent),
     closePct: rate(a.funded, a.leads),
-    acquisitionCpl: leadsPurchased && leadsPurchased > 0 ? spent / leadsPurchased : null,
-    costPerLead: div(spent, a.leads),
-    costPerContact: div(spent, a.contacted),
-    costPerFunded: div(spent, a.funded),
-    cpc: clicks && clicks > 0 ? spent / clicks : null,
+    acquisitionCpl: paid && leadsPurchased && leadsPurchased > 0 ? spent / leadsPurchased : null,
+    costPerLead: paid ? div(spent, a.leads) : null,
+    costPerContact: paid ? div(spent, a.contacted) : null,
+    costPerFunded: paid ? div(spent, a.funded) : null,
+    cpc: paid && clicks && clicks > 0 ? spent / clicks : null,
     avgDealSize: div(a.fundedAmount, a.funded),
     roas: div(estCommission, spent),
-    roiPct: spent > 0 ? ((estCommission - spent) / spent) * 100 : null,
+    roiPct: paid ? ((estCommission - spent) / spent) * 100 : null,
     speedToFirstTouchHours: a.touchCount > 0 ? Math.round((a.touchSumHours / a.touchCount) * 10) / 10 : null,
   };
 }
 
-const spendOf = (c: Campaign) => c.spent || c.budget || 0;
+/**
+ * ACTUAL spend only — never the budget. (IMPORTANT_TODO #3)
+ *
+ * This was `c.spent || c.budget || 0`. Because 0 is falsy, a campaign with a budget
+ * and no logged spend reported its ENTIRE BUDGET as spent: live, a campaign showed
+ * $3,500 "spent" against $1,000 actual — 3.5x — which then poisoned cost-per-funded,
+ * CPL, CPC, ROAS and ROI. Planned money is not spent money; substituting one for the
+ * other silently manufactures a cost basis that never left the bank account.
+ *
+ * Budget is still surfaced (CampaignMetrics.budget) so the UI can show planned vs
+ * actual side by side — it just may never stand in for actual.
+ */
+const spendOf = (c: Campaign) => Number(c.spent ?? 0) || 0;
+const budgetOf = (c: Campaign) => Number(c.budget ?? 0) || 0;
 
 export interface ChannelRollup {
   channel: CampaignChannel;
@@ -443,14 +471,20 @@ export async function getCampaignMetrics(campaigns: Campaign[]): Promise<Record<
 
   const out: Record<string, CampaignMetrics> = {};
   for (const c of campaigns) {
-    out[c.id] = metricsFromAcc(acc[c.id] ?? blankAcc(), spendOf(c), c.leads_purchased ?? null, c.clicks ?? null);
+    out[c.id] = metricsFromAcc(
+      acc[c.id] ?? blankAcc(),
+      spendOf(c),
+      c.leads_purchased ?? null,
+      c.clicks ?? null,
+      budgetOf(c),
+    );
   }
   return out;
 }
 
 /** Head-to-head rollup of the same KPIs aggregated per channel. */
 export function channelRollups(campaigns: Campaign[], metrics: Record<string, CampaignMetrics>): ChannelRollup[] {
-  const byChannel = new Map<CampaignChannel, { acc: Acc; spent: number; purchased: number; clicks: number; count: number }>();
+  const byChannel = new Map<CampaignChannel, { acc: Acc; spent: number; budget: number; purchased: number; clicks: number; count: number }>();
 
   // Re-fold from the per-campaign metrics we already have (no second query):
   // sum the raw counts and money, then recompute rates on the totals.
@@ -459,11 +493,12 @@ export function channelRollups(campaigns: Campaign[], metrics: Record<string, Ca
     if (!m) continue;
     let g = byChannel.get(c.channel);
     if (!g) {
-      g = { acc: blankAcc(), spent: 0, purchased: 0, clicks: 0, count: 0 };
+      g = { acc: blankAcc(), spent: 0, budget: 0, purchased: 0, clicks: 0, count: 0 };
       byChannel.set(c.channel, g);
     }
     g.count += 1;
     g.spent += m.spent;
+    g.budget += m.budget;
     g.purchased += m.leadsPurchased ?? 0;
     g.clicks += c.clicks ?? 0;
     const a = g.acc;
@@ -483,7 +518,7 @@ export function channelRollups(campaigns: Campaign[], metrics: Record<string, Ca
     .map(([channel, g]) => ({
       channel,
       campaigns: g.count,
-      metrics: metricsFromAcc(g.acc, g.spent, g.purchased || null, g.clicks || null),
+      metrics: metricsFromAcc(g.acc, g.spent, g.purchased || null, g.clicks || null, g.budget),
     }))
     .sort((a, b) => b.metrics.funded - a.metrics.funded || b.metrics.leads - a.metrics.leads);
 }
