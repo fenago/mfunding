@@ -128,8 +128,21 @@ Deno.serve(async (req) => {
       }
       const r = await updateContactCustomFields(cfg, contactId, [{ id: field.id, value: d.paydown_percentage ?? 0 }]);
       if (!r.ok) return json({ error: `GHL custom-field update failed (${r.status}): ${r.error}` }, 502);
-      await logActivity(db, "deal", dealId, "ghl_paydown_pushed", { paydown: d.paydown_percentage, field: field.name });
-      return json({ ok: true, pushed: true, paydown: d.paydown_percentage });
+
+      // Add the locked renewal-milestone tag (paydown-40/60/75/100) so GHL's
+      // "tag added" renewal workflow fires. Idempotent: we only ever add the tag
+      // for the CURRENT highest reached milestone — re-pushes re-add the same tag
+      // (a set no-op) and the GHL workflow has re-enrollment OFF, so no re-fire.
+      // Milestone thresholds mirror RENEWAL_MILESTONES in src/services/renewalService.ts.
+      let milestoneTag: string | null = null;
+      const pd = Number(d.paydown_percentage ?? 0);
+      const reached = [40, 60, 75, 100].filter((m) => pd >= m).pop() ?? null;
+      if (reached !== null) {
+        milestoneTag = `paydown-${reached}`;
+        try { await addContactTags(cfg, contactId, [milestoneTag]); } catch { /* best-effort */ }
+      }
+      await logActivity(db, "deal", dealId, "ghl_paydown_pushed", { paydown: d.paydown_percentage, field: field.name, tag: milestoneTag });
+      return json({ ok: true, pushed: true, paydown: d.paydown_percentage, tag: milestoneTag });
     }
 
     // Tag the deal's GHL contact submit:<funder> for each funder we submitted to,

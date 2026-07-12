@@ -38,6 +38,7 @@ import PipelineFlow from "../../../components/shared/PipelineFlow";
 import QualificationPanel from "../../../components/admin/QualificationPanel";
 import DealDocRequests from "../../../components/admin/DealDocRequests";
 import SendForSignature from "../../../components/admin/SendForSignature";
+import RenewalProjectionEditor from "../../../components/admin/RenewalProjectionEditor";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 // Required stip document types for a deal
@@ -235,6 +236,18 @@ export default function DealDetailPage() {
   const handleUpdateSubmissionStatus = async (submissionId: string, newStatus: SubmissionStatus) => {
     try {
       await updateSubmission(submissionId, { status: newStatus });
+      // When an offer is recorded, email the merchant (fire-and-forget; the
+      // portal message is created by triggers — this only adds the email). Never
+      // block the status update or surface a failure to staff.
+      if (newStatus === "offer_made" && id) {
+        try {
+          void supabase.functions.invoke("notify-merchant", {
+            body: { deal_id: id, kind: "offer_received" },
+          });
+        } catch (e) {
+          console.warn("[notify-merchant] offer_received failed (non-blocking):", e);
+        }
+      }
       fetchDeal();
     } catch {
       console.error("Failed to update submission");
@@ -676,6 +689,14 @@ export default function DealDetailPage() {
               />
             </div>
           </details>
+
+          {/* Renewal projection — drives the merchant portal paydown countdown.
+              MCA-family deals only (VCF debt-relief has no paydown-to-renewal). */}
+          {deal.deal_type !== "vcf" && (
+            <div className="md:col-span-2">
+              <RenewalProjectionEditor deal={deal} onSaved={fetchDeal} />
+            </div>
+          )}
 
           {/* Deal Notes */}
           {deal.notes && (

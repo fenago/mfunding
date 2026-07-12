@@ -69,6 +69,11 @@ verify_jwt = true
 [functions.send-merchant-email]
 verify_jwt = true
 
+# Sends the EMAIL half of a Wave 4 merchant notification (portal message half is a
+# DB trigger) + optional GHL tag — staff-only + closer-owns-deal enforced in code.
+[functions.notify-merchant]
+verify_jwt = true
+
 # Read-only: fetches ONE email's full body from GHL for the Step 7 "view email"
 # affordance — staff-only enforced in code.
 [functions.get-funder-email]

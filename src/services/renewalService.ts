@@ -46,12 +46,35 @@ export async function getRenewalCandidates(): Promise<RenewalCandidate[]> {
   return (data || []) as unknown as RenewalCandidate[];
 }
 
-/** Set a deal's paydown %. At >= 40% it also flips the deal to renewal_eligible. */
+/** Set a deal's paydown %. At >= 40% it also flips the deal to renewal_eligible.
+ *  When the new paydown crosses a renewal milestone (40/60/75/100) the DB trigger
+ *  writes the merchant's portal message; here we fire the matching EMAIL + GHL
+ *  paydown tag via the notify-merchant edge function (best-effort). */
 export async function updateDealPaydown(dealId: string, paydown: number): Promise<void> {
+  // Read the prior paydown so we only notify on an UPWARD milestone crossing.
+  const { data: before } = await supabase
+    .from("deals")
+    .select("paydown_percentage")
+    .eq("id", dealId)
+    .maybeSingle();
+  const prevMilestone = reachedMilestone(before?.paydown_percentage ?? null);
+
   const patch: Record<string, unknown> = { paydown_percentage: paydown };
   if (paydown >= 40) {
     patch.status = "renewal_eligible";
     patch.renewal_eligible_date = new Date().toISOString().slice(0, 10);
   }
   await mustWrite("update deal paydown", supabase.from("deals").update(patch).eq("id", dealId));
+
+  const newMilestone = reachedMilestone(paydown);
+  if (newMilestone !== null && newMilestone > (prevMilestone ?? 0)) {
+    // Best-effort: the portal message is already handled by the DB trigger.
+    try {
+      await supabase.functions.invoke("notify-merchant", {
+        body: { deal_id: dealId, kind: "renewal", milestone: newMilestone },
+      });
+    } catch {
+      /* email/tag is best-effort — never block the paydown update */
+    }
+  }
 }

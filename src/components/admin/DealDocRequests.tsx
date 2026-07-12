@@ -112,6 +112,18 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
           .update({ status, rejection_reason: rejection_reason ?? null })
           .eq("id", id),
       );
+      // On a rejection, email the merchant to re-upload (fire-and-forget; the
+      // portal message is created by triggers — this only adds the email). Never
+      // block the status change or surface a failure to staff.
+      if (status === "rejected") {
+        try {
+          void supabase.functions.invoke("notify-merchant", {
+            body: { deal_id: dealId, kind: "doc_rejected" },
+          });
+        } catch (e) {
+          console.warn("[notify-merchant] doc_rejected failed (non-blocking):", e);
+        }
+      }
       setRejectingId(null);
       setRejectReason("");
       await fetchRequests();

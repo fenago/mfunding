@@ -31,6 +31,48 @@ export interface PortalDeal {
    *  countdowns (see utils/deadline.ts). */
   stips_promised_by: string | null;
   paydown_percentage: number | null;
+
+  // ── Post-funding renewal fields (Wave 4) ──────────────────────────────────
+  // All optional: they are returned by get_my_portal_deals() once the backend
+  // ships them, and are simply undefined on the direct-select fallback (they are
+  // intentionally NOT in PORTAL_DEAL_COLUMNS — the tracker degrades gracefully
+  // to the paydown figure alone when they're missing). `estimated_paydown_pct`
+  // is RPC-computed and never a raw column.
+  //
+  // PRECEDENCE: a staff-entered paydown_percentage always wins over the
+  // estimate. Use displayedPaydown()/isPaydownEstimated() rather than reading
+  // these directly, so the rule stays in one place.
+  payback_amount?: number | null;
+  remittance_amount?: number | null;
+  remittance_frequency?: "daily" | "weekly" | null;
+  first_remittance_date?: string | null;
+  /** Staff-entered current balance; when present it's authoritative. */
+  balance_override?: number | null;
+  /** Freshness stamp for the paydown/balance figure ('YYYY-MM-DD' or ISO). */
+  balance_as_of?: string | null;
+  /** RPC convenience flag — true once the deal is renewal-eligible. */
+  renewal_eligible?: boolean | null;
+  /** RPC-computed estimate used only when paydown_percentage is null. */
+  estimated_paydown_pct?: number | null;
+  /** Server truth for whether the merchant has already expressed renewal
+   *  interest — authoritative load state for the one-tap button. */
+  renewal_interest_expressed?: boolean | null;
+  /** Row freshness fallback for the "as of" stamp when balance_as_of is null.
+   *  (Not returned by the RPC today; kept as a defensive fallback.) */
+  updated_at?: string | null;
+}
+
+/** The paydown % the UI should display: a staff-entered value wins; otherwise
+ *  the RPC estimate; otherwise null (show no figure). */
+export function displayedPaydown(deal: PortalDeal): number | null {
+  if (deal.paydown_percentage != null) return deal.paydown_percentage;
+  if (deal.estimated_paydown_pct != null) return deal.estimated_paydown_pct;
+  return null;
+}
+
+/** True when the displayed paydown is the estimate (no staff-entered value). */
+export function isPaydownEstimated(deal: PortalDeal): boolean {
+  return deal.paydown_percentage == null && deal.estimated_paydown_pct != null;
 }
 
 // The exact, safe column list — shared by the fallback select so it can never
@@ -350,6 +392,138 @@ export async function signMerchantDocument(
       data.message || "We couldn't record your signature. Please try again.",
     );
   }
+}
+
+// ── Renewal interest (express_renewal_interest) ──────────────────────────────
+// One-tap "I'm interested in additional capital" on the post-funding tracker.
+// The RPC is idempotent and auth-scoped; it returns whether interest was already
+// on file so the UI can show the acknowledged state without guessing.
+
+export interface RenewalInterestResult {
+  ok: boolean;
+  already_expressed: boolean;
+}
+
+export class RenewalInterestError extends Error {}
+
+/** Register the merchant's interest in additional capital for a funded deal.
+ *  Resolves with { ok, already_expressed }; throws RenewalInterestError with a
+ *  merchant-safe message if the RPC isn't deployed yet or a real error occurs. */
+export async function expressRenewalInterest(
+  dealId: string,
+): Promise<RenewalInterestResult> {
+  const { data, error } = await supabase.rpc("express_renewal_interest", {
+    p_deal_id: dealId,
+  });
+
+  if (!error) {
+    const row = (Array.isArray(data) ? data[0] : data) as
+      | { ok?: boolean; already_expressed?: boolean }
+      | null;
+    return {
+      ok: row?.ok ?? true,
+      already_expressed: row?.already_expressed ?? false,
+    };
+  }
+
+  if (isFunctionMissing(error)) {
+    throw new RenewalInterestError(
+      "We couldn't record that just yet — please reach out to your funding specialist and they'll take care of it.",
+    );
+  }
+  throw new RenewalInterestError(
+    error.message || "Something went wrong. Please try again in a moment.",
+  );
+}
+
+// ── Portal inbox: notifications + two-way messaging (messages table) ──────────
+// The merchant reads their own inbox (to_user_id = auth.uid()) via RLS, and can
+// compose/reply. Recipient resolution for a merchant send is server-side via the
+// `send_message_to_advisor` RPC (routes to the deal's assigned closer, with a
+// super-admin fallback, and writes the staff-visible activity_log marker). When
+// that RPC isn't deployed yet, sending surfaces a friendly fallback rather than
+// attempting an insert the merchant can't satisfy (to_user_id is NOT NULL and
+// the closer's id isn't merchant-visible).
+
+export interface PortalMessage {
+  id: string;
+  from_user_id: string;
+  to_user_id: string;
+  subject: string | null;
+  body: string;
+  status: "unread" | "read" | "archived";
+  read_at: string | null;
+  related_customer_id: string | null;
+  created_at: string;
+  /** Optional system-notification metadata — selected defensively. The confirmed
+   *  messages schema does NOT include these columns yet; when absent the inbox
+   *  falls back to a subject/body keyword heuristic (see the inbox page). If the
+   *  backend adds them later, they light up automatically. */
+  kind?: string | null;
+  action_path?: string | null;
+}
+
+const PORTAL_MESSAGE_COLUMNS =
+  "id, from_user_id, to_user_id, subject, body, status, read_at, " +
+  "related_customer_id, created_at";
+
+/** The signed-in merchant's inbox (own rows via RLS), newest first. Optional
+ *  notification columns (kind, action_path) are selected when present and
+ *  silently omitted otherwise so this keeps working before the backend adds
+ *  them. */
+export async function getMyMessages(userId: string): Promise<PortalMessage[]> {
+  // Try the richer select first (includes notification metadata); fall back to
+  // the base columns if those columns don't exist yet.
+  const rich = await supabase
+    .from("messages")
+    .select(`${PORTAL_MESSAGE_COLUMNS}, kind, action_path`)
+    .eq("to_user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (!rich.error) return (rich.data ?? []) as unknown as PortalMessage[];
+
+  const base = await supabase
+    .from("messages")
+    .select(PORTAL_MESSAGE_COLUMNS)
+    .eq("to_user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (base.error) {
+    throw new Error(base.error.message || "Failed to load your messages.");
+  }
+  return (base.data ?? []) as unknown as PortalMessage[];
+}
+
+export class SendMessageError extends Error {}
+
+/** Send a message from the merchant to their funding specialist. The RPC
+ *  resolves the recipient server-side (the deal's assigned closer, with a
+ *  super-admin fallback) and writes a staff-visible activity_log marker, so the
+ *  merchant never needs — and never sees — the closer's identity. `dealId` is
+ *  required: it's how the recipient is resolved and how the message is tied to a
+ *  funding request. Throws SendMessageError with a friendly message when the RPC
+ *  isn't deployed yet. */
+export async function sendMessageToAdvisor(params: {
+  dealId: string;
+  body: string;
+  subject?: string | null;
+}): Promise<void> {
+  const { error } = await supabase.rpc("send_message_to_advisor", {
+    p_deal_id: params.dealId,
+    p_subject: params.subject ?? null,
+    p_body: params.body,
+  });
+
+  if (!error) return;
+
+  if (isFunctionMissing(error)) {
+    throw new SendMessageError(
+      "Messaging is being set up — for anything urgent, please reach out to your funding specialist directly and they'll jump right on it.",
+    );
+  }
+  throw new SendMessageError(
+    error.message || "We couldn't send that just now. Please try again.",
+  );
 }
 
 /** Internal deal statuses that mean the file has reached (or passed) funder

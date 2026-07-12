@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Outlet, Link, useLocation } from "react-router-dom";
 import {
   HomeIcon,
@@ -10,6 +11,7 @@ import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import Logo from "../../components/ui/Logo";
 import SEO from "../../components/seo/SEO";
+import NotificationBell from "../../components/portal/NotificationBell";
 
 const navItems = [
   { name: "Dashboard", path: "/portal", icon: HomeIcon },
@@ -21,6 +23,26 @@ const navItems = [
 export default function PortalLayout() {
   const location = useLocation();
   const { profile } = useUserProfile();
+  const [unreadMessages, setUnreadMessages] = useState(0);
+
+  // Unread-message count for the Inbox nav badge. Re-checked on navigation so
+  // reading messages clears the badge without a full reload.
+  useEffect(() => {
+    const uid = profile?.id;
+    if (!uid) return;
+    let alive = true;
+    supabase
+      .from("messages")
+      .select("id", { count: "exact", head: true })
+      .eq("to_user_id", uid)
+      .eq("status", "unread")
+      .then(({ count }) => {
+        if (alive) setUnreadMessages(count || 0);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [profile?.id, location.pathname]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -49,17 +71,25 @@ export default function PortalLayout() {
               {navItems.map((item) => {
                 const Icon = item.icon;
                 const active = isActive(item.path);
+                const showBadge = item.path === "/portal/inbox" && unreadMessages > 0;
                 return (
                   <Link
                     key={item.path}
                     to={item.path}
-                    className={`flex items-center gap-2 text-sm font-medium transition-colors ${
+                    className={`relative flex items-center gap-2 text-sm font-medium transition-colors ${
                       active
                         ? "text-mint-green"
                         : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
                     }`}
                   >
-                    <Icon className="w-5 h-5" />
+                    <span className="relative">
+                      <Icon className="w-5 h-5" />
+                      {showBadge && (
+                        <span className="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 bg-mint-green text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                          {unreadMessages > 9 ? "9+" : unreadMessages}
+                        </span>
+                      )}
+                    </span>
                     <span className="hidden sm:inline">{item.name}</span>
                   </Link>
                 );
@@ -67,6 +97,7 @@ export default function PortalLayout() {
             </nav>
 
             <div className="flex items-center gap-4">
+              <NotificationBell userId={profile?.id} />
               <span className="text-sm text-gray-500 dark:text-gray-400 hidden sm:inline">
                 {profile?.email}
               </span>

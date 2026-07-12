@@ -97,6 +97,18 @@ export interface Deal {
   renewal_count: number;
   paydown_percentage: number;
   renewal_eligible_date: string | null;
+  // Renewal projection — drive the merchant portal's paydown countdown.
+  /** Total to be repaid (advance × factor). */
+  payback_amount?: number | null;
+  /** Amount debited each remittance. */
+  remittance_amount?: number | null;
+  /** How often the debit happens. */
+  remittance_frequency?: "daily" | "weekly" | null;
+  first_remittance_date?: string | null;
+  /** Staff-entered current balance; authoritative when set. */
+  balance_override?: number | null;
+  /** Freshness stamp auto-set to now() whenever balance_override is edited. */
+  balance_as_of?: string | null;
   // GHL
   ghl_contact_id: string | null;
   ghl_opportunity_id: string | null;
@@ -214,6 +226,13 @@ export interface UpdateDealData {
   is_renewal?: boolean;
   paydown_percentage?: number;
   renewal_eligible_date?: string;
+  // Renewal projection fields (drive the merchant paydown countdown).
+  payback_amount?: number | null;
+  remittance_amount?: number | null;
+  remittance_frequency?: "daily" | "weekly" | null;
+  first_remittance_date?: string | null;
+  balance_override?: number | null;
+  balance_as_of?: string | null;
   notes?: string;
   tags?: string[];
 }

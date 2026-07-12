@@ -192,16 +192,23 @@ Phase 6 (renewal mode) — anytime after Phase 1
 - [x] 5.1 `/portal/how-it-works` explainer *(accordion FAQ: who we are, journey steps, why each doc, honest MCA explainer ("purchase of future receivables, not a loan"), hedged timeframes, "you never pay us", credit-impact line, stips FAQ; linked from WelcomeOverlay + journey stage cards + nav)*
 - [x] Compliance review *(ALL PASS, 0 violations; seeded template 'mca-application-authorization' ruled ACTIVATE-OK on compliance grounds but stays DRAFT pending **owner/attorney sign-off** — activating it is an owner action)*
 
-### Wave 4 — IN PROGRESS (launched Jul 11, 2026)
-- [ ] 5.2 Notification producers (stage change, docs, submissions, offers, signatures, milestones → messages + email)
-- [ ] 5.3 Two-way inbox (merchant compose → closer)
-- [ ] 5.4 Email full parity for every actionable notification
-- [ ] 6.1 Renewal mode reusing paydown_percentage/renewalService//admin/renewals
-- [ ] 6.2 Remittance-schedule projection fields + "as of" freshness
-- [ ] 6.3 Renewal countdown UI (milestone unlocks + projected date)
-- [ ] 6.4 Sequence E ↔ portal one-voice linking
-- [ ] 6.5 One-tap renewal interest
-- [ ] 6.6 Post-funding document vault
+### Wave 4 — SHIPPED (Jul 11, 2026)
+- [x] 5.2 Notification producers *(live: `notify_merchant()` + `merchant_notice_copy()` (ONE canonical copy source, MCA + VCF variants) + origin-independent, exception-guarded triggers on deals (stage-step + renewal-milestone crossings), deal_doc_requests (requested/approved/rejected), deal_submissions (offer), merchant_documents (signature requested/completed). Messages carry `kind` + `action_path` columns (NULL = person message) for the notification center. `notify-merchant` edge fn (verify_jwt, staff-gated) = the EMAIL half + explicit GHL tagging. Notes: 'offer_received' covers submission events (stage message already announces submission — no double); silently no-ops for merchants without a claimed portal profile)*
+- [x] 5.3 Two-way inbox *(merchant compose/reply via `send_message_to_advisor(p_deal_id,p_subject,p_body)` RPC — resolves recipient to assigned closer (super_admin fallback) + writes the self-describing `merchant:reply — portal` activity_log note on the deal timeline (the staff surface; deliberately NO separate admin inbox). /portal/inbox reworked: chronological mobile-first list, deal picker when multi-deal, system notifications render with kind icons + deep links, person messages get reply UI)*
+- [x] **Notification center (owner requirement, added Jul 11)** *(NotificationBell in the portal header on every page: unread badge (status='unread'), dropdown/mobile sheet with kind icon + subject + relative time + action_path deep link (opening marks read), mark-all-read, "View all" → inbox. Classifier prefers kind/action_path columns, falls back to keyword heuristic pre-deploy)*
+- [x] 5.4 Email parity — PARTIAL by design *(emailed: doc_rejected + offer_received (admin-UI fire-and-forget notify-merchant hooks), renewal milestones (renewalService → notify-merchant), signature_requested (send-merchant-document already emails), invites (merchant-invite). Portal-message-only this wave: stage changes, doc_requested/approved, signature_completed — **deferred gap**)*
+- [x] 6.1 Renewal mode *(funded/renewal_eligible MCA deals flip the dashboard to PaydownTracker; VCF excluded; journey "Growing with us" step augmented, not duplicated)*
+- [x] 6.2 Remittance projection *(deals + admin RenewalProjectionEditor: payback_amount, remittance_amount, remittance_frequency daily|weekly, first_remittance_date, balance_override (auto-stamps balance_as_of), last_renewal_milestone. `estimate_paydown()`: balance_override beats schedule estimate beats nothing; staff `paydown_percentage` beats all for display. Verified: $500/day on $65k over 30d = 16.15%; override 32.5k/65k = 50.00%. Always-visible "As of {date}" freshness)*
+- [x] 6.3 Renewal countdown UI *(progress bar w/ 40/60/75/100 unlock checkpoints, "≈ N days until you may qualify for additional capital (estimated — around {date})" business-day projection, graceful no-projection degradation)*
+- [x] 6.4 Sequence E one-voice *(backend: `paydown-40/60/75/100` GHL tags added in ghl-sync "paydown" action — single owner, idempotent (verified fires once), thresholds mirror RENEWAL_MILESTONES; identical milestone language in portal message + email + drafted GHL copy. **Builder action pending**: wire MCA 12 into four tag-triggered branches (re-enrollment OFF) using the w4-ghl drafts — with compliance amendments: 75% draft MUST say "typically on more favorable terms" (not "on our most favorable terms"); 100% draft adopted as "You may qualify for fresh working capital. Reach out to your advisor whenever you're ready" (matches canonical copy))*
+- [x] 6.5 One-tap renewal interest *(`express_renewal_interest(p_deal_id)` — owner-gated, idempotent, `renewal:interest` activity note; `get_my_portal_deals()` returns `renewal_interest_expressed` for server-truth button state. GHL tag on interest **deferred** — merchant can't call the staff-only edge fn; activity note is the staff surface)*
+- [x] 6.6 Post-funding vault *(PostFundingVault accordion on funded deals: signed agreements, uploaded docs, funding summary)*
+- [x] Compliance review *(9/9 files PASS; GHL drafts a/b/c PASS, d + e amended per above)*
+
+**Wave 4 deferred gaps (tracked, deliberate):**
+- [ ] Estimated-only paydown milestone crossings don't fire notifications (trigger needs staff paydown update) — needs a scheduled recompute (pg_cron/edge cron)
+- [ ] Email for stage changes, doc_requested/approved, signature_completed (portal-message-only today)
+- [ ] GHL tag on express_renewal_interest (activity_log note only today)
 
 ### Close
 - [ ] Full auditor pass on the merchant surface (bucket, RLS, RPC column-safety, cross-merchant isolation, e-sign ledger) **before real merchants get invites**

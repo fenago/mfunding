@@ -19,6 +19,17 @@ import ActionNeededHero from "../../components/portal/ActionNeededHero";
 import SubmissionsCard from "../../components/portal/SubmissionsCard";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
 import WelcomeOverlay from "../../components/portal/WelcomeOverlay";
+import PaydownTracker from "../../components/portal/PaydownTracker";
+import PostFundingVault from "../../components/portal/PostFundingVault";
+
+/** MCA-family deal that has funded — the point the dashboard flips into the
+ *  renewal/paydown tracker (MCA-only; VCF keeps its own journey). */
+function isFundedMca(deal: PortalDeal): boolean {
+  return (
+    deal.deal_type !== "vcf" &&
+    (deal.status === "funded" || deal.status === "renewal_eligible")
+  );
+}
 
 /** Merchant's part done vs. total for one deal's document checklist. */
 function docProgressFor(requests: DocRequest[], dealId: string): { done: number; total: number } {
@@ -32,6 +43,7 @@ function docProgressFor(requests: DocRequest[], dealId: string): { done: number;
 export default function PortalDashboardPage() {
   const { session } = useSession();
   const [firstName, setFirstName] = useState<string | null>(null);
+  const [customerId, setCustomerId] = useState<string | null>(null);
   const [deals, setDeals] = useState<PortalDeal[]>([]);
   const [docRequests, setDocRequests] = useState<DocRequest[]>([]);
   const [signDocuments, setSignDocuments] = useState<MerchantDocument[]>([]);
@@ -56,6 +68,7 @@ export default function PortalDashboardPage() {
 
       if (customer) {
         setFirstName(customer.first_name ?? null);
+        setCustomerId(customer.id);
         const { count: docCount } = await supabase
           .from("customer_documents")
           .select("id", { count: "exact", head: true })
@@ -93,7 +106,10 @@ export default function PortalDashboardPage() {
       // Authoritative count of reviewable offers, for the Action-Needed hero.
       try {
         const eligible = loadedDeals.filter(
-          (d) => d.deal_type !== "vcf" && SUBMITTED_OR_PAST_STATUSES.has(d.status),
+          (d) =>
+            d.deal_type !== "vcf" &&
+            SUBMITTED_OR_PAST_STATUSES.has(d.status) &&
+            !isFundedMca(d), // funded deals show the tracker, not offer nudges
         );
         const subs = await Promise.all(
           eligible.map((d) => getMyDealSubmissions(d.id).catch(() => [])),
@@ -187,19 +203,29 @@ export default function PortalDashboardPage() {
                 </div>
                 <MerchantJourney deal={d} docProgress={docProgressFor(docRequests, d.id)} />
 
-                {/* Funder submissions — only for MCA-family deals at/past submission */}
-                {d.deal_type !== "vcf" && SUBMITTED_OR_PAST_STATUSES.has(d.status) && (
-                  <div className="mt-4">
-                    <SubmissionsCard dealId={d.id} />
-                  </div>
-                )}
-
-                {/* Funded celebration */}
-                {d.status === "funded" && d.amount_funded != null && (
-                  <div className="mt-4 bg-gradient-to-r from-mint-green to-teal-500 rounded-xl p-5 text-white">
-                    <p className="text-sm font-medium">Funding complete</p>
-                    <p className="text-3xl font-bold mt-1">${d.amount_funded.toLocaleString()}</p>
-                  </div>
+                {isFundedMca(d) ? (
+                  <>
+                    {/* Post-funding: paydown tracker replaces the celebration card
+                        and becomes the renewal-communication anchor. */}
+                    <div className="mt-4">
+                      <PaydownTracker deal={d} />
+                    </div>
+                    <PostFundingVault
+                      deal={d}
+                      customerId={customerId}
+                      signedDocuments={signDocuments}
+                    />
+                  </>
+                ) : (
+                  <>
+                    {/* Funder submissions — MCA-family deals at/past submission,
+                        before funding (once funded, the tracker takes over). */}
+                    {d.deal_type !== "vcf" && SUBMITTED_OR_PAST_STATUSES.has(d.status) && (
+                      <div className="mt-4">
+                        <SubmissionsCard dealId={d.id} />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );
