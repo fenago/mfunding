@@ -74,7 +74,19 @@ Deno.serve(async (req) => {
     );
     const documentsError = docsRes.ok ? null : `docs list failed (${docsRes.status}): ${docsRes.error ?? ""}`;
 
+    // The merchant flow (Revenue Playbook Rail 1) e-signs the application +
+    // Broker Compensation Disclosure (+ the funder agreement at offer stage).
+    // These two templates exist in GHL but were NEVER wired into the flow —
+    // their consents live inside the application's authorization clause
+    // (owner-confirmed Jul 12, 2026). Filter them so stray sends never reach a
+    // merchant. If the owner ever finishes + wires them, delete these lines.
+    const UNWIRED_TEMPLATES = [
+      /TCPA\s*\/\s*Contact Consent/i,
+      /Bank Verification\s*&\s*Credit Authorization/i,
+    ];
+
     const documents = (docsRes.data?.documents ?? [])
+      .filter((d) => !UNWIRED_TEMPLATES.some((re) => re.test((d.name as string) ?? "")))
       .map((d) => {
         const recips = (d.recipients as Record<string, unknown>[] | undefined) ?? [];
         const links = (d.links as Record<string, unknown>[] | undefined) ?? [];

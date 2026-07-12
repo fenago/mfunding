@@ -13,12 +13,14 @@ export interface DocRequestTemplate {
   label: string;
 }
 
-/** Quick-pick templates the closer can request in one tap. */
+/** Quick-pick templates the closer can request in one tap.
+ *  EXACTLY the Revenue Playbook's Rail 2 (upload) items — the application and
+ *  broker disclosure are Rail 1 (e-sign via GHL) and are NOT upload requests. */
 export const DOC_REQUEST_TEMPLATES: DocRequestTemplate[] = [
   { doc_type: "bank_statement", label: "Last 4 months of business bank statements" },
   { doc_type: "id", label: "Driver's license (photo of the front)" },
   { doc_type: "voided_check", label: "Voided business check" },
-  { doc_type: "application", label: "Signed application" },
+  { doc_type: "business_license", label: "Proof of business ownership" },
 ];
 
 /** doc_type → merchant-friendly label, used by the "upload something else"
@@ -44,7 +46,8 @@ export const DOC_TYPE_HELP: Record<string, string> = {
   application:
     "Your signed application. Check your email for the signing link, or snap a photo of the signed pages and upload them here.",
   tax_return: "Your most recent business tax return.",
-  business_license: "A photo or PDF of your current business license.",
+  business_license:
+    "Any official document showing you own the business — your business license, articles of incorporation or organization, or your EIN letter. A photo or PDF works.",
   other: "Upload the requested item as a clear photo or a PDF.",
 };
 
