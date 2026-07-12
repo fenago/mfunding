@@ -16,6 +16,7 @@ import {
 } from "../../services/portalService";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import MerchantJourney from "../../components/portal/MerchantJourney";
+import JourneyHero from "../../components/portal/JourneyHero";
 import ActionNeededHero from "../../components/portal/ActionNeededHero";
 import SubmissionsCard from "../../components/portal/SubmissionsCard";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
@@ -203,7 +204,10 @@ export default function PortalDashboardPage() {
                     </span>
                   )}
                 </div>
-                <MerchantJourney deal={d} docProgress={docProgressFor(docRequests, d.id)} />
+                <JourneyHero deal={d} />
+                <div className="mt-4">
+                  <MerchantJourney deal={d} docProgress={docProgressFor(docRequests, d.id)} />
+                </div>
 
                 {isFundedMca(d) ? (
                   <>

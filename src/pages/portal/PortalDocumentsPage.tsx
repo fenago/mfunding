@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import {
   DocumentIcon,
   CheckCircleIcon,
@@ -8,20 +9,23 @@ import {
   ArrowUpTrayIcon,
   ChevronDownIcon,
 } from "@heroicons/react/24/outline";
-import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
+import { CheckCircleIcon as CheckCircleSolid, DocumentCheckIcon } from "@heroicons/react/24/solid";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import {
   getMyCustomer,
   getMyDocRequests,
+  getMyMerchantDocuments,
   markDocRequestUploaded,
   notifyMerchantDocUploaded,
   type DocRequest,
   type DocRequestStatus,
+  type MerchantDocument,
 } from "../../services/portalService";
 import { docTypeHelp, MAX_UPLOAD_BYTES } from "../../data/docRequests";
 import Countdown from "../../components/portal/Countdown";
+import DocumentsToSign from "../../components/portal/DocumentsToSign";
 
 interface CustomerDocument {
   id: string;
@@ -173,6 +177,7 @@ export default function PortalDocumentsPage() {
   const { session } = useSession();
   const [documents, setDocuments] = useState<CustomerDocument[]>([]);
   const [requests, setRequests] = useState<DocRequest[]>([]);
+  const [merchantDocs, setMerchantDocs] = useState<MerchantDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [customerId, setCustomerId] = useState<string | null>(null);
 
@@ -181,6 +186,7 @@ export default function PortalDocumentsPage() {
   const [cardError, setCardError] = useState<Record<string, string>>({});
   const [adHocType, setAdHocType] = useState("bank_statement");
   const [showAdHoc, setShowAdHoc] = useState(false);
+  const [showOnFile, setShowOnFile] = useState(false);
 
   useEffect(() => {
     if (session?.user?.id) fetchAll();
@@ -198,7 +204,7 @@ export default function PortalDocumentsPage() {
 
     if (customer) {
       setCustomerId(customer.id);
-      const [{ data: docs }, reqs] = await Promise.all([
+      const [{ data: docs }, reqs, mDocs] = await Promise.all([
         supabase
           .from("customer_documents")
           .select("id, document_type, filename, status, created_at")
@@ -208,9 +214,14 @@ export default function PortalDocumentsPage() {
           console.error("Failed to load document checklist:", e);
           return [] as DocRequest[];
         }),
+        getMyMerchantDocuments().catch((e) => {
+          console.error("Failed to load agreements:", e);
+          return [] as MerchantDocument[];
+        }),
       ]);
       setDocuments(docs || []);
       setRequests(reqs);
+      setMerchantDocs(mDocs);
     }
     setIsLoading(false);
   };
@@ -292,201 +303,279 @@ export default function PortalDocumentsPage() {
   const openRequests = requests.filter((r) => r.status !== "approved");
   const approvedRequests = requests.filter((r) => r.status === "approved");
   const doneCount = requests.filter((r) => isDone(r.status)).length;
+  // Agreements: 'sent' still needs a signature; 'signed' is on file for reference.
+  const toSign = merchantDocs.filter((d) => d.status === "sent");
+  const signedDocs = merchantDocs.filter((d) => d.status === "signed");
+  // The all-clear only holds when there's nothing to sign AND nothing requested.
+  const allClear = toSign.length === 0 && requests.length === 0;
+  const onFileCount = signedDocs.length + documents.length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Your documents</h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Upload what your funding specialist asks for — the faster these come in, the faster you get offers.
+          Everything to sign, upload, and keep on file — all in one place.
         </p>
       </div>
 
       {!customerId && (
         <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700 text-center">
           <p className="text-gray-500 dark:text-gray-400">
-            You'll be able to upload documents once your application is started.
+            You'll be able to sign and upload documents once your application is started.
           </p>
         </div>
       )}
 
-      {/* Checklist header + progress */}
-      {customerId && requests.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 flex items-center gap-4">
-          <ProgressRing done={doneCount} total={requests.length} />
-          <div>
-            <h2 className="text-lg font-bold text-gray-900 dark:text-white">
-              {doneCount} of {requests.length} done
-            </h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
-              {openRequests.length === 0
-                ? "Everything's in — nothing else needed from you right now."
-                : `${openRequests.length} item${openRequests.length === 1 ? "" : "s"} still need your attention.`}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Empty state — no requests at all */}
-      {customerId && requests.length === 0 && (
-        <div className="bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-8 border border-emerald-200 dark:border-emerald-700 text-center">
-          <CheckCircleSolid className="w-12 h-12 text-emerald-500 mx-auto mb-3" />
-          <p className="font-semibold text-emerald-800 dark:text-emerald-200">
-            Nothing needed from you right now.
-          </p>
-          <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-1">
-            If your specialist needs anything, it'll show up here. You can still upload something below anytime.
-          </p>
-        </div>
-      )}
-
-      {/* Open checklist cards */}
-      {openRequests.map((req) => {
-        const chip = REQUEST_STATUS_CHIP[req.status];
-        const busy = uploadingId === req.id;
-        const err = cardError[req.id];
-        const isRejected = req.status === "rejected";
-        const needsUpload = req.status === "requested" || req.status === "rejected";
-        return (
-          <div
-            key={req.id}
-            className={`bg-white dark:bg-gray-800 rounded-xl p-5 border ${
-              isRejected
-                ? "border-red-300 dark:border-red-700"
-                : "border-gray-200 dark:border-gray-700"
-            }`}
-          >
-            <div className="flex items-start justify-between gap-3 mb-2">
-              <h3 className="font-semibold text-gray-900 dark:text-white">{req.label}</h3>
-              <span className={`inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full flex-shrink-0 ${chip.className}`}>
-                {chip.label}
-              </span>
-            </div>
-
-            {req.due_at && needsUpload && (
-              <div className="mb-2">
-                <Countdown target={req.due_at} label="Due" variant="urgent" />
-              </div>
-            )}
-
-            {isRejected && req.rejection_reason && (
-              <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2">
-                <p className="text-sm font-medium text-red-700 dark:text-red-300">
-                  We need this one again:
-                </p>
-                <p className="text-sm text-red-700 dark:text-red-300 mt-0.5">{req.rejection_reason}</p>
-              </div>
-            )}
-
-            {needsUpload ? (
-              <>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{docTypeHelp(req.doc_type)}</p>
-                <UploadSlot
-                  onFile={(f) => handleChecklistUpload(req, f)}
-                  busy={busy}
-                  primaryLabel={isRejected ? "Upload again" : "Upload"}
-                />
-              </>
-            ) : (
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Got it — your specialist is reviewing this. We'll let you know if anything else is needed.
-              </p>
-            )}
-
-            {err && <p className="text-sm text-red-500 mt-2">{err}</p>}
-          </div>
-        );
-      })}
-
-      {/* Approved — collapsed, quiet ✓ */}
-      {approvedRequests.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
-          {approvedRequests.map((req) => (
-            <div key={req.id} className="flex items-center gap-3 p-4">
-              <CheckCircleSolid className="w-5 h-5 text-emerald-500 flex-shrink-0" />
-              <span className="text-sm text-gray-700 dark:text-gray-200">{req.label}</span>
-              <span className="ml-auto text-xs text-emerald-600 dark:text-emerald-400 font-medium">Approved</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Ad-hoc "upload something else" */}
       {customerId && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
-          <button
-            type="button"
-            onClick={() => setShowAdHoc((v) => !v)}
-            className="w-full flex items-center justify-between p-5"
-          >
-            <span className="font-semibold text-gray-900 dark:text-white">Upload something else</span>
-            <ChevronDownIcon
-              className={`w-5 h-5 text-gray-400 transition-transform ${showAdHoc ? "rotate-180" : ""}`}
-            />
-          </button>
-          {showAdHoc && (
-            <div className="px-5 pb-5 space-y-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  What is it?
-                </label>
-                <select
-                  value={adHocType}
-                  onChange={(e) => setAdHocType(e.target.value)}
-                  className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white px-3 py-2"
-                >
-                  {DOCUMENT_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <UploadSlot onFile={handleAdHocUpload} busy={uploadingId === "adhoc"} />
-              {cardError.adhoc && <p className="text-sm text-red-500">{cardError.adhoc}</p>}
-              <p className="text-xs text-gray-400">Photos or PDFs up to 10MB.</p>
+        <>
+          {/* All-clear — only when nothing to sign AND nothing requested to upload */}
+          {allClear && (
+            <div className="bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-8 border border-emerald-200 dark:border-emerald-700 text-center">
+              <CheckCircleSolid className="w-12 h-12 text-emerald-500 mx-auto mb-3" />
+              <p className="font-semibold text-emerald-800 dark:text-emerald-200">
+                Nothing needs your signature or an upload right now.
+              </p>
+              <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-1">
+                If your specialist needs anything, it'll show up here. You can still upload something below anytime.
+              </p>
             </div>
           )}
-        </div>
-      )}
 
-      {/* Everything uploaded so far */}
-      {documents.length > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
-          <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-            <h2 className="font-semibold text-gray-900 dark:text-white">
-              Everything you've uploaded ({documents.length})
-            </h2>
-          </div>
-          <div className="divide-y divide-gray-200 dark:divide-gray-700">
-            {documents.map((doc) => {
-              const statusConfig = STATUS_CONFIG[doc.status] || STATUS_CONFIG.pending;
-              const StatusIcon = statusConfig.icon;
-              return (
-                <div key={doc.id} className="p-4 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className="p-2 bg-gray-100 dark:bg-gray-700 rounded-lg flex-shrink-0">
-                      <DocumentIcon className="w-6 h-6 text-gray-500" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-medium text-gray-900 dark:text-white truncate">{doc.filename}</p>
-                      <p className="text-sm text-gray-500">
-                        {DOCUMENT_TYPES.find((t) => t.value === doc.document_type)?.label ||
-                          doc.document_type.replace(/_/g, " ")}
-                        {" • "}
-                        {new Date(doc.created_at).toLocaleDateString()}
+          {/* ── SECTION 1: To sign (most prominent, top) ───────────────────── */}
+          {!allClear && (
+            <section className="space-y-3">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">To sign</h2>
+              {toSign.length > 0 ? (
+                <DocumentsToSign documents={merchantDocs} />
+              ) : (
+                <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">
+                  No agreements are waiting for your signature right now.
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* ── SECTION 2: To upload (the checklist) ───────────────────────── */}
+          {!allClear && (
+            <section className="space-y-4">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">To upload</h2>
+
+              {requests.length > 0 ? (
+                <>
+                  {/* Checklist header + progress */}
+                  <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 flex items-center gap-4">
+                    <ProgressRing done={doneCount} total={requests.length} />
+                    <div>
+                      <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                        {doneCount} of {requests.length} done
+                      </h3>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        {openRequests.length === 0
+                          ? "Everything's in — nothing else needed from you right now."
+                          : `${openRequests.length} item${openRequests.length === 1 ? "" : "s"} still need your attention.`}
                       </p>
                     </div>
                   </div>
-                  <div className={`flex items-center gap-1 flex-shrink-0 ${statusConfig.color}`}>
-                    <StatusIcon className="w-5 h-5" />
-                    <span className="text-sm hidden sm:inline">{statusConfig.label}</span>
-                  </div>
+
+                  {/* Open checklist cards */}
+                  {openRequests.map((req) => {
+                    const chip = REQUEST_STATUS_CHIP[req.status];
+                    const busy = uploadingId === req.id;
+                    const err = cardError[req.id];
+                    const isRejected = req.status === "rejected";
+                    const needsUpload = req.status === "requested" || req.status === "rejected";
+                    return (
+                      <div
+                        key={req.id}
+                        className={`bg-white dark:bg-gray-800 rounded-xl p-5 border ${
+                          isRejected
+                            ? "border-red-300 dark:border-red-700"
+                            : "border-gray-200 dark:border-gray-700"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <h3 className="font-semibold text-gray-900 dark:text-white">{req.label}</h3>
+                          <span className={`inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full flex-shrink-0 ${chip.className}`}>
+                            {chip.label}
+                          </span>
+                        </div>
+
+                        {req.due_at && needsUpload && (
+                          <div className="mb-2">
+                            <Countdown target={req.due_at} label="Due" variant="urgent" />
+                          </div>
+                        )}
+
+                        {isRejected && req.rejection_reason && (
+                          <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2">
+                            <p className="text-sm font-medium text-red-700 dark:text-red-300">
+                              We need this one again:
+                            </p>
+                            <p className="text-sm text-red-700 dark:text-red-300 mt-0.5">{req.rejection_reason}</p>
+                          </div>
+                        )}
+
+                        {needsUpload ? (
+                          <>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{docTypeHelp(req.doc_type)}</p>
+                            <UploadSlot
+                              onFile={(f) => handleChecklistUpload(req, f)}
+                              busy={busy}
+                              primaryLabel={isRejected ? "Upload again" : "Upload"}
+                            />
+                          </>
+                        ) : (
+                          <p className="text-sm text-gray-500 dark:text-gray-400">
+                            Got it — your specialist is reviewing this. We'll let you know if anything else is needed.
+                          </p>
+                        )}
+
+                        {err && <p className="text-sm text-red-500 mt-2">{err}</p>}
+                      </div>
+                    );
+                  })}
+
+                  {/* Approved — collapsed, quiet ✓ */}
+                  {approvedRequests.length > 0 && (
+                    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
+                      {approvedRequests.map((req) => (
+                        <div key={req.id} className="flex items-center gap-3 p-4">
+                          <CheckCircleSolid className="w-5 h-5 text-emerald-500 flex-shrink-0" />
+                          <span className="text-sm text-gray-700 dark:text-gray-200">{req.label}</span>
+                          <span className="ml-auto text-xs text-emerald-600 dark:text-emerald-400 font-medium">Approved</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">
+                  No documents have been requested right now. You can still add something below anytime.
                 </div>
-              );
-            })}
+              )}
+            </section>
+          )}
+
+          {/* Ad-hoc "upload something else" */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+            <button
+              type="button"
+              onClick={() => setShowAdHoc((v) => !v)}
+              className="w-full flex items-center justify-between p-5"
+            >
+              <span className="font-semibold text-gray-900 dark:text-white">Upload something else</span>
+              <ChevronDownIcon
+                className={`w-5 h-5 text-gray-400 transition-transform ${showAdHoc ? "rotate-180" : ""}`}
+              />
+            </button>
+            {showAdHoc && (
+              <div className="px-5 pb-5 space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    What is it?
+                  </label>
+                  <select
+                    value={adHocType}
+                    onChange={(e) => setAdHocType(e.target.value)}
+                    className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white px-3 py-2"
+                  >
+                    {DOCUMENT_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <UploadSlot onFile={handleAdHocUpload} busy={uploadingId === "adhoc"} />
+                {cardError.adhoc && <p className="text-sm text-red-500">{cardError.adhoc}</p>}
+                <p className="text-xs text-gray-400">Photos or PDFs up to 10MB.</p>
+              </div>
+            )}
           </div>
-        </div>
+
+          {/* ── SECTION 3: On file (signed agreements + uploads, collapsed) ── */}
+          <section>
+            <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+              <button
+                type="button"
+                onClick={() => setShowOnFile((v) => !v)}
+                className="w-full flex items-center justify-between p-5"
+              >
+                <span className="flex items-center gap-2 font-semibold text-gray-900 dark:text-white">
+                  On file
+                  <span className="text-sm font-normal text-gray-400">({onFileCount})</span>
+                </span>
+                <ChevronDownIcon
+                  className={`w-5 h-5 text-gray-400 transition-transform ${showOnFile ? "rotate-180" : ""}`}
+                />
+              </button>
+
+              {showOnFile && (
+                <div className="border-t border-gray-200 dark:border-gray-700">
+                  {onFileCount === 0 ? (
+                    <p className="p-5 text-sm text-gray-500 dark:text-gray-400">
+                      Nothing on file yet. Signed agreements and documents you upload will be kept here.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                      {/* Signed agreements — tap to view the signed copy */}
+                      {signedDocs.map((d) => (
+                        <Link
+                          key={d.id}
+                          to={`/portal/sign/${d.id}`}
+                          className="p-4 flex items-center justify-between gap-3 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors"
+                        >
+                          <div className="flex items-center gap-4 min-w-0">
+                            <div className="p-2 bg-emerald-100 dark:bg-emerald-900/40 rounded-lg flex-shrink-0">
+                              <DocumentCheckIcon className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-900 dark:text-white truncate">{d.name}</p>
+                              <p className="text-sm text-gray-500">
+                                Signed agreement
+                                {d.signed_at ? ` • ${new Date(d.signed_at).toLocaleDateString()}` : ""}
+                              </p>
+                            </div>
+                          </div>
+                          <span className="text-sm font-medium text-ocean-blue flex-shrink-0">View</span>
+                        </Link>
+                      ))}
+
+                      {/* Documents you've uploaded */}
+                      {documents.map((doc) => {
+                        const statusConfig = STATUS_CONFIG[doc.status] || STATUS_CONFIG.pending;
+                        const StatusIcon = statusConfig.icon;
+                        return (
+                          <div key={doc.id} className="p-4 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-4 min-w-0">
+                              <div className="p-2 bg-gray-100 dark:bg-gray-700 rounded-lg flex-shrink-0">
+                                <DocumentIcon className="w-6 h-6 text-gray-500" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="font-medium text-gray-900 dark:text-white truncate">{doc.filename}</p>
+                                <p className="text-sm text-gray-500">
+                                  {DOCUMENT_TYPES.find((t) => t.value === doc.document_type)?.label ||
+                                    doc.document_type.replace(/_/g, " ")}
+                                  {" • "}
+                                  {new Date(doc.created_at).toLocaleDateString()}
+                                </p>
+                              </div>
+                            </div>
+                            <div className={`flex items-center gap-1 flex-shrink-0 ${statusConfig.color}`}>
+                              <StatusIcon className="w-5 h-5" />
+                              <span className="text-sm hidden sm:inline">{statusConfig.label}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        </>
       )}
     </div>
   );

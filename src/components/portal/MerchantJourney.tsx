@@ -3,15 +3,12 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { CheckIcon } from "@heroicons/react/24/solid";
 import { ChevronDownIcon, QuestionMarkCircleIcon } from "@heroicons/react/24/outline";
-import PipelineFlow from "../shared/PipelineFlow";
 import Countdown from "./Countdown";
 import type { PortalDeal } from "../../services/portalService";
-import type { PipelineDef } from "../../data/pipelines";
 import {
   resolveJourney,
   STAGE_SLA,
   type MerchantStep,
-  type MerchantJourney as JourneyDef,
 } from "../../data/merchantJourney";
 
 interface DocProgress {
@@ -35,16 +32,6 @@ function stampText(value: string | null | undefined): string | null {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-/** Build a synthetic pipeline definition from the merchant steps so we can
- *  reuse the animated horizontal PipelineFlow on desktop. */
-function toPipelineDef(journey: JourneyDef): PipelineDef {
-  return {
-    id: journey.product,
-    name: "Your funding journey",
-    stages: journey.steps.map((s) => ({ key: s.key, label: s.label, blurb: s.whatsHappening })),
-  };
 }
 
 /** Elapsed-time helper for the soft SLA timer ("elapsed 6h"). */
@@ -189,16 +176,10 @@ export default function MerchantJourney({ deal, docProgress }: MerchantJourneyPr
 
   return (
     <div>
-      {/* Desktop: reuse the animated horizontal pipeline */}
-      <div className="hidden sm:block">
-        <PipelineFlow pipeline={toPipelineDef(journey)} currentKey={currentStep.key} />
-        <div className="mt-4">
-          <CurrentStepCard step={currentStep} deal={deal} docProgress={docProgress} />
-        </div>
-      </div>
-
-      {/* Mobile: vertical journey */}
-      <div className="sm:hidden space-y-3">
+      {/* The animated horizontal path now lives in <JourneyHero> above. This is
+          the actionable detail: the current step, plus at-a-glance history and
+          what's still ahead. One layout for every breakpoint. */}
+      <div className="space-y-3">
         {/* Completed — compressed behind a collapser */}
         {completed.length > 0 && (
           <div>

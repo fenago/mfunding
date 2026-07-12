@@ -66,7 +66,12 @@ export default function MerchantAuthPage() {
       <SEO title="Signing you in" noIndex={true} />
       <div className="w-full max-w-sm text-center">
         <div className="flex justify-center mb-8">
-          <Logo variant="full" size="md" theme="light" />
+          <div className="dark:hidden">
+            <Logo variant="full" size="md" theme="light" />
+          </div>
+          <div className="hidden dark:block">
+            <Logo variant="full" size="md" theme="dark" />
+          </div>
         </div>
 
         {phase === "signing-in" ? (
