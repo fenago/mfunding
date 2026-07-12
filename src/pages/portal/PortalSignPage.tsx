@@ -13,8 +13,11 @@ import {
   type MerchantDocument,
 } from "../../services/portalService";
 
+// This MUST match the consent sentence the sign-merchant-document edge function
+// records server-side — what the merchant sees checking the box has to be what's
+// legally captured. (Confirmed authoritative wording from w3-backend.)
 const CONSENT_TEXT =
-  "I agree that typing my name below constitutes my electronic signature on this document";
+  "I have read this document in full and I agree to be bound by it. I intend my typed name below to be my legal electronic signature.";
 
 function fmtDateTime(value: string | null): string | null {
   if (!value) return null;
@@ -221,7 +224,7 @@ export default function PortalSignPage() {
               onChange={(e) => setConsent(e.target.checked)}
               className="mt-0.5 w-5 h-5 rounded border-gray-300 text-mint-green focus:ring-mint-green flex-shrink-0"
             />
-            <span className="text-sm text-gray-700 dark:text-gray-200">{CONSENT_TEXT}.</span>
+            <span className="text-sm text-gray-700 dark:text-gray-200">{CONSENT_TEXT}</span>
           </label>
 
           {signError && <p className="text-sm text-red-500">{signError}</p>}
