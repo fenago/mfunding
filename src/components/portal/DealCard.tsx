@@ -1,71 +1,68 @@
-import { useRef, useState, useCallback } from "react";
-import {
-  SUBMITTED_OR_PAST_STATUSES,
-  type PortalDeal,
-  type DocRequest,
-  type MerchantDocument,
-} from "../../services/portalService";
+import type { PortalDeal, MerchantDocument } from "../../services/portalService";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import { resolveJourney } from "../../data/merchantJourney";
+import type { ApplicationStatus } from "../../utils/signing";
 import JourneyHero from "./JourneyHero";
-import MerchantJourney from "./MerchantJourney";
-import DocChecklist from "./DocChecklist";
-import SubmissionsCard from "./SubmissionsCard";
-import PaydownTracker from "./PaydownTracker";
-import PostFundingVault from "./PostFundingVault";
+import StepDetail from "./StepDetail";
 
 interface DealCardProps {
   deal: PortalDeal;
   customerId: string | null;
-  /** Page-level checklist rows (all deals) — used for at-a-glance step progress. */
-  docRequests: DocRequest[];
-  /** Signed/awaiting agreements, for the post-funding vault. */
-  signDocuments: MerchantDocument[];
-  /** Refetch page data after an inline upload. */
+  /** Selected journey step (controlled by the page); falls back to the stage. */
+  selectedKey?: string;
+  onSelectStep: (key: string) => void;
+  /** Resolved single application (one-application rule) for the application step. */
+  application: ApplicationStatus;
+  signedDocuments: MerchantDocument[];
+  onSignNative: (doc: MerchantDocument) => void;
   onChanged: () => void;
 }
 
-/** MCA-family deal that has funded — flips into the paydown/renewal tracker. */
-function isFundedMca(deal: PortalDeal): boolean {
-  return deal.deal_type !== "vcf" && (deal.status === "funded" || deal.status === "renewal_eligible");
-}
-
 /**
- * One funding request, rendered so the merchant can do everything inline: the
- * animated JourneyHero (clickable step anchors), the step detail, the actual
- * upload checklist right here, and the post-funding tracker. Selecting the
- * "documents" step scrolls to the inline checklist — no navigation.
+ * One funding request: the animated JourneyHero (stage vs. selection) plus the
+ * substance card for whichever step is selected. Selection is controlled by the
+ * page so the action block can jump straight to a step (e.g. documents).
  */
-export default function DealCard({ deal, customerId, docRequests, signDocuments, onChanged }: DealCardProps) {
-  const { journey, currentIndex } = resolveJourney(deal);
+export default function DealCard({
+  deal,
+  customerId,
+  selectedKey,
+  onSelectStep,
+  application,
+  signedDocuments,
+  onSignNative,
+  onChanged,
+}: DealCardProps) {
+  const { journey, currentIndex, isTerminal } = resolveJourney(deal);
   const currentKey = currentIndex >= 0 ? journey.steps[currentIndex].key : journey.steps[0].key;
-
-  const [selectedKey, setSelectedKey] = useState(currentKey);
-  const heroRef = useRef<HTMLDivElement | null>(null);
-  const checklistRef = useRef<HTMLDivElement | null>(null);
-
-  const dealRequests = docRequests.filter((r) => r.deal_id === deal.id);
-  const doneCount = dealRequests.filter(
-    (r) => r.status === "uploaded" || r.status === "under_review" || r.status === "approved",
-  ).length;
-  const funded = isFundedMca(deal);
-
-  // Show the inline checklist when there's something to upload, or when the deal
-  // is sitting at the documents step (so uploads are always one tap away).
-  const showChecklist = !!customerId && !funded && (dealRequests.length > 0 || currentKey === "documents");
-
-  const handleSelectStep = useCallback((key: string) => {
-    setSelectedKey(key);
-    requestAnimationFrame(() => {
-      if (key === "documents" && checklistRef.current) {
-        checklistRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      } else {
-        heroRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      }
-    });
-  }, []);
+  const activeKey = selectedKey || currentKey;
 
   const cfg = DEAL_STATUS_CONFIG[deal.status as keyof typeof DEAL_STATUS_CONFIG];
+
+  // Terminal / off-journey deals get a respectful status card, not a stepper.
+  if (isTerminal) {
+    const isDeclined = deal.status === "declined";
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-4 sm:p-5 border border-gray-200 dark:border-gray-700">
+        <div
+          className={`rounded-xl p-4 border ${
+            isDeclined
+              ? "bg-gray-50 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700"
+              : "bg-violet-50 dark:bg-violet-900/20 border-violet-200 dark:border-violet-700"
+          }`}
+        >
+          <h3 className="text-base font-bold text-gray-900 dark:text-white">
+            {isDeclined ? "Application update" : "We're still working for you"}
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+            {isDeclined
+              ? "We weren't able to move forward with this request right now. Your advisor can walk you through other options — check your messages or reach out anytime."
+              : "This request is paused, but we're keeping an eye out for new options that fit your business. We'll reach out the moment something changes."}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-4 sm:p-5 border border-gray-200 dark:border-gray-700">
@@ -89,45 +86,19 @@ export default function DealCard({ deal, customerId, docRequests, signDocuments,
         )}
       </div>
 
-      <div ref={heroRef}>
-        <JourneyHero
+      <JourneyHero deal={deal} selectedKey={activeKey} onSelectStep={onSelectStep} />
+
+      <div id={`step-detail-${deal.id}`} className="mt-4 scroll-mt-24">
+        <StepDetail
           deal={deal}
-          selectedKey={selectedKey}
-          onSelectStep={handleSelectStep}
-          hasUploadTarget={showChecklist}
+          stepKey={activeKey}
+          customerId={customerId}
+          application={application}
+          signedDocuments={signedDocuments}
+          onSignNative={onSignNative}
+          onChanged={onChanged}
         />
       </div>
-
-      <div className="mt-4">
-        <MerchantJourney
-          deal={deal}
-          docProgress={{ done: doneCount, total: dealRequests.length }}
-          onSelectStep={handleSelectStep}
-        />
-      </div>
-
-      {/* Inline upload checklist — the merchant uploads right here, no navigation. */}
-      {showChecklist && customerId && (
-        <div ref={checklistRef} className="mt-4 scroll-mt-24">
-          <DocChecklist customerId={customerId} dealId={deal.id} includeAdHoc onChanged={onChanged} />
-        </div>
-      )}
-
-      {funded ? (
-        <>
-          <div className="mt-4">
-            <PaydownTracker deal={deal} />
-          </div>
-          <PostFundingVault deal={deal} customerId={customerId} signedDocuments={signDocuments} />
-        </>
-      ) : (
-        deal.deal_type !== "vcf" &&
-        SUBMITTED_OR_PAST_STATUSES.has(deal.status) && (
-          <div className="mt-4">
-            <SubmissionsCard dealId={deal.id} />
-          </div>
-        )
-      )}
     </div>
   );
 }

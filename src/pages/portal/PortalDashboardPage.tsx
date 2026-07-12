@@ -17,11 +17,11 @@ import {
   type MerchantDocument,
   type GhlDocument,
 } from "../../services/portalService";
-import ActionNeededHero from "../../components/portal/ActionNeededHero";
-import DocumentsToSign from "../../components/portal/DocumentsToSign";
+import ActionBlock from "../../components/portal/ActionBlock";
 import WelcomeOverlay from "../../components/portal/WelcomeOverlay";
 import DealCard from "../../components/portal/DealCard";
 import SignDocumentModal from "../../components/portal/SignDocumentModal";
+import { unifyDocs } from "../../utils/signing";
 
 /** MCA-family deal that has funded — excluded from offer nudges (it shows the
  *  paydown tracker instead). */
@@ -45,6 +45,7 @@ export default function PortalDashboardPage() {
   const [pendingDocuments, setPendingDocuments] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [signingDoc, setSigningDoc] = useState<MerchantDocument | null>(null);
+  const [selectedByDeal, setSelectedByDeal] = useState<Record<string, string>>({});
   const [celebrate, setCelebrate] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const journeyRef = useRef<HTMLDivElement>(null);
@@ -171,6 +172,20 @@ export default function PortalDashboardPage() {
     }
   }, [celebrate, isLoading]);
 
+  // One unified, one-application-collapsed view of signable docs.
+  const unified = unifyDocs(signDocuments, ghlDocuments);
+
+  const selectStep = (dealId: string, key: string) =>
+    setSelectedByDeal((prev) => ({ ...prev, [dealId]: key }));
+
+  // Action block "upload" → select the documents step and scroll to it.
+  const handleUpload = (dealId: string) => {
+    selectStep(dealId, "documents");
+    setTimeout(() => {
+      document.getElementById(`step-detail-${dealId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -216,18 +231,15 @@ export default function PortalDashboardPage() {
         </p>
       </div>
 
-      {/* Action Needed — sticky, unmissable */}
-      <ActionNeededHero
+      {/* One action block: what you need to do now (sign → upload → offers) */}
+      <ActionBlock
         deals={deals}
-        pendingDocuments={pendingDocuments}
+        pending={unified.pending}
         docRequests={docRequests}
-        signDocuments={signDocuments}
-        ghlDocuments={ghlDocuments}
         offerCount={offerCount}
+        onSignNative={setSigningDoc}
+        onUpload={handleUpload}
       />
-
-      {/* Documents ready to sign — native opens the modal in place, GHL opens in a new tab */}
-      <DocumentsToSign documents={signDocuments} ghlDocuments={ghlDocuments} onSelect={setSigningDoc} />
 
       {/* The journey, one card per funding request */}
       <div ref={journeyRef} className="scroll-mt-6">
@@ -243,8 +255,11 @@ export default function PortalDashboardPage() {
               key={d.id}
               deal={d}
               customerId={customerId}
-              docRequests={docRequests}
-              signDocuments={signDocuments}
+              selectedKey={selectedByDeal[d.id]}
+              onSelectStep={(k) => selectStep(d.id, k)}
+              application={unified.application}
+              signedDocuments={signDocuments}
+              onSignNative={setSigningDoc}
               onChanged={fetchData}
             />
           ))}

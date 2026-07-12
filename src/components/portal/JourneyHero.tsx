@@ -1,43 +1,33 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { CheckIcon } from "@heroicons/react/24/solid";
-import { ArrowUpTrayIcon } from "@heroicons/react/24/outline";
 import type { PortalDeal } from "../../services/portalService";
-import { resolveJourney, type MerchantStep } from "../../data/merchantJourney";
+import { resolveJourney } from "../../data/merchantJourney";
 
 interface JourneyHeroProps {
   deal: PortalDeal;
-  /** Controlled selection (the step whose detail is expanded). */
-  selectedKey?: string;
-  /** Fired whenever a node is activated — even re-selecting the same one — so a
-   *  host can scroll to that step's inline content (e.g. the upload checklist). */
-  onSelectStep?: (key: string) => void;
-  /** True when an inline upload checklist exists on the page for this deal, so
-   *  the "Your documents" detail can offer an "Upload documents" button. */
-  hasUploadTarget?: boolean;
+  /** The step whose detail is expanded below (selection ≠ stage). */
+  selectedKey: string;
+  /** Select a step (visible highlight + host swaps the detail card). */
+  onSelectStep: (key: string) => void;
 }
 
 /**
- * JourneyHero — the glanceable, animated summary of where a merchant's funding
- * request stands. A horizontal path of nodes (one per merchant step): completed
- * nodes draw in a checkmark, the progress line fills from the start up to the
- * current node, the current node pulses with a soft ring + "You are here", and
- * upcoming nodes stay muted. Every node is a CLICKABLE anchor — tapping it
- * expands that step's plain-language card below the path (and, for the documents
- * step, jumps to the inline upload checklist). No navigation.
+ * JourneyHero — the animated path. Two DISTINCT states the merchant can't
+ * confuse: the deal's STAGE (filled node + "You are here" pill; never moves on
+ * click) and the SELECTED step (outlined ring + "Viewing"; follows taps). The
+ * progress line fills to the stage, completed nodes draw a checkmark, upcoming
+ * nodes stay muted. Every node is a clickable anchor; the substance for the
+ * selected step renders below (see StepDetail). Respects prefers-reduced-motion.
  *
- * COMPLIANCE: all step copy comes from merchantJourney.ts (product-aware, never
- * "loan" for MCA). The only strings added here are neutral chrome.
+ * COMPLIANCE: labels come from merchantJourney.ts (product-aware, never "loan").
  */
-export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUploadTarget }: JourneyHeroProps) {
+export default function JourneyHero({ deal, selectedKey, onSelectStep }: JourneyHeroProps) {
   const reduce = useReducedMotion();
   const { journey, currentIndex, isTerminal } = resolveJourney(deal);
   const steps = journey.steps;
-
-  const [internalSel, setInternalSel] = useState(Math.max(currentIndex, 0));
   const currentRef = useRef<HTMLButtonElement | null>(null);
 
-  // On mount, pull the current node into view on narrow screens.
   useEffect(() => {
     currentRef.current?.scrollIntoView({ block: "nearest", inline: "center" });
   }, []);
@@ -48,23 +38,10 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
   const safeIndex = Math.max(currentIndex, 0);
   const halfCol = 50 / n;
   const progressFrac = n > 1 ? safeIndex / (n - 1) : 0;
-
-  // Controlled when a host passes selectedKey; otherwise track locally.
-  const selFromKey = selectedKey != null ? steps.findIndex((s) => s.key === selectedKey) : -1;
-  const selected = selFromKey >= 0 ? selFromKey : selectedKey != null ? safeIndex : internalSel;
-
-  const activate = (i: number) => {
-    if (onSelectStep) onSelectStep(steps[i].key);
-    else setInternalSel(i);
-  };
-
   const heading = journey.product === "vcf" ? "Your path forward" : "Your path to funding";
 
   return (
-    <div
-      id={`journey-hero-${deal.id}`}
-      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gradient-to-br from-white to-gray-50 dark:from-gray-800 dark:to-gray-900 p-4 sm:p-5"
-    >
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gradient-to-br from-white to-gray-50 dark:from-gray-800 dark:to-gray-900 p-4 sm:p-5">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{heading}</h3>
         <span className="text-xs font-medium text-gray-400">
@@ -72,7 +49,6 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
         </span>
       </div>
 
-      {/* The animated path */}
       <div className="overflow-x-auto pb-1">
         <div className="pt-6 min-w-[22rem]">
           <div className="relative">
@@ -81,7 +57,6 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
               className="absolute h-[3px] rounded-full bg-gray-200 dark:bg-gray-700"
               style={{ top: 18, left: `${halfCol}%`, right: `${halfCol}%` }}
             >
-              {/* Progress fill — draws from start to the current node on mount */}
               <motion.div
                 className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-500 via-teal to-mint-green"
                 initial={reduce ? false : { width: 0 }}
@@ -96,13 +71,12 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
                 const isCompleted = i < currentIndex;
                 const isCurrent = i === currentIndex;
                 const isFundedNode = step.key === "funded";
-                const isSelected = i === selected;
+                const isSelected = step.key === selectedKey;
+                const selectedNotCurrent = isSelected && !isCurrent;
 
                 return (
-                  <div
-                    key={step.key}
-                    className="relative flex flex-col items-center flex-1 min-w-[3.25rem] px-0.5"
-                  >
+                  <div key={step.key} className="relative flex flex-col items-center flex-1 min-w-[3.25rem] px-0.5">
+                    {/* Stage pill (never moves) */}
                     {isCurrent && (
                       <motion.span
                         initial={reduce ? false : { opacity: 0, y: 4 }}
@@ -113,11 +87,17 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
                         You are here
                       </motion.span>
                     )}
+                    {/* Selection badge (only when viewing a different step) */}
+                    {selectedNotCurrent && (
+                      <span className="absolute -top-5 whitespace-nowrap rounded-full border border-ocean-blue bg-white dark:bg-gray-900 px-2 py-0.5 text-[10px] font-semibold text-ocean-blue shadow-sm">
+                        Viewing
+                      </span>
+                    )}
 
                     <motion.button
                       type="button"
                       ref={isCurrent ? currentRef : undefined}
-                      onClick={() => activate(i)}
+                      onClick={() => onSelectStep(step.key)}
                       aria-label={step.label}
                       aria-current={isCurrent ? "step" : undefined}
                       initial={false}
@@ -141,7 +121,7 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
                               ? "bg-gradient-to-br from-mint-green to-teal text-midnight-blue ring-mint-green"
                               : "bg-emerald-500 text-white ring-emerald-500"
                             : "bg-white dark:bg-gray-800 text-gray-400 ring-gray-200 dark:ring-gray-600"
-                      } ${isSelected ? "outline outline-2 outline-offset-2 outline-ocean-blue/40" : ""}`}
+                      } ${selectedNotCurrent ? "outline outline-2 outline-offset-2 outline-ocean-blue" : ""}`}
                     >
                       {isCompleted ? (
                         <motion.span
@@ -162,9 +142,11 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
                       className={`mt-2 text-center text-[10px] leading-tight ${
                         isCurrent
                           ? "font-semibold text-ocean-blue"
-                          : isCompleted
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : "text-gray-400"
+                          : isSelected
+                            ? "font-semibold text-ocean-blue"
+                            : isCompleted
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-gray-400"
                       }`}
                     >
                       {step.label}
@@ -176,61 +158,6 @@ export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUpload
           </div>
         </div>
       </div>
-
-      {/* Selected-node detail — a plain-language line about that step. */}
-      <StepBlurb
-        step={steps[selected]}
-        state={selected < currentIndex ? "done" : selected === currentIndex ? "current" : "ahead"}
-        onUpload={hasUploadTarget && steps[selected].key === "documents" ? () => activate(selected) : undefined}
-      />
     </div>
-  );
-}
-
-function StepBlurb({
-  step,
-  state,
-  onUpload,
-}: {
-  step: MerchantStep;
-  state: "done" | "current" | "ahead";
-  onUpload?: () => void;
-}) {
-  const tag =
-    state === "done" ? "Done" : state === "current" ? (step.whoseMove === "you" ? "Your move" : "We're on it") : "Coming up";
-  const tagClass =
-    state === "done"
-      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-      : state === "current"
-        ? step.whoseMove === "you"
-          ? "bg-amber-500 text-white"
-          : "bg-ocean-blue text-white"
-        : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300";
-
-  return (
-    <motion.div
-      key={step.key}
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
-      className="mt-4 rounded-lg bg-gray-50 dark:bg-gray-800/60 p-3"
-    >
-      <div className="mb-1 flex items-center gap-2">
-        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${tagClass}`}>{tag}</span>
-        <span className="text-sm font-semibold text-gray-900 dark:text-white">{step.label}</span>
-      </div>
-      <p className="text-xs text-gray-600 dark:text-gray-300">{step.whatsHappening}</p>
-      <p className="mt-1 text-xs text-gray-400">{step.timeframe}</p>
-      {onUpload && (
-        <button
-          type="button"
-          onClick={onUpload}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-mint-green px-3 py-1.5 text-xs font-semibold text-white hover:bg-mint-green/90 transition-colors"
-        >
-          <ArrowUpTrayIcon className="h-4 w-4" />
-          Upload documents
-        </button>
-      )}
-    </motion.div>
   );
 }

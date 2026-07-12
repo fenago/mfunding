@@ -10,9 +10,8 @@ import {
   getMyGhlDocuments,
   type PortalMessage,
   type MerchantDocument,
-  type GhlDocument,
 } from "../../services/portalService";
-import { ghlPending, openGhlDoc } from "../../utils/signing";
+import { unifyDocs, openGhlDoc, type Signable } from "../../utils/signing";
 import { classifyMessage, relativeTime } from "../../utils/portalNotifications";
 
 interface NotificationBellProps {
@@ -30,8 +29,7 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<PortalMessage[]>([]);
-  const [toSign, setToSign] = useState<MerchantDocument[]>([]);
-  const [ghlToSign, setGhlToSign] = useState<GhlDocument[]>([]);
+  const [pending, setPending] = useState<Signable[]>([]);
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -45,13 +43,11 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
         getMyGhlDocuments(),
       ]);
       setMessages(msgs);
-      setToSign(mDocs.filter((d) => d.status === "sent"));
-      setGhlToSign(ghlPending(gDocs));
+      setPending(unifyDocs(mDocs, gDocs).pending);
     } catch (e) {
       console.error("Failed to load notifications:", e);
       setMessages([]);
-      setToSign([]);
-      setGhlToSign([]);
+      setPending([]);
     }
     setLoading(false);
   };
@@ -87,7 +83,7 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
   // Documents awaiting signature (native agreements + real GHL docs) are always
   // "action needed" — count them in the badge and pin them to the top so a doc to
   // sign can never be missed, even if no portal message was created for it.
-  const signPinCount = toSign.length + ghlToSign.length;
+  const signPinCount = pending.length;
   const unreadCount = messages.filter((m) => m.status === "unread").length + signPinCount;
   const recent = messages.slice(0, RECENT_LIMIT);
 
@@ -163,50 +159,31 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
             </div>
 
             <div className="max-h-[60vh] sm:max-h-96 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
-              {/* Pinned: agreements ready to sign — always on top */}
-              {toSign.map((d) => (
+              {/* Pinned: documents ready to sign (native + GHL) — always on top */}
+              {pending.map((s, i) => (
                 <button
-                  key={`sign-${d.id}`}
+                  key={`sign-${s.nativeDoc?.id ?? i}-${s.name}`}
                   type="button"
+                  disabled={s.source === "ghl" && !s.url}
                   onClick={() => {
                     setOpen(false);
-                    navigate(`/portal/sign/${d.id}`);
+                    if (s.source === "native" && s.nativeDoc) navigate(`/portal/sign/${s.nativeDoc.id}`);
+                    else openGhlDoc(s.url);
                   }}
-                  className="w-full text-left px-4 py-3 flex items-start gap-3 bg-ocean-blue/5 hover:bg-ocean-blue/10 transition-colors"
-                >
-                  <span className="p-1.5 rounded-lg bg-ocean-blue/10 text-ocean-blue flex-shrink-0">
-                    <PencilSquareIcon className="w-4 h-4" />
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                      Agreement ready to sign
-                    </p>
-                    <p className="text-xs text-gray-500 truncate">{d.name}</p>
-                  </div>
-                  <span className="w-2 h-2 rounded-full bg-mint-green flex-shrink-0 mt-1.5" />
-                </button>
-              ))}
-
-              {/* Pinned: real GHL documents to sign — open in a new tab */}
-              {ghlToSign.map((d, i) => (
-                <button
-                  key={`ghl-${i}-${d.name}`}
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    openGhlDoc(d.url);
-                  }}
-                  disabled={!d.url}
                   className="w-full text-left px-4 py-3 flex items-start gap-3 bg-ocean-blue/5 hover:bg-ocean-blue/10 transition-colors disabled:opacity-60"
                 >
                   <span className="p-1.5 rounded-lg bg-ocean-blue/10 text-ocean-blue flex-shrink-0">
-                    <ArrowTopRightOnSquareIcon className="w-4 h-4" />
+                    {s.source === "ghl" ? (
+                      <ArrowTopRightOnSquareIcon className="w-4 h-4" />
+                    ) : (
+                      <PencilSquareIcon className="w-4 h-4" />
+                    )}
                   </span>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">
                       Document ready to sign
                     </p>
-                    <p className="text-xs text-gray-500 truncate">{d.name}</p>
+                    <p className="text-xs text-gray-500 truncate">{s.name}</p>
                   </div>
                   <span className="w-2 h-2 rounded-full bg-mint-green flex-shrink-0 mt-1.5" />
                 </button>

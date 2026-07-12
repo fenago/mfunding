@@ -19,7 +19,7 @@ import {
   type GhlDocument,
 } from "../../services/portalService";
 import { DOCUMENT_TYPES } from "../../data/docRequests";
-import { ghlPending, ghlSigned, ghlExpired, openGhlDoc } from "../../utils/signing";
+import { unifyDocs, openGhlDoc } from "../../utils/signing";
 import DocChecklist from "../../components/portal/DocChecklist";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
 import SignDocumentModal from "../../components/portal/SignDocumentModal";
@@ -110,12 +110,12 @@ export default function PortalDocumentsPage() {
     );
   }
 
-  const toSign = merchantDocs.filter((d) => d.status === "sent");
-  const signedDocs = merchantDocs.filter((d) => d.status === "signed");
-  const ghlToSign = ghlPending(ghlDocs);
-  const ghlDone = ghlSigned(ghlDocs);
-  const ghlDead = ghlExpired(ghlDocs);
-  const hasPendingSign = toSign.length > 0 || ghlToSign.length > 0;
+  // One unified, one-application-collapsed view of signable docs.
+  const unified = unifyDocs(merchantDocs, ghlDocs);
+  const signedDocs = unified.signedNative;
+  const ghlDone = unified.signedGhl;
+  const ghlDead = unified.expiredGhl;
+  const hasPendingSign = unified.pending.length > 0;
   // All-clear only when there's nothing to sign (native OR GHL) AND nothing requested.
   const allClear = !hasPendingSign && requests.length === 0;
   const onFileCount = signedDocs.length + documents.length + ghlDone.length + ghlDead.length;
@@ -156,11 +156,7 @@ export default function PortalDocumentsPage() {
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-gray-900 dark:text-white">To sign</h2>
             {hasPendingSign ? (
-              <DocumentsToSign
-                documents={merchantDocs}
-                ghlDocuments={ghlDocs}
-                onSelect={setSigningDoc}
-              />
+              <DocumentsToSign pending={unified.pending} onSelectNative={setSigningDoc} />
             ) : (
               <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">
                 No documents are waiting for your signature right now.
