@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { BellIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
+import { BellIcon, PencilSquareIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { CheckCircleIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
 import { tryWrite } from "@/supabase/writes";
 import {
   getMyMessages,
   getMyMerchantDocuments,
+  getMyGhlDocuments,
   type PortalMessage,
   type MerchantDocument,
+  type GhlDocument,
 } from "../../services/portalService";
+import { ghlPending, openGhlDoc } from "../../utils/signing";
 import { classifyMessage, relativeTime } from "../../utils/portalNotifications";
 
 interface NotificationBellProps {
@@ -28,6 +31,7 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<PortalMessage[]>([]);
   const [toSign, setToSign] = useState<MerchantDocument[]>([]);
+  const [ghlToSign, setGhlToSign] = useState<GhlDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -35,16 +39,19 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
     if (!userId) return;
     setLoading(true);
     try {
-      const [msgs, mDocs] = await Promise.all([
+      const [msgs, mDocs, gDocs] = await Promise.all([
         getMyMessages(userId),
         getMyMerchantDocuments().catch(() => [] as MerchantDocument[]),
+        getMyGhlDocuments(),
       ]);
       setMessages(msgs);
       setToSign(mDocs.filter((d) => d.status === "sent"));
+      setGhlToSign(ghlPending(gDocs));
     } catch (e) {
       console.error("Failed to load notifications:", e);
       setMessages([]);
       setToSign([]);
+      setGhlToSign([]);
     }
     setLoading(false);
   };
@@ -77,10 +84,11 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
     };
   }, [open]);
 
-  // Agreements awaiting signature are always "action needed" — count them in the
-  // badge and pin them to the top so a 'sent' doc can never be missed, even if no
-  // portal message was created for it.
-  const unreadCount = messages.filter((m) => m.status === "unread").length + toSign.length;
+  // Documents awaiting signature (native agreements + real GHL docs) are always
+  // "action needed" — count them in the badge and pin them to the top so a doc to
+  // sign can never be missed, even if no portal message was created for it.
+  const signPinCount = toSign.length + ghlToSign.length;
+  const unreadCount = messages.filter((m) => m.status === "unread").length + signPinCount;
   const recent = messages.slice(0, RECENT_LIMIT);
 
   const markRead = async (m: PortalMessage) => {
@@ -179,9 +187,34 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
                 </button>
               ))}
 
-              {loading && recent.length === 0 && toSign.length === 0 ? (
+              {/* Pinned: real GHL documents to sign — open in a new tab */}
+              {ghlToSign.map((d, i) => (
+                <button
+                  key={`ghl-${i}-${d.name}`}
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    openGhlDoc(d.url);
+                  }}
+                  disabled={!d.url}
+                  className="w-full text-left px-4 py-3 flex items-start gap-3 bg-ocean-blue/5 hover:bg-ocean-blue/10 transition-colors disabled:opacity-60"
+                >
+                  <span className="p-1.5 rounded-lg bg-ocean-blue/10 text-ocean-blue flex-shrink-0">
+                    <ArrowTopRightOnSquareIcon className="w-4 h-4" />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                      Document ready to sign
+                    </p>
+                    <p className="text-xs text-gray-500 truncate">{d.name}</p>
+                  </div>
+                  <span className="w-2 h-2 rounded-full bg-mint-green flex-shrink-0 mt-1.5" />
+                </button>
+              ))}
+
+              {loading && recent.length === 0 && signPinCount === 0 ? (
                 <div className="p-6 text-center text-sm text-gray-500">Loading…</div>
-              ) : recent.length === 0 && toSign.length === 0 ? (
+              ) : recent.length === 0 && signPinCount === 0 ? (
                 <div className="p-6 text-center">
                   <CheckCircleIcon className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
                   <p className="text-sm text-gray-500">You're all caught up.</p>

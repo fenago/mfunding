@@ -8,11 +8,13 @@ import {
   getMyPortalDeals,
   getMyDocRequests,
   getMyMerchantDocuments,
+  getMyGhlDocuments,
   getMyDealSubmissions,
   SUBMITTED_OR_PAST_STATUSES,
   type PortalDeal,
   type DocRequest,
   type MerchantDocument,
+  type GhlDocument,
 } from "../../services/portalService";
 import ActionNeededHero from "../../components/portal/ActionNeededHero";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
@@ -36,6 +38,7 @@ export default function PortalDashboardPage() {
   const [deals, setDeals] = useState<PortalDeal[]>([]);
   const [docRequests, setDocRequests] = useState<DocRequest[]>([]);
   const [signDocuments, setSignDocuments] = useState<MerchantDocument[]>([]);
+  const [ghlDocuments, setGhlDocuments] = useState<GhlDocument[]>([]);
   const [offerCount, setOfferCount] = useState(0);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [pendingDocuments, setPendingDocuments] = useState(0);
@@ -92,6 +95,9 @@ export default function PortalDashboardPage() {
       setSignDocuments([]);
     }
 
+    // Real GHL e-sign documents (resolves the contact server-side; [] on failure).
+    setGhlDocuments(await getMyGhlDocuments());
+
     // Authoritative count of reviewable offers, for the Action-Needed hero.
     try {
       const eligible = loadedDeals.filter(
@@ -123,6 +129,20 @@ export default function PortalDashboardPage() {
     fetchData();
   }, [fetchData]);
 
+  // A merchant who signs a GHL doc in a new tab and returns should see it flip
+  // without a manual reload — refresh on focus / tab-visible.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") void fetchData();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [fetchData]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -151,11 +171,12 @@ export default function PortalDashboardPage() {
         pendingDocuments={pendingDocuments}
         docRequests={docRequests}
         signDocuments={signDocuments}
+        ghlDocuments={ghlDocuments}
         offerCount={offerCount}
       />
 
-      {/* Agreements ready to sign — open the signing modal in place */}
-      <DocumentsToSign documents={signDocuments} onSelect={setSigningDoc} />
+      {/* Documents ready to sign — native opens the modal in place, GHL opens in a new tab */}
+      <DocumentsToSign documents={signDocuments} ghlDocuments={ghlDocuments} onSelect={setSigningDoc} />
 
       {/* The journey, one card per funding request */}
       {deals.length > 0 ? (

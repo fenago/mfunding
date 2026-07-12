@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom";
 import { BoltIcon, CheckCircleIcon, ArrowRightIcon } from "@heroicons/react/24/solid";
-import type { PortalDeal, DocRequest, MerchantDocument } from "../../services/portalService";
+import type { PortalDeal, DocRequest, MerchantDocument, GhlDocument } from "../../services/portalService";
 import Countdown from "./Countdown";
 import { isDeadlinePast } from "../../utils/deadline";
+import { ghlPending } from "../../utils/signing";
 
 interface ActionNeededHeroProps {
   deals: PortalDeal[];
@@ -12,6 +13,8 @@ interface ActionNeededHeroProps {
   docRequests?: DocRequest[];
   /** Agreements awaiting the merchant's signature (status 'sent'). */
   signDocuments?: MerchantDocument[];
+  /** Real GHL documents awaiting signature (opened in a new tab). */
+  ghlDocuments?: GhlDocument[];
   /** Number of offer-stage submissions the merchant can review right now. */
   offerCount?: number;
 }
@@ -32,21 +35,28 @@ function topAction(
   pendingDocuments: number,
   docRequests: DocRequest[],
   signDocuments: MerchantDocument[],
+  ghlDocuments: GhlDocument[],
   offerCount: number,
 ): ActionItem | null {
   const actions: ActionItem[] = [];
 
-  // A ready-to-sign agreement is the single most important active step — the
-  // file is one signature from moving to funding.
-  const toSign = signDocuments.filter((d) => d.status === "sent");
-  if (toSign.length > 0) {
-    const one = toSign.length === 1;
+  // A ready-to-sign document is the single most important active step — the file
+  // is one signature from moving forward. Native in-app agreements and real GHL
+  // documents are merged into one signal.
+  const nativeToSign = signDocuments.filter((d) => d.status === "sent");
+  const ghlToSign = ghlPending(ghlDocuments);
+  const totalToSign = nativeToSign.length + ghlToSign.length;
+  if (totalToSign > 0) {
+    const one = totalToSign === 1;
+    // Deep-link a lone native agreement to its sign page; anything involving a
+    // GHL doc (opens in a new tab) routes to the Documents "To sign" section.
+    const to = one && nativeToSign.length === 1 ? `/portal/sign/${nativeToSign[0].id}` : "/portal/documents";
     actions.push({
       priority: 120,
-      title: one ? "Your agreement is ready to sign" : `${toSign.length} agreements ready to sign`,
+      title: one ? "Your document is ready to sign" : `${totalToSign} documents ready to sign`,
       detail: "Review and add your signature to keep your funding moving.",
-      to: one ? `/portal/sign/${toSign[0].id}` : "/portal",
-      ctaLabel: one ? "Review & sign" : "Review agreements",
+      to,
+      ctaLabel: one ? "Review & sign" : "Review documents",
     });
   }
 
@@ -165,9 +175,10 @@ export default function ActionNeededHero({
   pendingDocuments,
   docRequests = [],
   signDocuments = [],
+  ghlDocuments = [],
   offerCount = 0,
 }: ActionNeededHeroProps) {
-  const action = topAction(deals, pendingDocuments, docRequests, signDocuments, offerCount);
+  const action = topAction(deals, pendingDocuments, docRequests, signDocuments, ghlDocuments, offerCount);
 
   if (!action) {
     return (

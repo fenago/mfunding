@@ -363,6 +363,41 @@ export async function getMerchantDocument(documentId: string): Promise<MerchantD
   return (data as unknown as MerchantDocument) ?? null;
 }
 
+// ── GHL Documents & Contracts (the real e-sign docs) ─────────────────────────
+// The email path sends per-recipient GHL signing links (MCA 04 fillable / 04B
+// pre-filled). The portal surfaces the SAME links via the ghl-docs-status edge
+// function, which resolves the merchant's own GHL contact server-side from
+// auth.uid() — the client passes no contact id. `url` is a per-recipient viewer
+// link (bearer token); open it in a new tab, never store or log it.
+
+export interface GhlDocument {
+  name: string;
+  /** GHL doc status: 'draft' | 'sent' | 'viewed' | 'completed'. */
+  status: string;
+  /** Recipient has completed (signed) this document. */
+  signed: boolean;
+  updatedAt: string | null;
+  isExpired: boolean;
+  /** Per-recipient viewer/signing URL, or null if none is available yet. */
+  url: string | null;
+}
+
+/** The signed-in merchant's real GHL e-sign documents. Resolves the contact
+ *  server-side; graceful [] on any failure (never blocks the portal). */
+export async function getMyGhlDocuments(): Promise<GhlDocument[]> {
+  try {
+    const { data, error } = await supabase.functions.invoke("ghl-docs-status", { body: {} });
+    if (error) {
+      console.warn("[ghl-docs-status] load failed (non-blocking):", error.message);
+      return [];
+    }
+    return ((data?.documents ?? []) as GhlDocument[]).filter((d) => !!d && !!d.name);
+  } catch (e) {
+    console.warn("[ghl-docs-status] threw (non-blocking):", e);
+    return [];
+  }
+}
+
 export class SignDocumentError extends Error {}
 
 /** Apply the merchant's typed-name electronic signature to a document via the

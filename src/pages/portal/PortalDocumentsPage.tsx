@@ -6,17 +6,20 @@ import {
   XCircleIcon,
   ChevronDownIcon,
 } from "@heroicons/react/24/outline";
-import { CheckCircleIcon as CheckCircleSolid, DocumentCheckIcon } from "@heroicons/react/24/solid";
+import { CheckCircleIcon as CheckCircleSolid, DocumentCheckIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/solid";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
 import {
   getMyCustomer,
   getMyDocRequests,
   getMyMerchantDocuments,
+  getMyGhlDocuments,
   type DocRequest,
   type MerchantDocument,
+  type GhlDocument,
 } from "../../services/portalService";
 import { DOCUMENT_TYPES } from "../../data/docRequests";
+import { ghlPending, ghlSigned, ghlExpired, openGhlDoc } from "../../utils/signing";
 import DocChecklist from "../../components/portal/DocChecklist";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
 import SignDocumentModal from "../../components/portal/SignDocumentModal";
@@ -41,6 +44,7 @@ export default function PortalDocumentsPage() {
   const [documents, setDocuments] = useState<CustomerDocument[]>([]);
   const [requests, setRequests] = useState<DocRequest[]>([]);
   const [merchantDocs, setMerchantDocs] = useState<MerchantDocument[]>([]);
+  const [ghlDocs, setGhlDocs] = useState<GhlDocument[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [showOnFile, setShowOnFile] = useState(false);
@@ -60,7 +64,7 @@ export default function PortalDocumentsPage() {
 
     if (customer) {
       setCustomerId(customer.id);
-      const [{ data: docs }, reqs, mDocs] = await Promise.all([
+      const [{ data: docs }, reqs, mDocs, gDocs] = await Promise.all([
         supabase
           .from("customer_documents")
           .select("id, document_type, filename, status, created_at")
@@ -74,13 +78,29 @@ export default function PortalDocumentsPage() {
           console.error("Failed to load agreements:", e);
           return [] as MerchantDocument[];
         }),
+        getMyGhlDocuments(),
       ]);
       setDocuments(docs || []);
       setRequests(reqs);
       setMerchantDocs(mDocs);
+      setGhlDocs(gDocs);
     }
     setIsLoading(false);
   };
+
+  // Refresh when the merchant returns from a GHL signing tab.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible" && session?.user?.id) fetchAll();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
   if (isLoading) {
     return (
@@ -92,9 +112,13 @@ export default function PortalDocumentsPage() {
 
   const toSign = merchantDocs.filter((d) => d.status === "sent");
   const signedDocs = merchantDocs.filter((d) => d.status === "signed");
-  // All-clear only when there's nothing to sign AND nothing requested to upload.
-  const allClear = toSign.length === 0 && requests.length === 0;
-  const onFileCount = signedDocs.length + documents.length;
+  const ghlToSign = ghlPending(ghlDocs);
+  const ghlDone = ghlSigned(ghlDocs);
+  const ghlDead = ghlExpired(ghlDocs);
+  const hasPendingSign = toSign.length > 0 || ghlToSign.length > 0;
+  // All-clear only when there's nothing to sign (native OR GHL) AND nothing requested.
+  const allClear = !hasPendingSign && requests.length === 0;
+  const onFileCount = signedDocs.length + documents.length + ghlDone.length + ghlDead.length;
 
   return (
     <div className="space-y-8">
@@ -128,14 +152,18 @@ export default function PortalDocumentsPage() {
             </div>
           )}
 
-          {/* ── SECTION 1: To sign ──────────────────────────────────────────── */}
+          {/* ── SECTION 1: To sign (native agreements + real GHL docs) ──────── */}
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-gray-900 dark:text-white">To sign</h2>
-            {toSign.length > 0 ? (
-              <DocumentsToSign documents={merchantDocs} onSelect={setSigningDoc} />
+            {hasPendingSign ? (
+              <DocumentsToSign
+                documents={merchantDocs}
+                ghlDocuments={ghlDocs}
+                onSelect={setSigningDoc}
+              />
             ) : (
               <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">
-                No agreements are waiting for your signature right now.
+                No documents are waiting for your signature right now.
               </div>
             )}
           </section>
@@ -193,6 +221,51 @@ export default function PortalDocumentsPage() {
                           </div>
                           <span className="text-sm font-medium text-ocean-blue flex-shrink-0">View</span>
                         </button>
+                      ))}
+
+                      {/* Completed GHL documents — open the signed copy in a new tab */}
+                      {ghlDone.map((d, i) => (
+                        <button
+                          key={`gd-${i}-${d.name}`}
+                          type="button"
+                          onClick={() => openGhlDoc(d.url)}
+                          disabled={!d.url}
+                          className="w-full p-4 flex items-center justify-between gap-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors disabled:cursor-default"
+                        >
+                          <div className="flex items-center gap-4 min-w-0">
+                            <div className="p-2 bg-emerald-100 dark:bg-emerald-900/40 rounded-lg flex-shrink-0">
+                              <DocumentCheckIcon className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-900 dark:text-white truncate">{d.name}</p>
+                              <p className="text-sm text-gray-500">
+                                Signed
+                                {d.updatedAt ? ` • ${new Date(d.updatedAt).toLocaleDateString()}` : ""}
+                              </p>
+                            </div>
+                          </div>
+                          {d.url && (
+                            <span className="inline-flex items-center gap-1 text-sm font-medium text-ocean-blue flex-shrink-0">
+                              View
+                              <ArrowTopRightOnSquareIcon className="w-4 h-4" />
+                            </span>
+                          )}
+                        </button>
+                      ))}
+
+                      {/* Expired GHL links — muted, needs a resend */}
+                      {ghlDead.map((d, i) => (
+                        <div key={`gx-${i}-${d.name}`} className="p-4 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-4 min-w-0">
+                            <div className="p-2 bg-gray-100 dark:bg-gray-700 rounded-lg flex-shrink-0">
+                              <DocumentCheckIcon className="w-6 h-6 text-gray-400" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-500 dark:text-gray-400 truncate">{d.name}</p>
+                              <p className="text-sm text-gray-400">Link expired — ask your specialist to resend</p>
+                            </div>
+                          </div>
+                        </div>
                       ))}
 
                       {/* Documents you've uploaded */}
