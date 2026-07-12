@@ -1,6 +1,7 @@
 import { PencilSquareIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/solid";
 import type { MerchantDocument } from "../../services/portalService";
-import { openGhlDoc, type Signable } from "../../utils/signing";
+import { openGhlDoc, type Signable, type ApplicationStatus } from "../../utils/signing";
+import FreshApplicationLink from "./FreshApplicationLink";
 
 interface DocumentsToSignProps {
   /** Unified pending signables (native + GHL), already collapsed by the
@@ -8,11 +9,13 @@ interface DocumentsToSignProps {
   pending: Signable[];
   /** Open a native agreement in the in-app signing modal. */
   onSelectNative?: (doc: MerchantDocument) => void;
+  /** Resolved application — powers the "fill out a fresh one" fallback link. */
+  application?: ApplicationStatus;
 }
 
 /** One unified "ready to sign" list: native in-app agreements + real GHL docs.
  *  The merchant can't tell them apart. Renders nothing when nothing is pending. */
-export default function DocumentsToSign({ pending, onSelectNative }: DocumentsToSignProps) {
+export default function DocumentsToSign({ pending, onSelectNative, application }: DocumentsToSignProps) {
   if (pending.length === 0) return null;
 
   return (
@@ -66,6 +69,7 @@ export default function DocumentsToSign({ pending, onSelectNative }: DocumentsTo
           ),
         )}
       </div>
+      {application && <FreshApplicationLink application={application} className="mt-3" />}
     </div>
   );
 }

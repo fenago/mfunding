@@ -11,6 +11,7 @@ import SubmissionsCard from "./SubmissionsCard";
 import PaydownTracker from "./PaydownTracker";
 import PostFundingVault from "./PostFundingVault";
 import Countdown from "./Countdown";
+import FreshApplicationLink from "./FreshApplicationLink";
 
 interface StepDetailProps {
   deal: PortalDeal;
@@ -234,6 +235,7 @@ function ApplicationCard({
             {s?.source === "ghl" && <ArrowTopRightOnSquareIcon className="w-4 h-4" />}
           </button>
         </div>
+        <FreshApplicationLink application={application} className="mt-2" />
       </div>
     );
   }
@@ -269,18 +271,26 @@ function PaperworkList({
   const pending = unified.pending;
   const signed = unified.signed;
   const dealReqs = docRequests.filter((r) => r.deal_id === deal.id);
-  const upDone = dealReqs.filter((r) => uploadDone(r.status)).length;
+  const requiredReqs = dealReqs.filter((r) => r.required);
+  const optionalReqs = dealReqs.filter((r) => !r.required);
 
-  const done = signed.length + upDone;
-  const total = pending.length + signed.length + dealReqs.length;
+  // Signatures count as required. Optional uploads are tallied separately so the
+  // primary number never implies an optional item is holding up the file.
+  const done = signed.length + requiredReqs.filter((r) => uploadDone(r.status)).length;
+  const total = pending.length + signed.length + requiredReqs.length;
+  const optDone = optionalReqs.filter((r) => uploadDone(r.status)).length;
+  const optTotal = optionalReqs.length;
   const hasSignables = pending.length + signed.length > 0;
 
   return (
     <div className="space-y-4">
-      {/* Combined progress — signables + uploads, one source of truth */}
+      {/* Combined progress — signatures + required uploads primary, optional secondary */}
       {total > 0 && (
         <p className="text-sm font-semibold text-gray-900 dark:text-white">
           {done} of {total} done
+          {optTotal > 0 && (
+            <span className="font-normal text-gray-400"> · {optDone} of {optTotal} optional</span>
+          )}
         </p>
       )}
 
@@ -294,6 +304,7 @@ function PaperworkList({
           {signed.map((s, i) => (
             <SignedRow key={`s-${s.nativeDoc?.id ?? i}-${s.name}`} s={s} onSignNative={onSignNative} />
           ))}
+          <FreshApplicationLink application={unified.application} />
         </div>
       )}
 

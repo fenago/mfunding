@@ -29,6 +29,18 @@ function isDone(status: DocRequestStatus): boolean {
   return status === "uploaded" || status === "under_review" || status === "approved";
 }
 
+/** Chip for a request — optional-but-not-yet-uploaded items get the softer
+ *  "Optional — helps your file" treatment instead of the urgent "Needed". */
+function chipFor(req: DocRequest): { label: string; className: string } {
+  if (req.status === "requested" && !req.required) {
+    return {
+      label: "Optional — helps your file",
+      className: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
+    };
+  }
+  return REQUEST_STATUS_CHIP[req.status];
+}
+
 // ── Upload slot: choose a file OR open the camera directly (mobile) ───────────
 function UploadSlot({
   onFile,
@@ -233,9 +245,22 @@ export default function DocChecklist({
     }
   };
 
-  const openRequests = requests.filter((r) => r.status !== "approved");
   const approvedRequests = requests.filter((r) => r.status === "approved");
-  const doneCount = requests.filter((r) => isDone(r.status)).length;
+  // Required items first, then optional; approved drop to the quiet list.
+  const openRequests = requests
+    .filter((r) => r.status !== "approved")
+    .sort((a, b) => Number(b.required) - Number(a.required));
+
+  const requiredReqs = requests.filter((r) => r.required);
+  const optionalReqs = requests.filter((r) => !r.required);
+  const reqDone = requiredReqs.filter((r) => isDone(r.status)).length;
+  const optDone = optionalReqs.filter((r) => isDone(r.status)).length;
+  const openRequiredCount = requiredReqs.filter((r) => !isDone(r.status)).length;
+  const openOptionalCount = optionalReqs.filter((r) => !isDone(r.status)).length;
+  // The ring tracks REQUIRED progress (optional never gates); fall back to
+  // optional only when there are no required items at all.
+  const primaryDone = requiredReqs.length > 0 ? reqDone : optDone;
+  const primaryTotal = requiredReqs.length > 0 ? requiredReqs.length : optionalReqs.length;
 
   if (!loaded) {
     return <p className="text-sm text-gray-400">Loading your checklist…</p>;
@@ -243,18 +268,25 @@ export default function DocChecklist({
 
   return (
     <div className="space-y-4">
-      {/* Progress header */}
+      {/* Progress header — required is the primary number; optional is secondary */}
       {showProgress && requests.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 flex items-center gap-4">
-          <ProgressRing done={doneCount} total={requests.length} />
+          <ProgressRing done={primaryDone} total={primaryTotal} />
           <div>
             <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-              {doneCount} of {requests.length} done
+              {requiredReqs.length > 0
+                ? `${reqDone} of ${requiredReqs.length} needed in`
+                : `${optDone} of ${optionalReqs.length} optional in`}
+              {requiredReqs.length > 0 && optionalReqs.length > 0 && (
+                <span className="font-normal text-gray-400"> · {optDone} of {optionalReqs.length} optional</span>
+              )}
             </h3>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              {openRequests.length === 0
-                ? "Everything's in — nothing else needed from you right now."
-                : `${openRequests.length} item${openRequests.length === 1 ? "" : "s"} still need your attention.`}
+              {openRequiredCount > 0
+                ? `${openRequiredCount} required item${openRequiredCount === 1 ? "" : "s"} still need your attention.`
+                : openOptionalCount > 0
+                  ? `You're all set on required items — ${openOptionalCount} optional item${openOptionalCount === 1 ? "" : "s"} could strengthen your file.`
+                  : "Everything's in — nothing else needed from you right now."}
             </p>
           </div>
         </div>
@@ -262,7 +294,7 @@ export default function DocChecklist({
 
       {/* Open checklist cards */}
       {openRequests.map((req) => {
-        const chip = REQUEST_STATUS_CHIP[req.status];
+        const chip = chipFor(req);
         const busy = uploadingId === req.id;
         const err = cardError[req.id];
         const isRejected = req.status === "rejected";
@@ -296,7 +328,14 @@ export default function DocChecklist({
 
             {needsUpload ? (
               <>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">{docTypeHelp(req.doc_type)}</p>
+                <div className="mb-3">
+                  <p className="text-sm text-gray-500 dark:text-gray-400">{docTypeHelp(req.doc_type)}</p>
+                  {!req.required && (
+                    <p className="text-xs text-gray-400 mt-1">
+                      Not required — but it strengthens your file with funding partners.
+                    </p>
+                  )}
+                </div>
                 <UploadSlot
                   onFile={(f) => handleChecklistUpload(req, f)}
                   busy={busy}

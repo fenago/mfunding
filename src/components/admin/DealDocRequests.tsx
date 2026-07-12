@@ -26,7 +26,7 @@ const STATUS_BADGE: Record<DocRequestStatus, { label: string; className: string 
 };
 
 const DOC_REQUEST_COLUMNS =
-  "id, deal_id, customer_id, doc_type, label, status, rejection_reason, due_at, requested_by, document_id, created_at";
+  "id, deal_id, customer_id, doc_type, label, status, rejection_reason, due_at, requested_by, document_id, created_at, required";
 
 export default function DealDocRequests({ dealId, customerId }: DealDocRequestsProps) {
   const { session } = useSession();
@@ -39,6 +39,7 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
   // New-request form
   const [customLabel, setCustomLabel] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [customRequired, setCustomRequired] = useState(true); // custom requests default to required
 
   // Reject flow
   const [rejectingId, setRejectingId] = useState<string | null>(null);
@@ -74,7 +75,12 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
     setIsLoading(false);
   };
 
-  const createRequest = async (doc_type: string, label: string, defaultDueHours?: number) => {
+  const createRequest = async (
+    doc_type: string,
+    label: string,
+    required: boolean,
+    defaultDueHours?: number,
+  ) => {
     if (!customerId || !label.trim()) return;
     setBusy(true);
     setError(null);
@@ -95,11 +101,13 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
           label: label.trim(),
           status: "requested",
           due_at: dueAt,
+          required,
           requested_by: session?.user?.id ?? null,
         }),
       );
       setCustomLabel("");
       setDueDate("");
+      setCustomRequired(true);
       await fetchRequests();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't create the request.");
@@ -171,19 +179,20 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
               type="button"
               disabled={busy || !customerId || already}
               onClick={() =>
-                createRequest(t.doc_type, t.label, t.doc_type === "bank_statement" ? 24 : undefined)
+                createRequest(t.doc_type, t.label, t.required, t.doc_type === "bank_statement" ? 24 : undefined)
               }
               title={
                 already
                   ? "Already requested"
                   : t.doc_type === "bank_statement"
-                    ? `Request: ${t.label} (due in 24 hours)`
-                    : `Request: ${t.label}`
+                    ? `Request: ${t.label} (required, due in 24 hours)`
+                    : `Request: ${t.label}${t.required ? " (required)" : " (optional)"}`
               }
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:border-ocean-blue hover:text-ocean-blue disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <PlusIcon className="w-4 h-4" />
               {t.label}
+              {!t.required && <span className="text-gray-400">· optional</span>}
               {already && " ✓"}
             </button>
           );
@@ -208,10 +217,20 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
           title="Optional due date"
           className="input-field text-sm sm:w-44"
         />
+        <select
+          value={customRequired ? "required" : "optional"}
+          onChange={(e) => setCustomRequired(e.target.value === "required")}
+          disabled={busy || !customerId}
+          title="Required items are urgent for the merchant; optional items are encouraged"
+          className="input-field text-sm sm:w-36"
+        >
+          <option value="required">Required</option>
+          <option value="optional">Optional</option>
+        </select>
         <button
           type="button"
           disabled={busy || !customerId || !customLabel.trim()}
-          onClick={() => createRequest("other", customLabel)}
+          onClick={() => createRequest("other", customLabel, customRequired)}
           className="btn-primary text-sm flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <PlusIcon className="w-4 h-4" />
@@ -219,7 +238,8 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
         </button>
       </div>
       <p className="text-xs text-gray-400 mb-5">
-        A due date is optional; it shows the merchant a countdown. Phrase custom requests
+        A due date is optional; it shows the merchant a countdown. Required items are urgent
+        in the portal; optional items are shown as "helps your file." Phrase custom requests
         in merchant-friendly language.
       </p>
 
@@ -243,6 +263,15 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <span className="text-sm font-medium text-gray-900 dark:text-white">{req.label}</span>
+                    <span
+                      className={`ml-2 inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded ${
+                        req.required
+                          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                          : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                      }`}
+                    >
+                      {req.required ? "Required" : "Optional"}
+                    </span>
                     {req.due_at && (
                       <span className="ml-2 inline-flex items-center gap-1 text-xs text-gray-400">
                         <ClockIcon className="w-3.5 h-3.5" />

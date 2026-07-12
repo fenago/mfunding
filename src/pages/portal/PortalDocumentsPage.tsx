@@ -156,7 +156,11 @@ export default function PortalDocumentsPage() {
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-gray-900 dark:text-white">To sign</h2>
             {hasPendingSign ? (
-              <DocumentsToSign pending={unified.pending} onSelectNative={setSigningDoc} />
+              <DocumentsToSign
+                pending={unified.pending}
+                onSelectNative={setSigningDoc}
+                application={unified.application}
+              />
             ) : (
               <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">
                 No documents are waiting for your signature right now.

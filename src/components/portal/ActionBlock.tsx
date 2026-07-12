@@ -9,14 +9,17 @@ import {
   BanknotesIcon,
 } from "@heroicons/react/24/solid";
 import type { PortalDeal, DocRequest, MerchantDocument } from "../../services/portalService";
-import { openGhlDoc, type Signable } from "../../utils/signing";
+import { openGhlDoc, type Signable, type ApplicationStatus } from "../../utils/signing";
 import { isDeadlinePast } from "../../utils/deadline";
 import Countdown from "./Countdown";
+import FreshApplicationLink from "./FreshApplicationLink";
 
 interface ActionBlockProps {
   deals: PortalDeal[];
   /** Unified pending signables (native + GHL), collapsed by the one-application rule. */
   pending: Signable[];
+  /** Resolved application — powers the "fill out a fresh one" fallback link. */
+  application: ApplicationStatus;
   docRequests: DocRequest[];
   offerCount: number;
   /** Open a native agreement in the in-app signing modal. */
@@ -45,23 +48,29 @@ function nextUpdateHint(deals: PortalDeal[]): string {
 export default function ActionBlock({
   deals,
   pending,
+  application,
   docRequests,
   offerCount,
   onSignNative,
   onUpload,
 }: ActionBlockProps) {
-  // Upload need: explicit requests, or a deal parked at the documents stage.
+  // Only REQUIRED items (and signatures) create urgency. Optional-but-encouraged
+  // uploads never fire the amber task — they surface as a soft nudge instead.
   const openReqs = docRequests.filter((r) => r.status === "requested" || r.status === "rejected");
-  const rejected = docRequests.filter((r) => r.status === "rejected");
-  const docsStageDeal = deals.find((d) => d.status === "docs_collected" || d.status === "bank_statements");
-  const uploadDeal =
-    deals.find((d) => openReqs.some((r) => r.deal_id === d.id)) ?? docsStageDeal ?? null;
-  const needUpload = openReqs.length > 0 || !!docsStageDeal;
+  const openRequired = openReqs.filter((r) => r.required);
+  const openOptional = openReqs.filter((r) => !r.required);
+  const rejectedRequired = openRequired.filter((r) => r.status === "rejected");
   const overdue = deals.find(
     (d) => isDeadlinePast(d.stips_promised_by) && (d.status === "docs_collected" || d.status === "bank_statements"),
   );
+  const needUpload = openRequired.length > 0 || !!overdue;
+  const uploadDeal =
+    deals.find((d) => openRequired.some((r) => r.deal_id === d.id)) ??
+    deals.find((d) => d.status === "docs_collected" || d.status === "bank_statements") ??
+    null;
+  const optionalDeal = deals.find((d) => openOptional.some((r) => r.deal_id === d.id)) ?? null;
   const soonestDue =
-    openReqs
+    openRequired
       .map((r) => r.due_at)
       .filter((d): d is string => !!d)
       .sort()[0] ?? overdue?.stips_promised_by ?? undefined;
@@ -70,7 +79,7 @@ export default function ActionBlock({
 
   const rowCount = pending.length + (needUpload ? 1 : 0) + (offersActive ? 1 : 0);
 
-  // Nothing to do → the all-set state.
+  // Nothing urgent → the all-set state (with a soft optional nudge if any remain).
   if (rowCount === 0) {
     return (
       <div className="sticky top-2 z-20 rounded-xl p-4 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700">
@@ -81,13 +90,27 @@ export default function ActionBlock({
               You're all set — we're working on it.
             </p>
             <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-0.5">{nextUpdateHint(deals)}</p>
+            {openOptional.length > 0 && (
+              <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-1">
+                {openOptional.length} optional item{openOptional.length === 1 ? "" : "s"} could strengthen your file.
+                {optionalDeal && (
+                  <button
+                    type="button"
+                    onClick={() => onUpload(optionalDeal.id)}
+                    className="ml-1 font-semibold underline hover:no-underline"
+                  >
+                    Add {openOptional.length === 1 ? "it" : "them"}
+                  </button>
+                )}
+              </p>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  const uploadUrgent = rejected.length > 0 || !!overdue;
+  const uploadUrgent = rejectedRequired.length > 0 || !!overdue;
 
   return (
     <div className="rounded-xl border-2 border-amber-300 dark:border-amber-700 bg-amber-50/70 dark:bg-amber-900/10 p-4 sm:p-5">
@@ -116,6 +139,7 @@ export default function ActionBlock({
             }}
           />
         ))}
+        <FreshApplicationLink application={application} className="px-1" />
 
         {/* 2) Upload */}
         {needUpload && uploadDeal && (
@@ -123,14 +147,14 @@ export default function ActionBlock({
             icon={<ArrowUpTrayIcon className="w-5 h-5" />}
             tone={uploadUrgent ? "red" : "amber"}
             title={
-              rejected.length > 0
+              rejectedRequired.length > 0
                 ? "Re-upload a document"
                 : overdue
                   ? "Your bank statements are past due"
                   : "Upload your documents"
             }
             detail={
-              rejected.length > 0
+              rejectedRequired.length > 0
                 ? "One of your uploads couldn't be accepted — send it again to keep your file moving."
                 : "Your most recent business bank statements are the fastest way to your offers."
             }

@@ -11,16 +11,20 @@ export interface DocRequestTemplate {
   doc_type: string;
   /** Merchant-friendly label shown on the checklist card. */
   label: string;
+  /** Required (urgent) vs. optional-but-encouraged. Mirrors deal_doc_requests.required. */
+  required: boolean;
 }
 
 /** Quick-pick templates the closer can request in one tap.
  *  EXACTLY the Revenue Playbook's Rail 2 (upload) items — the application and
- *  broker disclosure are Rail 1 (e-sign via GHL) and are NOT upload requests. */
+ *  broker disclosure are Rail 1 (e-sign via GHL) and are NOT upload requests.
+ *  Tiers: bank statements + driver's license are required; voided check + proof
+ *  of business ownership are optional but encouraged. */
 export const DOC_REQUEST_TEMPLATES: DocRequestTemplate[] = [
-  { doc_type: "bank_statement", label: "Last 4 months of business bank statements" },
-  { doc_type: "id", label: "Driver's license (photo of the front)" },
-  { doc_type: "voided_check", label: "Voided business check" },
-  { doc_type: "business_license", label: "Proof of business ownership" },
+  { doc_type: "bank_statement", label: "Last 4 months of business bank statements", required: true },
+  { doc_type: "id", label: "Driver's license (photo of the front)", required: true },
+  { doc_type: "voided_check", label: "Voided business check", required: false },
+  { doc_type: "business_license", label: "Proof of business ownership", required: false },
 ];
 
 /** doc_type → merchant-friendly label, used by the "upload something else"

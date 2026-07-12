@@ -235,6 +235,7 @@ export default function PortalDashboardPage() {
       <ActionBlock
         deals={deals}
         pending={unified.pending}
+        application={unified.application}
         docRequests={docRequests}
         offerCount={offerCount}
         onSignNative={setSigningDoc}

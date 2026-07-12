@@ -184,11 +184,13 @@ export interface DocRequest {
   requested_by: string | null;
   document_id: string | null;
   created_at: string;
+  /** Required items are urgent; optional items are encouraged but never gate. */
+  required: boolean;
 }
 
 const DOC_REQUEST_COLUMNS =
   "id, deal_id, customer_id, doc_type, label, status, rejection_reason, due_at, " +
-  "requested_by, document_id, created_at";
+  "requested_by, document_id, created_at, required";
 
 /** A merchant's own document requests (across their deals), oldest first.
  *  Returns [] cleanly if the table isn't deployed yet (backend in parallel). */
@@ -395,6 +397,27 @@ export async function getMyGhlDocuments(): Promise<GhlDocument[]> {
   } catch (e) {
     console.warn("[ghl-docs-status] threw (non-blocking):", e);
     return [];
+  }
+}
+
+export interface BlankApplicationResult {
+  ok: boolean;
+  url?: string | null;
+  message?: string;
+}
+
+/** Ask the backend to send a fresh BLANK fillable application to the merchant's
+ *  own contact (server-resolved). Rate-limited server-side. Returns a per-recipient
+ *  viewer URL on success; a friendly message otherwise. Never throws. */
+export async function requestBlankApplication(): Promise<BlankApplicationResult> {
+  try {
+    const { data, error } = await supabase.functions.invoke("request-blank-application", { body: {} });
+    if (error) {
+      return { ok: false, message: "We couldn't send a fresh application right now — please try again in a minute." };
+    }
+    return (data ?? { ok: false }) as BlankApplicationResult;
+  } catch {
+    return { ok: false, message: "Something went wrong — please try again." };
   }
 }
 

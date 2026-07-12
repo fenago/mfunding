@@ -145,6 +145,11 @@ verify_jwt = false
 [functions.ghl-docs-status]
 verify_jwt = true
 
+# Merchant-triggered "send me a fresh BLANK application" fallback. Merchant-gated
+# (own contact resolved from auth.uid); rate-limited so it can't stack copies.
+[functions.request-blank-application]
+verify_jwt = true
+
 # Side effects after a MERCHANT uploads a portal document (audit #24). Signed-in;
 # caller must OWN the document's customer (or be ops staff) — in-code check.
 # Writes activity_log + re-runs the AI underwriter on bank statements.
