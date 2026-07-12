@@ -184,14 +184,15 @@ Phase 6 (renewal mode) — anytime after Phase 1
 - [x] 3.3 Funder stips → merchant action items *(same `deal_doc_requests` flow — closer adds a request, it appears instantly in the portal checklist + ActionNeededHero (rejected doc = top priority); no separate mechanism needed)*
 - [x] Compliance review of all Wave 2 merchant-facing copy + the 2 GHL insertion lines *(ALL PASS, 0 violations; optional voided-check "preferred" polish applied)*
 
-### Wave 3 — QUEUED
-- [ ] 4.1 Offer review page (anonymized side-by-side, accept/decline, expiry countdown)
-- [ ] 4.2 Native merchant e-sign (freeze-and-ledger mirror: templates, merge, SHA-256, signature ledger, RPC)
-- [ ] 4.3 Signed doc auto-writes to customer_documents as 'application' (submit-to-funders gate passes; GHL round-trip retired)
-- [ ] 4.4 Per-product/state compliance disclosures on contracts
-- [ ] 5.1 `/portal/how-it-works` explainer page (compliance-reviewed)
+### Wave 3 — SHIPPED (Jul 11, 2026)
+- [x] 4.1 Offer review page *(live: `/portal/offers` — anonymized side-by-side offer cards in dollars (no factor/APR framing), accept/decline with confirm modals, `offer_expires_at` Countdown, "What do these numbers mean?" expander; `respond_to_offer(p_submission_id, p_response)` RPC gates ownership/stage/expiry, writes the `funder:note` activity marker so responses render on the closer's funder card with zero reader changes; `get_my_deal_submissions` gained `submission_id` (opaque handle, still fully anonymized). Accept does NOT move deal stage or touch sibling offers — closer drives the funded move (commission/GHL live there). E2E-verified with a real merchant JWT)*
+- [x] 4.2 Native merchant e-sign *(live: `merchant_doc_templates` / `merchant_documents` (frozen merged text + SHA-256) / append-only `merchant_document_signatures` (service-role-only writes — no REST forge path); signing via `sign-merchant-document` edge fn (verify_jwt + owner check): typed legal name + consent + real IP/UA captured, hash-integrity gate, atomic ledger+status flip, renders a signed PDF artifact. Staff send via `send-merchant-document` (ops or owning closer). `/portal/sign/:id` mobile-first signing page + dashboard DocumentsToSign card + closer SendForSignature control on the deal page. Migration: `20260712_merchant_esign.sql`)*
+- [x] 4.3 Signed doc → customer_documents 'application' *(verified E2E: signing inserts the `document_type='application'` row — the exact submit-to-funders gate passes; GHL download/re-upload round-trip no longer required for portal-signed apps)*
+- [x] 4.4 Per-product/state disclosures *(send-time injection from `compliance_disclosures` by product_type + customer.address_state into [STATE_DISCLOSURE] — verified live with CA disclosure, zero unresolved tokens; the disclosure's per-offer brackets ([APR] etc.) are funder-filled at OFFER time by design and don't block sends/signing)*
+- [x] 5.1 `/portal/how-it-works` explainer *(accordion FAQ: who we are, journey steps, why each doc, honest MCA explainer ("purchase of future receivables, not a loan"), hedged timeframes, "you never pay us", credit-impact line, stips FAQ; linked from WelcomeOverlay + journey stage cards + nav)*
+- [x] Compliance review *(ALL PASS, 0 violations; seeded template 'mca-application-authorization' ruled ACTIVATE-OK on compliance grounds but stays DRAFT pending **owner/attorney sign-off** — activating it is an owner action)*
 
-### Wave 4 — QUEUED
+### Wave 4 — IN PROGRESS (launched Jul 11, 2026)
 - [ ] 5.2 Notification producers (stage change, docs, submissions, offers, signatures, milestones → messages + email)
 - [ ] 5.3 Two-way inbox (merchant compose → closer)
 - [ ] 5.4 Email full parity for every actionable notification

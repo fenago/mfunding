@@ -138,3 +138,14 @@ verify_jwt = true
 # Writes activity_log + re-runs the AI underwriter on bank statements.
 [functions.merchant-doc-uploaded]
 verify_jwt = true
+
+# Staff (or the owning closer) generate + freeze + send a merchant e-signable
+# document from a template for a deal. Injects the state disclosure at merge time.
+[functions.send-merchant-document]
+verify_jwt = true
+
+# A MERCHANT e-signs a sent document. Signed-in; caller must OWN the document's
+# customer (in-code check). Appends the signature ledger row, writes the signed
+# artifact to storage, and drops the customer_documents 'application' copy.
+[functions.sign-merchant-document]
+verify_jwt = true

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import PipelineFlow from "../shared/PipelineFlow";
@@ -94,8 +95,6 @@ export default function WelcomeOverlay() {
               ))}
             </ol>
 
-            {/* TODO(Wave 3): link to /portal/how-it-works once that page ships. */}
-
             <button
               type="button"
               onClick={dismiss}
@@ -103,6 +102,14 @@ export default function WelcomeOverlay() {
             >
               Got it — let's go
             </button>
+
+            <Link
+              to="/portal/how-it-works"
+              onClick={dismiss}
+              className="mt-3 block text-center text-sm font-medium text-ocean-blue hover:underline"
+            >
+              Learn more about how it works
+            </Link>
           </motion.div>
         </motion.div>
       )}

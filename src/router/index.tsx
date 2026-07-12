@@ -135,6 +135,9 @@ const PortalLayout = lazyWithReload(() => import("../pages/portal/PortalLayout.t
 const PortalDashboardPage = lazyWithReload(() => import("../pages/portal/PortalDashboardPage.tsx"));
 const PortalDocumentsPage = lazyWithReload(() => import("../pages/portal/PortalDocumentsPage.tsx"));
 const PortalInboxPage = lazyWithReload(() => import("../pages/portal/PortalInboxPage.tsx"));
+const PortalOffersPage = lazyWithReload(() => import("../pages/portal/PortalOffersPage.tsx"));
+const PortalSignPage = lazyWithReload(() => import("../pages/portal/PortalSignPage.tsx"));
+const PortalHowItWorksPage = lazyWithReload(() => import("../pages/portal/PortalHowItWorksPage.tsx"));
 
 export const routes: RouteObject[] = [
   {
@@ -300,6 +303,18 @@ export const routes: RouteObject[] = [
               {
                 path: "documents",
                 element: <PortalDocumentsPage />,
+              },
+              {
+                path: "offers",
+                element: <PortalOffersPage />,
+              },
+              {
+                path: "sign/:documentId",
+                element: <PortalSignPage />,
+              },
+              {
+                path: "how-it-works",
+                element: <PortalHowItWorksPage />,
               },
               {
                 path: "inbox",

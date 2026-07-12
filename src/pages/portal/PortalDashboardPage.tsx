@@ -6,14 +6,18 @@ import supabase from "../../supabase";
 import {
   getMyPortalDeals,
   getMyDocRequests,
+  getMyMerchantDocuments,
+  getMyDealSubmissions,
   SUBMITTED_OR_PAST_STATUSES,
   type PortalDeal,
   type DocRequest,
+  type MerchantDocument,
 } from "../../services/portalService";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import MerchantJourney from "../../components/portal/MerchantJourney";
 import ActionNeededHero from "../../components/portal/ActionNeededHero";
 import SubmissionsCard from "../../components/portal/SubmissionsCard";
+import DocumentsToSign from "../../components/portal/DocumentsToSign";
 import WelcomeOverlay from "../../components/portal/WelcomeOverlay";
 
 /** Merchant's part done vs. total for one deal's document checklist. */
@@ -30,6 +34,8 @@ export default function PortalDashboardPage() {
   const [firstName, setFirstName] = useState<string | null>(null);
   const [deals, setDeals] = useState<PortalDeal[]>([]);
   const [docRequests, setDocRequests] = useState<DocRequest[]>([]);
+  const [signDocuments, setSignDocuments] = useState<MerchantDocument[]>([]);
+  const [offerCount, setOfferCount] = useState(0);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [pendingDocuments, setPendingDocuments] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -67,11 +73,35 @@ export default function PortalDashboardPage() {
       }
 
       // All deal reads go through the column-sanitized portal service.
+      let loadedDeals: PortalDeal[] = [];
       try {
-        setDeals(await getMyPortalDeals(uid));
+        loadedDeals = await getMyPortalDeals(uid);
+        setDeals(loadedDeals);
       } catch (err) {
         console.error("Failed to load portal deals:", err);
         setDeals([]);
+      }
+
+      // Agreements awaiting signature (own rows via RLS; [] if not deployed).
+      try {
+        setSignDocuments(await getMyMerchantDocuments());
+      } catch (err) {
+        console.error("Failed to load documents to sign:", err);
+        setSignDocuments([]);
+      }
+
+      // Authoritative count of reviewable offers, for the Action-Needed hero.
+      try {
+        const eligible = loadedDeals.filter(
+          (d) => d.deal_type !== "vcf" && SUBMITTED_OR_PAST_STATUSES.has(d.status),
+        );
+        const subs = await Promise.all(
+          eligible.map((d) => getMyDealSubmissions(d.id).catch(() => [])),
+        );
+        setOfferCount(subs.flat().filter((s) => s.status_bucket === "offer").length);
+      } catch (err) {
+        console.error("Failed to load offer count:", err);
+        setOfferCount(0);
       }
 
       const { count: msgCount } = await supabase
@@ -110,7 +140,16 @@ export default function PortalDashboardPage() {
       </div>
 
       {/* Action Needed — sticky, unmissable */}
-      <ActionNeededHero deals={deals} pendingDocuments={pendingDocuments} docRequests={docRequests} />
+      <ActionNeededHero
+        deals={deals}
+        pendingDocuments={pendingDocuments}
+        docRequests={docRequests}
+        signDocuments={signDocuments}
+        offerCount={offerCount}
+      />
+
+      {/* Agreements ready to sign */}
+      <DocumentsToSign documents={signDocuments} />
 
       {/* The journey, one card per funding request */}
       {deals.length > 0 ? (

@@ -3,6 +3,7 @@ import {
   HomeIcon,
   DocumentIcon,
   InboxIcon,
+  QuestionMarkCircleIcon,
   ArrowLeftOnRectangleIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -14,6 +15,7 @@ const navItems = [
   { name: "Dashboard", path: "/portal", icon: HomeIcon },
   { name: "Documents", path: "/portal/documents", icon: DocumentIcon },
   { name: "Inbox", path: "/portal/inbox", icon: InboxIcon },
+  { name: "How it works", path: "/portal/how-it-works", icon: QuestionMarkCircleIcon },
 ];
 
 export default function PortalLayout() {

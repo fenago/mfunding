@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { CheckIcon } from "@heroicons/react/24/solid";
-import { ChevronDownIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, QuestionMarkCircleIcon } from "@heroicons/react/24/outline";
 import PipelineFlow from "../shared/PipelineFlow";
 import Countdown from "./Countdown";
 import type { PortalDeal } from "../../services/portalService";
@@ -122,6 +123,15 @@ function CurrentStepCard({
           {elapsed ? ` · elapsed ${elapsed}` : ""}
         </p>
       )}
+
+      {/* Plain-language help for this step */}
+      <Link
+        to="/portal/how-it-works"
+        className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-ocean-blue hover:underline"
+      >
+        <QuestionMarkCircleIcon className="w-4 h-4" />
+        What does this step mean?
+      </Link>
     </div>
   );
 }

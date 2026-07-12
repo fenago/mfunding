@@ -196,6 +196,9 @@ export type SubmissionBucket =
   | "withdrawn";
 
 export interface DealSubmissionView {
+  /** Opaque handle for offer actions (accept/decline). Always returned by
+   *  get_my_deal_submissions in the confirmed contract. */
+  submission_id: string;
   partner_label: string;
   status_bucket: SubmissionBucket;
   submitted_at: string | null;
@@ -219,6 +222,134 @@ export async function getMyDealSubmissions(dealId: string): Promise<DealSubmissi
     throw new Error(error.message || "Failed to load your submission status.");
   }
   return (data ?? []) as DealSubmissionView[];
+}
+
+// ── Offer response (respond_to_offer) ────────────────────────────────────────
+// The merchant accepts or declines a specific funder offer. The RPC is
+// auth-scoped and validates the submission is theirs, still at offer stage, and
+// not expired. We surface friendly errors; graceful-degrade if not deployed yet.
+
+export type OfferResponse = "accept" | "decline";
+
+export class OfferActionError extends Error {}
+
+/** Accept or decline an offer by its submission handle. Resolves on success;
+ *  throws OfferActionError with a merchant-safe message on a real failure. */
+export async function respondToOffer(
+  submissionId: string,
+  response: OfferResponse,
+): Promise<void> {
+  const { error } = await supabase.rpc("respond_to_offer", {
+    p_submission_id: submissionId,
+    p_response: response,
+  });
+
+  if (!error) return;
+
+  if (isFunctionMissing(error)) {
+    throw new OfferActionError(
+      "We couldn't record that just yet — please reach out to your funding specialist and they'll take care of it.",
+    );
+  }
+  // Backend raises a specific message for expired / not-yours / wrong-stage.
+  throw new OfferActionError(
+    error.message || "Something went wrong recording your choice. Please try again.",
+  );
+}
+
+// ── Documents to e-sign (merchant_documents) ─────────────────────────────────
+// A server-merged, frozen agreement the merchant reviews and signs. The merchant
+// SELECTs their own rows via RLS; signing goes through sign_merchant_document.
+
+export type MerchantDocStatus = "draft" | "sent" | "signed" | "void";
+
+export interface MerchantDocument {
+  id: string;
+  deal_id: string | null;
+  /** Human template/agreement name shown to the merchant. */
+  name: string;
+  /** Frozen, server-merged document body — plain TEXT. Render preformatted;
+   *  never as raw HTML. */
+  merged_content: string;
+  content_sha256: string | null;
+  status: MerchantDocStatus;
+  sent_at: string | null;
+  signed_at: string | null;
+}
+
+const MERCHANT_DOC_COLUMNS =
+  "id, deal_id, name, status, sent_at, signed_at, merged_content, content_sha256";
+
+/** All of the signed-in merchant's documents (own rows via RLS), newest first.
+ *  Returns [] cleanly if the table isn't deployed yet (backend in parallel). */
+export async function getMyMerchantDocuments(): Promise<MerchantDocument[]> {
+  const { data, error } = await supabase
+    .from("merchant_documents")
+    .select(MERCHANT_DOC_COLUMNS)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    if (isTableMissing(error)) return [];
+    throw new Error(error.message || "Failed to load your documents.");
+  }
+  return (data ?? []) as unknown as MerchantDocument[];
+}
+
+/** A single document by id (own row via RLS). null if missing / not deployed. */
+export async function getMerchantDocument(documentId: string): Promise<MerchantDocument | null> {
+  const { data, error } = await supabase
+    .from("merchant_documents")
+    .select(MERCHANT_DOC_COLUMNS)
+    .eq("id", documentId)
+    .maybeSingle();
+
+  if (error) {
+    if (isTableMissing(error)) return null;
+    throw new Error(error.message || "Failed to load this document.");
+  }
+  return (data as unknown as MerchantDocument) ?? null;
+}
+
+export class SignDocumentError extends Error {}
+
+/** Apply the merchant's typed-name electronic signature to a document via the
+ *  `sign-merchant-document` edge function (which writes the ledger row, IP/UA,
+ *  storage artifact, and the customer_documents copy server-side). Resolves on
+ *  success; throws a retryable SignDocumentError on failure. */
+export async function signMerchantDocument(
+  documentId: string,
+  typedLegalName: string,
+  consent: boolean,
+): Promise<void> {
+  type SignResult = { ok?: boolean; message?: string } | null;
+  let data: SignResult = null;
+  let error: { message?: string } | null = null;
+  try {
+    const res = await supabase.functions.invoke("sign-merchant-document", {
+      body: {
+        document_id: documentId,
+        typed_legal_name: typedLegalName,
+        consent,
+      },
+    });
+    data = res.data as SignResult;
+    error = res.error;
+  } catch (e) {
+    throw new SignDocumentError(
+      e instanceof Error ? e.message : "We couldn't record your signature. Please try again.",
+    );
+  }
+
+  if (error) {
+    throw new SignDocumentError(
+      error.message || "We couldn't record your signature. Please try again.",
+    );
+  }
+  if (data && data.ok === false) {
+    throw new SignDocumentError(
+      data.message || "We couldn't record your signature. Please try again.",
+    );
+  }
 }
 
 /** Internal deal statuses that mean the file has reached (or passed) funder

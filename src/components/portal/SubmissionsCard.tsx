@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { SparklesIcon, BuildingLibraryIcon } from "@heroicons/react/24/solid";
+import { SparklesIcon, BuildingLibraryIcon, ArrowRightIcon } from "@heroicons/react/24/solid";
 import {
   getMyDealSubmissions,
   type DealSubmissionView,
@@ -126,11 +127,21 @@ export default function SubmissionsCard({ dealId }: SubmissionsCardProps) {
       </div>
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
         {anyOffer
-          ? "Good news — an offer is in. Your advisor will walk you through it."
+          ? "Good news — an offer is in. Review your options and your advisor will walk you through it."
           : anyWaiting
             ? "Funding partners typically respond within 24–48 hours. We'll flag the moment an offer lands."
             : "Here's where your file stands with our funding partners."}
       </p>
+
+      {anyOffer && (
+        <Link
+          to="/portal/offers"
+          className="mb-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-mint-green text-white text-sm font-semibold hover:brightness-95 transition"
+        >
+          Review your offers
+          <ArrowRightIcon className="w-4 h-4" />
+        </Link>
+      )}
 
       <div className="space-y-2">
         {subs.map((sub, i) => {

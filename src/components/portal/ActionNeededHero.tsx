@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { BoltIcon, CheckCircleIcon, ArrowRightIcon } from "@heroicons/react/24/solid";
-import type { PortalDeal, DocRequest } from "../../services/portalService";
+import type { PortalDeal, DocRequest, MerchantDocument } from "../../services/portalService";
 import Countdown from "./Countdown";
 import { isDeadlinePast } from "../../utils/deadline";
 
@@ -10,6 +10,10 @@ interface ActionNeededHeroProps {
   pendingDocuments: number;
   /** Open document-checklist requests across the merchant's deals. */
   docRequests?: DocRequest[];
+  /** Agreements awaiting the merchant's signature (status 'sent'). */
+  signDocuments?: MerchantDocument[];
+  /** Number of offer-stage submissions the merchant can review right now. */
+  offerCount?: number;
 }
 
 interface ActionItem {
@@ -27,8 +31,35 @@ function topAction(
   deals: PortalDeal[],
   pendingDocuments: number,
   docRequests: DocRequest[],
+  signDocuments: MerchantDocument[],
+  offerCount: number,
 ): ActionItem | null {
   const actions: ActionItem[] = [];
+
+  // A ready-to-sign agreement is the single most important active step — the
+  // file is one signature from moving to funding.
+  const toSign = signDocuments.filter((d) => d.status === "sent");
+  if (toSign.length > 0) {
+    const one = toSign.length === 1;
+    actions.push({
+      priority: 120,
+      title: one ? "Your agreement is ready to sign" : `${toSign.length} agreements ready to sign`,
+      detail: "Review and add your signature to keep your funding moving.",
+      to: one ? `/portal/sign/${toSign[0].id}` : "/portal",
+      ctaLabel: one ? "Review & sign" : "Review agreements",
+    });
+  }
+
+  // Offers waiting for the merchant's decision — just below a rejected doc.
+  if (offerCount > 0) {
+    actions.push({
+      priority: 105,
+      title: offerCount === 1 ? "You have an offer to review" : `You have ${offerCount} offers to review`,
+      detail: "See your funding options side by side and choose the one that fits.",
+      to: "/portal/offers",
+      ctaLabel: "Review your offers",
+    });
+  }
 
   // Explicit document requests are the most precise signal — a rejected doc is
   // the single most urgent thing on a merchant's plate (their file is stalled).
@@ -71,14 +102,15 @@ function topAction(
         countdownTarget: d.stips_promised_by ?? undefined,
       });
     }
-    // Offer awaiting the merchant's decision.
-    if (d.status === "offer_presented") {
+    // Offer awaiting the merchant's decision — fallback nudge when we don't have
+    // an authoritative offer count yet (deep-links to the offers page all the same).
+    if (d.status === "offer_presented" && offerCount === 0) {
       actions.push({
         priority: 90,
         title: "You have an offer to review",
-        detail: "Your advisor will walk you through the details — reply when you're ready.",
-        to: "/portal/inbox",
-        ctaLabel: "View messages",
+        detail: "See your funding options and choose the one that fits.",
+        to: "/portal/offers",
+        ctaLabel: "Review your offers",
       });
     }
     // Application waiting to be signed.
@@ -128,8 +160,14 @@ function nextUpdateHint(deals: PortalDeal[]): string {
   return "We'll reach out as soon as there's an update.";
 }
 
-export default function ActionNeededHero({ deals, pendingDocuments, docRequests = [] }: ActionNeededHeroProps) {
-  const action = topAction(deals, pendingDocuments, docRequests);
+export default function ActionNeededHero({
+  deals,
+  pendingDocuments,
+  docRequests = [],
+  signDocuments = [],
+  offerCount = 0,
+}: ActionNeededHeroProps) {
+  const action = topAction(deals, pendingDocuments, docRequests, signDocuments, offerCount);
 
   if (!action) {
     return (
