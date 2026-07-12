@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
   // Load the deal + its customer first (needed for both authz and the merge).
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, customer_id, deal_type")
+    .select("id, customer_id, deal_type, amount_requested, use_of_funds")
     .eq("id", dealId)
     .maybeSingle();
   if (dErr || !deal) return json({ error: "deal not found" }, 404);
@@ -79,7 +79,12 @@ Deno.serve(async (req) => {
 
   const { data: customer, error: cErr } = await db
     .from("customers")
-    .select("id, user_id, first_name, last_name, business_name, email, address_state")
+    .select(
+      "id, user_id, first_name, last_name, business_name, email, phone, " +
+      "address_street, address_city, address_state, address_zip, ein, " +
+      "time_in_business, monthly_revenue, industry, business_type, " +
+      "amount_requested, use_of_funds",
+    )
     .eq("id", deal.customer_id as string)
     .maybeSingle();
   if (cErr || !customer) return json({ error: "customer not found" }, 404);
@@ -118,7 +123,43 @@ Deno.serve(async (req) => {
     }
   }
 
-  // --- Merge + freeze. One unresolved OUR-token blocks the send. ---
+  // --- Build the per-field application data (SOFT tokens). Anything null renders
+  // as a labeled blank; none of these block the send. ---
+  const usd = (v: unknown): string | null => {
+    const n = typeof v === "number" ? v : parseFloat(String(v ?? ""));
+    if (!Number.isFinite(n)) return null;
+    return `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  };
+  const cityStateZip = [customer.address_city, customer.address_state, customer.address_zip]
+    .map((p) => (p ?? "").toString().trim())
+    .filter(Boolean)
+    .join(", ");
+  const tib = customer.time_in_business as number | null;
+  const timeInBusiness = tib != null && Number.isFinite(tib)
+    ? (tib >= 12
+      ? `${tib} months (${(tib / 12).toFixed(tib % 12 === 0 ? 0 : 1)} years)`
+      : `${tib} months`)
+    : null;
+  const email = (customer.email as string | null) ?? null;
+  const phone = (customer.phone as string | null) ?? null;
+  const fields: Record<string, string | null> = {
+    "[BUSINESS ADDRESS]": (customer.address_street as string | null) ?? null,
+    "[BUSINESS CITY STATE ZIP]": cityStateZip || null,
+    "[BUSINESS PHONE]": phone,
+    "[BUSINESS EMAIL]": email,
+    "[CELL PHONE]": phone,
+    "[OWNER EMAIL]": email,
+    "[EIN]": (customer.ein as string | null) ?? null,
+    "[ENTITY TYPE]": (customer.business_type as string | null) ?? null,
+    "[INDUSTRY]": (customer.industry as string | null) ?? null,
+    "[MONTHLY REVENUE]": usd(customer.monthly_revenue),
+    "[AMOUNT REQUESTED]": usd(deal.amount_requested ?? customer.amount_requested),
+    "[USE OF FUNDS]": (deal.use_of_funds as string | null) ?? (customer.use_of_funds as string | null) ?? null,
+    "[TIME IN BUSINESS]": timeInBusiness,
+    "[TITLE]": null, // no column; merchant fills on the signed page
+  };
+
+  // --- Merge + freeze. One unresolved HARD token blocks the send. ---
   const merchantName = `${customer.first_name ?? ""} ${customer.last_name ?? ""}`.trim();
   const { content, missing } = mergeMerchantDoc(tmpl.body_md as string, {
     companyLegalName,
@@ -126,6 +167,7 @@ Deno.serve(async (req) => {
     merchantName,
     effectiveDate: null, // today
     disclosureBody,
+    fields,
   });
   if (missing.length) {
     return json({
