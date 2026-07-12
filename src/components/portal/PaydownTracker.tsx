@@ -22,6 +22,27 @@ interface PaydownTrackerProps {
   deal: PortalDeal;
 }
 
+const INTEREST_HINT_PREFIX = "mf_renewal_interest_";
+
+/** Local acknowledged-state hint — used ONLY as a fallback when the server
+ *  field (renewal_interest_expressed) is absent, e.g. on the direct-select
+ *  degradation path where the RPC isn't returning that column. Server truth
+ *  always wins when present. */
+function readInterestHint(dealId: string): boolean {
+  try {
+    return localStorage.getItem(INTEREST_HINT_PREFIX + dealId) === "1";
+  } catch {
+    return false;
+  }
+}
+function writeInterestHint(dealId: string): void {
+  try {
+    localStorage.setItem(INTEREST_HINT_PREFIX + dealId, "1");
+  } catch {
+    /* non-fatal */
+  }
+}
+
 function fmtDate(value: string | null | undefined): string | null {
   if (!value) return null;
   const d = new Date(value);
@@ -85,9 +106,13 @@ function MilestoneBar({
 export default function PaydownTracker({ deal }: PaydownTrackerProps) {
   const paydown = displayedPaydown(deal);
   const estimated = isPaydownEstimated(deal);
-  // Server truth for the acknowledged state (get_my_portal_deals returns it).
+  // Acknowledged state: server truth (get_my_portal_deals.renewal_interest_expressed)
+  // when present; localStorage hint only as a fallback when that field is absent.
+  const serverKnown = deal.renewal_interest_expressed != null;
   const [interest, setInterest] = useState<"idle" | "sending" | "done">(
-    deal.renewal_interest_expressed ? "done" : "idle",
+    (serverKnown ? !!deal.renewal_interest_expressed : readInterestHint(deal.id))
+      ? "done"
+      : "idle",
   );
   const [interestError, setInterestError] = useState<string | null>(null);
 
@@ -116,6 +141,7 @@ export default function PaydownTracker({ deal }: PaydownTrackerProps) {
     try {
       // Idempotent server-side; already_expressed=true is still success.
       await expressRenewalInterest(deal.id);
+      writeInterestHint(deal.id); // helps the field-absent fallback path
       setInterest("done");
     } catch (e) {
       setInterest("idle");
