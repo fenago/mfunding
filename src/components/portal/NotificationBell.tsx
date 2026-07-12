@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { BellIcon } from "@heroicons/react/24/outline";
+import { BellIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
 import { CheckCircleIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
 import { tryWrite } from "@/supabase/writes";
-import { getMyMessages, type PortalMessage } from "../../services/portalService";
+import {
+  getMyMessages,
+  getMyMerchantDocuments,
+  type PortalMessage,
+  type MerchantDocument,
+} from "../../services/portalService";
 import { classifyMessage, relativeTime } from "../../utils/portalNotifications";
 
 interface NotificationBellProps {
@@ -22,6 +27,7 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<PortalMessage[]>([]);
+  const [toSign, setToSign] = useState<MerchantDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -29,10 +35,16 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
     if (!userId) return;
     setLoading(true);
     try {
-      setMessages(await getMyMessages(userId));
+      const [msgs, mDocs] = await Promise.all([
+        getMyMessages(userId),
+        getMyMerchantDocuments().catch(() => [] as MerchantDocument[]),
+      ]);
+      setMessages(msgs);
+      setToSign(mDocs.filter((d) => d.status === "sent"));
     } catch (e) {
       console.error("Failed to load notifications:", e);
       setMessages([]);
+      setToSign([]);
     }
     setLoading(false);
   };
@@ -65,7 +77,10 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
     };
   }, [open]);
 
-  const unreadCount = messages.filter((m) => m.status === "unread").length;
+  // Agreements awaiting signature are always "action needed" — count them in the
+  // badge and pin them to the top so a 'sent' doc can never be missed, even if no
+  // portal message was created for it.
+  const unreadCount = messages.filter((m) => m.status === "unread").length + toSign.length;
   const recent = messages.slice(0, RECENT_LIMIT);
 
   const markRead = async (m: PortalMessage) => {
@@ -140,9 +155,33 @@ export default function NotificationBell({ userId }: NotificationBellProps) {
             </div>
 
             <div className="max-h-[60vh] sm:max-h-96 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
-              {loading && recent.length === 0 ? (
+              {/* Pinned: agreements ready to sign — always on top */}
+              {toSign.map((d) => (
+                <button
+                  key={`sign-${d.id}`}
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    navigate(`/portal/sign/${d.id}`);
+                  }}
+                  className="w-full text-left px-4 py-3 flex items-start gap-3 bg-ocean-blue/5 hover:bg-ocean-blue/10 transition-colors"
+                >
+                  <span className="p-1.5 rounded-lg bg-ocean-blue/10 text-ocean-blue flex-shrink-0">
+                    <PencilSquareIcon className="w-4 h-4" />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                      Agreement ready to sign
+                    </p>
+                    <p className="text-xs text-gray-500 truncate">{d.name}</p>
+                  </div>
+                  <span className="w-2 h-2 rounded-full bg-mint-green flex-shrink-0 mt-1.5" />
+                </button>
+              ))}
+
+              {loading && recent.length === 0 && toSign.length === 0 ? (
                 <div className="p-6 text-center text-sm text-gray-500">Loading…</div>
-              ) : recent.length === 0 ? (
+              ) : recent.length === 0 && toSign.length === 0 ? (
                 <div className="p-6 text-center">
                   <CheckCircleIcon className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
                   <p className="text-sm text-gray-500">You're all caught up.</p>

@@ -21,6 +21,18 @@ export const DOC_REQUEST_TEMPLATES: DocRequestTemplate[] = [
   { doc_type: "application", label: "Signed application" },
 ];
 
+/** doc_type → merchant-friendly label, used by the "upload something else"
+ *  picker and to label documents already on file. */
+export const DOCUMENT_TYPES: { value: string; label: string }[] = [
+  { value: "bank_statement", label: "Bank Statement" },
+  { value: "application", label: "Application" },
+  { value: "tax_return", label: "Tax Return" },
+  { value: "id", label: "ID / Driver's License" },
+  { value: "business_license", label: "Business License" },
+  { value: "voided_check", label: "Voided Check" },
+  { value: "other", label: "Something else" },
+];
+
 /** Merchant-facing helper text per doc_type, shown under each checklist card.
  *  Falls back to a generic line for custom / unknown types. */
 export const DOC_TYPE_HELP: Record<string, string> = {

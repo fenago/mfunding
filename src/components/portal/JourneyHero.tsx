@@ -1,36 +1,43 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { CheckIcon } from "@heroicons/react/24/solid";
+import { ArrowUpTrayIcon } from "@heroicons/react/24/outline";
 import type { PortalDeal } from "../../services/portalService";
 import { resolveJourney, type MerchantStep } from "../../data/merchantJourney";
+
+interface JourneyHeroProps {
+  deal: PortalDeal;
+  /** Controlled selection (the step whose detail is expanded). */
+  selectedKey?: string;
+  /** Fired whenever a node is activated — even re-selecting the same one — so a
+   *  host can scroll to that step's inline content (e.g. the upload checklist). */
+  onSelectStep?: (key: string) => void;
+  /** True when an inline upload checklist exists on the page for this deal, so
+   *  the "Your documents" detail can offer an "Upload documents" button. */
+  hasUploadTarget?: boolean;
+}
 
 /**
  * JourneyHero — the glanceable, animated summary of where a merchant's funding
  * request stands. A horizontal path of nodes (one per merchant step): completed
  * nodes draw in a checkmark, the progress line fills from the start up to the
  * current node, the current node pulses with a soft ring + "You are here", and
- * upcoming nodes stay muted. Tapping any node reveals that step's plain-language
- * card below the path.
- *
- * The per-stage detail (whose move, timers, doc progress) still lives in
- * <MerchantJourney>; this is the picture at the top of the deal card. Terminal
- * states (declined/nurture) render nothing here — the respectful status card in
- * MerchantJourney handles those.
+ * upcoming nodes stay muted. Every node is a CLICKABLE anchor — tapping it
+ * expands that step's plain-language card below the path (and, for the documents
+ * step, jumps to the inline upload checklist). No navigation.
  *
  * COMPLIANCE: all step copy comes from merchantJourney.ts (product-aware, never
  * "loan" for MCA). The only strings added here are neutral chrome.
  */
-export default function JourneyHero({ deal }: { deal: PortalDeal }) {
+export default function JourneyHero({ deal, selectedKey, onSelectStep, hasUploadTarget }: JourneyHeroProps) {
   const reduce = useReducedMotion();
   const { journey, currentIndex, isTerminal } = resolveJourney(deal);
   const steps = journey.steps;
 
-  // Which node's detail card is open. Default to where the merchant is.
-  const [selected, setSelected] = useState(Math.max(currentIndex, 0));
+  const [internalSel, setInternalSel] = useState(Math.max(currentIndex, 0));
   const currentRef = useRef<HTMLButtonElement | null>(null);
 
-  // On mount, pull the current node into view on narrow screens (the path can
-  // overflow-scroll on a phone). block:nearest keeps the page from jumping.
+  // On mount, pull the current node into view on narrow screens.
   useEffect(() => {
     currentRef.current?.scrollIntoView({ block: "nearest", inline: "center" });
   }, []);
@@ -39,14 +46,25 @@ export default function JourneyHero({ deal }: { deal: PortalDeal }) {
 
   const n = steps.length;
   const safeIndex = Math.max(currentIndex, 0);
-  const halfCol = 50 / n; // % inset from each edge to the first/last node center
+  const halfCol = 50 / n;
   const progressFrac = n > 1 ? safeIndex / (n - 1) : 0;
 
-  const heading =
-    journey.product === "vcf" ? "Your path forward" : "Your path to funding";
+  // Controlled when a host passes selectedKey; otherwise track locally.
+  const selFromKey = selectedKey != null ? steps.findIndex((s) => s.key === selectedKey) : -1;
+  const selected = selFromKey >= 0 ? selFromKey : selectedKey != null ? safeIndex : internalSel;
+
+  const activate = (i: number) => {
+    if (onSelectStep) onSelectStep(steps[i].key);
+    else setInternalSel(i);
+  };
+
+  const heading = journey.product === "vcf" ? "Your path forward" : "Your path to funding";
 
   return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gradient-to-br from-white to-gray-50 dark:from-gray-800 dark:to-gray-900 p-4 sm:p-5">
+    <div
+      id={`journey-hero-${deal.id}`}
+      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gradient-to-br from-white to-gray-50 dark:from-gray-800 dark:to-gray-900 p-4 sm:p-5"
+    >
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{heading}</h3>
         <span className="text-xs font-medium text-gray-400">
@@ -99,7 +117,7 @@ export default function JourneyHero({ deal }: { deal: PortalDeal }) {
                     <motion.button
                       type="button"
                       ref={isCurrent ? currentRef : undefined}
-                      onClick={() => setSelected(i)}
+                      onClick={() => activate(i)}
                       aria-label={step.label}
                       aria-current={isCurrent ? "step" : undefined}
                       initial={false}
@@ -115,7 +133,7 @@ export default function JourneyHero({ deal }: { deal: PortalDeal }) {
                           : {}
                       }
                       transition={isCurrent && !reduce ? { duration: 1.9, repeat: Infinity } : undefined}
-                      className={`relative z-10 flex h-9 w-9 items-center justify-center rounded-full text-xs font-bold ring-2 transition-colors ${
+                      className={`relative z-10 flex h-9 w-9 items-center justify-center rounded-full text-xs font-bold ring-2 transition-colors cursor-pointer ${
                         isCurrent
                           ? "bg-ocean-blue text-white ring-ocean-blue"
                           : isCompleted
@@ -159,13 +177,25 @@ export default function JourneyHero({ deal }: { deal: PortalDeal }) {
         </div>
       </div>
 
-      {/* Tapped-node detail — a plain-language line about that step. */}
-      <StepBlurb step={steps[selected]} state={selected < currentIndex ? "done" : selected === currentIndex ? "current" : "ahead"} />
+      {/* Selected-node detail — a plain-language line about that step. */}
+      <StepBlurb
+        step={steps[selected]}
+        state={selected < currentIndex ? "done" : selected === currentIndex ? "current" : "ahead"}
+        onUpload={hasUploadTarget && steps[selected].key === "documents" ? () => activate(selected) : undefined}
+      />
     </div>
   );
 }
 
-function StepBlurb({ step, state }: { step: MerchantStep; state: "done" | "current" | "ahead" }) {
+function StepBlurb({
+  step,
+  state,
+  onUpload,
+}: {
+  step: MerchantStep;
+  state: "done" | "current" | "ahead";
+  onUpload?: () => void;
+}) {
   const tag =
     state === "done" ? "Done" : state === "current" ? (step.whoseMove === "you" ? "Your move" : "We're on it") : "Coming up";
   const tagClass =
@@ -190,6 +220,17 @@ function StepBlurb({ step, state }: { step: MerchantStep; state: "done" | "curre
         <span className="text-sm font-semibold text-gray-900 dark:text-white">{step.label}</span>
       </div>
       <p className="text-xs text-gray-600 dark:text-gray-300">{step.whatsHappening}</p>
+      <p className="mt-1 text-xs text-gray-400">{step.timeframe}</p>
+      {onUpload && (
+        <button
+          type="button"
+          onClick={onUpload}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-mint-green px-3 py-1.5 text-xs font-semibold text-white hover:bg-mint-green/90 transition-colors"
+        >
+          <ArrowUpTrayIcon className="h-4 w-4" />
+          Upload documents
+        </button>
+      )}
     </motion.div>
   );
 }

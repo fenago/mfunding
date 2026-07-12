@@ -5,11 +5,14 @@ import type { MerchantDocument } from "../../services/portalService";
 interface DocumentsToSignProps {
   /** Documents in the 'sent' state — awaiting the merchant's signature. */
   documents: MerchantDocument[];
+  /** When provided, cards open the signing modal in place instead of routing to
+   *  the standalone /portal/sign/:id page. */
+  onSelect?: (doc: MerchantDocument) => void;
 }
 
-/** Dashboard card listing agreements ready for the merchant to sign. Renders
- *  nothing when there's nothing pending. */
-export default function DocumentsToSign({ documents }: DocumentsToSignProps) {
+/** Card listing agreements ready for the merchant to sign. Renders nothing when
+ *  there's nothing pending. Used on the dashboard and the Documents page. */
+export default function DocumentsToSign({ documents, onSelect }: DocumentsToSignProps) {
   const pending = documents.filter((d) => d.status === "sent");
   if (pending.length === 0) return null;
 
@@ -22,18 +25,32 @@ export default function DocumentsToSign({ documents }: DocumentsToSignProps) {
         </h3>
       </div>
       <div className="space-y-2">
-        {pending.map((d) => (
-          <Link
-            key={d.id}
-            to={`/portal/sign/${d.id}`}
-            className="flex items-center justify-between gap-3 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-4 py-3 hover:shadow-sm transition"
-          >
-            <span className="font-medium text-gray-900 dark:text-white truncate">{d.name}</span>
-            <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-mint-green text-white text-sm font-semibold flex-shrink-0">
-              Review &amp; sign
-            </span>
-          </Link>
-        ))}
+        {pending.map((d) =>
+          onSelect ? (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => onSelect(d)}
+              className="w-full flex items-center justify-between gap-3 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-4 py-3 hover:shadow-sm transition text-left"
+            >
+              <span className="font-medium text-gray-900 dark:text-white truncate">{d.name}</span>
+              <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-mint-green text-white text-sm font-semibold flex-shrink-0">
+                Review &amp; sign
+              </span>
+            </button>
+          ) : (
+            <Link
+              key={d.id}
+              to={`/portal/sign/${d.id}`}
+              className="flex items-center justify-between gap-3 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-4 py-3 hover:shadow-sm transition"
+            >
+              <span className="font-medium text-gray-900 dark:text-white truncate">{d.name}</span>
+              <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-mint-green text-white text-sm font-semibold flex-shrink-0">
+                Review &amp; sign
+              </span>
+            </Link>
+          ),
+        )}
       </div>
     </div>
   );

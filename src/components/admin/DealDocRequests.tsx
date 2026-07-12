@@ -74,10 +74,17 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
     setIsLoading(false);
   };
 
-  const createRequest = async (doc_type: string, label: string) => {
+  const createRequest = async (doc_type: string, label: string, defaultDueHours?: number) => {
     if (!customerId || !label.trim()) return;
     setBusy(true);
     setError(null);
+    // Bank statements default to a 24-hour turnaround (owner preference). A date
+    // the closer typed in the field always wins; other templates get no default.
+    const dueAt = dueDate
+      ? dueDate
+      : defaultDueHours
+        ? new Date(Date.now() + defaultDueHours * 3600 * 1000).toISOString()
+        : null;
     try {
       await mustWrite(
         "request document",
@@ -87,7 +94,7 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
           doc_type,
           label: label.trim(),
           status: "requested",
-          due_at: dueDate || null,
+          due_at: dueAt,
           requested_by: session?.user?.id ?? null,
         }),
       );
@@ -163,8 +170,16 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
               key={t.doc_type + t.label}
               type="button"
               disabled={busy || !customerId || already}
-              onClick={() => createRequest(t.doc_type, t.label)}
-              title={already ? "Already requested" : `Request: ${t.label}`}
+              onClick={() =>
+                createRequest(t.doc_type, t.label, t.doc_type === "bank_statement" ? 24 : undefined)
+              }
+              title={
+                already
+                  ? "Already requested"
+                  : t.doc_type === "bank_statement"
+                    ? `Request: ${t.label} (due in 24 hours)`
+                    : `Request: ${t.label}`
+              }
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:border-ocean-blue hover:text-ocean-blue disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <PlusIcon className="w-4 h-4" />

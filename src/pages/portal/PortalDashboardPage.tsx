@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { DocumentArrowUpIcon, InboxIcon } from "@heroicons/react/24/outline";
 import { useSession } from "../../context/SessionContext";
@@ -14,32 +14,19 @@ import {
   type DocRequest,
   type MerchantDocument,
 } from "../../services/portalService";
-import { DEAL_STATUS_CONFIG } from "../../types/deals";
-import MerchantJourney from "../../components/portal/MerchantJourney";
-import JourneyHero from "../../components/portal/JourneyHero";
 import ActionNeededHero from "../../components/portal/ActionNeededHero";
-import SubmissionsCard from "../../components/portal/SubmissionsCard";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
 import WelcomeOverlay from "../../components/portal/WelcomeOverlay";
-import PaydownTracker from "../../components/portal/PaydownTracker";
-import PostFundingVault from "../../components/portal/PostFundingVault";
+import DealCard from "../../components/portal/DealCard";
+import SignDocumentModal from "../../components/portal/SignDocumentModal";
 
-/** MCA-family deal that has funded — the point the dashboard flips into the
- *  renewal/paydown tracker (MCA-only; VCF keeps its own journey). */
+/** MCA-family deal that has funded — excluded from offer nudges (it shows the
+ *  paydown tracker instead). */
 function isFundedMca(deal: PortalDeal): boolean {
   return (
     deal.deal_type !== "vcf" &&
     (deal.status === "funded" || deal.status === "renewal_eligible")
   );
-}
-
-/** Merchant's part done vs. total for one deal's document checklist. */
-function docProgressFor(requests: DocRequest[], dealId: string): { done: number; total: number } {
-  const forDeal = requests.filter((r) => r.deal_id === dealId);
-  const done = forDeal.filter(
-    (r) => r.status === "uploaded" || r.status === "under_review" || r.status === "approved",
-  ).length;
-  return { done, total: forDeal.length };
 }
 
 export default function PortalDashboardPage() {
@@ -53,88 +40,88 @@ export default function PortalDashboardPage() {
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [pendingDocuments, setPendingDocuments] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [signingDoc, setSigningDoc] = useState<MerchantDocument | null>(null);
 
-  useEffect(() => {
+  const fetchData = useCallback(async () => {
     const uid = session?.user?.id;
     if (!uid) return;
+    setIsLoading(true);
 
-    const fetchData = async () => {
-      setIsLoading(true);
+    // Merchant identity + pending-doc count. customers has no merchant
+    // row-level SELECT anymore (it leaked internal columns) — read the safe
+    // projection through the SECURITY DEFINER RPC.
+    const customer = await getMyCustomer().catch((err) => {
+      console.error("Failed to load account details:", err);
+      return null;
+    });
 
-      // Merchant identity + pending-doc count. customers has no merchant
-      // row-level SELECT anymore (it leaked internal columns) — read the safe
-      // projection through the SECURITY DEFINER RPC.
-      const customer = await getMyCustomer().catch((err) => {
-        console.error("Failed to load account details:", err);
-        return null;
-      });
-
-      if (customer) {
-        setFirstName(customer.first_name ?? null);
-        setCustomerId(customer.id);
-        const { count: docCount } = await supabase
-          .from("customer_documents")
-          .select("id", { count: "exact", head: true })
-          .eq("customer_id", customer.id)
-          .eq("status", "pending");
-        setPendingDocuments(docCount || 0);
-
-        // Document checklist (own rows via RLS; [] if table not deployed yet).
-        try {
-          setDocRequests(await getMyDocRequests(customer.id));
-        } catch (err) {
-          console.error("Failed to load document checklist:", err);
-          setDocRequests([]);
-        }
-      }
-
-      // All deal reads go through the column-sanitized portal service.
-      let loadedDeals: PortalDeal[] = [];
-      try {
-        loadedDeals = await getMyPortalDeals();
-        setDeals(loadedDeals);
-      } catch (err) {
-        console.error("Failed to load portal deals:", err);
-        setDeals([]);
-      }
-
-      // Agreements awaiting signature (own rows via RLS; [] if not deployed).
-      try {
-        setSignDocuments(await getMyMerchantDocuments());
-      } catch (err) {
-        console.error("Failed to load documents to sign:", err);
-        setSignDocuments([]);
-      }
-
-      // Authoritative count of reviewable offers, for the Action-Needed hero.
-      try {
-        const eligible = loadedDeals.filter(
-          (d) =>
-            d.deal_type !== "vcf" &&
-            SUBMITTED_OR_PAST_STATUSES.has(d.status) &&
-            !isFundedMca(d), // funded deals show the tracker, not offer nudges
-        );
-        const subs = await Promise.all(
-          eligible.map((d) => getMyDealSubmissions(d.id).catch(() => [])),
-        );
-        setOfferCount(subs.flat().filter((s) => s.status_bucket === "offer").length);
-      } catch (err) {
-        console.error("Failed to load offer count:", err);
-        setOfferCount(0);
-      }
-
-      const { count: msgCount } = await supabase
-        .from("messages")
+    if (customer) {
+      setFirstName(customer.first_name ?? null);
+      setCustomerId(customer.id);
+      const { count: docCount } = await supabase
+        .from("customer_documents")
         .select("id", { count: "exact", head: true })
-        .eq("to_user_id", uid)
-        .eq("status", "unread");
-      setUnreadMessages(msgCount || 0);
+        .eq("customer_id", customer.id)
+        .eq("status", "pending");
+      setPendingDocuments(docCount || 0);
 
-      setIsLoading(false);
-    };
+      // Document checklist (own rows via RLS; [] if table not deployed yet).
+      try {
+        setDocRequests(await getMyDocRequests(customer.id));
+      } catch (err) {
+        console.error("Failed to load document checklist:", err);
+        setDocRequests([]);
+      }
+    }
 
-    fetchData();
+    // All deal reads go through the column-sanitized portal service.
+    let loadedDeals: PortalDeal[] = [];
+    try {
+      loadedDeals = await getMyPortalDeals();
+      setDeals(loadedDeals);
+    } catch (err) {
+      console.error("Failed to load portal deals:", err);
+      setDeals([]);
+    }
+
+    // Agreements awaiting signature (own rows via RLS; [] if not deployed).
+    try {
+      setSignDocuments(await getMyMerchantDocuments());
+    } catch (err) {
+      console.error("Failed to load documents to sign:", err);
+      setSignDocuments([]);
+    }
+
+    // Authoritative count of reviewable offers, for the Action-Needed hero.
+    try {
+      const eligible = loadedDeals.filter(
+        (d) =>
+          d.deal_type !== "vcf" &&
+          SUBMITTED_OR_PAST_STATUSES.has(d.status) &&
+          !isFundedMca(d), // funded deals show the tracker, not offer nudges
+      );
+      const subs = await Promise.all(
+        eligible.map((d) => getMyDealSubmissions(d.id).catch(() => [])),
+      );
+      setOfferCount(subs.flat().filter((s) => s.status_bucket === "offer").length);
+    } catch (err) {
+      console.error("Failed to load offer count:", err);
+      setOfferCount(0);
+    }
+
+    const { count: msgCount } = await supabase
+      .from("messages")
+      .select("id", { count: "exact", head: true })
+      .eq("to_user_id", uid)
+      .eq("status", "unread");
+    setUnreadMessages(msgCount || 0);
+
+    setIsLoading(false);
   }, [session]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   if (isLoading) {
     return (
@@ -167,8 +154,8 @@ export default function PortalDashboardPage() {
         offerCount={offerCount}
       />
 
-      {/* Agreements ready to sign */}
-      <DocumentsToSign documents={signDocuments} />
+      {/* Agreements ready to sign — open the signing modal in place */}
+      <DocumentsToSign documents={signDocuments} onSelect={setSigningDoc} />
 
       {/* The journey, one card per funding request */}
       {deals.length > 0 ? (
@@ -178,64 +165,16 @@ export default function PortalDashboardPage() {
               Your funding requests
             </h2>
           )}
-          {deals.map((d) => {
-            const cfg = DEAL_STATUS_CONFIG[d.status as keyof typeof DEAL_STATUS_CONFIG];
-            return (
-              <div
-                key={d.id}
-                className="bg-white dark:bg-gray-800 rounded-xl p-4 sm:p-5 border border-gray-200 dark:border-gray-700"
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <div className="min-w-0">
-                    <span className="font-mono text-sm text-gray-900 dark:text-white">
-                      {d.deal_number || "Your request"}
-                    </span>
-                    {d.amount_requested != null && (
-                      <span className="ml-2 text-sm text-gray-500">
-                        ${d.amount_requested.toLocaleString()}
-                      </span>
-                    )}
-                  </div>
-                  {cfg && (
-                    <span
-                      className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full ${cfg.bgColor} ${cfg.color}`}
-                    >
-                      {cfg.label}
-                    </span>
-                  )}
-                </div>
-                <JourneyHero deal={d} />
-                <div className="mt-4">
-                  <MerchantJourney deal={d} docProgress={docProgressFor(docRequests, d.id)} />
-                </div>
-
-                {isFundedMca(d) ? (
-                  <>
-                    {/* Post-funding: paydown tracker replaces the celebration card
-                        and becomes the renewal-communication anchor. */}
-                    <div className="mt-4">
-                      <PaydownTracker deal={d} />
-                    </div>
-                    <PostFundingVault
-                      deal={d}
-                      customerId={customerId}
-                      signedDocuments={signDocuments}
-                    />
-                  </>
-                ) : (
-                  <>
-                    {/* Funder submissions — MCA-family deals at/past submission,
-                        before funding (once funded, the tracker takes over). */}
-                    {d.deal_type !== "vcf" && SUBMITTED_OR_PAST_STATUSES.has(d.status) && (
-                      <div className="mt-4">
-                        <SubmissionsCard dealId={d.id} />
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })}
+          {deals.map((d) => (
+            <DealCard
+              key={d.id}
+              deal={d}
+              customerId={customerId}
+              docRequests={docRequests}
+              signDocuments={signDocuments}
+              onChanged={fetchData}
+            />
+          ))}
         </div>
       ) : (
         <div className="bg-white dark:bg-gray-800 rounded-xl p-8 border border-gray-200 dark:border-gray-700 text-center">
@@ -298,6 +237,15 @@ export default function PortalDashboardPage() {
           </div>
         </Link>
       </div>
+
+      {/* In-page signing — review & sign without leaving the dashboard */}
+      {signingDoc && (
+        <SignDocumentModal
+          documentId={signingDoc.id}
+          onClose={() => setSigningDoc(null)}
+          onSigned={() => fetchData()}
+        />
+      )}
     </div>
   );
 }

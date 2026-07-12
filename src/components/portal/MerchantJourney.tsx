@@ -20,6 +20,9 @@ interface MerchantJourneyProps {
   deal: PortalDeal;
   /** Document-checklist progress for this deal, shown on the "documents" step. */
   docProgress?: DocProgress;
+  /** Clicking a step (done or still-ahead) selects it in the JourneyHero above,
+   *  which scrolls into view and expands that step's detail. No navigation. */
+  onSelectStep?: (key: string) => void;
 }
 
 function stampText(value: string | null | undefined): string | null {
@@ -124,18 +127,32 @@ function CurrentStepCard({
 }
 
 /** Completed steps, each with the real date it happened. */
-function CompletedList({ steps, deal }: { steps: MerchantStep[]; deal: PortalDeal }) {
+function CompletedList({
+  steps,
+  deal,
+  onSelect,
+}: {
+  steps: MerchantStep[];
+  deal: PortalDeal;
+  onSelect?: (key: string) => void;
+}) {
   return (
     <ul className="space-y-2">
       {steps.map((s) => {
         const stamp = s.stampField ? stampText(deal[s.stampField] as string | null) : null;
         return (
-          <li key={s.key} className="flex items-center gap-3">
-            <span className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center flex-shrink-0">
-              <CheckIcon className="w-4 h-4" />
-            </span>
-            <span className="text-sm text-gray-700 dark:text-gray-200">{s.label}</span>
-            {stamp && <span className="text-xs text-gray-400 ml-auto">{stamp}</span>}
+          <li key={s.key}>
+            <button
+              type="button"
+              onClick={() => onSelect?.(s.key)}
+              className="w-full flex items-center gap-3 text-left rounded-lg px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors"
+            >
+              <span className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center flex-shrink-0">
+                <CheckIcon className="w-4 h-4" />
+              </span>
+              <span className="text-sm text-gray-700 dark:text-gray-200">{s.label}</span>
+              {stamp && <span className="text-xs text-gray-400 ml-auto">{stamp}</span>}
+            </button>
           </li>
         );
       })}
@@ -143,7 +160,7 @@ function CompletedList({ steps, deal }: { steps: MerchantStep[]; deal: PortalDea
   );
 }
 
-export default function MerchantJourney({ deal, docProgress }: MerchantJourneyProps) {
+export default function MerchantJourney({ deal, docProgress, onSelectStep }: MerchantJourneyProps) {
   const { journey, currentIndex, isTerminal } = resolveJourney(deal);
   const [showCompleted, setShowCompleted] = useState(false);
 
@@ -197,7 +214,7 @@ export default function MerchantJourney({ deal, docProgress }: MerchantJourneyPr
             </button>
             {showCompleted && (
               <div className="mt-2 px-3">
-                <CompletedList steps={completed} deal={deal} />
+                <CompletedList steps={completed} deal={deal} onSelect={onSelectStep} />
               </div>
             )}
           </div>
@@ -218,11 +235,17 @@ export default function MerchantJourney({ deal, docProgress }: MerchantJourneyPr
             <p className="text-xs font-medium text-gray-400 mb-2">Still ahead</p>
             <ul className="space-y-2">
               {upcoming.map((s, i) => (
-                <li key={s.key} className="flex items-center gap-3">
-                  <span className="w-6 h-6 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-300 flex items-center justify-center text-xs flex-shrink-0">
-                    {currentIndex + 2 + i}
-                  </span>
-                  <span className="text-sm text-gray-500 dark:text-gray-400">{s.label}</span>
+                <li key={s.key}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectStep?.(s.key)}
+                    className="w-full flex items-center gap-3 text-left rounded-lg px-1 py-0.5 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors"
+                  >
+                    <span className="w-6 h-6 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-300 flex items-center justify-center text-xs flex-shrink-0">
+                      {currentIndex + 2 + i}
+                    </span>
+                    <span className="text-sm text-gray-500 dark:text-gray-400">{s.label}</span>
+                  </button>
                 </li>
               ))}
             </ul>
