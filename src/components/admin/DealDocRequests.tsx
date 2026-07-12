@@ -179,7 +179,7 @@ export default function DealDocRequests({ dealId, customerId }: DealDocRequestsP
               type="button"
               disabled={busy || !customerId || already}
               onClick={() =>
-                createRequest(t.doc_type, t.label, t.required, t.doc_type === "bank_statement" ? 24 : undefined)
+                createRequest(t.doc_type, t.label, t.required, t.required ? 24 : undefined)
               }
               title={
                 already
