@@ -45,6 +45,28 @@
 - [ ] **O9. Fix the closer identity split-brain.**
   `deals.assigned_closer_id` → **profiles(id)** while `commissions.closer_id` → **closers(id)**. This has already caused two bugs (a closer filter that silently matched zero deals; defensive double-indexing in the analytics + earnings code). Unify on one key so attribution can't drift. *(Related: audit #2, #18, #32 are all "same concept, different answer" bugs.)*
 
+### GHL builder actions (Merchant Experience — API cannot do these; ~20 min total in the builder)
+
+- [ ] **O10. Post-sign redirect (60 seconds — do this one first).**
+  GHL → **Payments → Documents & Contracts → Settings (top-right) → Document Settings** → toggle ON **"Redirect to a Custom URL"** → enter `https://mfunding.net/portal?signed=1` → choose **open in the existing tab** → Save. Global — covers every document. After this, a merchant who signs lands back in their portal, where a "🎉 Signature received" banner + journey scroll already await.
+
+- [ ] **O11. Seq A / doc-send messages — add the portal line** (compliance-passed; ADD next to the existing upload links, never replace them).
+  Workflow **"MCA 06 - Bank Statements"** (`f2472211-4c93-494f-aca2-1c7c6bfc7e25`):
+  - **Day 0 SMS** — append: ` Have your MFunding portal login? Upload there too: mfunding.net/portal/documents`
+  - **Day 2 "3 easy ways" SMS** — add a 4th way: `…or upload in your portal (mfunding.net/portal/documents if you're set up).`
+  - **Day 10 email** — add: `Already set up your MFunding portal? You can also upload everything from your document checklist there: https://mfunding.net/portal/documents`
+  Workflows **"MCA 04 - Application Sent"** (`076bee21-…`) + **"MCA 04B PREFILL"** (`afc21762-…`): add the same email line to the doc-request email(s). Only on steps that carry the *upload/stips* link — leave application-signing-only messages untouched.
+
+- [ ] **O12. MCA 12 - Renewal Eligible (`3cf63a5d-6789-43ce-8559-bdcb52d86996`) — four tag-triggered milestone branches.**
+  The backend already adds these tags automatically as paydown crosses each threshold. Builder: 4 entries, Trigger = **Contact Tag added**, **Allow re-enrollment = OFF** on each (hard requirement — prevents double-sends on re-syncs):
+  - Tag `paydown-40` → SMS: `{{contact.first_name}}, you're ~40% through your advance and paying like clockwork — you may qualify for additional capital. Watch your progress: https://mfunding.net/portal`
+  - Tag `paydown-60` → SMS: `Nice work {{contact.first_name}} — you're ~60% paid down. Renewal options typically improve from here. See where you stand: https://mfunding.net/portal`
+  - Tag `paydown-75` → SMS: `{{contact.first_name}}, you're ~75% paid down — often the best time to renew, typically on more favorable terms. Check your portal: https://mfunding.net/portal` *(compliance-amended: must say "typically on more favorable terms", NOT "on our most favorable terms")*
+  - Tag `paydown-100` → SMS: `Congrats {{contact.first_name}} — your advance is paid in full 🙌 You may qualify for fresh working capital. Reach out to your advisor whenever you're ready: https://mfunding.net/portal` *(compliance-amended wording)*
+  Optional same visit — **"MCA 11 - Funded"** (`6ec974fd-…`) Day-1 congrats SMS, append: ` Track everything and see when you may qualify for more in your portal: https://mfunding.net/portal`
+
+- [ ] **O13. (Later, needs code first) Document-completed webhook.** A workflow "Trigger = Documents & Contracts (status Completed) → Custom Webhook POST to ghl-webhook" would make portal signing status instant instead of polled. **Wait** — the ghl-webhook handler branch isn't built yet; I'll flag when it is.
+
 ---
 
 ## 🔴 CRITICAL
