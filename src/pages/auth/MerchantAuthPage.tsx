@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import supabase from "../../supabase";
 import Logo from "../../components/ui/Logo";
 import SEO from "../../components/seo/SEO";
+import MerchantLoginLinkForm from "../../components/auth/MerchantLoginLinkForm";
 
 type Phase = "signing-in" | "expired";
 
@@ -77,12 +78,13 @@ export default function MerchantAuthPage() {
             </p>
           </>
         ) : (
-          <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6">
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">This link has expired</h1>
-            <p className="text-gray-500 dark:text-gray-400 mt-2">
-              For your security, sign-in links only work for a short time. Ask your funding
-              advisor to send you a fresh link and you'll be right in.
+          <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 text-left">
+            <h1 className="text-xl font-bold text-gray-900 dark:text-white text-center">This link has expired</h1>
+            <p className="text-gray-500 dark:text-gray-400 mt-2 mb-5 text-center">
+              For your security, sign-in links only work for a short time. Enter your email and
+              we'll send you a fresh one.
             </p>
+            <MerchantLoginLinkForm compact />
           </div>
         )}
       </div>

@@ -133,6 +133,13 @@ verify_jwt = true
 [functions.merchant-invite]
 verify_jwt = true
 
+# Merchant self-serves a passwordless sign-in link (logged-out mechant on the
+# sign-in / expired-link screens). Anon-callable — auth is impossible before a merchant is
+# signed in — so it never enumerates accounts (always returns ok:true) and throttles
+# to one send per customer per 2 minutes.
+[functions.merchant-login-link]
+verify_jwt = false
+
 # Live "docs back from the merchant" status. Staff, OR the merchant asking about
 # their OWN GHL contact (in-code ownership check).
 [functions.ghl-docs-status]

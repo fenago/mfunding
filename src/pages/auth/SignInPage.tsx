@@ -5,6 +5,7 @@ import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import LoadingPage from "../LoadingPage";
 import { SignInPageSEO } from "../../components/seo/SEO";
+import MerchantLoginLinkForm from "../../components/auth/MerchantLoginLinkForm";
 
 const SignInPage = () => {
   const { session } = useSession();
@@ -67,6 +68,11 @@ const SignInPage = () => {
         </Link>
         {status && <p className="text-center text-gray-500 dark:text-gray-400">{status}</p>}
       </form>
+
+      <div className="w-full max-w-md mt-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg p-8">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Business owner sign in</h2>
+        <MerchantLoginLinkForm />
+      </div>
     </main>
   );
 };
