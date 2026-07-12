@@ -155,6 +155,7 @@
 
 - [ ] **24. Emailed bank statements skip underwriting and are auto-approved.**
   `poll-funder-replies:342` files attachments as `bank_statement` status `approved`; only the form-upload path (`ghl-webhook:762`) triggers the underwriter.
+  *(PARTIAL — Jul 11 Merchant Experience Wave 2: merchant **portal** uploads now trigger the underwriter via the `merchant-doc-uploaded` edge fn. The **emailed-attachment** path in poll-funder-replies still skips it — that's the remaining gap.)*
 
 - [ ] **25. Auto-underwrite can target a funded/dead deal.**
   `ghl-webhook:858` picks the customer's most-recently-updated deal with no status filter.

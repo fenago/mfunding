@@ -170,18 +170,19 @@ Phase 6 (renewal mode) — anytime after Phase 1
 **Team lead:**
 - [ ] Subdomain `my.mfunding.net` (DNS + hosting alias + app awareness)
 - [x] Compliance review of all Wave 1 merchant-facing copy *(ALL PASS, Jul 11 — zero loan-language violations, timeframes hedged, no guarantees, terminal states respectful)*
-- [ ] Review, commit, deploy Wave 1
+- [x] Review, commit, deploy Wave 1 *(commit 54a226e pushed Jul 11; edge functions + migrations already live; Netlify deploys from main)*
 
-### Wave 2 — QUEUED
-- [ ] 2.1 `deal_doc_requests` table + closer request-docs UI (templates: bank statements, license, voided check, signed app)
-- [ ] 2.2 Merchant checklist UI (per-item status, rejection reasons, re-upload, progress ring)
-- [ ] 2.3 Mobile camera capture (`capture="environment"`)
-- [ ] 2.4 Typed uploads (kill hardcoded "other") + 10MB enforcement
-- [ ] 2.5 Ops feedback loop (closer ping + My Day + underwriter trigger on bank statements)
-- [ ] 2.6 Email parity (Sequence A links deep-link to portal checklist)
-- [ ] 3.1 `get_my_deal_submissions` sanitized RPC (no funder identity) + `offer_expires_at` on deal_submissions
-- [ ] 3.2 Dashboard submissions card (counts, statuses, celebration state)
-- [ ] 3.3 Funder stips → merchant action items
+### Wave 2 — SHIPPED (Jul 11, 2026)
+- [x] 2.1 `deal_doc_requests` table + closer request-docs UI *(live: table + RLS (staff/closer ALL, merchant SELECT-only), `doc_type` reuses the `customer_document_type` enum = same vocab as `doc_checklist`; approve → DB trigger auto-ticks `deals.doc_checklist` (single source of truth preserved); closer UI `DealDocRequests` on the deal page Documents tab — template quick-picks + custom label + due date + approve/reject-with-reason. Migration: `supabase/migrations/20260711_deal_doc_requests.sql`)*
+- [x] 2.2 Merchant checklist UI *(PortalDocumentsPage rebuilt checklist-first: per-request cards with own upload slots, progress ring "X of Y done", rejected cards show reviewer reason + re-upload, approved collapse ✓, ad-hoc upload section kept below, reassuring empty state)*
+- [x] 2.3 Mobile camera capture *("Take a photo" input with `capture="environment"` on every card + `accept="image/*,.pdf"`)*
+- [x] 2.4 Typed uploads + 10MB enforced *(checklist uploads carry the request's `doc_type` into `customer_documents.document_type` — hardcoded "other" killed for checklist flow; 10MB enforced in code; merchant write path is the `mark_doc_request_uploaded` RPC only — merchants have no direct table writes)*
+- [x] 2.5 Ops feedback loop *(edge fn `merchant-doc-uploaded`, verify_jwt=true + server-side ownership check: activity_log 'document_uploaded' + auto underwriter re-run on bank statements — closes audit #24 for the portal path; ops surface = existing NeedsAttention "Documents to review" queue; dedicated notification producer deferred to Wave 4 §5.2; NOTE: never reuse `merchant_reply_at` as an upload signal — poll-funder-replies uses it as its reply-detection baseline)*
+- [x] 2.6 Email parity — DRAFTED, apply pending *(GHL API cannot read/write step-level workflow copy, builder-only. Full inventory + before/after drafts done for MCA 06/Seq A + MCA 04/04B; portal line is ADDITIVE next to the existing vibereach upload link so uninvited merchants aren't stranded; SMS line only on Day 0 + Day 2 "methods" steps + Day 10 email; both lines compliance-PASSED. **Owner/builder action to apply** — 5 min in the GHL builder, or a supervised browser session)*
+- [x] 3.1 `get_my_deal_submissions` RPC + `offer_expires_at` *(live: SECURITY DEFINER, zero rows unless caller owns the deal; returns "Funding Partner A/B/…" positional labels, status buckets (submitted/reviewing/offer/declined/withdrawn), offer fields non-null only at 'offer'; never lender identity/notes/commissions; `deal_submissions` still has NO merchant RLS — RPC is the only path. Migration: `supabase/migrations/20260711_offer_expires_and_deal_submissions_rpc.sql`)*
+- [x] 3.2 Dashboard submissions card *(SubmissionsCard: "Your file is in front of N funding partners", per-partner status chips, waiting pulse, offer celebration + detail grid, Countdown on `offer_expires_at`; MCA-family deals at/past submission only)*
+- [x] 3.3 Funder stips → merchant action items *(same `deal_doc_requests` flow — closer adds a request, it appears instantly in the portal checklist + ActionNeededHero (rejected doc = top priority); no separate mechanism needed)*
+- [x] Compliance review of all Wave 2 merchant-facing copy + the 2 GHL insertion lines *(ALL PASS, 0 violations; optional voided-check "preferred" polish applied)*
 
 ### Wave 3 — QUEUED
 - [ ] 4.1 Offer review page (anonymized side-by-side, accept/decline, expiry countdown)

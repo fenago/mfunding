@@ -53,6 +53,18 @@ function isFunctionMissing(error: { code?: string; message?: string } | null): b
   );
 }
 
+function isTableMissing(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  // Postgres "undefined_table" is 42P01; PostgREST returns PGRST205 with a
+  // "Could not find the table ... in the schema cache" message when the table
+  // hasn't been created yet (backend building in parallel).
+  return (
+    error.code === "42P01" ||
+    error.code === "PGRST205" ||
+    /could not find the table|relation .* does not exist/i.test(error.message || "")
+  );
+}
+
 /**
  * Fetch the signed-in merchant's own deals, column-sanitized.
  *
@@ -94,3 +106,132 @@ export async function getMyPortalDeals(userId: string): Promise<PortalDeal[]> {
 
   return (rows ?? []) as unknown as PortalDeal[];
 }
+
+// ── Document checklist (deal_doc_requests) ───────────────────────────────────
+// A closer/VA (or a funder-stip request) creates rows the merchant must satisfy.
+// Merchants SELECT their own rows via RLS; they mark an upload through the
+// SECURITY DEFINER RPC `mark_doc_request_uploaded`.
+
+export type DocRequestStatus =
+  | "requested"
+  | "uploaded"
+  | "under_review"
+  | "approved"
+  | "rejected";
+
+export interface DocRequest {
+  id: string;
+  deal_id: string;
+  customer_id: string;
+  doc_type: string;
+  label: string;
+  status: DocRequestStatus;
+  rejection_reason: string | null;
+  due_at: string | null;
+  requested_by: string | null;
+  document_id: string | null;
+  created_at: string;
+}
+
+const DOC_REQUEST_COLUMNS =
+  "id, deal_id, customer_id, doc_type, label, status, rejection_reason, due_at, " +
+  "requested_by, document_id, created_at";
+
+/** A merchant's own document requests (across their deals), oldest first.
+ *  Returns [] cleanly if the table isn't deployed yet (backend in parallel). */
+export async function getMyDocRequests(customerId: string): Promise<DocRequest[]> {
+  const { data, error } = await supabase
+    .from("deal_doc_requests")
+    .select(DOC_REQUEST_COLUMNS)
+    .eq("customer_id", customerId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    if (isTableMissing(error)) return [];
+    throw new Error(error.message || "Failed to load your document checklist.");
+  }
+  return (data ?? []) as unknown as DocRequest[];
+}
+
+/** Flip a request to 'uploaded' and link the stored document. No-op (non-fatal)
+ *  if the RPC isn't deployed yet — the file still saved to customer_documents,
+ *  the checklist status just won't advance until the RPC lands. */
+export async function markDocRequestUploaded(
+  requestId: string,
+  documentId: string,
+): Promise<void> {
+  const { error } = await supabase.rpc("mark_doc_request_uploaded", {
+    p_request_id: requestId,
+    p_document_id: documentId,
+  });
+  if (error && !isFunctionMissing(error)) {
+    throw new Error(error.message || "Couldn't mark this document as received.");
+  }
+}
+
+/** Fire-and-forget: tell the backend a merchant uploaded a document so it can
+ *  log the activity and re-run underwriting for bank statements. NEVER throws —
+ *  a failure here must not block the merchant's upload. */
+export async function notifyMerchantDocUploaded(documentId: string): Promise<void> {
+  try {
+    const { error } = await supabase.functions.invoke("merchant-doc-uploaded", {
+      body: { document_id: documentId },
+    });
+    if (error) console.warn("[merchant-doc-uploaded] notify failed (non-blocking):", error.message);
+  } catch (e) {
+    console.warn("[merchant-doc-uploaded] notify threw (non-blocking):", e);
+  }
+}
+
+// ── Anonymized funder submissions (get_my_deal_submissions) ───────────────────
+// Merchant-safe view of where their file stands with funding partners. Partner
+// identities are anonymized server-side ("Funding Partner A"...). Offer fields
+// are null unless an offer has actually been presented.
+
+export type SubmissionBucket =
+  | "submitted"
+  | "reviewing"
+  | "offer"
+  | "declined"
+  | "withdrawn";
+
+export interface DealSubmissionView {
+  partner_label: string;
+  status_bucket: SubmissionBucket;
+  submitted_at: string | null;
+  offer_amount: number | null;
+  offer_payback: number | null;
+  offer_term: number | null;
+  offer_payment: number | null;
+  offer_frequency: string | null;
+  offer_expires_at: string | null;
+}
+
+/** Anonymized submission rows for one of the merchant's deals. Returns []
+ *  cleanly if the RPC isn't deployed yet. */
+export async function getMyDealSubmissions(dealId: string): Promise<DealSubmissionView[]> {
+  const { data, error } = await supabase.rpc("get_my_deal_submissions", {
+    p_deal_id: dealId,
+  });
+
+  if (error) {
+    if (isFunctionMissing(error)) return [];
+    throw new Error(error.message || "Failed to load your submission status.");
+  }
+  return (data ?? []) as DealSubmissionView[];
+}
+
+/** Internal deal statuses that mean the file has reached (or passed) funder
+ *  submission — the point at which the submissions card is meaningful. Covers
+ *  both the MCA and VCF pipelines. */
+export const SUBMITTED_OR_PAST_STATUSES = new Set<string>([
+  "submitted_to_funder",
+  "offer_received",
+  "offer_presented",
+  "offer_accepted",
+  "funded",
+  "renewal_eligible",
+  "submitted_to_vcf",
+  "restructure_executed",
+  "servicing",
+]);

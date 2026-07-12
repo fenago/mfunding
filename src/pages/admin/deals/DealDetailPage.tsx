@@ -36,6 +36,7 @@ import AIUnderwritingPanel from "../../../components/shared/AIUnderwritingPanel"
 import OfferComparison from "../../../components/shared/OfferComparison";
 import PipelineFlow from "../../../components/shared/PipelineFlow";
 import QualificationPanel from "../../../components/admin/QualificationPanel";
+import DealDocRequests from "../../../components/admin/DealDocRequests";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 // Required stip document types for a deal
@@ -953,6 +954,9 @@ export default function DealDetailPage() {
       {/* Tab: Documents (Stips Checklist) */}
       {activeTab === "documents" && (
         <div className="space-y-6">
+          {/* Request documents from the merchant (also how funder stips reach them) */}
+          <DealDocRequests dealId={deal.id} customerId={deal.customer_id} />
+
           <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
             <h3 className="font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
               <DocumentCheckIcon className="w-5 h-5 text-gray-400" />

@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { BoltIcon, CheckCircleIcon, ArrowRightIcon } from "@heroicons/react/24/solid";
-import type { PortalDeal } from "../../services/portalService";
+import type { PortalDeal, DocRequest } from "../../services/portalService";
 import Countdown from "./Countdown";
 import { isDeadlinePast } from "../../utils/deadline";
 
@@ -8,6 +8,8 @@ interface ActionNeededHeroProps {
   deals: PortalDeal[];
   /** Count of the merchant's documents still pending review/upload. */
   pendingDocuments: number;
+  /** Open document-checklist requests across the merchant's deals. */
+  docRequests?: DocRequest[];
 }
 
 interface ActionItem {
@@ -21,8 +23,41 @@ interface ActionItem {
 }
 
 /** Derive the single most important thing the merchant should do right now. */
-function topAction(deals: PortalDeal[], pendingDocuments: number): ActionItem | null {
+function topAction(
+  deals: PortalDeal[],
+  pendingDocuments: number,
+  docRequests: DocRequest[],
+): ActionItem | null {
   const actions: ActionItem[] = [];
+
+  // Explicit document requests are the most precise signal — a rejected doc is
+  // the single most urgent thing on a merchant's plate (their file is stalled).
+  const rejected = docRequests.filter((r) => r.status === "rejected");
+  const stillNeeded = docRequests.filter((r) => r.status === "requested");
+  if (rejected.length > 0) {
+    actions.push({
+      priority: 110,
+      title: `${rejected.length} document${rejected.length === 1 ? "" : "s"} need${rejected.length === 1 ? "s" : ""} another look`,
+      detail: "One of your uploads couldn't be accepted — tap to send it again and keep your file moving.",
+      to: "/portal/documents",
+      ctaLabel: "Re-upload now",
+    });
+  }
+  if (stillNeeded.length > 0) {
+    // Surface the soonest due date as a countdown if any request has one.
+    const soonest = stillNeeded
+      .map((r) => r.due_at)
+      .filter((d): d is string => !!d)
+      .sort()[0];
+    actions.push({
+      priority: 78,
+      title: `${stillNeeded.length} document${stillNeeded.length === 1 ? "" : "s"} needed`,
+      detail: "Upload what your specialist asked for — it's the fastest way to your offers.",
+      to: "/portal/documents",
+      ctaLabel: "Upload documents",
+      countdownTarget: soonest,
+    });
+  }
 
   for (const d of deals) {
     // Stips overdue — most urgent. (date-only aware: overdue only after end of day)
@@ -93,8 +128,8 @@ function nextUpdateHint(deals: PortalDeal[]): string {
   return "We'll reach out as soon as there's an update.";
 }
 
-export default function ActionNeededHero({ deals, pendingDocuments }: ActionNeededHeroProps) {
-  const action = topAction(deals, pendingDocuments);
+export default function ActionNeededHero({ deals, pendingDocuments, docRequests = [] }: ActionNeededHeroProps) {
+  const action = topAction(deals, pendingDocuments, docRequests);
 
   if (!action) {
     return (

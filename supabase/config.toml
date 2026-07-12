@@ -132,3 +132,9 @@ verify_jwt = true
 # their OWN GHL contact (in-code ownership check).
 [functions.ghl-docs-status]
 verify_jwt = true
+
+# Side effects after a MERCHANT uploads a portal document (audit #24). Signed-in;
+# caller must OWN the document's customer (or be ops staff) — in-code check.
+# Writes activity_log + re-runs the AI underwriter on bank statements.
+[functions.merchant-doc-uploaded]
+verify_jwt = true

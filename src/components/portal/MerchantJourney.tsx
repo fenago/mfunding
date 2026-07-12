@@ -13,8 +13,15 @@ import {
   type MerchantJourney as JourneyDef,
 } from "../../data/merchantJourney";
 
+interface DocProgress {
+  done: number;
+  total: number;
+}
+
 interface MerchantJourneyProps {
   deal: PortalDeal;
+  /** Document-checklist progress for this deal, shown on the "documents" step. */
+  docProgress?: DocProgress;
 }
 
 function stampText(value: string | null | undefined): string | null {
@@ -52,10 +59,19 @@ function elapsedSince(iso: string | null | undefined): string | null {
 }
 
 /** The expanded card for the step the deal is currently sitting at. */
-function CurrentStepCard({ step, deal }: { step: MerchantStep; deal: PortalDeal }) {
+function CurrentStepCard({
+  step,
+  deal,
+  docProgress,
+}: {
+  step: MerchantStep;
+  deal: PortalDeal;
+  docProgress?: DocProgress;
+}) {
   const youMove = step.whoseMove === "you";
   const sla = STAGE_SLA[deal.status];
   const elapsed = sla ? elapsedSince(deal[sla.since] as string | null) : null;
+  const showDocProgress = step.key === "documents" && docProgress && docProgress.total > 0;
 
   return (
     <div
@@ -79,6 +95,13 @@ function CurrentStepCard({ step, deal }: { step: MerchantStep; deal: PortalDeal 
       <h3 className="text-base font-bold text-gray-900 dark:text-white">{step.label}</h3>
       <p className="text-sm text-gray-700 dark:text-gray-200 mt-1">{step.whatsHappening}</p>
       <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">{step.timeframe}</p>
+
+      {/* Document checklist progress */}
+      {showDocProgress && (
+        <p className="mt-2 text-sm font-semibold text-gray-900 dark:text-white">
+          {docProgress!.done} of {docProgress!.total} documents in
+        </p>
+      )}
 
       {/* Stips deadline countdown (urgent) */}
       {deal.stips_promised_by && (step.key === "documents") && (
@@ -123,7 +146,7 @@ function CompletedList({ steps, deal }: { steps: MerchantStep[]; deal: PortalDea
   );
 }
 
-export default function MerchantJourney({ deal }: MerchantJourneyProps) {
+export default function MerchantJourney({ deal, docProgress }: MerchantJourneyProps) {
   const { journey, currentIndex, isTerminal } = resolveJourney(deal);
   const [showCompleted, setShowCompleted] = useState(false);
 
@@ -160,7 +183,7 @@ export default function MerchantJourney({ deal }: MerchantJourneyProps) {
       <div className="hidden sm:block">
         <PipelineFlow pipeline={toPipelineDef(journey)} currentKey={currentStep.key} />
         <div className="mt-4">
-          <CurrentStepCard step={currentStep} deal={deal} />
+          <CurrentStepCard step={currentStep} deal={deal} docProgress={docProgress} />
         </div>
       </div>
 
@@ -195,7 +218,7 @@ export default function MerchantJourney({ deal }: MerchantJourneyProps) {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3 }}
         >
-          <CurrentStepCard step={currentStep} deal={deal} />
+          <CurrentStepCard step={currentStep} deal={deal} docProgress={docProgress} />
         </motion.div>
 
         {/* Upcoming — summarized */}

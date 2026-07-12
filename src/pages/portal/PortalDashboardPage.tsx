@@ -3,16 +3,33 @@ import { Link } from "react-router-dom";
 import { DocumentArrowUpIcon, InboxIcon } from "@heroicons/react/24/outline";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
-import { getMyPortalDeals, type PortalDeal } from "../../services/portalService";
+import {
+  getMyPortalDeals,
+  getMyDocRequests,
+  SUBMITTED_OR_PAST_STATUSES,
+  type PortalDeal,
+  type DocRequest,
+} from "../../services/portalService";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import MerchantJourney from "../../components/portal/MerchantJourney";
 import ActionNeededHero from "../../components/portal/ActionNeededHero";
+import SubmissionsCard from "../../components/portal/SubmissionsCard";
 import WelcomeOverlay from "../../components/portal/WelcomeOverlay";
+
+/** Merchant's part done vs. total for one deal's document checklist. */
+function docProgressFor(requests: DocRequest[], dealId: string): { done: number; total: number } {
+  const forDeal = requests.filter((r) => r.deal_id === dealId);
+  const done = forDeal.filter(
+    (r) => r.status === "uploaded" || r.status === "under_review" || r.status === "approved",
+  ).length;
+  return { done, total: forDeal.length };
+}
 
 export default function PortalDashboardPage() {
   const { session } = useSession();
   const [firstName, setFirstName] = useState<string | null>(null);
   const [deals, setDeals] = useState<PortalDeal[]>([]);
+  const [docRequests, setDocRequests] = useState<DocRequest[]>([]);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [pendingDocuments, setPendingDocuments] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -39,6 +56,14 @@ export default function PortalDashboardPage() {
           .eq("customer_id", customer.id)
           .eq("status", "pending");
         setPendingDocuments(docCount || 0);
+
+        // Document checklist (own rows via RLS; [] if table not deployed yet).
+        try {
+          setDocRequests(await getMyDocRequests(customer.id));
+        } catch (err) {
+          console.error("Failed to load document checklist:", err);
+          setDocRequests([]);
+        }
       }
 
       // All deal reads go through the column-sanitized portal service.
@@ -85,7 +110,7 @@ export default function PortalDashboardPage() {
       </div>
 
       {/* Action Needed — sticky, unmissable */}
-      <ActionNeededHero deals={deals} pendingDocuments={pendingDocuments} />
+      <ActionNeededHero deals={deals} pendingDocuments={pendingDocuments} docRequests={docRequests} />
 
       {/* The journey, one card per funding request */}
       {deals.length > 0 ? (
@@ -121,7 +146,14 @@ export default function PortalDashboardPage() {
                     </span>
                   )}
                 </div>
-                <MerchantJourney deal={d} />
+                <MerchantJourney deal={d} docProgress={docProgressFor(docRequests, d.id)} />
+
+                {/* Funder submissions — only for MCA-family deals at/past submission */}
+                {d.deal_type !== "vcf" && SUBMITTED_OR_PAST_STATUSES.has(d.status) && (
+                  <div className="mt-4">
+                    <SubmissionsCard dealId={d.id} />
+                  </div>
+                )}
 
                 {/* Funded celebration */}
                 {d.status === "funded" && d.amount_funded != null && (
