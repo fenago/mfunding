@@ -58,7 +58,7 @@ const MCA_STEPS: MerchantStep[] = [
   {
     key: "documents",
     label: "Your documents",
-    whatsHappening: "Upload your most recent business bank statements and a few quick items so partners can review your file.",
+    whatsHappening: "Sign your paperwork and upload a few items so funding partners can review your file.",
     whoseMove: "you",
     timeframe: "The faster these come in, the faster you get offers.",
     statuses: ["docs_collected", "bank_statements"],

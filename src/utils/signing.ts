@@ -113,6 +113,8 @@ export interface UnifiedDocs {
   all: Signable[];
   /** Documents still needing a signature (native + GHL). */
   pending: Signable[];
+  /** Documents already signed/completed (native + GHL), for the paperwork list. */
+  signed: Signable[];
   /** Native agreements already signed (for "On file"). */
   signedNative: MerchantDocument[];
   /** GHL docs already completed (for "On file"). */
@@ -131,6 +133,7 @@ export function unifyDocs(native: MerchantDocument[], ghl: GhlDocument[]): Unifi
   return {
     all: kept,
     pending: kept.filter((s) => s.pending),
+    signed: kept.filter((s) => s.signed),
     signedNative: kept.filter((s) => s.source === "native" && s.signed).map((s) => s.nativeDoc!),
     signedGhl: kept.filter((s) => s.source === "ghl" && s.signed).map((s) => s.ghlDoc!),
     expiredGhl: kept.filter((s) => s.source === "ghl" && s.expired).map((s) => s.ghlDoc!),

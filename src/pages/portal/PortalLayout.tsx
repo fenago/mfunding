@@ -12,6 +12,7 @@ import supabase from "../../supabase";
 import Logo from "../../components/ui/Logo";
 import SEO from "../../components/seo/SEO";
 import NotificationBell from "../../components/portal/NotificationBell";
+import VersionRefreshToast from "../../components/portal/VersionRefreshToast";
 
 const navItems = [
   { name: "Dashboard", path: "/portal", icon: HomeIcon },
@@ -117,6 +118,9 @@ export default function PortalLayout() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Outlet />
       </main>
+
+      {/* New-deploy detector — unobtrusive "Refresh" toast, never auto-reloads */}
+      <VersionRefreshToast />
     </div>
   );
 }

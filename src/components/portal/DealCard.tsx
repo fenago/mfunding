@@ -1,7 +1,7 @@
-import type { PortalDeal, MerchantDocument } from "../../services/portalService";
+import type { PortalDeal, MerchantDocument, DocRequest } from "../../services/portalService";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import { resolveJourney } from "../../data/merchantJourney";
-import type { ApplicationStatus } from "../../utils/signing";
+import type { UnifiedDocs } from "../../utils/signing";
 import JourneyHero from "./JourneyHero";
 import StepDetail from "./StepDetail";
 
@@ -11,8 +11,9 @@ interface DealCardProps {
   /** Selected journey step (controlled by the page); falls back to the stage. */
   selectedKey?: string;
   onSelectStep: (key: string) => void;
-  /** Resolved single application (one-application rule) for the application step. */
-  application: ApplicationStatus;
+  /** Unified signable docs (one-application rule) — powers the paperwork list. */
+  unified: UnifiedDocs;
+  docRequests: DocRequest[];
   signedDocuments: MerchantDocument[];
   onSignNative: (doc: MerchantDocument) => void;
   onChanged: () => void;
@@ -28,7 +29,8 @@ export default function DealCard({
   customerId,
   selectedKey,
   onSelectStep,
-  application,
+  unified,
+  docRequests,
   signedDocuments,
   onSignNative,
   onChanged,
@@ -93,7 +95,8 @@ export default function DealCard({
           deal={deal}
           stepKey={activeKey}
           customerId={customerId}
-          application={application}
+          unified={unified}
+          docRequests={docRequests}
           signedDocuments={signedDocuments}
           onSignNative={onSignNative}
           onChanged={onChanged}

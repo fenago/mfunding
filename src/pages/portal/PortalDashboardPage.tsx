@@ -257,7 +257,8 @@ export default function PortalDashboardPage() {
               customerId={customerId}
               selectedKey={selectedByDeal[d.id]}
               onSelectStep={(k) => selectStep(d.id, k)}
-              application={unified.application}
+              unified={unified}
+              docRequests={docRequests}
               signedDocuments={signDocuments}
               onSignNative={setSigningDoc}
               onChanged={fetchData}

@@ -31,3 +31,6 @@ supabase/.branches/
 # Local MCP config (contains tokens — keep out of git)
 .mcp.json
 deno.lock
+
+# Generated build id for the stale-bundle detector
+public/version.json
