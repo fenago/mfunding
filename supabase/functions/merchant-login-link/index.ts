@@ -26,6 +26,7 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
   latestEmailMessageId,
 } from "../_shared/ghl.ts";
+import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 
 const PORTAL_REDIRECT = "https://mfunding.net/auth/merchant";
 const THROTTLE_MS = 2 * 60 * 1000;
@@ -121,7 +122,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  const hi = firstName ? `Hi ${esc(firstName)},` : "Hi,";
   const subject = "Your MFunding sign-in link";
   const bodyText =
     `${firstName ? `Hi ${firstName},` : "Hi,"}\n\n` +
@@ -130,17 +130,17 @@ Deno.serve(async (req) => {
     `For your security this link works for a short time. If it expires, just request ` +
     `a new one from the sign-in page.\n\n` +
     `If you didn't ask to sign in, you can ignore this email.\n\n` +
-    `— The MFunding Team`;
-  const html =
-    `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#0f172a;max-width:600px;line-height:1.5">` +
-    `<p>${hi}</p>` +
-    `<p>Here is your secure sign-in link for your MFunding account. Tap the button below to log in — this link signs you in, no password needed.</p>` +
-    `<p style="margin:24px 0"><a href="${actionLink}" style="background:#0f766e;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Sign in to my account</a></p>` +
-    `<p style="color:#475569;font-size:13px">For your security this link works for a short time. If it expires, just request a new one from the sign-in page.</p>` +
-    `<p style="color:#475569;font-size:13px">If the button does not work, copy and paste this link:<br>${esc(actionLink)}</p>` +
-    `<p style="color:#475569;font-size:13px">If you didn't ask to sign in, you can ignore this email.</p>` +
-    `<p>— The MFunding Team</p>` +
-    `</div>`;
+    `— The Momentum Funding team`;
+  const html = renderMerchantEmail({
+    greeting: firstName ? `Hi ${firstName},` : "Hi,",
+    paragraphs: [
+      "Here is your secure sign-in link for your MFunding account. Tap the button below to log in — this link signs you in, no password needed.",
+    ],
+    ctaLabel: "Sign in to my account",
+    ctaUrl: actionLink,
+    footerNote:
+      "For your security this link works for a short time. If it expires, just request a new one from the sign-in page. If you didn't ask to sign in, you can ignore this email.",
+  });
 
   let replyMessageId: string | undefined;
   try { replyMessageId = (await latestEmailMessageId(cfg, contactId)) ?? undefined; } catch { /* thread if we can */ }

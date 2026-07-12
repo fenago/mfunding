@@ -22,6 +22,7 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
   sendSmsToContact, latestEmailMessageId,
 } from "../_shared/ghl.ts";
+import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 
 const PORTAL_REDIRECT = "https://mfunding.net/auth/merchant";
 
@@ -143,7 +144,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  const hi = firstName ? `Hi ${esc(firstName)},` : "Hi,";
   const subject = "Your MFunding application portal is ready";
   const bodyText =
     `${firstName ? `Hi ${firstName},` : "Hi,"}\n\n` +
@@ -153,17 +153,18 @@ Deno.serve(async (req) => {
     `review your funding options in one place.\n\n` +
     `You never pay us — our funding partners compensate us. Checking your options ` +
     `does not impact your credit; only a formal submission can.\n\n` +
-    `— The MFunding Team`;
-  const html =
-    `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#0f172a;max-width:600px;line-height:1.5">` +
-    `<p>${hi}</p>` +
-    `<p>Your secure MFunding application portal is ready. Tap the button below to log in — no password needed.</p>` +
-    `<p style="margin:24px 0"><a href="${actionLink}" style="background:#0f766e;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">Open my portal</a></p>` +
-    `<p>Inside, you can upload your documents, track your application in real time, and review your funding options in one place.</p>` +
-    `<p style="color:#475569;font-size:13px">You never pay us — our funding partners compensate us. Checking your options does not impact your credit; only a formal submission can.</p>` +
-    `<p style="color:#475569;font-size:13px">If the button does not work, copy and paste this link:<br>${esc(actionLink)}</p>` +
-    `<p>— The MFunding Team</p>` +
-    `</div>`;
+    `— The Momentum Funding team`;
+  const html = renderMerchantEmail({
+    greeting: firstName ? `Hi ${firstName},` : "Hi,",
+    paragraphs: [
+      "Your secure MFunding application portal is ready. Tap the button below to log in — no password needed.",
+      "Inside, you can upload your documents, track your application in real time, and review your funding options in one place.",
+    ],
+    ctaLabel: "Open your portal",
+    ctaUrl: actionLink,
+    footerNote:
+      "You never pay us — our funding partners compensate us. Checking your options does not impact your credit; only a formal submission can.",
+  });
 
   let replyMessageId: string | undefined;
   try { replyMessageId = (await latestEmailMessageId(cfg, contactId)) ?? undefined; } catch { /* thread if we can */ }

@@ -25,6 +25,7 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
   addContactTags, latestEmailMessageId, sendMarker,
 } from "../_shared/ghl.ts";
+import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 
 const APP_URL = (Deno.env.get("APP_PUBLIC_URL") ?? "https://mfunding.net").replace(/\/$/, "");
 
@@ -108,6 +109,21 @@ function copyFor(kind: string, isVcf: boolean, arg1?: string | null, milestone?:
           ? "There is a new update on your file. Sign in to your portal to see where things stand."
           : "There is a new update on your file. Sign in to your portal to see the latest.",
         path: "/portal" };
+  }
+}
+
+// Per-kind CTA button label. Falls back to "Open your portal".
+function ctaLabelFor(kind: string): string {
+  switch (kind) {
+    case "doc_requested": return "Upload your document";
+    case "doc_rejected": return "Re-upload your document";
+    case "doc_approved": return "View your documents";
+    case "offer": case "offer_received": return "Review your offer";
+    case "signature_requested": return "Review & sign in your portal";
+    case "signature_signed": case "signature_completed": return "View your documents";
+    case "submission": return "Track your file";
+    case "renewal": case "renewal_milestone": return "Explore your options";
+    default: return "Open your portal";
   }
 }
 
@@ -198,13 +214,14 @@ Deno.serve(async (req) => {
   } else {
     const firstName = (customer.first_name as string | null) ?? "there";
     const link = `${APP_URL}${copy.path}`;
-    const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;line-height:1.6">
-<p>Hi ${esc(firstName)},</p>
-<p>${esc(copy.body)}</p>
-<p><a href="${link}" style="color:#0369a1;font-weight:600">Open your portal</a></p>
-<p style="margin-top:24px">— Momentum Funding</p>
-</div>`;
-    const text = `Hi ${firstName},\n\n${copy.body}\n\nOpen your portal: ${link}\n\n— Momentum Funding`;
+    const ctaLabel = ctaLabelFor(kind);
+    const html = renderMerchantEmail({
+      greeting: `Hi ${firstName},`,
+      paragraphs: [copy.body],
+      ctaLabel,
+      ctaUrl: link,
+    });
+    const text = `Hi ${firstName},\n\n${copy.body}\n\n${ctaLabel}: ${link}\n\n— The Momentum Funding team`;
     let replyMessageId: string | undefined;
     try { replyMessageId = (await latestEmailMessageId(cfg, contactId)) ?? undefined; } catch { /* thread if we can */ }
     const sr = await sendEmailToContact(cfg, contactId, copy.subject, html, { text, replyMessageId });

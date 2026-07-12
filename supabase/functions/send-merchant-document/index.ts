@@ -24,6 +24,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, sendMarker,
 } from "../_shared/ghl.ts";
+import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 import { mergeMerchantDoc, sha256Hex } from "../_shared/merchantDocMerge.ts";
 
 function json(body: unknown, status = 200) {
@@ -176,13 +177,15 @@ Deno.serve(async (req) => {
         const firstName = (customer.first_name as string) ?? "there";
         const portalUrl = `${APP_URL}/portal`;
         const subject = `Your funding documents are ready to review and sign`;
-        const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;line-height:1.6">
-<p>Hi ${esc(firstName)},</p>
-<p>Your ${esc(tmpl.name as string)} is ready. Please sign in to your portal to read it in full and sign.</p>
-<p><a href="${portalUrl}" style="color:#0369a1;font-weight:600">Open your portal</a></p>
-<p>Signing takes a minute — type your full legal name and confirm you agree.</p>
-<p style="margin-top:24px">— Momentum Funding</p>
-</div>`;
+        const html = renderMerchantEmail({
+          greeting: `Hi ${firstName},`,
+          paragraphs: [
+            `Your ${tmpl.name} is ready. Please sign in to your portal to read it in full and sign.`,
+          ],
+          ctaLabel: "Review & sign in your portal",
+          ctaUrl: portalUrl,
+          footerNote: "Signing takes a minute — type your full legal name and confirm you agree.",
+        });
         const text = `Hi ${firstName},\n\nYour ${tmpl.name} is ready to review and sign. Sign in to your portal: ${portalUrl}\n\n— Momentum Funding`;
         const sr = await sendEmailToContact(cfg, contactId, subject, html, { text });
         emailed = sr.ok;

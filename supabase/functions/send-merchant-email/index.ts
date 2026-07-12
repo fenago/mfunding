@@ -17,6 +17,7 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
   sendMarker,
 } from "../_shared/ghl.ts";
+import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -109,7 +110,12 @@ Deno.serve(async (req) => {
     }
   }
 
-  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px;white-space:pre-wrap">${esc(bodyText)}</div>`;
+  // Wrap the closer's verbatim text in the branded shell. white-space:pre-wrap
+  // preserves their line breaks; no auto-signoff (they sign their own message).
+  const html = renderMerchantEmail({
+    bodyHtml: `<div style="white-space:pre-wrap;font-size:15px;line-height:1.6;color:#0F172A">${esc(bodyText)}</div>`,
+    signoff: "",
+  });
   let replyMessageId: string | undefined;
   try { replyMessageId = (await latestEmailMessageId(cfg, contactId)) ?? undefined; } catch { /* thread if we can */ }
   const sr = await sendEmailToContact(cfg, contactId, subject, html, { text: bodyText, emailCc: cc, emailBcc: bcc, replyMessageId });
