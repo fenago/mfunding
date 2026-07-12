@@ -11,6 +11,7 @@ import {
 import type { PortalDeal, DocRequest, MerchantDocument } from "../../services/portalService";
 import { openGhlDoc, type Signable, type ApplicationStatus } from "../../utils/signing";
 import { isDeadlinePast } from "../../utils/deadline";
+import { cleanDocLabel, joinLabels } from "../../data/docRequests";
 import Countdown from "./Countdown";
 import FreshApplicationLink from "./FreshApplicationLink";
 
@@ -75,6 +76,11 @@ export default function ActionBlock({
       .filter((d): d is string => !!d)
       .sort()[0] ?? overdue?.stips_promised_by ?? undefined;
 
+  // Name the exact outstanding items (single source: the doc requests).
+  const requiredLabels = joinLabels(openRequired.map((r) => cleanDocLabel(r.label)));
+  const rejectedLabels = joinLabels(rejectedRequired.map((r) => cleanDocLabel(r.label)));
+  const optionalLabels = joinLabels(openOptional.map((r) => cleanDocLabel(r.label)));
+
   const offersActive = offerCount > 0 || deals.some((d) => d.status === "offer_presented");
 
   const rowCount = pending.length + (needUpload ? 1 : 0) + (offersActive ? 1 : 0);
@@ -92,7 +98,7 @@ export default function ActionBlock({
             <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-0.5">{nextUpdateHint(deals)}</p>
             {openOptional.length > 0 && (
               <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-1">
-                {openOptional.length} optional item{openOptional.length === 1 ? "" : "s"} could strengthen your file.
+                Optional: {optionalLabels} could strengthen your file.
                 {optionalDeal && (
                   <button
                     type="button"
@@ -148,15 +154,17 @@ export default function ActionBlock({
             tone={uploadUrgent ? "red" : "amber"}
             title={
               rejectedRequired.length > 0
-                ? "Re-upload a document"
-                : overdue
-                  ? "Your bank statements are past due"
-                  : "Upload your documents"
+                ? `Re-upload: ${rejectedLabels}`
+                : requiredLabels
+                  ? `Upload: ${requiredLabels}`
+                  : "Upload your last 4 months of business bank statements"
             }
             detail={
               rejectedRequired.length > 0
                 ? "One of your uploads couldn't be accepted — send it again to keep your file moving."
-                : "Your most recent business bank statements are the fastest way to your offers."
+                : overdue
+                  ? "Past due — upload now to keep your file moving with our funding partners."
+                  : "The faster these come in, the faster you get offers."
             }
             countdownTarget={soonestDue}
             cta={{ label: "Upload documents", onClick: () => onUpload(uploadDeal.id) }}

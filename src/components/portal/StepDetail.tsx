@@ -5,6 +5,7 @@ import { QuestionMarkCircleIcon } from "@heroicons/react/24/outline";
 import type { PortalDeal, MerchantDocument, DocRequest } from "../../services/portalService";
 import { SUBMITTED_OR_PAST_STATUSES } from "../../services/portalService";
 import { resolveJourney, STAGE_SLA } from "../../data/merchantJourney";
+import { cleanDocLabel, joinLabels } from "../../data/docRequests";
 import { openGhlDoc, type ApplicationStatus, type Signable, type UnifiedDocs } from "../../utils/signing";
 import DocChecklist from "./DocChecklist";
 import SubmissionsCard from "./SubmissionsCard";
@@ -84,6 +85,18 @@ export default function StepDetail({
   const sla = STAGE_SLA[deal.status];
   const elapsed = sla ? elapsedSince(deal[sla.since] as string | null) : null;
 
+  // Documents step: name exactly what's still needed (pending signatures +
+  // outstanding required uploads), single source. Falls back to the static copy
+  // when nothing is outstanding or requests haven't loaded.
+  const openRequiredLabels = docRequests
+    .filter((r) => r.deal_id === deal.id && r.required && (r.status === "requested" || r.status === "rejected"))
+    .map((r) => cleanDocLabel(r.label));
+  const docsNeeded = [...unified.pending.map((s) => s.name), ...openRequiredLabels];
+  const docsSummary =
+    stepKey === "documents" && docsNeeded.length > 0
+      ? `Still needed: ${joinLabels(docsNeeded)}.`
+      : null;
+
   return (
     <motion.div
       key={stepKey}
@@ -96,7 +109,7 @@ export default function StepDetail({
         <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${tagClass}`}>{tag}</span>
         <h3 className="text-base font-bold text-gray-900 dark:text-white">{step.label}</h3>
       </div>
-      <p className="text-sm text-gray-600 dark:text-gray-300">{step.whatsHappening}</p>
+      <p className="text-sm text-gray-600 dark:text-gray-300">{docsSummary ?? step.whatsHappening}</p>
       <p className="mt-1 text-xs text-gray-400">{step.timeframe}</p>
 
       {/* ── Per-step substance ─────────────────────────────────────────────── */}

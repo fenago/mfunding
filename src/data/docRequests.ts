@@ -64,3 +64,27 @@ export function docTypeHelp(docType: string): string {
 
 /** Max upload size enforced in the browser (matches the storage bucket copy). */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/** Tidy a request label for inline enumeration — drops the "(photo of the front)"
+ *  style parentheticals so it reads naturally in a sentence. */
+export function cleanDocLabel(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+}
+
+/** Natural-language join: "A" · "A and B" · "A, B, and C". */
+export function joinLabels(labels: string[]): string {
+  if (labels.length === 0) return "";
+  if (labels.length === 1) return labels[0];
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+}
+
+/** Friendly copy for an upload failure — maps the storage MIME rejection to
+ *  plain language; passes through our own already-friendly messages. */
+export function friendlyUploadError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  if (/mime type|not supported|unsupported|invalid.*type/i.test(msg)) {
+    return "That file type isn't supported — a photo (JPG, PNG, HEIC) or PDF works best.";
+  }
+  return msg || "Upload failed. Please try again.";
+}

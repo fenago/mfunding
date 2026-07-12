@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ChevronDownIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import { CameraIcon, ArrowUpTrayIcon } from "@heroicons/react/24/outline";
 import { useSession } from "../../context/SessionContext";
@@ -12,8 +12,13 @@ import {
   type DocRequest,
   type DocRequestStatus,
 } from "../../services/portalService";
-import { docTypeHelp, MAX_UPLOAD_BYTES, DOCUMENT_TYPES } from "../../data/docRequests";
+import { docTypeHelp, MAX_UPLOAD_BYTES, DOCUMENT_TYPES, friendlyUploadError } from "../../data/docRequests";
 import Countdown from "./Countdown";
+
+/** Scroll a just-surfaced error into view so the merchant can't miss it. */
+function scrollToError(id: string) {
+  setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+}
 
 // Merchant-facing chips for each checklist request status.
 const REQUEST_STATUS_CHIP: Record<DocRequestStatus, { label: string; className: string }> = {
@@ -218,10 +223,8 @@ export default function DocChecklist({
       await fetchRequests();
       onChanged?.();
     } catch (e) {
-      setCardError((m) => ({
-        ...m,
-        [req.id]: e instanceof Error ? e.message : "Upload failed. Please try again.",
-      }));
+      setCardError((m) => ({ ...m, [req.id]: friendlyUploadError(e) }));
+      scrollToError(`docerr-${req.id}`);
     } finally {
       setUploadingId(null);
     }
@@ -236,10 +239,8 @@ export default function DocChecklist({
       await fetchRequests();
       onChanged?.();
     } catch (e) {
-      setCardError((m) => ({
-        ...m,
-        adhoc: e instanceof Error ? e.message : "Upload failed. Please try again.",
-      }));
+      setCardError((m) => ({ ...m, adhoc: friendlyUploadError(e) }));
+      scrollToError("docerr-adhoc");
     } finally {
       setUploadingId(null);
     }
@@ -303,7 +304,11 @@ export default function DocChecklist({
           <div
             key={req.id}
             className={`bg-white dark:bg-gray-800 rounded-xl p-5 border ${
-              isRejected ? "border-red-300 dark:border-red-700" : "border-gray-200 dark:border-gray-700"
+              err
+                ? "border-red-400 dark:border-red-600 ring-1 ring-red-300 dark:ring-red-700"
+                : isRejected
+                  ? "border-red-300 dark:border-red-700"
+                  : "border-gray-200 dark:border-gray-700"
             }`}
           >
             <div className="flex items-start justify-between gap-3 mb-2">
@@ -348,7 +353,15 @@ export default function DocChecklist({
               </p>
             )}
 
-            {err && <p className="text-sm text-red-500 mt-2">{err}</p>}
+            {err && (
+              <div
+                id={`docerr-${req.id}`}
+                className="mt-3 flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 px-3 py-2"
+              >
+                <ExclamationTriangleIcon className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-sm font-medium text-red-700 dark:text-red-300">{err}</p>
+              </div>
+            )}
           </div>
         );
       })}
@@ -400,7 +413,15 @@ export default function DocChecklist({
                 </select>
               </div>
               <UploadSlot onFile={handleAdHocUpload} busy={uploadingId === "adhoc"} />
-              {cardError.adhoc && <p className="text-sm text-red-500">{cardError.adhoc}</p>}
+              {cardError.adhoc && (
+                <div
+                  id="docerr-adhoc"
+                  className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 px-3 py-2"
+                >
+                  <ExclamationTriangleIcon className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm font-medium text-red-700 dark:text-red-300">{cardError.adhoc}</p>
+                </div>
+              )}
               <p className="text-xs text-gray-400">Photos or PDFs up to 10MB.</p>
             </div>
           )}
