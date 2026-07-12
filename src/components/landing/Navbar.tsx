@@ -110,6 +110,19 @@ export default function Navbar() {
                     </Link>
                   </motion.div>
                 )}
+                {!isAdmin && (
+                  <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                    <Link
+                      to="/portal"
+                      className={`flex items-center gap-2 text-sm font-medium transition-colors ${
+                        isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
+                      }`}
+                    >
+                      <Squares2X2Icon className="w-4 h-4" />
+                      My Portal
+                    </Link>
+                  </motion.div>
+                )}
                 <div className="flex items-center gap-3">
                   <span className={`text-sm ${isScrolled && theme === 'light' ? 'text-text-secondary' : 'text-white/70'}`}>
                     {profile?.display_name || profile?.email?.split('@')[0]}
@@ -234,6 +247,22 @@ export default function Navbar() {
                       >
                         <Squares2X2Icon className="w-5 h-5" />
                         Dashboard
+                      </Link>
+                    </motion.div>
+                  )}
+                  {!isAdmin && (
+                    <motion.div
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.4 }}
+                    >
+                      <Link
+                        to="/portal"
+                        className="flex items-center gap-2 text-text-secondary font-medium py-3 px-4 rounded-lg hover:bg-mint-green/10 hover:text-midnight-blue transition-colors"
+                        onClick={() => setIsMobileMenuOpen(false)}
+                      >
+                        <Squares2X2Icon className="w-5 h-5" />
+                        My Portal
                       </Link>
                     </motion.div>
                   )}
