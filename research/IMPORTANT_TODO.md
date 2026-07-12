@@ -67,6 +67,14 @@
 
 - [ ] **O13. (Later, needs code first) Document-completed webhook.** A workflow "Trigger = Documents & Contracts (status Completed) → Custom Webhook POST to ghl-webhook" would make portal signing status instant instead of polled. **Wait** — the ghl-webhook handler branch isn't built yet; I'll flag when it is.
 
+- [ ] **O14. (Deferred decision, Jul 12 2026) Partial pre-fill of the application — pick a path when ready.**
+  **The ask:** on the fillable application, staff fill SOME of the ~23 fields (whatever the closer learned on the call) and the merchant sees those values and completes the rest.
+  **The blocker:** GHL fillable fields CANNOT be pre-seeded — verified in our own account: fillable fields always open blank and only *write back* to the contact after signing. That's why two templates exist at all. So "staff fill some, merchant fills the rest" is impossible on the current GHL documents.
+  **Current state (fine for launch):** two GHL paths, closer picks per deal — **MCA 04** = merchant fills everything; **04B PREFILL** = all-or-nothing snapshot of the CRM at send time (staff enrich the contact first, then send). The portal's one-application rule guarantees a merchant only ever sees one application.
+  **Option 1 — Hybrid GHL template (quick, fixed split):** a third template where call-collected fields (business name, address, EIN, entity, industry, revenue, amount requested…) are PRINTED from CRM custom values and only merchant-personal fields (SSN, DOB, driver's license, ownership %, bank details) remain fillable. Partial pre-fill in effect, but the staff/merchant split is fixed by template design, not per-merchant. Builder-built (~30 min); field-split spec ready on request. Caveat: a printed field the closer didn't fill shows blank and the merchant CANNOT type into it.
+  **Option 2 — Native portal application form (full flexibility, bigger build):** the application as a portal form; staff pre-fill ANY subset from admin, merchant sees the values, edits/completes the rest in the portal, signs natively (freeze-and-ledger e-sign already built and dormant); we own write-back to Supabase + GHL. True arbitrary partial fill. Est. a focused build wave (form + admin prefill UI + field sync).
+  Recommendation on file: Option 1 matches the closer-on-the-phone motion; Option 2 is the only way to get any-field flexibility.
+
 ---
 
 ## 🔴 CRITICAL
