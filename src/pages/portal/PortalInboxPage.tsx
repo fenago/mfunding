@@ -57,7 +57,7 @@ export default function PortalInboxPage() {
     try {
       const [msgs, dls] = await Promise.all([
         getMyConversation(uid),
-        getMyPortalDeals(uid).catch(() => [] as PortalDeal[]),
+        getMyPortalDeals().catch(() => [] as PortalDeal[]),
       ]);
       setMessages(msgs);
       setDeals(dls);

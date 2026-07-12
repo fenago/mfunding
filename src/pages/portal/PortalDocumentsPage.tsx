@@ -13,6 +13,7 @@ import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import {
+  getMyCustomer,
   getMyDocRequests,
   markDocRequestUploaded,
   notifyMerchantDocUploaded,
@@ -188,11 +189,12 @@ export default function PortalDocumentsPage() {
 
   const fetchAll = async () => {
     setIsLoading(true);
-    const { data: customer } = await supabase
-      .from("customers")
-      .select("id")
-      .eq("user_id", session?.user?.id)
-      .maybeSingle();
+    // customers has no merchant row-level SELECT anymore — resolve identity via
+    // the SECURITY DEFINER RPC (safe column projection).
+    const customer = await getMyCustomer().catch((e) => {
+      console.error("Failed to load account details:", e);
+      return null;
+    });
 
     if (customer) {
       setCustomerId(customer.id);

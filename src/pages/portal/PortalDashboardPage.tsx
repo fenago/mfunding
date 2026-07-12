@@ -4,6 +4,7 @@ import { DocumentArrowUpIcon, InboxIcon } from "@heroicons/react/24/outline";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
 import {
+  getMyCustomer,
   getMyPortalDeals,
   getMyDocRequests,
   getMyMerchantDocuments,
@@ -59,12 +60,13 @@ export default function PortalDashboardPage() {
     const fetchData = async () => {
       setIsLoading(true);
 
-      // Merchant identity + pending-doc count (own row via RLS).
-      const { data: customer } = await supabase
-        .from("customers")
-        .select("id, first_name")
-        .eq("user_id", uid)
-        .maybeSingle();
+      // Merchant identity + pending-doc count. customers has no merchant
+      // row-level SELECT anymore (it leaked internal columns) — read the safe
+      // projection through the SECURITY DEFINER RPC.
+      const customer = await getMyCustomer().catch((err) => {
+        console.error("Failed to load account details:", err);
+        return null;
+      });
 
       if (customer) {
         setFirstName(customer.first_name ?? null);
@@ -88,7 +90,7 @@ export default function PortalDashboardPage() {
       // All deal reads go through the column-sanitized portal service.
       let loadedDeals: PortalDeal[] = [];
       try {
-        loadedDeals = await getMyPortalDeals(uid);
+        loadedDeals = await getMyPortalDeals();
         setDeals(loadedDeals);
       } catch (err) {
         console.error("Failed to load portal deals:", err);

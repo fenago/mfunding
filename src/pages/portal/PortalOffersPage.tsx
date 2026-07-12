@@ -336,7 +336,7 @@ export default function PortalOffersPage() {
     const load = async () => {
       setIsLoading(true);
       try {
-        const deals = await getMyPortalDeals(uid);
+        const deals = await getMyPortalDeals();
         // Only MCA-family deals that have reached funder submission can have offers.
         const eligible = deals.filter(
           (d) => d.deal_type !== "vcf" && SUBMITTED_OR_PAST_STATUSES.has(d.status),

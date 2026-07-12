@@ -35,7 +35,6 @@ export const ACCESS_GROUPS: AccessGroup[] = [
     items: [
       { name: "Portal Dashboard", roles: MERCHANT },
       { name: "My Documents", roles: MERCHANT },
-      { name: "My Estimates", roles: MERCHANT },
       { name: "Inbox / Messages", roles: MERCHANT },
     ],
   },

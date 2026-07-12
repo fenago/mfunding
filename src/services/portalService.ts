@@ -75,14 +75,6 @@ export function isPaydownEstimated(deal: PortalDeal): boolean {
   return deal.paydown_percentage == null && deal.estimated_paydown_pct != null;
 }
 
-// The exact, safe column list — shared by the fallback select so it can never
-// drift from the RPC contract.
-const PORTAL_DEAL_COLUMNS =
-  "id, deal_number, deal_type, status, amount_requested, amount_funded, created_at, " +
-  "contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, " +
-  "submitted_at, offer_received_at, offer_presented_at, offer_accepted_at, funded_at, " +
-  "declined_at, nurture_at, stips_promised_by, paydown_percentage";
-
 function isFunctionMissing(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false;
   // Postgres "undefined_function" is 42883; PostgREST also surfaces a
@@ -107,46 +99,65 @@ function isTableMissing(error: { code?: string; message?: string } | null): bool
   );
 }
 
+// ── Merchant identity (get_my_customer) ──────────────────────────────────────
+// customers RLS no longer grants merchants a row-level SELECT (that leaked every
+// column: commission_earned, funded_by_lender_id, notes, temperature, ...). The
+// ONLY merchant path to their own customer row is this SECURITY DEFINER RPC,
+// which projects a portal-safe identity/contact subset. Never `from('customers')`
+// in merchant context.
+
+export interface PortalCustomer {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  business_name: string | null;
+  email: string | null;
+  phone: string | null;
+  address_city: string | null;
+  address_state: string | null;
+}
+
+/**
+ * The signed-in merchant's own customer row, column-sanitized. Returns null when
+ * the caller has no linked customer, or (graceful degradation) if the RPC isn't
+ * deployed yet — callers treat null as "no customer context yet".
+ */
+export async function getMyCustomer(): Promise<PortalCustomer | null> {
+  const { data, error } = await supabase.rpc("get_my_customer");
+
+  if (error) {
+    if (isFunctionMissing(error)) return null;
+    throw new Error(error.message || "Failed to load your account details.");
+  }
+  const row = (Array.isArray(data) ? data[0] : data) as PortalCustomer | undefined;
+  return row ?? null;
+}
+
 /**
  * Fetch the signed-in merchant's own deals, column-sanitized.
  *
- * Prefers the SECURITY DEFINER RPC `get_my_portal_deals()` (auth.uid()-scoped,
- * returns only safe columns). If that RPC isn't deployed yet (backend in
- * parallel), falls back to the customer-linked direct select of the EXACT same
- * safe columns so the portal keeps working during the rollout.
+ * Uses the SECURITY DEFINER RPC `get_my_portal_deals()` (auth.uid()-scoped,
+ * returns only safe columns). This is the ONLY merchant path to deals: the
+ * merchant row-level SELECT policy on deals was dropped (raw selects leaked
+ * internal columns), so a direct `from('deals')` returns zero rows for a
+ * merchant. If the RPC somehow isn't deployed, degrade to empty rather than
+ * attempting a now-blocked direct read.
  */
-export async function getMyPortalDeals(userId: string): Promise<PortalDeal[]> {
+export async function getMyPortalDeals(): Promise<PortalDeal[]> {
   const { data, error } = await supabase.rpc("get_my_portal_deals");
 
   if (!error) {
     return (data ?? []) as PortalDeal[];
   }
 
-  if (!isFunctionMissing(error)) {
-    // A real error (network, auth, RLS) — surface it rather than masking.
-    throw new Error(error.message || "Failed to load your funding requests.");
+  if (isFunctionMissing(error)) {
+    // RPC not deployed and no direct fallback exists (RLS-blocked) — degrade
+    // to empty so the portal never breaks.
+    return [];
   }
 
-  // Fallback: resolve the merchant's customer row, then read their deals.
-  const { data: customer } = await supabase
-    .from("customers")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (!customer) return [];
-
-  const { data: rows, error: dealsError } = await supabase
-    .from("deals")
-    .select(PORTAL_DEAL_COLUMNS)
-    .eq("customer_id", customer.id)
-    .order("created_at", { ascending: false });
-
-  if (dealsError) {
-    throw new Error(dealsError.message || "Failed to load your funding requests.");
-  }
-
-  return (rows ?? []) as unknown as PortalDeal[];
+  // A real error (network, auth) — surface it rather than masking.
+  throw new Error(error.message || "Failed to load your funding requests.");
 }
 
 // ── Document checklist (deal_doc_requests) ───────────────────────────────────
