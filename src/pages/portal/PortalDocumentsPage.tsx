@@ -238,9 +238,13 @@ export default function PortalDocumentsPage() {
                             </div>
                             <div className="min-w-0">
                               <p className="font-medium text-gray-900 dark:text-white truncate">{d.name}</p>
-                              <p className="text-sm text-gray-500">
-                                Signed
-                                {d.updatedAt ? ` • ${new Date(d.updatedAt).toLocaleDateString()}` : ""}
+                              <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                                ✓ Signed — thank you
+                                {d.updatedAt ? (
+                                  <span className="font-normal text-gray-500">
+                                    {" • "}{new Date(d.updatedAt).toLocaleDateString()}
+                                  </span>
+                                ) : ""}
                               </p>
                             </div>
                           </div>

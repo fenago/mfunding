@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
-import { Link } from "react-router-dom";
-import { DocumentArrowUpIcon, InboxIcon } from "@heroicons/react/24/outline";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { DocumentArrowUpIcon, InboxIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { CheckBadgeIcon } from "@heroicons/react/24/solid";
 import { useSession } from "../../context/SessionContext";
 import supabase from "../../supabase";
 import {
@@ -44,6 +45,9 @@ export default function PortalDashboardPage() {
   const [pendingDocuments, setPendingDocuments] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [signingDoc, setSigningDoc] = useState<MerchantDocument | null>(null);
+  const [celebrate, setCelebrate] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const journeyRef = useRef<HTMLDivElement>(null);
 
   const fetchData = useCallback(async () => {
     const uid = session?.user?.id;
@@ -143,6 +147,30 @@ export default function PortalDashboardPage() {
     };
   }, [fetchData]);
 
+  // Returning from a GHL signing tab (redirect appends ?signed=1): celebrate
+  // once, then immediately strip the param so a refresh/back doesn't re-fire it.
+  useEffect(() => {
+    if (searchParams.get("signed") === "1") {
+      setCelebrate(true);
+      setSearchParams(
+        (prev) => {
+          prev.delete("signed");
+          return prev;
+        },
+        { replace: true },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Once the celebration is up and the data has loaded, bring the journey into
+  // view so the merchant sees their progress move — not just a toast.
+  useEffect(() => {
+    if (celebrate && !isLoading) {
+      journeyRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [celebrate, isLoading]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -154,6 +182,29 @@ export default function PortalDashboardPage() {
   return (
     <div className="space-y-6">
       <WelcomeOverlay />
+
+      {/* Post-signing celebration — one-time, on return from a GHL signing tab */}
+      {celebrate && (
+        <div className="flex items-start gap-3 rounded-xl border border-emerald-200 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 p-4 sm:p-5">
+          <CheckBadgeIcon className="w-7 h-7 text-emerald-500 flex-shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-emerald-800 dark:text-emerald-200">
+              🎉 Signature received — you're all set for now
+            </p>
+            <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-0.5">
+              Your signed copy is on file. We'll let you know the moment there's a next step.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCelebrate(false)}
+            aria-label="Dismiss"
+            className="p-1 -m-1 text-emerald-600/70 hover:text-emerald-700 dark:text-emerald-400/70 dark:hover:text-emerald-300 flex-shrink-0"
+          >
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+        </div>
+      )}
 
       {/* Greeting */}
       <div>
@@ -179,6 +230,7 @@ export default function PortalDashboardPage() {
       <DocumentsToSign documents={signDocuments} ghlDocuments={ghlDocuments} onSelect={setSigningDoc} />
 
       {/* The journey, one card per funding request */}
+      <div ref={journeyRef} className="scroll-mt-6">
       {deals.length > 0 ? (
         <div className="space-y-4">
           {deals.length > 1 && (
@@ -207,6 +259,7 @@ export default function PortalDashboardPage() {
           </Link>
         </div>
       )}
+      </div>
 
       {/* Quick actions */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

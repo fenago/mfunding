@@ -93,9 +93,15 @@ Deno.serve(async (req) => {
         const recip = (myRecip ?? recips[0] ?? {}) as Record<string, unknown>;
         const referenceId = myLink?.referenceId as string | undefined;
         return {
+          // Kept internally for the completion-sync ledger; stripped before the
+          // response (the client GhlDocument shape has no id). GHL keys the doc
+          // id as `_id` / `documentId` (never `id` — that's the recipient's id).
+          id: (d._id as string) ?? (d.documentId as string) ?? null,
           name: (d.name as string) ?? "Document",
           status: (d.status as string) ?? "sent",
-          signed: recip.hasCompleted === true,
+          // Completed when THIS contact's recipient record is done, or the whole
+          // doc reads completed.
+          signed: recip.hasCompleted === true || (d.status as string) === "completed",
           updatedAt: (d.updatedAt as string) ?? null,
           isExpired: d.isExpired === true,
           // Per-recipient viewer/signing link (fillable or pre-filled). Bearer link
@@ -107,10 +113,123 @@ Deno.serve(async (req) => {
         };
       });
 
+    // 1b) Lazy completion-sync. The portal polls this fn on load + focus — the
+    // exact moment a merchant returns from signing a GHL-hosted doc in a new tab
+    // (GHL never calls us back). For every doc that reads completed and has NOT
+    // been reacted to yet, record it once and fire the feedback loop:
+    //   (a) merchant portal message + bell (notify_merchant, canonical copy)
+    //   (b) closer-visible activity_log note on the deal timeline
+    //   (c) if it's the signed application, tick deals.doc_checklist['application']
+    // Every step is best-effort and isolated so a failure never breaks the
+    // status response the portal is waiting on.
+    try {
+      const completed = documents.filter((d) => d.signed && d.id);
+      if (completed.length > 0) {
+        // Resolve the customer behind this GHL contact (works for staff + merchant
+        // polls alike — the contact id is authoritative).
+        const { data: cust } = await db
+          .from("customers")
+          .select("id, business_name")
+          .eq("ghl_contact_id", contactId)
+          .limit(1)
+          .maybeSingle();
+        const customerId = cust?.id as string | undefined;
+        const businessName = (cust?.business_name as string | undefined) ?? "The merchant";
+
+        if (customerId) {
+          // Deal to attach to: the customer's most recent non-declined deal. Fine
+          // for now — a merchant with one active deal (the common case) resolves
+          // unambiguously; declined deals are skipped so we never light up a dead
+          // file. (Note: VCF has no 'declined' status, so its most-recent wins.)
+          const { data: deal } = await db
+            .from("deals")
+            .select("id, deal_type")
+            .eq("customer_id", customerId)
+            .neq("status", "declined")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          const dealId = deal?.id as string | undefined;
+          const dealType = (deal?.deal_type as string | undefined) ?? "mca";
+
+          for (const doc of completed) {
+            // Record-once: ON CONFLICT DO NOTHING. An empty returned set means
+            // another (overlapping focus/visibility) poll already handled it.
+            const { data: ins, error: insErr } = await db
+              .from("ghl_doc_completions")
+              .upsert(
+                { document_id: doc.id, customer_id: customerId, doc_name: doc.name },
+                { onConflict: "document_id", ignoreDuplicates: true },
+              )
+              .select("document_id");
+            if (insErr || !ins || ins.length === 0) continue; // already handled (or insert failed)
+
+            // (a) Merchant portal message + bell. Canonical copy from the one
+            // reviewed source ('signature_signed' -> "Thanks for signing").
+            try {
+              const { data: copy } = await db.rpc("merchant_notice_copy", {
+                p_kind: "signature_signed",
+                p_deal_type: dealType,
+                p_arg1: doc.name,
+              });
+              const row = Array.isArray(copy) ? copy[0] : copy;
+              const title = (row?.title as string | undefined) ?? "Thanks for signing";
+              const body = (row?.body as string | undefined) ??
+                `We have recorded your signature on ${doc.name}. Your signed copy is on file — no further action is needed right now.`;
+              await db.rpc("notify_merchant", {
+                p_customer_id: customerId,
+                p_deal_id: dealId ?? null,
+                p_kind: "signature_completed",
+                p_title: title,
+                p_body: body,
+                p_action_path: "/portal/documents",
+              });
+            } catch (e) {
+              console.warn("[ghl-docs-status] notify_merchant skipped:", e instanceof Error ? e.message : e);
+            }
+
+            // (b) Closer-visible timeline note. Marker style mirrors the native
+            // e-sign path ('merchant:signed — <label>'); 'note' is the only
+            // allowed interaction_type for a system event.
+            if (dealId) {
+              try {
+                await db.from("activity_log").insert({
+                  entity_type: "deal",
+                  entity_id: dealId,
+                  interaction_type: "note",
+                  subject: `merchant:signed — ${doc.name}`,
+                  content: `${businessName} signed "${doc.name}" (via portal/GHL).`,
+                  logged_by: caller.id,
+                });
+              } catch (e) {
+                console.warn("[ghl-docs-status] activity_log skipped:", e instanceof Error ? e.message : e);
+              }
+            }
+
+            // (c) Signed application → tick the funder-submit checklist gate.
+            // Match rule: the doc name mentions "application" or "prefill"
+            // (covers MCA_Merchant_Funding_Application and "04B MCA PREFILL").
+            if (dealId && /application|prefill/i.test(doc.name)) {
+              try {
+                await db.rpc("ghl_mark_checklist_key", { p_deal_id: dealId, p_key: "application" });
+              } catch (e) {
+                console.warn("[ghl-docs-status] checklist tick skipped:", e instanceof Error ? e.message : e);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[ghl-docs-status] completion-sync skipped:", e instanceof Error ? e.message : e);
+    }
+
     // 2) Uploaded files on the contact's FILE_UPLOAD custom fields.
     const uploads = await listContactFileUploads(cfg, contactId);
 
-    return json({ ok: true, documents, uploads, documents_error: documentsError });
+    // Strip the internal doc id — the client GhlDocument shape doesn't carry it.
+    const documentsOut = documents.map(({ id: _id, ...rest }) => rest);
+
+    return json({ ok: true, documents: documentsOut, uploads, documents_error: documentsError });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);
   }
