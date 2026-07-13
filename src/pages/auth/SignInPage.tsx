@@ -13,14 +13,25 @@ import LoadingPage from "../LoadingPage";
 import { SignInPageSEO } from "../../components/seo/SEO";
 import Logo from "../../components/ui/Logo";
 import MerchantLoginLinkForm from "../../components/auth/MerchantLoginLinkForm";
+import { IS_PORTAL_HOST } from "../../config";
 
 /**
- * Sign-in as a mini landing page. Business owners are the overwhelmingly common
- * visitor, so the passwordless merchant sign-in is THE primary card. Staff
- * password login is tucked into an unobtrusive, collapsible section below —
- * same logic, same role-aware redirect (handled by the <Navigate> at the top
- * once a session exists). No self-signup on the merchant-facing surface;
- * merchants get accounts via invite/claim.
+ * Sign-in, and WHICH form leads depends on WHICH HOST you came in on.
+ *
+ * There are two audiences on one bundle, and putting the wrong one first makes
+ * the page useless to whoever actually showed up:
+ *
+ *   my.mfunding.net  → the MERCHANT portal. A business owner is on the phone with
+ *                      a closer. Passwordless merchant sign-in leads.
+ *   mfunding.net     → the company site / staff app. The team signs in here every
+ *                      day with a password. TEAM sign-in leads.
+ *
+ * It previously showed the merchant form first on BOTH hosts, which buried the
+ * team login behind a collapsed link on the domain the team actually uses.
+ * The app already knows the host (IS_PORTAL_HOST in config.ts) — this just uses it.
+ *
+ * Either form is still reachable from either host (the non-primary one sits in a
+ * collapsible below), so no one is ever locked out of the wrong door.
  *
  * COMPLIANCE: the reassurance strip uses "funding"/"capital", never "loan",
  * and makes no approval or outcome guarantees.
@@ -29,8 +40,12 @@ const SignInPage = () => {
   const { session } = useSession();
   const { isStaff, isLoading: profileLoading } = useUserProfile();
   const [status, setStatus] = useState("");
-  const [showStaff, setShowStaff] = useState(false);
   const [formValues, setFormValues] = useState({ email: "", password: "" });
+
+  // The merchant form leads ONLY on the portal subdomain.
+  const merchantFirst = IS_PORTAL_HOST;
+  // The secondary form starts collapsed; on the staff host that's the merchant one.
+  const [showSecondary, setShowSecondary] = useState(false);
 
   // Already signed in → route by role: staff to the admin app, merchants
   // (role `user`) to their portal. Wait for the profile so we don't send a
@@ -84,79 +99,136 @@ const SignInPage = () => {
           </div>
         </div>
 
-        {/* PRIMARY: merchant passwordless sign-in */}
-        <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-xl p-8">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white text-center">
-            Sign in to your funding portal
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-2 mb-6">
-            We'll email you a secure sign-in link — no password needed.
-          </p>
-          <MerchantLoginLinkForm compact />
-        </div>
+        {/* ── PRIMARY ─────────────────────────────────────────────────────────
+            my.mfunding.net → the merchant. mfunding.net → the team. */}
+        {merchantFirst ? (
+          <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-xl p-8">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white text-center">
+              Sign in to your funding portal
+            </h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-2 mb-6">
+              We'll email you a secure sign-in link — no password needed.
+            </p>
+            <MerchantLoginLinkForm compact />
+          </div>
+        ) : (
+          <form
+            className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-xl p-8 flex flex-col gap-3"
+            onSubmit={handleSubmit}
+          >
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white text-center">
+              Team sign in
+            </h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400 text-center mt-1 mb-3">
+              MFunding staff — sign in with your work email and password.
+            </p>
+            <input
+              className="input-field"
+              name="email"
+              onChange={handleInputChange}
+              type="email"
+              placeholder="Work email"
+              autoComplete="email"
+            />
+            <input
+              className="input-field"
+              name="password"
+              onChange={handleInputChange}
+              type="password"
+              placeholder="Password"
+              autoComplete="current-password"
+            />
+            <button className="btn-primary w-full" type="submit">
+              Login
+            </button>
+            <Link
+              className="text-center text-ocean-blue hover:text-mint-green transition-colors text-xs"
+              to="/auth/sign-up"
+            >
+              Need a team account? Sign up
+            </Link>
+            {status && (
+              <p className="text-center text-gray-500 dark:text-gray-400 text-sm">{status}</p>
+            )}
+          </form>
+        )}
 
-        {/* Reassurance strip */}
-        <ul className="mt-6 space-y-3">
-          {valueProps.map(({ Icon, text }) => (
-            <li key={text} className="flex items-center gap-3">
-              <span className="flex-shrink-0 flex h-8 w-8 items-center justify-center rounded-full bg-mint-green/15 text-teal dark:text-mint-green">
-                <Icon className="h-4 w-4" />
-              </span>
-              <span className="text-sm text-gray-600 dark:text-gray-300">{text}</span>
-            </li>
-          ))}
-        </ul>
+        {/* Reassurance strip — merchant-facing copy, so only on the portal host. */}
+        {merchantFirst && (
+          <ul className="mt-6 space-y-3">
+            {valueProps.map(({ Icon, text }) => (
+              <li key={text} className="flex items-center gap-3">
+                <span className="flex-shrink-0 flex h-8 w-8 items-center justify-center rounded-full bg-mint-green/15 text-teal dark:text-mint-green">
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className="text-sm text-gray-600 dark:text-gray-300">{text}</span>
+              </li>
+            ))}
+          </ul>
+        )}
 
-        {/* Staff login — demoted, collapsible */}
+        {/* ── SECONDARY: the other door, demoted + collapsible ──────────────── */}
         <div className="mt-8 text-center">
           <button
             type="button"
-            onClick={() => setShowStaff((v) => !v)}
+            onClick={() => setShowSecondary((v) => !v)}
             className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-ocean-blue dark:text-gray-400 dark:hover:text-mint-green transition-colors"
           >
-            MFunding team member? Sign in here
+            {merchantFirst ? "MFunding team member? Sign in here" : "Are you a merchant? Sign in here"}
             <ChevronDownIcon
-              className={`h-4 w-4 transition-transform ${showStaff ? "rotate-180" : ""}`}
+              className={`h-4 w-4 transition-transform ${showSecondary ? "rotate-180" : ""}`}
             />
           </button>
 
-          {showStaff && (
-            <form
-              className="mt-4 flex flex-col gap-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm p-6 text-left"
-              onSubmit={handleSubmit}
-            >
-              <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
-                Team sign in
-              </h2>
-              <input
-                className="input-field"
-                name="email"
-                onChange={handleInputChange}
-                type="email"
-                placeholder="Work email"
-                autoComplete="email"
-              />
-              <input
-                className="input-field"
-                name="password"
-                onChange={handleInputChange}
-                type="password"
-                placeholder="Password"
-                autoComplete="current-password"
-              />
-              <button className="btn-primary w-full" type="submit">
-                Login
-              </button>
-              <Link
-                className="text-center text-ocean-blue hover:text-mint-green transition-colors text-xs"
-                to="/auth/sign-up"
+          {showSecondary && (
+            merchantFirst ? (
+              <form
+                className="mt-4 flex flex-col gap-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm p-6 text-left"
+                onSubmit={handleSubmit}
               >
-                Need a team account? Sign up
-              </Link>
-              {status && (
-                <p className="text-center text-gray-500 dark:text-gray-400 text-sm">{status}</p>
-              )}
-            </form>
+                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
+                  Team sign in
+                </h2>
+                <input
+                  className="input-field"
+                  name="email"
+                  onChange={handleInputChange}
+                  type="email"
+                  placeholder="Work email"
+                  autoComplete="email"
+                />
+                <input
+                  className="input-field"
+                  name="password"
+                  onChange={handleInputChange}
+                  type="password"
+                  placeholder="Password"
+                  autoComplete="current-password"
+                />
+                <button className="btn-primary w-full" type="submit">
+                  Login
+                </button>
+                <Link
+                  className="text-center text-ocean-blue hover:text-mint-green transition-colors text-xs"
+                  to="/auth/sign-up"
+                >
+                  Need a team account? Sign up
+                </Link>
+                {status && (
+                  <p className="text-center text-gray-500 dark:text-gray-400 text-sm">{status}</p>
+                )}
+              </form>
+            ) : (
+              <div className="mt-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm p-6 text-left">
+                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
+                  Merchant sign in
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-3">
+                  We'll email you a secure sign-in link — no password needed.
+                </p>
+                <MerchantLoginLinkForm compact />
+              </div>
+            )
           )}
         </div>
       </div>
