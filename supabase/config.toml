@@ -102,6 +102,13 @@ verify_jwt = false
 [functions.funder-reply-reconcile]
 verify_jwt = true
 
+# Synergy lead reconciliation sweep — proves every inbound vendor lead email became
+# a deal, auto-recovers the ones that didn't, and digests what still needs a human.
+# Two callers: staff (user JWT + role check in code) OR pg_cron (?secret=<GHL webhook
+# secret> + anon-key Bearer for the gateway).
+[functions.synergy-reconcile]
+verify_jwt = true
+
 # AI performance read on ONE lead-gen campaign (verdict + recommendations).
 # Staff-only enforced in code (getUser + profiles.role check).
 [functions.analyze-campaign]

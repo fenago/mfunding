@@ -528,13 +528,53 @@ function pickId(b: Record<string, unknown>, keys: string[]): string {
   return "";
 }
 
+// One fetched GHL email record, flattened. `recordId` is the STABLE, unique id of
+// the email itself — it is what synergy_intake_log is keyed on and what lets the
+// reconciliation sweep re-drive one SPECIFIC email (see email_record_id below).
+interface FetchedEmail {
+  recordId: string;
+  body: string;
+  subject: string;
+  from: string;
+  to: string;
+  conversationId: string;
+  contactId: string;
+  dateAdded: string;   // when GHL received it — the ledger's received_at
+}
+
+// Fetch ONE email record by its GHL email-record id. This is the re-drive path:
+// the sweep found an inbound lead email that never produced a deal and hands us
+// its id so we process THAT email — not merely "the newest one on the thread",
+// which is what made recovery a manual job.
+async function fetchEmailRecord(cfg: GhlConfig, recordId: string): Promise<FetchedEmail | null> {
+  const e = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
+    cfg, "GET", `/conversations/messages/email/${recordId}`,
+  );
+  const em = (e.data?.emailMessage ?? e.data ?? {}) as Record<string, unknown>;
+  const body = String(em.body ?? "");
+  if (!body) return null;
+  const to = Array.isArray(em.to)
+    ? (em.to as unknown[]).map((x) => String(x)).join(", ")
+    : String(em.to ?? "");
+  return {
+    recordId,
+    body,
+    subject: String(em.subject ?? ""),
+    from: String(em.from ?? ""),
+    to,
+    conversationId: String(em.conversationId ?? ""),
+    contactId: String(em.contactId ?? ""),
+    dateAdded: String(em.dateAdded ?? ""),
+  };
+}
+
 // Fetch the newest INBOUND email body on a GHL conversation (by conversation id,
 // or resolved from a contact id). Uses the email-record technique from
 // get-funder-email: conversation message → meta.email.messageIds → email record.
 async function newestInboundEmail(
   cfg: GhlConfig,
   ids: { conversationId?: string; contactId?: string },
-): Promise<{ body: string; subject: string; from: string; to: string } | null> {
+): Promise<FetchedEmail | null> {
   let cid = ids.conversationId ?? "";
   if (!cid && ids.contactId) {
     const c = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
@@ -553,19 +593,42 @@ async function newestInboundEmail(
     const recIds = (m.meta as { email?: { messageIds?: string[] } } | undefined)?.email?.messageIds ?? [];
     const recId = recIds[recIds.length - 1];
     if (!recId) continue;
-    const e = await ghlFetch<{ emailMessage?: Record<string, unknown> } & Record<string, unknown>>(
-      cfg, "GET", `/conversations/messages/email/${recId}`,
-    );
-    const em = (e.data?.emailMessage ?? e.data ?? {}) as Record<string, unknown>;
-    const body = String(em.body ?? "");
-    // `to` is the delivery address(es) — an array on the email record, or a string.
-    // This is the campaign-dedicated tracking address for identifier attribution.
-    const to = Array.isArray(em.to)
-      ? (em.to as unknown[]).map((x) => String(x)).join(", ")
-      : String(em.to ?? "");
-    if (body) return { body, subject: String(em.subject ?? ""), from: String(em.from ?? ""), to };
+    const fetched = await fetchEmailRecord(cfg, recId);
+    if (fetched?.body) {
+      return { ...fetched, conversationId: fetched.conversationId || cid, contactId: fetched.contactId || (ids.contactId ?? "") };
+    }
   }
   return null;
+}
+
+// ── The intake ledger (synergy_intake_log) ───────────────────────────────────
+// Every terminal path writes here, keyed by the email-record id, so the
+// reconciliation sweep can prove that every inbound lead email produced a deal.
+// BEST-EFFORT ONLY: a logging failure must NEVER break an intake — a lead is worth
+// more than its audit row.
+interface IntakeLogRow {
+  ghl_email_record_id: string;
+  ghl_conversation_id?: string | null;
+  ghl_contact_id?: string | null;
+  from_email?: string | null;
+  subject?: string | null;
+  received_at?: string | null;
+  outcome: "created" | "deduped" | "rejected";
+  deal_id?: string | null;
+  customer_id?: string | null;
+  reject_reason?: string | null;
+  notes?: string | null;
+}
+async function logIntake(db: SupabaseClient, row: IntakeLogRow | null): Promise<void> {
+  if (!row?.ghl_email_record_id) return;  // structured POSTs carry no email record
+  try {
+    const { error } = await db.from("synergy_intake_log")
+      .upsert({ ...row, updated_at: new Date().toISOString() },
+        { onConflict: "ghl_email_record_id" });
+    if (error) console.error("live-transfer-intake: synergy_intake_log write failed", { id: row.ghl_email_record_id, error: error.message });
+  } catch (e) {
+    console.error("live-transfer-intake: synergy_intake_log threw", { error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 // ── Self-healing sender adoption ───────────────────────────────────────────────
@@ -725,13 +788,39 @@ Deno.serve(async (req) => {
 
   // ── Resolve the canonical lead ──
   let fields: Record<string, string>;
-  let sourceMode: "structured" | "email-body" | "ghl-fetch";
+  let sourceMode: "structured" | "email-body" | "ghl-fetch" | "email-record";
   let emailSubject = "";
   let emailFrom = "";
   let emailTo = "";   // delivery address (To) — matched against campaigns.tracking_email
   let bodyForMarker = ""; // raw body text used to sniff markers/structure
 
-  if (looksStructured(body)) {
+  // RE-DRIVE HOOK — the reconciliation sweep (synergy-reconcile) passes the
+  // email-record id of a SPECIFIC inbound lead email that never became a deal.
+  // Without this the intake could only ever fetch the NEWEST email on the thread,
+  // which is exactly why recovering the Detroit Mobile Car Repair lead had to be
+  // done by hand.
+  const requestedRecordId = pickId(body, ["email_record_id", "emailRecordId", "emailMessageId"]);
+  // The GHL email record this run is about. Null for structured POSTs (no email).
+  let emailRecordId = "";
+  let logConversationId = pickId(body, ["conversationId", "conversation_id", "conversation"]);
+  let logContactId = senderContactId;
+  let receivedAt: string | null = null;
+
+  if (requestedRecordId) {
+    if (!cfg) return json({ error: `GHL not configured: ${cfgErr || "missing credentials"}` }, 502);
+    const fetched = await fetchEmailRecord(cfg, requestedRecordId);
+    if (!fetched) return json({ error: `email record ${requestedRecordId} not found or has no body` }, 422);
+    sourceMode = "email-record";
+    emailRecordId = fetched.recordId;
+    emailSubject = fetched.subject;
+    emailFrom = fetched.from;
+    emailTo = fetched.to;
+    logConversationId = fetched.conversationId || logConversationId;
+    logContactId = fetched.contactId || logContactId;
+    receivedAt = fetched.dateAdded || null;
+    bodyForMarker = fetched.body;
+    fields = parseLabelValue(htmlToSegments(fetched.body));
+  } else if (looksStructured(body)) {
     sourceMode = "structured";
     fields = Object.fromEntries(Object.entries(body).map(([k, v]) => [k, v == null ? "" : String(v)]));
     emailFrom = extractFrom(body);
@@ -753,11 +842,27 @@ Deno.serve(async (req) => {
       emailSubject = fetched.subject || emailSubject;
       emailFrom = fetched.from || emailFrom;
       emailTo = fetched.to || emailTo;
+      emailRecordId = fetched.recordId;
+      logConversationId = fetched.conversationId || logConversationId;
+      logContactId = fetched.contactId || logContactId;
+      receivedAt = fetched.dateAdded || null;
       sourceMode = "ghl-fetch";
     }
     bodyForMarker = bodyText;
     fields = parseLabelValue(htmlToSegments(bodyText));
   }
+  // The ledger row this run will write on whatever terminal path it takes. Only
+  // an email-sourced run has one (a structured POST has no GHL email record).
+  const logBase = emailRecordId
+    ? {
+      ghl_email_record_id: emailRecordId,
+      ghl_conversation_id: logConversationId || null,
+      ghl_contact_id: logContactId || null,
+      from_email: emailFrom || null,
+      subject: emailSubject || null,
+      received_at: receivedAt,
+    }
+    : null;
   // The tracking number a live-transfer call landed on (future hook; empty today).
   const deliveryPhone = extractDeliveryPhone(body);
 
@@ -866,6 +971,18 @@ Deno.serve(async (req) => {
       if (!r.sent) console.error("live-transfer-intake: parse-failure alert issue", { alertWarning });
     }
     console.log("live-transfer-intake: rejected — no valid merchant", { kind: kcfg.kind, from: emailFrom, leadEmailTrusted, hasIdentity, phoneValid: isValidMerchantPhone(lead.phone) });
+    // LEDGER: a rejected lead email is EXACTLY the failure mode that killed a lead.
+    // Record it so the sweep can find it and re-drive it after a parser fix.
+    await logIntake(db, logBase && {
+      ...logBase,
+      outcome: "rejected",
+      reject_reason: [
+        leadEmailTrusted ? "parsed lead email is the delivery robot's address" : null,
+        !isValidMerchantPhone(lead.phone) ? "no valid merchant phone extracted" : null,
+        !hasIdentity ? "no merchant name/business extracted" : null,
+      ].filter(Boolean).join("; ") || "no valid merchant",
+      notes: `kind=${kcfg.kind} mode=${sourceMode} parsedFields=${parsedCount}`,
+    });
     return json({
       ok: true, rejected: true, kind: kcfg.kind,
       reason: alertOnFailure
@@ -959,6 +1076,13 @@ Deno.serve(async (req) => {
           `Duplicate ${kcfg.kind} intake — no second deal created (same ${lead.email ? "email" : "phone"} within ${DEDUPE_WINDOW_DAYS}d), ` +
           `but the record was REFRESHED from this email. Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.`,
       }).then(() => {}, () => {});
+      await logIntake(db, logBase && {
+        ...logBase,
+        outcome: "deduped",
+        deal_id: dup.id as string,
+        customer_id: dup.customer_id as string,
+        notes: `Duplicate ${kcfg.kind} — refreshed existing deal ${dup.deal_number ?? dup.id}.`,
+      });
       return json({
         ok: true, deduped: true, refreshed: true, kind: kcfg.kind,
         dealId: dup.id, dealNumber: dup.deal_number, customerId: dup.customer_id,
@@ -1126,6 +1250,16 @@ Deno.serve(async (req) => {
     content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${phoneFlag}${adoptNote ? `\n${adoptNote}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
   }).then(() => {}, () => {});
 
+  // ── LEDGER: this email produced a deal. Written BEFORE the GHL sync so a GHL
+  // hiccup can never leave a real deal looking like a dropped lead to the sweep. ──
+  await logIntake(db, logBase && {
+    ...logBase,
+    outcome: "created",
+    deal_id: dealId,
+    customer_id: customerId,
+    notes: `${kcfg.kind} · ${lead.business || fullName} · ${dealNumber ?? dealId} (mode=${sourceMode})`,
+  });
+
   // ── GHL: proper merchant contact + MCA opportunity at "New Lead" ──
   let ghlContactId: string | null = null;
   let ghlOpportunityId: string | null = null;
@@ -1245,6 +1379,7 @@ Deno.serve(async (req) => {
     alertWarning,
     adopted: Boolean(adoptNote),
     mode: sourceMode,
+    emailRecordId: emailRecordId || null,
     variant: variantFlag ? true : false,
     phoneNeedsReview,
     parsedFields: parsedCount,
