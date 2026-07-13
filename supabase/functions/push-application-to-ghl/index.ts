@@ -301,6 +301,42 @@ Deno.serve(async (req) => {
   // last email it actually tried to send this contact. If it bounced, refuse:
   // minting documents nobody will ever see is worse than not sending, because the
   // app then LOOKS like it delivered. Every retry click would mint another set.
+  // (a) The CHEAP check first: a verdict we already hold. Instantly verified this
+  //     address at intake (customers_verify_email trigger), and a bounce sweep may have
+  //     since PROVEN it dead. Either way we already know — don't pay GHL a round-trip
+  //     to re-learn it, and don't mint documents against it.
+  const { data: health } = await db
+    .from("customers").select("email_status, email_bounce_reason").eq("id", customer.id).maybeSingle();
+  const known = (health?.email_status as string | null) ?? null;
+  if (known === "invalid" || known === "bounced") {
+    const why = known === "bounced"
+      ? `the last email to it bounced (${health?.email_bounce_reason ?? "hard bounce"})`
+      : `our email verifier says the mailbox does not exist`;
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: dealId,
+        interaction_type: "note",
+        subject: "application:pushed-to-ghl",
+        content: `BLOCKED the application send: ${merchantEmail} is undeliverable — ${why}. ` +
+          `No document was sent and no e-sign record was created. Needs a working email from the merchant.`,
+        logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+    return json({
+      error: `The application was NOT sent. ${merchantEmail} is undeliverable — ${why}. ` +
+        `Sending would only create documents the merchant can never receive. ` +
+        `Call them, get a working email, put it on the deal (that re-verifies it automatically), then send. ` +
+        `Nothing was created in GHL — there is no document waiting for them to sign.`,
+      email_bounced: known === "bounced",
+      email_invalid: known === "invalid",
+      attempted_email: merchantEmail,
+      contactId,
+    }, 422);
+  }
+
+  // (b) The AUTHORITATIVE check: ask GHL what happened to the last email it actually
+  //     tried to send this contact. Verification predicts; a bounce PROVES.
   const bounce = await lastEmailFailure(cfg, contactId);
   if (bounce.bounced) {
     await recordEmailOutcome(db, customer.id as string, merchantEmail, bounce);

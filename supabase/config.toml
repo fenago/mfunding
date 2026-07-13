@@ -181,3 +181,11 @@ verify_jwt = true
 # in code) OR pg_cron (?secret=<GHL webhook secret> + anon-key Bearer for the gateway).
 [functions.check-email-bounces]
 verify_jwt = true
+
+# Email verification at intake — asks Instantly whether a merchant's mailbox actually
+# exists and stamps customers.email_status ('verified' | 'invalid' | 'catch_all' | …).
+# Fired by the customers_verify_email DB trigger on every new/changed merchant email,
+# and by the "Re-verify" button on the deal. Two callers: staff (user JWT + role check
+# in code) OR the trigger (?secret=<GHL webhook secret> + anon-key Bearer for the gateway).
+[functions.verify-merchant-email]
+verify_jwt = true

@@ -575,7 +575,9 @@ export async function recordEmailOutcome(
       email_checked_at: new Date().toISOString(),
     }
     : {
-      email_status: "ok",
+      // GHL actually DELIVERED to this address — that is proof, and it outranks any
+      // Instantly guess (including a stale "invalid"/"catch_all"), so we upgrade it.
+      email_status: "verified",
       email_bounced_at: null,
       email_bounce_reason: null,
       email_checked_at: new Date().toISOString(),
