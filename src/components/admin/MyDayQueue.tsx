@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BoltIcon, ArrowPathIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
+import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon } from "@heroicons/react/24/outline";
 import { getOpenDealsForQueue, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
@@ -17,6 +17,30 @@ interface Urgency {
   /** When set, the card corner shows a LIVE speed-to-lead countdown to this ISO
    * timestamp ("⏱ 4:32 left"), flipping to "SLA MISSED — call anyway" past it. */
   countdownDue?: string;
+  /** The merchant's OWN stated best time to reach them ("4:00PM CST").
+   *
+   * On a real-time lead this directly contradicts the 5-minute clock, and the
+   * contradiction is real, not a bug: the vendor promises speed-to-lead, but the
+   * merchant told us when they can actually talk. Cold-calling someone at 9am who
+   * said "reach me at 4pm" burns the lead to satisfy a stopwatch.
+   *
+   * So the 5-minute window is for an EMAIL, and the phone call goes at THIS time.
+   * The card has to show both or the closer can only obey one of them. */
+  callWindow?: string;
+}
+
+/**
+ * The merchant's answer to "What is the best time to reach you?", straight from the
+ * vendor's email (the intake parks the raw answers in deals.lead_qual). Free text and
+ * inconsistent by nature — "4:00PM CST", "10am PST" — so it is displayed, never
+ * parsed into a timestamp. A human reads it and dials accordingly.
+ */
+function bestTimeToCall(deal: QueueDeal): string | undefined {
+  const q = (deal as unknown as { lead_qual?: Record<string, unknown> | null }).lead_qual;
+  const raw = q && typeof q === "object" ? q["best_time"] : null;
+  const s = typeof raw === "string" ? raw.trim() : "";
+  if (!s || /^(n\/?a|none|any|anytime)$/i.test(s)) return undefined;
+  return s;
 }
 
 /**
@@ -84,18 +108,34 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
         since: deal.created_at,
         tone: "red",
         // No countdown, deliberately. Nothing is expiring; they are on the phone.
+        // Their stated time still shows: if the handoff drops or they don't pick up,
+        // that's when to try them back.
+        callWindow: bestTimeToCall(deal),
       };
     }
+    // REAL-TIME. Two instructions, and they are NOT the same instruction:
+    //
+    //   1. EMAIL them inside 5 minutes. Speed-to-lead is what we're paying Synergy
+    //      for, and an email can go out at any hour without ambushing anyone.
+    //   2. CALL them at the time THEY gave us. Every one of these leads answers
+    //      "best time to reach you" — 4:00PM CST, 10am PST. Dialing a merchant at
+    //      9am who asked for 4pm burns the lead to satisfy a stopwatch.
+    //
+    // The clock is therefore an EMAIL clock, and it says so. Previously it read
+    // "CALL NOW", which put the closer in direct conflict with the merchant's own
+    // stated availability and gave them no way to satisfy both.
     const dueMs = deal.first_call_due_at ? Date.parse(deal.first_call_due_at) - now : 0;
+    const bestTime = bestTimeToCall(deal);
     return {
       rank: 0,
-      badge: dueMs > 0 ? `🔴 REAL-TIME LEAD · ${countdown(dueMs)}` : "🔴 REAL-TIME LEAD · OVERDUE",
+      badge: dueMs > 0 ? `⏱ REAL-TIME · EMAIL NOW · ${countdown(dueMs)}` : "⏱ REAL-TIME · EMAIL OVERDUE",
       why: dueMs > 0
-        ? "Email lead — nobody is on the phone. Call them before the clock runs out."
-        : "Email lead PAST its 5-minute call window — call immediately.",
+        ? `Nobody is on the phone. Send them an email inside the 5-minute window${bestTime ? `, then call at ${bestTime} — the time they asked for` : " — then call them"}.`
+        : `Past the 5-minute email window — send it now${bestTime ? `, and call at ${bestTime} (their stated time)` : ""}.`,
       since: deal.created_at,
       tone: "red",
       countdownDue: isRealtime ? deal.first_call_due_at ?? undefined : undefined,
+      callWindow: bestTime,
     };
   }
 
@@ -276,7 +316,7 @@ const SOURCE_STYLE: Record<string, { edge: string; chip: string; label: string }
   // they're already there", the other means "you have 5 minutes to dial". Same color
   // for both is how a closer treats a warm handoff like a callback, and loses it.
   live_transfer: { edge: "border-l-red-500", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "📞 Live transfer — on the line" },
-  realtime_appt: { edge: "border-l-fuchsia-500", chip: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300", label: "⏱ Real-time — call in 5 min" },
+  realtime_appt: { edge: "border-l-fuchsia-500", chip: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300", label: "⏱ Real-time — email in 5 min" },
   website: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
   website_apply: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
   web_purchased: { edge: "border-l-amber-500", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", label: "Web lead" },
@@ -312,7 +352,7 @@ function QueueCard({ deal, u, now, onPick }: QueueItem & { now: number; onPick: 
               ⏱ {countdown(Date.parse(u.countdownDue) - now)} left
             </span>
           ) : (
-            <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">SLA MISSED — call anyway</span>
+            <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">SLA MISSED — send it anyway</span>
           )
         ) : overdue ? (
           <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0">overdue</span>
@@ -325,6 +365,17 @@ function QueueCard({ deal, u, now, onPick }: QueueItem & { now: number; onPick: 
         {amount && <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 shrink-0">{amount}</span>}
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-3 mt-0.5">{u.why}</p>
+
+      {/* The merchant's OWN words on when to phone them. Loud on purpose: it is the
+          one instruction on this card that came from the person we're about to call,
+          and it is the thing a 5-minute stopwatch will otherwise steamroll. */}
+      {u.callWindow && (
+        <p className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded px-1.5 py-1">
+          <PhoneIcon className="w-3 h-3 shrink-0" />
+          <span className="truncate">They asked to be called at <b>{u.callWindow}</b></span>
+        </p>
+      )}
+
       <div className="flex items-center justify-between gap-2 mt-1.5">
         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
         <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
