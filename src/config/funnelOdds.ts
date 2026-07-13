@@ -14,6 +14,14 @@
  * them must label them as estimates.
  */
 
+/**
+ * Below this many events in the denominator, an observed percentage is noise, not a
+ * rate, and every surface that would render one must suppress it instead. 20 is the
+ * point where a single deal moves the number by ≤5 points. Shared so the conversion
+ * table and the speed-to-lead report can never disagree about what "enough" means.
+ */
+export const MIN_RELIABLE_N = 20;
+
 /** Odds a deal sitting at each stage eventually funds. Estimates — see above. */
 export const FUND_ODDS: Record<string, number> = {
   new: 0.06,
