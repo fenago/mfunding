@@ -42,6 +42,22 @@ function json(body: unknown, status = 200) {
   });
 }
 
+/**
+ * Silent to the CALLER, never silent to US.
+ *
+ * Every bail-out below returns { ok: true } so a stranger can't probe which
+ * emails have accounts. But it used to return that with NO trace anywhere, so a
+ * merchant would say "the link never arrived" and there was literally nothing to
+ * look at — no log, no row, nothing. That is not acceptable for an auth flow.
+ *
+ * This logs the reason to the edge-function log (server-side only, never in the
+ * response body), so the outcome of every attempt is answerable.
+ */
+function bail(reason: string, email: string) {
+  console.warn(JSON.stringify({ fn: "merchant-login-link", outcome: reason, email }));
+  return json({ ok: true });
+}
+
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -57,7 +73,7 @@ Deno.serve(async (req) => {
     const parsed = JSON.parse(raw) as { email?: unknown };
     if (typeof parsed.email === "string") email = parsed.email.trim().toLowerCase();
   } catch { /* fall through to shape check */ }
-  if (!email || email.length > 254 || !EMAIL_SHAPE.test(email)) return json({ ok: true });
+  if (!email || email.length > 254 || !EMAIL_SHAPE.test(email)) return bail("bad-email-shape", email);
 
   const db = serviceClient();
 
@@ -70,8 +86,34 @@ Deno.serve(async (req) => {
     .not("user_id", "is", null)
     .limit(1)
     .maybeSingle();
-  // Silent success whether or not a match exists — never reveal account state.
-  if (!customer) return json({ ok: true });
+  // Silent success whether or not a match exists — never reveal account state to the
+  // caller. But tell OURSELVES which of the two very different things happened:
+  //   a) no customer with that email at all (typo, or not a merchant), vs
+  //   b) the customer EXISTS but has never claimed their portal (user_id is null) —
+  //      that merchant can never sign in until someone sends them a Portal Invite,
+  //      and before this they'd have retried forever with zero feedback to anyone.
+  if (!customer) {
+    const { data: unclaimed } = await db
+      .from("customers")
+      .select("id, user_id")
+      .ilike("email", email)
+      .limit(1)
+      .maybeSingle();
+    if (unclaimed && !unclaimed.user_id) {
+      // Surface it on the merchant's own timeline so a closer actually sees it.
+      await db.from("activity_log").insert({
+        entity_type: "customer",
+        entity_id: unclaimed.id,
+        interaction_type: "note",
+        subject: "portal:login-blocked (not invited)",
+        content:
+          "This merchant tried to sign in to the portal but has no portal account yet. " +
+          "Send them a Portal Invite — a sign-in link alone can never work for them.",
+      }).then(() => {}, () => {});
+      return bail("customer-exists-but-portal-not-claimed", email);
+    }
+    return bail("no-customer-for-email", email);
+  }
 
   const customerId = customer.id as string;
   const to = ((customer.email as string | null) ?? email).trim();
@@ -88,7 +130,7 @@ Deno.serve(async (req) => {
     .gte("created_at", since)
     .limit(1)
     .maybeSingle();
-  if (recent) return json({ ok: true });
+  if (recent) return bail("throttled-link-sent-within-2min", email);
 
   // --- Generate the magic link (same landing route as merchant-invite). ---
   const linkRes = await db.auth.admin.generateLink({
@@ -97,8 +139,10 @@ Deno.serve(async (req) => {
     options: { redirectTo: PORTAL_REDIRECT },
   });
   const actionLink = linkRes.data?.properties?.action_link;
-  // Do not leak generateLink failures to the caller — stay silent.
-  if (linkRes.error || !actionLink) return json({ ok: true });
+  // Do not leak generateLink failures to the caller — but do NOT swallow them either.
+  if (linkRes.error || !actionLink) {
+    return bail(`generate-link-failed:${linkRes.error?.message ?? "no-action-link"}`, email);
+  }
 
   // --- Send via GHL email (system of record; lands in Conversations). ---
   const cfg = await getGhlConfig(db);
@@ -116,7 +160,7 @@ Deno.serve(async (req) => {
       source: "Portal Login Link",
     });
     contactId = cr.data?.contact?.id ?? null;
-    if (!contactId) return json({ ok: true }); // silent — nothing actionable to expose
+    if (!contactId) return bail("ghl-upsert-returned-no-contact-id", email);
     if ((customer.ghl_contact_id ?? null) !== contactId) {
       await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customerId);
     }
