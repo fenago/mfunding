@@ -14,6 +14,7 @@ import {
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import NeedsAttention from "../../components/admin/NeedsAttention";
+import MoneyInPlay from "../../components/admin/MoneyInPlay";
 
 interface Stats {
   totalLenders: number;
@@ -233,6 +234,15 @@ export default function AdminDashboardPage() {
 
       {/* Needs attention — operational queues */}
       <NeedsAttention />
+
+      {/* Money in play — owner's view. What the open pipeline is really worth, what it
+          pays out at the closer split, and what it's actually expected to fund.
+          Super-admin only: it exposes company margin, not just a closer's own book. */}
+      {isSuperAdmin && (
+        <div className="mt-6">
+          <MoneyInPlay />
+        </div>
+      )}
 
       {/* Quick Actions */}
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700">
