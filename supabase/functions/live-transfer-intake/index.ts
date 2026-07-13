@@ -246,10 +246,21 @@ function parseLabelValue(segments: string[]): Record<string, string> {
   return out;
 }
 
+/**
+ * First number in a messy vendor string.
+ *
+ * The old version stripped every non-digit and parsed what was left, which silently
+ * MANGLED any range: FICO "700-750" became 700750, and "$10,000-$15,000" became
+ * 1000015000. Those numbers then flowed into underwriting and the funder-matching
+ * screens as if they were real. Take the FIRST number instead — a range's lower
+ * bound is the conservative read, and it can't invent a value that was never stated.
+ */
 const numFrom = (v: unknown): number | null => {
   if (v == null || v === "") return null;
-  const n = Number(String(v).replace(/[^0-9.]/g, ""));
-  return Number.isFinite(n) && n !== 0 ? n : (String(v).replace(/[^0-9.]/g, "") === "0" ? 0 : null);
+  const m = String(v).match(/\d[\d,]*(?:\.\d+)?/);
+  if (!m) return null;                       // "N/A", "", "unknown" → null, not 0
+  const n = Number(m[0].replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
 };
 
 function splitName(full: string): { first: string; last: string } {
@@ -259,11 +270,40 @@ function splitName(full: string): { first: string; last: string } {
   return { first: parts[0], last: parts.slice(1).join(" ") };
 }
 
+/**
+ * Pull a real US phone out of messy text and return E.164, or "" if there isn't one.
+ *
+ * The old version only accepted an exact 10 digits, or 11 starting with 1 — anything
+ * else it handed back verbatim, which then failed isValidMerchantPhone() and HARD-
+ * REJECTED the whole lead. So a merchant whose phone arrived as
+ * "(708) 616-3446 ext 12" was thrown away entirely. Losing a real, qualified lead
+ * because of a formatting quirk in a field we don't even control is indefensible.
+ *
+ * Now: strip to digits, drop a leading country code, and scan for the first window
+ * that is a valid NANP number (area code and exchange can't start with 0 or 1). That
+ * survives extensions, a second number trailing the first, and stray punctuation.
+ */
 function phoneNorm(raw: string): string {
-  const d = raw.replace(/\D/g, "");
-  if (d.length === 10) return `+1${d}`;
-  if (d.length === 11 && d.startsWith("1")) return `+${d}`;
-  return raw.trim();
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+
+  const take = (d: string): string | null => {
+    if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+    if (d.length !== 10) return null;
+    // NANP: NPA and NXX both start 2–9. This is what stops a random digit window
+    // (a zip, an EIN, a dollar figure) from being mistaken for a phone number.
+    if (!/^[2-9]\d{2}[2-9]\d{6}$/.test(d)) return null;
+    return `+1${d}`;
+  };
+
+  const whole = take(digits);
+  if (whole) return whole;
+
+  for (let i = 0; i + 10 <= digits.length; i++) {
+    const hit = take(digits.slice(i, i + 10));
+    if (hit) return hit;
+  }
+  return "";
 }
 
 // Domain of an email address ("Marcus <a@b.com>" → "b.com").
@@ -774,7 +814,23 @@ Deno.serve(async (req) => {
   // human reply (no lead structure) is skipped quietly.
   const leadEmailTrusted = Boolean(lead.email && isTrustedDomain(lead.email));
   const hasIdentity = Boolean(lead.first || lead.last || lead.business);
-  const validMerchant = isValidMerchantPhone(lead.phone) && hasIdentity && !leadEmailTrusted;
+  const phoneOk = isValidMerchantPhone(lead.phone);
+  // The merchant's OWN email (not the delivery robot's) is also a way to reach them.
+  const hasReachableEmail = Boolean(lead.email && !leadEmailTrusted);
+
+  // A BAD PHONE NO LONGER KILLS THE LEAD.
+  //
+  // This used to require a perfectly-formed phone, so a merchant whose number arrived
+  // with an extension — or in any shape the normalizer didn't like — was DISCARDED
+  // outright, name, business, email and all. That is the wrong trade: an unclean phone
+  // is a data-quality problem, a dropped lead is lost revenue. phoneNorm() is now far
+  // more forgiving, and if it still can't find a number we keep the lead anyway so
+  // long as we can identify AND reach the merchant some other way (their own email).
+  //
+  // What must STILL be rejected is the robot: if the parsed lead email is the delivery
+  // robot's own address, we have no merchant at all and must not arm a nurture from it.
+  const validMerchant = hasIdentity && !leadEmailTrusted && (phoneOk || hasReachableEmail);
+  const phoneNeedsReview = validMerchant && !phoneOk;
   const parsedCount = Object.keys(fields).length;
 
   if (!validMerchant) {
@@ -825,6 +881,13 @@ Deno.serve(async (req) => {
   // still becomes a lead, but we mark it for a human to eyeball the parse.
   const variantFlag = (!isLiveTransfer && parsedCount < 5)
     ? " ⚠️ format variant — review parse (fewer fields than a standard Synergy lead)."
+    : "";
+
+  // We KEPT this lead despite an unparseable phone (see validMerchant above). Say so
+  // loudly everywhere a human will look, so nobody discovers it by dialing a dead
+  // number in front of a merchant.
+  const phoneFlag = phoneNeedsReview
+    ? ` ⚠️ PHONE COULD NOT BE PARSED — raw value from the vendor: "${lead.phoneRaw || "(none)"}". Lead was KEPT (we can still reach them at ${lead.email}); fix the number before calling.`
     : "";
 
   // ── DEDUPE: same phone/email with a same-kind deal in the last 30 days ──
@@ -1060,7 +1123,7 @@ Deno.serve(async (req) => {
     entity_type: "deal", entity_id: dealId,
     interaction_type: "note",
     subject: kcfg.activitySubject,
-    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${adoptNote ? `\n${adoptNote}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
+    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${phoneFlag}${adoptNote ? `\n${adoptNote}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
   }).then(() => {}, () => {});
 
   // ── GHL: proper merchant contact + MCA opportunity at "New Lead" ──
@@ -1183,6 +1246,7 @@ Deno.serve(async (req) => {
     adopted: Boolean(adoptNote),
     mode: sourceMode,
     variant: variantFlag ? true : false,
+    phoneNeedsReview,
     parsedFields: parsedCount,
   });
 });
