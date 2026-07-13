@@ -39,6 +39,7 @@ import MyDayQueue from "../../components/admin/MyDayQueue";
 import DealAssistant from "../../components/admin/DealAssistant";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import PortalAccessChip from "../../components/admin/PortalAccessChip";
+import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
@@ -1339,6 +1340,21 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
                   can't upload, can't e-sign. The state AND the one-click fix live
                   here so the closer never leaves the playbook to grant access. */}
               {deal.customer?.id && <PortalAccessChip customerId={deal.customer.id} />}
+              {/* Email the merchant WITHOUT leaving the playbook. This is the 5-minute
+                  speed-to-lead touch on a real-time lead — if it lives three screens
+                  away in Comms, it doesn't get sent inside the window. */}
+              <EmailMerchantPanel
+                dealId={deal.id}
+                merchantEmail={deal.customer?.email}
+                merchantFirstName={deal.customer?.first_name}
+                businessName={deal.customer?.business_name}
+                leadSource={deal.lead_source}
+                bestTime={
+                  (deal as unknown as { lead_qual?: Record<string, unknown> | null }).lead_qual?.[
+                    "best_time"
+                  ] as string | undefined
+                }
+              />
 
               {/* Campaign attribution — a subtle chip with the code when it's
                   attached, a loud amber prompt (opens Edit lead → campaign picker)
