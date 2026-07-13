@@ -915,13 +915,20 @@ Deno.serve(async (req) => {
   //          (checked in the body head too, since body-embedded webhooks carry no
   //          subject). BOTH products use this subject, so it proves origin, not kind.
   // Step 2 — WHICH product? The vendor sends real-time leads from a separately named
-  //          account, "Agentic Voice Inc (Real Time)". That name appears in the From
-  //          display name AND in the body's "Select the Company or Agent" field.
-  //          Either one is proof. Absent it, this is a genuine warm transfer.
+  //          account, "Agentic Voice Inc (Real Time)" / "(RT)". We look for that tag
+  //          in every place the vendor could put it — the From display name, the
+  //          subject, and the body's "Select the Company or Agent" field. ANY ONE of
+  //          them is proof. Absent it everywhere, this is a genuine warm transfer.
+  //
+  //          Scanned narrowly ON PURPOSE — these three fields are the vendor's own
+  //          words about the ACCOUNT. Sweeping the whole body would let a merchant's
+  //          own answer ("I need funds in real time") reclassify their lead.
   const subjLower = emailSubject.toLowerCase();
   const agentField = fields["Select the Company or Agent"] ?? "";
   const isRealtimeAccount =
-    REALTIME_ACCOUNT_MARKER.test(emailFrom) || REALTIME_ACCOUNT_MARKER.test(agentField);
+    REALTIME_ACCOUNT_MARKER.test(emailFrom) ||
+    REALTIME_ACCOUNT_MARKER.test(emailSubject) ||
+    REALTIME_ACCOUNT_MARKER.test(agentField);
   let isLiveTransfer: boolean;
   if (sourceMode === "structured") {
     // Structured posts are the (future) Zapier path; default to live_transfer to

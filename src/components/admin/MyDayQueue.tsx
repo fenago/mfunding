@@ -59,38 +59,43 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
 
   // 0 — a HOT Synergy lead. Top of the board.
   //
-  // IMPORTANT, and the source of a lot of confusion: a LIVE TRANSFER is a warm PHONE
-  // handoff (the merchant is already on the line — nothing to "call back"), while a
-  // REAL-TIME lead is email-only and MUST be called inside 5 minutes.
+  // The two products are NOT the same job, and telling a closer the wrong one wastes
+  // the lead:
   //
-  // But Synergy currently sends BOTH products to sales@ with the identical subject
-  // ("Live Transfer! …"), so the intake labels everything `live_transfer` and we
-  // genuinely cannot tell them apart. Therefore we keep the countdown on BOTH:
-  // a spurious clock on a warm handoff costs nothing (the closer is already on the
-  // phone), whereas a missing clock on a real-time lead loses the lead outright.
+  //   LIVE TRANSFER — the vendor is warm-handing the merchant to you ON THE PHONE.
+  //                   They are already on the line. There is nothing to "call back"
+  //                   and no clock; the call IS the event. Pick up.
+  //   REAL-TIME     — email only. Nobody is on the phone. You have 5 minutes to call
+  //                   them, and the countdown is real.
   //
-  // The badge says both things so the closer isn't misled either way. Once Synergy
-  // splits the products onto two addresses, live transfers lose the clock for real.
-  if (deal.status === "new" && deal.first_call_due_at && HOT.has(deal.temperature ?? "")) {
-    const dueMs = Date.parse(deal.first_call_due_at) - now;
-    const isLiveTransfer = deal.lead_source === "live_transfer";
-    const isRealtime = deal.lead_source === "realtime_appt";
-    const hasCornerCountdown = isLiveTransfer || isRealtime;
+  // We can finally tell them apart: Synergy sends real-time leads from a distinctly
+  // named account ("… (Real Time)" / "(RT)"), which the intake reads off the From
+  // name, the subject, or the body's "Select the Company or Agent" field. So a live
+  // transfer now arrives with first_call_due_at = NULL, on purpose — which is exactly
+  // why this branch must NOT require a due date to fire.
+  const isLiveTransfer = deal.lead_source === "live_transfer";
+  const isRealtime = deal.lead_source === "realtime_appt";
+  if (deal.status === "new" && HOT.has(deal.temperature ?? "") && (deal.first_call_due_at || isLiveTransfer)) {
+    if (isLiveTransfer) {
+      return {
+        rank: 0,
+        badge: "🔴 LIVE TRANSFER — THEY'RE ON THE LINE",
+        why: "The vendor is transferring this merchant to you right now. Take the call — there is no callback window, this is the conversation.",
+        since: deal.created_at,
+        tone: "red",
+        // No countdown, deliberately. Nothing is expiring; they are on the phone.
+      };
+    }
+    const dueMs = deal.first_call_due_at ? Date.parse(deal.first_call_due_at) - now : 0;
     return {
       rank: 0,
-      badge: isLiveTransfer
-        ? "🔴 SYNERGY — ON THE LINE, OR CALL NOW"
-        : isRealtime
-          ? "🔴 REAL-TIME LEAD — CALL NOW"
-          : (dueMs > 0 ? `🔴 CALL NOW · ${countdown(dueMs)}` : "🔴 CALL NOW · OVERDUE"),
-      why: isLiveTransfer
-        ? "Synergy lead. If your phone rang, they're being transferred to you — take the call. If it didn't, this is an email lead: call them before the clock runs out."
-        : dueMs > 0
-          ? "Real-time lead — call before the clock runs out."
-          : "Real-time lead PAST its call window — call immediately.",
+      badge: dueMs > 0 ? `🔴 REAL-TIME LEAD · ${countdown(dueMs)}` : "🔴 REAL-TIME LEAD · OVERDUE",
+      why: dueMs > 0
+        ? "Email lead — nobody is on the phone. Call them before the clock runs out."
+        : "Email lead PAST its 5-minute call window — call immediately.",
       since: deal.created_at,
       tone: "red",
-      countdownDue: hasCornerCountdown ? deal.first_call_due_at : undefined,
+      countdownDue: isRealtime ? deal.first_call_due_at ?? undefined : undefined,
     };
   }
 
@@ -267,8 +272,11 @@ function slaMs(rank: number): number | null {
 // live transfers pop red (they're the time-critical ones), web-form leads blue,
 // etc. Left edge carries the color; a tiny chip names the source.
 const SOURCE_STYLE: Record<string, { edge: string; chip: string; label: string }> = {
-  live_transfer: { edge: "border-l-red-500", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "Live transfer" },
-  realtime_appt: { edge: "border-l-red-400", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "Real-time" },
+  // The two Synergy products must never look alike — one means "pick up the phone,
+  // they're already there", the other means "you have 5 minutes to dial". Same color
+  // for both is how a closer treats a warm handoff like a callback, and loses it.
+  live_transfer: { edge: "border-l-red-500", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "📞 Live transfer — on the line" },
+  realtime_appt: { edge: "border-l-fuchsia-500", chip: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300", label: "⏱ Real-time — call in 5 min" },
   website: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
   website_apply: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
   web_purchased: { edge: "border-l-amber-500", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", label: "Web lead" },
