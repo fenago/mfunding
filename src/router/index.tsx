@@ -31,6 +31,7 @@ import NotFoundPage from "../pages/404Page.tsx";
 import PrivacyPolicyPage from "../pages/PrivacyPolicyPage.tsx";
 import TermsOfServicePage from "../pages/TermsOfServicePage.tsx";
 import UnitEconomicsPage from "../pages/UnitEconomicsPage.tsx";
+import RevenuePage from "../pages/admin/RevenuePage.tsx";
 import BusinessLoansHubPage from "../pages/business-loans/BusinessLoansHubPage.tsx";
 import ProductDetailPage from "../pages/business-loans/ProductDetailPage.tsx";
 import RealEstateHubPage from "../pages/real-estate/RealEstateHubPage.tsx";
@@ -551,6 +552,12 @@ export const routes: RouteObject[] = [
                     element: <LeadSourceROIPage />,
                   },
                 ],
+              },
+              // Revenue & Commission (super_admin only)
+              {
+                path: "revenue",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <RevenuePage /> }],
               },
               // Unit Economics — MCA (super_admin only)
               {

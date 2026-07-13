@@ -3,6 +3,7 @@ import { BanknotesIcon, ArrowPathIcon, InformationCircleIcon } from "@heroicons/
 import { Link } from "react-router-dom";
 import supabase from "@/supabase";
 import { COMMISSION_DEFAULTS } from "@/types/commissions";
+import { FUND_ODDS, ADVANCE_CEILING_PCT, STAGE_LABEL, STAGE_ORDER } from "@/config/funnelOdds";
 
 /**
  * Money in play — and what it actually pays.
@@ -30,41 +31,10 @@ import { COMMISSION_DEFAULTS } from "@/types/commissions";
  * Unassigned deals fall back to the 30% default.
  */
 
-// Odds a deal at each stage eventually FUNDS, derived from the funnel conversion
-// targets in CLAUDE.md (contact 65% → qualify 60% → app 70% → docs 55% → approve 60%
-// → accept 75% → fund 87.5%), compounded forward. These are TARGETS, not measured
-// history — we don't have enough funded deals to measure yet. Labeled as estimates in
-// the UI so nobody mistakes them for observed truth.
-const FUND_ODDS: Record<string, number> = {
-  new: 0.06,
-  contacted: 0.09,
-  qualifying: 0.15,
-  application_sent: 0.22,
-  docs_collected: 0.39,
-  bank_statements: 0.39,
-  submitted_to_funder: 0.39,
-  offer_received: 0.66,
-  offer_presented: 0.66,
-  offer_accepted: 0.88,
-};
-
-// The advance a funder would plausibly write: the industry-standard top of the band
-// (120% of monthly revenue), never more than the merchant actually asked for.
-const ADVANCE_CEILING_PCT = 1.2;
-
-const STAGE_LABEL: Record<string, string> = {
-  new: "New",
-  contacted: "Contacted",
-  qualifying: "Qualifying",
-  application_sent: "Application sent",
-  docs_collected: "Docs collected",
-  bank_statements: "Bank statements",
-  submitted_to_funder: "Submitted to funder",
-  offer_received: "Offer received",
-  offer_presented: "Offer presented",
-  offer_accepted: "Offer accepted",
-};
-const STAGE_ORDER = Object.keys(STAGE_LABEL);
+// The stage ladder, the fund odds, and the revenue-based advance ceiling all live in
+// @/config/funnelOdds (imported above) — shared with Revenue & Commission, which
+// measures ACTUAL conversion against these same odds. Two copies would let the drift
+// report drift away from the forecast it is supposed to be checking.
 
 type Row = {
   id: string;

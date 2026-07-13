@@ -153,6 +153,8 @@ const navGroups: NavGroup[] = [
       { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
       { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
       { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },
+      // Owner-only: pipeline + funded commission, and measured funnel conversion vs target.
+      { name: "Revenue & Commission", path: "/admin/revenue", icon: ReceiptPercentIcon, roles: SUPER },
     ],
   },
   {

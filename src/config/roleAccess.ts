@@ -101,6 +101,7 @@ export const ACCESS_GROUPS: AccessGroup[] = [
     items: [
       { name: "My Earnings", roles: OPS }, // self-scoped by RLS — each closer sees only their own
       { name: "Commissions", roles: SUPER },
+      { name: "Revenue & Commission", roles: SUPER },
       { name: "Unit Economics (MCA)", roles: SUPER },
       { name: "Unit Economics (VCF)", roles: SUPER },
       { name: "Live Transfer ROI", roles: SUPER },
