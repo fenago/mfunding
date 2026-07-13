@@ -203,6 +203,36 @@ export default function MerchantApplicationModal({
 
   const cust = deal.customer;
 
+  /**
+   * Record that the e-sign document HAS GONE OUT.
+   *
+   * Called the instant the document is actually with GHL — never later. This used to be
+   * stamped at the very end of the send, after the cover note, and that ordering re-sent
+   * a real merchant's contract three times: the note failed, the early-return skipped the
+   * stamp, and the next click saw `sent_to_merchant_at = NULL`, concluded the document had
+   * never gone out, and enrolled them again. K.L. Breen collected 6 orphan document
+   * records from 3 clicks.
+   *
+   * A cover note failing cannot un-send a document, so it must never un-stamp one. Both
+   * send paths (pre-filled 04B and self-fill MCA 04) call this, so they can't drift apart.
+   */
+  const stampSent = async (applicationId: string | null) => {
+    const iso = new Date().toISOString();
+    // The self-fill path may have no saved application row at all (the merchant is the
+    // one who fills it in). There's nothing to stamp then — but the in-session flag still
+    // has to flip, or a second click in the same session re-sends the document.
+    setSentAt(iso);
+    if (!applicationId) return;
+    const { data: auth } = await supabase.auth.getUser();
+    await tryWrite(
+      "stamp application sent",
+      supabase
+        .from("mca_applications")
+        .update({ sent_to_merchant_at: iso, sent_by: auth?.user?.id ?? null })
+        .eq("id", applicationId),
+    );
+  };
+
   // Load any existing draft; otherwise pre-fill from the customer + deal so the
   // closer starts with everything we already know.
   useEffect(() => {
@@ -374,6 +404,28 @@ export default function MerchantApplicationModal({
       if (pushErr) await invokeThrow(pushErr);
       if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
 
+      // ── STAMP IT NOW. The document is OUT. ──
+      //
+      // This used to be stamped at the END, after the cover note — and that ordering
+      // sent a real merchant's contract THREE TIMES:
+      //
+      //   1. enroll 04B  → the e-sign document goes out       ✅ succeeded
+      //   2. send the cover note                              ❌ failed
+      //   3. stamp sent_to_merchant_at                        ← never reached
+      //
+      // With the stamp skipped, the next click recomputed `isResend = false`, decided the
+      // document had never gone out, and re-enrolled 04B from scratch. K.L. Breen ended up
+      // with 6 orphan document records from 3 clicks. The only thing between that and
+      // three contracts landing in a live merchant's inbox was a GHL re-enrollment toggle
+      // that this file's own comments say we must never depend on.
+      //
+      // The stamp asserts exactly ONE fact: the document has been sent. That became true
+      // the instant the push returned ok — not after some later, unrelated email. A cover
+      // note failing cannot un-send a document, so it must never un-stamp one. Everything
+      // downstream (the re-send guard, the stage move) keys off this, so it has to be
+      // written the moment it is TRUE, not the moment the happy path finishes.
+      await stampSent(id);
+
       const firstName = form.owner_first_name || cust?.first_name || "there";
       const biz = form.business_legal_name || cust?.business_name || "your business";
       const amt = form.amount_requested ? `$${Number(form.amount_requested).toLocaleString()}` : "your requested amount";
@@ -400,15 +452,9 @@ export default function MerchantApplicationModal({
         return;
       }
 
-      // Stamp who/when sent (best-effort — the send already went out).
-      const { data: auth } = await supabase.auth.getUser();
-      await tryWrite(
-        "stamp application sent",
-        supabase
-          .from("mca_applications")
-          .update({ sent_to_merchant_at: new Date().toISOString(), sent_by: auth?.user?.id ?? null })
-          .eq("id", id),
-      );
+      // (sent_to_merchant_at is stamped ABOVE, the moment the document actually went out.
+      // Stamping it here — after the cover note — is what re-sent K.L. Breen's contract
+      // three times.)
 
       if (isResend) {
         // No stage move on a re-send (it's a no-op). The re-fire happened via the
@@ -502,6 +548,13 @@ export default function MerchantApplicationModal({
       });
       if (pushErr) await invokeThrow(pushErr);
       if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
+
+      // Same rule as the prefilled path: if the server enrolled the contact directly,
+      // the DOCUMENT IS OUT — stamp it now, before the cover note can fail and skip it.
+      // (On this path the doc can also be sent by the stage move further down; that case
+      // is stamped after the move, since until then nothing has actually reached anyone.)
+      const docOutNow = (pushData as { enrolled_via?: string })?.enrolled_via === "direct";
+      if (docOutNow) await stampSent(existingId);
 
       const firstName = form.owner_first_name || cust?.first_name || "there";
       const biz = form.business_legal_name || cust?.business_name || "your business";
