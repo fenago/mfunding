@@ -22,32 +22,15 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
   sendSmsToContact, latestEmailMessageId,
 } from "../_shared/ghl.ts";
-import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
-
-const PORTAL_REDIRECT = "https://mfunding.net/auth/merchant";
+import {
+  ensureMerchantPortalUser, generatePortalMagicLink, buildPortalEmail,
+} from "../_shared/merchantPortal.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
-}
-
-const esc = (s: string) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-// Find an existing auth user by email (paged; user base is small).
-async function findAuthUserByEmail(db: ReturnType<typeof serviceClient>, email: string) {
-  const target = email.toLowerCase();
-  for (let page = 1; page <= 20; page++) {
-    const { data, error } = await db.auth.admin.listUsers({ page, perPage: 200 });
-    if (error) throw new Error(`listUsers failed: ${error.message}`);
-    const users = data?.users ?? [];
-    const hit = users.find((u) => (u.email ?? "").toLowerCase() === target);
-    if (hit) return hit;
-    if (users.length < 200) break;
-  }
-  return null;
 }
 
 Deno.serve(async (req) => {
@@ -91,33 +74,16 @@ Deno.serve(async (req) => {
   const firstName = (customer.first_name as string | null) ?? "";
 
   // --- Ensure an auth user exists + is linked to this customer. ---
-  let authUserId = (customer.user_id as string | null) ?? null;
-  if (!authUserId) {
-    const created = await db.auth.admin.createUser({ email, email_confirm: true });
-    if (created.data?.user) {
-      authUserId = created.data.user.id;
-    } else {
-      // Most likely already registered — resolve them.
-      const existing = await findAuthUserByEmail(db, email);
-      if (!existing) {
-        return json({ error: `could not create or find auth user: ${created.error?.message ?? "unknown"}` }, 502);
-      }
-      authUserId = existing.id;
-    }
-    const { error: linkErr } = await db.from("customers").update({ user_id: authUserId }).eq("id", customerId);
-    if (linkErr) return json({ error: `failed to link user_id: ${linkErr.message}` }, 500);
-  }
+  // Shared with merchant-login-link's provision-on-demand path, so a merchant ends
+  // up with the exact same account whether staff invited them or they self-served.
+  const ensured = await ensureMerchantPortalUser(db, customer);
+  if (!ensured.ok) return json({ error: ensured.error }, 502);
+  const authUserId = ensured.userId;
 
   // --- Generate the magic link. ---
-  const linkRes = await db.auth.admin.generateLink({
-    type: "magiclink",
-    email,
-    options: { redirectTo: PORTAL_REDIRECT },
-  });
-  const actionLink = linkRes.data?.properties?.action_link;
-  if (linkRes.error || !actionLink) {
-    return json({ error: `generateLink failed: ${linkRes.error?.message ?? "no action_link"}` }, 502);
-  }
+  const linkRes = await generatePortalMagicLink(db, email);
+  if (!linkRes.ok) return json({ error: linkRes.error }, 502);
+  const actionLink = linkRes.actionLink;
 
   // --- Send via GHL (email is system of record; SMS is the on-call path). ---
   let cfg: Awaited<ReturnType<typeof getGhlConfig>> | null = null;
@@ -144,27 +110,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  const subject = "Your MFunding application portal is ready";
-  const bodyText =
-    `${firstName ? `Hi ${firstName},` : "Hi,"}\n\n` +
-    `Your secure MFunding application portal is ready. Tap the link below to log in — ` +
-    `no password needed:\n\n${actionLink}\n\n` +
-    `Inside, you can upload your documents, track your application in real time, and ` +
-    `review your funding options in one place.\n\n` +
-    `You never pay us — our funding partners compensate us. Checking your options ` +
-    `does not impact your credit; only a formal submission can.\n\n` +
-    `— The Momentum Funding team`;
-  const html = renderMerchantEmail({
-    greeting: firstName ? `Hi ${firstName},` : "Hi,",
-    paragraphs: [
-      "Your secure MFunding application portal is ready. Tap the button below to log in — no password needed.",
-      "Inside, you can upload your documents, track your application in real time, and review your funding options in one place.",
-    ],
-    ctaLabel: "Open your portal",
-    ctaUrl: actionLink,
-    footerNote:
-      "You never pay us — our funding partners compensate us. Checking your options does not impact your credit; only a formal submission can.",
-  });
+  const { subject, text: bodyText, html } = buildPortalEmail({ firstName, actionLink });
 
   let replyMessageId: string | undefined;
   try { replyMessageId = (await latestEmailMessageId(cfg, contactId)) ?? undefined; } catch { /* thread if we can */ }
