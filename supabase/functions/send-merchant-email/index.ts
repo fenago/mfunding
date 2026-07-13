@@ -14,8 +14,8 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
-  sendMarker,
+  corsHeaders, serviceClient, getGhlConfig, sendEmailToContact, latestEmailMessageId,
+  sendMarker, ensureContactEmail, ghlErrorMessage,
 } from "../_shared/ghl.ts";
 import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 
@@ -89,25 +89,49 @@ Deno.serve(async (req) => {
   try { cfg = await getGhlConfig(db); } catch (e) { ghlError = e instanceof Error ? e.message : String(e); }
   if (!cfg) return json({ error: `GHL not configured: ${ghlError ?? "missing credentials"}` }, 502);
 
-  // Resolve the merchant's GHL contact (create via upsert if missing — same as
-  // the submit engine). Persist a newly-created id so later comms reuse it.
-  let contactId = (deal.ghl_contact_id as string | null) ?? (customer.ghl_contact_id as string | null) ?? null;
-  if (!contactId) {
-    const cr = await upsertContact(cfg, {
-      email: merchantEmail,
-      firstName: (customer.first_name as string | null) ?? undefined,
-      lastName: (customer.last_name as string | null) ?? undefined,
-      companyName: (customer.business_name as string | null) ?? undefined,
-      phone: (customer.phone as string | null) ?? undefined,
-      tags: ["merchant"],
-      source: "Merchant Message",
-    });
-    contactId = cr.data?.contact?.id ?? null;
-    if (!contactId) return json({ error: `GHL upsert failed: ${cr.error ?? "no contact id"}` }, 502);
-    // Cache it on the customer so future sends skip the upsert.
-    if ((customer.ghl_contact_id ?? null) !== contactId) {
-      await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);
-    }
+  // --- PRE-FLIGHT: verify the thing GHL is about to complain about. ---
+  // GHL answers a send with 400 "Contact's email is invalid" when the CONTACT it
+  // sends to has no usable email — which can be true even though the merchant's
+  // email in Supabase is fine (stored ghl_contact_id pointing at a duplicate /
+  // emailless / deleted contact). So confirm the target contact carries this
+  // email BEFORE sending, and heal it by upserting by email if it doesn't (the
+  // same guarantee push-application-to-ghl gets by always upserting by email).
+  const linkedId = (deal.ghl_contact_id as string | null) ?? (customer.ghl_contact_id as string | null) ?? null;
+  const pre = await ensureContactEmail(cfg, linkedId, merchantEmail, {
+    firstName: (customer.first_name as string | null) ?? undefined,
+    lastName: (customer.last_name as string | null) ?? undefined,
+    companyName: (customer.business_name as string | null) ?? undefined,
+    phone: (customer.phone as string | null) ?? undefined,
+    tags: ["merchant"],
+    source: "Merchant Message",
+  });
+  const merchantLabel = ((customer.business_name as string | null)
+    ?? [customer.first_name, customer.last_name].filter(Boolean).join(" "))
+    || "this merchant";
+  if (!pre.contactId) {
+    return json({
+      error:
+        `Email to ${merchantLabel} was NOT sent. GHL has no contact that can receive ${merchantEmail}` +
+        (linkedId ? ` (this deal is linked to GHL contact ${linkedId})` : "") +
+        `. Fix: open the merchant in GHL, put ${merchantEmail} on the contact record (or merge the duplicate), then send again. ` +
+        `GHL said: ${pre.error}`,
+      contact_id: linkedId, attempted_email: merchantEmail, ghl_error: pre.error,
+    }, 502);
+  }
+  const contactId = pre.contactId;
+  if (pre.healed) {
+    console.warn("[send-merchant-email] healed GHL contact", JSON.stringify({
+      dealId, from: linkedId, to: contactId, email: merchantEmail, previous_contact_email: pre.previousEmail,
+    }));
+  }
+  // Persist whatever contact actually owns this email so later comms reuse it.
+  if ((customer.ghl_contact_id ?? null) !== contactId) {
+    const { error: cuErr } = await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);
+    if (cuErr) console.error("[send-merchant-email] customer ghl_contact_id update failed:", cuErr.message);
+  }
+  if ((deal.ghl_contact_id ?? null) !== contactId) {
+    const { error: duErr } = await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
+    if (duErr) console.error("[send-merchant-email] deal ghl_contact_id update failed:", duErr.message);
   }
 
   // Wrap the closer's verbatim text in the branded shell. white-space:pre-wrap
@@ -119,7 +143,27 @@ Deno.serve(async (req) => {
   let replyMessageId: string | undefined;
   try { replyMessageId = (await latestEmailMessageId(cfg, contactId)) ?? undefined; } catch { /* thread if we can */ }
   const sr = await sendEmailToContact(cfg, contactId, subject, html, { text: bodyText, emailCc: cc, emailBcc: bcc, replyMessageId });
-  if (!sr.ok) return json({ error: `GHL send failed: ${sr.error}` }, 502);
+  if (!sr.ok) {
+    // ghlFetch already logged the endpoint + payload + full GHL body server-side.
+    // What the CLOSER gets must be actionable: who, what address, which contact,
+    // what to do — never GHL's raw "Contact's email is invalid" (which is about
+    // GHL's contact record, not the address we hold, and reads as if the merchant
+    // gave us a bad email).
+    const reason = ghlErrorMessage(sr.error);
+    const emailIssue = /email is invalid|invalid email/i.test(reason);
+    return json({
+      error:
+        `Email to ${merchantLabel} was NOT sent (GHL ${sr.status}). ` +
+        (emailIssue
+          ? `We sent it to ${merchantEmail} on GHL contact ${contactId}, and GHL rejected the contact's email address. ` +
+            `The address on our record looks valid, so this is a GHL contact problem: open contact ${contactId} in GHL, ` +
+            `re-save ${merchantEmail} on it and merge any duplicate contact for this merchant, then click send again.`
+          : `Address: ${merchantEmail} · GHL contact: ${contactId}. Retry once; if it fails again, check the contact in GHL.`) +
+        ` GHL said: "${reason}". Nothing was delivered — do not tell the merchant it went out.`,
+      contact_id: contactId, attempted_email: merchantEmail,
+      ghl_status: sr.status, ghl_error: reason,
+    }, 502);
+  }
 
   // Audit trail (best-effort — never fail the send over the log).
   try {

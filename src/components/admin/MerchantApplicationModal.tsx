@@ -194,6 +194,12 @@ export default function MerchantApplicationModal({
   const [busy, setBusy] = useState<"save" | "send" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // HALF-SEND RECOVERY: the e-sign document goes out FIRST (push-application-to-ghl
+  // enrolls the merchant in the GHL doc workflow), the closer's cover note second.
+  // When the cover note fails, the DOCUMENT IS ALREADY WITH THE MERCHANT — re-running
+  // the whole send would re-enroll them and risk a second document. So we keep the
+  // failed cover note here and offer a retry that sends ONLY the note.
+  const [pendingNote, setPendingNote] = useState<{ subject: string; body: string; regarding: string } | null>(null);
 
   const cust = deal.customer;
 
@@ -384,11 +390,15 @@ export default function MerchantApplicationModal({
         `Reply here if anything looks off or you have questions.\n\n` +
         `Talk soon.`;
 
-      const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
-        body: { dealId: deal.id, subject, body: emailBody, regarding: "MCA application" },
-      });
-      if (fnErr) await invokeThrow(fnErr);
-      if ((data as { error?: string })?.error) throw new Error((data as { error?: string }).error);
+      const noteErr = await sendCoverNote(subject, emailBody, "MCA application");
+      if (noteErr) {
+        // The DOCUMENT already went out (the push above succeeded) — say so, and do
+        // NOT let the closer re-run the whole send just to retry the note.
+        setPendingNote({ subject, body: emailBody, regarding: "MCA application" });
+        setError(halfSendMessage(noteErr));
+        setBusy(null);
+        return;
+      }
 
       // Stamp who/when sent (best-effort — the send already went out).
       const { data: auth } = await supabase.auth.getUser();
@@ -427,6 +437,49 @@ export default function MerchantApplicationModal({
     }
   }
 
+  // Fire the closer's cover note. Returns the server's (actionable) error message,
+  // or null on success. Never throws — the caller decides what the failure MEANS,
+  // which depends on whether the e-sign document already went out.
+  async function sendCoverNote(subject: string, body: string, regarding: string): Promise<string | null> {
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
+        body: { dealId: deal.id, subject, body, regarding },
+      });
+      if (fnErr) await invokeThrow(fnErr);
+      if ((data as { error?: string })?.error) throw new Error((data as { error?: string }).error);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : "The cover note could not be sent.";
+    }
+  }
+
+  // The e-sign document DID go out; only the cover note failed. Be explicit about
+  // both halves so the closer doesn't re-run the send (which re-enrolls the
+  // merchant in the GHL doc workflow and can put a SECOND document in front of them).
+  function halfSendMessage(reason: string) {
+    return (
+      `The e-sign documents WERE sent to the merchant — only your cover note failed. ` +
+      `Do NOT click "Send to merchant to e-sign" again (that re-sends the document). ` +
+      `Use "Retry cover note only" below once the contact is fixed.\n\n${reason}`
+    );
+  }
+
+  // Retry ONLY the cover note (the document is already with the merchant).
+  async function retryCoverNote() {
+    if (!pendingNote) return;
+    setBusy("send");
+    setError(null);
+    const noteErr = await sendCoverNote(pendingNote.subject, pendingNote.body, pendingNote.regarding);
+    if (noteErr) {
+      setError(halfSendMessage(noteErr));
+      setBusy(null);
+      return;
+    }
+    setPendingNote(null);
+    setBusy(null);
+    onSent();
+  }
+
   // PATH 1 — SELF-FILL: send the ORIGINAL fillable application (the merchant
   // types everything themselves; MCA 04). No required-field gating — there's
   // nothing to pre-fill. Two-click arm/confirm so it can't fire accidentally.
@@ -452,23 +505,26 @@ export default function MerchantApplicationModal({
 
       const firstName = form.owner_first_name || cust?.first_name || "there";
       const biz = form.business_legal_name || cust?.business_name || "your business";
-      const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
-        body: {
-          dealId: deal.id,
-          subject: `Your funding application for ${biz}`,
-          body:
-            `Hi ${firstName},\n\n` +
-            `Thanks for your time. I'm sending over your funding application for ${biz} now.\n\n` +
-            `You'll receive a separate email with:\n` +
-            `  1. Your funding application to fill out and e-sign\n` +
-            `  2. A quick compensation disclosure to e-sign\n` +
-            `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
-            `Reply here if you have any questions.\n\nTalk soon.`,
-          regarding: "MCA application (self-fill)",
-        },
-      });
-      if (fnErr) await invokeThrow(fnErr);
-      if ((data as { error?: string })?.error) throw new Error((data as { error?: string }).error);
+      const subject = `Your funding application for ${biz}`;
+      const emailBody =
+        `Hi ${firstName},\n\n` +
+        `Thanks for your time. I'm sending over your funding application for ${biz} now.\n\n` +
+        `You'll receive a separate email with:\n` +
+        `  1. Your funding application to fill out and e-sign\n` +
+        `  2. A quick compensation disclosure to e-sign\n` +
+        `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
+        `Reply here if you have any questions.\n\nTalk soon.`;
+      const noteErr = await sendCoverNote(subject, emailBody, "MCA application (self-fill)");
+      if (noteErr) {
+        setPendingNote({ subject, body: emailBody, regarding: "MCA application (self-fill)" });
+        // On the self-fill path the doc is only already out if the server enrolled
+        // the contact directly; otherwise the stage move (below) would have sent it,
+        // and we never got there — so nothing has reached the merchant.
+        const docAlreadyOut = (pushData as { enrolled_via?: string })?.enrolled_via === "direct";
+        setError(docAlreadyOut ? halfSendMessage(noteErr) : `${noteErr} The application was NOT sent either — the deal stays where it is.`);
+        setBusy(null);
+        return;
+      }
 
       if (!isResend) {
         try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
@@ -736,7 +792,17 @@ export default function MerchantApplicationModal({
 
         {/* Footer */}
         <div className="p-5 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-b-xl">
-          {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+          {error && <p className="text-sm text-red-600 mb-3 whitespace-pre-line">{error}</p>}
+          {pendingNote && (
+            <button
+              type="button"
+              onClick={retryCoverNote}
+              disabled={busy === "send"}
+              className="mb-3 px-3 py-1.5 text-sm rounded-lg border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
+            >
+              {busy === "send" ? "Retrying…" : "Retry cover note only"}
+            </button>
+          )}
           {toast && (
             <p className="text-sm text-emerald-600 mb-3 flex items-center gap-1.5">
               <CheckCircleIcon className="w-4 h-4" /> {toast}

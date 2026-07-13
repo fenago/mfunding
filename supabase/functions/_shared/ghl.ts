@@ -48,7 +48,37 @@ export interface GhlResponse<T = unknown> {
   error?: string;
 }
 
-/** Authenticated request against the LeadConnector API. */
+/** PII / secret keys that must never reach a log line. */
+const REDACT_KEYS = new Set([
+  "ssn", "socialsecuritynumber", "social_security_number",
+  "bankaccount", "bank_account", "bankaccountnumber", "bank_account_number",
+  "routing", "routingnumber", "bank_routing_number",
+  "apikey", "api_key", "authorization", "token", "password",
+]);
+
+/** Deep-copy a request body with secrets/PII replaced by "[redacted]" and long
+ * HTML bodies truncated, so a failed call can be logged safely. */
+export function redactForLog(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return value.length > 500 ? `${value.slice(0, 500)}…[+${value.length - 500} chars]` : value;
+  if (typeof value !== "object") return value;
+  if (depth > 4) return "[deep]";
+  if (Array.isArray(value)) return value.slice(0, 60).map((v) => redactForLog(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = REDACT_KEYS.has(k.toLowerCase().replace(/[^a-z_]/g, "")) ? "[redacted]" : redactForLog(v, depth + 1);
+  }
+  return out;
+}
+
+/** Authenticated request against the LeadConnector API.
+ *
+ * OBSERVABILITY: every non-2xx is logged server-side with the endpoint, the
+ * request payload (secrets/PII redacted), the HTTP status and GHL's FULL
+ * response body. A GHL failure must never leave nothing to look at — the
+ * K.L. Breen 400 ("Contact's email is invalid") could not be reconstructed from
+ * the logs because this function used to swallow everything but the return value.
+ */
 export async function ghlFetch<T = unknown>(
   cfg: GhlConfig,
   method: string,
@@ -70,12 +100,33 @@ export async function ghlFetch<T = unknown>(
   if (text) {
     try { parsed = JSON.parse(text); } catch { parsed = text; }
   }
+  if (!res.ok) {
+    console.error("[ghl] REQUEST FAILED", JSON.stringify({
+      endpoint: `${method} ${path}`,
+      status: res.status,
+      request: body === undefined ? null : redactForLog(body),
+      response: typeof parsed === "string" ? parsed.slice(0, 2000) : parsed,
+    }));
+  }
   return {
     ok: res.ok,
     status: res.status,
     data: res.ok ? (parsed as T) : null,
     error: res.ok ? undefined : (typeof parsed === "string" ? parsed : JSON.stringify(parsed)),
   };
+}
+
+/** Pull the human message out of a GHL error body (which is usually
+ * {"statusCode":400,"message":"…","error":"Bad Request"} JSON-stringified). */
+export function ghlErrorMessage(err: string | undefined): string {
+  if (!err) return "unknown error";
+  try {
+    const o = JSON.parse(err) as { message?: unknown };
+    const m = o?.message;
+    if (typeof m === "string") return m;
+    if (Array.isArray(m)) return m.map(String).join("; ");
+  } catch { /* not JSON */ }
+  return err;
 }
 
 // ---- Contact helpers ---------------------------------------------------------
@@ -113,6 +164,71 @@ export async function upsertContact(cfg: GhlConfig, input: ContactInput) {
 
 export async function getContact(cfg: GhlConfig, contactId: string) {
   return await ghlFetch<{ contact: Record<string, unknown> }>(cfg, "GET", `/contacts/${contactId}`);
+}
+
+export interface EnsuredContact {
+  /** The contact id that actually owns `email` — may differ from the one passed in. */
+  contactId: string | null;
+  /** true when we had to upsert/re-point because the stored contact was wrong. */
+  healed: boolean;
+  /** What the stored contact carried before we touched it (for the audit trail). */
+  previousEmail: string | null;
+  /** Why the send can't proceed (contactId is null when this is set). */
+  error?: string;
+}
+
+/**
+ * PRE-FLIGHT + SELF-HEAL for any GHL send.
+ *
+ * GHL rejects a send with 400 "Contact's email is invalid" when the CONTACT it is
+ * sending to has no/!valid email — which happens when our stored ghl_contact_id
+ * points at a duplicate, emailless or deleted contact, even though the merchant's
+ * email in Supabase is perfectly fine. So before we send: read the target contact,
+ * confirm it carries a usable email, and if it doesn't, upsert BY EMAIL (GHL
+ * dedupes on it) and hand back whichever contact actually owns the address. This
+ * is the same guarantee push-application-to-ghl gets by always upserting by email.
+ *
+ * Callers should persist a healed contactId back onto customers/deals.
+ */
+export async function ensureContactEmail(
+  cfg: GhlConfig,
+  contactId: string | null,
+  desiredEmail: string,
+  profile?: Omit<ContactInput, "email">,
+): Promise<EnsuredContact> {
+  const valid = (e: unknown): e is string =>
+    typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
+  if (!valid(desiredEmail)) {
+    return { contactId: null, healed: false, previousEmail: null, error: `"${desiredEmail}" is not a valid email address` };
+  }
+
+  let previousEmail: string | null = null;
+  if (contactId) {
+    const got = await getContact(cfg, contactId);
+    const onFile = (got.data?.contact as { email?: unknown } | undefined)?.email;
+    previousEmail = typeof onFile === "string" ? onFile : null;
+    // Healthy: the linked contact exists and already carries a valid email that
+    // matches ours (case-insensitive). Send against it, unchanged.
+    if (got.ok && valid(previousEmail) && previousEmail.trim().toLowerCase() === desiredEmail.trim().toLowerCase()) {
+      return { contactId, healed: false, previousEmail };
+    }
+    console.warn("[ghl] contact pre-flight: linked contact is unusable, healing", JSON.stringify({
+      contactId, fetch_ok: got.ok, status: got.status,
+      contact_email: previousEmail, expected_email: desiredEmail,
+    }));
+  }
+
+  // Heal: upsert by email. Returns the canonical contact that owns this address
+  // (creating it if there isn't one) and guarantees the address is on the record.
+  const up = await upsertContact(cfg, { ...(profile ?? {}), email: desiredEmail });
+  const healedId = up.data?.contact?.id ?? null;
+  if (!healedId) {
+    return {
+      contactId: null, healed: false, previousEmail,
+      error: `GHL would not accept a contact for ${desiredEmail}: ${ghlErrorMessage(up.error)}`,
+    };
+  }
+  return { contactId: healedId, healed: healedId !== contactId, previousEmail };
 }
 
 // ---- FILE_UPLOAD custom fields (merchant-uploaded docs live GHL-side) ---------
