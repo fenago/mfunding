@@ -61,6 +61,17 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 // marker in the body head) is what distinguishes a live transfer from a real-time
 // lead — everything else about the two emails is identical.
 const LIVE_TRANSFER_SUBJECT_MARKER = "live transfer";
+// THE DISCRIMINATOR. Both products still arrive with the SAME subject ("Live
+// Transfer! …"), the same sender address, and the same body layout — so the subject
+// tells you nothing. What DOES differ is the account the vendor sent it from:
+//
+//   Agentic Voice Inc               → LIVE TRANSFER  (merchant is on the line NOW)
+//   Agentic Voice Inc (Real Time)   → REAL-TIME      (email lead; call them, 5-min SLA)
+//
+// It shows up in two independent places — the From display name, and the body's
+// "Select the Company or Agent" field — so we scan both and treat either as proof.
+// The "(RT)" suffix is the same account with a second tag on it; accept it too.
+const REALTIME_ACCOUNT_MARKER = /\(\s*(?:real[\s-]*time|rt)\s*\)/i;
 // Trusted lead-delivery domains. A sender on one of these is a Synergy delivery
 // robot; add more domains here as vendors/senders change — no code change needed.
 const TRUSTED_DELIVERY_DOMAINS = ["double-verified.com"];
@@ -76,15 +87,25 @@ const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
 const FIRST_CALL_SLA_MS = 5 * 60 * 1000;
 // Can we actually TELL a live transfer from a real-time lead?
 //
-// No. Today Synergy sends BOTH products to sales@send.mfunding.net with the same
-// subject ("Live Transfer! …"), the same sender, and an identical body. There is no
-// discriminator in the email — so the classifier calls everything live_transfer.
+// YES — as of 2026-07-13. Synergy now sends real-time leads from a distinctly named
+// account ("Agentic Voice Inc (Real Time)"), which lands in both the From display
+// name and the body's "Select the Company or Agent" field. See
+// REALTIME_ACCOUNT_MARKER. That is the discriminator we were missing, and it means
+// the SLA clock can finally be applied to the product it was written for:
 //
-// Flip this to TRUE the moment the two products land on two different addresses
-// (set campaigns.tracking_email for SYN-LT and SYN-RT). Until then, anything that
-// keys off the live_transfer label is really keying off "a Synergy lead" and must
-// behave accordingly — see first_call_due_at below.
-const CAN_DISTINGUISH_KINDS = false;
+//   real-time     → 5-minute callback clock. Nobody is on the phone.
+//   live transfer → NO clock. The merchant is already on the line; the call IS the
+//                   event. A countdown here is noise at best and, at worst, tells a
+//                   closer to "call within 5 minutes" someone who is mid-conversation.
+//
+// If Synergy ever stops tagging the account, the marker simply stops matching and
+// every lead falls back to live_transfer — which keeps the clock ON. Failing toward
+// "call them" is the safe direction; failing toward "no clock" would drop leads.
+const CAN_DISTINGUISH_KINDS = true;
+// Both Synergy products, for dedupe. A merchant is the same merchant whichever one
+// delivered them, so the dedupe lookup must span both — never just the kind we just
+// classified this email as.
+const SYNERGY_LEAD_SOURCES = ["live_transfer", "realtime_appt"];
 // Urgent internal alert recipients.
 const TEAM_ALERT_TO = "socrates73@gmail.com";
 const TEAM_ALERT_CC = ["cmarq2k8@gmail.com"];
@@ -890,16 +911,26 @@ Deno.serve(async (req) => {
   if (emailTo) lead.raw["_email_to"] = emailTo;
 
   // ── CLASSIFY: live transfer vs real-time ──
-  // The ONLY discriminator is the "Live Transfer!" subject (checked in the body
-  // head too, since body-embedded webhooks carry no subject). Anything else from
-  // the trusted sender that parses into a lead is a real-time / appointment lead.
+  // Step 1 — is this a Synergy lead at all? That's the "Live Transfer!" subject
+  //          (checked in the body head too, since body-embedded webhooks carry no
+  //          subject). BOTH products use this subject, so it proves origin, not kind.
+  // Step 2 — WHICH product? The vendor sends real-time leads from a separately named
+  //          account, "Agentic Voice Inc (Real Time)". That name appears in the From
+  //          display name AND in the body's "Select the Company or Agent" field.
+  //          Either one is proof. Absent it, this is a genuine warm transfer.
   const subjLower = emailSubject.toLowerCase();
+  const agentField = fields["Select the Company or Agent"] ?? "";
+  const isRealtimeAccount =
+    REALTIME_ACCOUNT_MARKER.test(emailFrom) || REALTIME_ACCOUNT_MARKER.test(agentField);
   let isLiveTransfer: boolean;
   if (sourceMode === "structured") {
     // Structured posts are the (future) Zapier path; default to live_transfer to
     // preserve existing behavior, unless the caller explicitly says realtime.
     const explicit = String(body.kind ?? body.lead_kind ?? body.lead_type ?? "").toLowerCase();
     isLiveTransfer = explicit ? explicit.includes("live") : true;
+  } else if (isRealtimeAccount) {
+    // The vendor told us, explicitly, that nobody is on the phone.
+    isLiveTransfer = false;
   } else {
     isLiveTransfer =
       subjLower.includes(LIVE_TRANSFER_SUBJECT_MARKER) ||
@@ -908,9 +939,19 @@ Deno.serve(async (req) => {
   const kcfg = isLiveTransfer ? LIVE_TRANSFER_CFG : REALTIME_CFG;
 
   // Trust signal: sender is on a trusted delivery domain, OR the subject marks it a
-  // live transfer. Structured POSTs are an intentional (secret-gated) API call.
+  // Synergy lead. Structured POSTs are an intentional (secret-gated) API call.
+  //
+  // NOTE the subject marker is checked here on its OWN, not via isLiveTransfer. Now
+  // that a real-time lead classifies as isLiveTransfer=false, keying the gate off
+  // that flag would ignore every real-time lead the moment the sender domain changed.
+  // Origin and kind are two different questions; this line only asks about origin.
   const senderTrusted = isTrustedDomain(emailFrom);
-  const looksLikeTransfer = isLiveTransfer || senderTrusted || sourceMode === "structured";
+  const looksLikeTransfer =
+    isLiveTransfer ||
+    isRealtimeAccount ||
+    senderTrusted ||
+    subjLower.includes(LIVE_TRANSFER_SUBJECT_MARKER) ||
+    sourceMode === "structured";
 
   // ── GATE 1 — ordinary inbound (funder reply, chatter, random email) ──
   // With the workflow now firing on ALL inbound email, THIS endpoint is the gate:
@@ -1025,7 +1066,14 @@ Deno.serve(async (req) => {
     ? ` ⚠️ PHONE COULD NOT BE PARSED — raw value from the vendor: "${lead.phoneRaw || "(none)"}". Lead was KEPT (we can still reach them at ${lead.email}); fix the number before calling.`
     : "";
 
-  // ── DEDUPE: same phone/email with a same-kind deal in the last 30 days ──
+  // ── DEDUPE: same phone/email with ANY Synergy deal in the last 30 days ──
+  //
+  // Deliberately NOT scoped to the same kind. It used to be (.eq lead_source), and
+  // that made the dedupe key depend on the CLASSIFIER: reclassify a lead from
+  // live_transfer to realtime — which is exactly what happens when the sweep re-drives
+  // an email, or when we sharpen the classifier — and the merchant gets a SECOND deal
+  // instead of matching their first. One merchant, one open deal, whichever Synergy
+  // product delivered them.
   const sinceIso = new Date(Date.now() - DEDUPE_WINDOW_DAYS * 24 * 3600 * 1000).toISOString();
   const candIds = new Set<string>();
   if (lead.email) {
@@ -1039,9 +1087,9 @@ Deno.serve(async (req) => {
   let existingCustomerId: string | null = candIds.size ? [...candIds][0] : null;
   if (candIds.size) {
     const { data: dup } = await db.from("deals")
-      .select("id, deal_number, customer_id, created_at")
+      .select("id, deal_number, customer_id, created_at, lead_source")
       .in("customer_id", [...candIds])
-      .eq("lead_source", kcfg.leadSource)
+      .in("lead_source", SYNERGY_LEAD_SOURCES)
       .gte("created_at", sinceIso)
       .order("created_at", { ascending: false })
       .limit(1).maybeSingle();
@@ -1083,6 +1131,19 @@ Deno.serve(async (req) => {
         const d = curDeal as Record<string, unknown>;
         if ((d.amount_requested == null) && lead.requestedAmount != null) dpatch.amount_requested = lead.requestedAmount;
         if ((d.use_of_funds == null || d.use_of_funds === "") && lead.useOfFunds) dpatch.use_of_funds = lead.useOfFunds;
+        // If this email classifies the merchant differently than the deal we matched
+        // (the vendor's newer word, or a sharper classifier on our side), the deal is
+        // WRONG about which product this is — and the whole SLA hangs off that. Correct
+        // it, and correct the clock with it: a real-time lead owes a callback, a warm
+        // transfer does not. Never overwrite a due-date a closer has already satisfied.
+        if (d.lead_source !== kcfg.leadSource) {
+          dpatch.lead_source = kcfg.leadSource;
+          if (!d.contacted_at) {
+            dpatch.first_call_due_at = (isLiveTransfer && CAN_DISTINGUISH_KINDS)
+              ? null
+              : new Date(Date.now() + FIRST_CALL_SLA_MS).toISOString();
+          }
+        }
         await db.from("deals").update(dpatch).eq("id", dup.id).then(() => {}, () => {});
       }
 
