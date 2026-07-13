@@ -22,6 +22,12 @@
 --                 path that writes a stage timestamp WITHOUT changing status (the
 --                 trigger is `BEFORE INSERT OR UPDATE OF status`, so it cannot see
 --                 those writes).
+--
+-- KNOWN BENIGN ROW: MF-2026-0013 reports OUT_OF_ORDER. Its docs_collected_at is exactly
+-- equal to its created_at — it is a legacy GHL import that was BORN at the docs_collected
+-- rung, so that stamp means "when we imported it", not "when docs were collected". It has
+-- no HOLE and does not distort conversion counts. Left as-is rather than rewriting real
+-- history; if it ever becomes noisy, exclude it by deal_number.
 
 with rungs as (
   select
@@ -73,4 +79,25 @@ where p.ts[p.hi_i] is not null
     p.ts[p.lo_i] is null                 -- HOLE: later rung stamped, earlier one missing
     or p.ts[p.lo_i] > p.ts[p.hi_i]       -- OUT_OF_ORDER: earlier rung stamped after a later one
   )
-order by p.deal_number, p.lo_i, p.hi_i;
+
+union all
+
+-- NO_ATTEMPT — contacted, but with no outreach on record. You cannot have CONTACTED a
+-- merchant you never ATTEMPTED to reach, and because the speed-to-lead SLA is judged on
+-- first_attempt_at, such a deal is UNSCOREABLE. The stage trigger now stamps
+-- first_attempt_at from contacted_at, so this must stay at zero.
+select
+  d.deal_number,
+  d.id as deal_id,
+  d.status,
+  'NO_ATTEMPT'       as violation,
+  'first_attempt_at' as earlier_column,
+  null::timestamptz  as earlier_at,
+  'contacted_at'     as later_column,
+  d.contacted_at     as later_at
+from public.deals d
+where d.deal_type = 'mca'
+  and d.contacted_at is not null
+  and d.first_attempt_at is null
+
+order by 1, 5, 7;

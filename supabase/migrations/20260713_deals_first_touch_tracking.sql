@@ -5,10 +5,13 @@
 -- goes at the merchant's stated best time). Without the channel you cannot tell
 -- a fast email from a slow dial when reporting speed-to-lead.
 --
--- Also adds the two generated-column-style helpers the analytics pages read.
--- NOTE: these two functions are REDEFINED in 20260713_deals_contact_attempts_and_callbacks.sql
--- to key off first_attempt_at instead of contacted_at. This file records the
--- original shape; run both in order.
+-- NOTE: this migration originally also created deal_sla_met() and
+-- deal_speed_to_lead_seconds() keyed off contacted_at. They are REDEFINED minutes
+-- later in 20260713_deals_contact_attempts_and_callbacks.sql to key off
+-- first_attempt_at, which is their live shape. They are deliberately NOT defined
+-- here: these files sort alphabetically on replay ("deals_c..." < "deals_f..."), so
+-- defining them here would let a from-scratch replay overwrite the good definition
+-- with the stale one. Column-only migration; ordering cannot hurt it.
 
 alter table public.deals
   add column if not exists first_touch_channel text;
@@ -28,27 +31,3 @@ end $$;
 
 comment on column public.deals.first_touch_channel is
   'How the closer first reached this lead (call/email/sms). Stamped alongside contacted_at. On a REAL-TIME lead the 5-minute SLA is satisfied by an EMAIL — the phone call goes at the merchant''s stated best time — so the channel is what tells the two apart when reporting speed-to-lead.';
-
--- Computed accessors (Postgrest exposes these as virtual columns on deals).
-create or replace function public.deal_sla_met(d deals)
-returns boolean
-language sql
-immutable
-as $function$
-  select case
-    when d.first_call_due_at is null then null      -- live transfer: nothing to be late for
-    when d.contacted_at is null then null           -- not yet worked
-    else d.contacted_at <= d.first_call_due_at
-  end;
-$function$;
-
-create or replace function public.deal_speed_to_lead_seconds(d deals)
-returns integer
-language sql
-immutable
-as $function$
-  select case
-    when d.contacted_at is null then null
-    else greatest(0, extract(epoch from (d.contacted_at - d.created_at))::int)
-  end;
-$function$;
