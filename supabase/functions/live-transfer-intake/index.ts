@@ -17,7 +17,8 @@
 // a customer + MCA deal, a PROPER GHL contact (the merchant — NOT the junk sender
 // contact) + an MCA-pipeline opportunity, mirror every fact onto the contact's
 // custom fields, born HOT with a 5-minute speed-to-lead clock (top of My Day), and
-// email the team an urgent "call within 5 min" alert.
+// email the team an urgent alert (a live transfer = they're on the line now; a
+// real-time lead = call them within 5 min).
 //
 // SELF-HEALING: when a NEW sender on a trusted delivery domain emails for the
 // first time, the function itself tags that sender contact `lt-source` and sets
@@ -65,8 +66,25 @@ const LIVE_TRANSFER_SUBJECT_MARKER = "live transfer";
 const TRUSTED_DELIVERY_DOMAINS = ["double-verified.com"];
 // Canonical MFunding MCA pipeline (same id ghl-webhook keys off, so stage changes round-trip).
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
-// Speed-to-lead SLA: the closer must call within 5 minutes (both lead kinds).
+// Speed-to-lead SLA — REAL-TIME LEADS ONLY.
+//
+// live_transfer = the vendor WARM-TRANSFERS the merchant to us ON THE PHONE. They
+//                 are already on the line. There is no callback window; the call is
+//                 the event. No SLA clock.
+// realtime      = an email-delivered lead. Nobody is on the phone. The closer must
+//                 call them, and this is the window they have to do it in.
 const FIRST_CALL_SLA_MS = 5 * 60 * 1000;
+// Can we actually TELL a live transfer from a real-time lead?
+//
+// No. Today Synergy sends BOTH products to sales@send.mfunding.net with the same
+// subject ("Live Transfer! …"), the same sender, and an identical body. There is no
+// discriminator in the email — so the classifier calls everything live_transfer.
+//
+// Flip this to TRUE the moment the two products land on two different addresses
+// (set campaigns.tracking_email for SYN-LT and SYN-RT). Until then, anything that
+// keys off the live_transfer label is really keying off "a Synergy lead" and must
+// behave accordingly — see first_call_due_at below.
+const CAN_DISTINGUISH_KINDS = false;
 // Urgent internal alert recipients.
 const TEAM_ALERT_TO = "socrates73@gmail.com";
 const TEAM_ALERT_CC = ["cmarq2k8@gmail.com"];
@@ -117,9 +135,11 @@ const LIVE_TRANSFER_CFG: KindConfig = {
   ghlTags: ["live-transfer", "synergy", "merchant"],
   ghlSource: "Live Transfer",
   alertSubjectPrefix: "🔴 LIVE TRANSFER",
-  alertHeaderHtml: "🔴 LIVE TRANSFER — CALL WITHIN 5 MINUTES",
-  alertHeaderText: "LIVE TRANSFER — CALL WITHIN 5 MINUTES",
-  alertIntro: "A Synergy live-transfer lead just came in. The merchant is expecting a call <b>right now</b>.",
+  alertHeaderHtml: "🔴 LIVE TRANSFER — MERCHANT IS ON THE LINE NOW",
+  alertHeaderText: "LIVE TRANSFER — MERCHANT IS ON THE LINE NOW",
+  alertIntro:
+    "The vendor is <b>warm-transferring this merchant to us on the phone right now</b> — they are already on the line. " +
+    "This email is the RECORD of that transfer, not a callback request. There is no 5-minute clock: take the call.",
 };
 const REALTIME_CFG: KindConfig = {
   kind: "realtime",
@@ -327,10 +347,44 @@ function toLead(f: Record<string, unknown>): Lead {
   };
 }
 
-// Does this look like a Double-Verified structured POST (vs a GHL webhook wrapper)?
+// Is this a GHL webhook wrapper (an inbound EMAIL delivered to us) rather than a
+// direct structured lead POST? These keys only ever appear on a GHL payload.
+function looksLikeGhlWebhook(b: Record<string, unknown>): boolean {
+  return [
+    "contact_id", "contactId", "conversationId", "conversation_id",
+    "locationId", "location_id", "customData", "messageType", "webhookId",
+  ].some((k) => b[k] != null && b[k] !== "");
+}
+
+/**
+ * Does this look like a Double-Verified structured POST (vs a GHL webhook wrapper)?
+ *
+ * THIS IS THE BUG THAT ATE A REAL LEAD (Robert Young / ECS Holdings, Jul 13).
+ *
+ * A GHL webhook for an inbound email carries the CONTACT's own fields —
+ * first_name, last_name, company, email, phone. And on a lead-delivery email that
+ * contact is the DELIVERY ROBOT (e.g. "Live Transfer for Agentic Voice Inc!" /
+ * info@double-verified.com), never the merchant.
+ *
+ * The old test fired on `first_name` alone, so every GHL-delivered transfer looked
+ * "structured": we ingested GHL's ~116 payload keys as the lead, took the robot's
+ * address as the merchant email, found no merchant phone, and NEVER PARSED THE
+ * EMAIL BODY — where the actual merchant is. The parse-failure alert then reported
+ * "Fields parsed: 116", which is the tell: there are only ~23 real labels.
+ *
+ * Two changes:
+ *   1. A GHL webhook is NEVER structured. The body is the lead; go parse it.
+ *   2. Only LEAD-SPECIFIC keys may trigger structured mode — ones GHL does not
+ *      send. company/first_name/last_name are too generic and are exactly what
+ *      fooled it.
+ */
+const STRUCTURED_LEAD_KEYS = [
+  "requested_amount", "monthly_deposits", "positions_balance", "open_positions",
+  "use_of_funds", "fico", "time_as_owner",
+];
 function looksStructured(b: Record<string, unknown>): boolean {
-  return ["company", "first_name", "last_name", "requested_amount", "monthly_deposits", "positions_balance", "open_positions"]
-    .some((k) => b[k] != null && b[k] !== "");
+  if (looksLikeGhlWebhook(b)) return false; // the email body is the source of truth
+  return STRUCTURED_LEAD_KEYS.some((k) => b[k] != null && b[k] !== "");
 }
 
 // Pull the email body text out of a GHL webhook payload's many possible shapes.
@@ -794,13 +848,58 @@ Deno.serve(async (req) => {
       .order("created_at", { ascending: false })
       .limit(1).maybeSingle();
     if (dup) {
+      // DEDUPE = don't create a second deal. It does NOT mean "throw the new data
+      // away", which is what this used to do: it logged a note and returned, so a
+      // re-send carrying fresher qualification (revenue, FICO, requested amount,
+      // positions) was silently discarded and the deal kept stale numbers.
+      //
+      // The merchant is the same; the DATA may be newer. So refresh the customer and
+      // top up the deal — without clobbering anything a human has since typed. Only
+      // fill fields that are still empty, plus always refresh lead_qual (the vendor's
+      // raw answers) and re-stamp the contact details, which are the whole point of a
+      // re-send.
+      const { data: cur } = await db.from("customers").select("*").eq("id", dup.customer_id).maybeSingle();
+      if (cur) {
+        const fresh: Record<string, unknown> = { lead_qual: lead.raw, temperature: "hot" };
+        const fill = (col: string, val: unknown) => {
+          if (val == null || val === "") return;
+          const existing = (cur as Record<string, unknown>)[col];
+          if (existing == null || existing === "") fresh[col] = val;      // fill gaps
+        };
+        // Contact details always refresh — a re-send is the vendor correcting them.
+        if (lead.phone) fresh.phone = lead.phone;
+        if (lead.email) fresh.email = lead.email;
+        fill("first_name", lead.first);
+        fill("last_name", lead.last);
+        fill("business_name", lead.business);
+        fill("state", lead.state);
+        fill("industry", lead.industry);
+        fill("monthly_revenue", lead.monthlyDeposits);
+        fill("credit_score", lead.fico);
+        await db.from("customers").update(fresh).eq("id", dup.customer_id).then(() => {}, () => {});
+      }
+
+      const { data: curDeal } = await db.from("deals").select("*").eq("id", dup.id).maybeSingle();
+      if (curDeal) {
+        const dpatch: Record<string, unknown> = { lead_qual: lead.raw, temperature: "hot" };
+        const d = curDeal as Record<string, unknown>;
+        if ((d.amount_requested == null) && lead.requestedAmount != null) dpatch.amount_requested = lead.requestedAmount;
+        if ((d.use_of_funds == null || d.use_of_funds === "") && lead.useOfFunds) dpatch.use_of_funds = lead.useOfFunds;
+        await db.from("deals").update(dpatch).eq("id", dup.id).then(() => {}, () => {});
+      }
+
       await db.from("activity_log").insert({
         entity_type: "deal", entity_id: dup.id,
         interaction_type: "note",
         subject: kcfg.activitySubject.replace(":intake", ":dedupe"),
-        content: `Duplicate ${kcfg.kind} intake suppressed (same ${lead.email ? "email" : "phone"} within ${DEDUPE_WINDOW_DAYS}d). Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.`,
+        content:
+          `Duplicate ${kcfg.kind} intake — no second deal created (same ${lead.email ? "email" : "phone"} within ${DEDUPE_WINDOW_DAYS}d), ` +
+          `but the record was REFRESHED from this email. Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.`,
       }).then(() => {}, () => {});
-      return json({ ok: true, deduped: true, kind: kcfg.kind, dealId: dup.id, dealNumber: dup.deal_number, customerId: dup.customer_id });
+      return json({
+        ok: true, deduped: true, refreshed: true, kind: kcfg.kind,
+        dealId: dup.id, dealNumber: dup.deal_number, customerId: dup.customer_id,
+      });
     }
   }
 
@@ -915,7 +1014,28 @@ Deno.serve(async (req) => {
     campaign_id: campaignId,
     temperature: "hot",
     urgency: /yes/i.test(lead.needMoneyNow) ? "high" : null,
-    first_call_due_at: new Date(now + FIRST_CALL_SLA_MS).toISOString(),
+    // THE CLOCK STAYS ON UNTIL WE CAN ACTUALLY TELL THE TWO PRODUCTS APART.
+    //
+    // In principle the 5-minute speed-to-lead clock belongs to REAL-TIME leads only:
+    // a LIVE TRANSFER is a warm phone handoff — the merchant is already on the line,
+    // there is nothing to "call back".
+    //
+    // But TODAY both products arrive at sales@ with the identical subject
+    // ("Live Transfer! …"), so the classifier labels EVERYTHING live_transfer. Gating
+    // the clock on that label therefore removes it from real-time leads too — and a
+    // real-time lead with no clock is a dead lead. So while the kinds are
+    // indistinguishable we always set it:
+    //   • truly a warm handoff → the closer is already on the phone; the clock is
+    //     harmless noise they ignore.
+    //   • truly a real-time lead → the clock is the ONLY thing that makes them call.
+    // Asymmetric risk: a spurious clock costs nothing, a missing one loses the lead.
+    //
+    // Flip CAN_DISTINGUISH_KINDS to true once Synergy delivers the two products to
+    // two different addresses (campaigns.tracking_email) — then live transfers
+    // correctly stop carrying a callback deadline.
+    first_call_due_at: (isLiveTransfer && CAN_DISTINGUISH_KINDS)
+      ? null
+      : new Date(now + FIRST_CALL_SLA_MS).toISOString(),
     lead_qual: lead.raw,
     notes: [
       kcfg.notesHeader,

@@ -57,28 +57,39 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   const responded = subs.filter((s) => s.response_at);
   const anyResponded = responded.length > 0;
 
-  // 0 — a HOT lead (real-time / live transfer) with a live speed-to-lead clock.
-  // The most time-critical thing on the board: the merchant expects a call NOW.
+  // 0 — a HOT Synergy lead. Top of the board.
+  //
+  // IMPORTANT, and the source of a lot of confusion: a LIVE TRANSFER is a warm PHONE
+  // handoff (the merchant is already on the line — nothing to "call back"), while a
+  // REAL-TIME lead is email-only and MUST be called inside 5 minutes.
+  //
+  // But Synergy currently sends BOTH products to sales@ with the identical subject
+  // ("Live Transfer! …"), so the intake labels everything `live_transfer` and we
+  // genuinely cannot tell them apart. Therefore we keep the countdown on BOTH:
+  // a spurious clock on a warm handoff costs nothing (the closer is already on the
+  // phone), whereas a missing clock on a real-time lead loses the lead outright.
+  //
+  // The badge says both things so the closer isn't misled either way. Once Synergy
+  // splits the products onto two addresses, live transfers lose the clock for real.
   if (deal.status === "new" && deal.first_call_due_at && HOT.has(deal.temperature ?? "")) {
     const dueMs = Date.parse(deal.first_call_due_at) - now;
-    // Live transfers and Synergy real-time leads each get their own loud label +
-    // a corner countdown (below); the clock isn't jammed into the badge so both
-    // read cleanly at a glance.
     const isLiveTransfer = deal.lead_source === "live_transfer";
     const isRealtime = deal.lead_source === "realtime_appt";
     const hasCornerCountdown = isLiveTransfer || isRealtime;
     return {
       rank: 0,
       badge: isLiveTransfer
-        ? "🔴 LIVE TRANSFER — CALL NOW"
+        ? "🔴 SYNERGY — ON THE LINE, OR CALL NOW"
         : isRealtime
           ? "🔴 REAL-TIME LEAD — CALL NOW"
           : (dueMs > 0 ? `🔴 CALL NOW · ${countdown(dueMs)}` : "🔴 CALL NOW · OVERDUE"),
-      why: dueMs > 0 ? "Real-time lead — call before the clock runs out." : "Real-time lead PAST its call window — call immediately.",
+      why: isLiveTransfer
+        ? "Synergy lead. If your phone rang, they're being transferred to you — take the call. If it didn't, this is an email lead: call them before the clock runs out."
+        : dueMs > 0
+          ? "Real-time lead — call before the clock runs out."
+          : "Real-time lead PAST its call window — call immediately.",
       since: deal.created_at,
       tone: "red",
-      // Live transfers + real-time leads surface the corner countdown; any other
-      // hot lead keeps its existing badge-embedded clock so nothing changes for it.
       countdownDue: hasCornerCountdown ? deal.first_call_due_at : undefined,
     };
   }
