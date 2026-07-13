@@ -20,6 +20,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields, ghlFetch, addContactTags,
+  lastEmailFailure, bounceMessage, recordEmailOutcome,
 } from "../_shared/ghl.ts";
 
 // TWO PARALLEL DOC PATHS (parallel GHL workflows):
@@ -287,6 +288,45 @@ Deno.serve(async (req) => {
   if ((deal.ghl_contact_id ?? null) !== contactId) {
     await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
   }
+
+  // HARD GUARD #2 — A VALID-LOOKING ADDRESS IS NOT A LIVE ONE.
+  // The guard above only proves an email EXISTS. It cannot tell a live mailbox
+  // from a dead one, because a dead mailbox is syntactically perfect: every regex
+  // passes, GHL accepts the contact, the workflow enrolls, the document records
+  // get minted with status "sent" — and the merchant never receives anything.
+  // That is exactly how deal MF-2026-0029 ended up with 6 orphan documents against
+  // a vendor-supplied address whose FIRST automated email came back
+  // "1 Requested mail action aborted, mailbox not found" (a 550 hard bounce).
+  // So before we enroll anyone into a doc workflow, ask GHL what happened to the
+  // last email it actually tried to send this contact. If it bounced, refuse:
+  // minting documents nobody will ever see is worse than not sending, because the
+  // app then LOOKS like it delivered. Every retry click would mint another set.
+  const bounce = await lastEmailFailure(cfg, contactId);
+  if (bounce.bounced) {
+    await recordEmailOutcome(db, customer.id as string, merchantEmail, bounce);
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: dealId,
+        interaction_type: "note",
+        subject: "application:pushed-to-ghl",
+        content: `BLOCKED the application send: ${merchantEmail} is undeliverable (GHL: ${bounce.error ?? bounce.status}). ` +
+          `No document was sent and no e-sign record was created. Needs a working email from the merchant.`,
+        logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+    return json({
+      error: `The application was NOT sent. ${bounceMessage(merchantEmail, bounce)} ` +
+        `Nothing was created in GHL — there is no document waiting for them to sign.`,
+      email_bounced: true,
+      attempted_email: merchantEmail,
+      bounce_reason: bounce.error,
+      contactId,
+    }, 422);
+  }
+  // No bounce on record → the address is live as far as GHL knows. Clear any stale
+  // "bounced" flag so a corrected address stops showing the red chip.
+  await recordEmailOutcome(db, customer.id as string, merchantEmail, bounce);
 
   // Push the merge fields — only for the PREFILL path. The blank "send original
   // docs" path pushes nothing (the merchant fills the doc themselves).

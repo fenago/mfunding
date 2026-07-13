@@ -173,3 +173,11 @@ verify_jwt = true
 # artifact to storage, and drops the customer_documents 'application' copy.
 [functions.sign-merchant-document]
 verify_jwt = true
+
+# Email-deliverability watchdog — reads each merchant's last OUTBOUND GHL email
+# record and stamps customers.email_status ('bounced' | 'ok'), so a dead vendor-supplied
+# mailbox is visible on the deal within minutes of the lead landing instead of after a
+# closer has filled out the whole application. Two callers: staff (user JWT + role check
+# in code) OR pg_cron (?secret=<GHL webhook secret> + anon-key Bearer for the gateway).
+[functions.check-email-bounces]
+verify_jwt = true

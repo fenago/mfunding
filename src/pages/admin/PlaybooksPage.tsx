@@ -39,6 +39,7 @@ import MyDayQueue from "../../components/admin/MyDayQueue";
 import DealAssistant from "../../components/admin/DealAssistant";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import PortalAccessChip from "../../components/admin/PortalAccessChip";
+import EmailBouncedChip from "../../components/admin/EmailBouncedChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
@@ -1340,6 +1341,11 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
                   can't upload, can't e-sign. The state AND the one-click fix live
                   here so the closer never leaves the playbook to grant access. */}
               {deal.customer?.id && <PortalAccessChip customerId={deal.customer.id} />}
+              {/* A DEAD merchant email is worth more than a warning — it's the whole
+                  deal. A vendor-supplied mailbox that hard-bounced will reject the
+                  application, the docs and every e-sign, and GHL 400s each attempt.
+                  This chip is silent unless the address actually bounced. */}
+              {deal.customer?.id && <EmailBouncedChip customerId={deal.customer.id} />}
               {/* Email the merchant WITHOUT leaving the playbook. This is the 5-minute
                   speed-to-lead touch on a real-time lead — if it lives three screens
                   away in Comms, it doesn't get sent inside the window. */}

@@ -430,25 +430,158 @@ export function sendMarker(sendData: unknown): string {
   return "";
 }
 
-/** Latest email message id in the contact's conversation (or null). Use as
- * replyMessageId so outbound lands as a threaded reply in the recipient's inbox. */
-export async function latestEmailMessageId(cfg: GhlConfig, contactId: string): Promise<string | null> {
+/** Walk a contact's conversation and return the EMAIL RECORD ids carried by its
+ * email messages, newest message first (and, within a message, in GHL's order).
+ * This is the one traversal every email-record lookup shares: conversation →
+ * messages → meta.email.messageIds. A conversation message is NOT an email record
+ * — it has no status/error and its direction lies about sibling-address replies
+ * (see the "GHL email records vs messages" memory), so anything that needs to
+ * JUDGE an email must fetch the record ids this returns. */
+async function emailRecordIds(cfg: GhlConfig, contactId: string, limit = 10): Promise<string[]> {
   const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
     cfg, "GET", `/conversations/search?locationId=${cfg.locationId}&contactId=${contactId}`,
   );
   const cid = conv.data?.conversations?.[0]?.id;
-  if (!cid) return null;
+  if (!cid) return [];
   const msgs = await ghlFetch<{ messages?: { messages?: Array<Record<string, unknown>> } }>(
-    cfg, "GET", `/conversations/${cid}/messages?limit=10`,
+    cfg, "GET", `/conversations/${cid}/messages?limit=${limit}`,
   );
+  const out: string[] = [];
   for (const m of msgs.data?.messages?.messages ?? []) {
     if (!/email/i.test(String(m.messageType ?? ""))) continue;
-    // replyMessageId must be an EMAIL RECORD id (meta.email.messageIds), not
-    // the conversation-message id — GHL 404s otherwise.
     const ids = (m.meta as { email?: { messageIds?: string[] } } | undefined)?.email?.messageIds ?? [];
-    if (ids.length) return String(ids[ids.length - 1]);
+    for (const id of ids) out.push(String(id));
   }
-  return null;
+  return out;
+}
+
+/** Latest email message id in the contact's conversation (or null). Use as
+ * replyMessageId so outbound lands as a threaded reply in the recipient's inbox. */
+export async function latestEmailMessageId(cfg: GhlConfig, contactId: string): Promise<string | null> {
+  // replyMessageId must be an EMAIL RECORD id (meta.email.messageIds), not the
+  // conversation-message id — GHL 404s otherwise.
+  const ids = await emailRecordIds(cfg, contactId, 10);
+  return ids.length ? ids[0] : null;
+}
+
+/** One GHL email record — the authoritative object for "did this email land?". */
+export interface GhlEmailRecord {
+  id: string;
+  direction?: string;
+  status?: string;
+  error?: string;
+  to?: string[];
+  subject?: string;
+  dateAdded?: string;
+}
+
+/** Fetch a single email record by its id. */
+export async function getEmailRecord(cfg: GhlConfig, emailMessageId: string) {
+  return await ghlFetch<{ emailMessage: GhlEmailRecord }>(
+    cfg, "GET", `/conversations/messages/email/${emailMessageId}`,
+  );
+}
+
+/** GHL/Mailgun terminal states that mean "this address does not accept mail".
+ * Once GHL records one of these it flags the address and rejects EVERY later send
+ * to it with 400 "Contact's email is invalid". */
+const UNDELIVERABLE_STATUSES = new Set(["failed", "bounced", "rejected", "undelivered"]);
+
+export interface LastEmailOutcome {
+  /** true when the most recent OUTBOUND email to this contact did not deliver. */
+  bounced: boolean;
+  /** GHL's email-record status: "delivered" | "opened" | "failed" | … null = never emailed. */
+  status: string | null;
+  /** GHL's SMTP-level reason, e.g. "1 Requested mail action aborted, mailbox not found" (550). */
+  error: string | null;
+  /** The address GHL actually sent to (may differ from what we hold). */
+  to: string | null;
+  emailMessageId: string | null;
+  /** When the record was created (ISO). */
+  at: string | null;
+}
+
+const NO_EMAIL_ON_RECORD: LastEmailOutcome = {
+  bounced: false, status: null, error: null, to: null, emailMessageId: null, at: null,
+};
+
+/**
+ * Did the last email we sent this contact BOUNCE, and why?
+ *
+ * Walks the same conversation → message → email-record path as
+ * latestEmailMessageId, then reads the most recent OUTBOUND email RECORD's
+ * `status` / `error`. Judging by the record (not the conversation message) is
+ * mandatory: the conversation message carries no status at all, so a hard bounce
+ * is completely invisible from it.
+ *
+ * This is the check that would have caught klbreen3@yahoo.com before a closer
+ * spent an entire application on a dead mailbox: its very first automated email
+ * came back status "failed" / "1 Requested mail action aborted, mailbox not found",
+ * and from that moment GHL 400s every send to the address.
+ *
+ * Never throws — a GHL hiccup returns "no bounce on record" (status null) so a
+ * lookup failure can never block a legitimate send.
+ */
+export async function lastEmailFailure(cfg: GhlConfig, contactId: string): Promise<LastEmailOutcome> {
+  try {
+    const ids = await emailRecordIds(cfg, contactId, 10);
+    for (const id of ids) {
+      const rec = await getEmailRecord(cfg, id);
+      const em = rec.data?.emailMessage;
+      if (!em) continue;
+      // Inbound records (merchant replies) say nothing about deliverability.
+      if (String(em.direction ?? "").toLowerCase() !== "outbound") continue;
+      const status = typeof em.status === "string" ? em.status : null;
+      return {
+        bounced: !!status && UNDELIVERABLE_STATUSES.has(status.toLowerCase()),
+        status,
+        error: typeof em.error === "string" && em.error ? em.error : null,
+        to: Array.isArray(em.to) && em.to.length ? String(em.to[0]) : null,
+        emailMessageId: em.id ?? id,
+        at: typeof em.dateAdded === "string" ? em.dateAdded : null,
+      };
+    }
+    return NO_EMAIL_ON_RECORD;
+  } catch (e) {
+    console.warn("[ghl] lastEmailFailure lookup failed (treating as no bounce on record):",
+      e instanceof Error ? e.message : String(e));
+    return NO_EMAIL_ON_RECORD;
+  }
+}
+
+/** The exact sentence a closer must see when an address is dead. One copy, one
+ * truth — used by every send path so the message never drifts. */
+export function bounceMessage(email: string, outcome: LastEmailOutcome): string {
+  const reason = outcome.error ?? outcome.status ?? "the mail server rejected it";
+  return `${email} is undeliverable — the last email to it bounced (${reason}). ` +
+    `GHL will reject every send to this address. Call the merchant, get a working email, ` +
+    `update it on the deal, then re-send.`;
+}
+
+/** Persist a bounce verdict onto the customer row so the UI can show it without
+ * hitting GHL on every render. Best-effort by design, but LOUD on failure. */
+export async function recordEmailOutcome(
+  db: SupabaseClient,
+  customerId: string,
+  email: string,
+  outcome: LastEmailOutcome,
+): Promise<void> {
+  if (!outcome.status) return; // never emailed — leave the row alone
+  const patch = outcome.bounced
+    ? {
+      email_status: "bounced",
+      email_bounced_at: outcome.at ?? new Date().toISOString(),
+      email_bounce_reason: (outcome.error ?? outcome.status).slice(0, 500),
+      email_checked_at: new Date().toISOString(),
+    }
+    : {
+      email_status: "ok",
+      email_bounced_at: null,
+      email_bounce_reason: null,
+      email_checked_at: new Date().toISOString(),
+    };
+  const { error } = await db.from("customers").update(patch).eq("id", customerId).eq("email", email);
+  if (error) console.error("[ghl] recordEmailOutcome update failed:", error.message);
 }
 
 // ---- Comms page helpers (contact search + thread history) --------------------

@@ -16,8 +16,14 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, sendEmailToContact, latestEmailMessageId,
   sendMarker, ensureContactEmail, ghlErrorMessage,
+  lastEmailFailure, bounceMessage, recordEmailOutcome, type LastEmailOutcome,
 } from "../_shared/ghl.ts";
 import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
+
+/** "We didn't look" — used when the failure clearly isn't about the address. */
+const NO_OUTCOME: LastEmailOutcome = {
+  bounced: false, status: null, error: null, to: null, emailMessageId: null, at: null,
+};
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -145,22 +151,33 @@ Deno.serve(async (req) => {
   const sr = await sendEmailToContact(cfg, contactId, subject, html, { text: bodyText, emailCc: cc, emailBcc: bcc, replyMessageId });
   if (!sr.ok) {
     // ghlFetch already logged the endpoint + payload + full GHL body server-side.
-    // What the CLOSER gets must be actionable: who, what address, which contact,
-    // what to do — never GHL's raw "Contact's email is invalid" (which is about
-    // GHL's contact record, not the address we hold, and reads as if the merchant
-    // gave us a bad email).
+    // What the CLOSER gets must be actionable — and TRUE. GHL's raw "Contact's
+    // email is invalid" is a lie about the address's SYNTAX; what it actually
+    // means, 99% of the time, is "this address HARD-BOUNCED once, so I've flagged
+    // it and I will never send to it again". So don't guess: read the contact's
+    // last outbound email RECORD and let its status say which of the two it is.
     const reason = ghlErrorMessage(sr.error);
     const emailIssue = /email is invalid|invalid email/i.test(reason);
+    const outcome = emailIssue ? await lastEmailFailure(cfg, contactId) : NO_OUTCOME;
+    if (outcome.bounced) await recordEmailOutcome(db, customer.id as string, merchantEmail, outcome);
     return json({
       error:
         `Email to ${merchantLabel} was NOT sent (GHL ${sr.status}). ` +
-        (emailIssue
-          ? `We sent it to ${merchantEmail} on GHL contact ${contactId}, and GHL rejected the contact's email address. ` +
-            `The address on our record looks valid, so this is a GHL contact problem: open contact ${contactId} in GHL, ` +
-            `re-save ${merchantEmail} on it and merge any duplicate contact for this merchant, then click send again.`
-          : `Address: ${merchantEmail} · GHL contact: ${contactId}. Retry once; if it fails again, check the contact in GHL.`) +
+        (outcome.bounced
+          // THE TRUTH: dead mailbox. No amount of GHL contact surgery fixes this —
+          // only a new address does. (klbreen3@yahoo.com: "1 Requested mail action
+          // aborted, mailbox not found" — a 550 on the very first automated send.)
+          ? bounceMessage(merchantEmail, outcome)
+          : emailIssue
+            // Genuinely no bounce on record → it really is the contact record.
+            ? `We sent it to ${merchantEmail} on GHL contact ${contactId}, and GHL rejected the contact's email address, ` +
+              `but there is NO bounce on record for it. Open contact ${contactId} in GHL, re-save ${merchantEmail} on it ` +
+              `and merge any duplicate contact for this merchant, then click send again.`
+            : `Address: ${merchantEmail} · GHL contact: ${contactId}. Retry once; if it fails again, check the contact in GHL.`) +
         ` GHL said: "${reason}". Nothing was delivered — do not tell the merchant it went out.`,
       contact_id: contactId, attempted_email: merchantEmail,
+      email_bounced: outcome.bounced,
+      bounce_reason: outcome.error,
       ghl_status: sr.status, ghl_error: reason,
     }, 502);
   }
