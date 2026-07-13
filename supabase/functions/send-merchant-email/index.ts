@@ -158,7 +158,7 @@ Deno.serve(async (req) => {
     // last outbound email RECORD and let its status say which of the two it is.
     const reason = ghlErrorMessage(sr.error);
     const emailIssue = /email is invalid|invalid email/i.test(reason);
-    const outcome = emailIssue ? await lastEmailFailure(cfg, contactId) : NO_OUTCOME;
+    const outcome = emailIssue ? await lastEmailFailure(cfg, contactId, merchantEmail) : NO_OUTCOME;
     if (outcome.bounced) await recordEmailOutcome(db, customer.id as string, merchantEmail, outcome);
     return json({
       error:

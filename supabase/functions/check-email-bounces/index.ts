@@ -136,7 +136,9 @@ Deno.serve(async (req) => {
 
   for (const c of rows) {
     if (!c.email || !c.ghl_contact_id) continue;
-    const outcome = await lastEmailFailure(cfg, c.ghl_contact_id);
+    // Compare against the merchant's CURRENT address: a bounce to an address they've
+    // since replaced is history, not a verdict on the new one.
+    const outcome = await lastEmailFailure(cfg, c.ghl_contact_id, c.email);
     checked++;
     if (!outcome.status) {
       // GHL has never emailed this contact → no verdict to record. Stamp the ATTEMPT

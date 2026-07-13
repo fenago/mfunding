@@ -521,8 +521,46 @@ const NO_EMAIL_ON_RECORD: LastEmailOutcome = {
  *
  * Never throws — a GHL hiccup returns "no bounce on record" (status null) so a
  * lookup failure can never block a legitimate send.
+ *
+ * ── PASS `currentEmail` OR THIS WILL CONDEMN A GOOD ADDRESS ──
+ *
+ * A bounce is a fact about an ADDRESS, not about a merchant. The moment a closer gets
+ * the merchant on the phone and fixes a dead address, the old bounce record is still
+ * the newest outbound email on that GHL contact — it just refers to an address we no
+ * longer use.
+ *
+ * K.L. Breen is exactly this: his contact's newest outbound email is the hard bounce to
+ * klbreen3@yahoo.com, while his real, verified address is now klbreen1@yahoo.com. Without
+ * this check, the bounce sweep would stamp him `bounced`, the doc-send guard would refuse
+ * to send, and we would block a live deal on a mailbox that works — having "fixed" the
+ * bug by reproducing it.
+ *
+ * So: a bounce only counts when it was addressed to the email we are about to use.
+ * Anything else is history, and history must not veto the present. Omitting `currentEmail`
+ * keeps the old (unsafe) behavior and is only correct when the caller has no address to
+ * compare against.
  */
-export async function lastEmailFailure(cfg: GhlConfig, contactId: string): Promise<LastEmailOutcome> {
+export async function lastEmailFailure(
+  cfg: GhlConfig,
+  contactId: string,
+  currentEmail?: string | null,
+): Promise<LastEmailOutcome> {
+  const outcome = await lastEmailOutcomeRaw(cfg, contactId);
+  if (!outcome.bounced || !currentEmail || !outcome.to) return outcome;
+  const same = outcome.to.trim().toLowerCase() === currentEmail.trim().toLowerCase();
+  if (same) return outcome;
+  // The bounce was to a DIFFERENT (now-replaced) address. Not a verdict on this one.
+  console.log(JSON.stringify({
+    fn: "lastEmailFailure",
+    note: "stale bounce ignored — it was addressed to a different email",
+    bouncedTo: outcome.to,
+    currentEmail,
+    contactId,
+  }));
+  return NO_EMAIL_ON_RECORD;
+}
+
+async function lastEmailOutcomeRaw(cfg: GhlConfig, contactId: string): Promise<LastEmailOutcome> {
   try {
     const ids = await emailRecordIds(cfg, contactId, 10);
     for (const id of ids) {

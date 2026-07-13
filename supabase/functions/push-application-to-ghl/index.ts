@@ -337,7 +337,9 @@ Deno.serve(async (req) => {
 
   // (b) The AUTHORITATIVE check: ask GHL what happened to the last email it actually
   //     tried to send this contact. Verification predicts; a bounce PROVES.
-  const bounce = await lastEmailFailure(cfg, contactId);
+  // Only a bounce to the address we are about to USE can block this send. A bounce to
+  // an old, since-corrected address must never veto a good one.
+  const bounce = await lastEmailFailure(cfg, contactId, merchantEmail);
   if (bounce.bounced) {
     await recordEmailOutcome(db, customer.id as string, merchantEmail, bounce);
     try {
