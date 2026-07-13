@@ -1,4 +1,5 @@
 import supabase from "../supabase";
+import { invokeThrow } from "../utils/invokeError";
 
 // AI "Internal Underwriter" (Phase 1). Reads a deal's bank-statement PDFs with
 // Claude and returns an affordability + risk read. The heavy lifting lives in
@@ -182,7 +183,10 @@ export async function runUnderwriting(
   const { data, error } = await supabase.functions.invoke("underwrite-deal", {
     body: { dealId, mode },
   });
-  if (error) throw error;
+  // Surface the SERVER's message ("No bank statements on file for this deal yet.")
+  // instead of supabase-js's generic "Edge Function returned a non-2xx status code".
+  if (error) await invokeThrow(error);
+  if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error);
   return data as DealUnderwriting;
 }
 

@@ -27,6 +27,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
+import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
 
 function json(body: unknown, status = 200) {
@@ -339,22 +340,57 @@ Deno.serve(async (req) => {
     // --- Deal + customer. ---
     const { data: deal, error: dErr } = await db
       .from("deals")
-      .select("id, deal_number, deal_type, amount_requested, use_of_funds, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state)")
+      .select("id, deal_number, deal_type, amount_requested, use_of_funds, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, ghl_contact_id)")
       .eq("id", dealId).maybeSingle();
     if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
     const cust = (deal.customer ?? {}) as Any;
 
     // --- Documents: bank statements (analyzed) + applications (context only). ---
-    const { data: docRows } = await db
-      .from("customer_documents")
-      .select("id, document_type, filename, storage_path, mime_type, created_at, updated_at")
-      .eq("customer_id", deal.customer_id)
-      .in("document_type", ["bank_statement", "application"]);
-    const docs = (docRows ?? []) as Any[];
-    const bankDocs = docs.filter((d) => d.document_type === "bank_statement");
+    const loadDocs = async (): Promise<Any[]> => {
+      const { data: rows, error } = await db
+        .from("customer_documents")
+        .select("id, document_type, filename, storage_path, mime_type, created_at, updated_at")
+        .eq("customer_id", deal.customer_id)
+        .in("document_type", ["bank_statement", "application"]);
+      if (error) throw new Error(`could not read documents: ${error.message}`);
+      return (rows ?? []) as Any[];
+    };
+
+    let docs = await loadDocs();
+    let bankDocs = docs.filter((d) => d.document_type === "bank_statement");
+
+    // ── SELF-HEAL: the merchant's statements usually live in GHL, not here. ──
+    // Merchants upload through the GHL secure-upload link, so their files sit on the
+    // GHL contact's FILE_UPLOAD fields. The playbook's doc checklist reads GHL and
+    // shows them ticked, but this function reads `customer_documents` — which was
+    // EMPTY for every real merchant, so underwriting 422'd on every genuine deal.
+    // When we find nothing locally, pull the files across (read-only against GHL,
+    // idempotent on external_ref) and re-read, so "Run underwriting" simply works.
+    let ingestNote: string | null = null;
+    const ghlContactId = (cust.ghl_contact_id as string | null | undefined) ?? null;
+    if (bankDocs.length === 0 && ghlContactId) {
+      try {
+        const res = await ingestGhlDocuments(db, deal.customer_id as string, ghlContactId);
+        console.log(
+          `[underwrite-deal] GHL ingest for deal ${deal.deal_number}: found=${res.found} synced=${res.synced} skipped=${res.skipped} failed=${res.failed} bank=${res.bankStatementsAdded}`,
+        );
+        if (res.synced > 0) {
+          ingestNote = `Imported ${res.synced} document(s) the merchant uploaded in GoHighLevel.`;
+          docs = await loadDocs();
+          bankDocs = docs.filter((d) => d.document_type === "bank_statement");
+        }
+      } catch (e) {
+        console.warn("[underwrite-deal] GHL ingest failed:", e instanceof Error ? e.message : e);
+      }
+    }
 
     if (bankDocs.length === 0) {
-      return json({ error: "No bank statements on file for this deal yet.", dealId }, 422);
+      return json({
+        error: ghlContactId
+          ? "No bank statements on file for this deal yet — nothing found in our storage or on the merchant's GoHighLevel contact."
+          : "No bank statements on file for this deal yet.",
+        dealId,
+      }, 422);
     }
 
     // --- docs_hash: stable hash of the analyzed doc set (bank + application),
@@ -1019,7 +1055,10 @@ Deno.serve(async (req) => {
       const judgeText = await callLLM(db, {
         system: judgeSystem,
         prompt: judgeUser,
-        maxTokens: 1024,
+        // 1024 truncated the JSON mid-narrative on a real 3-statement deal — the
+        // parse then failed and the run persisted an EMPTY narrative with a default
+        // "medium" rating. Give the judge room to close its JSON.
+        maxTokens: 2048,
         temperature: 0.2,
         jsonMode: true,
         task: "underwrite_judge",
@@ -1030,6 +1069,9 @@ Deno.serve(async (req) => {
         if (typeof parsed.narrative === "string") aiNarrative = parsed.narrative.trim();
         if (typeof parsed.funder_fit_note === "string") funderFitNote = parsed.funder_fit_note.trim();
       }
+      // A parse miss (or an empty narrative) must NOT silently ship a blank read —
+      // fall back to the flag-derived rating + summary, exactly like a throw does.
+      if (!aiNarrative) throw new Error("judge returned no narrative");
     } catch (e) {
       // Judge failure never sinks the run — we still persist metrics + flags. Derive
       // a fallback risk_rating from the critical/warn flag counts.
@@ -1079,6 +1121,8 @@ Deno.serve(async (req) => {
       id: inserted?.id,
       version: inserted?.version ?? version,
       run_mode: mode,
+      // Set when this run had to pull the merchant's documents out of GHL first.
+      ingest_note: ingestNote,
       docs_hash: docsHash,
       risk_rating: riskRating,
       affordability_rating: affordabilityRating,

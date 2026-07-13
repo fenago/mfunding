@@ -24,6 +24,9 @@ import {
   corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact, upsertContact, sendEmailToContact, addContactTags,
   listBusinesses, createBusiness, linkContactToBusiness,
 } from "../_shared/ghl.ts";
+// The GHL→Supabase document bridge now lives in _shared (the AI underwriter and the
+// ingest-ghl-documents function use the exact same code path).
+import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -759,7 +762,7 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
   // customer's Documents. Best-effort — never let it break the contact upsert.
   if (custId && ghlId) {
     try {
-      const { synced, bankStatementsAdded } = await syncFormUploads(db, custId, ghlId);
+      const { synced, bankStatementsAdded } = await ingestGhlDocuments(db, custId, ghlId);
       if (synced > 0) await logEvent(db, evt, String(evt.type), "form_uploads_synced", `${synced} file(s)`);
       // New bank statements → re-run the AI underwriter (auto, deduped by docs_hash).
       if (bankStatementsAdded > 0) await triggerUnderwriting(custId);
@@ -767,84 +770,6 @@ async function handleContact(db: DB, evt: Record<string, unknown>) {
       await logEvent(db, evt, String(evt.type), "form_upload_sync_error", e instanceof Error ? e.message : String(e));
     }
   }
-}
-
-// Sync GHL intake-form file uploads → customer_documents. GHL stores form file
-// uploads as file-upload custom fields on the contact (value = { <docId>: { meta:
-// { originalname }, url } }). Only emailed attachments were being auto-filed, so
-// form uploads (bank statements, ID) silently never reached the app. Idempotent
-// via customer_documents.external_ref = the GHL doc id. Returns files synced.
-async function syncFormUploads(
-  db: DB,
-  customerId: string,
-  ghlContactId: string,
-): Promise<{ synced: number; bankStatementsAdded: number }> {
-  const cfg = await getGhlConfig(db);
-  const res = await ghlFetch<{ contact?: { customFields?: Array<{ id: string; value: unknown }> } }>(
-    cfg, "GET", `/contacts/${ghlContactId}`,
-  );
-  const fields = res.ok ? (res.data?.contact?.customFields ?? []) : [];
-  // Field id -> field name (e.g. "MCA Bank Statements", "Other Documents (ID,
-  // voided check…)") so we type each file by the upload field it came from, not
-  // just the (often generic, e.g. "image.jpg") filename.
-  const defs = await ghlFetch<{ customFields?: Array<{ id: string; name: string }> }>(
-    cfg, "GET", `/locations/${cfg.locationId}/customFields`,
-  );
-  const fieldName: Record<string, string> = {};
-  for (const fd of (defs.data?.customFields ?? [])) fieldName[fd.id] = fd.name;
-
-  const files: Array<{ ref: string; name: string; url: string; hint: string }> = [];
-  for (const f of fields) {
-    const v = f.value;
-    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
-    const hint = fieldName[f.id] ?? "";
-    for (const [ref, entry] of Object.entries(v as Record<string, unknown>)) {
-      if (!entry || typeof entry !== "object") continue;
-      const e = entry as Record<string, unknown>;
-      const meta = (e.meta ?? {}) as Record<string, unknown>;
-      const url = String(e.url ?? e.documentId ?? "");
-      const name = String(meta.originalname ?? meta.name ?? e.name ?? `${ref}.pdf`).trim();
-      if (url.startsWith("http")) files.push({ ref, name, url, hint });
-    }
-  }
-  if (!files.length) return { synced: 0, bankStatementsAdded: 0 };
-
-  const { data: existingDocs } = await db.from("customer_documents")
-    .select("external_ref").eq("customer_id", customerId).not("external_ref", "is", null);
-  const have = new Set((existingDocs ?? []).map((r: { external_ref: string }) => r.external_ref));
-
-  let synced = 0;
-  let bankStatementsAdded = 0;
-  for (const file of files.slice(0, 25)) {
-    if (have.has(file.ref)) continue;
-    try {
-      // Auth header is dropped on the cross-origin redirect to storage (expected).
-      const bin = await fetch(file.url, { headers: { Authorization: `Bearer ${cfg.apiKey}`, Version: "2021-07-28" } });
-      if (!bin.ok) continue;
-      const bytes = new Uint8Array(await bin.arrayBuffer());
-      if (!bytes.length) continue;
-      const ct = contentTypeFor(file.name);
-      const docType = docTypeFor(`${file.hint} ${file.name}`);
-      const slug = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "upload";
-      const path = `customer/${customerId}/${Date.now()}-${slug}`;
-      const up = await db.storage.from("customer-documents").upload(path, bytes, { contentType: ct, upsert: false });
-      if (up.error) continue;
-      await db.from("customer_documents").insert({
-        customer_id: customerId,
-        document_type: docType,
-        filename: file.name,
-        storage_path: path,
-        file_size: bytes.length,
-        mime_type: ct,
-        status: "pending",
-        external_ref: file.ref,
-        description: "Auto-synced from GHL intake-form upload.",
-      });
-      synced++;
-      if (docType === "bank_statement") bankStatementsAdded++;
-    } catch (_e) { /* skip this file, keep going */ }
-  }
-  return { synced, bankStatementsAdded };
 }
 
 // Fire-and-forget: re-run the AI underwriter for a deal when new bank statements
@@ -872,26 +797,6 @@ async function triggerUnderwriting(customerId: string): Promise<void> {
       body: JSON.stringify({ dealId: deal.id, mode: "auto" }),
     });
   } catch { /* best-effort — underwriting must never break the webhook */ }
-}
-
-function contentTypeFor(name: string): string {
-  const n = name.toLowerCase();
-  if (n.endsWith(".pdf")) return "application/pdf";
-  if (n.endsWith(".png")) return "image/png";
-  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
-  if (n.endsWith(".webp")) return "image/webp";
-  return "application/octet-stream";
-}
-
-// Keep to the document_type values the app already uses (bank_statement,
-// application, id, voided_check, other). Matches against the field name + filename.
-function docTypeFor(s: string): string {
-  const n = s.toLowerCase();
-  if (/statement/.test(n)) return "bank_statement";
-  if (/applica/.test(n)) return "application";
-  if (/driver|licen|passport|photo id|\bid\b/.test(n)) return "id";
-  if (/void|cheque|\bcheck\b/.test(n)) return "voided_check";
-  return "other";
 }
 
 async function handleOpportunity(db: DB, evt: Record<string, unknown>) {

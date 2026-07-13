@@ -189,3 +189,11 @@ verify_jwt = true
 # in code) OR the trigger (?secret=<GHL webhook secret> + anon-key Bearer for the gateway).
 [functions.verify-merchant-email]
 verify_jwt = true
+
+# GHL → Supabase document bridge. Merchants upload their statements/ID through the
+# GHL secure-upload link, so the files live on the GHL contact and never reached our
+# storage — which is why the AI underwriter 422'd on every real deal. Pulls them into
+# the private customer-documents bucket + customer_documents (idempotent on the GHL
+# file id). Staff (user JWT + role check in code) or a service-role bearer.
+[functions.ingest-ghl-documents]
+verify_jwt = true
