@@ -442,16 +442,17 @@ export const routes: RouteObject[] = [
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <LeadBudgetCalculatorPage /> }],
               },
-              // Funder partnership directory (super_admin only)
+              // Funder partnership directory (admin + super_admin — admins manage
+              // the funder network, same as Lenders)
               {
                 path: "funder-directory",
-                element: <SuperAdminProtectedRoute />,
+                element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <FunderDirectoryPage /> }],
               },
-              // Funder approval matrix — per-lender MCA criteria (super_admin only)
+              // Funder approval matrix — per-lender MCA criteria (admin + super_admin)
               {
                 path: "funder-matrix",
-                element: <SuperAdminProtectedRoute />,
+                element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <FunderMatrixPage /> }],
               },
               // Cold-email (Instantly) dashboard + strategy (admins + super_admin)

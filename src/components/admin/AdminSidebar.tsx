@@ -82,6 +82,13 @@ const CLOSER_LENS_PATHS = new Set<string>([
   // has a closer row (e.g. Carlos) gets these, while pure closers never do.
   "/admin/lead-partner", // Lead Partner (Synergy)
   "/admin/email", // Email (Instantly)
+  // Funder network (roles: ADMIN) — admins manage the funder relationships even
+  // when they also carry a closer row. Pure closers still never see these,
+  // because the ADMIN roles array below excludes them.
+  "/admin/lenders",
+  "/admin/funder-directory",
+  "/admin/funder-matrix",
+  "/admin/funder-contacts",
 ]);
 
 const navGroups: NavGroup[] = [
@@ -98,8 +105,8 @@ const navGroups: NavGroup[] = [
       { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
-      { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: SUPER },
-      { name: "Funder Approval Matrix", path: "/admin/funder-matrix", icon: TableCellsIcon, roles: SUPER },
+      { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Funder Approval Matrix", path: "/admin/funder-matrix", icon: TableCellsIcon, roles: ADMIN },
       { name: "Funder Contacts", path: "/admin/funder-contacts", icon: UserGroupIcon, roles: ADMIN },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
