@@ -81,7 +81,6 @@ const PREFILL_TAG = "app-prefilled";
 // TO RE-ENABLE: fix the GHL workflow first, prove it by moving a TEST deal to
 // Application Sent and confirming the document that lands is the fillable
 // "MCA_Merchant_Funding_Application" — then flip this to false.
-const STAGE_TRIGGER_SENDS_PREFILL_DOC = true;
 
 // The fields the 04B PREFILL template merges that ONLY a filled-in application
 // can supply. GHL renders an EMPTY custom field as its literal "{{tag}}", so any
@@ -302,38 +301,6 @@ Deno.serve(async (req) => {
     if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
   }
 
-  // ── GUARD 0 — THE SELF-FILL PATH IS CLOSED (see the incident note above). ──
-  // Moving a deal into Application Sent fires a GHL workflow that sends the 04B
-  // PREFILL document. On the self-fill path we deliberately push NOTHING, so that
-  // document renders as raw {{merge tags}} — which is exactly what a real merchant
-  // signed. Refuse here, before we touch GHL at all: nothing is enrolled, nothing
-  // is tagged, and the caller never advances the stage.
-  if (blank && STAGE_TRIGGER_SENDS_PREFILL_DOC) {
-    try {
-      await db.from("activity_log").insert({
-        entity_type: "deal",
-        entity_id: dealId,
-        interaction_type: "note",
-        subject: "application:pushed-to-ghl",
-        content: "BLOCKED the self-fill (blank) application send. GoHighLevel's Application Sent " +
-          "stage trigger delivers the 04B PREFILL document, which prints raw merge tags when " +
-          "there is nothing prefilled (this is what MF-2026-0028 signed). Nothing was sent and " +
-          "nothing was enrolled. Fill the application in and send it prefilled.",
-        logged_by: caller.id,
-      });
-    } catch { /* best-effort */ }
-    return json({
-      error: "The blank/self-fill application can't be sent right now, and nothing was sent. " +
-        "GoHighLevel's \"Application Sent\" stage trigger delivers the 04B PREFILL document — not the " +
-        "fillable one — so a blank send puts a document full of raw {{merge tags}} in front of the " +
-        "merchant (this is exactly what happened on MF-2026-0028). " +
-        "Fill the application in and use \"Send to merchant to e-sign\" instead. " +
-        "To restore the self-fill option, the GHL workflow has to send the fillable " +
-        "\"MCA_Merchant_Funding_Application\" template on the Application Sent stage move.",
-      self_fill_disabled: true,
-    }, 422);
-  }
-
   // The application the closer just filled.
   const { data: app, error: aErr } = await db
     .from("mca_applications").select("*").eq("deal_id", dealId).maybeSingle();
@@ -512,35 +479,42 @@ Deno.serve(async (req) => {
   //    exactly as before — no behavior change, no double send. And with GHL
   //    re-enrollment OFF (the same assumption the resend path makes) a direct
   //    enroll dedupes against any stage-move trigger, so the merchant gets one send.
-  const noOpportunity = !deal.ghl_opportunity_id;
   let reenrolled: boolean | undefined;
   let enrollDirect = false;
   if (blank) {
-    // ── PATH 1 (SELF-FILL): the fillable doc, sent by MCA 04. Clear any prefill
-    // routing first (path 2 → path 1 crossing): stop 04B and drop the tag.
+    // ── PATH 1 (SELF-FILL): the fillable doc (MCA 04). ──
+    // Clear the prefill routing first (path 2 → path 1 crossing): stop 04B, drop the tag.
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {}); // best-effort
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG] }); // best-effort
-    // MCA 04 has a PIPELINE-STAGE trigger (Application Sent). The caller advances
-    // the deal to Application Sent right after this returns, which moves the GHL
-    // opportunity into that stage and fires the trigger. If we ALSO enroll directly
-    // here, that's TWO signals into the same workflow — deduped only by GHL's
-    // "Allow re-enrollment = OFF", a fragile setting we must never depend on (and
-    // our own guidance used to tell closers to flip it ON, which would double-email
-    // the merchant). So enroll directly ONLY when the stage trigger can't be
-    // trusted to fire:
-    //  · noOpportunity — the deal has no GHL opportunity yet (e.g. a bulk-imported
-    //    web/aged lead), so the caller's stage move CREATES the opportunity straight
-    //    into Application Sent, and a fresh create-into-stage does not reliably fire
-    //    the "stage changed" trigger; OR
-    //  · resend — the deal is already at Application Sent, so the stage move is a
-    //    no-op and won't re-trigger; the closer explicitly asked to re-fire.
-    // Otherwise the stage move alone delivers the doc — skip the direct enroll so
-    // the merchant gets exactly ONE send.
-    if (noOpportunity || resend) {
-      enrollDirect = true;
-      if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // allow re-fire
-      const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
-      reenrolled = wf.ok;
+
+    // ALWAYS ENROLL DIRECTLY. Delivery must never depend on a pipeline-stage trigger.
+    //
+    // This restores d09eb40 (2026-07-08, "enrollment-only delivery"), which commit
+    // 8dd5f00 (2026-07-10, "Fix MCA 04 double-enroll") reverted — and that revert is
+    // the whole bug. It made the self-fill path skip the direct enroll and wait for a
+    // stage trigger to fire MCA 04. But the MCA 04 stage trigger had already been
+    // DELETED, on purpose, precisely because we promised to enroll directly. So
+    // self-fill enrolled the merchant in NOTHING, and the only thing that fired was
+    // 04B's surviving stage trigger — which sent the PREFILL document to a merchant
+    // whose application was, by definition, not filled in. GHL renders an unresolved
+    // custom field as its literal {{tag}}, so five merchants received a contract full
+    // of {{contact.federal_tax_id_ein}} and one of them SIGNED it (MF-2026-0028).
+    //
+    // The lesson is the one the July 8 commit already wrote down: a stage trigger
+    // cannot tell the two paths apart. It fires on "the deal reached Application
+    // Sent", which is true for BOTH a prefilled send and a self-fill send, and it has
+    // no idea which document the closer asked for. Only this function knows that. So
+    // this function delivers, always, and the stage move stays what it should be — a
+    // pipeline update, not a delivery mechanism.
+    enrollDirect = true;
+    if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // allow re-fire
+    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
+    reenrolled = wf.ok;
+    if (!wf.ok) {
+      return json({
+        error: `Could not enroll the merchant into the fillable application workflow (MCA 04): ` +
+          `${wf.error ?? "enrollment failed"} — the document was NOT sent.`,
+      }, 502);
     }
   } else {
     // ── PATH 2 (PREFILL): the merged doc, sent by MCA 04B. The doc send ALWAYS

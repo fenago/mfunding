@@ -526,25 +526,79 @@ export default function MerchantApplicationModal({
     onSent();
   }
 
-  // PATH 1 — SELF-FILL: REMOVED (2026-07-13).
+  // PATH 1 — SELF-FILL: send the ORIGINAL fillable application (the merchant types
+  // everything themselves; MCA 04). No required-field gating — there is nothing to
+  // pre-fill. Two-click arm/confirm so it can't fire accidentally.
   //
-  // This used to POST { blank: true } to push-application-to-ghl, which pushed no
-  // merge fields, stripped the prefill routing, and left delivery to the deal's move
-  // into Application Sent — on the documented assumption that the stage trigger fires
-  // MCA 04 and sends the ORIGINAL FILLABLE application for the merchant to complete.
+  // RESTORED 2026-07-13. This was briefly removed after five merchants received a
+  // document full of raw {{merge tags}} — but the button was never the problem. The
+  // server had stopped enrolling the merchant into MCA 04 and was waiting on a
+  // pipeline-stage trigger that had been deliberately deleted, so the only thing that
+  // fired was 04B's stage trigger: the PREFILL template, on a deal with nothing
+  // prefilled. push-application-to-ghl now enrolls MCA 04 directly again (as it did
+  // before 8dd5f00), so this path delivers the fillable application it always promised.
   //
-  // It does not. The stage trigger sends "04B MCA PREFILL" — the template that is
-  // nothing but {{contact.*}} merge tags. With nothing pushed, every tag renders as
-  // raw template syntax. MF-2026-0028 (a real merchant) e-signed a funding application
-  // reading "Federal Tax ID (EIN): {{contact.federal_tax_id_ein}}". Four other
-  // merchants received the same document the same afternoon. In the entire history of
-  // the GHL location, the fillable template has never been sent once.
-  //
-  // The server now refuses blank sends outright (422). This button is gone with it —
-  // a control whose only possible outcome is a worthless contract shouldn't exist, and
-  // one that only errors out is just an invitation to try again. When the GHL workflow
-  // is repointed at the fillable "MCA_Merchant_Funding_Application" template, restore
-  // this from git history and flip STAGE_TRIGGER_SENDS_PREFILL_DOC in the edge function.
+  // Both paths are real business needs and neither gets deleted to paper over a bug:
+  // merchant on the phone → prefill it for them; can't reach them → send it to fill in.
+  const [blankArmed, setBlankArmed] = useState(false);
+  async function sendBlank() {
+    if (!blankArmed) { setBlankArmed(true); setTimeout(() => setBlankArmed(false), 6000); return; }
+    setBlankArmed(false);
+    if (!merchantEmail) {
+      setError("This merchant has no email yet — add one via 'Edit lead info' first.");
+      return;
+    }
+    const isResend = !!sentAt || !!deal.application_sent_at || deal.status === "application_sent";
+    setBusy("send");
+    setError(null);
+    try {
+      // blank:true → the server clears any prefill routing (removes 04B + tag)
+      // and runs the classic MCA 04 self-fill path.
+      const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
+        body: { dealId: deal.id, blank: true, resend: isResend },
+      });
+      if (pushErr) await invokeThrow(pushErr);
+      if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
+
+      // The server ALWAYS enrolls directly now, so a successful push means the document
+      // IS OUT. Stamp it here, before the cover note can fail and skip the stamp — that
+      // ordering is what re-sent a merchant's contract three times.
+      await stampSent(existingId);
+
+      const firstName = form.owner_first_name || cust?.first_name || "there";
+      const biz = form.business_legal_name || cust?.business_name || "your business";
+      const subject = `Your funding application for ${biz}`;
+      const emailBody =
+        `Hi ${firstName},\n\n` +
+        `Thanks for your time. I'm sending over your funding application for ${biz} now.\n\n` +
+        `You'll receive a separate email with:\n` +
+        `  1. Your funding application to fill out and e-sign\n` +
+        `  2. A quick compensation disclosure to e-sign\n` +
+        `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
+        `Reply here if you have any questions.\n\nTalk soon.`;
+      const noteErr = await sendCoverNote(subject, emailBody, "MCA application (self-fill)");
+      if (noteErr) {
+        setPendingNote({ subject, body: emailBody, regarding: "MCA application (self-fill)" });
+        // The document is already with the merchant (the push enrolled MCA 04 directly).
+        // Only the cover note failed — say so, and do NOT let a retry re-send the doc.
+        setError(halfSendMessage(noteErr));
+        setBusy(null);
+        return;
+      }
+
+      if (!isResend) {
+        try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
+      } else if ((pushData as { reenrolled?: boolean })?.reenrolled === false) {
+        setError("Cover note sent, but GHL did NOT re-send the fillable docs — MCA 04 re-enrollment was rejected. Re-send the document manually from GHL → Documents & Contracts (move the old doc to Draft first).");
+        setBusy(null);
+        return;
+      }
+      onSent();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send the blank application.");
+      setBusy(null);
+    }
+  }
 
   const TABS: { id: Tab; label: string }[] = [
     { id: "business", label: "Business" },
@@ -855,19 +909,34 @@ export default function MerchantApplicationModal({
               </button>
             </div>
           </div>
-          {/* PATH 1 (self-fill) — CLOSED. The escape hatch used to live here.
-              GoHighLevel's "Application Sent" stage trigger sends the 04B PREFILL
-              document, NOT the fillable one, so a blank send hands the merchant a
-              contract full of raw merge tags — MF-2026-0028 e-signed exactly that.
-              The server refuses blank sends (422) until the GHL workflow is
-              repointed at the fillable "MCA_Merchant_Funding_Application" template;
-              offering a button that can only fail would just invite the mistake. */}
-          <div className="mt-2 text-right">
-            <p className="text-xs text-gray-400">
-              The blank/self-fill send is disabled — GHL's Application Sent trigger delivers the
-              pre-filled document, so an unfilled application goes out full of raw merge tags.
-              Complete the fields above and send it pre-filled.
+          {/* PATH 1 — SELF-FILL. The other real business case: we could NOT get the
+              merchant on the phone, so send them the ORIGINAL fillable application to
+              complete themselves. Two-click arm/confirm — it can't fire by accident, and
+              it deliberately has no required-field gate, because there is nothing to
+              pre-fill. push-application-to-ghl enrolls MCA 04 directly, so this delivers
+              the fillable template, not the prefill one. */}
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <p className="text-xs text-gray-400 mr-auto">
+              Couldn't reach them? Send the blank application for the merchant to fill in and sign themselves.
             </p>
+            <button
+              type="button"
+              onClick={sendBlank}
+              disabled={busy !== null || loading}
+              title="Send the ORIGINAL fillable application — the merchant completes and e-signs it themselves"
+              className={`text-sm font-semibold px-4 py-2 rounded-lg border disabled:opacity-50 inline-flex items-center gap-1.5 ${
+                blankArmed
+                  ? "border-amber-500 bg-amber-500 text-white hover:opacity-90"
+                  : "border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-white dark:hover:bg-gray-700"
+              }`}
+            >
+              <PaperAirplaneIcon className="w-4 h-4" />
+              {busy === "send" && blankArmed
+                ? "Sending…"
+                : blankArmed
+                  ? "Click again to confirm — send blank"
+                  : "Send blank app (merchant fills it in)"}
+            </button>
           </div>
         </div>
       </div>
