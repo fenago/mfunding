@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "@/context/UserProfileContext";
+import FunderQualifier from "@/components/admin/FunderQualifier";
 import {
   PRODUCT_TYPES,
   PROGRAM_FIELDS,
@@ -246,6 +247,11 @@ export default function FunderMatrixPage() {
               }`}
         </span>
       </div>
+
+      {/* Qualification matcher — answers "who does THIS merchant qualify for?" so the
+          raw criteria table below is a reference, not the thing you have to read to
+          get an answer. MCA-only today, same as the matrix itself. */}
+      {productType === "mca" && <FunderQualifier />}
 
       {/* Doc-requirement quick filters */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
