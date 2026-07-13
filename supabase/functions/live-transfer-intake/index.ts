@@ -830,23 +830,41 @@ Deno.serve(async (req) => {
     emailSubject = extractSubject(body);
     emailFrom = extractFrom(body);
     emailTo = extractTo(body);
-    if (bodyText) {
-      sourceMode = "email-body";
-    } else {
-      // Fetch the newest inbound email from GHL using whatever id the webhook sent.
-      if (!cfg) return json({ error: `GHL not configured: ${cfgErr || "missing credentials"}` }, 502);
+
+    // A GHL webhook is a DELIVERY ENVELOPE, never the lead itself — and its inline
+    // body arrives as a thin preview that can carry NO subject and NO from-address.
+    // That is fatal here, because the transfer gate below recognizes a Synergy lead
+    // by exactly those two things: a "Live Transfer!" subject or a trusted sender.
+    // The Synergy body itself never says "live transfer" (it opens with "Company
+    // Name"), so the body-marker fallback can't save it either — and the lead is
+    // silently ignored. That is precisely how First Choice Cleaning (MF-2026-0020)
+    // was dropped: intake ran, returned 200, wrote nothing, alerted nobody.
+    //
+    // So for a GHL envelope we ALWAYS go to the authoritative email RECORD, which
+    // carries the real subject, the real sender, and the full body. Never trust the
+    // envelope's preview when the record is one fetch away.
+    sourceMode = "email-body";
+    const isGhlEnvelope = looksLikeGhlWebhook(body);
+    if ((isGhlEnvelope || !bodyText) && cfg) {
       const conversationId = pickId(body, ["conversationId", "conversation_id", "conversation"]);
       const fetched = await newestInboundEmail(cfg, { conversationId, contactId: senderContactId });
-      if (!fetched) return json({ error: "no inbound email body found (payload carried no body and no resolvable conversation/contact id)" }, 422);
-      bodyText = fetched.body;
-      emailSubject = fetched.subject || emailSubject;
-      emailFrom = fetched.from || emailFrom;
-      emailTo = fetched.to || emailTo;
-      emailRecordId = fetched.recordId;
-      logConversationId = fetched.conversationId || logConversationId;
-      logContactId = fetched.contactId || logContactId;
-      receivedAt = fetched.dateAdded || null;
-      sourceMode = "ghl-fetch";
+      if (fetched) {
+        bodyText = fetched.body;
+        emailSubject = fetched.subject || emailSubject;
+        emailFrom = fetched.from || emailFrom;
+        emailTo = fetched.to || emailTo;
+        emailRecordId = fetched.recordId;
+        logConversationId = fetched.conversationId || logConversationId;
+        logContactId = fetched.contactId || logContactId;
+        receivedAt = fetched.dateAdded || null;
+        sourceMode = "ghl-fetch";
+      }
+    }
+    // Only give up if the record fetch found nothing AND the envelope carried no body
+    // of its own. A thin preview is worse than the record, but far better than a
+    // dropped lead.
+    if (!bodyText) {
+      return json({ error: "no inbound email body found (payload carried no body and no resolvable conversation/contact id)" }, 422);
     }
     bodyForMarker = bodyText;
     fields = parseLabelValue(htmlToSegments(bodyText));
