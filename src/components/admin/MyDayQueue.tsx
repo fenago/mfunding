@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon } from "@heroicons/react/24/outline";
+import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { getOpenDealsForQueue, logContactAttempt, type ContactOutcome, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
@@ -336,6 +336,42 @@ function ago(iso: string, now: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * Does this deal match what the user typed?
+ *
+ * Searches EVERYTHING a human might half-remember about a merchant, because that is the
+ * actual use case: "I'm looking for someone named Nguyen or something like that". They
+ * won't recall whether Nguyen was the contact or the business, and they certainly won't
+ * recall the deal number — so every field is fair game: contact name, business name, deal
+ * number, phone, email.
+ *
+ * Punctuation- and space-insensitive, so "KL Breen" finds "K.L. Breen Builders Inc" and
+ * "5618560232" finds "+1 (561) 856-0232". Multi-word queries must match ALL words but in
+ * ANY field ("nguyen auto" finds Nguyen at Auto Repair), which is what makes a half-
+ * remembered search actually land.
+ */
+function matchesQuery(d: QueueDeal, q: string): boolean {
+  if (!q.trim()) return true;
+  const c = d.customer;
+  const hay = [
+    c?.first_name, c?.last_name, c?.business_name, c?.email, c?.phone,
+    d.deal_number, d.status, d.lead_source,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    // Strip punctuation so "K.L." matches "kl" and "(561) 856-0232" matches "5618560232".
+    .replace(/[^a-z0-9@]+/g, " ");
+  const flat = hay.replace(/\s+/g, "");
+
+  return q
+    .toLowerCase()
+    .replace(/[^a-z0-9@\s]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => hay.includes(word) || flat.includes(word.replace(/\s+/g, "")));
+}
+
 function nameOf(d: QueueDeal): string {
   return (
     d.customer?.business_name ||
@@ -660,6 +696,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   // Mine for everyone else.
   const canToggle = isAdmin;
   const [scope, setScope] = useState<"mine" | "all">(isSuperAdmin ? "all" : "mine");
+  const [query, setQuery] = useState("");
   const [deals, setDeals] = useState<QueueDeal[]>([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(() => Date.now());
@@ -711,12 +748,33 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
       if (!canToggle) return mineScope(d);
       return scope === "all" ? true : mineScope(d);
     });
+    const searching = query.trim() !== "";
     return scoped
-      .map((d) => ({ deal: d, u: classify(d, now) }))
+      .filter((d) => matchesQuery(d, query))
+      .map((d) => {
+        const u = classify(d, now);
+        // While SEARCHING, a deal the ranking rules ignore must still be findable. My Day
+        // only surfaces deals that need action, so a merchant who is simply parked (nothing
+        // due, nothing overdue) classifies to null and would vanish — and "I searched for
+        // Nguyen and got nothing" is a far worse outcome than one extra card. So a match
+        // that has no urgency of its own gets a neutral one, and says exactly that.
+        if (u || !searching) return { deal: d, u };
+        return {
+          deal: d,
+          u: {
+            rank: 99,
+            badge: "🔍 Match",
+            why: "Found by search — nothing is due on this deal right now.",
+            since: d.created_at,
+            tone: "gray",
+            lane: "followup" as Lane,
+          } satisfies Urgency,
+        };
+      })
       .filter((x): x is QueueItem => x.u !== null)
       .sort((a, b) => a.u.rank - b.u.rank || Date.parse(a.u.since) - Date.parse(b.u.since));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deals, scope, canToggle, effectiveUserId, now]);
+  }, [deals, scope, canToggle, effectiveUserId, now, query]);
 
   // Two lanes off the ONE classification. Rank ordering is preserved inside each
   // lane (items is already sorted; filter keeps that order).
@@ -754,6 +812,27 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
           )}
         </button>
         <div className="flex items-center gap-2">
+          {/* Search. Sits in the header because "find me that Nguyen guy" is a thing a
+              closer does mid-call, and hunting through 14 cards by eye is not a plan. */}
+          <div className="relative">
+            <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search name, business, phone…"
+              className="w-44 sm:w-56 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 pl-8 pr-7 py-1 text-xs text-gray-900 dark:text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-ocean-blue"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                title="Clear search"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                <XMarkIcon className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           {canToggle && (
             <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
               {(["mine", "all"] as const).map((s) => (
@@ -780,7 +859,15 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
       {!collapsed && (loading ? (
         <p className="text-sm text-gray-400 py-2">Loading your queue…</p>
       ) : items.length === 0 ? (
-        <p className="text-sm text-gray-500 dark:text-gray-400 py-2">Queue clear — work the funnel below 🎉</p>
+        query.trim() ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400 py-2">
+            No open deal matches <b>“{query}”</b>
+            {scope === "mine" && canToggle && <> in your book — try <b>All</b>.</>}
+            {!(scope === "mine" && canToggle) && <> . They may be funded, declined, or not in the pipeline.</>}
+          </p>
+        ) : (
+          <p className="text-sm text-gray-500 dark:text-gray-400 py-2">Queue clear — work the funnel below 🎉</p>
+        )
       ) : (
         <div className="space-y-4">
           {laneOrder.map((lane) =>
