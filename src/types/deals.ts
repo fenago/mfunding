@@ -123,8 +123,19 @@ export interface Deal {
   temperature?: string | null;
   /** Qualification snapshot that arrived WITH the lead (revenue, TIB, FICO, etc.). */
   lead_qual?: Record<string, unknown> | null;
-  /** Speed-to-lead countdown target for hot/hottest leads. */
+  /** Speed-to-lead countdown target for hot/hottest leads. NULL on a live transfer —
+   *  the merchant is already on the phone, so there is nothing to be late for. */
   first_call_due_at?: string | null;
+  /** When a closer FIRST reached out, answered or not. The speed-to-lead SLA is judged
+   *  against THIS — a merchant who doesn't pick up does not make us slow.
+   *  (`contacted_at`, above, is the different question: when we actually got through.) */
+  first_attempt_at?: string | null;
+  last_attempt_at?: string | null;
+  contact_attempts?: number | null;
+  first_touch_channel?: "call" | "email" | "sms" | "other" | null;
+  /** The merchant asked to be called at this time. While it's in the future the deal is
+   *  SNOOZED out of the urgent queue; it jumps back to the top the moment it comes due. */
+  callback_at?: string | null;
   /** Persisted AI lender analysis (tokens cost money — survives reloads). */
   ai_lender_recommendations: { summary: string; recommendations: unknown[] } | null;
   ai_recommended_at: string | null;

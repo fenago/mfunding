@@ -54,6 +54,7 @@ import {
   listCustomFields, updateContactCustomFields, addContactTags, getContact,
   type GhlConfig,
 } from "../_shared/ghl.ts";
+import { ensureMerchantPortalUser } from "../_shared/merchantPortal.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config (kept simple, top of file) ────────────────────────────────────────
@@ -770,6 +771,44 @@ async function writeContactCustomFields(
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
+/**
+ * PORTAL ACCESS, from the moment the lead exists.
+ *
+ * A merchant can only sign in at my.mfunding.net once customers.user_id is set, and that
+ * used to happen ONLY when a human clicked "Portal invite". So every lead the intake
+ * created landed with no portal account, and the playbook honestly reported "⚠ No portal
+ * access" on deal after deal. Backfilling the merchants who already existed fixed the
+ * symptom for exactly one afternoon — the intake kept minting new ones behind it.
+ *
+ * Provisioning is SILENT. It creates the auth user and stamps user_id, and sends the
+ * merchant NOTHING — no email, no invite, no notification. (Verified: confirmation_sent_at,
+ * invited_at and recovery_sent_at all stay NULL.) So it cannot surprise a merchant we
+ * haven't spoken to yet, or one we're about to decline. It only means that WHEN a closer
+ * sends the link — or the merchant asks for one themselves — the account is already there.
+ *
+ * Called on BOTH the create path and the dedupe path: a merchant who arrives twice is
+ * still a merchant who needs to be able to log in, and the dedupe path returns early.
+ *
+ * Never fatal. A lead is worth vastly more than a portal account, so a failure here is
+ * logged and the intake carries on.
+ */
+async function provisionPortal(db: SupabaseClient, customerId: string): Promise<void> {
+  try {
+    const { data: cust } = await db
+      .from("customers")
+      .select("id, first_name, last_name, business_name, email, phone, user_id")
+      .eq("id", customerId)
+      .maybeSingle();
+    if (!cust || cust.user_id || !cust.email) return;
+    const ensured = await ensureMerchantPortalUser(db, cust);
+    if (!ensured.ok) {
+      console.warn("live-transfer-intake: portal provisioning failed", { customerId, error: ensured.error });
+    }
+  } catch (e) {
+    console.warn("live-transfer-intake: portal provisioning threw", { customerId, error: String(e) });
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -1169,6 +1208,10 @@ Deno.serve(async (req) => {
         customer_id: dup.customer_id as string,
         notes: `Duplicate ${kcfg.kind} — refreshed existing deal ${dup.deal_number ?? dup.id}.`,
       });
+      // Same merchant, second email — they still need to be able to log in. The dedupe
+      // path returns early, so without this a re-sent lead would keep its portal-less state.
+      await provisionPortal(db, dup.customer_id as string);
+
       return json({
         ok: true, deduped: true, refreshed: true, kind: kcfg.kind,
         dealId: dup.id, dealNumber: dup.deal_number, customerId: dup.customer_id,
@@ -1209,6 +1252,8 @@ Deno.serve(async (req) => {
     if (error) return json({ error: `could not create customer: ${error.message}` }, 500);
     customerId = c.id as string;
   }
+
+  await provisionPortal(db, customerId);
 
   // ── Resolve the attribution campaign ──
   // Order:

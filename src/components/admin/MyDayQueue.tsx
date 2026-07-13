@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon } from "@heroicons/react/24/outline";
-import { getOpenDealsForQueue, type QueueDeal } from "../../services/dealService";
+import { getOpenDealsForQueue, logContactAttempt, type ContactOutcome, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 
@@ -27,6 +27,11 @@ interface Urgency {
    * So the 5-minute window is for an EMAIL, and the phone call goes at THIS time.
    * The card has to show both or the closer can only obey one of them. */
   callWindow?: string;
+  /** Force the lane instead of deriving it from rank. Needed where rank and lane
+   *  genuinely disagree: a SNOOZED callback is low-urgency (so, a low rank) but it is
+   *  emphatically not "new work" — nobody should make first contact with it, it's a
+   *  promise already made. Deriving lane from rank alone can't express that. */
+  lane?: Lane;
 }
 
 /**
@@ -99,6 +104,55 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   // why this branch must NOT require a due date to fire.
   const isLiveTransfer = deal.lead_source === "live_transfer";
   const isRealtime = deal.lead_source === "realtime_appt";
+
+  // ── A SCHEDULED CALLBACK OUTRANKS EVERYTHING, but only once it's DUE. ──
+  //
+  // "Call me at 4pm" is the most common real-time outcome, and the app used to have no
+  // answer for it: the lead sat in the queue screaming CALL NOW all day, which teaches
+  // a team to ignore red badges — the exact opposite of what a speed-to-lead queue is
+  // for. Now it goes quiet until the merchant's time, then comes back at the very top.
+  const cbMs = deal.callback_at ? Date.parse(deal.callback_at) - now : null;
+  if (cbMs !== null) {
+    if (cbMs > 0) {
+      // SNOOZED. Deliberately calm and deliberately still visible — a promise we made
+      // to a merchant should never vanish from the board entirely.
+      return {
+        rank: 6.8,
+        badge: `🕐 Callback at ${new Date(deal.callback_at!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+        why: `They asked you to call at this time. It'll jump to the top of My Day when it's due — nothing to do until then.`,
+        since: deal.created_at,
+        tone: "amber",
+        lane: "followup",
+      };
+    }
+    return {
+      rank: 0,
+      badge: "☎️ CALLBACK DUE — CALL THEM NOW",
+      why: `You promised to call at ${new Date(deal.callback_at!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} — that time has come. This is the call they agreed to take.`,
+      since: deal.callback_at!,
+      tone: "red",
+      callWindow: bestTimeToCall(deal),
+    };
+  }
+
+  // ── TRIED, NOBODY ANSWERED. ──
+  //
+  // We responded IN TIME — a merchant not picking up does not make us slow — so this
+  // must NOT keep shouting "SLA MISSED". It says what's true: you tried N times, try
+  // again. Speed-to-lead is already banked in first_attempt_at.
+  if (deal.status === "new" && deal.first_attempt_at && !deal.contacted_at) {
+    const tries = deal.contact_attempts ?? 1;
+    return {
+      rank: 3.2,
+      badge: `📵 No answer · tried ${tries}×`,
+      why: `You reached out${deal.first_call_due_at && Date.parse(deal.first_attempt_at) <= Date.parse(deal.first_call_due_at) ? " inside the SLA" : ""} and nobody picked up. Try again, or set a callback time.`,
+      since: deal.last_attempt_at ?? deal.first_attempt_at,
+      tone: "amber",
+      callWindow: bestTimeToCall(deal),
+      lane: "new",
+    };
+  }
+
   if (deal.status === "new" && HOT.has(deal.temperature ?? "") && (deal.first_call_due_at || isLiveTransfer)) {
     if (isLiveTransfer) {
       return {
@@ -242,22 +296,25 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
 // lead is always rank 0 / 5.5 / 6 and explicitly listed).
 //
 //   rank 0   🔴 CALL NOW / LIVE TRANSFER / REAL-TIME  → new       (first touch, on the clock)
+//   rank 0   ☎️ Callback DUE — they asked for now     → new       (a promise coming due)
 //   rank 1   💬 Funder replied                        → followup
 //   rank 2   💬 Merchant replied                      → followup
 //   rank 3   📄 Present offers                        → followup
+//   rank 3.2 📵 No answer — tried N×                  → new       (SLA banked; try again)
 //   rank 3.5 📎 Promised statements N days ago        → followup  (broken commitment — loudest chase)
 //   rank 4   ⏰ Docs stale                            → followup  (chase the stips)
 //   rank 4.5 📎 Statements promised TODAY             → followup
 //   rank 5   📤 Nudge funders                         → followup
 //   rank 5.5 🌤️ Warm lead — call now                 → new       (never contacted)
 //   rank 6   🆕 New lead — make first contact         → new       (never contacted)
+//   rank 6.8 🕐 Callback SNOOZED until their time     → followup  (lane forced: not new work)
 //   rank 6.9 📎 Statements due in N days              → followup  (scheduled, soft)
 //   rank 7   ☎️/📋/✍️/📎/🤝/📝 active-stage nudges     → followup  (incl. "Collect the stips")
 //   rank 8   🔧 In progress                           → followup
 const NEW_WORK_RANKS = new Set([0, 5.5, 6]);
 
 function laneOf(u: Urgency): Lane {
-  return NEW_WORK_RANKS.has(u.rank) ? "new" : "followup";
+  return u.lane ?? (NEW_WORK_RANKS.has(u.rank) ? "new" : "followup");
 }
 
 const toneChip: Record<string, string> = {
@@ -333,16 +390,41 @@ type QueueItem = { deal: QueueDeal; u: Urgency };
 
 /** One work card. Unchanged from the single-list version — same tones, same SLA
  * countdown, same overdue flag, same onPick. Lifted out so both lanes render it. */
-function QueueCard({ deal, u, now, onPick }: QueueItem & { now: number; onPick: (d: QueueDeal) => void }) {
+function QueueCard({
+  deal, u, now, onPick, onTouched,
+}: QueueItem & { now: number; onPick: (d: QueueDeal) => void; onTouched: () => void }) {
   const src = sourceStyle(deal);
   const amount = amountOf(deal);
   const sla = slaMs(u.rank);
   const overdue = sla !== null && now - Date.parse(u.since) > sla;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [askCallback, setAskCallback] = useState(false);
+
+  // The outcome buttons belong on any lead we haven't actually SPOKEN to yet — which
+  // includes one we've dialled three times and nobody answered.
+  const needsOutcome = deal.status === "new" && !deal.contacted_at;
+
+  const log = async (outcome: ContactOutcome, callbackAt?: string) => {
+    setBusy(outcome);
+    try {
+      await logContactAttempt(deal.id, { outcome, channel: "call", callbackAt });
+      setAskCallback(false);
+      onTouched();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
-    <button
+    // A div, not a button: the card now carries its own action buttons, and a button
+    // inside a button is invalid and swallows the inner click.
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onPick(deal)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onPick(deal); }}
       title={`Load ${nameOf(deal)} into the playbook`}
-      className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3`}
+      className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3 cursor-pointer`}
     >
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
@@ -376,18 +458,144 @@ function QueueCard({ deal, u, now, onPick }: QueueItem & { now: number; onPick: 
         </p>
       )}
 
+      {/* WHAT HAPPENED? — the thing the app had no way to hear.
+          A closer dials a real-time lead and one of three things is true. Until now the
+          app modelled none of them, so the red SLA badge sat there forever no matter
+          what the closer did, and "call me at 4pm" merchants screamed CALL NOW all day
+          — which is exactly how a team learns to ignore red badges. */}
+      {needsOutcome && (
+        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+          {askCallback ? (
+            <CallbackPicker
+              bestTime={u.callWindow}
+              busy={busy === "callback"}
+              onCancel={() => setAskCallback(false)}
+              onPick={(iso) => log("callback", iso)}
+            />
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => log("reached")}
+                disabled={!!busy}
+                title="You spoke to the merchant"
+                className="flex-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white transition-colors"
+              >
+                {busy === "reached" ? "…" : "✅ Reached"}
+              </button>
+              <button
+                type="button"
+                onClick={() => log("attempted")}
+                disabled={!!busy}
+                title="You tried — nobody picked up. You were still on time."
+                className="flex-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-gray-400 dark:border-gray-500 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-60 transition-colors"
+              >
+                {busy === "attempted" ? "…" : "📵 No answer"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setAskCallback(true)}
+                disabled={!!busy}
+                title="They asked you to call at a specific time — snooze until then"
+                className="flex-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-amber-500 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-60 transition-colors"
+              >
+                🕐 Call back
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-2 mt-1.5">
         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
         <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
       </div>
-    </button>
+    </div>
+  );
+}
+
+/**
+ * "Call me at 4pm" → snooze this deal until 4pm.
+ *
+ * A closer is on the phone when they use this, so it has to be one tap. The presets do
+ * the work; the datetime field is the escape hatch for anything they don't cover.
+ *
+ * We deliberately do NOT try to parse the merchant's free-text best_time ("4:00PM CST",
+ * "10am PST") into a timestamp. It's inconsistent, timezone-laden, and a mis-parse would
+ * silently bury a hot lead until the wrong hour. It's shown as a reminder, and a human
+ * picks the actual time.
+ */
+function CallbackPicker({
+  bestTime, busy, onPick, onCancel,
+}: {
+  bestTime?: string;
+  busy: boolean;
+  onPick: (iso: string) => void;
+  onCancel: () => void;
+}) {
+  const [custom, setCustom] = useState("");
+  const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
+
+  const PRESETS: { label: string; iso: () => string }[] = [
+    { label: "1h", iso: () => inMinutes(60) },
+    { label: "3h", iso: () => inMinutes(180) },
+    { label: "Tomorrow 9am", iso: () => {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      d.setHours(9, 0, 0, 0);
+      return d.toISOString();
+    } },
+  ];
+
+  return (
+    <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 p-2">
+      <p className="text-[10px] font-semibold text-amber-800 dark:text-amber-300 mb-1.5">
+        {bestTime ? <>They said <b>{bestTime}</b> — when will you call?</> : "When will you call them back?"}
+      </p>
+      <div className="flex flex-wrap gap-1 mb-1.5">
+        {PRESETS.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            disabled={busy}
+            onClick={() => onPick(p.iso())}
+            className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white"
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-1">
+        <input
+          type="datetime-local"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          className="flex-1 min-w-0 rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 px-1 py-0.5 text-[10px] text-gray-900 dark:text-white"
+        />
+        <button
+          type="button"
+          disabled={busy || !custom}
+          onClick={() => onPick(new Date(custom).toISOString())}
+          className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white"
+        >
+          Set
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-1 py-0.5 text-[10px] text-amber-700 dark:text-amber-300 hover:underline"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
   );
 }
 
 /** One lane: a labelled header with a count badge, then the lane's cards in rank
  * order (or its own empty state). */
 function LaneSection({
-  title, hint, icon, countTone, items, empty, now, onPick,
+  title, hint, icon, countTone, items, empty, now, onPick, onTouched,
 }: {
   title: string;
   hint: string;
@@ -397,6 +605,8 @@ function LaneSection({
   empty: string;
   now: number;
   onPick: (d: QueueDeal) => void;
+  /** Refetch after a closer logs a first touch, so the card leaves the lane at once. */
+  onTouched: () => void;
 }) {
   return (
     <section>
@@ -411,7 +621,7 @@ function LaneSection({
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
           {items.map((it) => (
-            <QueueCard key={it.deal.id} deal={it.deal} u={it.u} now={now} onPick={onPick} />
+            <QueueCard key={it.deal.id} deal={it.deal} u={it.u} now={now} onPick={onPick} onTouched={onTouched} />
           ))}
         </div>
       )}
@@ -567,6 +777,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 empty="Nothing to chase right now."
                 now={now}
                 onPick={onPick}
+                onTouched={load}
               />
             ) : (
               <LaneSection
@@ -579,6 +790,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 empty="No new leads waiting."
                 now={now}
                 onPick={onPick}
+                onTouched={load}
               />
             )
           )}

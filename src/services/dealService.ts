@@ -1154,3 +1154,72 @@ export async function getDealStats(): Promise<{
     unassigned,
   };
 }
+
+/**
+ * What actually happened when the closer worked this lead.
+ *
+ * A first touch is not a single event, it's an OUTCOME, and there are three:
+ *
+ *   attempted → we reached out and got nothing (no answer, or an email awaiting a
+ *               reply). We were ON TIME regardless — a merchant who doesn't pick up
+ *               does not make us slow.
+ *   reached   → a real conversation happened. This is the one that counts as contact.
+ *   callback  → "call me at 4pm." The single most common real-time outcome, and the
+ *               one the app used to have no answer for: the deal now SNOOZES out of
+ *               the urgent queue and resurfaces, at the top, when the time comes.
+ *
+ * TWO CLOCKS, deliberately kept apart:
+ *   first_attempt_at → what speed-to-lead is judged on. Set by ANY outcome.
+ *   contacted_at     → only set by `reached`. It is the contact-RATE metric, and if a
+ *                      wall of no-answers stamped it, our contact rate would read 100%
+ *                      while nobody had actually spoken to anyone.
+ *
+ * first_attempt_at is written once and never overwritten — the FIRST attempt is the
+ * one the SLA is about. Every subsequent attempt still bumps last_attempt_at and the
+ * counter.
+ */
+export type ContactOutcome = "attempted" | "reached" | "callback";
+
+export async function logContactAttempt(
+  dealId: string,
+  opts: {
+    outcome: ContactOutcome;
+    channel: "call" | "email" | "sms" | "other";
+    /** Required for `callback` — when the merchant asked to be called. */
+    callbackAt?: string | null;
+  },
+): Promise<void> {
+  const { data: cur } = await supabase
+    .from("deals")
+    .select("status, first_attempt_at, contacted_at, contact_attempts")
+    .eq("id", dealId)
+    .maybeSingle();
+
+  const nowIso = new Date().toISOString();
+  const patch: Record<string, unknown> = {
+    last_attempt_at: nowIso,
+    first_touch_channel: opts.channel,
+    contact_attempts: Number(cur?.contact_attempts ?? 0) + 1,
+  };
+
+  // The SLA stamp. Once only — a third dial doesn't make us slower than the first.
+  if (!cur?.first_attempt_at) patch.first_attempt_at = nowIso;
+
+  if (opts.outcome === "reached") {
+    if (!cur?.contacted_at) patch.contacted_at = nowIso;
+    // Only ever move FORWARD out of New. A closer logging a late call must not drag a
+    // deal that's already at Submitted back to Contacted.
+    if (cur?.status === "new") patch.status = "contacted";
+    patch.callback_at = null; // we got them; nothing left to call back for
+  }
+
+  if (opts.outcome === "callback") {
+    patch.callback_at = opts.callbackAt ?? null;
+  }
+
+  // `attempted` sets neither contacted_at nor status: we tried, nobody answered, the
+  // lead is still untouched in every sense that matters to the funnel.
+
+  const { error } = await supabase.from("deals").update(patch).eq("id", dealId);
+  if (error) throw error;
+}

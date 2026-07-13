@@ -8,6 +8,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { useUserProfile } from "@/context/UserProfileContext";
+import { logContactAttempt } from "@/services/dealService";
 
 /**
  * Email the merchant, from inside the playbook, on any deal, at any step.
@@ -39,6 +40,9 @@ interface Props {
   leadSource?: string | null;
   /** deals.lead_qual.best_time — the merchant's own "best time to reach you" answer. */
   bestTime?: string | null;
+  /** Fired after a successful send, so the host can refetch (the deal just moved out
+   *  of New — sending the email is the first touch). */
+  onSent?: () => void;
   className?: string;
 }
 
@@ -102,6 +106,7 @@ export default function EmailMerchantPanel({
   businessName,
   leadSource,
   bestTime,
+  onSent,
   className = "",
 }: Props) {
   const { profile } = useUserProfile();
@@ -152,6 +157,22 @@ export default function EmailMerchantPanel({
       if (error) throw error;
       const d = data as { error?: string } | null;
       if (d?.error) throw new Error(d.error);
+
+      // Sending this email IS the first touch — on a real-time lead it is exactly the
+      // action the 5-minute speed-to-lead clock measures. Stamp it here rather than
+      // hoping the closer separately remembers to click something on a card.
+      //
+      // Logged as an ATTEMPT, not as "reached": an email that has not been replied to
+      // is not a conversation. It banks the SLA (first_attempt_at) without inflating the
+      // contact rate (contacted_at), which only a real answer sets.
+      // Best-effort — a stamp failure must never make a SENT email look unsent.
+      try {
+        await logContactAttempt(dealId, { outcome: "attempted", channel: "email" });
+        onSent?.();
+      } catch {
+        /* the email went out; the stamp is bookkeeping */
+      }
+
       setResult({ ok: true, text: "Sent. It's in their Conversations thread." });
       setTimeout(() => setOpen(false), 1400);
     } catch (e) {
