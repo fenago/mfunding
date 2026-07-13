@@ -38,6 +38,7 @@ import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import DealAssistant from "../../components/admin/DealAssistant";
 import PipelineFlow from "../../components/shared/PipelineFlow";
+import PortalAccessChip from "../../components/admin/PortalAccessChip";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
@@ -1333,6 +1334,11 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
                   ))}
                 </select>
               )}
+
+              {/* Portal access — a merchant with no portal account can't sign in,
+                  can't upload, can't e-sign. The state AND the one-click fix live
+                  here so the closer never leaves the playbook to grant access. */}
+              {deal.customer?.id && <PortalAccessChip customerId={deal.customer.id} />}
 
               {/* Campaign attribution — a subtle chip with the code when it's
                   attached, a loud amber prompt (opens Edit lead → campaign picker)
