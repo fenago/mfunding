@@ -3,6 +3,7 @@ import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon } from "@heroicons/
 import { getOpenDealsForQueue, logContactAttempt, type ContactOutcome, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
+import { statedTimeInET, timeET } from "../../utils/time";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -118,8 +119,8 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
       // to a merchant should never vanish from the board entirely.
       return {
         rank: 6.8,
-        badge: `🕐 Callback at ${new Date(deal.callback_at!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
-        why: `They asked you to call at this time. It'll jump to the top of My Day when it's due — nothing to do until then.`,
+        badge: `🕐 Callback at ${timeET(deal.callback_at!)}`,
+        why: `They asked you to call at ${timeET(deal.callback_at!)}. It'll jump to the top of My Day when it's due — nothing to do until then.`,
         since: deal.created_at,
         tone: "amber",
         lane: "followup",
@@ -128,7 +129,7 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
     return {
       rank: 0,
       badge: "☎️ CALLBACK DUE — CALL THEM NOW",
-      why: `You promised to call at ${new Date(deal.callback_at!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} — that time has come. This is the call they agreed to take.`,
+      why: `You promised to call at ${timeET(deal.callback_at!)} — that time has come. This is the call they agreed to take.`,
       since: deal.callback_at!,
       tone: "red",
       callWindow: bestTimeToCall(deal),
@@ -454,7 +455,17 @@ function QueueCard({
       {u.callWindow && (
         <p className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded px-1.5 py-1">
           <PhoneIcon className="w-3 h-3 shrink-0" />
-          <span className="truncate">They asked to be called at <b>{u.callWindow}</b></span>
+          {/* Their words first, then what it means on OUR clock. A closer on Eastern
+              reading "4:00PM CST" has to convert in their head mid-call, and will get
+              it wrong often enough to lose a call. If it can't be parsed with
+              confidence, only the raw text shows — a wrong conversion is far worse
+              than none. */}
+          <span className="truncate">
+            Call at <b>{u.callWindow}</b>
+            {statedTimeInET(u.callWindow) && (
+              <span className="font-bold"> = {statedTimeInET(u.callWindow)}</span>
+            )}
+          </span>
         </p>
       )}
 
@@ -550,7 +561,14 @@ function CallbackPicker({
   return (
     <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 p-2">
       <p className="text-[10px] font-semibold text-amber-800 dark:text-amber-300 mb-1.5">
-        {bestTime ? <>They said <b>{bestTime}</b> — when will you call?</> : "When will you call them back?"}
+        {bestTime ? (
+          <>
+            They said <b>{bestTime}</b>
+            {statedTimeInET(bestTime) && <> = <b>{statedTimeInET(bestTime)}</b></>} — when will you call?
+          </>
+        ) : (
+          "When will you call them back?"
+        )}
       </p>
       <div className="flex flex-wrap gap-1 mb-1.5">
         {PRESETS.map((p) => (

@@ -9,6 +9,7 @@ import {
 import supabase from "@/supabase";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { logContactAttempt } from "@/services/dealService";
+import { statedTimeInET } from "@/utils/time";
 
 /**
  * Email the merchant, from inside the playbook, on any deal, at any step.
@@ -233,7 +234,9 @@ export default function EmailMerchantPanel({
                   box, because it's what the email is supposed to acknowledge. */}
               {bestTime && (
                 <div className="text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
-                  They asked to be called at <b>{bestTime}</b> — the template below says you'll call then.
+                  They asked to be called at <b>{bestTime}</b>
+                  {statedTimeInET(bestTime) && <> — that's <b>{statedTimeInET(bestTime)}</b> on your clock</>} — the
+                  template below says you'll call then.
                 </div>
               )}
 
