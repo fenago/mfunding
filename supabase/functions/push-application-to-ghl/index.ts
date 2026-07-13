@@ -24,21 +24,88 @@ import {
 } from "../_shared/ghl.ts";
 
 // TWO PARALLEL DOC PATHS (parallel GHL workflows):
-//  · MCA 04  — SELF-FILL: sends the original fillable application; the merchant
-//    types everything themselves. Fires on the Application Sent stage move (and
-//    direct enrollment below). Its first step is an If/Else gate: contacts
-//    tagged "app-prefilled" EXIT immediately, so a prefilled deal that moves
-//    stage never gets the fillable doc on top.
+//  · MCA 04  — SELF-FILL: was SUPPOSED to send the original fillable application
+//    ("MCA_Merchant_Funding_Application"), which the merchant types themselves.
+//    Fires on the Application Sent stage move. Its first step is an If/Else gate:
+//    contacts tagged "app-prefilled" EXIT immediately.
 //  · MCA 04B — PREFILL: sends "04B MCA PREFILL" (native-text template whose
 //    {{contact.*}} merge tags render the values this function pushes) + the
-//    disclosure + upload link. NO stage trigger — fired ONLY by direct
-//    enrollment here, so self-fill deals can never receive it.
+//    disclosure + upload link. Fired by direct enrollment here.
 // PATH CROSSING: a merchant being chased down path 1 whom the closer later
 // prefill-sends is REMOVED from MCA 04, tagged, and enrolled in 04B (and the
 // reverse on a blank send) — exactly one path active at a time.
 const MCA_04_WORKFLOW_ID = "076bee21-5667-4cdf-83ae-caf50bea44e2";
 const MCA_04B_WORKFLOW_ID = "afc21762-6879-4de1-89a2-82cc77479bfa";
 const PREFILL_TAG = "app-prefilled";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠️ INCIDENT 2026-07-13 — THE SELF-FILL PATH IS DISABLED. READ BEFORE RE-ENABLING.
+//
+// The comment above describes what the GHL workflows are SUPPOSED to do. It is
+// not what they actually do, and a real merchant paid for the difference.
+//
+// MF-2026-0028 (Braun Blaising and Wynne P.C.) e-signed a funding application
+// consisting almost entirely of raw "{{contact.federal_tax_id_ein}}"-style merge
+// tags. The closer had chosen the SELF-FILL path (blank:true). This function did
+// exactly what it says it does: it pushed NO fields, stripped the prefill routing,
+// enrolled the contact in NOTHING, and left delivery to the Application Sent stage
+// move to fire MCA 04 (the fillable app). GHL sent 04B MCA PREFILL instead — the
+// PREFILL template — against a contact with nothing prefilled.
+//
+// EVIDENCE (all verified against the live location t7NmVR4WCy927j4Zon4b):
+//  · The contact's tags at signing time were ["merchant"] — no "app-prefilled".
+//    So the tag gate is not the cause, and no 04B enrollment came from us.
+//  · Our push ran at 19:25:01; the 04B document was minted at 19:25:04.972Z —
+//    AFTER the opportunity moved into Application Sent (19:25:03). The stage
+//    move, not this function, created the document.
+//  · FIVE consecutive self-fill sends (Papa Diop, Jerry Espinoza, Carlton Rankin,
+//    Victor Morran, Victor Nguyan) each produced a "04B MCA PREFILL" document
+//    within ~3s of their stage move. Not one of them was enrolled in 04B by us.
+//  · Of every document EVER sent from this location, not a single one came from
+//    the "MCA_Merchant_Funding_Application" template. The fillable application
+//    has never once gone out. MCA 04 does not send it.
+//
+// CONCLUSION: the workflow that fires on the Application Sent pipeline-stage move
+// sends the 04B PREFILL template. Either MCA 04's Send-Document action was
+// repointed at 04B, or 04B kept a stage trigger it was supposed to have had
+// deleted. Either way, ANY move into Application Sent puts the PREFILL document
+// in front of the merchant — so a send with nothing to prefill is a send of a
+// document full of raw merge tags.
+//
+// We cannot fix that from here: we have no authority over GHL automations. What
+// we CAN do is refuse to be the thing that pulls the trigger. Until the owner
+// repairs the workflow (see the 422 message below), the only safe send is one
+// where the contact's merge fields are FULLY populated first — i.e. the prefill
+// path. So the self-fill path is closed.
+//
+// TO RE-ENABLE: fix the GHL workflow first, prove it by moving a TEST deal to
+// Application Sent and confirming the document that lands is the fillable
+// "MCA_Merchant_Funding_Application" — then flip this to false.
+const STAGE_TRIGGER_SENDS_PREFILL_DOC = true;
+
+// The fields the 04B PREFILL template merges that ONLY a filled-in application
+// can supply. GHL renders an EMPTY custom field as its literal "{{tag}}", so any
+// one of these left blank prints as raw garbage on a document a merchant signs.
+// A prefill template with nothing to prefill is broken by definition — this list
+// is what "prefilled" MEANS, and it mirrors REQUIRED_KEYS in MerchantApplicationModal.
+const REQUIRED_FOR_PREFILL: Array<[string, string]> = [
+  ["business_legal_name", "Business legal name"], ["business_type", "Entity type"],
+  ["ein", "EIN"], ["business_start_date", "Business start date"], ["industry", "Industry"],
+  ["business_phone", "Business phone"], ["business_email", "Business email"],
+  ["business_address", "Business street address"], ["business_city", "Business city"],
+  ["business_state", "Business state"], ["business_zip", "Business ZIP"],
+  ["owner_first_name", "Owner first name"], ["owner_last_name", "Owner last name"],
+  ["owner_title", "Owner title"], ["owner_ownership_pct", "Ownership %"],
+  ["owner_ssn", "Owner SSN"], ["owner_dob", "Owner date of birth"],
+  ["owner_dl_number", "Driver's license number"], ["owner_email", "Owner email"],
+  ["owner_phone", "Owner cell phone"], ["owner_home_address", "Owner home address"],
+  ["owner_home_city", "Owner home city"], ["owner_home_state", "Owner home state"],
+  ["owner_home_zip", "Owner home ZIP"],
+  ["bank_name", "Bank name"], ["bank_routing_number", "Bank routing number"],
+  ["bank_account_number", "Bank account number"],
+  ["amount_requested", "Amount requested"], ["use_of_funds", "Use of funds"],
+  ["monthly_revenue", "Average monthly revenue"],
+];
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -235,13 +302,69 @@ Deno.serve(async (req) => {
     if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
   }
 
+  // ── GUARD 0 — THE SELF-FILL PATH IS CLOSED (see the incident note above). ──
+  // Moving a deal into Application Sent fires a GHL workflow that sends the 04B
+  // PREFILL document. On the self-fill path we deliberately push NOTHING, so that
+  // document renders as raw {{merge tags}} — which is exactly what a real merchant
+  // signed. Refuse here, before we touch GHL at all: nothing is enrolled, nothing
+  // is tagged, and the caller never advances the stage.
+  if (blank && STAGE_TRIGGER_SENDS_PREFILL_DOC) {
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: dealId,
+        interaction_type: "note",
+        subject: "application:pushed-to-ghl",
+        content: "BLOCKED the self-fill (blank) application send. GoHighLevel's Application Sent " +
+          "stage trigger delivers the 04B PREFILL document, which prints raw merge tags when " +
+          "there is nothing prefilled (this is what MF-2026-0028 signed). Nothing was sent and " +
+          "nothing was enrolled. Fill the application in and send it prefilled.",
+        logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+    return json({
+      error: "The blank/self-fill application can't be sent right now, and nothing was sent. " +
+        "GoHighLevel's \"Application Sent\" stage trigger delivers the 04B PREFILL document — not the " +
+        "fillable one — so a blank send puts a document full of raw {{merge tags}} in front of the " +
+        "merchant (this is exactly what happened on MF-2026-0028). " +
+        "Fill the application in and use \"Send to merchant to e-sign\" instead. " +
+        "To restore the self-fill option, the GHL workflow has to send the fillable " +
+        "\"MCA_Merchant_Funding_Application\" template on the Application Sent stage move.",
+      self_fill_disabled: true,
+    }, 422);
+  }
+
   // The application the closer just filled.
   const { data: app, error: aErr } = await db
     .from("mca_applications").select("*").eq("deal_id", dealId).maybeSingle();
   if (aErr) return json({ error: `could not load application: ${aErr.message}` }, 500);
-  // Only the PREFILL path needs a saved application. The blank "send original
-  // docs" path has nothing to merge — the merchant fills it in the doc itself.
-  if (!app && !blank) return json({ error: "No application on this deal to push." }, 404);
+
+  // ── GUARD 1 — NEVER SEND A "PREFILL" DOCUMENT WITH NOTHING TO PREFILL. ──
+  // The 04B template is nothing but merge tags. GHL prints an EMPTY custom field as
+  // its literal "{{tag}}", so an application that was never filled in (or was only
+  // half filled in) doesn't produce a sparse document — it produces a legally
+  // worthless one covered in raw template syntax, which the merchant then E-SIGNS.
+  // MF-2026-0028 had ZERO rows in mca_applications when its 04B went out.
+  // Refuse BEFORE any GHL call: no contact upsert, no tag, no enrollment, nothing.
+  if (!blank) {
+    if (!app) {
+      return json({
+        error: "The application hasn't been filled in yet, so there is nothing to prefill — nothing was sent. " +
+          "Open the application, complete it, and send again.",
+        missing_application: true,
+      }, 422);
+    }
+    const missing = REQUIRED_FOR_PREFILL
+      .filter(([col]) => s((app as App)[col]) === "")
+      .map(([, label]) => label);
+    if (missing.length > 0) {
+      return json({
+        error: `The application is incomplete, so the prefilled document would print raw merge tags where these are blank — nothing was sent. ` +
+          `Fill in and send again. Missing: ${missing.join(", ")}.`,
+        missing_fields: missing,
+      }, 422);
+    }
+  }
 
   const { data: customer } = await db
     .from("customers")

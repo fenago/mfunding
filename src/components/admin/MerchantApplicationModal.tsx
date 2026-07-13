@@ -526,72 +526,25 @@ export default function MerchantApplicationModal({
     onSent();
   }
 
-  // PATH 1 — SELF-FILL: send the ORIGINAL fillable application (the merchant
-  // types everything themselves; MCA 04). No required-field gating — there's
-  // nothing to pre-fill. Two-click arm/confirm so it can't fire accidentally.
-  const [blankArmed, setBlankArmed] = useState(false);
-  async function sendBlank() {
-    if (!blankArmed) { setBlankArmed(true); setTimeout(() => setBlankArmed(false), 6000); return; }
-    setBlankArmed(false);
-    if (!merchantEmail) {
-      setError("This merchant has no email yet — add one via 'Edit lead info' first.");
-      return;
-    }
-    const isResend = !!sentAt || !!deal.application_sent_at || deal.status === "application_sent";
-    setBusy("send");
-    setError(null);
-    try {
-      // blank:true → the server clears any prefill routing (removes 04B + tag)
-      // and runs the classic MCA 04 self-fill path.
-      const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
-        body: { dealId: deal.id, blank: true, resend: isResend },
-      });
-      if (pushErr) await invokeThrow(pushErr);
-      if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
-
-      // Same rule as the prefilled path: if the server enrolled the contact directly,
-      // the DOCUMENT IS OUT — stamp it now, before the cover note can fail and skip it.
-      // (On this path the doc can also be sent by the stage move further down; that case
-      // is stamped after the move, since until then nothing has actually reached anyone.)
-      const docOutNow = (pushData as { enrolled_via?: string })?.enrolled_via === "direct";
-      if (docOutNow) await stampSent(existingId);
-
-      const firstName = form.owner_first_name || cust?.first_name || "there";
-      const biz = form.business_legal_name || cust?.business_name || "your business";
-      const subject = `Your funding application for ${biz}`;
-      const emailBody =
-        `Hi ${firstName},\n\n` +
-        `Thanks for your time. I'm sending over your funding application for ${biz} now.\n\n` +
-        `You'll receive a separate email with:\n` +
-        `  1. Your funding application to fill out and e-sign\n` +
-        `  2. A quick compensation disclosure to e-sign\n` +
-        `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
-        `Reply here if you have any questions.\n\nTalk soon.`;
-      const noteErr = await sendCoverNote(subject, emailBody, "MCA application (self-fill)");
-      if (noteErr) {
-        setPendingNote({ subject, body: emailBody, regarding: "MCA application (self-fill)" });
-        // On the self-fill path the doc is only already out if the server enrolled
-        // the contact directly; otherwise the stage move (below) would have sent it,
-        // and we never got there — so nothing has reached the merchant.
-        const docAlreadyOut = (pushData as { enrolled_via?: string })?.enrolled_via === "direct";
-        setError(docAlreadyOut ? halfSendMessage(noteErr) : `${noteErr} The application was NOT sent either — the deal stays where it is.`);
-        setBusy(null);
-        return;
-      }
-
-      if (!isResend) {
-        try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
-      } else if ((pushData as { reenrolled?: boolean })?.reenrolled === false) {
-        setError("Cover note sent, but GHL did NOT re-send the fillable docs — MCA 04 re-enrollment was rejected. Re-send the document manually from GHL → Documents & Contracts (move the old doc to Draft first).");
-        setBusy(null);
-        return;
-      }
-      onSent();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send the blank application.");
-      setBusy(null);
-    }
-  }
+  // PATH 1 — SELF-FILL: REMOVED (2026-07-13).
+  //
+  // This used to POST { blank: true } to push-application-to-ghl, which pushed no
+  // merge fields, stripped the prefill routing, and left delivery to the deal's move
+  // into Application Sent — on the documented assumption that the stage trigger fires
+  // MCA 04 and sends the ORIGINAL FILLABLE application for the merchant to complete.
+  //
+  // It does not. The stage trigger sends "04B MCA PREFILL" — the template that is
+  // nothing but {{contact.*}} merge tags. With nothing pushed, every tag renders as
+  // raw template syntax. MF-2026-0028 (a real merchant) e-signed a funding application
+  // reading "Federal Tax ID (EIN): {{contact.federal_tax_id_ein}}". Four other
+  // merchants received the same document the same afternoon. In the entire history of
+  // the GHL location, the fillable template has never been sent once.
+  //
+  // The server now refuses blank sends outright (422). This button is gone with it —
+  // a control whose only possible outcome is a worthless contract shouldn't exist, and
+  // one that only errors out is just an invitation to try again. When the GHL workflow
+  // is repointed at the fillable "MCA_Merchant_Funding_Application" template, restore
+  // this from git history and flip STAGE_TRIGGER_SENDS_PREFILL_DOC in the edge function.
 
   const TABS: { id: Tab; label: string }[] = [
     { id: "business", label: "Business" },
@@ -902,19 +855,19 @@ export default function MerchantApplicationModal({
               </button>
             </div>
           </div>
-          {/* PATH 1 escape hatch — send the classic fillable application instead
-              (merchant completes it themselves). Two clicks to fire. */}
+          {/* PATH 1 (self-fill) — CLOSED. The escape hatch used to live here.
+              GoHighLevel's "Application Sent" stage trigger sends the 04B PREFILL
+              document, NOT the fillable one, so a blank send hands the merchant a
+              contract full of raw merge tags — MF-2026-0028 e-signed exactly that.
+              The server refuses blank sends (422) until the GHL workflow is
+              repointed at the fillable "MCA_Merchant_Funding_Application" template;
+              offering a button that can only fail would just invite the mistake. */}
           <div className="mt-2 text-right">
-            <button
-              type="button"
-              onClick={sendBlank}
-              disabled={busy !== null || loading}
-              className={`text-xs underline disabled:opacity-50 ${blankArmed ? "text-red-600 font-semibold" : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"}`}
-            >
-              {blankArmed
-                ? "Click again to confirm — sends the BLANK application (merchant fills it out)"
-                : "…or send the blank application for the merchant to fill out themselves"}
-            </button>
+            <p className="text-xs text-gray-400">
+              The blank/self-fill send is disabled — GHL's Application Sent trigger delivers the
+              pre-filled document, so an unfilled application goes out full of raw merge tags.
+              Complete the fields above and send it pre-filled.
+            </p>
           </div>
         </div>
       </div>
