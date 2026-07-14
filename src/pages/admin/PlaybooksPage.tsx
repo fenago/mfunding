@@ -2424,7 +2424,12 @@ function StepCard({
             contact step (where the board asks "did anyone call?") and alongside
             the docs panel. Loading it also SYNCS: outbound calls the system
             hasn't seen stamp the deal's timeline + call telemetry, record-once. */}
-        {(step.stageKey === "contacted" || step.stageKey === "application_sent") && interactive && deal?.ghl_contact_id && (
+        {/* Every FIRST-TOUCH and chase stage — a call can happen at any of them, and
+            "logged only where we happened to mount the panel" is how the owner's PRB
+            dial went invisible. (The 5-min cron sweep is the real net; this poll is
+            just the instant path while someone is looking.) */}
+        {["new", "contacted", "qualifying", "application_sent", "bank_statements", "docs_collected"].includes(step.stageKey ?? "") &&
+          interactive && deal?.ghl_contact_id && (
           <CallHistoryPanel ghlContactId={deal.ghl_contact_id} dealId={deal.id} />
         )}
 
