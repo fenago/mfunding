@@ -37,7 +37,13 @@ import type { GhlConfig } from "../_shared/ghl.ts";
 // reverse on a blank send) — exactly one path active at a time.
 const MCA_04_WORKFLOW_ID = "076bee21-5667-4cdf-83ae-caf50bea44e2";
 const MCA_04B_WORKFLOW_ID = "afc21762-6879-4de1-89a2-82cc77479bfa";
+// PATH 3 — 04C PARTIAL: we prefill the ~14 fields the LEAD already gave us (merge
+// tags), and the merchant completes the rest as fillable fields on the document
+// itself (EIN, SSN, addresses, banking). Enrollment-only, like 04B — NO stage
+// trigger, ever. Built by the owner 2026-07-13; ids read from his GHL account.
+const MCA_04C_WORKFLOW_ID = "cdc8dbfa-aa89-4cc3-8d8b-7f1968ecf155";
 const PREFILL_TAG = "app-prefilled";
+const PARTIAL_TAG = "app-partial";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST-SEND VERIFICATION — the safety net this system never had.
@@ -54,6 +60,7 @@ const PREFILL_TAG = "app-prefilled";
 // we actually saw. Anything else is reported honestly as unconfirmed, and a document
 // that is the WRONG template for the path the closer chose fails the whole call.
 const DOC_PREFILL = /04B\s*MCA\s*PREFILL/i;
+const DOC_PARTIAL = /04C\s*MCA\s*PARTIAL/i;
 const DOC_SELF_FILL = /MCA[\s_-]*Merchant[\s_-]*Funding[\s_-]*Application/i;
 // Rides along on BOTH paths, so it can never settle WHICH application went out.
 const DOC_COMPANION = /broker\s*compensation\s*disclosure/i;
@@ -82,16 +89,21 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * happily "confirm" itself against the document from the PREVIOUS send and we'd be
  * right back to asserting things we haven't checked.
  */
+type SendMode = "prefill" | "blank" | "partial";
+const EXPECTED_DOC: Record<SendMode, RegExp> = {
+  prefill: DOC_PREFILL,
+  blank: DOC_SELF_FILL,
+  partial: DOC_PARTIAL,
+};
+
 async function verifyDocumentSent(
   cfg: GhlConfig,
   contactId: string,
   email: string,
-  blank: boolean,
+  mode: SendMode,
   sinceMs: number,
 ): Promise<{ verification: Verification; template: string | null }> {
-  // blank = self-fill path (fillable app). Otherwise the pre-filled 04B.
-  const expected = blank ? DOC_SELF_FILL : DOC_PREFILL;
-  const other = blank ? DOC_PREFILL : DOC_SELF_FILL;
+  const expected = EXPECTED_DOC[mode];
   const wantEmail = email.trim().toLowerCase();
 
   const deadline = Date.now() + 15_000;
@@ -123,9 +135,9 @@ async function verifyDocumentSent(
       const right = apps.find((d) => expected.test(d.name ?? ""));
       if (right) return { verification: "confirmed", template: right.name ?? null };
 
-      // The other known application template, or ANY unrecognized document that is
-      // not the disclosure — either way it is not what the closer asked to send.
-      const wrong = apps.find((d) => other.test(d.name ?? "")) ?? apps[0];
+      // ANY other application document — one of the two other known templates, or
+      // something unrecognized — is not what the closer asked to send.
+      const wrong = apps[0];
       if (wrong) return { verification: "wrong_template", template: wrong.name ?? null };
     }
 
@@ -296,6 +308,64 @@ const s = (v: unknown): string => (v === null || v === undefined ? "" : String(v
 const joinCsz = (city: unknown, state: unknown, zip: unknown) =>
   [s(city), [s(state), s(zip)].filter(Boolean).join(" ")].filter(Boolean).join(", ");
 
+/**
+ * The 04C push: the ~14 fields the LEAD already gave us, straight from
+ * deals.lead_qual (the vendor's own answers) with customer/deal columns as
+ * fallback. No mca_applications row involved — that is the whole point of the
+ * partial path: the closer types nothing.
+ *
+ * Every 04C merge tag MUST have a value behind it or it prints as raw {{tag}}
+ * on the signed contract, so this builder is deliberately exhaustive about
+ * fallbacks and the caller refuses to send if the essentials are missing.
+ */
+function buildPartialFields(
+  lq: Record<string, unknown>,
+  cust: Record<string, unknown>,
+  deal: Record<string, unknown>,
+): Array<{ id: string; value: string | number }> {
+  const out: Array<{ id: string; value: string | number }> = [];
+  const push = (id: string, value: string | number | "") => {
+    if (value === "" || value === null || value === undefined) return;
+    out.push({ id, value });
+  };
+  const money = (v: unknown): string => {
+    const n = Number(String(v ?? "").replace(/[^0-9.]/g, ""));
+    return Number.isFinite(n) && n > 0 ? "$" + n.toLocaleString("en-US") : "";
+  };
+  // "No" / "N/A" mean ZERO positions, not a literal string on a contract.
+  const count = (v: unknown): number => {
+    const t = String(v ?? "").trim();
+    if (!t || /^(no|n\/?a|none)$/i.test(t)) return 0;
+    const n = Number(t.replace(/[^0-9.]/g, ""));
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const business = s(lq["company"]) || s(cust.business_name);
+  const first = s(cust.first_name);
+  const last = s(cust.last_name);
+  const contactName = s(lq["contact_name"]) || [first, last].filter(Boolean).join(" ");
+  const phone = s(lq["phone"]) || s(cust.phone);
+  const email = s(lq["email"]) || s(cust.email);
+
+  push(F.business_name, business);
+  push(F.industry_doc, s(lq["industry"]) || s(cust.industry));
+  push(F.business_phone, phone);
+  push(F.business_email, email);
+  push(F.owner_full_name, contactName);
+  // 100% of leads answer is_owner = Yes; the doc's Title/Ownership lines are merge
+  // tags on 04C, so they need explicit values.
+  push(F.owner_title, "Owner");
+  push(F.ownership_pct_doc, "100%");
+  push(F.owner_email, email);
+  push(F.owner_cell_phone, phone);
+  push(F.amount_requested_doc, money(lq["requested_amount"]) || money(deal.amount_requested));
+  push(F.use_of_funds_doc, s(lq["use_of_funds"]) || s(deal.use_of_funds));
+  push(F.avg_monthly_revenue_doc, money(lq["monthly_deposits"]) || money(cust.monthly_revenue));
+  push(F.active_mca_positions, count(lq["open_positions"]));
+  push(F.total_outstanding_mca_balance, count(lq["positions_balance"]));
+  return out;
+}
+
 /** Build the [{id, value}] custom-field array from the application row. Only
  * non-empty values are included, so a partial (draft) doesn't blank GHL fields. */
 function buildFields(app: App): Array<{ id: string; value: string | number }> {
@@ -375,13 +445,18 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let payload: { dealId?: string; blank?: boolean; resend?: boolean };
+  let payload: { dealId?: string; blank?: boolean; partial?: boolean; resend?: boolean };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const dealId = payload.dealId;
   if (!dealId) return json({ error: "dealId is required" }, 400);
   // blank = "send the original docs, no prefill" (the merchant fills it out).
   // resend = re-fire the send even if the deal is already at Application Sent.
   const blank = payload.blank === true;
+  const partial = payload.partial === true;
+  if (blank && partial) return json({ error: "Pick one path: blank or partial, not both." }, 400);
+  // prefill = closer filled everything; partial = we prefill the lead's 14, merchant
+  // completes the rest on the document; blank = merchant fills everything.
+  const mode: SendMode = blank ? "blank" : partial ? "partial" : "prefill";
   const resend = payload.resend === true;
 
   const db = serviceClient();
@@ -405,7 +480,7 @@ Deno.serve(async (req) => {
   // stage move can be trusted to fire MCA 04, or whether we must enroll directly.
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, customer_id, ghl_contact_id, ghl_opportunity_id")
+    .select("id, customer_id, ghl_contact_id, ghl_opportunity_id, lead_qual, amount_requested, use_of_funds")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
@@ -426,7 +501,10 @@ Deno.serve(async (req) => {
   // worthless one covered in raw template syntax, which the merchant then E-SIGNS.
   // MF-2026-0028 had ZERO rows in mca_applications when its 04B went out.
   // Refuse BEFORE any GHL call: no contact upsert, no tag, no enrollment, nothing.
-  if (!blank) {
+  // Only the FULL-prefill path needs a completed application: on 04C the unknown
+  // fields are FILLABLE on the document (they render as input boxes, not merge
+  // tags), so an absent application cannot produce raw template syntax.
+  if (mode === "prefill") {
     if (!app) {
       return json({
         error: "The application hasn't been filled in yet, so there is nothing to prefill — nothing was sent. " +
@@ -448,7 +526,7 @@ Deno.serve(async (req) => {
 
   const { data: customer } = await db
     .from("customers")
-    .select("id, first_name, last_name, business_name, email, phone, ghl_contact_id")
+    .select("id, first_name, last_name, business_name, email, phone, ghl_contact_id, industry, monthly_revenue")
     .eq("id", deal.customer_id).maybeSingle();
   if (!customer) return json({ error: "This deal has no merchant on file." }, 404);
 
@@ -569,10 +647,27 @@ Deno.serve(async (req) => {
   // "bounced" flag so a corrected address stops showing the red chip.
   await recordEmailOutcome(db, customer.id as string, merchantEmail, bounce);
 
-  // Push the merge fields — only for the PREFILL path. The blank "send original
-  // docs" path pushes nothing (the merchant fills the doc themselves).
-  const fields = blank ? [] : buildFields(appRow);
-  if (!blank && fields.length === 0) return json({ error: "Nothing to push — the application is empty." }, 422);
+  // Push the merge fields. Prefill = the closer's completed application; partial =
+  // the 14 values the LEAD already gave us; blank = nothing (the merchant fills
+  // the whole document themselves).
+  const leadQual = (deal.lead_qual ?? {}) as Record<string, unknown>;
+  const fields =
+    mode === "prefill" ? buildFields(appRow)
+    : mode === "partial" ? buildPartialFields(leadQual, customer as Record<string, unknown>, deal as Record<string, unknown>)
+    : [];
+  if (mode === "prefill" && fields.length === 0) return json({ error: "Nothing to push — the application is empty." }, 422);
+  // The partial doc's merge tags are exactly these values — send with too few and
+  // the contract prints raw {{tags}}. Business name, a name, phone and email are
+  // the floor; a Synergy lead always clears it, so failing here means the deal has
+  // no lead data AND no customer basics, and a human should look at it.
+  if (mode === "partial" && fields.length < 6) {
+    return json({
+      error: "This deal doesn't carry enough lead data to prefill the partial application " +
+        `(only ${fields.length} of ~14 fields have values — the merge tags for the rest would print as raw {{tags}} on the signed document). ` +
+        "Fill the application and send it prefilled instead, or fix the lead info first.",
+      fields_available: fields.length,
+    }, 422);
+  }
   if (fields.length > 0) {
     const res = await updateContactCustomFields(cfg, contactId, fields);
     if (!res.ok) return json({ error: `GHL custom-field update failed: ${res.error}` }, 502);
@@ -600,9 +695,10 @@ Deno.serve(async (req) => {
   let enrollDirect = false;
   if (blank) {
     // ── PATH 1 (SELF-FILL): the fillable doc (MCA 04). ──
-    // Clear the prefill routing first (path 2 → path 1 crossing): stop 04B, drop the tag.
+    // Clear the other paths' routing first (crossing): stop 04B/04C, drop the tags.
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {}); // best-effort
-    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG] }); // best-effort
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04C_WORKFLOW_ID}`, {}); // best-effort
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG, PARTIAL_TAG] }); // best-effort
 
     // ALWAYS ENROLL DIRECTLY. Delivery must never depend on a pipeline-stage trigger.
     //
@@ -633,12 +729,34 @@ Deno.serve(async (req) => {
           `${wf.error ?? "enrollment failed"} — the document was NOT sent.`,
       }, 502);
     }
+  } else if (partial) {
+    // ── PATH 3 (04C PARTIAL): our 14 lead-derived merge fields + the merchant
+    // completes the rest as FILLABLE fields on the document. Enrollment-only, like
+    // every doc path: the workflow has NO trigger, so nothing fires unless this
+    // function enrolls the contact.
+    enrollDirect = true;
+    await addContactTags(cfg, contactId, [PARTIAL_TAG]);
+    // Crossing from another path mid-flight: stop the other doc workflows + tag.
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // best-effort
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {}); // best-effort
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG] }); // best-effort
+    if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04C_WORKFLOW_ID}`, {});
+    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04C_WORKFLOW_ID}`, {});
+    reenrolled = wf.ok;
+    if (!wf.ok) {
+      return json({
+        error: `Could not enroll the merchant into the partial application workflow (MCA 04C): ` +
+          `${wf.error ?? "enrollment failed"} — the document was NOT sent.`,
+      }, 502);
+    }
   } else {
     // ── PATH 2 (PREFILL): the merged doc, sent by MCA 04B. The doc send ALWAYS
     // comes from a direct 04B enrollment (04B has no stage trigger); the caller's
     // stage move only syncs the pipeline, and MCA 04's tag gate exits.
     enrollDirect = true;
     await addContactTags(cfg, contactId, [PREFILL_TAG]); // gate MCA 04 out
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PARTIAL_TAG] }); // best-effort
+    await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04C_WORKFLOW_ID}`, {}); // best-effort
     // Path 1 → path 2 crossing: stop the fillable-app chase mid-flight.
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // best-effort
     // Re-sends must re-fire: remove from 04B first so re-enrollment isn't a no-op.
@@ -651,9 +769,12 @@ Deno.serve(async (req) => {
   // ── VERIFY WHAT GHL ACTUALLY SENT. ──
   // The enrollment above returned ok. That is NOT the same as the right document
   // going out, and the difference is what a real merchant signed on 2026-07-13.
-  const expectedName = blank ? "MCA_Merchant_Funding_Application" : "04B MCA PREFILL";
+  const expectedName =
+    mode === "blank" ? "MCA_Merchant_Funding_Application"
+    : mode === "partial" ? "04C MCA PARTIAL"
+    : "04B MCA PREFILL";
   const { verification, template } = await verifyDocumentSent(
-    cfg, contactId, merchantEmail, blank, sendStartedMs,
+    cfg, contactId, merchantEmail, mode, sendStartedMs,
   );
 
   // ── WRONG TEMPLATE → FAIL LOUDLY. ──
@@ -665,9 +786,16 @@ Deno.serve(async (req) => {
     const got = template ?? "an unrecognized document";
     // The dangerous direction: the PREFILL template against a contact we deliberately
     // did NOT prefill. Every merge tag renders as literal "{{contact.*}}" text.
-    const rawTags = blank && DOC_PREFILL.test(template ?? "");
+    // Raw-tag hazard: the FULL-prefill template landing on a send that did not push
+    // the full application (blank pushed nothing; partial pushed only the lead's 14).
+    const rawTags = mode !== "prefill" && DOC_PREFILL.test(template ?? "");
+    const MODE_LABEL: Record<SendMode, string> = {
+      blank: "fillable self-fill application",
+      partial: "partial application (lead fields prefilled, merchant completes the rest)",
+      prefill: "pre-filled application",
+    };
     const detail =
-      `GHL was asked to send the ${blank ? "fillable self-fill application" : "pre-filled application"} ` +
+      `GHL was asked to send the ${MODE_LABEL[mode]} ` +
       `("${expectedName}") to ${merchantEmail}, but the document it actually created is "${got}".` +
       (rawTags
         ? ` That is the PREFILL template on a contact with nothing prefilled — the merchant is looking at a ` +
@@ -706,11 +834,13 @@ Deno.serve(async (req) => {
       entity_id: dealId,
       interaction_type: "note",
       subject: "application:pushed-to-ghl",
-      content: (blank
+      content: (mode === "blank"
         ? `Sent the original application docs (no prefill) — merchant fills + e-signs.`
-        : `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`)
+        : mode === "partial"
+          ? `Sent the PARTIAL application (04C): pushed ${fields.length} lead-derived fields; the merchant completes the rest on the document.`
+          : `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`)
         + (enrollDirect
-          ? ` ${resend ? "Re-enrolled" : "Enrolled"} in ${blank ? "MCA 04" : "MCA 04B"} directly (${reenrolled ? "ok" : "failed"}${!resend && blank ? ", no opportunity yet" : ""}).`
+          ? ` ${resend ? "Re-enrolled" : "Enrolled"} in ${mode === "blank" ? "MCA 04" : mode === "partial" ? "MCA 04C" : "MCA 04B"} directly (${reenrolled ? "ok" : "failed"}).`
           : ` Delivery left to the Application Sent stage trigger to fire MCA 04 (deal already has an opportunity).`)
         + (verification === "confirmed"
           ? ` VERIFIED: GHL created "${template}" for ${merchantEmail}.`
@@ -726,7 +856,7 @@ Deno.serve(async (req) => {
   //  · "confirmed"   — we read the document back and it is the right template
   //  · "unconfirmed" — nothing visible yet; sent, but do not claim it landed
   return json({
-    ok: true, dealId, contactId, fieldsPushed: fields.length, blank, reenrolled,
+    ok: true, dealId, contactId, fieldsPushed: fields.length, blank, mode, reenrolled,
     enrolled_via: enrollDirect ? "direct" : "stage_trigger",
     verification,
     verified_template: template,

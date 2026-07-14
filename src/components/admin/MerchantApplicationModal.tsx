@@ -698,6 +698,69 @@ export default function MerchantApplicationModal({
     onSent();
   }
 
+  // PATH 3 — 04C PARTIAL: THE DEFAULT for a normal lead. We prefill the ~14 fields
+  // the vendor already gave us (pushed straight from deals.lead_qual — no application
+  // form needed), and the merchant completes the rest as fillable fields on the
+  // document itself: EIN, SSN, addresses, banking. The closer types NOTHING.
+  // Two-click arm/confirm, same as the blank path — it sends a real contract.
+  const [partialArmed, setPartialArmed] = useState(false);
+  async function sendPartial() {
+    if (!partialArmed) { setPartialArmed(true); setTimeout(() => setPartialArmed(false), 6000); return; }
+    setPartialArmed(false);
+    if (!merchantEmail) {
+      setError("This merchant has no email yet — add one via 'Edit lead info' first.");
+      return;
+    }
+    const isResend = !!sentAt || !!deal.application_sent_at || deal.status === "application_sent";
+    setBusy("send");
+    setError(null);
+    try {
+      const { data: pushData, error: pushErr } = await supabase.functions.invoke("push-application-to-ghl", {
+        body: { dealId: deal.id, partial: true, resend: isResend },
+      });
+      if (pushErr) await invokeThrow(pushErr);
+      if ((pushData as { error?: string })?.error) throw new Error((pushData as { error?: string }).error);
+
+      // The server always enrolls directly, so a successful push means the document
+      // IS OUT — stamp before the cover note can fail and skip it.
+      await stampSent(existingId);
+
+      const firstName = form.owner_first_name || cust?.first_name || "there";
+      const biz = form.business_legal_name || cust?.business_name || "your business";
+      const subject = `Your funding application for ${biz}`;
+      const emailBody =
+        `Hi ${firstName},\n\n` +
+        `Thanks for your time. I've started your funding application for ${biz} — ` +
+        `most of it is already filled in from what you've told us.\n\n` +
+        `You'll receive a separate email with:\n` +
+        `  1. Your application — just complete the few remaining fields (business details, banking) and e-sign\n` +
+        `  2. A quick compensation disclosure to e-sign\n` +
+        `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
+        `It takes about five minutes. Reply here if anything looks off.\n\nTalk soon.`;
+      const noteErr = await sendCoverNote(subject, emailBody, "MCA application (partial)");
+      if (noteErr) {
+        setPendingNote({ subject, body: emailBody, regarding: "MCA application (partial)" });
+        setError(halfSendMessage(noteErr));
+        setBusy(null);
+        return;
+      }
+      if (!isResend) {
+        try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
+      }
+      const v = (pushData as { verification?: string; verified_template?: string | null });
+      setToast(
+        v?.verification === "confirmed"
+          ? `Partial application sent — GHL confirmed "${v.verified_template}". The merchant completes the rest and signs.`
+          : "Partial application sent — awaiting GHL confirmation. The merchant completes the rest and signs.",
+      );
+      setBusy(null);
+      onSent();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The partial send failed.");
+      setBusy(null);
+    }
+  }
+
   // PATH 1 — SELF-FILL: send the ORIGINAL fillable application (the merchant types
   // everything themselves; MCA 04). No required-field gating — there is nothing to
   // pre-fill. Two-click arm/confirm so it can't fire accidentally.
@@ -1195,6 +1258,34 @@ export default function MerchantApplicationModal({
               it deliberately has no required-field gate, because there is nothing to
               pre-fill. push-application-to-ghl enrolls MCA 04 directly, so this delivers
               the fillable template, not the prefill one. */}
+          {/* PATH 3 — 04C PARTIAL: the default for a normal lead. Zero typing: we prefill
+              what the vendor told us; the merchant completes EIN/SSN/addresses/banking on
+              the document itself. */}
+          <div className="mt-3 flex items-center justify-end gap-2 rounded-lg border border-mint-green/40 bg-mint-green/5 px-3 py-2">
+            <p className="text-xs text-gray-600 dark:text-gray-300 mr-auto">
+              <b>Fastest path:</b> send it now with the lead's info prefilled — the merchant completes
+              the rest (EIN, SSN, banking) and signs. No form needed.
+            </p>
+            <button
+              type="button"
+              onClick={sendPartial}
+              disabled={busy !== null || loading}
+              title="Send the 04C partial application — lead fields prefilled, merchant completes the rest"
+              className={`text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 inline-flex items-center gap-1.5 ${
+                partialArmed
+                  ? "bg-amber-500 text-white hover:opacity-90"
+                  : "bg-mint-green text-white hover:opacity-90"
+              }`}
+            >
+              <PaperAirplaneIcon className="w-4 h-4" />
+              {busy === "send" && partialArmed
+                ? "Sending…"
+                : partialArmed
+                  ? "Click again to confirm — send partial"
+                  : "Send partial (merchant completes the rest)"}
+            </button>
+          </div>
+
           <div className="mt-3 flex items-center justify-end gap-2">
             <p className="text-xs text-gray-400 mr-auto">
               Couldn't reach them? Send the blank application for the merchant to fill in and sign themselves.
