@@ -7,13 +7,19 @@
 // GHL and nothing was stored in our own system. Now: fill once here, it's saved,
 // and one click sends it out.
 //
-// E-SIGN NOTE: the formal embedded signature is still executed by GHL Documents
-// & Contracts, fired by moving the deal to the Application Sent stage (the MCA 04
-// automation emails the merchant the app + disclosure + upload link). "Send to
-// merchant to e-sign" does exactly that move, PLUS emails a personal cover note
-// through the existing send-merchant-email transport so it lands in the merchant's
-// Conversations thread. TODO: when a native embedded e-sign exists, deliver a
-// direct signing link here instead of relying on the GHL automation.
+// E-SIGN NOTE: the formal signature is executed by GHL Documents & Contracts, but
+// DELIVERY IS THE CODE'S JOB — push-application-to-ghl enrolls the merchant into the
+// doc workflow directly. It is NOT fired by the move to Application Sent; that move is
+// only a pipeline update. Believing otherwise is what put a contract full of raw
+// {{merge tags}} in front of five merchants on 2026-07-13 (one signed it), because a
+// stage trigger cannot tell the pre-filled path from the self-fill path — only this
+// code knows which document the closer asked for.
+//
+// And because GHL answering 200 is NOT proof of what it sent, the server now READS THE
+// DOCUMENT BACK after enrolling and reports what actually landed. This modal shows that
+// verdict verbatim — "Confirmed — GHL sent <template>", an honest "awaiting
+// confirmation", or a loud red stop on the wrong template. It never claims a success it
+// has not verified.
 
 import { useEffect, useMemo, useState } from "react";
 import { XMarkIcon, DocumentTextIcon, PaperAirplaneIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
@@ -29,13 +35,30 @@ import type { DealWithCustomer } from "../../types/deals";
 // sent"). This pulls the server's { error } out of that body (falling back to the
 // raw message) and throws it, so the real reason reaches the closer verbatim.
 // Call it on any functions.invoke error path: `if (err) await invokeThrow(err)`.
+// Carries the server's structured body alongside the message, so a caller can react
+// to WHAT went wrong (e.g. verification === "wrong_template") and not just print it.
+class SendError extends Error {
+  details: ServerError;
+  constructor(message: string, details: ServerError = {}) {
+    super(message);
+    this.name = "SendError";
+    this.details = details;
+  }
+}
+type ServerError = {
+  error?: string;
+  verification?: "confirmed" | "unconfirmed" | "wrong_template";
+  verified_template?: string | null;
+  expected_template?: string;
+};
+
 async function invokeThrow(error: unknown): Promise<never> {
   const ctx = (error as { context?: { json?: () => Promise<unknown> } } | null)?.context;
   if (ctx && typeof ctx.json === "function") {
-    const body = (await ctx.json().catch(() => null)) as { error?: string } | null;
-    if (body?.error) throw new Error(body.error);
+    const body = (await ctx.json().catch(() => null)) as ServerError | null;
+    if (body?.error) throw new SendError(body.error, body);
   }
-  throw new Error((error as { message?: string } | null)?.message ?? "Request failed.");
+  throw new SendError((error as { message?: string } | null)?.message ?? "Request failed.");
 }
 
 // The application fields we capture. Keys match mca_applications columns.
@@ -122,12 +145,17 @@ type Tab = "business" | "owner" | "banking" | "funding";
 // excluded here: business_dba, owner_dl_state, average_daily_balance,
 // existing_positions, existing_balance, notes. The application can't be SENT
 // until every one of these is filled (a Save draft may still be partial).
+// owner_ssn is NOT here by design (owner's call, 2026-07-13): a merchant who won't
+// read their SSN out on a first call should not block the whole application. It stays
+// on the form, it still merges when filled — it just doesn't gate the send. The one
+// consequence (a blank SSN prints as a raw {{tag}} on the signed document) is shown as
+// a single warning line by the Send button. The closer decides; the app doesn't.
 const REQUIRED_KEYS: (keyof AppForm)[] = [
   // Business
   "business_legal_name", "business_type", "ein", "business_start_date", "industry",
   "business_phone", "business_email", "business_address", "business_city", "business_state", "business_zip",
   // Owner / guarantor
-  "owner_first_name", "owner_last_name", "owner_title", "owner_ownership_pct", "owner_ssn", "owner_dob",
+  "owner_first_name", "owner_last_name", "owner_title", "owner_ownership_pct", "owner_dob",
   "owner_dl_number", "owner_email", "owner_phone",
   "owner_home_address", "owner_home_city", "owner_home_state", "owner_home_zip",
   // Banking
@@ -135,6 +163,70 @@ const REQUIRED_KEYS: (keyof AppForm)[] = [
   // Funding request
   "amount_requested", "use_of_funds", "monthly_revenue",
 ];
+
+// Entity type is a fixed vocabulary, not free text — a typo here lands on a legal
+// document. These values are the EXACT picklist of the GHL "Business Entity"
+// SINGLE_OPTIONS custom field (bg2F006hXRWpFBC0UcJQ, verified live). A value outside
+// that picklist makes GHL reject the ENTIRE custom-field PUT, which would leave every
+// merge tag on the document unfilled — so this list must not drift from GHL's.
+const ENTITY_TYPES = [
+  "LLC", "S-Corp", "C-Corp", "Sole Proprietor", "Partnership", "LP", "LLP", "Non-profit",
+] as const;
+
+// ── PREFILL FROM THE LEAD ────────────────────────────────────────────────────
+// The lead vendor already told us most of these answers; deals.lead_qual holds the
+// raw payload the live-transfer intake parked there. Making a closer hand-type them
+// again while the merchant is on the phone is how you get typos on a contract — and
+// how you lose the call. We seed, the closer confirms.
+
+const txt = (v: unknown) => String(v ?? "").trim();
+
+/** "$125,000" → "125000". Anything with no number in it ("N/A") → "". */
+function money(v: unknown): string {
+  const raw = txt(v);
+  if (!raw) return "";
+  const n = raw.replace(/[^0-9.]/g, "");
+  if (!n || !Number.isFinite(Number(n))) return "";
+  return String(Number(n));
+}
+
+/** The vendor's count/balance answers come through as "N/A" | "No" | a number.
+ * "N/A" and "No" mean NONE — i.e. 0. They must never reach a funding application
+ * as the literal string "No". */
+function countOrZero(v: unknown): string {
+  const raw = txt(v);
+  if (!raw) return "";
+  if (/^(n\/?a|no|none)$/i.test(raw)) return "0";
+  return money(raw);
+}
+
+/** "Carlton Rankin" → { first: "Carlton", last: "Rankin" } (split on the LAST space,
+ * so "Mary Anne Vandermeer" keeps "Mary Anne" as the first name). */
+function splitName(v: unknown): { first: string; last: string } {
+  const raw = txt(v).replace(/\s+/g, " ");
+  if (!raw) return { first: "", last: "" };
+  const i = raw.lastIndexOf(" ");
+  if (i < 0) return { first: raw, last: "" };
+  return { first: raw.slice(0, i), last: raw.slice(i + 1) };
+}
+
+/** "7 Years" / "18 Months" → an APPROXIMATE start date (today minus that span).
+ *
+ * This is an ESTIMATE, never a fact: the vendor asked "how long have you owned it",
+ * not "what is your incorporation date". It is written into the field so the closer
+ * SEES it and can correct it on the call (the field carries a hint saying so), rather
+ * than being asserted silently onto a legal document. Unparseable → "", because an
+ * empty field a closer must fill beats a wild guess they might not notice. */
+function startDateFromTenure(v: unknown): string {
+  const m = txt(v).match(/^(\d+(?:\.\d+)?)\s*(years?|yrs?|months?|mos?)\b/i);
+  if (!m) return "";
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const months = /^(y)/i.test(m[2]) ? Math.round(n * 12) : Math.round(n);
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  return d.toISOString().slice(0, 10);
+}
 
 // Which tab each required field lives on — powers the per-tab "N missing" badge.
 const TAB_OF: Partial<Record<keyof AppForm, Tab>> = {
@@ -200,6 +292,20 @@ export default function MerchantApplicationModal({
   // the whole send would re-enroll them and risk a second document. So we keep the
   // failed cover note here and offer a retry that sends ONLY the note.
   const [pendingNote, setPendingNote] = useState<{ subject: string; body: string; regarding: string } | null>(null);
+  // The vendor's raw tenure answer ("7 Years") behind the estimated start date, so the
+  // field can say where its value came from instead of presenting a guess as a fact.
+  const [startDateFrom, setStartDateFrom] = useState<string | null>(null);
+  // How many REQUIRED fields we filled from the lead + our own records, for an honest
+  // "X of Y already filled" count.
+  const [prefilled, setPrefilled] = useState(0);
+  // What GHL ACTUALLY sent, read back after the send. Never assumed — only reported.
+  const [sendResult, setSendResult] = useState<
+    { verification: "confirmed" | "unconfirmed"; template: string | null; expected: string } | null
+  >(null);
+  // GHL sent the WRONG template. The document is already with the merchant and we
+  // cannot recall it — so we lock the send buttons rather than let a retry mint a
+  // second wrong document, and we say exactly what landed.
+  const [wrongTemplate, setWrongTemplate] = useState<{ got: string | null; expected: string } | null>(null);
 
   const cust = deal.customer;
 
@@ -266,21 +372,51 @@ export default function MerchantApplicationModal({
         if (cust?.phone && digits(cust.phone) !== digits(next.business_phone)) d.phone = cust.phone;
         setDrift(d.email || d.phone ? d : null);
       } else {
-        // Fresh — seed from what we already have on the customer + deal.
-        setForm({
+        // Fresh — seed from what we already have on the customer + deal, and from the
+        // LEAD the vendor sold us (deals.lead_qual). The customer/deal row wins where
+        // it has a value (it's our own record, and a closer may have corrected it);
+        // the lead fills the gaps. A saved draft never reaches here, so this can never
+        // clobber something a human typed.
+        const q = (deal.lead_qual ?? {}) as Record<string, unknown>;
+        const name = splitName(q.contact_name);
+        const tenure = txt(q.time_as_owner);
+        const startEst = startDateFromTenure(tenure);
+
+        // First non-empty wins.
+        const pick = (...vals: (string | null | undefined)[]) =>
+          vals.find((v) => txt(v) !== "") ?? "";
+
+        const seeded: AppForm = {
           ...EMPTY,
-          business_legal_name: cust?.business_name ?? "",
-          business_email: cust?.email ?? "",
-          business_phone: cust?.phone ?? "",
-          industry: cust?.industry ?? "",
-          owner_first_name: cust?.first_name ?? "",
-          owner_last_name: cust?.last_name ?? "",
-          owner_email: cust?.email ?? "",
-          owner_phone: cust?.phone ?? "",
-          amount_requested: deal.amount_requested != null ? String(deal.amount_requested) : "",
-          use_of_funds: deal.use_of_funds ?? "",
-          monthly_revenue: cust?.monthly_revenue != null ? String(cust.monthly_revenue) : "",
-        });
+          business_legal_name: pick(cust?.business_name, txt(q.company)),
+          business_email: pick(cust?.email, txt(q.email)),
+          business_phone: pick(cust?.phone, txt(q.phone)),
+          business_state: txt(q.state).toUpperCase().slice(0, 2),
+          business_start_date: startEst,
+          industry: pick(cust?.industry, txt(q.industry)),
+          owner_first_name: pick(cust?.first_name, name.first),
+          owner_last_name: pick(cust?.last_name, name.last),
+          owner_email: pick(cust?.email, txt(q.email)),
+          owner_phone: pick(cust?.phone, txt(q.phone)),
+          // is_owner was "Yes" on 100% of real leads — seed the common case, editable.
+          owner_title: "Owner",
+          owner_ownership_pct: "100",
+          amount_requested: pick(
+            deal.amount_requested != null ? String(deal.amount_requested) : "",
+            money(q.requested_amount),
+          ),
+          use_of_funds: pick(deal.use_of_funds, txt(q.use_of_funds)),
+          monthly_revenue: pick(
+            cust?.monthly_revenue != null ? String(cust.monthly_revenue) : "",
+            money(q.monthly_deposits),
+          ),
+          existing_positions: countOrZero(q.open_positions),
+          existing_balance: countOrZero(q.positions_balance),
+        };
+        setForm(seeded);
+        // Only claim the date is an estimate if we actually estimated one.
+        setStartDateFrom(startEst && tenure ? tenure : null);
+        setPrefilled(REQUIRED_KEYS.filter((k) => txt(seeded[k]) !== "").length);
       }
       setLoading(false);
     })();
@@ -310,6 +446,9 @@ export default function MerchantApplicationModal({
     return counts;
   }, [missingRequired]);
   const canSend = missingRequired.length === 0;
+  // GHL put the wrong document in front of this merchant. Sending again would only
+  // put a second one there — the fix is in GHL, not in another click.
+  const sendLocked = wrongTemplate !== null;
 
   // Build the DB payload from the form: trim, drop empties to null, coerce types.
   function payload(): Record<string, unknown> {
@@ -471,16 +610,49 @@ export default function MerchantApplicationModal({
           return;
         }
       } else {
-        // First send: advancing to Application Sent is what FIRES MCA 04 and sends
-        // the docs. Forward-only guard in updateDealStatus is fine here.
+        // First send: the document is already out (push-application-to-ghl enrolled the
+        // workflow directly and VERIFIED what GHL minted). This move only syncs the
+        // pipeline. Forward-only guard in updateDealStatus is fine here.
         try { await updateDealStatus(deal.id, "application_sent"); } catch { /* stage already ahead */ }
       }
 
-      onSent();
+      // Report what GHL ACTUALLY DID — not what we hoped it did.
+      showSendResult(pushData);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send the application.");
-      setBusy(null);
+      handleSendError(e);
     }
+  }
+
+  /** Record the server's post-send verification so the closer can SEE what landed.
+   * We hold the modal open on purpose: the whole reason a merchant signed a garbage
+   * contract on 2026-07-13 is that every screen said "sent ✅" and nobody looked. */
+  function showSendResult(pushData: unknown) {
+    const p = (pushData ?? {}) as {
+      verification?: "confirmed" | "unconfirmed";
+      verified_template?: string | null;
+      expected_template?: string;
+    };
+    setSendResult({
+      verification: p.verification === "confirmed" ? "confirmed" : "unconfirmed",
+      template: p.verified_template ?? null,
+      expected: p.expected_template ?? "the application",
+    });
+    setBusy(null);
+  }
+
+  /** A send that failed. The one case that needs its own treatment: GHL minted the
+   * WRONG template. That document is already with the merchant, so the useful thing
+   * is not "try again" — it's "stop, and go tell them not to sign it". */
+  function handleSendError(e: unknown) {
+    const d = e instanceof SendError ? e.details : undefined;
+    if (d?.verification === "wrong_template") {
+      setWrongTemplate({
+        got: d.verified_template ?? null,
+        expected: d.expected_template ?? "the application",
+      });
+    }
+    setError(e instanceof Error ? e.message : "Could not send the application.");
+    setBusy(null);
   }
 
   // Fire the closer's cover note. Returns the server's (actionable) error message,
@@ -593,10 +765,9 @@ export default function MerchantApplicationModal({
         setBusy(null);
         return;
       }
-      onSent();
+      showSendResult(pushData);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send the blank application.");
-      setBusy(null);
+      handleSendError(e);
     }
   }
 
@@ -638,8 +809,23 @@ export default function MerchantApplicationModal({
                 </span>
               )}
             </p>
+            {/* Honest count: what the lead + our records already answered, and what's left. */}
+            {!loading && prefilled > 0 && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                  {prefilled} of {REQUIRED_KEYS.length} prefilled from the lead
+                </span>
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                  {missingRequired.length} left to ask
+                </span>
+              </div>
+            )}
           </div>
-          <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+          {/* A send already happened → closing must still refresh the deal underneath. */}
+          <button
+            onClick={sendResult && !wrongTemplate ? onSent : onClose}
+            className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          >
             <XMarkIcon className="w-5 h-5" />
           </button>
         </div>
@@ -716,12 +902,30 @@ export default function MerchantApplicationModal({
                     <input className={inputCls} value={form.business_legal_name} onChange={(e) => set("business_legal_name", e.target.value)} /></div>
                   <div><Label>DBA (if any)</Label>
                     <input className={inputCls} value={form.business_dba} onChange={(e) => set("business_dba", e.target.value)} /></div>
+                  {/* Fixed vocabulary — these values ARE the GHL picklist. Free text here
+                      put garbage on a legal document. */}
                   <div><Label req>Entity type</Label>
-                    <input className={inputCls} placeholder="LLC, Corp, Sole Prop…" value={form.business_type} onChange={(e) => set("business_type", e.target.value)} /></div>
+                    <select className={inputCls} value={form.business_type} onChange={(e) => set("business_type", e.target.value)}>
+                      <option value="">Select…</option>
+                      {ENTITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select></div>
                   <div><Label req>EIN</Label>
                     <input className={inputCls} placeholder="XX-XXXXXXX" value={form.ein} onChange={(e) => set("ein", e.target.value)} /></div>
                   <div><Label req>Business start date</Label>
-                    <input type="date" className={inputCls} value={form.business_start_date} onChange={(e) => set("business_start_date", e.target.value)} /></div>
+                    <input
+                      type="date"
+                      className={inputCls}
+                      value={form.business_start_date}
+                      onChange={(e) => { set("business_start_date", e.target.value); setStartDateFrom(null); }}
+                    />
+                    {/* An estimate, shown AS an estimate. The vendor answered "how long
+                        have you owned it", which is not an incorporation date. */}
+                    {startDateFrom && form.business_start_date && (
+                      <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                        Estimated from "{startDateFrom}" — confirm with the merchant.
+                      </p>
+                    )}
+                  </div>
                   <div><Label req>Industry</Label>
                     <input className={inputCls} value={form.industry} onChange={(e) => set("industry", e.target.value)} /></div>
                   <div><Label req>Business phone</Label>
@@ -751,8 +955,16 @@ export default function MerchantApplicationModal({
                     <input className={inputCls} placeholder="Owner, President…" value={form.owner_title} onChange={(e) => set("owner_title", e.target.value)} /></div>
                   <div><Label req>Ownership %</Label>
                     <input type="number" className={inputCls} value={form.owner_ownership_pct} onChange={(e) => set("owner_ownership_pct", e.target.value)} /></div>
-                  <div><Label req>SSN</Label>
-                    <input className={inputCls} placeholder="•••-••-••••" value={form.owner_ssn} onChange={(e) => set("owner_ssn", e.target.value)} /></div>
+                  {/* Optional on purpose — a merchant who won't read their SSN out on a
+                      first call must not block the entire application. */}
+                  <div><Label>SSN</Label>
+                    <input className={inputCls} placeholder="•••-••-••••" value={form.owner_ssn} onChange={(e) => set("owner_ssn", e.target.value)} />
+                    {!form.owner_ssn.trim() && (
+                      <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                        Blank prints as a raw tag on the signed document.
+                      </p>
+                    )}
+                  </div>
                   <div><Label req>Date of birth</Label>
                     <input type="date" className={inputCls} value={form.owner_dob} onChange={(e) => set("owner_dob", e.target.value)} /></div>
                   <div><Label req>Email</Label>
@@ -852,6 +1064,53 @@ export default function MerchantApplicationModal({
 
         {/* Footer */}
         <div className="p-5 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-b-xl">
+          {/* ── GHL SENT THE WRONG TEMPLATE. ──
+              The document is already with the merchant. Retrying only mints a second
+              wrong one, so the send buttons are locked and the only useful action is a
+              phone call. This is the alarm that did not exist on 2026-07-13. */}
+          {wrongTemplate && (
+            <div className="mb-3 rounded-lg border-2 border-red-500 bg-red-50 dark:bg-red-950/40 p-3">
+              <p className="text-sm font-bold text-red-700 dark:text-red-300">
+                ⚠ WRONG DOCUMENT SENT — do not send again
+              </p>
+              <p className="mt-1 text-[13px] text-red-700 dark:text-red-300">
+                GHL was asked for <b>{wrongTemplate.expected}</b> but actually created{" "}
+                <b>{wrongTemplate.got ?? "an unrecognized document"}</b>.
+              </p>
+              <p className="mt-1.5 text-[13px] text-red-700 dark:text-red-300">
+                <u>Call the merchant now and tell them not to sign it.</u> The deal was{" "}
+                <b>not</b> marked as sent. A GHL workflow is sending the wrong template and must be
+                fixed before any further application goes out.
+              </p>
+            </div>
+          )}
+
+          {/* Post-send verification: what GHL ACTUALLY sent, read back from GHL. */}
+          {sendResult && !wrongTemplate && (
+            sendResult.verification === "confirmed" ? (
+              <div className="mb-3 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 p-3">
+                <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                  <CheckCircleIcon className="w-4 h-4" />
+                  Confirmed — GHL sent <b>{sendResult.template}</b>
+                </p>
+                <p className="mt-0.5 text-[12px] text-emerald-700/80 dark:text-emerald-400/80">
+                  Read back from GHL after the send. The merchant has the right document.
+                </p>
+              </div>
+            ) : (
+              <div className="mb-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3">
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">
+                  Sent — awaiting confirmation
+                </p>
+                <p className="mt-0.5 text-[12px] text-amber-800/90 dark:text-amber-300/90">
+                  The merchant was enrolled, but GHL had not created the document yet when we checked
+                  (expected <b>{sendResult.expected}</b>). This is usually just GHL being slow. Confirm it
+                  landed in GHL → Documents &amp; Contracts.
+                </p>
+              </div>
+            )
+          )}
+
           {error && <p className="text-sm text-red-600 mb-3 whitespace-pre-line">{error}</p>}
           {pendingNote && (
             <button
@@ -887,8 +1146,25 @@ export default function MerchantApplicationModal({
                   All required fields complete — ready to send.
                 </p>
               )}
+              {/* SSN is optional, and this is the ONE consequence of leaving it blank.
+                  A warning, not a gate — the closer decides. */}
+              {!form.owner_ssn.trim() && (
+                <p className="text-xs font-medium text-amber-600 dark:text-amber-400 mt-1">
+                  ⚠ SSN is blank; it will print as a raw tag on the signed document.
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2">
+              {/* A send happened — let the closer leave having SEEN the verdict. */}
+              {sendResult && !wrongTemplate && (
+                <button
+                  type="button"
+                  onClick={onSent}
+                  className="text-sm font-semibold px-4 py-2 rounded-lg bg-emerald-600 text-white hover:opacity-90"
+                >
+                  Done
+                </button>
+              )}
               <button
                 type="button"
                 onClick={saveDraft}
@@ -900,8 +1176,12 @@ export default function MerchantApplicationModal({
               <button
                 type="button"
                 onClick={sendToMerchant}
-                disabled={busy !== null || loading || !canSend}
-                title={canSend ? "Send the application to the merchant to e-sign" : "Fill all required (*) fields first"}
+                disabled={busy !== null || loading || !canSend || sendLocked}
+                title={
+                  sendLocked
+                    ? "Locked — GHL sent the wrong document. Fix the GHL workflow before sending again."
+                    : canSend ? "Send the application to the merchant to e-sign" : "Fill all required (*) fields first"
+                }
                 className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
               >
                 <PaperAirplaneIcon className="w-4 h-4" />
@@ -922,8 +1202,10 @@ export default function MerchantApplicationModal({
             <button
               type="button"
               onClick={sendBlank}
-              disabled={busy !== null || loading}
-              title="Send the ORIGINAL fillable application — the merchant completes and e-signs it themselves"
+              disabled={busy !== null || loading || sendLocked}
+              title={sendLocked
+                ? "Locked — GHL sent the wrong document. Fix the GHL workflow before sending again."
+                : "Send the ORIGINAL fillable application — the merchant completes and e-signs it themselves"}
               className={`text-sm font-semibold px-4 py-2 rounded-lg border disabled:opacity-50 inline-flex items-center gap-1.5 ${
                 blankArmed
                   ? "border-amber-500 bg-amber-500 text-white hover:opacity-90"

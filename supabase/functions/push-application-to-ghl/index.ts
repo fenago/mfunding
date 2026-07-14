@@ -22,6 +22,7 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields, ghlFetch, addContactTags,
   lastEmailFailure, bounceMessage, recordEmailOutcome,
 } from "../_shared/ghl.ts";
+import type { GhlConfig } from "../_shared/ghl.ts";
 
 // TWO PARALLEL DOC PATHS (parallel GHL workflows):
 //  · MCA 04  — SELF-FILL: was SUPPOSED to send the original fillable application
@@ -39,7 +40,115 @@ const MCA_04B_WORKFLOW_ID = "afc21762-6879-4de1-89a2-82cc77479bfa";
 const PREFILL_TAG = "app-prefilled";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ⚠️ INCIDENT 2026-07-13 — THE SELF-FILL PATH IS DISABLED. READ BEFORE RE-ENABLING.
+// POST-SEND VERIFICATION — the safety net this system never had.
+//
+// Until now, NOTHING ever checked what GHL actually sent. We enrolled the contact,
+// GHL answered 200, and we told the closer "sent ✅". A 200 on an enrollment means
+// only that GHL ACCEPTED THE ENROLLMENT — it says nothing about which document the
+// workflow then chose to mint. On 2026-07-13 that gap put a contract made of raw
+// {{merge tags}} in front of five real merchants, and one of them SIGNED it. It went
+// unnoticed for hours because every screen in this app said the send had succeeded.
+//
+// So we now read the documents BACK from GHL and confirm the template by name.
+// Verification is evidence, not optimism: we only report "confirmed" for a document
+// we actually saw. Anything else is reported honestly as unconfirmed, and a document
+// that is the WRONG template for the path the closer chose fails the whole call.
+const DOC_PREFILL = /04B\s*MCA\s*PREFILL/i;
+const DOC_SELF_FILL = /MCA[\s_-]*Merchant[\s_-]*Funding[\s_-]*Application/i;
+// Rides along on BOTH paths, so it can never settle WHICH application went out.
+const DOC_COMPANION = /broker\s*compensation\s*disclosure/i;
+
+type Verification = "confirmed" | "unconfirmed" | "wrong_template";
+type GhlDoc = {
+  name?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  recipients?: Array<{ id?: string; email?: string }>;
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Ask GHL what it ACTUALLY created for this contact, and confirm it is the template
+ * the closer asked for.
+ *
+ * Enrollment is async — GHL takes a few seconds to mint the document — so we poll
+ * with a short backoff. A document that hasn't appeared inside the window is NOT a
+ * failure: GHL is often just slow, and crying wolf on a send that was fine would
+ * train closers to ignore the one alarm that matters. That case reports
+ * "unconfirmed" and the UI says "sent, not yet confirmed" — honest, not alarming.
+ *
+ * `sinceMs` scopes us to documents minted by THIS send. Without it, a re-send would
+ * happily "confirm" itself against the document from the PREVIOUS send and we'd be
+ * right back to asserting things we haven't checked.
+ */
+async function verifyDocumentSent(
+  cfg: GhlConfig,
+  contactId: string,
+  email: string,
+  blank: boolean,
+  sinceMs: number,
+): Promise<{ verification: Verification; template: string | null }> {
+  // blank = self-fill path (fillable app). Otherwise the pre-filled 04B.
+  const expected = blank ? DOC_SELF_FILL : DOC_PREFILL;
+  const other = blank ? DOC_PREFILL : DOC_SELF_FILL;
+  const wantEmail = email.trim().toLowerCase();
+
+  const deadline = Date.now() + 15_000;
+  let delay = 1_500;
+
+  for (;;) {
+    await sleep(delay);
+
+    // Same endpoint + limit cap (21) that ghl-docs-status documents and relies on.
+    const res = await ghlFetch<{ documents?: GhlDoc[] }>(
+      cfg,
+      "GET",
+      `/proposals/document?locationId=${cfg.locationId}&limit=20`,
+    );
+
+    if (res.ok) {
+      const mine = (res.data?.documents ?? []).filter((d) => {
+        const ts = Date.parse(d.createdAt ?? d.updatedAt ?? "");
+        // A document from an EARLIER send is not evidence about THIS one.
+        if (!Number.isFinite(ts) || ts < sinceMs) return false;
+        return (d.recipients ?? []).some(
+          (r) => r.id === contactId || (r.email ?? "").trim().toLowerCase() === wantEmail,
+        );
+      });
+
+      // The disclosure accompanies both paths — exclude it before judging.
+      const apps = mine.filter((d) => !DOC_COMPANION.test(d.name ?? ""));
+
+      const right = apps.find((d) => expected.test(d.name ?? ""));
+      if (right) return { verification: "confirmed", template: right.name ?? null };
+
+      // The other known application template, or ANY unrecognized document that is
+      // not the disclosure — either way it is not what the closer asked to send.
+      const wrong = apps.find((d) => other.test(d.name ?? "")) ?? apps[0];
+      if (wrong) return { verification: "wrong_template", template: wrong.name ?? null };
+    }
+
+    if (Date.now() >= deadline) return { verification: "unconfirmed", template: null };
+    delay = Math.min(Math.round(delay * 1.6), 4_000);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠️ INCIDENT 2026-07-13 — historical record. READ BEFORE TOUCHING THE DOC PATHS.
+//
+// STATUS UPDATE (2026-07-13, verified live against t7NmVR4WCy927j4Zon4b):
+// The self-fill path is NOT disabled — the header below is the original writeup and
+// its final claim ("the fillable application has never once gone out") is no longer
+// true. Once enrollment-only delivery was restored, self-fill began minting the
+// correct template: "MCA_Merchant_Funding_Application" documents now exist in the
+// location (2026-07-13T20:36:06Z and 2026-07-14T00:14:14Z, both to the test contact).
+// Delivery is this function's job, via direct enrollment — never a pipeline-stage
+// trigger. That is the whole lesson of the incident, and it is what the code does.
+//
+// What was missing even after the fix: nobody ever checked WHAT GHL ACTUALLY SENT.
+// That is now done — see verifyDocumentSent() below, which reads the document back
+// and refuses to report success for a template it did not see.
 //
 // The comment above describes what the GHL workflows are SUPPOSED to do. It is
 // not what they actually do, and a real merchant paid for the difference.
@@ -95,7 +204,11 @@ const REQUIRED_FOR_PREFILL: Array<[string, string]> = [
   ["business_state", "Business state"], ["business_zip", "Business ZIP"],
   ["owner_first_name", "Owner first name"], ["owner_last_name", "Owner last name"],
   ["owner_title", "Owner title"], ["owner_ownership_pct", "Ownership %"],
-  ["owner_ssn", "Owner SSN"], ["owner_dob", "Owner date of birth"],
+  // owner_ssn is deliberately NOT required (owner's call, 2026-07-13). It still
+  // merges when present; when blank, GHL prints the literal
+  // "{{contact.social_security_number}}" on the signed document. The closer is warned
+  // about that next to the Send button and decides — it does not block the send.
+  ["owner_dob", "Owner date of birth"],
   ["owner_dl_number", "Driver's license number"], ["owner_email", "Owner email"],
   ["owner_phone", "Owner cell phone"], ["owner_home_address", "Owner home address"],
   ["owner_home_city", "Owner home city"], ["owner_home_state", "Owner home state"],
@@ -479,6 +592,10 @@ Deno.serve(async (req) => {
   //    exactly as before — no behavior change, no double send. And with GHL
   //    re-enrollment OFF (the same assumption the resend path makes) a direct
   //    enroll dedupes against any stage-move trigger, so the merchant gets one send.
+  // Everything GHL mints from here on belongs to THIS send. The 5s slack absorbs
+  // clock skew between us and GHL without reaching back to a previous send's document.
+  const sendStartedMs = Date.now() - 5_000;
+
   let reenrolled: boolean | undefined;
   let enrollDirect = false;
   if (blank) {
@@ -531,7 +648,58 @@ Deno.serve(async (req) => {
     if (!wf.ok) return json({ error: `Could not enroll the merchant into the prefill doc workflow (MCA 04B): ${wf.error ?? "enrollment failed"} — the document was NOT sent.` }, 502);
   }
 
-  // Audit trail (best-effort).
+  // ── VERIFY WHAT GHL ACTUALLY SENT. ──
+  // The enrollment above returned ok. That is NOT the same as the right document
+  // going out, and the difference is what a real merchant signed on 2026-07-13.
+  const expectedName = blank ? "MCA_Merchant_Funding_Application" : "04B MCA PREFILL";
+  const { verification, template } = await verifyDocumentSent(
+    cfg, contactId, merchantEmail, blank, sendStartedMs,
+  );
+
+  // ── WRONG TEMPLATE → FAIL LOUDLY. ──
+  // GHL minted a document for this merchant that is NOT the one the closer asked for.
+  // The document is already out — we cannot recall it — but we refuse to report
+  // success, we refuse to let the caller stamp the deal as sent, and we say plainly
+  // what landed. Retrying would only mint a second wrong document, so we say so.
+  if (verification === "wrong_template") {
+    const got = template ?? "an unrecognized document";
+    // The dangerous direction: the PREFILL template against a contact we deliberately
+    // did NOT prefill. Every merge tag renders as literal "{{contact.*}}" text.
+    const rawTags = blank && DOC_PREFILL.test(template ?? "");
+    const detail =
+      `GHL was asked to send the ${blank ? "fillable self-fill application" : "pre-filled application"} ` +
+      `("${expectedName}") to ${merchantEmail}, but the document it actually created is "${got}".` +
+      (rawTags
+        ? ` That is the PREFILL template on a contact with nothing prefilled — the merchant is looking at a ` +
+          `contract full of raw {{merge tags}}. This is the 2026-07-13 failure repeating.`
+        : ``);
+
+    try {
+      await db.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: dealId,
+        interaction_type: "note",
+        subject: "application:wrong-template-sent",
+        content: `WRONG DOCUMENT SENT. ${detail} The deal was NOT marked as sent. ` +
+          `A GHL workflow is sending a template that does not match the path this code requested — ` +
+          `it must be repaired in GHL before any further application is sent.`,
+        logged_by: caller.id,
+      });
+    } catch { /* best-effort */ }
+
+    return json({
+      error: `WRONG DOCUMENT SENT — do NOT click send again. ${detail} ` +
+        `The deal has NOT been marked as sent. Clicking send again will only put a second wrong document ` +
+        `in front of the merchant. Call them and tell them not to sign it, then have the GHL workflow fixed.`,
+      verification,
+      verified_template: template,
+      expected_template: expectedName,
+      contactId,
+      dealId,
+    }, 502);
+  }
+
+  // Audit trail (best-effort). Records what we VERIFIED, not what we assumed.
   try {
     await db.from("activity_log").insert({
       entity_type: "deal",
@@ -543,7 +711,10 @@ Deno.serve(async (req) => {
         : `Pushed ${fields.length} application fields to the merchant's GHL contact for e-signature.`)
         + (enrollDirect
           ? ` ${resend ? "Re-enrolled" : "Enrolled"} in ${blank ? "MCA 04" : "MCA 04B"} directly (${reenrolled ? "ok" : "failed"}${!resend && blank ? ", no opportunity yet" : ""}).`
-          : ` Delivery left to the Application Sent stage trigger to fire MCA 04 (deal already has an opportunity).`),
+          : ` Delivery left to the Application Sent stage trigger to fire MCA 04 (deal already has an opportunity).`)
+        + (verification === "confirmed"
+          ? ` VERIFIED: GHL created "${template}" for ${merchantEmail}.`
+          : ` NOT YET CONFIRMED: no document from GHL within 15s — expected "${expectedName}". Check GHL → Documents & Contracts.`),
       logged_by: caller.id,
     });
   } catch { /* best-effort */ }
@@ -551,8 +722,14 @@ Deno.serve(async (req) => {
   // enrolled_via tells the caller how the doc was (or will be) delivered:
   //  · "direct"        — we enrolled the contact into the workflow ourselves
   //  · "stage_trigger" — the caller's move to Application Sent will fire MCA 04
+  // verification tells the caller what GHL ACTUALLY DID:
+  //  · "confirmed"   — we read the document back and it is the right template
+  //  · "unconfirmed" — nothing visible yet; sent, but do not claim it landed
   return json({
     ok: true, dealId, contactId, fieldsPushed: fields.length, blank, reenrolled,
     enrolled_via: enrollDirect ? "direct" : "stage_trigger",
+    verification,
+    verified_template: template,
+    expected_template: expectedName,
   });
 });
