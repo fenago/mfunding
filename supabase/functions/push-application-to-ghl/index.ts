@@ -221,7 +221,9 @@ const REQUIRED_FOR_PREFILL: Array<[string, string]> = [
   // "{{contact.social_security_number}}" on the signed document. The closer is warned
   // about that next to the Send button and decides — it does not block the send.
   ["owner_dob", "Owner date of birth"],
-  ["owner_dl_number", "Driver's license number"], ["owner_email", "Owner email"],
+  // DL number optional (owner's call) — the merchant uploads a photo of the licence
+  // with their stips, so the number needn't gate the send.
+  ["owner_email", "Owner email"],
   ["owner_phone", "Owner cell phone"], ["owner_home_address", "Owner home address"],
   ["owner_home_city", "Owner home city"], ["owner_home_state", "Owner home state"],
   ["owner_home_zip", "Owner home ZIP"],

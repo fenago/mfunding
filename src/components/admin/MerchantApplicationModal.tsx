@@ -155,8 +155,11 @@ const REQUIRED_KEYS: (keyof AppForm)[] = [
   "business_legal_name", "business_type", "ein", "business_start_date", "industry",
   "business_phone", "business_email", "business_address", "business_city", "business_state", "business_zip",
   // Owner / guarantor
+  // DL number is OPTIONAL (owner's call): the merchant sends a PHOTO of the licence
+  // with their stips anyway, so making a closer transcribe the number on the phone is
+  // double work. Blank on the 04B path = raw {{tag}} on the doc — warned, not gated.
   "owner_first_name", "owner_last_name", "owner_title", "owner_ownership_pct", "owner_dob",
-  "owner_dl_number", "owner_email", "owner_phone",
+  "owner_email", "owner_phone",
   "owner_home_address", "owner_home_city", "owner_home_state", "owner_home_zip",
   // Banking
   "bank_name", "bank_routing_number", "bank_account_number",
@@ -703,10 +706,7 @@ export default function MerchantApplicationModal({
   // form needed), and the merchant completes the rest as fillable fields on the
   // document itself: EIN, SSN, addresses, banking. The closer types NOTHING.
   // Two-click arm/confirm, same as the blank path — it sends a real contract.
-  const [partialArmed, setPartialArmed] = useState(false);
   async function sendPartial() {
-    if (!partialArmed) { setPartialArmed(true); setTimeout(() => setPartialArmed(false), 6000); return; }
-    setPartialArmed(false);
     if (!merchantEmail) {
       setError("This merchant has no email yet — add one via 'Edit lead info' first.");
       return;
@@ -1209,11 +1209,15 @@ export default function MerchantApplicationModal({
                   All required fields complete — ready to send.
                 </p>
               )}
-              {/* SSN is optional, and this is the ONE consequence of leaving it blank.
-                  A warning, not a gate — the closer decides. */}
-              {!form.owner_ssn.trim() && (
+              {/* SSN + DL are optional, and this is the ONE consequence of leaving them
+                  blank on the FULL-prefill (04B) doc, whose lines are merge tags. A
+                  warning, not a gate — the closer decides. */}
+              {(!form.owner_ssn.trim() || !form.owner_dl_number.trim()) && (
                 <p className="text-xs font-medium text-amber-600 dark:text-amber-400 mt-1">
-                  ⚠ SSN is blank; it will print as a raw tag on the signed document.
+                  ⚠ {[!form.owner_ssn.trim() && "SSN", !form.owner_dl_number.trim() && "Driver's license #"]
+                    .filter(Boolean)
+                    .join(" and ")}{" "}
+                  blank — will print as a raw tag on the prefilled (04B) document. Fine on a partial send.
                 </p>
               )}
             </div>
@@ -1271,18 +1275,10 @@ export default function MerchantApplicationModal({
               onClick={sendPartial}
               disabled={busy !== null || loading}
               title="Send the 04C partial application — lead fields prefilled, merchant completes the rest"
-              className={`text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 inline-flex items-center gap-1.5 ${
-                partialArmed
-                  ? "bg-amber-500 text-white hover:opacity-90"
-                  : "bg-mint-green text-white hover:opacity-90"
-              }`}
+              className="text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50 inline-flex items-center gap-1.5 bg-mint-green text-white hover:opacity-90"
             >
               <PaperAirplaneIcon className="w-4 h-4" />
-              {busy === "send" && partialArmed
-                ? "Sending…"
-                : partialArmed
-                  ? "Click again to confirm — send partial"
-                  : "Send partial (merchant completes the rest)"}
+              {busy === "send" ? "Sending…" : "Send partial (merchant completes the rest)"}
             </button>
           </div>
 

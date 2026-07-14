@@ -397,6 +397,41 @@ export default function PlaybooksPage() {
     });
   }
 
+  // "Send PARTIAL" (04C) — the fastest path and the default for a normal lead.
+  // We push the ~14 values the LEAD already gave us (straight from lead_qual, no
+  // application form involved) and the merchant completes the rest — EIN, SSN,
+  // addresses, banking — as fillable fields on the document itself, then signs.
+  // The closer types NOTHING. Same confirm dialog as the other two paths.
+  function sendPartialDocs(resend: boolean) {
+    if (!deal) return;
+    const prevIdx = currentIdx;
+    setConfirmState({
+      title: `Send the PARTIAL application to ${dealName(deal)}?`,
+      body: "We prefill what the lead already told us (name, business, amounts). The merchant completes the rest — EIN, SSN, address, banking — right on the document, then signs. You type nothing.",
+      confirmLabel: resend ? "Resend partial" : "Send partial",
+      onConfirm: async () => {
+        try {
+          const { data, error } = await supabase.functions.invoke("push-application-to-ghl", {
+            body: { dealId: deal.id, partial: true, resend },
+          });
+          if (error) await invokeThrow(error);
+          const res = data as { error?: string; verification?: string; verified_template?: string | null };
+          if (res?.error) throw new Error(res.error);
+          if (!resend) await updateDealStatus(deal.id, "application_sent");
+          await refreshDeal(deal.id);
+          notify(
+            res?.verification === "confirmed"
+              ? `Partial application sent — GHL confirmed "${res.verified_template}". The merchant completes the rest and signs.`
+              : "Partial application sent — awaiting GHL confirmation. The merchant completes the rest and signs.",
+          );
+          if (!resend) celebrateAdvance("application_sent", prevIdx);
+        } catch (e) {
+          notify(e instanceof Error ? e.message : "Could not send the partial application.", "error");
+        }
+      },
+    });
+  }
+
   // Persist a step's structured fields + checklist + note, log it, and advance
   // the stage — everything in one click, without leaving the page.
   async function completeStep(
@@ -763,6 +798,7 @@ export default function PlaybooksPage() {
                 onCloseDeal={() => setShowCloseDeal(true)}
                 onFillApplication={() => setShowApplication(true)}
                 onSendDocs={sendDocs}
+                onSendPartial={sendPartialDocs}
               />
             );
           })}
@@ -2073,6 +2109,7 @@ function StepCard({
   onCloseDeal,
   onFillApplication,
   onSendDocs,
+  onSendPartial,
 }: {
   step: PlaybookStep;
   last: boolean;
@@ -2091,6 +2128,7 @@ function StepCard({
   onCloseDeal: () => void;
   onFillApplication: () => void;
   onSendDocs: (resend: boolean) => void;
+  onSendPartial: (resend: boolean) => void;
 }) {
   const tone = step.tone ? toneStyles[step.tone] : null;
 
@@ -2312,16 +2350,26 @@ function StepCard({
               <b>tap to sign</b>.
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              {/* Path 1 — send the ORIGINAL docs, no prefill (the merchant fills it). */}
+              {/* Path 3 — 04C PARTIAL, the DEFAULT: we prefill the lead's info, the
+                  merchant completes EIN/SSN/banking on the doc. Closer types nothing. */}
+              <button
+                type="button"
+                onClick={() => onSendPartial(false)}
+                title="Prefills everything the lead told us; the merchant completes EIN, SSN, address and banking on the document, then signs. You type nothing."
+                className="inline-flex items-center gap-1.5 rounded-lg bg-mint-green px-3 py-1.5 text-white font-semibold hover:opacity-90"
+              >
+                ⚡ Send partial <span className="font-normal opacity-90">(they finish the rest)</span>
+              </button>
+              {/* Path 1 — send the ORIGINAL docs, no prefill (the merchant fills it all). */}
               <button
                 type="button"
                 onClick={() => onSendDocs(false)}
-                title="Send the application + disclosure + upload link as-is — the merchant fills it out and e-signs. No prefilling."
+                title="Send the application + disclosure + upload link as-is — the merchant fills out everything and e-signs. No prefilling."
                 className="inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-white font-semibold hover:opacity-90"
               >
-                📨 Send the docs now <span className="font-normal opacity-90">(they fill it out)</span>
+                📨 Send blank <span className="font-normal opacity-90">(they fill everything)</span>
               </button>
-              {/* Path 2 — white-glove: closer fills it, then sends to sign. */}
+              {/* Path 2 — white-glove: closer fills it all, merchant just signs. */}
               <button
                 type="button"
                 onClick={onFillApplication}
@@ -2332,7 +2380,9 @@ function StepCard({
               </button>
             </div>
             <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-              Two ways to send: <b>Send the docs now</b> emails the blank application for them to complete — the original, simplest path. <b>Fill it in for them first</b> pre-fills it so they just sign.
+              Three ways to send: <b>Send partial</b> prefills what the lead told us and the merchant completes the
+              rest — the fastest path, use it by default. <b>Send blank</b> emails the empty application for them to
+              fill entirely. <b>Fill it in for them first</b> is white-glove — you type everything, they just sign.
             </p>
           </div>
         )}
