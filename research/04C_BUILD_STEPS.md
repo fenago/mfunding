@@ -1,166 +1,171 @@
 # 04C — Step-by-step build guide (GoHighLevel)
 
-**Who does this:** the owner. GHL's API cannot create document templates or workflows, so this
-cannot be automated. Everything else is on me.
-
+**Who:** the owner. GHL's API cannot create templates or workflows, so this cannot be automated.
 **Time:** ~30 minutes.
-
-**The result:** the closer presses one button. The merchant gets an application that already
-knows who they are and asks them only for what they alone can supply.
+**Every merge tag below was read live from your GHL location — none are guessed.**
 
 ---
 
-## THE SPLIT — 15 we fill, 15 they fill
+## THE ANSWER, UP FRONT
 
 | | |
 |---|---|
-| **Merge tags** (we prefill — merchant CANNOT edit) | **15** |
-| **Fillable fields** (merchant types — we CANNOT prefill) | **15** |
+| **Clone from** | **`04B MCA PREFILL`** — yes |
+| **Merge tags** (we prefill; merchant cannot edit) | **15** |
+| **Fillable fields** (merchant types; we cannot prefill) | **12** |
+| **Total fields on the document** | **27** |
 
-That is the whole design. In GHL a field is **either** a merge tag **or** fillable. Never both.
-A merge tag with no value prints as a literal `{{contact.whatever}}` on the signed contract —
-that is exactly what a real merchant signed today, and it is why 04C must be a new template
-rather than a tweak to 04B.
+*(12 fillable, not 15 — because GHL combines City/State/ZIP into a single field for both the
+business and the owner. Fewer boxes for the merchant. Good.)*
+
+**The rule:** if Synergy already told us → **merge tag**. If only the merchant knows it →
+**fillable field**.
 
 ---
 
-## PART 1 — Build the document template
+## ⚠️ READ THIS FIRST — the landmine on 04B
 
-### Step 1. Clone 04B
-GHL → **Payments → Documents & Contracts → Templates** → find **`04B MCA PREFILL`** →
-**⋯ → Duplicate**. Rename the copy:
+I checked your location. **These custom fields exist**, which means 04B may well reference them:
+
+```
+contact.additional_owner_name          contact.additional_owner_ssn
+contact.additional_owner_dob           contact.additional_owner_title
+contact.additional_owner_cell_phone    contact.additional_owner_ownership_percent_doc
+contact.bank_account_type
+```
+
+**We push NONE of them.** GHL cannot read a template body over the API, so I am blind here — but
+if any of these tags are in 04B, they print as raw `{{contact.additional_owner_ssn}}` **on every
+signed contract, even a fully-filled one.**
+
+**While you're in the editor: search 04B for `additional_owner` and `bank_account_type`.**
+If they're there, either delete them or make them fillable fields. In 04C, make them **fillable**
+(a second owner is real, and only the merchant knows about them).
+
+---
+
+## PART 1 — The document template
+
+### Step 1. Clone
+GHL → **Payments → Documents & Contracts → Templates** → `04B MCA PREFILL` → **⋯ → Duplicate**.
+Rename to:
 
 ```
 04C MCA PARTIAL PREFILL
 ```
 
-### Step 2. LEAVE THESE 15 AS MERGE TAGS
-Do not touch them. These prefill from the lead automatically.
+### Step 2. LEAVE THESE 15 MERGE TAGS ALONE — they prefill from the lead
 
-| Section | Field | Tag |
+| Section | Label on the document | Merge tag (verified) |
 |---|---|---|
-| Business | Legal business name | `{{contact.company_name}}` |
-| Business | Industry / business type | `{{contact.industry}}` |
-| Business | Business phone | `{{contact.phone}}` |
-| Business | Business email | `{{contact.email}}` |
-| Business | Business state *(within City, State, ZIP)* | `{{contact.state}}` |
-| Business | Date business established | `{{contact.date_business_established}}` |
-| Owner | Full name | `{{contact.owner_full_name}}` |
+| Business | Legal Business Name | `{{contact.business_name}}` |
+| Business | Industry / Business Type | `{{contact.industry_doc}}` |
+| Business | Business Phone | `{{contact.business_phone}}` |
+| Business | Business Email | `{{contact.business_email}}` |
+| Business | Date Business Established | `{{contact.date_business_established}}` |
+| Owner | Full Name | `{{contact.owner_full_name}}` |
 | Owner | Title | `{{contact.owner_title__position}}` |
 | Owner | Ownership % | `{{contact.ownership_percent_doc}}` |
-| Owner | Email address | `{{contact.email}}` |
-| Owner | Cell phone | `{{contact.phone}}` |
-| Funding | Amount requested | `{{contact.requested_amount}}` |
-| Funding | Use of funds | `{{contact.use_of_funds}}` |
-| Funding | Average monthly revenue | `{{contact.average_monthly_deposits}}` |
-| Funding | Existing positions / balance | `{{contact.open_positions}}` |
+| Owner | Email Address | `{{contact.owner_email}}` |
+| Owner | Cell Phone | `{{contact.owner_cell_phone}}` |
+| Funding | Amount Requested | `{{contact.amount_requested_doc}}` |
+| Funding | Use of Funds | `{{contact.use_of_funds_doc}}` |
+| Funding | Average Monthly Revenue | `{{contact.avg_monthly_revenue_doc}}` |
+| Funding | Active MCA Positions | `{{contact.active_mca_positions}}` |
+| Funding | Outstanding MCA Balance | `{{contact.total_outstanding_mca_balance}}` |
 
-*(Field names in your template may differ slightly — go by the label, not my wording.)*
+### Step 3. ⭐ CONVERT THESE 12 TO FILLABLE FIELDS — this is the actual work
 
-### Step 3. CONVERT THESE 15 TO FILLABLE FIELDS ⭐ THE ACTUAL WORK
-For each one: **delete the `{{merge tag}}`**, then from the left toolbar drag in a
-**fillable field** (the `(x)` / person icon in the editor toolbar) and assign it to the merchant
-as the recipient.
+For each: **delete the merge tag**, then drag in a **fillable field** from the editor toolbar
+(the person / `(x)` icon) and assign the **merchant** as the recipient.
 
-**BUSINESS — 5**
-1. Federal Tax ID (EIN)
-2. Type of Entity
-3. Business street address
-4. Business city
-5. Business ZIP
+**BUSINESS — 4**
 
-**OWNER / GUARANTOR — 7**
-6. SSN
-7. Date of birth
-8. Driver's licence number
-9. Home address
-10. Home city
-11. Home state
-12. Home ZIP
+| # | Delete this tag | Replace with a fillable field labelled |
+|---|---|---|
+| 1 | `{{contact.federal_tax_id_ein}}` | Federal Tax ID (EIN) |
+| 2 | `{{contact.business_entity}}` | Type of Entity |
+| 3 | `{{contact.business_address}}` | Business Street Address |
+| 4 | `{{contact.business_city_state_zip}}` | Business City, State, ZIP |
+
+**OWNER / GUARANTOR — 5**
+
+| # | Delete this tag | Replace with a fillable field labelled |
+|---|---|---|
+| 5 | `{{contact.social_security_number}}` | SSN |
+| 6 | `{{contact.owner_date_of_birth}}` | Date of Birth |
+| 7 | `{{contact.drivers_license_number}}` | Driver's License # |
+| 8 | `{{contact.owner_home_address}}` | Home Street Address |
+| 9 | `{{contact.owner_city_state_zip}}` | Home City, State, ZIP |
 
 **BANKING — 3**
-13. Bank name
-14. Routing number
-15. Account number
 
-> **Rule of thumb:** if the merchant is the only person on earth who knows it, it's a **fillable
-> field**. If Synergy already told us, it's a **merge tag**.
+| # | Delete this tag | Replace with a fillable field labelled |
+|---|---|---|
+| 10 | `{{contact.bank_name}}` | Bank Name |
+| 11 | `{{contact.bank_routing_number}}` | Routing Number |
+| 12 | `{{contact.bank_account_number}}` | Account Number |
 
-### Step 4. Save. Copy the template ID.
-It's in the URL: `…/proposals-estimates/edit/<TEMPLATE_ID>`
+**PLUS:** if you find any `additional_owner_*` or `bank_account_type` tags (see the landmine
+warning above) → make those **fillable** too.
+
+### Step 4. Save. Copy the template ID from the URL
+`…/payments/proposals-estimates/edit/`**`<TEMPLATE_ID>`**
 
 ---
 
-## PART 2 — Build the workflow
+## PART 2 — The workflow
 
-### Step 5. Create it
-GHL → **Automation → Workflows → + Create Workflow → Start from scratch**. Name it:
+### Step 5. Create
+**Automation → Workflows → + Create Workflow → Start from scratch.** Name:
 
 ```
 MCA 04C PARTIAL
 ```
 
 ### Step 6. 🚨 DO NOT ADD A TRIGGER 🚨
-Leave it showing **"Add new trigger"**. Empty. This is the single most important step on the page.
+Leave it reading **"Add new trigger."** Empty. This is the most important step on the page.
 
-> **Why.** A pipeline-stage trigger fires on *"the deal reached Application Sent"* — which is true
-> of **all three** send paths. It cannot tell them apart, so it will happily send the wrong
-> document. That is precisely what happened today: 04B's stage trigger fired on self-fill deals
-> and five merchants got a prefill contract full of raw `{{tags}}`.
+> A pipeline-stage trigger fires on *"the deal reached Application Sent"* — which is true of
+> **all three** send paths. It cannot tell them apart, so it will send the wrong document.
+> **That is exactly what happened today:** 04B's stage trigger fired on self-fill deals and five
+> merchants received a prefill contract full of raw `{{tags}}`. One signed it.
 >
-> **Delivery is the code's job.** `push-application-to-ghl` knows which document the closer asked
-> for; a stage trigger does not. The workflow fires only when we enroll the contact into it.
+> Delivery is the code's job. The workflow fires only when we enroll the contact into it.
 
-### Step 7. Add the actions (mirror 04B exactly)
-1. **Send documents & contracts** → template **`04C MCA PARTIAL PREFILL`**
-2. **Send documents & contracts** → template **`MCA — Broker Compensation Disclosure`**
+### Step 7. Actions (mirror 04B exactly)
+1. **Send documents & contracts** → `04C MCA PARTIAL PREFILL`
+2. **Send documents & contracts** → `MCA — Broker Compensation Disclosure`
 3. **Email** → the same notification email 04B sends
 
-### Step 8. PUBLISH IT
-Flip **Draft → Publish**, top right. A draft workflow silently does nothing when we enroll a
-contact into it — the enrollment "succeeds" and no document is ever sent.
+### Step 8. PUBLISH
+Flip **Draft → Publish** (top right). **A draft workflow silently does nothing** — the enrollment
+"succeeds" and no document is ever sent. That failure looks exactly like success.
 
-### Step 9. Copy the workflow ID
-It's in the URL: `…/automation/workflow/<WORKFLOW_ID>`
+### Step 9. Copy the workflow ID from the URL
+`…/automation/workflow/`**`<WORKFLOW_ID>`**
 
 ---
 
-## PART 3 — Send me two IDs
+## PART 3 — Send me these
 
 ```
 04C template ID:  ________________________
 04C workflow ID:  ________________________
+
+Did 04B contain additional_owner_* or bank_account_type tags?   YES / NO
 ```
 
-Then I:
-- wire `MCA_04C_WORKFLOW_ID` into `push-application-to-ghl`
-- add the third send path (tag `app-partial`, enroll 04C **directly** — never a stage trigger)
-- add the **"Send partial — merchant completes the rest"** button, and make it the **default**
-- verify all three paths end-to-end **on the test contact only**
+Then I wire in the third path (enroll 04C **directly** — never a stage trigger), add the
+**"Send partial"** button and make it the default, and verify all three paths **on the test
+contact only**.
 
 ---
 
-## PART 4 — While you're in there (5 minutes, prevents a repeat)
-
-**Open `04B MCA PREFILL` and read every merge tag in it.**
-
-GHL will not let me read a template body over the API — this is the one thing I am blind to.
-If 04B contains tags for fields **we do not push**, they will print as raw `{{tags}}` **even on a
-fully-filled application**. Specifically check for:
-
-- an **Additional Owner** block — `{{contact.additional_owner_name}}` / `_ssn` / `_dob`
-  (all three of those custom fields exist in your location, so the template may well reference them)
-- `{{contact.bank_account_type}}`
-
-If either is there, tell me and I'll either push those fields or you delete them from the
-template. **This is a live landmine on the path you use most.**
-
----
-
-## The three paths, once this is done
+## The three paths, once this is live
 
 | Button | Use when | Closer types | Merchant fills |
 |---|---|---|---|
-| **Send partial** ⭐ *(default)* | You have the lead. Most deals. | **0 fields** | **15** |
-| **Send to e-sign** (04B) | Merchant on the phone, you got everything | 15 fields | **0** — just signs |
-| **Send blank** (MCA 04) | You never reached them | 0 fields | **30** |
+| **Send partial** ⭐ *default* | You have the lead. **Most deals.** | **0** | **12** |
+| **Send to e-sign** (04B) | Merchant on the phone, you got everything | ~14 | **0** — just signs |
+| **Send blank** (MCA 04) | You never reached them | 0 | everything |
