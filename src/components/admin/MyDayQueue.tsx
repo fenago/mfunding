@@ -608,6 +608,34 @@ function QueueCard({
         </div>
       )}
 
+      {/* The two numbers a closer sizes a call with — revenue and the ask — plus the
+          MULTIPLE between them, which is the instant realism read: an advance sizes
+          off monthly revenue (~70-120%), so ≤1.2× is in range, ≤1.5× is a stretch,
+          and beyond that the first job of the call is resetting the expectation. */}
+      {(() => {
+        const rev = Number(deal.customer?.monthly_revenue ?? 0);
+        const ask = Number(deal.amount_requested ?? 0);
+        if (!rev && !ask) return null;
+        const mult = rev > 0 && ask > 0 ? ask / rev : null;
+        const tone =
+          mult === null ? "text-gray-500 dark:text-gray-400"
+          : mult <= 1.2 ? "text-emerald-600 dark:text-emerald-400"
+          : mult <= 1.5 ? "text-amber-600 dark:text-amber-400"
+          : "text-red-600 dark:text-red-400";
+        return (
+          <p className="mt-1 text-[11px] text-gray-600 dark:text-gray-300">
+            {rev > 0 && <><b>${Math.round(rev / 1000)}K</b>/mo revenue</>}
+            {rev > 0 && ask > 0 && " · "}
+            {ask > 0 && <>asking <b>${Math.round(ask / 1000)}K</b></>}
+            {mult !== null && (
+              <span className={`ml-1 font-semibold ${tone}`}>
+                ({mult.toFixed(1)}×{mult > 1.5 ? " — reset the ask" : ""})
+              </span>
+            )}
+          </p>
+        );
+      })()}
+
       {/* "Should I call again?" needs one fact: WHEN was the last try. It was buried
           in a DB column; now it's on the card, with the attempt count for context.
           last_attempt_at includes auto-audited GHL dials, so this reflects reality
