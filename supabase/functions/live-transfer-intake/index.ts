@@ -56,6 +56,7 @@ import {
 } from "../_shared/ghl.ts";
 import { ensureMerchantPortalUser } from "../_shared/merchantPortal.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
+import { parseStatedTimeET, nextEtOccurrenceIso } from "../_shared/bestTime.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config (kept simple, top of file) ────────────────────────────────────────
@@ -888,6 +889,42 @@ async function provisionPortal(db: SupabaseClient, customerId: string): Promise<
   }
 }
 
+/**
+ * AUTO-SCHEDULE THE MERCHANT'S OWN CALL TIME.
+ *
+ * Every Synergy lead answers "What is the best time to reach you?" — "4:00PM CST",
+ * "10am PST" — in the MERCHANT'S OWN timezone. That answer used to live only as
+ * display text; a human had to read it and book the callback by hand, and when they
+ * didn't, the promise existed nowhere: not in callback_at, not on the GHL calendar.
+ *
+ * Now: if it parses CONSERVATIVELY (unambiguous time + recognized US zone — see
+ * _shared/bestTime.ts, whose rules mirror src/utils/time.ts and are the law), it
+ * becomes deals.callback_at at the NEXT occurrence of that Eastern wall time
+ * (today if still ≥30 min ahead in ET, else tomorrow — the rule is written down in
+ * nextEtOccurrenceIso). The existing callback-calendar-sync sweep then projects it
+ * onto the closer's GHL calendar within ~5 minutes. Unparseable → callback_at stays
+ * NULL and the raw text keeps showing on the My Day card for a human to act on.
+ *
+ * INTERNAL ONLY — this schedules OUR side. Nothing is sent to the merchant.
+ * NEVER overwrites an existing callback_at (callers must check first): a time a
+ * closer set by hand is a promise already made.
+ */
+function scheduleFromBestTime(bestTime: string): { callbackAt: string | null; note: string } {
+  if (!bestTime) return { callbackAt: null, note: "" };
+  const parsed = parseStatedTimeET(bestTime);
+  if (!parsed) {
+    return {
+      callbackAt: null,
+      note: `Best-time auto-schedule: "${bestTime}" did not parse conservatively (needs an unambiguous time + a US zone) — callback_at left NULL for a human to set.`,
+    };
+  }
+  const callbackAt = nextEtOccurrenceIso(parsed.hour, parsed.minute);
+  return {
+    callbackAt,
+    note: `Best-time auto-schedule: "${bestTime}" → callback_at ${callbackAt} (next ET occurrence of ${parsed.hour}:${String(parsed.minute).padStart(2, "0")} ET; calendar sync will project it to the closer's GHL calendar).`,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -1424,11 +1461,22 @@ Deno.serve(async (req) => {
       }
 
       const { data: curDeal } = await db.from("deals").select("*").eq("id", dup.id).maybeSingle();
+      let dedupeCallbackNote = "";
       if (curDeal) {
         const dpatch: Record<string, unknown> = { lead_qual: lead.raw, temperature: "hot" };
         const d = curDeal as Record<string, unknown>;
         if ((d.amount_requested == null) && lead.requestedAmount != null) dpatch.amount_requested = lead.requestedAmount;
         if ((d.use_of_funds == null || d.use_of_funds === "") && lead.useOfFunds) dpatch.use_of_funds = lead.useOfFunds;
+        // Auto-schedule the merchant's stated best time — ONLY into a gap. An
+        // existing callback_at is a promise (human-set or already auto-set) and is
+        // never overwritten by a re-delivery of the same lead.
+        if (d.callback_at == null) {
+          const sched = scheduleFromBestTime(lead.bestTime);
+          if (sched.callbackAt) dpatch.callback_at = sched.callbackAt;
+          dedupeCallbackNote = sched.note ? ` ${sched.note}` : "";
+        } else if (lead.bestTime) {
+          dedupeCallbackNote = ` Existing callback_at (${d.callback_at}) kept — intake never overwrites a scheduled callback.`;
+        }
         // If this email classifies the merchant differently than the deal we matched
         // (the vendor's newer word, or a sharper classifier on our side), the deal is
         // WRONG about which product this is — and the whole SLA hangs off that. Correct
@@ -1451,7 +1499,7 @@ Deno.serve(async (req) => {
         subject: kcfg.activitySubject.replace(":intake", ":dedupe"),
         content:
           `Duplicate ${kcfg.kind} intake — no second deal created (same ${lead.email ? "email" : "phone"} within ${DEDUPE_WINDOW_DAYS}d), ` +
-          `but the record was REFRESHED from this email. Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.`,
+          `but the record was REFRESHED from this email. Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.${dedupeCallbackNote}`,
       }).then(() => {}, () => {});
       await logIntake(db, logBase && {
         ...logBase,
@@ -1576,6 +1624,11 @@ Deno.serve(async (req) => {
   }
 
   // ── Create the DEAL — born HOT with a 5-minute call clock ──
+  // The merchant's stated best time becomes the scheduled callback at birth (a new
+  // deal has no callback_at, so "never overwrite" is trivially honored here). My
+  // Day's classify() explicitly lets the 5-minute EMAIL clock outrank this future
+  // callback on an untouched lead — the two instructions coexist on one card.
+  const bestTimeSched = scheduleFromBestTime(lead.bestTime);
   const now = Date.now();
   const { data: deal, error: dErr } = await db.from("deals").insert({
     customer_id: customerId,
@@ -1605,6 +1658,9 @@ Deno.serve(async (req) => {
     first_call_due_at: (isLiveTransfer && CAN_DISTINGUISH_KINDS)
       ? null
       : new Date(now + FIRST_CALL_SLA_MS).toISOString(),
+    // Their stated best time, machine-scheduled (or null when it didn't parse —
+    // see scheduleFromBestTime). callback-calendar-sync projects this to GHL.
+    callback_at: bestTimeSched.callbackAt,
     lead_qual: lead.raw,
     notes: [
       kcfg.notesHeader,
@@ -1635,7 +1691,7 @@ Deno.serve(async (req) => {
     entity_type: "deal", entity_id: dealId,
     interaction_type: "note",
     subject: kcfg.activitySubject,
-    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${phoneFlag}${adoptNote ? `\n${adoptNote}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
+    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${phoneFlag}${bestTimeSched.note ? `\n${bestTimeSched.note}` : ""}${adoptNote ? `\n${adoptNote}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
   }).then(() => {}, () => {});
 
   // ── LEDGER: this email produced a deal. Written BEFORE the GHL sync so a GHL
@@ -1803,6 +1859,7 @@ Deno.serve(async (req) => {
     customerId,
     campaignId,
     attributionRule,
+    callbackAt: bestTimeSched.callbackAt,
     ghlContactId,
     ghlOpportunityId,
     customFieldsWritten,

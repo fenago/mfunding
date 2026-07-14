@@ -168,11 +168,20 @@ const ZONE_HOURS_FROM_ET: Record<string, number> = {
   hst: -5,
 };
 
-/**
- * "4:00PM CST" → "5:00 PM ET". Returns null when it can't be parsed with confidence,
- * or when the merchant already spoke in Eastern (nothing to convert).
- */
-export function statedTimeInET(raw: string | null | undefined): string | null {
+// ── KEEP IN SYNC ─────────────────────────────────────────────────────────────
+// The parse below (ZONE_HOURS_FROM_ET + parseStatedTimeET) has a Deno twin in
+// supabase/functions/_shared/bestTime.ts, used by live-transfer-intake to
+// auto-schedule deals.callback_at from the merchant's stated best time. Any
+// change to the zone table or the parsing rules MUST be mirrored there, or the
+// intake will schedule calls the UI can't explain (and vice versa).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The machine-readable core of statedTimeInET. shift = hours the stated zone
+ * sits behind Eastern (0 when they spoke in ET); nextDay = the ET wall time
+ * rolled past midnight relative to their stated day ("11pm PST" = 2 AM ET). */
+interface StatedTime { etHour: number; etMinute: number; shift: number; nextDay: boolean }
+
+function parseStated(raw: string | null | undefined): StatedTime | null {
   if (!raw) return null;
   const s = raw.trim().toLowerCase();
 
@@ -186,7 +195,6 @@ export function statedTimeInET(raw: string | null | undefined): string | null {
 
   const shift = ZONE_HOURS_FROM_ET[z[1]];
   if (shift === undefined) return null;
-  if (shift === 0) return null; // already Eastern — nothing useful to add
 
   let hour = Number(m[1]);
   const minute = Number(m[2] ?? 0);
@@ -200,9 +208,34 @@ export function statedTimeInET(raw: string | null | undefined): string | null {
   // Their wall clock → Eastern wall clock.
   let etHour = (hour - shift) % 24;
   if (etHour < 0) etHour += 24;
+  return { etHour, etMinute: minute, shift, nextDay: hour - shift >= 24 };
+}
 
-  const h12 = etHour % 12 === 0 ? 12 : etHour % 12;
-  const suffix = etHour < 12 ? "AM" : "PM";
-  const dayNote = hour - shift >= 24 ? " next day" : "";
-  return `${h12}:${String(minute).padStart(2, "0")} ${suffix} ET${dayNote}`;
+/**
+ * "4:00PM CST" → { hour: 17, minute: 0 } — the merchant's stated best time as an
+ * EASTERN wall-clock time, or null when it can't be parsed with confidence.
+ * Same conservative rules as statedTimeInET (this IS its machine twin), except
+ * an ET-stated time is returned rather than refused: "4:03 PM EST" is a
+ * perfectly schedulable {16, 3} even though there's nothing to *convert*.
+ */
+export function parseStatedTimeET(
+  raw: string | null | undefined,
+): { hour: number; minute: number } | null {
+  const p = parseStated(raw);
+  return p ? { hour: p.etHour, minute: p.etMinute } : null;
+}
+
+/**
+ * "4:00PM CST" → "5:00 PM ET". Returns null when it can't be parsed with confidence,
+ * or when the merchant already spoke in Eastern (nothing to convert).
+ */
+export function statedTimeInET(raw: string | null | undefined): string | null {
+  const p = parseStated(raw);
+  if (!p) return null;
+  if (p.shift === 0) return null; // already Eastern — nothing useful to add
+
+  const h12 = p.etHour % 12 === 0 ? 12 : p.etHour % 12;
+  const suffix = p.etHour < 12 ? "AM" : "PM";
+  const dayNote = p.nextDay ? " next day" : "";
+  return `${h12}:${String(p.etMinute).padStart(2, "0")} ${suffix} ET${dayNote}`;
 }

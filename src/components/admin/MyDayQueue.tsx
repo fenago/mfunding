@@ -82,7 +82,9 @@ function daysPastPromise(promised: string, now: number): number | null {
 
 // Ranking rules — the order here IS the priority (0 = most urgent). A deal that
 // matches none of these never enters the queue.
-function classify(deal: QueueDeal, now: number): Urgency | null {
+// Exported for tests: the precedence rules here (especially the email-clock-vs-
+// callback guard below) are behavior we need to be able to prove without a browser.
+export function classify(deal: QueueDeal, now: number): Urgency | null {
   const subs = deal.submissions ?? [];
   const responded = subs.filter((s) => s.response_at);
   const anyResponded = responded.length > 0;
@@ -113,7 +115,28 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   // a team to ignore red badges — the exact opposite of what a speed-to-lead queue is
   // for. Now it goes quiet until the merchant's time, then comes back at the very top.
   const cbMs = deal.callback_at ? Date.parse(deal.callback_at) - now : null;
-  if (cbMs !== null) {
+
+  // ── THE PRECEDENCE TRAP: a future callback must NOT swallow the 5-minute email
+  // clock on a brand-new lead. ──
+  //
+  // The intake now auto-schedules callback_at from the merchant's stated best time
+  // ("4:00PM CST" → today 5:00 PM ET) the moment a real-time lead is created. If the
+  // snooze branch below ran first — as it used to — that brand-new lead would go
+  // QUIET until 4pm and the rank-0 EMAIL-NOW card (the 5-minute speed-to-lead window
+  // we literally pay Synergy for) would never show. Silent, plausible, and it kills
+  // speed-to-lead on exactly the leads that carry a stated call time, i.e. all of them.
+  //
+  // So: while the lead is untouched (status new, no attempt logged) and its email
+  // clock exists, the first-touch branches fire FIRST and the card states the whole
+  // plan (email now · call at their time — it's on the calendar). The moment an
+  // attempt is logged, first_attempt_at is set, this guard drops away, and the
+  // normal callback snooze/resurface takes over. A callback that is already DUE
+  // (cbMs <= 0) is never bypassed — "call them now" and "email now" agree.
+  const emailClockFirst =
+    deal.status === "new" && !deal.first_attempt_at && !!deal.first_call_due_at &&
+    cbMs !== null && cbMs > 0;
+
+  if (cbMs !== null && !emailClockFirst) {
     // "📅 on calendar": the GHL appointment reflects THIS exact instant. A stale
     // tick after a reschedule would be a lie, so it compares values, not existence
     // (callback_synced_at stores the synced instant — see the migration comment).
@@ -186,12 +209,24 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
     // stated availability and gave them no way to satisfy both.
     const dueMs = deal.first_call_due_at ? Date.parse(deal.first_call_due_at) - now : 0;
     const bestTime = bestTimeToCall(deal);
+    // The whole plan on one card (see emailClockFirst above): when the intake has
+    // already booked their stated time as a callback, say so — EMAIL NOW, then the
+    // call is at a known ET instant, and it's on (or heading to) the closer's
+    // GHL calendar. Only claim "on your calendar" when the sync has actually
+    // confirmed THIS instant; freshly-set callbacks ride the 5-min sweeper.
+    const plannedCall = emailClockFirst
+      ? (() => {
+          const onCal = !!deal.callback_ghl_event_id && !!deal.callback_synced_at &&
+            Date.parse(deal.callback_synced_at) === Date.parse(deal.callback_at!);
+          return `then call at ${timeET(deal.callback_at!)} — ${onCal ? "on your calendar" : "calendar sync pending"}`;
+        })()
+      : null;
     return {
       rank: 0,
       badge: dueMs > 0 ? `⏱ REAL-TIME · EMAIL NOW · ${countdown(dueMs)}` : "⏱ REAL-TIME · EMAIL OVERDUE",
       why: dueMs > 0
-        ? `Nobody is on the phone. Send them an email inside the 5-minute window${bestTime ? `, then call at ${bestTime} — the time they asked for` : " — then call them"}.`
-        : `Past the 5-minute email window — send it now${bestTime ? `, and call at ${bestTime} (their stated time)` : ""}.`,
+        ? `Nobody is on the phone. EMAIL NOW inside the 5-minute window, ${plannedCall ?? (bestTime ? `then call at ${bestTime} — the time they asked for` : "then call them")}.`
+        : `Past the 5-minute email window — send it now, ${plannedCall ?? (bestTime ? `and call at ${bestTime} (their stated time)` : "then call them")}.`,
       since: deal.created_at,
       tone: "red",
       countdownDue: isRealtime ? deal.first_call_due_at ?? undefined : undefined,
