@@ -228,7 +228,10 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
       since: deal.last_attempt_at ?? deal.first_attempt_at,
       tone: "amber",
       callWindow: bestTimeToCall(deal),
-      lane: "new",
+      // FOLLOW-UP, not "new": first touch means NEVER touched. A lead dialed three
+      // times is a chase — the owner found a 3-attempt, 58-minutes-worked lead still
+      // parked under "NEW WORK · FIRST TOUCH", which makes the lane label a lie.
+      lane: "followup",
     };
   }
 
@@ -969,11 +972,12 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   const followUps = useMemo(() => items.filter((i) => laneOf(i.u) === "followup"), [items]);
   const newWork = useMemo(() => items.filter((i) => laneOf(i.u) === "new"), [items]);
 
-  // Follow-up leads (the lane the owner cares most about) — EXCEPT when there's a
-  // 🔴 CALL NOW on the clock, which must never sit below a header. Then new work
-  // goes first so the most urgent card on the board is visible without scrolling.
-  const callNowFirst = newWork.some((i) => i.u.rank === 0);
-  const laneOrder: Lane[] = callNowFirst ? ["new", "followup"] : ["followup", "new"];
+  // FIXED ORDER, ALWAYS: New Work on top, Follow-up below. This used to swap the
+  // lanes whenever a rank-0 card existed, so the whole board reshuffled every time a
+  // lead arrived — the owner's verdict: "no more of that flip-flopping back-and-forth
+  // shit." New things appear where new things live; an empty new lane costs one quiet
+  // header line.
+  const laneOrder: Lane[] = ["new", "followup"];
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
