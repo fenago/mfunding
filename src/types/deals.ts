@@ -136,6 +136,11 @@ export interface Deal {
   /** The merchant asked to be called at this time. While it's in the future the deal is
    *  SNOOZED out of the urgent queue; it jumps back to the top the moment it comes due. */
   callback_at?: string | null;
+  /** Who scheduled the callback. 'merchant_stated' = auto-booked from the vendor's
+   *  best-time field — a WINDOW, not a promise (amber copy, downgrades after 3h,
+   *  auto-expires at the end of its Eastern day). 'closer_promised' = a human
+   *  commitment (red copy, never auto-expires). */
+  callback_source?: "merchant_stated" | "closer_promised" | null;
   /** GHL appointment id projecting callback_at onto the "Callbacks — Internal"
    *  calendar (one-way DB→GHL, healed by the 5-min callback-calendar-sync sweep). */
   callback_ghl_event_id?: string | null;

@@ -343,11 +343,13 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
   let backwardMove = false;
   let backwardMoverName = "";
   let backwardMoverId: string | null = null;
+  // One ordering source for BOTH the backward-move gate and the callback-clearing
+  // "advancing" check below — the deal's own pipeline stage list.
+  const stageOrder = cur ? PIPELINES[cur.deal_type === "vcf" ? "vcf" : "mca"].stages.map((s) => s.key) : [];
   const revivingFromParked = curStatus != null && PARKED_STATUSES.includes(curStatus) && !PARKED_STATUSES.includes(newStatus);
   if (cur && curStatus !== newStatus && !revivingFromParked) {
-    const order = PIPELINES[cur.deal_type === "vcf" ? "vcf" : "mca"].stages.map((s) => s.key);
-    const fromIdx = order.indexOf(cur.status);
-    const toIdx = order.indexOf(newStatus);
+    const fromIdx = stageOrder.indexOf(cur.status);
+    const toIdx = stageOrder.indexOf(newStatus);
     const backward = toIdx !== -1 && (fromIdx === -1 || toIdx < fromIdx);
     if (backward) {
       const { data: auth } = await supabase.auth.getUser();
@@ -395,8 +397,26 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
     updateData.nurture_at = null;
   }
 
+  // ── A stage move settles the callback. ──
+  // Forward: a deal that just advanced doesn't need a "call them" reminder — the
+  // conversation that mattered evidently happened. Parked: a shelved deal must not
+  // keep a callback (or its GHL calendar event — the sync sweep cancels the
+  // appointment as soon as callback_at goes null; that ghost was Victor Nguyan's
+  // 11am reminder on a nurture'd deal). Backward moves (admin corrections) leave
+  // the callback alone — rewinding a mis-staged deal says nothing about the call.
+  const fromRank = curStatus ? stageOrder.indexOf(curStatus) : -1;
+  const toRank = stageOrder.indexOf(newStatus);
+  const advancing = fromRank !== -1 && toRank !== -1 && toRank > fromRank;
+  if (advancing || PARKED_STATUSES.includes(newStatus)) {
+    updateData.callback_at = null;
+  }
+
   const rows = await mustWrite<Deal>("update deal status", supabase.from("deals").update(updateData).eq("id", id));
   const deal = rows[0];
+  // Cancel/refresh the GHL appointment when the callback was settled by this move.
+  if ("callback_at" in updateData) {
+    supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: id } }).catch(() => {});
+  }
 
   // Audit trail for rewinds — "stage moved backward by <name>: from → to" so the
   // history shows WHO pulled the deal back and from where. Best-effort (tryWrite
@@ -1331,7 +1351,7 @@ export async function logContactAttempt(
 ): Promise<void> {
   const { data: cur } = await supabase
     .from("deals")
-    .select("status, first_attempt_at, contacted_at, contact_attempts")
+    .select("status, first_attempt_at, contacted_at, contact_attempts, callback_at")
     .eq("id", dealId)
     .maybeSingle();
 
@@ -1355,10 +1375,24 @@ export async function logContactAttempt(
 
   if (opts.outcome === "callback") {
     patch.callback_at = opts.callbackAt ?? null;
+    // Set by a human, after talking to (or trying) the merchant — a real commitment.
+    patch.callback_source = "closer_promised";
   }
 
-  // `attempted` sets neither contacted_at nor status: we tried, nobody answered, the
-  // lead is still untouched in every sense that matters to the funnel.
+  // ANY attempt logged AFTER the callback came due settles it. The card existed to
+  // make this call happen; the call happened (answered or not). Leaving the DUE badge
+  // up after the closer demonstrably tried is how red badges stop meaning anything —
+  // the exact disease the SLA-MISSED fix cured last week.
+  if (
+    opts.outcome === "attempted" &&
+    cur?.callback_at &&
+    Date.parse(cur.callback_at) <= Date.now()
+  ) {
+    patch.callback_at = null;
+  }
+
+  // `attempted` (before any due time) sets neither contacted_at nor status: we tried,
+  // nobody answered, the lead is still untouched in every sense the funnel cares about.
 
   await mustWrite("log contact attempt", supabase.from("deals").update(patch).eq("id", dealId));
 
@@ -1396,6 +1430,8 @@ export async function scheduleCallback(
     supabase.from("deals").update({
       callback_at: callbackAtIso,
       callback_invite: opts.invite ?? false,
+      // Scheduled by a person, deliberately — a commitment, not an inference.
+      callback_source: "closer_promised",
     }).eq("id", dealId),
   );
   // Same instant-projection as logContactAttempt: fire-and-forget, never blocking.

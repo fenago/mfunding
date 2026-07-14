@@ -145,20 +145,59 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
     cbMs !== null && cbMs > 0;
 
   if (cbMs !== null && !emailClockFirst) {
+    // ── CALLBACK HONESTY: who scheduled this? ──
+    // 'closer_promised' — a human told the merchant "I'll call you at 2". A real
+    //   commitment: red when due, and it NEVER expires on its own.
+    // 'merchant_stated' — a machine booked the vendor form's "best time to reach
+    //   you". A WINDOW, not a promise: amber while the window is open, quietly
+    //   downgraded once it's clearly missed, auto-expired at end of its ET day
+    //   (callback-calendar-sync). Calling it "you promised" would be a lie, and
+    //   lying red badges are how closers learn to ignore red badges.
+    const merchantStated = deal.callback_source === "merchant_stated";
     // "📅 on calendar": the GHL appointment reflects THIS exact instant. A stale
     // tick after a reschedule would be a lie, so it compares values, not existence
     // (callback_synced_at stores the synced instant — see the migration comment).
     const onCalendar = !!deal.callback_ghl_event_id && !!deal.callback_synced_at &&
       Date.parse(deal.callback_synced_at) === Date.parse(deal.callback_at!);
     if (cbMs > 0) {
-      // SNOOZED. Deliberately calm and deliberately still visible — a promise we made
-      // to a merchant should never vanish from the board entirely.
+      // SNOOZED. Deliberately calm and deliberately still visible — scheduled work
+      // should never vanish from the board entirely. The copy tells the truth about
+      // provenance: an auto-booked window is not a promise anyone made.
       return {
         rank: 6.8,
-        badge: `🕐 Callback at ${timeET(deal.callback_at!)}${onCalendar ? " · 📅 on calendar" : ""}`,
-        why: `They asked you to call at ${timeET(deal.callback_at!)}. It'll jump to the top of My Day when it's due — nothing to do until then.`,
+        badge: `🕐 ${merchantStated ? "Their window" : "Callback"} at ${timeET(deal.callback_at!)}${onCalendar ? " · 📅 on calendar" : ""}`,
+        why: merchantStated
+          ? `Their stated best time — auto-scheduled from the lead${bestTimeToCall(deal) ? ` (they said "${bestTimeToCall(deal)}")` : ""}. It'll surface when the window opens — nothing to do until then.`
+          : `You promised to call at ${timeET(deal.callback_at!)}. It'll jump to the top of My Day when it's due — nothing to do until then.`,
         since: deal.created_at,
         tone: "amber",
+        lane: "followup",
+      };
+    }
+    if (merchantStated) {
+      const overdueMs = -cbMs;
+      if (overdueMs < 3 * HOUR) {
+        // Window OPEN: a good time to dial, not a broken promise. Above routine
+        // follow-ups, below anything red.
+        const stated = bestTimeToCall(deal);
+        return {
+          rank: 2.5,
+          badge: "🕐 Their stated window is open",
+          why: `Their stated window is open${stated ? ` (they said "${stated}")` : ` (${timeET(deal.callback_at!)})`} — good time to try them.`,
+          since: deal.callback_at!,
+          tone: "amber",
+          callWindow: stated,
+          lane: "followup",
+        };
+      }
+      // Window MISSED (3h+). Quiet — end-of-day the sweep clears it with a note.
+      return {
+        rank: 6.5,
+        badge: "🕐 Stated window missed",
+        why: `Their window was ${timeET(deal.callback_at!)} — missed. Try them anyway or reschedule.`,
+        since: deal.callback_at!,
+        tone: "amber",
+        callWindow: bestTimeToCall(deal),
         lane: "followup",
       };
     }

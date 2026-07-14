@@ -143,6 +143,63 @@ Deno.serve(async (req) => {
   try { cfg = await getGhlConfig(db); }
   catch (e) { return json({ error: `GHL not configured: ${e instanceof Error ? e.message : String(e)}` }, 502); }
 
+  // ── END-OF-DAY EXPIRY — merchant_stated ONLY. ──
+  // An auto-booked "best time to reach you" is a WINDOW, not a promise. Once its
+  // Eastern calendar day has fully passed without a logged call, the window is
+  // simply over — keeping the card up teaches closers to ignore the board. So:
+  // clear callback_at here (the cancel path below then removes the GHL event in
+  // THIS same sweep) and leave an activity_log note, because nothing may vanish
+  // silently. closer_promised NEVER expires this way — a human promise stays on
+  // the board until a human deals with it.
+  //
+  // Day boundary is America/New_York, NOT UTC: a 9 PM ET window is still "today"
+  // even though UTC has rolled over, and must survive until the ET midnight sweep.
+  const expired = { count: 0, failed: 0 };
+  {
+    const etDay = (t: string | number) =>
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(new Date(t)); // en-CA → "YYYY-MM-DD", lexically comparable
+    const todayET = etDay(Date.now());
+
+    let eq = db.from("deals")
+      .select("id, deal_number, callback_at")
+      .eq("callback_source", "merchant_stated")
+      .not("callback_at", "is", null);
+    if (onlyDealId) eq = eq.eq("id", onlyDealId);
+    const { data: expRows, error: expErr } = await eq;
+    if (expErr) console.error("[callback-sync] expiry query FAILED", expErr.message);
+
+    for (const r of expRows ?? []) {
+      const cb = r.callback_at as string;
+      if (etDay(cb) >= todayET) continue; // still today (or future) in ET — leave it
+      const { error: clrErr } = await db.from("deals")
+        .update({ callback_at: null })
+        .eq("id", r.id)
+        .eq("callback_at", cb); // race guard: a reschedule since our read wins
+      if (clrErr) {
+        console.error("[callback-sync] expiry clear FAILED", JSON.stringify({ deal: r.deal_number ?? r.id, error: clrErr.message }));
+        expired.failed++;
+        continue;
+      }
+      expired.count++;
+      const whenET = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit",
+      }).format(new Date(cb));
+      // interaction_type MUST be 'note' — the check constraint has no 'system'
+      // value and a bad value fails the insert silently (house rule #2).
+      const { error: logErr } = await db.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: r.id,
+        interaction_type: "note",
+        subject: "Stated call window expired",
+        content: `auto-expired: their stated window (${whenET} ET) passed without a logged call — nothing vanishes silently. Auto-booked from the lead's best-time field; reschedule if still worth chasing.`,
+      });
+      if (logErr) console.error("[callback-sync] expiry note FAILED", JSON.stringify({ deal: r.deal_number ?? r.id, error: logErr.message }));
+    }
+  }
+
   // ── Candidates: any deal with a callback to project OR a lingering event ──
   // (partial-index-backed; the set is tiny). Drift is decided below in code:
   // callback_at !== callback_synced_at, compared as instants.
@@ -166,7 +223,7 @@ Deno.serve(async (req) => {
     (closerRows ?? []).map((c) => [c.user_id as string, c.ghl_user_id as string]),
   );
 
-  const summary = { swept: deals.length, created: 0, updated: 0, cancelled: 0, skipped: 0, failed: [] as { deal: string; error: string }[] };
+  const summary = { swept: deals.length, expired: expired.count, expiry_failed: expired.failed, created: 0, updated: 0, cancelled: 0, skipped: 0, failed: [] as { deal: string; error: string }[] };
 
   for (const d of deals) {
     const label = d.deal_number ?? d.id;

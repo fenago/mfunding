@@ -1472,7 +1472,7 @@ Deno.serve(async (req) => {
         // never overwritten by a re-delivery of the same lead.
         if (d.callback_at == null && !isLiveTransfer) {
           const sched = scheduleFromBestTime(lead.bestTime);
-          if (sched.callbackAt) dpatch.callback_at = sched.callbackAt;
+          if (sched.callbackAt) { dpatch.callback_at = sched.callbackAt; dpatch.callback_source = "merchant_stated"; }
           dedupeCallbackNote = sched.note ? ` ${sched.note}` : "";
         } else if (lead.bestTime) {
           dedupeCallbackNote = ` Existing callback_at (${d.callback_at}) kept — intake never overwrites a scheduled callback.`;
@@ -1667,6 +1667,7 @@ Deno.serve(async (req) => {
     // Their stated best time, machine-scheduled (or null when it didn't parse —
     // see scheduleFromBestTime). callback-calendar-sync projects this to GHL.
     callback_at: bestTimeSched.callbackAt,
+    callback_source: bestTimeSched.callbackAt ? "merchant_stated" : undefined,
     lead_qual: lead.raw,
     notes: [
       kcfg.notesHeader,
