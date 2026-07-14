@@ -1416,7 +1416,15 @@ Deno.serve(async (req) => {
     for (const c of data ?? []) candIds.add(c.id as string);
   }
   if (lead.phone) {
-    const { data } = await db.from("customers").select("id").eq("phone", lead.phone);
+    // Match by EVERY common storage format of the same number, not exact string.
+    // A closer's manual capture stored "8436977747" while the intake normalizes to
+    // "+18436977747" — one character of formatting, and the dedupe minted a duplicate
+    // deal for a merchant already at Application Sent (Nothin' But Waste, MF-2026-0034
+    // ghosting MF-2026-0033). Phone identity is the DIGITS, not the string.
+    const digits = lead.phone.replace(/\D/g, "");
+    const ten = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+    const variants = [...new Set([lead.phone, ten, `1${ten}`, `+1${ten}`])];
+    const { data } = await db.from("customers").select("id").in("phone", variants);
     for (const c of data ?? []) candIds.add(c.id as string);
   }
   let existingCustomerId: string | null = candIds.size ? [...candIds][0] : null;

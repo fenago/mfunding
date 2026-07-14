@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { normalizePhoneForStorage } from "@/lib/phone";
 import { Link } from "react-router-dom";
 import {
   CheckCircleIcon,
@@ -305,7 +306,7 @@ export default function PlaybookCapture({
                 last_name: form.last_name.trim() || null,
                 business_name: form.business_name.trim() || null,
                 email: form.email.trim() || null,
-                phone: form.phone.trim(),
+                phone: normalizePhoneForStorage(form.phone.trim()),
                 status: "lead",
                 source: "other",
                 is_live_transfer: defaults.isLiveTransfer,

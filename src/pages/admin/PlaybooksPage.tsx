@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { normalizePhoneForStorage } from "@/lib/phone";
 import { Link } from "react-router-dom";
 import {
   MapIcon,
@@ -1583,7 +1584,7 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
             last_name: lastName.trim(),
             business_name: businessName.trim() || null,
             email: email.trim(),
-            phone: phone.trim(),
+            phone: normalizePhoneForStorage(phone.trim()),
           })
           .eq("id", deal.customer_id),
       );
