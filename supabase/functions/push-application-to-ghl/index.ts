@@ -449,6 +449,30 @@ function buildFields(app: App): Array<{ id: string; value: string | number }> {
   if (app.has_bankruptcy === false) push(F.bankruptcy_history_radio, "No");
   push(F.bankruptcy_details, s(app.bankruptcy_details));
 
+  // ── RAW-TAG PROOFING for the OPTIONAL fields. ──
+  // Every field above is skipped when empty ("a draft doesn't blank GHL fields") — but
+  // on the 04B document those fields are MERGE TAGS, and GHL prints an empty custom
+  // field as its literal {{tag}} on the signed contract. Required fields are gated
+  // before send; the OPTIONAL ones (DBA, SSN, DL#, the financials block) can be
+  // legitimately skipped by a closer and used to ship raw template syntax.
+  //
+  // So: any optional TEXT doc-field still absent here gets an explicit "N/A", and the
+  // numeric position fields get 0. "DBA: N/A" on a signed application is a true
+  // statement; "DBA: {{contact.dba_doing_business_as}}" is a defect.
+  const orNA = (id: string, value: string | number = "N/A") => {
+    if (!out.some((f) => f.id === id)) out.push({ id, value });
+  };
+  orNA(F.dba);
+  orNA(F.ssn);                       // optional by the owner's call — warned, never gated
+  orNA(F.dl_number);                 // optional — the merchant uploads a photo of it anyway
+  orNA(F.annual_gross_revenue_doc);
+  orNA(F.avg_monthly_deposits_doc);
+  orNA(F.number_of_employees_doc);
+  orNA(F.bankruptcy_details, "None");
+  orNA(F.tax_lien_details, "None");
+  orNA(F.active_mca_positions, 0);          // NUMERICAL — must be a number, not "N/A"
+  orNA(F.total_outstanding_mca_balance, 0); // MONETORY — same
+
   return out;
 }
 
