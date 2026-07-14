@@ -26,6 +26,7 @@ import { XMarkIcon, DocumentTextIcon, PaperAirplaneIcon, CheckCircleIcon } from 
 import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
 import { updateDealStatus } from "../../services/dealService";
+import EnrichmentCard, { type EnrichmentUseField } from "./EnrichmentCard";
 import type { DealWithCustomer } from "../../types/deals";
 
 // supabase.functions.invoke stashes a non-2xx response's JSON body in
@@ -968,6 +969,33 @@ export default function MerchantApplicationModal({
           ) : (
             <>
               {tab === "business" && (
+                <>
+                {/* Business research — apply findings per-field with "Use". Compare-only
+                    once docs are out for signature (onUse withheld), so research can
+                    never mutate an application that is already on paper. entity_hint
+                    and year_started are surfaced by the card but deliberately NOT
+                    mapped: "P.C." is not one of our dropdown values, and a year is not
+                    a start date — a wrong date on a legal document is exactly the
+                    mistake this form exists to prevent. */}
+                <div className="mb-4">
+                  <EnrichmentCard
+                    dealId={deal.id}
+                    customerId={deal.customer_id}
+                    onUse={sentAt ? undefined : (field: EnrichmentUseField, value: string) => {
+                      const MAP: Partial<Record<EnrichmentUseField, keyof AppForm>> = {
+                        street: "business_address",
+                        city: "business_city",
+                        state: "business_state",
+                        zip: "business_zip",
+                        phone: "business_phone",
+                        website: "business_website",
+                        ein: "ein",
+                      };
+                      const key = MAP[field];
+                      if (key) set(key, value);
+                    }}
+                  />
+                </div>
                 <div className="grid sm:grid-cols-2 gap-4">
                   <div className="sm:col-span-2"><Label req>Business legal name</Label>
                     <input className={inputCls} value={form.business_legal_name} onChange={(e) => set("business_legal_name", e.target.value)} /></div>
@@ -1016,6 +1044,7 @@ export default function MerchantApplicationModal({
                   <div><Label>Website</Label>
                     <input className={inputCls} placeholder="https://…" value={form.business_website} onChange={(e) => set("business_website", e.target.value)} /></div>
                 </div>
+                </>
               )}
 
               {tab === "owner" && (

@@ -1255,4 +1255,12 @@ export async function logContactAttempt(
 
   const { error } = await supabase.from("deals").update(patch).eq("id", dealId);
   if (error) throw error;
+
+  // Project the callback onto the closer's GHL calendar IMMEDIATELY (the 5-minute
+  // sweep remains the reliability floor — this just closes the gap between "closer
+  // sets a 1-hour callback" and "it appears on the calendar"). Fire-and-forget:
+  // the calendar must never block or fail the callback itself.
+  if ("callback_at" in patch) {
+    supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: dealId } }).catch(() => {});
+  }
 }

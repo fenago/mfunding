@@ -41,6 +41,8 @@ import PipelineFlow from "../../components/shared/PipelineFlow";
 import PortalAccessChip from "../../components/admin/PortalAccessChip";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
+import LeadGradeChip from "../../components/admin/LeadGradeChip";
+import EnrichmentCard from "../../components/admin/EnrichmentCard";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
@@ -1393,6 +1395,7 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
                   can't upload, can't e-sign. The state AND the one-click fix live
                   here so the closer never leaves the playbook to grant access. */}
               {deal.customer?.id && <PortalAccessChip customerId={deal.customer.id} />}
+              <LeadGradeChip grade={deal.lead_grade} expectedValue={deal.expected_value} reasons={deal.score_reasons} />
               {/* A DEAD merchant email is worth more than a warning — it's the whole
                   deal. A vendor-supplied mailbox that never existed (or that already
                   hard-bounced) will reject the application, the docs and every e-sign.
@@ -1496,6 +1499,13 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
         You're working this lead. Fill in each step below — it saves to the deal, logs the call, and advances the stage. Or
         click a stage above to jump the lead there.
       </p>
+
+      {/* Business research (Firecrawl) — read-only surface here: findings + verdict,
+          no "Use" buttons. Applying values to the record happens inside the
+          application form, where the closer can see the side-by-side. */}
+      <div className="mt-3">
+        <EnrichmentCard dealId={deal.id} customerId={deal.customer_id} />
+      </div>
     </div>
   );
 }

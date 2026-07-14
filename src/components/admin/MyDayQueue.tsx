@@ -4,6 +4,7 @@ import { getOpenDealsForQueue, logContactAttempt, type ContactOutcome, type Queu
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import { dateTimeET, etDateTimeLocalToUtcIso, statedTimeInET, timeET, tomorrowAtEtIso } from "../../utils/time";
+import LeadGradeChip from "./LeadGradeChip";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -559,7 +560,10 @@ function QueueCard({
       )}
 
       <div className="flex items-center justify-between gap-2 mt-1.5">
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
+          <LeadGradeChip grade={deal.lead_grade} expectedValue={deal.expected_value} reasons={deal.score_reasons} />
+        </span>
         <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
       </div>
     </div>
@@ -792,7 +796,12 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         };
       })
       .filter((x): x is QueueItem => x.u !== null)
-      .sort((a, b) => a.u.rank - b.u.rank || Date.parse(a.u.since) - Date.parse(b.u.since));
+      .sort((a, b) =>
+        a.u.rank - b.u.rank ||
+        // Quality tiebreak ONLY (plan §1): among equally urgent cards, the deal worth
+        // more money goes first. Urgency ranks and lanes are untouched.
+        ((b.deal.expected_value ?? -1) - (a.deal.expected_value ?? -1)) ||
+        Date.parse(a.u.since) - Date.parse(b.u.since));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deals, scope, canToggle, effectiveUserId, now, query]);
 
