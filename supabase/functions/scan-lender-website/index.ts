@@ -1,9 +1,44 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+// Authn/Authz (audit #4): this function drives PAID Firecrawl agent jobs, so it
+// must never be anonymously callable. verify_jwt = true at the gateway PLUS this
+// in-code staff role check — belt and braces (config alone has been mis-trusted
+// before). Mirrors the pattern in push-application-to-ghl. Returns null when the
+// caller is authorized staff, or an error Response to send back.
+async function requireStaff(req: Request): Promise<Response | null> {
+  const deny = (error: string, status: number) =>
+    new Response(JSON.stringify({ error }), {
+      status,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const token = authHeader.replace(/^Bearer\s+/i, "");
+  if (!token) return deny("Missing authorization", 401);
+
+  const db = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    { auth: { persistSession: false } },
+  );
+  const { data: userData, error: userErr } = await db.auth.getUser(token);
+  const caller = userData?.user;
+  if (userErr || !caller) return deny("Invalid session", 401);
+
+  const { data: callerProfile } = await db
+    .from("profiles").select("role").eq("id", caller.id).single();
+  const callerRole = callerProfile?.role as string | undefined;
+  if (!callerRole || !["closer", "admin", "super_admin"].includes(callerRole)) {
+    return deny("Forbidden — staff only", 403);
+  }
+  return null;
+}
 
 interface ExtractedLenderData {
   company_name?: string;
@@ -174,7 +209,10 @@ serve(async (req) => {
   }
 
   const startTime = Date.now();
-  console.log("=== SCAN LENDER WEBSITE v14 (Agent+Schema) ===");
+  console.log("=== SCAN LENDER WEBSITE v15 (Agent+Schema, staff-gated) ===");
+
+  const denied = await requireStaff(req);
+  if (denied) return denied;
 
   try {
     const { url } = await req.json();
@@ -187,7 +225,9 @@ serve(async (req) => {
       );
     }
 
-    const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY") || Deno.env.get("VITE_FIRECRAWL_API_KEY");
+    // Key lives ONLY in the Supabase secret store (audit #4 — the old VITE_-named
+    // variant belonged to the client bundle era and is retired).
+    const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
     console.log("API Key found:", firecrawlApiKey ? `Yes (${firecrawlApiKey.length} chars)` : "No");
 
     if (!firecrawlApiKey) {

@@ -39,12 +39,6 @@ verify_jwt = false
 [functions.gemini-chat]
 verify_jwt = false
 
-[functions.scan-lender-website]
-verify_jwt = false
-
-[functions.scan-vendor-website]
-verify_jwt = false
-
 # PRIVILEGED functions (verify_jwt = true): require a signed-in user. The most
 # sensitive (admin-users, submit-to-funders) ALSO enforce role checks in code.
 [functions.admin-users]
@@ -118,6 +112,15 @@ verify_jwt = true
 # call server-side (audit #4 — VITE_GEMINI_API_KEY was in the bundle). Staff-only
 # enforced in code (getUser + profiles.role check). Key from vault via callLLM.
 [functions.recommend-customer]
+verify_jwt = true
+
+# Drive paid Firecrawl agent jobs from the lender/vendor edit modals (audit #4:
+# these were verify_jwt = false, letting ANONYMOUS callers burn Firecrawl credits).
+# Staff-only ALSO enforced in code (getUser + profiles.role) — belt and braces.
+[functions.scan-lender-website]
+verify_jwt = true
+
+[functions.scan-vendor-website]
 verify_jwt = true
 
 # Scrapes a lender website + AI-extracts structured funder data. Moves the old
