@@ -608,6 +608,18 @@ function QueueCard({
         </div>
       )}
 
+      {/* "Should I call again?" needs one fact: WHEN was the last try. It was buried
+          in a DB column; now it's on the card, with the attempt count for context.
+          last_attempt_at includes auto-audited GHL dials, so this reflects reality
+          even when nobody tapped a button. */}
+      {deal.last_attempt_at && (
+        <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+          📞 Last tried <b>{ago(deal.last_attempt_at, now)} ago</b>
+          {(deal.contact_attempts ?? 0) > 0 && <> · {deal.contact_attempts} attempt{(deal.contact_attempts ?? 0) === 1 ? "" : "s"}</>}
+          {deal.contacted_at && <> · reached {ago(deal.contacted_at, now)} ago</>}
+        </p>
+      )}
+
       {/* WHAT HAPPENED? — the thing the app had no way to hear.
           A closer dials a real-time lead and one of three things is true. Until now the
           app modelled none of them, so the red SLA badge sat there forever no matter

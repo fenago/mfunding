@@ -179,19 +179,25 @@ async function syncCallsForDeal(
       // comes back with a duration we didn't have, update the row, and if the finalized
       // duration crosses the answered bar, stamp contacted_at (only if still null:
       // an earlier real conversation always wins).
-      if (c.durationSeconds != null) {
-        const { data: known } = await db.from("ghl_call_log")
-          .select("ghl_message_id, duration_seconds")
-          .eq("ghl_message_id", c.id).maybeSingle();
-        if (known && known.duration_seconds == null) {
-          await db.from("ghl_call_log")
-            .update({ duration_seconds: c.durationSeconds, call_status: c.status })
-            .eq("ghl_message_id", c.id);
-          if (c.status === "completed" && (c.durationSeconds ?? 0) >= CONTACT_MIN_SECONDS) {
-            await db.from("deals")
-              .update({ contacted_at: c.calledAt })
-              .eq("id", dealId).is("contacted_at", null);
-          }
+      // Refresh on ANY finalization, not just duration: GHL writes the record at
+      // ring time as {status:"ringing", duration:null} and settles it after hangup —
+      // sometimes to "no-answer"/"voicemail" with duration STILL null. Gating the
+      // refresh on duration alone froze those records as "ringing" forever, so the
+      // card could never grade the owner's dials at all.
+      const { data: known } = await db.from("ghl_call_log")
+        .select("ghl_message_id, duration_seconds, call_status")
+        .eq("ghl_message_id", c.id).maybeSingle();
+      if (known && (
+        (c.durationSeconds != null && known.duration_seconds == null) ||
+        (c.status && c.status !== known.call_status)
+      )) {
+        await db.from("ghl_call_log")
+          .update({ duration_seconds: c.durationSeconds ?? known.duration_seconds, call_status: c.status })
+          .eq("ghl_message_id", c.id);
+        if (c.status === "completed" && (c.durationSeconds ?? 0) >= CONTACT_MIN_SECONDS) {
+          await db.from("deals")
+            .update({ contacted_at: c.calledAt })
+            .eq("id", dealId).is("contacted_at", null);
         }
       }
     }
