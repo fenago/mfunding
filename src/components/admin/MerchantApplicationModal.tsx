@@ -75,6 +75,7 @@ interface AppForm {
   business_city: string;
   business_state: string;
   business_zip: string;
+  business_website: string;
   industry: string;
   // Owner
   owner_first_name: string;
@@ -95,6 +96,7 @@ interface AppForm {
   bank_name: string;
   bank_routing_number: string;
   bank_account_number: string;
+  bank_account_type: string; // "" | "Checking" | "Savings"
   // Funding
   amount_requested: string;
   use_of_funds: string;
@@ -116,11 +118,14 @@ interface AppForm {
 const EMPTY: AppForm = {
   business_legal_name: "", business_dba: "", business_type: "", ein: "", business_start_date: "",
   business_phone: "", business_email: "", business_address: "", business_city: "", business_state: "",
-  business_zip: "", industry: "",
+  business_zip: "", business_website: "", industry: "",
   owner_first_name: "", owner_last_name: "", owner_title: "", owner_ownership_pct: "", owner_ssn: "",
   owner_dob: "", owner_email: "", owner_phone: "", owner_home_address: "", owner_home_city: "",
   owner_home_state: "", owner_home_zip: "", owner_dl_number: "", owner_dl_state: "",
-  bank_name: "", bank_routing_number: "", bank_account_number: "",
+  // Account type defaults to Checking: 99% of merchant operating accounts are, the
+  // GHL field is a strict picklist, and a default means the 04B merge tag always has
+  // a value behind it. The closer flips it to Savings when it is.
+  bank_name: "", bank_routing_number: "", bank_account_number: "", bank_account_type: "Checking",
   amount_requested: "", use_of_funds: "", monthly_revenue: "", average_daily_balance: "",
   existing_positions: "", existing_balance: "",
   annual_gross_revenue: "", average_monthly_deposits: "", number_of_employees: "",
@@ -248,13 +253,13 @@ const FIELD_LABEL: Record<keyof AppForm, string> = {
   business_legal_name: "Business legal name", business_dba: "DBA", business_type: "Entity type", ein: "EIN",
   business_start_date: "Business start date", business_phone: "Business phone", business_email: "Business email",
   business_address: "Business street address", business_city: "Business city", business_state: "Business state",
-  business_zip: "Business ZIP", industry: "Industry",
+  business_zip: "Business ZIP", business_website: "Website", industry: "Industry",
   owner_first_name: "Owner first name", owner_last_name: "Owner last name", owner_title: "Owner title",
   owner_ownership_pct: "Ownership %", owner_ssn: "Owner SSN", owner_dob: "Owner date of birth",
   owner_email: "Owner email", owner_phone: "Owner phone", owner_home_address: "Home address",
   owner_home_city: "Home city", owner_home_state: "Home state", owner_home_zip: "Home ZIP",
   owner_dl_number: "Driver's license #", owner_dl_state: "DL state",
-  bank_name: "Bank name", bank_routing_number: "Routing number", bank_account_number: "Account number",
+  bank_name: "Bank name", bank_routing_number: "Routing number", bank_account_number: "Account number", bank_account_type: "Account type",
   amount_requested: "Amount requested", use_of_funds: "Use of funds", monthly_revenue: "Monthly revenue",
   average_daily_balance: "Average daily balance", existing_positions: "# of existing positions",
   existing_balance: "Existing MCA balance",
@@ -1005,6 +1010,8 @@ export default function MerchantApplicationModal({
                     <div><Label req>ZIP</Label>
                       <input className={inputCls} value={form.business_zip} onChange={(e) => set("business_zip", e.target.value)} /></div>
                   </div>
+                  <div><Label>Website</Label>
+                    <input className={inputCls} placeholder="https://…" value={form.business_website} onChange={(e) => set("business_website", e.target.value)} /></div>
                 </div>
               )}
 
@@ -1056,8 +1063,15 @@ export default function MerchantApplicationModal({
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     The application requires the merchant's primary business bank account. Get it while they're on the phone.
                   </p>
-                  <div><Label req>Bank name</Label>
-                    <input className={inputCls} value={form.bank_name} onChange={(e) => set("bank_name", e.target.value)} /></div>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div><Label req>Bank name</Label>
+                      <input className={inputCls} value={form.bank_name} onChange={(e) => set("bank_name", e.target.value)} /></div>
+                    <div><Label>Account type</Label>
+                      <select className={inputCls} value={form.bank_account_type} onChange={(e) => set("bank_account_type", e.target.value)}>
+                        <option value="Checking">Checking</option>
+                        <option value="Savings">Savings</option>
+                      </select></div>
+                  </div>
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div><Label req>Routing number</Label>
                       <input className={inputCls} value={form.bank_routing_number} onChange={(e) => set("bank_routing_number", e.target.value)} /></div>

@@ -273,6 +273,9 @@ const F = {
   owner_home_address: "I1s7NPQrMKbZjIHDpIZf",     // Owner Home Address (TEXT)
   owner_city_state_zip: "qUlRkDnSWBrCtsEh2CX1",   // Owner City State ZIP (TEXT)
 
+  business_website: "OBGCHWdcOdl2mSNlDJqb",       // Business Website (TEXT)
+  owner_home_phone: "GjrEktqueuhPjQvatDjm",       // Owner Home Phone (TEXT)
+  bank_account_type: "gxdgf6Dcs4aoeZGIvdfW",      // Bank Account Type (SINGLE_OPTIONS: Checking | Savings)
   bank_name: "FvxB7vdMuoaZagKSilez",              // Bank Name (TEXT)
   bank_routing: "8ozLoigFG8RC3Ce50JJL",           // Bank Routing Number (TEXT)
   bank_account: "XSHgbnsVQ9Mfs2V393X8",           // Bank Account Number (TEXT)
@@ -365,6 +368,7 @@ function buildPartialFields(
   push(F.ownership_pct_doc, "100%");
   push(F.owner_email, email);
   push(F.owner_cell_phone, phone);
+  push(F.owner_home_phone, phone); // home = cell, always (owner's call — see buildFields)
   push(F.amount_requested_doc, money(lq["requested_amount"]) || money(deal.amount_requested));
   // Use of funds is on 100% of measured Synergy leads, so this fallback exists only
   // for hand-made deals with no lead payload. "Working Capital" is the generic MCA
@@ -390,6 +394,7 @@ function buildFields(app: App): Array<{ id: string; value: string | number }> {
 
   // Business
   push(F.business_name, s(app.business_legal_name));
+  push(F.business_website, s(app.business_website));
   push(F.dba, s(app.business_dba));
   push(F.business_entity, s(app.business_type));
   push(F.ein, s(app.ein));
@@ -411,11 +416,17 @@ function buildFields(app: App): Array<{ id: string; value: string | number }> {
   push(F.dl_number, s(app.owner_dl_number));
   push(F.owner_email, s(app.owner_email));
   push(F.owner_cell_phone, s(app.owner_phone));
+  // HOME PHONE = CELL PHONE, always (owner's call). Nobody has a home phone, the 04B
+  // template prints the line anyway, and a blank merge tag is a raw {{tag}} on a signed
+  // contract. Mirroring the cell keeps the line truthful without another form field.
+  push(F.owner_home_phone, s(app.owner_phone));
   push(F.owner_home_address, s(app.owner_home_address));
   push(F.owner_city_state_zip, joinCsz(app.owner_home_city, app.owner_home_state, app.owner_home_zip));
 
   // Banking (account holder defaults to the owner's name)
   push(F.bank_name, s(app.bank_name));
+  const acct = s(app.bank_account_type);
+  if (acct === "Checking" || acct === "Savings") push(F.bank_account_type, acct);
   push(F.bank_routing, s(app.bank_routing_number));
   push(F.bank_account, s(app.bank_account_number));
   push(F.bank_holder, ownerName);
@@ -463,6 +474,7 @@ function buildFields(app: App): Array<{ id: string; value: string | number }> {
     if (!out.some((f) => f.id === id)) out.push({ id, value });
   };
   orNA(F.dba);
+  orNA(F.business_website);
   orNA(F.ssn);                       // optional by the owner's call — warned, never gated
   orNA(F.dl_number);                 // optional — the merchant uploads a photo of it anyway
   orNA(F.annual_gross_revenue_doc);
