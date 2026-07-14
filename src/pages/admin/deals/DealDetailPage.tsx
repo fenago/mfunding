@@ -169,8 +169,10 @@ export default function DealDetailPage() {
     try {
       const updated = await updateDealStatus(id, newStatus);
       setDeal((prev) => (prev ? { ...prev, ...updated } : null));
-    } catch {
-      console.error("Failed to update status");
+    } catch (e) {
+      // Surface WHY — a silent catch here hid the backward-move gate from admins.
+      console.error("Failed to update status:", e);
+      window.alert(e instanceof Error ? e.message : "Could not update the deal status. Please try again.");
     }
   };
 

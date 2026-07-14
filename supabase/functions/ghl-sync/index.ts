@@ -14,7 +14,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
-  corsHeaders, serviceClient, getGhlConfig,
+  corsHeaders, serviceClient, getGhlConfig, ghlFetch, getContact,
   upsertContact, createOpportunity, updateOpportunity, listPipelines,
   listCustomFields, updateContactCustomFields, findFieldByName, addContactTags,
   createBusiness, linkContactToBusiness,
@@ -299,11 +299,67 @@ function docPrefillFields(cust: any, deal?: any) {
       const name = cust?.business_name || `${cust?.first_name ?? ""} ${cust?.last_name ?? ""}`.trim() || `Deal ${id.slice(0, 8)}`;
 
       let oppId = d.ghl_opportunity_id as string | null;
+
+      // ── Backward-move email shield ──────────────────────────────────────
+      // Some GHL stage automations trigger on ENTERING a stage regardless of
+      // direction (verified live Jul 14 2026: MCA 03 emails the merchant ~1s
+      // after the opportunity re-enters Qualifying). A BACKWARD move is an
+      // admin pipeline correction and must NEVER email the merchant, and GHL
+      // has no "move stage without automations" — so when the target stage is
+      // EARLIER than the opportunity's current stage we shield the contact
+      // with a temporary email DND for the moment the stage-entry workflow
+      // fires (DND makes GHL skip the send), then lift it ~15s later in the
+      // background. A contact that was ALREADY email-DND'd is left untouched.
+      // Forward moves are unaffected: their stage automations still fire.
+      let liftDndLater = false;
+      let priorDndSettings: Record<string, unknown> = {};
+      if (oppId) {
+        const cur = await ghlFetch<{ opportunity: { pipelineStageId?: string } }>(cfg, "GET", `/opportunities/${oppId}`);
+        const curStageId = cur.data?.opportunity?.pipelineStageId ?? null;
+        const curIdx = curStageId ? pipeline.stages.findIndex((s) => s.id === curStageId) : -1;
+        const tgtIdx = pipeline.stages.findIndex((s) => s.id === stage.id);
+        if (curIdx !== -1 && tgtIdx !== -1 && tgtIdx < curIdx) {
+          const c = await getContact(cfg, contactId);
+          const contact = (c.data?.contact ?? {}) as Record<string, unknown>;
+          priorDndSettings = (contact.dndSettings as Record<string, unknown> | undefined) ?? {};
+          const emailStatus = (priorDndSettings.Email as { status?: string } | undefined)?.status ?? "inactive";
+          const alreadyShielded = contact.dnd === true || emailStatus !== "inactive";
+          if (!alreadyShielded) {
+            const on = await ghlFetch(cfg, "PUT", `/contacts/${contactId}`, {
+              dndSettings: { ...priorDndSettings, Email: { status: "active", message: "backward stage sync — automation shield" } },
+            });
+            if (!on.ok) {
+              // Shield failed → do NOT move the stage backward; that would email
+              // the merchant. Fail loudly instead of silently breaking the rule.
+              return json({ error: `backward stage sync aborted — could not shield contact from stage automations (${on.status}): ${on.error}` }, 502);
+            }
+            liftDndLater = true;
+          }
+        }
+      }
+      const liftShield = async (delayMs: number) => {
+        if (delayMs > 0) await new Promise((res) => setTimeout(res, delayMs));
+        await ghlFetch(cfg, "PUT", `/contacts/${contactId}`, {
+          dndSettings: { ...priorDndSettings, Email: { status: "inactive" } },
+        });
+      };
+
       const r = oppId
         ? await updateOpportunity(cfg, oppId, { pipelineStageId: stage.id, status: oppStatus, monetaryValue: d.amount_requested ?? undefined })
         : await createOpportunity(cfg, { pipelineId: pipeline.id, pipelineStageId: stage.id, contactId, name, status: oppStatus, monetaryValue: d.amount_requested ?? undefined });
-      if (!r.ok) return json({ error: `GHL opportunity ${oppId ? "update" : "create"} failed (${r.status}): ${r.error}` }, 502);
+      if (!r.ok) {
+        if (liftDndLater) await liftShield(0); // nothing moved — restore DND immediately
+        return json({ error: `GHL opportunity ${oppId ? "update" : "create"} failed (${r.status}): ${r.error}` }, 502);
+      }
       oppId = oppId ?? r.data?.opportunity?.id ?? null;
+      if (liftDndLater) {
+        // Lift the shield AFTER the stage-entry workflow's instant send attempt
+        // has come and gone; don't block the HTTP response on the wait.
+        const lifting = liftShield(15000);
+        // deno-lint-ignore no-explicit-any
+        const rt = (globalThis as any).EdgeRuntime;
+        if (rt?.waitUntil) rt.waitUntil(lifting); else await lifting;
+      }
 
       await db.from("deals").update({ ghl_contact_id: contactId, ghl_opportunity_id: oppId }).eq("id", id);
 

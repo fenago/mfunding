@@ -1,5 +1,5 @@
 import supabase from "../supabase";
-import { mustWrite } from "@/supabase/writes";
+import { mustWrite, tryWrite } from "@/supabase/writes";
 import type {
   Deal,
   DealWithCustomer,
@@ -221,13 +221,21 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
   const { data: cur } = await supabase.from("deals").select("status, deal_type").eq("id", id).single();
   const curStatus = cur?.status as DealStatus | undefined;
 
-  // ── Backward-move lock ────────────────────────────────────────────────
-  // Moving a deal BACKWARD re-fires that stage's GHL automations at the
-  // merchant — a trainee doing it by accident emails a real customer. Forward
-  // moves and moves INTO a terminal state (declined / dead / nurture) are
-  // always allowed; anything else requires a super_admin. Pulling a PARKED deal
-  // back into the pipeline ("Bring back") is an intentional revive, so it's
-  // exempt — the whole point is to restore the stage it left from.
+  // ── Backward-move gate ────────────────────────────────────────────────
+  // Moving a deal BACKWARD is an admin correction for a mis-staged deal. It is
+  // safe by design: stage timestamps are never erased (the stamp trigger only
+  // FILLS holes), doc-request rails can't double-seed (seed_rail2 guards on
+  // "no requests exist yet"), the merchant gets NO notification on a rewind
+  // (deals_merchant_notify skips backward moves), and doc sends are
+  // enrollment-only — a stage move never emails the merchant. Still, closers
+  // shouldn't rewind pipelines, so backward moves are gated to admin +
+  // super_admin. Forward moves and moves INTO a terminal state (declined /
+  // dead / nurture) are always allowed; pulling a PARKED deal back into the
+  // pipeline ("Bring back") is an intentional revive, so it's exempt — the
+  // whole point is to restore the stage it left from.
+  let backwardMove = false;
+  let backwardMoverName = "";
+  let backwardMoverId: string | null = null;
   const revivingFromParked = curStatus != null && PARKED_STATUSES.includes(curStatus) && !PARKED_STATUSES.includes(newStatus);
   if (cur && curStatus !== newStatus && !revivingFromParked) {
     const order = PIPELINES[cur.deal_type === "vcf" ? "vcf" : "mca"].stages.map((s) => s.key);
@@ -237,13 +245,17 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
     if (backward) {
       const { data: auth } = await supabase.auth.getUser();
       const { data: prof } = auth?.user
-        ? await supabase.from("profiles").select("role").eq("id", auth.user.id).single()
+        ? await supabase.from("profiles").select("role, first_name, last_name").eq("id", auth.user.id).single()
         : { data: null };
-      if (prof?.role !== "super_admin") {
+      if (prof?.role !== "super_admin" && prof?.role !== "admin") {
         throw new Error(
-          "Backward stage moves are locked — they re-send that stage's automated emails to the merchant. Ask a super admin if this deal really needs to move back.",
+          "Backward stage moves are limited to admins — ask an admin if this deal really needs to move back.",
         );
       }
+      backwardMove = true;
+      backwardMoverId = auth?.user?.id ?? null;
+      backwardMoverName =
+        [prof?.first_name, prof?.last_name].filter(Boolean).join(" ").trim() || auth?.user?.email || "unknown";
     }
   }
 
@@ -278,6 +290,27 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
 
   const rows = await mustWrite<Deal>("update deal status", supabase.from("deals").update(updateData).eq("id", id));
   const deal = rows[0];
+
+  // Audit trail for rewinds — "stage moved backward by <name>: from → to" so the
+  // history shows WHO pulled the deal back and from where. Best-effort (tryWrite
+  // logs loudly but never blocks the move). interaction_type must be 'note' —
+  // the activity_log check constraint has no 'system'/'status_change-free' value
+  // for this, and a bad value fails silently.
+  if (backwardMove && curStatus) {
+    await tryWrite(
+      "log backward stage move",
+      supabase.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: id,
+        interaction_type: "note",
+        subject: "Stage moved backward",
+        content: `stage moved backward by ${backwardMoverName}: ${curStatus} → ${newStatus}`,
+        old_status: curStatus,
+        new_status: newStatus,
+        logged_by: backwardMoverId,
+      }),
+    );
+  }
 
   // Auto-generate the commission when a deal becomes funded (best-effort —
   // never block the status change if commission creation fails).

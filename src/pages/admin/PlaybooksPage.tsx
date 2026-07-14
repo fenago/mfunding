@@ -313,21 +313,33 @@ export default function PlaybooksPage() {
     setDeal((d) => (d ? { ...d, doc_checklist: next } : d));
   }
 
-  // Click a pipeline stage to move the lead there — updates the deal + syncs GHL,
-  // which fires that stage's automation (e.g. Application Sent → MCA 04 sends the docs).
+  // Click a pipeline stage to move the lead there — updates the deal + syncs GHL.
+  // FORWARD keeps the existing celebratory flow. BACKWARD (admin/super_admin
+  // only, enforced in updateDealStatus) is a pipeline correction: nothing is
+  // sent to the merchant (no email, no docs, no notification — doc sends are
+  // enrollment-only), stage timestamps are preserved, the GHL opportunity is
+  // synced to the earlier stage, and the rewind is written to the activity log.
   function advanceDeal(stageKey: string) {
     if (!deal || stageKey === deal.status) return;
     const label = STAGE_LABELS[active.pipeline][stageKey] ?? stageKey;
     const prevIdx = currentIdx;
+    const targetIdx = order.indexOf(stageKey);
+    const isBackward = targetIdx !== -1 && prevIdx !== -1 && targetIdx < prevIdx;
     setConfirmState({
-      title: `Move ${dealName(deal)} to "${label}"?`,
-      body: "This updates the deal and fires the GoHighLevel automation for that stage.",
-      confirmLabel: "Move the deal",
+      title: isBackward ? `Move ${dealName(deal)} BACK to "${label}"?` : `Move ${dealName(deal)} to "${label}"?`,
+      body: isBackward
+        ? "This rewinds the pipeline stage. Nothing is sent to the merchant — no email, no docs, no notification. GHL moves to the earlier stage too, and the rewind is logged."
+        : "This updates the deal and fires the GoHighLevel automation for that stage.",
+      confirmLabel: isBackward ? "Move it back" : "Move the deal",
       onConfirm: async () => {
         try {
           await updateDealStatus(deal.id, stageKey as DealStatus);
           await refreshDeal(deal.id);
-          celebrateAdvance(stageKey, prevIdx);
+          if (isBackward) {
+            notify(`Moved back to ${label} — nothing was sent to the merchant.`);
+          } else {
+            celebrateAdvance(stageKey, prevIdx);
+          }
         } catch (e) {
           notify(e instanceof Error ? e.message : "Could not move the deal. Please try again.", "error");
         }
@@ -1468,11 +1480,12 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
         </div>
       </div>
 
-      {/* Animated pipeline — shows where the lead is; click a stage to move it there (fires the GHL automation). */}
+      {/* Animated pipeline — shows where the lead is; click any stage to move it there.
+          Forward fires that stage's automation; backward (admins) rewinds silently. */}
       <div className="mt-4 rounded-lg bg-white/70 dark:bg-gray-800/60 border border-emerald-200 dark:border-emerald-800 px-3 py-3">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Where this lead is in the pipeline</span>
-          <span className="text-[11px] text-gray-400">Click a stage to move the lead → it fires that stage's automation</span>
+          <span className="text-[11px] text-gray-400">Click any stage — forward fires its automation; an earlier stage moves the lead back (admins, sends nothing)</span>
         </div>
         {/* Use the SAME terminal-filtered stages as the badge (no "Nurture" node —
             that's a close-deal off-ramp, not a forward step), so the stepper count
