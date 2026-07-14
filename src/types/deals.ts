@@ -136,6 +136,25 @@ export interface Deal {
   /** The merchant asked to be called at this time. While it's in the future the deal is
    *  SNOOZED out of the urgent queue; it jumps back to the top the moment it comes due. */
   callback_at?: string | null;
+  /** GHL appointment id projecting callback_at onto the "Callbacks — Internal"
+   *  calendar (one-way DB→GHL, healed by the 5-min callback-calendar-sync sweep). */
+  callback_ghl_event_id?: string | null;
+  /** The callback_at INSTANT the GHL event currently reflects — NOT a sync
+   *  timestamp. On calendar ⇔ callback_synced_at === callback_at. */
+  callback_synced_at?: string | null;
+  /** Last calendar-sync failure (null = healthy). Never blocks the callback. */
+  callback_sync_error?: string | null;
+  // ── Lead scoring v1 (research/PLAN_lead_scoring.md) ──
+  /** Close-likelihood grade A–D. v1 weights are JUDGMENT (0 funded deals) — always label as estimate. */
+  lead_grade?: "A" | "B" | "C" | "D" | null;
+  /** 0–100 rules score behind the grade. */
+  lead_score?: number | null;
+  /** Estimated $ = P(close) × expected gross commission on the fundable amount — the "best first" sort. */
+  expected_value?: number | null;
+  /** Factor breakdown [{factor, points, max, note}] — the notes ARE the explanation. */
+  score_reasons?: { factor: string; points: number; max: number; note: string }[] | null;
+  score_version?: number | null;
+  scored_at?: string | null;
   /** Persisted AI lender analysis (tokens cost money — survives reloads). */
   ai_lender_recommendations: { summary: string; recommendations: unknown[] } | null;
   ai_recommended_at: string | null;

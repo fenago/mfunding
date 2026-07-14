@@ -3,7 +3,7 @@ import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIco
 import { getOpenDealsForQueue, logContactAttempt, type ContactOutcome, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
-import { statedTimeInET, timeET } from "../../utils/time";
+import { dateTimeET, etDateTimeLocalToUtcIso, statedTimeInET, timeET, tomorrowAtEtIso } from "../../utils/time";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -114,12 +114,17 @@ function classify(deal: QueueDeal, now: number): Urgency | null {
   // for. Now it goes quiet until the merchant's time, then comes back at the very top.
   const cbMs = deal.callback_at ? Date.parse(deal.callback_at) - now : null;
   if (cbMs !== null) {
+    // "📅 on calendar": the GHL appointment reflects THIS exact instant. A stale
+    // tick after a reschedule would be a lie, so it compares values, not existence
+    // (callback_synced_at stores the synced instant — see the migration comment).
+    const onCalendar = !!deal.callback_ghl_event_id && !!deal.callback_synced_at &&
+      Date.parse(deal.callback_synced_at) === Date.parse(deal.callback_at!);
     if (cbMs > 0) {
       // SNOOZED. Deliberately calm and deliberately still visible — a promise we made
       // to a merchant should never vanish from the board entirely.
       return {
         rank: 6.8,
-        badge: `🕐 Callback at ${timeET(deal.callback_at!)}`,
+        badge: `🕐 Callback at ${timeET(deal.callback_at!)}${onCalendar ? " · 📅 on calendar" : ""}`,
         why: `They asked you to call at ${timeET(deal.callback_at!)}. It'll jump to the top of My Day when it's due — nothing to do until then.`,
         since: deal.created_at,
         tone: "amber",
@@ -581,17 +586,21 @@ function CallbackPicker({
   onCancel: () => void;
 }) {
   const [custom, setCustom] = useState("");
+  // ── EVERY time here is EASTERN. ──
+  // The app renders exclusively in ET (installEasternTime), but writes used to be
+  // browser-local: "Tomorrow 9am" from a Phoenix laptop booked 9am ARIZONA (noon ET),
+  // and a custom "4:00 PM" booked 4pm browser time — then the card rendered the ET
+  // translation and nothing looked wrong until the call was hours late. The relative
+  // presets (1h/3h) are timezone-free; everything wall-clock goes through the ET
+  // helpers and is labelled ET so the closer knows whose clock they're reading.
+  const customIso = custom ? etDateTimeLocalToUtcIso(custom) : null;
+
   const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
 
   const PRESETS: { label: string; iso: () => string }[] = [
     { label: "1h", iso: () => inMinutes(60) },
     { label: "3h", iso: () => inMinutes(180) },
-    { label: "Tomorrow 9am", iso: () => {
-      const d = new Date();
-      d.setDate(d.getDate() + 1);
-      d.setHours(9, 0, 0, 0);
-      return d.toISOString();
-    } },
+    { label: "Tomorrow 9am ET", iso: () => tomorrowAtEtIso(9) },
   ];
 
   return (
@@ -624,12 +633,16 @@ function CallbackPicker({
           type="datetime-local"
           value={custom}
           onChange={(e) => setCustom(e.target.value)}
+          title="Eastern time — the whole app runs on ET"
           className="flex-1 min-w-0 rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 px-1 py-0.5 text-[10px] text-gray-900 dark:text-white"
         />
+        <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300 shrink-0" title="This time is Eastern, not your laptop's timezone">
+          ET
+        </span>
         <button
           type="button"
-          disabled={busy || !custom}
-          onClick={() => onPick(new Date(custom).toISOString())}
+          disabled={busy || !customIso}
+          onClick={() => customIso && onPick(customIso)}
           className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white"
         >
           Set
@@ -642,6 +655,13 @@ function CallbackPicker({
           ✕
         </button>
       </div>
+      {/* Echo the exact instant back before it's committed — the cheap insurance
+          against every remaining way to misread a datetime field. */}
+      {customIso && (
+        <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+          Will call back at <b>{dateTimeET(customIso)}</b>
+        </p>
+      )}
     </div>
   );
 }

@@ -193,6 +193,13 @@ verify_jwt = true
 [functions.verify-merchant-email]
 verify_jwt = true
 
+# Projects deals.callback_at onto the GHL "Callbacks — Internal" calendar
+# (one-way DB→GHL upsert/cancel; sync state written back to the deal). Two
+# callers: staff (user JWT + role check in code) OR pg_cron every 5 min
+# (?secret=<GHL webhook secret> + anon-key Bearer for the gateway).
+[functions.callback-calendar-sync]
+verify_jwt = true
+
 # GHL → Supabase document bridge. Merchants upload their statements/ID through the
 # GHL secure-upload link, so the files live on the GHL contact and never reached our
 # storage — which is why the AI underwriter 422'd on every real deal. Pulls them into

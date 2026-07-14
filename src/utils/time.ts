@@ -79,6 +79,61 @@ export function dateTimeET(iso: string | Date): string {
   return `${s} ET`;
 }
 
+// ── ENTERING a time as Eastern (the write-side twin of the render patch) ──────
+//
+// installEasternTime() fixes every RENDER, but `new Date("2026-07-14T16:00")` still
+// parses in the BROWSER's timezone — so a closer in Phoenix typing 4:00 PM into a
+// datetime-local field used to book the callback at 4:00 PM *Arizona* time, three
+// hours after the merchant expected the call. Same silent, plausible, deal-losing
+// bug the render patch killed, one layer up. These helpers interpret a wall-clock
+// time AS Eastern and return the true UTC instant for storage.
+
+/** How far Eastern's wall clock is from UTC at the given instant, in ms
+ * (negative: ET is behind UTC — -4h in summer, -5h in winter). */
+function etOffsetMs(atUtcMs: number): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: APP_TZ, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const p: Record<string, string> = {};
+  for (const part of dtf.formatToParts(new Date(atUtcMs))) p[part.type] = part.value;
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second);
+  return asUtc - atUtcMs;
+}
+
+/** A wall-clock date+time IN EASTERN → the UTC instant, as ISO. Month is 1-based.
+ * Out-of-range parts (day 32, hour 24) roll over the same way Date.UTC does. */
+export function etWallClockToUtcIso(
+  year: number, month: number, day: number, hour: number, minute = 0,
+): string {
+  const naive = Date.UTC(year, month - 1, day, hour, minute);
+  // Guess the offset at the naive instant, then refine once — the second pass
+  // catches a wall time that lands on the far side of a DST switch.
+  let ts = naive - etOffsetMs(naive);
+  ts = naive - etOffsetMs(ts);
+  return new Date(ts).toISOString();
+}
+
+/** A `<input type="datetime-local">` value ("2026-07-14T16:00"), interpreted as
+ * EASTERN wall time → UTC ISO. Null when the string isn't a datetime-local. */
+export function etDateTimeLocalToUtcIso(local: string): string | null {
+  const m = local.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return etWallClockToUtcIso(+m[1], +m[2], +m[3], +m[4], +m[5]);
+}
+
+/** Tomorrow at H:MM **Eastern** → UTC ISO. "Tomorrow" is Eastern's tomorrow, not
+ * the browser's — a Phoenix closer at 10:30 PM MST is already past midnight ET. */
+export function tomorrowAtEtIso(hour: number, minute = 0): string {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: APP_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  });
+  const p: Record<string, string> = {};
+  for (const part of dtf.formatToParts(new Date())) p[part.type] = part.value;
+  return etWallClockToUtcIso(+p.year, +p.month, +p.day + 1, hour, minute);
+}
+
 // ── The merchant's own stated call time ───────────────────────────────────────
 //
 // Synergy asks "What is the best time to reach you?" and the merchant answers in free
