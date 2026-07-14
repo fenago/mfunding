@@ -378,6 +378,30 @@ export async function addContactTags(cfg: GhlConfig, contactId: string, tags: st
   );
 }
 
+// ---- Workflows (contact-level enrollment control) -----------------------------
+
+/**
+ * Remove ONE contact from a running workflow (stops that contact's remaining
+ * steps without touching the workflow definition — the only workflow authority
+ * we allow ourselves in code). Verified live 2026-07-13: returns 200
+ * {"succeeded":true} against the MFunding location.
+ */
+export async function removeContactFromWorkflow(cfg: GhlConfig, contactId: string, workflowId: string) {
+  return await ghlFetch<{ succeeded?: boolean }>(
+    cfg, "DELETE", `/contacts/${contactId}/workflow/${workflowId}`,
+  );
+}
+
+// ---- Contact notes -------------------------------------------------------------
+
+/** Write a note onto a contact so VAs working purely inside GHL/VibeReach see it
+ * without opening our app. */
+export async function createContactNote(cfg: GhlConfig, contactId: string, body: string) {
+  return await ghlFetch<{ note?: { id: string } }>(
+    cfg, "POST", `/contacts/${contactId}/notes`, { body },
+  );
+}
+
 // ---- Email (send through GHL, not a 3rd-party ESP) ---------------------------
 
 /** Send an Email to a contact via GHL conversations. The contact must exist

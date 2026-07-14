@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircleIcon, ExclamationTriangleIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
+import { ArrowPathIcon, CheckCircleIcon, CheckIcon, ExclamationTriangleIcon, LinkIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import PortalInviteButton from "./PortalInviteButton";
 
@@ -22,21 +22,56 @@ import PortalInviteButton from "./PortalInviteButton";
  * (or resend) the invite — the closer never leaves the playbook.
  */
 export default function PortalAccessChip({ customerId }: { customerId: string }) {
-  const [state, setState] = useState<{ userId: string | null; invitedAt: string | null } | null>(null);
+  const [state, setState] = useState<{ userId: string | null; invitedAt: string | null; email: string | null } | null>(null);
   const [open, setOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     const { data } = await supabase
       .from("customers")
-      .select("user_id, portal_invited_at")
+      .select("user_id, portal_invited_at, email")
       .eq("id", customerId)
       .maybeSingle();
     setState({
       userId: (data?.user_id as string | null) ?? null,
       invitedAt: (data?.portal_invited_at as string | null) ?? null,
+      email: (data?.email as string | null) ?? null,
     });
   }, [customerId]);
+
+  // Active merchants can re-request a one-tap sign-in link. This calls the EXISTING
+  // merchant-login-link function, which throttles to one link per 2 minutes and logs
+  // — it is silent-success by design, so a non-error response means "sent".
+  const sendLoginLink = useCallback(async () => {
+    const email = state?.email;
+    if (!email) return;
+    setSending(true);
+    setSendError(null);
+    try {
+      const { error } = await supabase.functions.invoke("merchant-login-link", { body: { email } });
+      if (error) throw error;
+      setSent(true);
+      setTimeout(() => setSent(false), 4000);
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : "Could not send the sign-in link.");
+    } finally {
+      setSending(false);
+    }
+  }, [state?.email]);
+
+  const copyPortalLink = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText("https://my.mfunding.net");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard blocked — nothing to do */
+    }
+  }, []);
 
   useEffect(() => {
     void load();
@@ -107,6 +142,41 @@ export default function PortalAccessChip({ customerId }: { customerId: string })
               : "Until the invite goes out, this merchant has no way to sign in and see their own deal."}
           </p>
           <PortalInviteButton customerId={customerId} />
+
+          {active && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => void sendLoginLink()}
+                disabled={sending || !state.email}
+                title={!state.email ? "No email on file — add one before you can send a sign-in link." : undefined}
+                className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold px-2 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {sending ? (
+                  <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" />
+                ) : sent ? (
+                  <CheckIcon className="w-3.5 h-3.5" />
+                ) : (
+                  <PaperAirplaneIcon className="w-3.5 h-3.5" />
+                )}
+                {sending ? "Sending…" : sent ? "Sign-in link sent" : "Send sign-in link"}
+              </button>
+              {!state.email && (
+                <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">No email on file — add one first.</p>
+              )}
+              {sendError && <p className="mt-1 text-[10px] text-rose-600 dark:text-rose-400">{sendError}</p>}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void copyPortalLink()}
+            className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-medium px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 text-gray-600 dark:bg-gray-700/40 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/70 transition-colors"
+          >
+            {copied ? <CheckIcon className="w-3.5 h-3.5" /> : <LinkIcon className="w-3.5 h-3.5" />}
+            {copied ? "Copied" : "Copy portal link"}
+          </button>
+
           <button
             type="button"
             onClick={() => {

@@ -585,6 +585,7 @@ export default function MerchantApplicationModal({
         `  1. Your funding application to review and e-sign\n` +
         `  2. A quick compensation disclosure to e-sign\n` +
         `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
+        `Prefer to do it all in one place? Everything above is also in your secure portal — sign in at my.mfunding.net with this email and you can upload, sign, and track your application there too (we'll email you a one-tap sign-in link any time you ask).\n\n` +
         `Most of it is already filled in — you just need to confirm and sign. It takes about three minutes. ` +
         `Reply here if anything looks off or you have questions.\n\n` +
         `Talk soon.`;
@@ -741,6 +742,7 @@ export default function MerchantApplicationModal({
         `  1. Your application — just complete the few remaining fields (business details, banking) and e-sign\n` +
         `  2. A quick compensation disclosure to e-sign\n` +
         `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
+        `Prefer to do it all in one place? Everything above is also in your secure portal — sign in at my.mfunding.net with this email and you can upload, sign, and track your application there too (we'll email you a one-tap sign-in link any time you ask).\n\n` +
         `It takes about five minutes. Reply here if anything looks off.\n\nTalk soon.`;
       const noteErr = await sendCoverNote(subject, emailBody, "MCA application (partial)");
       if (noteErr) {
@@ -815,6 +817,7 @@ export default function MerchantApplicationModal({
         `  1. Your funding application to fill out and e-sign\n` +
         `  2. A quick compensation disclosure to e-sign\n` +
         `  3. A secure link to upload your last few months of bank statements, a photo ID, and a voided check\n\n` +
+        `Prefer to do it all in one place? Everything above is also in your secure portal — sign in at my.mfunding.net with this email and you can upload, sign, and track your application there too (we'll email you a one-tap sign-in link any time you ask).\n\n` +
         `Reply here if you have any questions.\n\nTalk soon.`;
       const noteErr = await sendCoverNote(subject, emailBody, "MCA application (self-fill)");
       if (noteErr) {
