@@ -224,7 +224,7 @@ export default function FAQSection() {
               href="tel:+19547375692"
               className="text-ocean-blue hover:text-mint-green transition-colors font-medium"
             >
-              Or call us: (954) 737-5692 | Toll Free: (888) 596-5378
+              Or call us: (954) 737-5692
             </a>
           </div>
         </motion.div>

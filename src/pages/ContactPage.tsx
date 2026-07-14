@@ -20,7 +20,7 @@ const contactInfo = [
   {
     icon: PhoneIcon,
     label: 'Phone',
-    value: '(954) 737-5692 | (888) 596-5378',
+    value: '(954) 737-5692',
     href: 'tel:+19547375692',
     description: 'Mon–Fri, 9am–6pm EST',
   },
