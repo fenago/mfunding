@@ -38,7 +38,8 @@ Both paths verified end-to-end on the test contact.
 
 ### Owner actions — 04C (see `research/04C_PLAN.md` for the full analysis)
 
-- [ ] **O10. Build the `04C MCA PARTIAL PREFILL` document template.**
+- [ ] **O10. Build the `04C MCA PARTIAL PREFILL` document template.** → **`research/04C_BUILD_STEPS.md`**
+      has the click-by-click. **15 merge tags (we prefill) + 15 fillable fields (merchant completes).**
   Clone 04B. For the **16 fields Synergy never sends** (EIN, entity, start date, business street/city/zip,
   SSN, DOB, DL#, home address/city/state/zip, bank name/routing/account) replace each **merge tag** with
   a **fillable field**. Leave the other 14 as merge tags.
@@ -82,13 +83,15 @@ Both paths verified end-to-end on the test contact.
 
 - [ ] **F1. Entity type → dropdown** (LLC · S-Corp · C-Corp · Sole Prop · Partnership · LP · LLP · Non-profit).
       Free text guarantees a garbage value on a legal document.
-- [ ] **F2. SSN → not mandatory.** ⚠️ *Except on 04B*, where a blank SSN becomes a raw tag on a signed
-      contract. On 04C the merchant enters it themselves — which is the real fix.
+- [ ] **F2. SSN → not mandatory.** Owner's call: optional, full stop. A single non-blocking warning
+      shows if it's blank on the 04B path (an empty merge tag prints as a raw tag on the signed
+      contract) — it does not block the send. The owner decides.
 - [ ] **F3. Title → prefill "Owner"** (`is_owner` = Yes on 100% of leads).
 - [ ] **F4. Ownership % → prefill 100.**
 - [ ] **F5. Prefill 19 of 30 fields from `deals.lead_qual`** — the closer's job drops from 30 fields to ~11.
-- [ ] **F6. NEVER derive `business_start_date` from `time_as_owner`.** "7 Years" is not a date, it goes on a
-      signed legal document and into a funder submission. Prefill a hint; a human enters the real date.
+- [ ] **F6. `business_start_date` IS prefilled from `time_as_owner`.** Owner overruled my objection.
+      Done as an EDITABLE ESTIMATE the closer sees and can correct ("Estimated from '7 Years' — confirm
+      with the merchant"), never a silent fact injected into a contract.
 - [ ] **F7. Post-send verification** — read back which template GHL actually created and **fail loudly** if
       it's the wrong one. Would have caught this incident in seconds. **Ship this BEFORE the 04C button.**
 
