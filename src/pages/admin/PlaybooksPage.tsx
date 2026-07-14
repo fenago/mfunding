@@ -41,6 +41,7 @@ import PipelineFlow from "../../components/shared/PipelineFlow";
 import PortalAccessChip from "../../components/admin/PortalAccessChip";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
+import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
@@ -2417,6 +2418,14 @@ function StepCard({
         {/* Live doc status — what's signed + what they uploaded, straight from GHL */}
         {(step.stageKey === "application_sent" || step.stageKey === "bank_statements") && interactive && deal?.ghl_contact_id && (
           <DocsBackPanel ghlContactId={deal.ghl_contact_id} customerId={deal.customer_id} />
+        )}
+
+        {/* Real dials through GHL/VibeReach — audited call history. Shown on the
+            contact step (where the board asks "did anyone call?") and alongside
+            the docs panel. Loading it also SYNCS: outbound calls the system
+            hasn't seen stamp the deal's timeline + call telemetry, record-once. */}
+        {(step.stageKey === "contacted" || step.stageKey === "application_sent") && interactive && deal?.ghl_contact_id && (
+          <CallHistoryPanel ghlContactId={deal.ghl_contact_id} dealId={deal.id} />
         )}
 
         {/* Docs receipt — when the send-docs step fired. "Sent" only means it LEFT

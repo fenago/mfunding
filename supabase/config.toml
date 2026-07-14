@@ -155,6 +155,12 @@ verify_jwt = false
 [functions.ghl-docs-status]
 verify_jwt = true
 
+# Live GHL/VibeReach call history for a merchant contact + self-audit sync of
+# outbound dials into the deal (activity_log + call telemetry). STAFF ONLY
+# (in-code role check) — call records expose staff phone numbers.
+[functions.ghl-call-history]
+verify_jwt = true
+
 # Merchant-triggered "send me a fresh BLANK application" fallback. Merchant-gated
 # (own contact resolved from auth.uid); rate-limited so it can't stack copies.
 [functions.request-blank-application]
