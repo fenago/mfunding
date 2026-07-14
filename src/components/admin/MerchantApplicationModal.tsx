@@ -1044,7 +1044,7 @@ export default function MerchantApplicationModal({
                     <div><Label req>ZIP</Label>
                       <input className={inputCls} value={form.owner_home_zip} onChange={(e) => set("owner_home_zip", e.target.value)} /></div>
                   </div>
-                  <div><Label req>Driver's license #</Label>
+                  <div><Label>Driver's license #</Label>
                     <input className={inputCls} value={form.owner_dl_number} onChange={(e) => set("owner_dl_number", e.target.value)} /></div>
                   <div><Label>DL state</Label>
                     <input className={inputCls} maxLength={2} value={form.owner_dl_state} onChange={(e) => set("owner_dl_state", e.target.value.toUpperCase())} /></div>

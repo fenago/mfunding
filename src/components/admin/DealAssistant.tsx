@@ -71,7 +71,18 @@ function Rendered({ text }: { text: string }) {
 export default function DealAssistant({ deal }: { deal: DealWithCustomer }) {
   // Open by default: the whole point is that a closer with a deal loaded can just
   // talk to it (often mid-call). Collapsed-by-default made it easy to miss entirely.
-  const [open, setOpen] = useState(true);
+  // COLLAPSED by default, and the choice STICKS (localStorage). It used to open
+  // itself on every deal load, so a closer working through their queue closed the
+  // same panel over and over — an assistant that has to be dismissed dozens of
+  // times a day trains people to resent it. It announces itself as the pill;
+  // whoever wants it, opens it, and their preference is remembered.
+  const [open, setOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem("dealAssistantOpen") === "1"; } catch { return false; }
+  });
+  const setOpenSticky = (v: boolean) => {
+    setOpen(v);
+    try { localStorage.setItem("dealAssistantOpen", v ? "1" : "0"); } catch { /* private mode */ }
+  };
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -123,7 +134,7 @@ export default function DealAssistant({ deal }: { deal: DealWithCustomer }) {
       {!open && (
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => setOpenSticky(true)}
           className="flex items-center gap-2 rounded-full bg-ocean-blue px-4 py-2.5 text-sm font-semibold text-white shadow-lg hover:opacity-90"
         >
           <SparklesIcon className="w-4 h-4" />
@@ -136,7 +147,7 @@ export default function DealAssistant({ deal }: { deal: DealWithCustomer }) {
           {/* Header — states the deal it is scoped to. Click to collapse to the pill. */}
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={() => setOpenSticky(false)}
             className="w-full flex items-center gap-2 px-4 py-3 text-left shrink-0 bg-gradient-to-br from-ocean-blue/5 to-mint-green/5 dark:from-ocean-blue/10 dark:to-mint-green/5 hover:bg-ocean-blue/10 transition"
           >
             <span className="grid place-items-center w-7 h-7 rounded-lg bg-ocean-blue text-white shrink-0">
