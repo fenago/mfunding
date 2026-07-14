@@ -2,7 +2,7 @@
 --
 -- Two calendars, one flag. "Callbacks — Internal" (AylxRmWspFl9hFIyNzlj) has NO
 -- contact-facing notifications — every ordinary callback books there silently.
--- "Scheduled Calls — Merchant Invited" (glSkDKrJ0S92vNDQl9bM, created via the API
+-- "Scheduled Calls — Merchant Invited" (iP6k0cdcyeABY6qvWbX1, created via the API
 -- 2026-07-14) carries contact email confirmation + a 60-minute email reminder with
 -- compliance-neutral copy ("call about your funding options" — never "loan").
 -- deals.callback_invite picks which calendar callback-calendar-sync books on, and
@@ -25,6 +25,6 @@ comment on column public.deals.callback_ghl_calendar_id is
 
 -- Register the invited calendar next to the internal one (config, not code).
 update public.platform_settings
-   set value = value || jsonb_build_object('invited_calendar_id', 'glSkDKrJ0S92vNDQl9bM'),
+   set value = value || jsonb_build_object('invited_calendar_id', 'iP6k0cdcyeABY6qvWbX1'),
        updated_at = now()
  where key = 'callback_calendar';
