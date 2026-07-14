@@ -1,27 +1,37 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowPathIcon,
   CalendarDaysIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  MagnifyingGlassIcon,
   MapIcon,
+  PlusIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import {
   getCalendarDeals,
+  scheduleCallback,
+  searchOpenDeals,
   STIPS_PENDING_STATUSES,
   type CalendarDeal,
+  type OpenDealHit,
 } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
-import { dateKeyET, timeET } from "../../utils/time";
+import { APP_TZ, dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, timeET } from "../../utils/time";
 
 /**
  * /admin/calendar — the in-app calendar, for EVERY staff level.
  *
- * READ-ONLY by design (P1): the playbook / My Day stays the single place where
- * callbacks get rescheduled or cleared. This page answers one question — "what
- * did we promise, and when?" — from OUR database. The GHL calendar is a
- * projection of these same rows; this page reads the truth.
+ * SCHEDULE + RESCHEDULE live here (P2); CLEARING stays in the playbook. The
+ * "+ Schedule call" button (or clicking an empty future day) opens a small
+ * dialog: pick an open deal, enter a date+time AS ET, optionally send the
+ * merchant an invitation (per-send, default OFF — it books on the merchant-
+ * invited GHL calendar, which emails a neutral confirmation + reminder).
+ * Saving writes deals.callback_at — the single source of truth — and the GHL
+ * calendar follows. An existing callback is never silently overwritten: the
+ * dialog shows the current time and makes "Replace" explicit.
  *
  * Three item types, all off `deals`:
  *   🕐 callback  — deals.callback_at (timed; red + banner once it's past due)
@@ -185,8 +195,265 @@ function byDayOrder(a: CalItem, b: CalItem): number {
   return nameOf(a.deal).localeCompare(nameOf(b.deal));
 }
 
+/** A UTC instant → the `datetime-local` value of its EASTERN wall clock
+ * ("2026-07-14T16:00") — the read-side twin of etDateTimeLocalToUtcIso, used to
+ * prefill the reschedule dialog with the time the merchant actually agreed to. */
+function etDateTimeLocalValue(iso: string): string {
+  const p: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TZ, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(new Date(iso))) p[part.type] = part.value;
+  return `${p.year}-${p.month}-${p.day}T${p.hour === "24" ? "00" : p.hour}:${p.minute}`;
+}
+
+/** What the schedule dialog opens with: a deal (or none — the picker finds one)
+ * and a datetime-local string already in ET wall-clock terms. */
+interface SchedulePrefill {
+  deal: OpenDealHit | null;
+  dtLocal: string;
+}
+
+/**
+ * The "+ Schedule call" dialog. Deal picker (forgiving search over business +
+ * contact name, open deals only — same style as FunderQualifier's merchant
+ * search), an ET date+time, and the per-send merchant-invitation checkbox.
+ */
+function ScheduleCallDialog({
+  prefill,
+  onClose,
+  onSaved,
+}: {
+  prefill: SchedulePrefill;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [deal, setDeal] = useState<OpenDealHit | null>(prefill.deal);
+  const [dtLocal, setDtLocal] = useState(prefill.dtLocal);
+  const [invite, setInvite] = useState(!!prefill.deal?.callback_invite);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<OpenDealHit[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  // Debounced open-deal lookup (business or contact name, ilike, RLS-scoped).
+  useEffect(() => {
+    if (q.trim().length < 2) {
+      setHits([]);
+      return;
+    }
+    const t = setTimeout(() => {
+      searchOpenDeals(q).then(setHits).catch(() => setHits([]));
+    }, 200);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) setSearchOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [searchOpen]);
+
+  // Replace mode: the deal already promised a callback — say so, loudly, and
+  // make the button say what it really does. Never a silent overwrite.
+  const replacing = !!deal?.callback_at;
+
+  const save = async () => {
+    if (!deal) {
+      setError("Pick a deal first — search by business or contact name.");
+      return;
+    }
+    const iso = etDateTimeLocalToUtcIso(dtLocal);
+    if (!iso) {
+      setError("Enter a date and time (ET).");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await scheduleCallback(deal.id, iso, { invite });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Saving the call failed — try again.");
+      setSaving(false);
+    }
+  };
+
+  const fieldCls =
+    "w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-ocean-blue";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold text-gray-900 dark:text-white">
+            {replacing ? "Reschedule the call" : "Schedule a call"}
+          </h3>
+          <button
+            onClick={onClose}
+            title="Close"
+            className="p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Deal picker */}
+        {deal ? (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2">
+            <span className="flex items-baseline gap-1.5 min-w-0">
+              <span className="text-sm font-semibold text-gray-900 dark:text-white truncate">{deal.name}</span>
+              {deal.deal_number && (
+                <span className="text-[11px] font-mono text-gray-400 shrink-0">{deal.deal_number}</span>
+              )}
+            </span>
+            {!prefill.deal && (
+              <button
+                onClick={() => setDeal(null)}
+                className="text-[11px] font-medium text-ocean-blue hover:underline shrink-0"
+              >
+                change
+              </button>
+            )}
+          </div>
+        ) : (
+          <div ref={searchRef} className="relative">
+            <div className="relative">
+              <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setSearchOpen(true);
+                }}
+                onFocus={() => setSearchOpen(true)}
+                placeholder="Find an open deal (business or contact name)…"
+                className={`${fieldCls} pl-9`}
+              />
+            </div>
+            {searchOpen && hits.length > 0 && (
+              <div className="absolute z-30 mt-1 w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl overflow-hidden max-h-56 overflow-y-auto">
+                {hits.map((h) => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => {
+                      setDeal(h);
+                      setInvite(!!h.callback_invite);
+                      setQ("");
+                      setSearchOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 border-b border-gray-100 dark:border-gray-700/50 last:border-0"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{h.name}</span>
+                      {h.deal_number && (
+                        <span className="text-[11px] font-mono text-gray-400 shrink-0">{h.deal_number}</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                      {h.status.replace(/_/g, " ")}
+                      {h.callback_at && <> · ⚠ already has a callback — {dateTimeET(h.callback_at)}</>}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+            {searchOpen && q.trim().length >= 2 && hits.length === 0 && (
+              <p className="absolute z-30 mt-1 w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                No open deals match "{q.trim()}".
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Replace warning — an existing promise is never silently overwritten. */}
+        {replacing && deal?.callback_at && (
+          <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+            ⚠ <b>Already scheduled — {dateTimeET(deal.callback_at)}.</b> Saving <b>replaces</b> that time
+            (the GHL calendar updates too).
+          </div>
+        )}
+
+        {/* When — entered AS Eastern, stored as the true instant. */}
+        <label className="block">
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+            Date &amp; time — <b>ET</b>
+          </span>
+          <input
+            type="datetime-local"
+            value={dtLocal}
+            onChange={(e) => setDtLocal(e.target.value)}
+            className={`${fieldCls} mt-1 tabular-nums`}
+          />
+        </label>
+
+        {/* Merchant invitation — per-send, explicit, DEFAULT OFF. */}
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={invite}
+            onChange={(e) => setInvite(e.target.checked)}
+            className="w-4 h-4 mt-0.5 rounded border-gray-300 text-ocean-blue focus:ring-ocean-blue"
+          />
+          <span className="text-sm text-gray-800 dark:text-gray-200">
+            Send the merchant an invitation
+            <span className="block text-[11px] text-gray-500 dark:text-gray-400">
+              Best for scheduled reviews/offer calls — first-contact leads usually shouldn't get a formal invite.
+            </span>
+          </span>
+        </label>
+
+        {error && <p className="text-xs font-medium text-red-600 dark:text-red-400">{error}</p>}
+
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <span className="text-[10px] text-gray-400">Clearing a callback stays in the Revenue Playbook.</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={saving}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-ocean-blue hover:bg-ocean-blue/90 disabled:opacity-50"
+            >
+              {saving
+                ? "Saving…"
+                : replacing
+                  ? "Replace the callback (updates the calendar)"
+                  : invite
+                    ? "Schedule + invite the merchant"
+                    : "Schedule the call (books the calendar)"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** One calendar line: time · type chip · merchant · deal # · sync tick · closer. */
-function ItemRow({ item, now, showCloser }: { item: CalItem; now: number; showCloser: boolean }) {
+function ItemRow({
+  item,
+  now,
+  showCloser,
+  onReschedule,
+}: {
+  item: CalItem;
+  now: number;
+  showCloser: boolean;
+  onReschedule?: (deal: CalendarDeal) => void;
+}) {
   const { deal, type, at, pastDue } = item;
   const meta = TYPE_META[type];
   const missedCallback = type === "callback" && pastDue;
@@ -250,6 +517,19 @@ function ItemRow({ item, now, showCloser }: { item: CalItem; now: number; showCl
           {closerNameOf(deal)}
         </span>
       )}
+      {type === "callback" && onReschedule && (
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onReschedule(deal);
+          }}
+          title="Pick a new time — clearing the callback stays in the Revenue Playbook"
+          className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+        >
+          Reschedule
+        </button>
+      )}
       <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
         Open →
       </span>
@@ -270,6 +550,8 @@ export default function CalendarPage() {
   const [ty, tm] = todayKey.split("-").map(Number);
   const [view, setView] = useState<{ y: number; m: number }>({ y: ty, m: tm });
   const [selectedKey, setSelectedKey] = useState<string>(todayKey);
+  // The schedule dialog: null = closed; otherwise its prefill (deal + ET time).
+  const [schedule, setSchedule] = useState<SchedulePrefill | null>(null);
 
   const load = useCallback(() => {
     getCalendarDeals()
@@ -351,6 +633,33 @@ export default function CalendarPage() {
     setSelectedKey(todayKey);
   };
 
+  // "+ Schedule call": prefill the selected day (today if the selection is in the
+  // past — nobody schedules a call for yesterday) at 10:00 AM ET.
+  const openSchedule = useCallback(
+    (dateKey?: string) => {
+      const key = dateKey && dateKey >= todayKey ? dateKey : todayKey;
+      setSchedule({ deal: null, dtLocal: `${key}T10:00` });
+    },
+    [todayKey],
+  );
+
+  // Reschedule an existing callback: same dialog, deal locked in, current time
+  // prefilled (as its ET wall clock) so the closer sees what they're replacing.
+  const openReschedule = useCallback((deal: CalendarDeal) => {
+    if (!deal.callback_at) return;
+    setSchedule({
+      deal: {
+        id: deal.id,
+        deal_number: deal.deal_number,
+        status: deal.status,
+        callback_at: deal.callback_at,
+        callback_invite: deal.callback_invite,
+        name: nameOf(deal),
+      },
+      dtLocal: etDateTimeLocalValue(deal.callback_at),
+    });
+  }, []);
+
   return (
     <div className="p-4 sm:p-6 space-y-4 max-w-7xl mx-auto">
       {/* Header */}
@@ -381,6 +690,13 @@ export default function CalendarPage() {
             </div>
           )}
           <button
+            onClick={() => openSchedule(selectedKey)}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-ocean-blue hover:bg-ocean-blue/90"
+          >
+            <PlusIcon className="w-3.5 h-3.5" />
+            Schedule call
+          </button>
+          <button
             onClick={load}
             title="Refresh"
             className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -390,13 +706,13 @@ export default function CalendarPage() {
         </div>
       </div>
 
-      {/* Read-only notice: the playbook is where callbacks actually get worked. */}
+      {/* Calendar edits stop at scheduling: clearing a callback is playbook work. */}
       <Link
         to="/admin/playbooks"
         className="inline-flex items-center gap-1.5 text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-ocean-blue"
       >
         <MapIcon className="w-3.5 h-3.5" />
-        Read-only view — reschedule or clear callbacks in the <b>Revenue Playbook</b> →
+        Schedule &amp; reschedule here — <b>clearing</b> a callback happens in the <b>Revenue Playbook</b> →
       </Link>
 
       {/* MISSED PROMISES — past-due callbacks on open deals, loud on purpose. */}
@@ -407,7 +723,7 @@ export default function CalendarPage() {
           </h2>
           <div className="space-y-1.5">
             {missedCallbacks.map((it) => (
-              <ItemRow key={it.key} item={it} now={now} showCloser={showCloser} />
+              <ItemRow key={it.key} item={it} now={now} showCloser={showCloser} onReschedule={openReschedule} />
             ))}
           </div>
         </div>
@@ -433,7 +749,7 @@ export default function CalendarPage() {
         ) : (
           <div className="space-y-1.5">
             {todayItems.map((it) => (
-              <ItemRow key={it.key} item={it} now={now} showCloser={showCloser} />
+              <ItemRow key={it.key} item={it} now={now} showCloser={showCloser} onReschedule={openReschedule} />
             ))}
           </div>
         )}
@@ -484,19 +800,30 @@ export default function CalendarPage() {
               ) : (
                 <button
                   key={key}
-                  onClick={() => setSelectedKey(key)}
-                  className={`min-h-[3.5rem] rounded-lg border p-1.5 text-left transition flex flex-col ${
+                  onClick={() => {
+                    setSelectedKey(key);
+                    // Empty future day → straight into scheduling (the affordance
+                    // the click implies). Days with items just select.
+                    if ((byDay.get(key)?.length ?? 0) === 0 && key >= todayKey) openSchedule(key);
+                  }}
+                  title={(byDay.get(key)?.length ?? 0) === 0 && key >= todayKey ? "Schedule a call on this day" : undefined}
+                  className={`group min-h-[3.5rem] rounded-lg border p-1.5 text-left transition flex flex-col ${
                     selectedKey === key
                       ? "border-ocean-blue bg-ocean-blue/10"
                       : "border-gray-100 dark:border-gray-700 hover:border-ocean-blue/50 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                   } ${key === todayKey ? "ring-2 ring-mint-green" : ""}`}
                 >
-                  <span
-                    className={`text-xs font-semibold ${
-                      key === todayKey ? "text-mint-green" : "text-gray-700 dark:text-gray-300"
-                    }`}
-                  >
-                    {Number(key.slice(8))}
+                  <span className="flex items-center justify-between">
+                    <span
+                      className={`text-xs font-semibold ${
+                        key === todayKey ? "text-mint-green" : "text-gray-700 dark:text-gray-300"
+                      }`}
+                    >
+                      {Number(key.slice(8))}
+                    </span>
+                    {(byDay.get(key)?.length ?? 0) === 0 && key >= todayKey && (
+                      <PlusIcon className="w-3 h-3 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    )}
                   </span>
                   {(byDay.get(key)?.length ?? 0) > 0 && (
                     <span className="mt-auto flex items-center gap-0.5 flex-wrap">
@@ -543,7 +870,7 @@ export default function CalendarPage() {
           ) : (
             <div className="space-y-1.5">
               {selectedItems.map((it) => (
-                <ItemRow key={it.key} item={it} now={now} showCloser={showCloser} />
+                <ItemRow key={it.key} item={it} now={now} showCloser={showCloser} onReschedule={openReschedule} />
               ))}
             </div>
           )}
@@ -553,8 +880,28 @@ export default function CalendarPage() {
               set in the playbook will appear here the moment they're saved.
             </p>
           )}
+          {!loading && (
+            <button
+              onClick={() => openSchedule(selectedKey)}
+              className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ocean-blue hover:underline"
+            >
+              <PlusIcon className="w-3.5 h-3.5" />
+              Schedule a call {selectedKey === todayKey ? "today" : `on ${labelOfKey(selectedKey)}`}
+            </button>
+          )}
         </div>
       </div>
+
+      {schedule && (
+        <ScheduleCallDialog
+          prefill={schedule}
+          onClose={() => setSchedule(null)}
+          onSaved={() => {
+            setSchedule(null);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -20,9 +20,16 @@
 //     must never lose a callback; My Day reads callback_at directly and the
 //     next sweep retries until healed).
 //
-// P1 GUARANTEE: nothing merchant-facing. toNotify:false on every appointment
-// write, the calendar's contact notifications are disabled, and Google
-// invitation emails are off. Merchant invites are Phase 3, per-send, default OFF.
+// MERCHANT INVITES (Phase 3, per-send, DEFAULT OFF): deals.callback_invite
+// picks the calendar. FALSE → "Callbacks — Internal" (no contact notifications,
+// toNotify:false, Google invitation emails off — nothing merchant-facing, ever).
+// TRUE → "Scheduled Calls — Merchant Invited" (contact email confirmation +
+// 60-min email reminder with compliance-neutral copy configured ON the calendar)
+// with toNotify:true so GHL actually sends them. callback_ghl_calendar_id
+// records where the current event lives; when the flag (or config) moves the
+// target, the sweeper cancels on the old calendar and recreates on the new one —
+// the cancel itself is always toNotify:false (a moved booking is immediately
+// re-confirmed by the new one; a cleared callback means the closer reached them).
 //
 // Callers:
 //   • pg_cron every 5 min (?secret=<GHL webhook secret> + anon-key Bearer for
@@ -52,18 +59,24 @@ interface SyncDeal {
   id: string;
   deal_number: string | null;
   callback_at: string | null;
+  callback_invite: boolean | null;
   callback_ghl_event_id: string | null;
+  callback_ghl_calendar_id: string | null;
   callback_synced_at: string | null;
   ghl_contact_id: string | null;
   assigned_closer_id: string | null;
   customer: { business_name: string | null; first_name: string | null; last_name: string | null } | null;
 }
 
-function titleFor(d: SyncDeal): string {
+function titleFor(d: SyncDeal, invited: boolean): string {
   const who = d.customer?.business_name ||
     [d.customer?.first_name, d.customer?.last_name].filter(Boolean).join(" ") ||
     "merchant";
-  return `Callback: ${who}${d.deal_number ? ` (${d.deal_number})` : ""}`;
+  // Invited titles are MERCHANT-VISIBLE (Google invitation emails are on for
+  // that calendar) — neutral wording, no internal jargon, no deal numbers.
+  return invited
+    ? `Call with Momentum Funding — ${who}`
+    : `Callback: ${who}${d.deal_number ? ` (${d.deal_number})` : ""}`;
 }
 
 /** GHL nests the created/updated appointment inconsistently; dig the id out. */
@@ -116,11 +129,13 @@ Deno.serve(async (req) => {
   const onlyDealId = typeof payload.deal_id === "string" ? payload.deal_id
     : url.searchParams.get("deal_id") ?? null;
 
-  // The calendar id is config, not code (platform_settings.callback_calendar).
+  // The calendar ids are config, not code (platform_settings.callback_calendar).
   const { data: setting, error: settingErr } = await db
     .from("platform_settings").select("value").eq("key", "callback_calendar").maybeSingle();
-  const calendarId = (setting?.value as { internal_calendar_id?: string } | null)?.internal_calendar_id;
-  if (settingErr || !calendarId) {
+  const calSetting = setting?.value as { internal_calendar_id?: string; invited_calendar_id?: string } | null;
+  const internalCalendarId = calSetting?.internal_calendar_id;
+  const invitedCalendarId = calSetting?.invited_calendar_id ?? null;
+  if (settingErr || !internalCalendarId) {
     return json({ error: `callback_calendar setting missing: ${settingErr?.message ?? "no internal_calendar_id"}` }, 502);
   }
 
@@ -133,7 +148,8 @@ Deno.serve(async (req) => {
   // callback_at !== callback_synced_at, compared as instants.
   let q = db.from("deals")
     .select(`
-      id, deal_number, callback_at, callback_ghl_event_id, callback_synced_at,
+      id, deal_number, callback_at, callback_invite, callback_ghl_event_id,
+      callback_ghl_calendar_id, callback_synced_at,
       ghl_contact_id, assigned_closer_id,
       customer:customers!customer_id ( business_name, first_name, last_name )
     `)
@@ -169,15 +185,26 @@ Deno.serve(async (req) => {
           summary.failed.push({ deal: label, error: msg });
           continue;
         }
-        await writeBack(db, d.id, { callback_ghl_event_id: null, callback_synced_at: null, callback_sync_error: null });
+        await writeBack(db, d.id, { callback_ghl_event_id: null, callback_ghl_calendar_id: null, callback_synced_at: null, callback_sync_error: null });
         summary.cancelled++;
         continue;
       }
 
-      // ── IN SYNC: the event already reflects this exact instant → nothing to do ──
+      // ── Which calendar does this callback belong on? ──
+      // invite flag ON + invited calendar configured → the merchant-facing one.
+      const invited = !!d.callback_invite && !!invitedCalendarId;
+      const targetCalendarId = invited ? invitedCalendarId! : internalCalendarId;
+      // An invite the config can't honor is a real problem — book internal so the
+      // callback isn't lost, but leave the error visible until config heals it.
+      const configWarning = d.callback_invite && !invitedCalendarId
+        ? "invite requested but no invited_calendar_id configured — booked internal, merchant NOT notified"
+        : null;
+
+      // ── IN SYNC: the event reflects this instant ON the right calendar → done ──
       if (
         d.callback_ghl_event_id && d.callback_synced_at &&
-        Date.parse(d.callback_synced_at) === Date.parse(d.callback_at)
+        Date.parse(d.callback_synced_at) === Date.parse(d.callback_at) &&
+        (d.callback_ghl_calendar_id ?? internalCalendarId) === targetCalendarId
       ) { summary.skipped++; continue; }
 
       // ── SET / CHANGED: upsert ──
@@ -189,25 +216,43 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      // ── MOVED CALENDARS (invite flag flipped): cancel the old event first. ──
+      // A PUT can't safely re-home an appointment across calendars, so the move is
+      // cancel + recreate. The cancel is silent (toNotify:false): a flip TO invited
+      // is immediately followed by a notified booking; a flip AWAY from invited
+      // means the merchant should stop hearing about it — either way, no email here.
+      let eventId = d.callback_ghl_event_id;
+      // Rows synced before this column existed live on the internal calendar.
+      const currentCalendarId = d.callback_ghl_calendar_id ?? internalCalendarId;
+      if (eventId && currentCalendarId !== targetCalendarId) {
+        const res = await ghlFetch(cfg, "PUT", `/calendars/events/appointments/${eventId}`, {
+          appointmentStatus: "cancelled",
+          toNotify: false,
+        });
+        if (!res.ok && res.status !== 404) throw new Error(`cross-calendar cancel failed: ${ghlErrorMessage(res.error)}`);
+        eventId = null;
+      }
+
       const startMs = Date.parse(d.callback_at);
       const body: Record<string, unknown> = {
-        calendarId,
+        calendarId: targetCalendarId,
         locationId: cfg.locationId,
         contactId: d.ghl_contact_id,
         startTime: new Date(startMs).toISOString(),
         endTime: new Date(startMs + APPT_MINUTES * 60_000).toISOString(),
-        title: titleFor(d),
+        title: titleFor(d, invited),
         appointmentStatus: "confirmed",
         // A 4pm callback books at 4pm, whatever the slot grid thinks.
         ignoreFreeSlotValidation: true,
         ignoreDateRange: true,
-        // P1: nothing merchant-facing, ever. Reminders are calendar-native.
-        toNotify: false,
+        // Internal: nothing merchant-facing, ever (reminders are calendar-native).
+        // Invited: toNotify:true fires the calendar's contact confirmation +
+        // reminder emails — that IS the invitation.
+        toNotify: invited,
       };
       const ghlUser = d.assigned_closer_id ? ghlUserByProfile.get(d.assigned_closer_id) : undefined;
       if (ghlUser) body.assignedUserId = ghlUser;
 
-      let eventId = d.callback_ghl_event_id;
       let action: "created" | "updated";
       if (eventId) {
         // Duplicate protection: a changed time UPDATES the existing event.
@@ -233,8 +278,9 @@ Deno.serve(async (req) => {
 
       await writeBack(db, d.id, {
         callback_ghl_event_id: eventId,
+        callback_ghl_calendar_id: targetCalendarId, // where the event now lives
         callback_synced_at: d.callback_at, // the instant the event NOW reflects
-        callback_sync_error: null,
+        callback_sync_error: configWarning,
       });
       summary[action]++;
     } catch (e) {

@@ -164,6 +164,7 @@ export interface CalendarDeal {
   deal_number: string | null;
   status: string;
   callback_at: string | null;
+  callback_invite: boolean | null;
   callback_ghl_event_id: string | null;
   callback_synced_at: string | null;
   callback_sync_error: string | null;
@@ -190,7 +191,7 @@ export async function getCalendarDeals(): Promise<CalendarDeal[]> {
     .from("deals")
     .select(`
       id, deal_number, status,
-      callback_at, callback_ghl_event_id, callback_synced_at, callback_sync_error,
+      callback_at, callback_invite, callback_ghl_event_id, callback_synced_at, callback_sync_error,
       stips_promised_by, first_call_due_at, assigned_closer_id,
       customer:customers!customer_id ( id, first_name, last_name, business_name ),
       closer:profiles!assigned_closer_id ( id, first_name, last_name )
@@ -203,6 +204,49 @@ export async function getCalendarDeals(): Promise<CalendarDeal[]> {
     throw error;
   }
   return (data || []) as unknown as CalendarDeal[];
+}
+
+/** One row in the Calendar page's schedule-a-call deal picker. */
+export interface OpenDealHit {
+  id: string;
+  deal_number: string | null;
+  status: string;
+  callback_at: string | null;
+  callback_invite: boolean | null;
+  /** "Business name" or "First Last" — whatever the customer record has. */
+  name: string;
+}
+
+/**
+ * Forgiving open-deal lookup for the Calendar page's "+ Schedule call" dialog —
+ * same shape as FunderQualifier's merchant search: ilike across business name
+ * and contact first/last name, then flatten to the customer's OPEN deals.
+ * RLS already fences closers to their own book + unassigned.
+ */
+export async function searchOpenDeals(term: string): Promise<OpenDealHit[]> {
+  const t = `%${term.trim()}%`;
+  const { data, error } = await supabase
+    .from("customers")
+    .select("id, business_name, first_name, last_name, deals(id, deal_number, status, callback_at, callback_invite)")
+    .or(`business_name.ilike.${t},first_name.ilike.${t},last_name.ilike.${t}`)
+    .limit(10);
+  if (error) {
+    console.error("Open-deal search failed:", error);
+    return [];
+  }
+  const closed = new Set<string>(QUEUE_CLOSED_STATUSES);
+  const hits: OpenDealHit[] = [];
+  for (const c of (data ?? []) as unknown as Array<{
+    business_name: string | null; first_name: string | null; last_name: string | null;
+    deals: Array<{ id: string; deal_number: string | null; status: string; callback_at: string | null; callback_invite: boolean | null }> | null;
+  }>) {
+    const name = c.business_name || [c.first_name, c.last_name].filter(Boolean).join(" ") || "merchant";
+    for (const d of c.deals ?? []) {
+      if (closed.has(d.status)) continue;
+      hits.push({ ...d, name });
+    }
+  }
+  return hits;
 }
 
 export async function getDealById(id: string): Promise<{
@@ -1325,4 +1369,35 @@ export async function logContactAttempt(
   if ("callback_at" in patch) {
     supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: dealId } }).catch(() => {});
   }
+}
+
+/**
+ * Schedule (or reschedule) a call from the Calendar page — the scheduling-only
+ * sibling of logContactAttempt's `callback` outcome. It touches NO contact
+ * telemetry (scheduling a call is not a dial): just the promise itself.
+ *
+ *   callback_at      — the ET-entered instant (already converted to UTC ISO by
+ *                      etDateTimeLocalToUtcIso at the input).
+ *   callback_invite  — per-send, explicit, DEFAULT OFF. TRUE books the GHL
+ *                      appointment on the merchant-invited calendar, which emails
+ *                      the merchant a neutral confirmation + reminder.
+ *
+ * Overwrite protection lives in the DIALOG (it shows the existing time and makes
+ * "Replace" explicit) — by the time this runs, the closer has already said yes.
+ * Clearing a callback stays in the playbook; this function never nulls one.
+ */
+export async function scheduleCallback(
+  dealId: string,
+  callbackAtIso: string,
+  opts: { invite?: boolean } = {},
+): Promise<void> {
+  await mustWrite(
+    "schedule callback",
+    supabase.from("deals").update({
+      callback_at: callbackAtIso,
+      callback_invite: opts.invite ?? false,
+    }).eq("id", dealId),
+  );
+  // Same instant-projection as logContactAttempt: fire-and-forget, never blocking.
+  supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: dealId } }).catch(() => {});
 }
