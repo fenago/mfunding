@@ -330,9 +330,14 @@ function buildPartialFields(
     if (value === "" || value === null || value === undefined) return;
     out.push({ id, value });
   };
+  // NO dollar sign, deliberately. These doc fields feed templates that print their
+  // own literal "$" next to the tag — buildFields (the 04B path) has always pushed
+  // bare numbers for exactly this reason, and pushing "$42,000" here rendered
+  // "$$42,000" on the document. The template owns the currency symbol; we own the
+  // number. Commas kept for readability.
   const money = (v: unknown): string => {
     const n = Number(String(v ?? "").replace(/[^0-9.]/g, ""));
-    return Number.isFinite(n) && n > 0 ? "$" + n.toLocaleString("en-US") : "";
+    return Number.isFinite(n) && n > 0 ? n.toLocaleString("en-US") : "";
   };
   // "No" / "N/A" mean ZERO positions, not a literal string on a contract.
   const count = (v: unknown): number => {
@@ -361,7 +366,11 @@ function buildPartialFields(
   push(F.owner_email, email);
   push(F.owner_cell_phone, phone);
   push(F.amount_requested_doc, money(lq["requested_amount"]) || money(deal.amount_requested));
-  push(F.use_of_funds_doc, s(lq["use_of_funds"]) || s(deal.use_of_funds));
+  // Use of funds is on 100% of measured Synergy leads, so this fallback exists only
+  // for hand-made deals with no lead payload. "Working Capital" is the generic MCA
+  // purpose — deliberately bland, because a raw {{tag}} on the signed document is the
+  // one outcome that is never acceptable.
+  push(F.use_of_funds_doc, s(lq["use_of_funds"]) || s(deal.use_of_funds) || "Working Capital");
   push(F.avg_monthly_revenue_doc, money(lq["monthly_deposits"]) || money(cust.monthly_revenue));
   push(F.active_mca_positions, count(lq["open_positions"]));
   push(F.total_outstanding_mca_balance, count(lq["positions_balance"]));

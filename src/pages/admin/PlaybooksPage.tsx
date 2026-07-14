@@ -402,8 +402,12 @@ export default function PlaybooksPage() {
   // application form involved) and the merchant completes the rest — EIN, SSN,
   // addresses, banking — as fillable fields on the document itself, then signs.
   // The closer types NOTHING. Same confirm dialog as the other two paths.
-  function sendPartialDocs(resend: boolean) {
+  function sendPartialDocs(resendArg: boolean) {
     if (!deal) return;
+    // A deal already at Application Sent means the contact may still be sitting in
+    // the 04C workflow — a plain re-enroll silently no-ops there. Treat any send on
+    // an already-sent deal as a resend so the server removes + re-enrolls.
+    const resend = resendArg || deal.status === "application_sent" || !!deal.application_sent_at;
     const prevIdx = currentIdx;
     setConfirmState({
       title: `Send the PARTIAL application to ${dealName(deal)}?`,
