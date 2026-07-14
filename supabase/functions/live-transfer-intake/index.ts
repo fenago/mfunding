@@ -69,10 +69,19 @@ const LIVE_TRANSFER_SUBJECT_MARKER = "live transfer";
 //   Agentic Voice Inc               → LIVE TRANSFER  (merchant is on the line NOW)
 //   Agentic Voice Inc (Real Time)   → REAL-TIME      (email lead; call them, 5-min SLA)
 //
-// It shows up in two independent places — the From display name, and the body's
-// "Select the Company or Agent" field — so we scan both and treat either as proof.
-// The "(RT)" suffix is the same account with a second tag on it; accept it too.
-const REALTIME_ACCOUNT_MARKER = /\(\s*(?:real[\s-]*time|rt)\s*\)/i;
+// It shows up in two places — the From display name, and the body's agent field
+// (canonical key "agent") — and either is proof.
+//
+// DELIBERATELY TOLERANT OF THE VENDOR'S FORMATTING. Synergy mutates this string freely:
+// the ledger already holds "(Real Time)", "(Real Time) (RT)" and "(Real Time) (HNMR)".
+// The old pattern REQUIRED parentheses, so the day they write "Agentic Voice Inc - Real
+// Time" every real-time lead silently becomes a live transfer and loses its 5-minute
+// clock. Match the WORDS, not their punctuation.
+//
+// "rt" still requires its parens/brackets: bare "rt" is a two-letter substring that would
+// fire on innocent text. "real time" / "real-time" / "realtime" are unambiguous enough to
+// match anywhere in the account name.
+const REALTIME_ACCOUNT_MARKER = /\breal[\s-]*time\b|[([]\s*rt\s*[)\]]/i;
 // Trusted lead-delivery domains. A sender on one of these is a Synergy delivery
 // robot; add more domains here as vendors/senders change — no code change needed.
 const TRUSTED_DELIVERY_DOMAINS = ["double-verified.com"];
@@ -88,20 +97,34 @@ const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
 const FIRST_CALL_SLA_MS = 5 * 60 * 1000;
 // Can we actually TELL a live transfer from a real-time lead?
 //
-// YES — as of 2026-07-13. Synergy now sends real-time leads from a distinctly named
-// account ("Agentic Voice Inc (Real Time)"), which lands in both the From display
-// name and the body's "Select the Company or Agent" field. See
-// REALTIME_ACCOUNT_MARKER. That is the discriminator we were missing, and it means
-// the SLA clock can finally be applied to the product it was written for:
+// YES — as of 2026-07-13. Synergy sends real-time leads from a distinctly named account
+// ("Agentic Voice Inc (Real Time)"), which lands in the From display name and in the
+// body's agent field. See REALTIME_ACCOUNT_MARKER. So the SLA clock can finally be
+// applied to the product it was written for:
 //
-//   real-time     → 5-minute callback clock. Nobody is on the phone.
+//   real-time     → 5-minute clock. Nobody is on the phone.
 //   live transfer → NO clock. The merchant is already on the line; the call IS the
 //                   event. A countdown here is noise at best and, at worst, tells a
 //                   closer to "call within 5 minutes" someone who is mid-conversation.
 //
-// If Synergy ever stops tagging the account, the marker simply stops matching and
-// every lead falls back to live_transfer — which keeps the clock ON. Failing toward
-// "call them" is the safe direction; failing toward "no clock" would drop leads.
+// ⚠️ READ THIS BEFORE CHANGING THE CLASSIFIER. The failure direction INVERTED when this
+// flag went true, and the old comment here still claimed the opposite — which would have
+// walked the next person straight into it.
+//
+// While the flag was FALSE, everything got a clock, so a classifier miss was harmless.
+// Now that it is TRUE, `first_call_due_at` is NULL for anything we call a live transfer.
+// So a miss no longer means "a spurious timer" — it means a REAL-TIME LEAD LOSES ITS
+// CLOCK ENTIRELY, and a closer sits waiting for a phone call that is never coming while
+// the 5-minute window we pay for expires in silence.
+//
+// The two mistakes are NOT symmetric:
+//   wrongly real-time  → a pointless 5-minute timer on a merchant already on the phone.
+//                        Costs seconds of attention.
+//   wrongly live-xfer  → no clock, no countdown, no urgency. Costs the lead.
+//
+// Therefore: when the classifier genuinely CANNOT TELL (no agent field in the body AND no
+// From display name), it defaults to REAL-TIME and keeps the clock on. See the
+// `!haveAccountSignal` branch. Never "simplify" that away.
 const CAN_DISTINGUISH_KINDS = true;
 // Both Synergy products, for dedupe. A merchant is the same merchant whichever one
 // delivered them, so the dedupe lookup must span both — never just the kind we just
@@ -959,15 +982,36 @@ Deno.serve(async (req) => {
   //          subject, and the body's "Select the Company or Agent" field. ANY ONE of
   //          them is proof. Absent it everywhere, this is a genuine warm transfer.
   //
-  //          Scanned narrowly ON PURPOSE — these three fields are the vendor's own
-  //          words about the ACCOUNT. Sweeping the whole body would let a merchant's
-  //          own answer ("I need funds in real time") reclassify their lead.
+  //          Scanned narrowly ON PURPOSE — these are the vendor's own words about the
+  //          ACCOUNT. Sweeping the whole body would let a merchant's own answer ("I
+  //          need funds in real time") reclassify their own lead.
   const subjLower = emailSubject.toLowerCase();
-  const agentField = fields["Select the Company or Agent"] ?? "";
-  const isRealtimeAccount =
-    REALTIME_ACCOUNT_MARKER.test(emailFrom) ||
-    REALTIME_ACCOUNT_MARKER.test(emailSubject) ||
-    REALTIME_ACCOUNT_MARKER.test(agentField);
+
+  // The BODY's agent field. Read it by its CANONICAL key.
+  //
+  // This was `fields["Select the Company or Agent"]` — the raw email label — and it was
+  // ALWAYS undefined, because parseLabelValue emits canonical keys (LABEL_TO_KEY maps
+  // that label to "agent"). So the body proof never ran. Not once. Two of the three
+  // "independent" signals this classifier claims were dead: the subject is byte-identical
+  // on both products (verified across every ledger row — it has never carried "(Real
+  // Time)"), and this one couldn't read its own input.
+  //
+  // Which left the From DISPLAY NAME as the sole discriminator — and GHL does not always
+  // give us one. There is already a row in synergy_intake_log whose from_email is the bare
+  // "info@double-verified.com" with no display name at all. On a real-time lead that means:
+  // classified live_transfer → first_call_due_at NULL → no countdown → the closer waits for
+  // a phone call that is never coming, while the 5-minute SLA we PAY FOR quietly expires.
+  const agentField = fields["agent"] ?? "";
+  const fromHasMarker = REALTIME_ACCOUNT_MARKER.test(emailFrom);
+  const subjHasMarker = REALTIME_ACCOUNT_MARKER.test(emailSubject);
+  const agentHasMarker = REALTIME_ACCOUNT_MARKER.test(agentField);
+  const isRealtimeAccount = fromHasMarker || subjHasMarker || agentHasMarker;
+
+  // Can we SEE the vendor's account name at all? The body's agent field is the reliable
+  // one (it is inside the lead, not in an envelope GHL may rewrite), so if it is present
+  // we have a definitive answer either way. A From display name also counts as a signal.
+  const haveAccountSignal = agentField.trim() !== "" || /\S+\s+</.test(emailFrom);
+
   let isLiveTransfer: boolean;
   if (sourceMode === "structured") {
     // Structured posts are the (future) Zapier path; default to live_transfer to
@@ -977,7 +1021,26 @@ Deno.serve(async (req) => {
   } else if (isRealtimeAccount) {
     // The vendor told us, explicitly, that nobody is on the phone.
     isLiveTransfer = false;
+  } else if (!haveAccountSignal) {
+    // ── WE CANNOT TELL. FAIL TOWARD THE CLOCK. ──
+    //
+    // No agent field in the body and no display name on the From. Guessing "live transfer"
+    // here would strip the countdown and tell a closer to wait for a call that may never
+    // come. Guessing "real-time" costs, at worst, a spurious 5-minute timer on a merchant
+    // who is already on the phone — which the closer is by definition already talking to.
+    //
+    // Those two mistakes are not symmetric. One wastes a few seconds of attention; the
+    // other silently burns a lead we paid for. So an unknown lead keeps its clock.
+    isLiveTransfer = false;
+    console.warn(JSON.stringify({
+      fn: "live-transfer-intake",
+      warn: "cannot determine lead kind — no agent field and no From display name; defaulting to REAL-TIME so the SLA clock stays on",
+      from: emailFrom,
+      subject: emailSubject,
+    }));
   } else {
+    // We can see the account, and it does NOT carry the real-time marker. Genuine warm
+    // transfer: the merchant is on the line.
     isLiveTransfer =
       subjLower.includes(LIVE_TRANSFER_SUBJECT_MARKER) ||
       (!emailSubject && /live\s*transfer/i.test(bodyForMarker.slice(0, 400)));
@@ -1332,25 +1395,20 @@ Deno.serve(async (req) => {
     campaign_id: campaignId,
     temperature: "hot",
     urgency: /yes/i.test(lead.needMoneyNow) ? "high" : null,
-    // THE CLOCK STAYS ON UNTIL WE CAN ACTUALLY TELL THE TWO PRODUCTS APART.
+    // THE 5-MINUTE CLOCK BELONGS TO REAL-TIME LEADS ONLY.
     //
-    // In principle the 5-minute speed-to-lead clock belongs to REAL-TIME leads only:
-    // a LIVE TRANSFER is a warm phone handoff — the merchant is already on the line,
-    // there is nothing to "call back".
+    // A LIVE TRANSFER is a warm phone handoff — the merchant is already on the line, so
+    // there is nothing to "call back" and a countdown is worse than useless: it tells a
+    // closer to call within 5 minutes someone they are mid-conversation with.
     //
-    // But TODAY both products arrive at sales@ with the identical subject
-    // ("Live Transfer! …"), so the classifier labels EVERYTHING live_transfer. Gating
-    // the clock on that label therefore removes it from real-time leads too — and a
-    // real-time lead with no clock is a dead lead. So while the kinds are
-    // indistinguishable we always set it:
-    //   • truly a warm handoff → the closer is already on the phone; the clock is
-    //     harmless noise they ignore.
-    //   • truly a real-time lead → the clock is the ONLY thing that makes them call.
-    // Asymmetric risk: a spurious clock costs nothing, a missing one loses the lead.
+    // A REAL-TIME lead is email-only. Nobody is on the phone. The clock is the ONLY
+    // thing that makes anyone move, and it is the thing we are PAYING the vendor for.
     //
-    // Flip CAN_DISTINGUISH_KINDS to true once Synergy delivers the two products to
-    // two different addresses (campaigns.tracking_email) — then live transfers
-    // correctly stop carrying a callback deadline.
+    // So this hangs entirely on the classifier being right — which is why the classifier
+    // FAILS TOWARD THE CLOCK when it cannot tell (see the !haveAccountSignal branch).
+    // The two mistakes are not symmetric: a spurious clock on a warm transfer costs a
+    // closer a few seconds of attention; a missing clock on a real-time lead costs the
+    // lead. Anything that cannot be proven to be a warm handoff keeps its deadline.
     first_call_due_at: (isLiveTransfer && CAN_DISTINGUISH_KINDS)
       ? null
       : new Date(now + FIRST_CALL_SLA_MS).toISOString(),
