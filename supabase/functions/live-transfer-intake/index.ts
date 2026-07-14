@@ -55,6 +55,7 @@ import {
   type GhlConfig,
 } from "../_shared/ghl.ts";
 import { ensureMerchantPortalUser } from "../_shared/merchantPortal.ts";
+import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config (kept simple, top of file) ────────────────────────────────────────
@@ -1786,6 +1787,11 @@ Deno.serve(async (req) => {
     alertWarning = r.error;
     if (!r.sent) console.error(`live-transfer-intake: alert email issue (${kcfg.kind})`, { dealId, alertWarning });
   }
+
+  // ── Lead scoring (fire-and-forget — NEVER blocks or fails the intake) ──
+  // The score is nice; the lead is sacred. A miss here is caught by the nightly
+  // score-lead sweep.
+  fireAndForgetScore(dealId, "intake");
 
   return json({
     ok: true,

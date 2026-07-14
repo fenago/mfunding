@@ -19,6 +19,7 @@ import {
 } from "../../../types/deals";
 import DealCreateModal from "./DealCreateModal";
 import { expectedCommissionInPlay } from "../../../types/commissions";
+import LeadGradeChip from "../../../components/admin/LeadGradeChip";
 
 // Sentinel for the closer <select>: "" already means "All Closers", so the
 // unassigned-only view needs its own value (a real profile id can never collide).
@@ -33,6 +34,9 @@ export default function DealListPage() {
   const [closers, setClosers] = useState<CloserOption[]>([]);
   const [reactivatingId, setReactivatingId] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
+  // "Best first (EV)" — sort by expected value (est.) instead of newest-first.
+  // Client-side on the already-fetched rows; unscored deals sink to the bottom.
+  const [sortBestFirst, setSortBestFirst] = useState(false);
 
   useEffect(() => {
     fetchDeals();
@@ -142,6 +146,8 @@ export default function DealListPage() {
               market: d.market ?? "",
               amount_requested: d.amount_requested ?? "",
               amount_funded: d.amount_funded ?? "",
+              lead_grade: d.lead_grade ?? "",
+              expected_value_est: d.expected_value ?? "",
               created_at: d.created_at,
             })))}
             disabled={deals.length === 0}
@@ -274,6 +280,15 @@ export default function DealListPage() {
             </option>
           ))}
         </select>
+        <select
+          value={sortBestFirst ? "ev" : "newest"}
+          onChange={(e) => setSortBestFirst(e.target.value === "ev")}
+          className="input-field w-44"
+          title="Best first ranks by expected value (est.) — P(close) × commission in play"
+        >
+          <option value="newest">Newest first</option>
+          <option value="ev">Best first (EV)</option>
+        </select>
         {Object.values(filters).some(Boolean) && (
           <button
             onClick={() => setFilters({})}
@@ -319,6 +334,9 @@ export default function DealListPage() {
                   <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3">
                     Customer
                   </th>
+                  <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3" title="v1 rules-based lead quality — estimate, not measured">
+                    Grade
+                  </th>
                   <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3">
                     Status
                   </th>
@@ -340,7 +358,10 @@ export default function DealListPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {deals.map((deal) => {
+                {(sortBestFirst
+                  ? [...deals].sort((a, b) => (b.expected_value ?? -1) - (a.expected_value ?? -1))
+                  : deals
+                ).map((deal) => {
                   const statusConfig = DEAL_STATUS_CONFIG[deal.status];
                   const typeConfig = DEAL_TYPE_CONFIG[deal.deal_type];
                   const marketConfig = deal.market ? MARKET_CONFIG[deal.market] : null;
@@ -370,6 +391,13 @@ export default function DealListPage() {
                             <div className="text-sm text-gray-500">{deal.customer.business_name}</div>
                           )}
                         </Link>
+                      </td>
+                      <td className="px-6 py-4">
+                        <LeadGradeChip
+                          grade={deal.lead_grade}
+                          expectedValue={deal.expected_value}
+                          reasons={deal.score_reasons}
+                        />
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">

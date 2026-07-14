@@ -39,6 +39,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, lastEmailFailure, recordEmailOutcome,
 } from "../_shared/ghl.ts";
+import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 
 // GHL rate-limits hard, and each merchant costs ~3 calls (conversation → messages →
 // email record). Keep a run small; the sweep runs every 15 minutes, so a backlog
@@ -157,6 +158,15 @@ Deno.serve(async (req) => {
         customer_id: c.id, email: c.email, status: outcome.status, error: outcome.error,
       }));
     } else ok++;
+    // ── Lead-score refresh when the deliverability VERDICT changed (a dead email
+    // is a strong negative already stored — the score must reflect it). Fire-and-
+    // forget: scoring never blocks or fails the sweep.
+    const priorBounced = c.email_status === "bounced";
+    if (priorBounced !== outcome.bounced) {
+      const { data: dealRows } = await db
+        .from("deals").select("id").eq("customer_id", c.id).neq("deal_type", "vcf");
+      for (const d of dealRows ?? []) fireAndForgetScore(d.id as string, "email_health");
+    }
     await sleep(PACE_MS);
   }
 

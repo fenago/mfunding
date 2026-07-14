@@ -29,6 +29,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
+import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -1114,6 +1115,11 @@ Deno.serve(async (req) => {
       .select("id, version, created_at")
       .maybeSingle();
     if (insErr) return json({ error: `could not save underwriting run: ${insErr.message}` }, 502);
+
+    // ── Lead-score re-rank (fire-and-forget — never blocks the underwriting
+    // response). Bank-statement truth just landed: the score must move NOW —
+    // this is what demotes a stated-$19k/true-$10.9k merchant automatically.
+    fireAndForgetScore(dealId, "underwriting");
 
     return json({
       ok: true,

@@ -185,6 +185,13 @@ verify_jwt = true
 [functions.check-email-bounces]
 verify_jwt = true
 
+# Lead scoring v1 — computes grade A–D + expected value per deal, writes the deals
+# score columns + an append-only lead_score_events row. Three callers: staff (user
+# JWT + role check in code), fn-to-fn fire-and-forget (service-role bearer), OR
+# pg_cron nightly sweep (?secret=<GHL webhook secret> + anon-key Bearer for the gateway).
+[functions.score-lead]
+verify_jwt = true
+
 # Email verification at intake — asks Instantly whether a merchant's mailbox actually
 # exists and stamps customers.email_status ('verified' | 'invalid' | 'catch_all' | …).
 # Fired by the customers_verify_email DB trigger on every new/changed merchant email,
@@ -198,6 +205,13 @@ verify_jwt = true
 # callers: staff (user JWT + role check in code) OR pg_cron every 5 min
 # (?secret=<GHL webhook secret> + anon-key Bearer for the gateway).
 [functions.callback-calendar-sync]
+verify_jwt = true
+
+# One-button Firecrawl research on a lead's business (LOAD/CONFIRM per
+# research/PLAN_business_enrichment.md). Staff-only enforced in code; a CLOSER may
+# only research deals they own (closer_owns_deal RPC). FIRECRAWL_API_KEY from the
+# secret store only. Cost-gated: business_key cache + daily cap (429 when hit).
+[functions.enrich-business]
 verify_jwt = true
 
 # GHL → Supabase document bridge. Merchants upload their statements/ID through the
