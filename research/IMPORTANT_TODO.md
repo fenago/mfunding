@@ -112,6 +112,36 @@ Both paths verified end-to-end on the test contact.
 
 ---
 
+## 🟢 JULY 14 — GROWTH PLANS (four plan docs, each with its own TODO block)
+
+*Four planning passes, each grounded against the live DB/GHL and committed as its own doc.
+The full checklists live at the end of each plan (## TODO entries) — pointers here so this
+file stays the index, not a copy that drifts.*
+
+- [ ] **G1. Business enrichment (Firecrawl)** → `research/PLAN_business_enrichment.md`
+      One button: research the business, find the address, confirm claims, analyze — cached,
+      capped, staff-gated, never auto-writes. ⚠️ Includes a LIVE security rider: the existing
+      `scan-lender-website` / `scan-vendor-website` functions are callable WITHOUT LOGIN today
+      (anonymous strangers can burn paid Firecrawl credits — June audit finding #4, still open).
+- [ ] **G2. Lead scoring & ranking** → `research/PLAN_lead_scoring.md`
+      Grade A–D at intake (explainable rules; anchor = how many funders can actually take the
+      lead) + expected-value $ sort. Re-ranks on underwriting. Logs every score from day one —
+      that log is the training data for a calibrated v2 once ~50 real outcomes exist.
+- [ ] **G3. Calendar & follow-ups** → `research/PLAN_followups_calendar.md`
+      deals.callback_at stays the truth; GHL calendar is a one-way projection with native
+      15-min reminders. Merchant invites: per-send choice, default OFF at first contact.
+      ⚠️ Found a live bug: CallbackPicker's presets are browser-local, not ET — first fix.
+- [ ] **G4. Portal in the playbook** → `research/PLAN_portal_in_playbook.md`
+      VALIDATED 4/5 PASS: portal is far more built than assumed (uploads, native + GHL e-sign,
+      offers w/ accept-decline, inbox, notifications) — it is under-USED, not under-built. The
+      one FAIL is load-bearing: portal uploads never write back to GHL, so MCA 05/06 keep
+      chasing merchants who already complied. P1 fixes that WITHOUT touching any workflow
+      (verified: remove-from-workflow API returns 200) + adds the portal line to every cover
+      note and playbook script. Additive to email always — the "primary door" framing stays
+      rejected.
+
+---
+
 ## 🔵 OWNER ACTIONS — only the owner can do these
 *Outside the codebase: credentials, business terms, and legal facts. These are also loaded into the admin Task Board (`/admin/todos`).*
 
