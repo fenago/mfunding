@@ -106,7 +106,9 @@ export interface QueueDeal extends DealWithCustomer {
 }
 
 // Terminal / done statuses the "My Day" queue never surfaces (both pipelines).
-const QUEUE_CLOSED_STATUSES = [
+// Exported so the Calendar page excludes exactly the same set — a callback on a
+// dead deal is not a promise anyone still has to keep.
+export const QUEUE_CLOSED_STATUSES = [
   "nurture",
   "declined",
   "dead",
@@ -115,6 +117,18 @@ const QUEUE_CLOSED_STATUSES = [
   "restructure_executed",
   "servicing",
 ];
+
+// Stages where the stips are still OUTSTANDING — i.e. a "statements promised by"
+// date still means something. Once a deal is submitted (or past it), the promise
+// is moot and the signal switches itself off. Shared by My Day and the Calendar
+// so the two surfaces can never disagree about whether a promise is live.
+export const STIPS_PENDING_STATUSES = new Set([
+  "qualifying",
+  "application_sent",
+  "docs_collected",
+  "bank_statements",
+  "positions_analysis",
+]);
 
 /**
  * Open deals for the "My Day" work queue, each with its funder submissions
@@ -140,6 +154,55 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
     throw error;
   }
   return (data || []) as unknown as QueueDeal[];
+}
+
+/** The slim slice of a deal the Calendar page renders — one row per deal that
+ * carries at least one dated commitment (callback, stips promise, or a future
+ * speed-to-lead deadline). */
+export interface CalendarDeal {
+  id: string;
+  deal_number: string | null;
+  status: string;
+  callback_at: string | null;
+  callback_ghl_event_id: string | null;
+  callback_synced_at: string | null;
+  callback_sync_error: string | null;
+  stips_promised_by: string | null;
+  first_call_due_at: string | null;
+  assigned_closer_id: string | null;
+  customer: {
+    id: string;
+    first_name: string | null;
+    last_name: string | null;
+    business_name: string | null;
+  } | null;
+  closer: { id: string; first_name: string | null; last_name: string | null } | null;
+}
+
+/**
+ * Every open deal with a dated commitment, for the in-app Calendar. Reads OUR
+ * DB (the GHL calendar is a projection of this — this is the truth). RLS scopes
+ * what a closer can see (own book + unassigned); Mine/All scoping for admins
+ * happens client-side, exactly like My Day.
+ */
+export async function getCalendarDeals(): Promise<CalendarDeal[]> {
+  const { data, error } = await supabase
+    .from("deals")
+    .select(`
+      id, deal_number, status,
+      callback_at, callback_ghl_event_id, callback_synced_at, callback_sync_error,
+      stips_promised_by, first_call_due_at, assigned_closer_id,
+      customer:customers!customer_id ( id, first_name, last_name, business_name ),
+      closer:profiles!assigned_closer_id ( id, first_name, last_name )
+    `)
+    .not("status", "in", `(${QUEUE_CLOSED_STATUSES.join(",")})`)
+    .or("callback_at.not.is.null,stips_promised_by.not.is.null,first_call_due_at.not.is.null");
+
+  if (error) {
+    console.error("Error fetching calendar deals:", error);
+    throw error;
+  }
+  return (data || []) as unknown as CalendarDeal[];
 }
 
 export async function getDealById(id: string): Promise<{
@@ -1253,8 +1316,7 @@ export async function logContactAttempt(
   // `attempted` sets neither contacted_at nor status: we tried, nobody answered, the
   // lead is still untouched in every sense that matters to the funnel.
 
-  const { error } = await supabase.from("deals").update(patch).eq("id", dealId);
-  if (error) throw error;
+  await mustWrite("log contact attempt", supabase.from("deals").update(patch).eq("id", dealId));
 
   // Project the callback onto the closer's GHL calendar IMMEDIATELY (the 5-minute
   // sweep remains the reliability floor — this just closes the gap between "closer

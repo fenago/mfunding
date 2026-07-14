@@ -39,6 +39,7 @@ import {
   ArrowUpTrayIcon,
   AdjustmentsHorizontalIcon,
   AcademicCapIcon,
+  CalendarDaysIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -69,6 +70,7 @@ const SUPER: NavRole[] = ["super_admin"]; // owner-only: financials, config, net
 // can't reach the admin-only Task Board route, won't see it here either).
 const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/playbooks", // 🎯 Revenue Playbook — their command center
+  "/admin/calendar", // 📅 callbacks + stips promises — RLS scopes to their book
   "/admin/comms",
   "/admin/documents", // Doc Review
   "/admin/todos", // Task Board
@@ -103,6 +105,7 @@ const navGroups: NavGroup[] = [
     title: "Daily",
     items: [
       { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
+      { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
       { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: ADMIN },

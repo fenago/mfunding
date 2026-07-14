@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { getOpenDealsForQueue, logContactAttempt, type ContactOutcome, type QueueDeal } from "../../services/dealService";
+import { getOpenDealsForQueue, logContactAttempt, STIPS_PENDING_STATUSES, type ContactOutcome, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import { dateTimeET, etDateTimeLocalToUtcIso, statedTimeInET, timeET, tomorrowAtEtIso } from "../../utils/time";
@@ -66,10 +66,9 @@ function countdown(ms: number): string {
 const WARM = new Set(["warm", "warmer"]);
 const HOT = new Set(["hot", "hottest"]);
 
-// Stages where the stips are still OUTSTANDING — i.e. a "statements promised by"
-// date still means something. Once a deal is submitted (or past it), the promise
-// is moot and the signal switches itself off.
-const STIPS_PENDING = new Set(["qualifying", "application_sent", "docs_collected", "bank_statements", "positions_analysis"]);
+// Stages where the stips are still OUTSTANDING — shared with the Calendar page
+// (dealService.STIPS_PENDING_STATUSES) so the two surfaces can never disagree.
+const STIPS_PENDING = STIPS_PENDING_STATUSES;
 
 // Whole days between the merchant's promised date (a YYYY-MM-DD `date` column,
 // so it carries no timezone) and today. Positive = the promise is PAST due.

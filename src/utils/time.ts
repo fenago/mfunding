@@ -79,6 +79,17 @@ export function dateTimeET(iso: string | Date): string {
   return `${s} ET`;
 }
 
+/** The EASTERN calendar day an instant falls on, as "YYYY-MM-DD". This is what
+ * decides which day-cell a timestamp lands in — a 11:30 PM ET callback is that
+ * day even though it's already tomorrow in UTC. (en-CA locale = ISO ordering.) */
+export function dateKeyET(iso: string | Date): string {
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(d);
+}
+
 // ── ENTERING a time as Eastern (the write-side twin of the render patch) ──────
 //
 // installEasternTime() fixes every RENDER, but `new Date("2026-07-14T16:00")` still

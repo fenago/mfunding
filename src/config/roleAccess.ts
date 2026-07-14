@@ -49,6 +49,8 @@ export const ACCESS_GROUPS: AccessGroup[] = [
   {
     title: "Pipeline",
     items: [
+      // Calendar: closers see their own book (RLS); admins/super get Mine/All.
+      { name: "Calendar", roles: OPS },
       { name: "Customers", roles: OPS },
       { name: "Deals", roles: OPS },
       { name: "Renewals", roles: OPS },

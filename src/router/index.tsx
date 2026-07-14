@@ -117,6 +117,7 @@ const SequencesPage = lazyWithReload(() => import("../pages/admin/SequencesPage.
 const ResourcesAdminPage = lazyWithReload(() => import("../pages/admin/ResourcesAdminPage.tsx"));
 const FunderGuidePage = lazyWithReload(() => import("../pages/admin/FunderGuidePage.tsx"));
 const CommsPage = lazyWithReload(() => import("../pages/admin/CommsPage.tsx"));
+const CalendarPage = lazyWithReload(() => import("../pages/admin/CalendarPage.tsx"));
 const DealListPage = lazyWithReload(() => import("../pages/admin/deals/DealListPage.tsx"));
 const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDetailPage.tsx"));
 
@@ -649,6 +650,12 @@ export const routes: RouteObject[] = [
               {
                 path: "comms",
                 element: <CommsPage />,
+              },
+              // Calendar — callbacks, stips promises, SLA windows (all staff;
+              // RLS scopes a closer to their own book, admins get Mine/All)
+              {
+                path: "calendar",
+                element: <CalendarPage />,
               },
               // Resources / blog admin (super_admin only)
               {
