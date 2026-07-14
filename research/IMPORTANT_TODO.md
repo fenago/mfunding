@@ -12,6 +12,103 @@
 
 ---
 
+## 🔴 JULY 13 — DOCUMENT PATH INCIDENTS + 04C
+
+*A single afternoon of live traffic exposed a chain of failures between a paid lead and a fundable
+deal. All the CODE issues below are FIXED and verified. What remains is owner work and 04C.*
+
+### What happened (so it is never re-litigated)
+
+**Five merchants received a funding application printed with raw `{{merge tags}}`, and one signed it.**
+
+Root cause: commit `8dd5f00` (07-10) reverted `d09eb40` (07-08, *"enrollment-only delivery — never
+depend on the stage trigger"*). The owner had **deleted the MCA 04 stage trigger** on the strength of
+that promise. The revert put self-fill back to waiting on the deleted trigger, so it enrolled the
+merchant in **nothing** — and the only thing that fired was **04B's** surviving stage trigger: the
+PREFILL template, on a deal with nothing prefilled. GHL renders an unresolved custom field as its
+literal `{{tag}}`.
+
+**Fixed:** self-fill always enrolls MCA 04 directly (restored). Owner removed 04B's stage trigger.
+Both paths verified end-to-end on the test contact.
+
+> **THE RULE, written down so it is never lost again:** a pipeline-stage trigger fires on *"the deal
+> reached Application Sent"*, which is true of **both** send paths. It cannot tell them apart. Only
+> `push-application-to-ghl` knows which document the closer asked for. **Delivery is the code's job.
+> A stage move is a pipeline update, never a delivery mechanism.**
+
+### Owner actions — 04C (see `research/04C_PLAN.md` for the full analysis)
+
+- [ ] **O10. Build the `04C MCA PARTIAL PREFILL` document template.**
+  Clone 04B. For the **16 fields Synergy never sends** (EIN, entity, start date, business street/city/zip,
+  SSN, DOB, DL#, home address/city/state/zip, bank name/routing/account) replace each **merge tag** with
+  a **fillable field**. Leave the other 14 as merge tags.
+  *Why it must be a new template:* in GHL a field is **either** a merge tag (prefills, read-only, prints raw
+  when empty) **or** fillable (merchant types, can never prefill). There is no field that is both. That
+  constraint is the whole design.
+
+- [ ] **O11. Create the `MCA 04C PARTIAL` workflow. NO TRIGGER — enrollment-only, like 04B.**
+  Actions: Send 04C → Send Broker Compensation Disclosure → notification email. Publish it.
+  **Do not add a pipeline-stage trigger.** See the rule above.
+
+- [ ] **O12. Send me the 04C workflow ID + template ID.** I wire them in and verify all three paths.
+
+- [ ] **O13. ⚠️ AUDIT THE 04B TEMPLATE BODY — 5 minutes, prevents a repeat.**
+  GHL will not expose a template body over the API, so I **cannot** verify this. Open 04B and confirm every
+  merge tag in it is a field we actually push. If it contains an *Additional Owner* block
+  (`{{contact.additional_owner_name/_ssn/_dob}}` — all exist in this location) or `{{contact.bank_account_type}}`,
+  **those print as raw tags even on a fully-filled application.** Live landmine.
+
+- [ ] **O14. Grant the GHL token `proposals` write scope** (or void by hand): Victor Nguyan's 6 orphan
+  documents cannot be voided — the API returns *"token is not authorized for this scope."*
+
+### Merchant remediation — HUMAN REQUIRED
+
+- [ ] **O15. Four merchants are holding unsigned raw-tag applications RIGHT NOW.**
+  Papa Diop · Jerry Espinoza · Carlton Rankin · Victor Morran. **Do not let them sign.** Re-send properly.
+
+- [ ] **O16. Victor Nguyan (MF-2026-0028) — his signature is VOID.**
+  The signed application has no EIN, SSN, DOB, address or banking. *Before spending the call:* the AI
+  underwriter read his statements — **true revenue $10,978/mo against a stated $19,075, 11 NSFs, 15 negative
+  days, max affordable advance $4,888 against a $30,000 ask.** He is a decline. Re-executing may not be
+  worth the phone call.
+
+- [ ] **O17. Two more dead vendor emails.** `detroitdust@yahoo.com` (MF-2026-0019, already at Application
+  Sent — that work went nowhere) and `sabin.ricoh101@yahoo.com` (MF-2026-0025). Call for real addresses.
+
+- [ ] **O18. Raise lead quality with Kyle/Synergy.** **3 of 14 leads (21%) came with a dead email** — from a
+  vendor called *Double-Verified*. You are paying for these.
+
+### The application form (owner's fixes — mine to build, listed for tracking)
+
+- [ ] **F1. Entity type → dropdown** (LLC · S-Corp · C-Corp · Sole Prop · Partnership · LP · LLP · Non-profit).
+      Free text guarantees a garbage value on a legal document.
+- [ ] **F2. SSN → not mandatory.** ⚠️ *Except on 04B*, where a blank SSN becomes a raw tag on a signed
+      contract. On 04C the merchant enters it themselves — which is the real fix.
+- [ ] **F3. Title → prefill "Owner"** (`is_owner` = Yes on 100% of leads).
+- [ ] **F4. Ownership % → prefill 100.**
+- [ ] **F5. Prefill 19 of 30 fields from `deals.lead_qual`** — the closer's job drops from 30 fields to ~11.
+- [ ] **F6. NEVER derive `business_start_date` from `time_as_owner`.** "7 Years" is not a date, it goes on a
+      signed legal document and into a funder submission. Prefill a hint; a human enters the real date.
+- [ ] **F7. Post-send verification** — read back which template GHL actually created and **fail loudly** if
+      it's the wrong one. Would have caught this incident in seconds. **Ship this BEFORE the 04C button.**
+
+### Fixed today (code) — do not re-open
+
+- [x] Self-fill regression (`8dd5f00`) reverted — enrollment-only delivery restored.
+- [x] `sent_to_merchant_at` stamped when the DOCUMENT goes out, not after the cover note — a failed cover
+      note was re-sending merchants' contracts (Kevin Breen got 3 sends / 6 documents).
+- [x] Never send a prefill document with nothing to prefill (422, names the missing fields).
+- [x] Merchant emails verified at intake (Instantly) + bounce detection (GHL email records). A bounce is a
+      fact about an **address**, not a merchant — a stale bounce can no longer veto a corrected email.
+- [x] AI underwriting never worked on a real deal — merchants upload to GHL, the underwriter read only
+      Supabase. It now self-heals by ingesting the GHL uploads first.
+- [x] The underwriter silently persisted an **empty narrative with a default "medium" rating** when its JSON
+      truncated. A fabricated verdict on an unread deal. Fixed.
+- [x] Swallowed edge-function errors ("non-2xx status code") now surface the server's real message.
+
+
+---
+
 ## 🔵 OWNER ACTIONS — only the owner can do these
 *Outside the codebase: credentials, business terms, and legal facts. These are also loaded into the admin Task Board (`/admin/todos`).*
 
