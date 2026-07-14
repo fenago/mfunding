@@ -136,6 +136,20 @@ const TEAM_ALERT_CC = ["cmarq2k8@gmail.com"];
 const PLAYBOOK_URL = "https://mfunding.net/admin/playbooks";
 // Dedupe window: same phone/email within this many days → no duplicate deal.
 const DEDUPE_WINDOW_DAYS = 30;
+// PARSE-FAILURE ALERT COOLDOWN, per GHL email record.
+//
+// The reconcile sweep re-drives every ledger row that isn't created/deduped — including
+// 'rejected' — and it runs EVERY TWO MINUTES. This alert used to fire unconditionally on
+// each re-drive, so a single genuinely unparseable lead emailed the owner ~720 times a
+// day, on the exact channel that is supposed to save a lead (and from send.mfunding.net,
+// whose deliverability we depend on). One email per record per cooldown; if a human wants
+// it to stop entirely, they set synergy_intake_log.do_not_recover.
+const ALERT_COOLDOWN_HOURS = 6;
+// How long a claim on a merchant identity stays valid before another run may take it
+// over. Comfortably longer than a real intake (a few seconds), short enough that a run
+// killed mid-flight doesn't block the merchant until the heat death of the universe —
+// the 2-minute sweep will re-drive it right after this expires.
+const CLAIM_TTL_SECONDS = 120;
 // Self-healing sender adoption: the tag the LT-intake workflow keys off + the
 // all-channel DND we stamp so a lead-delivery robot is never messaged. Mirrors
 // what was set by hand on the original sender contact.
@@ -658,11 +672,18 @@ interface IntakeLogRow {
   from_email?: string | null;
   subject?: string | null;
   received_at?: string | null;
-  outcome: "created" | "deduped" | "rejected";
+  // 'ignored' = we decided this inbound was not a lead and threw it away. It is a
+  // TERMINAL-ish state that must still leave a trace: the ignore gate used to return 200
+  // and write nothing at all, so if the vendor ever moves to an untrusted domain AND
+  // rewords the subject, every paid lead would be dropped with no ledger row, no alert,
+  // and no way to answer "what did we throw away?". The sweep re-drives 'ignored' rows
+  // that still look like leads; a human kills that loop with do_not_recover.
+  outcome: "created" | "deduped" | "rejected" | "unprocessed" | "ignored";
   deal_id?: string | null;
   customer_id?: string | null;
   reject_reason?: string | null;
   notes?: string | null;
+  last_alert_at?: string | null;
 }
 async function logIntake(db: SupabaseClient, row: IntakeLogRow | null): Promise<void> {
   if (!row?.ghl_email_record_id) return;  // structured POSTs carry no email record
@@ -674,6 +695,40 @@ async function logIntake(db: SupabaseClient, row: IntakeLogRow | null): Promise<
   } catch (e) {
     console.error("live-transfer-intake: synergy_intake_log threw", { error: e instanceof Error ? e.message : String(e) });
   }
+}
+
+/** The existing ledger row for this email record, if any. Used for two things a human
+ *  cares about: the do_not_recover kill switch, and the alert cooldown. */
+async function readIntakeLog(
+  db: SupabaseClient, emailRecordId: string,
+): Promise<{ outcome?: string; do_not_recover?: boolean; last_alert_at?: string | null } | null> {
+  if (!emailRecordId) return null;
+  try {
+    const { data } = await db.from("synergy_intake_log")
+      .select("outcome, do_not_recover, last_alert_at")
+      .eq("ghl_email_record_id", emailRecordId).maybeSingle();
+    return data ?? null;
+  } catch { return null; }
+}
+
+/** True when we already alerted about this email record inside the cooldown window.
+ *  Fail OPEN (return false → send the alert): if we cannot read the ledger, a duplicate
+ *  alert is a nuisance, a suppressed one can cost the lead. */
+function alertIsCoolingDown(row: { last_alert_at?: string | null } | null): boolean {
+  const last = row?.last_alert_at;
+  if (!last) return false;
+  const t = Date.parse(last);
+  if (!Number.isFinite(t)) return false;
+  return t > Date.now() - ALERT_COOLDOWN_HOURS * 3600 * 1000;
+}
+
+/** The key we serialize concurrent intakes on: one merchant = one key. Phone digits
+ *  when we have them (the vendor's most reliable identifier), else the email. */
+function identityKey(lead: Lead): string {
+  const digits = (lead.phone || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+  if (digits.length >= 10) return `p:${digits}`;
+  const email = (lead.email || "").trim().toLowerCase();
+  return email ? `e:${email}` : "";
 }
 
 // ── Self-healing sender adoption ───────────────────────────────────────────────
@@ -964,6 +1019,20 @@ Deno.serve(async (req) => {
       received_at: receivedAt,
     }
     : null;
+  // ── HUMAN KILL SWITCH — checked before anything is created, sent, or alerted. ──
+  // A human has looked at this exact email and said "this is not a lead, stop". Before
+  // do_not_recover existed, they wrote that in prose in reject_reason and NOTHING read
+  // it: the sweep kept re-driving those rows every 2 minutes until they aged out of the
+  // 48h window. Now it is obeyed.
+  const priorLog = await readIntakeLog(db, emailRecordId);
+  if (priorLog?.do_not_recover) {
+    console.log("live-transfer-intake: do_not_recover — skipping", { emailRecordId, outcome: priorLog.outcome });
+    return json({
+      ok: true, ignored: true, permanent: true,
+      reason: "a human marked this email do_not_recover — not reprocessed, not alerted",
+    });
+  }
+
   // The tracking number a live-transfer call landed on (future hook; empty today).
   const deliveryPhone = extractDeliveryPhone(body);
 
@@ -1068,7 +1137,28 @@ Deno.serve(async (req) => {
   // never writes activity_log. Just a log line so firing on everything is harmless.
   if (!looksLikeTransfer) {
     console.log("live-transfer-intake: ignored non-transfer inbound", { from: emailFrom, subject: emailSubject, parsedFields: Object.keys(fields).length });
-    return json({ ok: true, ignored: true, reason: "not a Synergy transfer (untrusted sender + no live-transfer subject) — ignored" });
+    // LEAVE A TRACE. This path used to return 200 and write NOTHING — no ledger row, no
+    // alert, nothing anywhere. And the sweep that is supposed to be the backstop
+    // discovers sender robots ONLY by trusted domain or the lt-source tag (which is only
+    // ever applied to trusted-domain senders), so the EXACT condition that trips this
+    // gate — an untrusted sender — also blinds the sweep to it.
+    //
+    // Concretely: Synergy moves to leads@synergydirect.com and rewords the subject, and
+    // every lead we are paying for is 200-OK'd into the void while the sweep reports
+    // "all clean". The ledger row is what makes that visible: the sweep can see it, a
+    // human can audit what we threw away, and the do_not_recover switch above is how a
+    // genuine non-lead is told to stop coming back.
+    await logIntake(db, logBase && {
+      ...logBase,
+      outcome: "ignored",
+      reject_reason: "no trust signal (sender not on a trusted delivery domain, no live-transfer subject marker, no real-time account marker)",
+      notes: `IGNORED as non-transfer inbound. parsedFields=${Object.keys(fields).length} mode=${sourceMode}. If this WAS a lead, the vendor changed how it delivers — add the sender's domain to TRUSTED_DELIVERY_DOMAINS in live-transfer-intake AND synergy-reconcile. If it was not, set do_not_recover on this row.`,
+    });
+    return json({
+      ok: true, ignored: true,
+      logged: Boolean(logBase),
+      reason: "not a Synergy transfer (untrusted sender + no live-transfer subject) — ignored (logged to synergy_intake_log)",
+    });
   }
 
   // ── SELF-HEAL — adopt a new trusted sender (tag lt-source + DND). Idempotent. ──
@@ -1112,7 +1202,19 @@ Deno.serve(async (req) => {
     const alertOnFailure = isLiveTransfer || hasLeadStructure;
     let alertSent = false;
     let alertWarning: string | undefined;
-    if (alertOnFailure && cfg) {
+    // COOLDOWN. The sweep re-drives every 'rejected' row every 2 minutes, and this alert
+    // used to fire on every single one of those re-drives — ~1,440 identical "PARSE
+    // FAILURE" emails per unparseable lead over a 48h window. That is not a safety net,
+    // it is alert fatigue plus a deliverability hazard on the sending domain we rely on.
+    // Alert once per email record per ALERT_COOLDOWN_HOURS; the ledger row keeps the item
+    // visible in between, and do_not_recover stops it for good.
+    const coolingDown = alertIsCoolingDown(priorLog);
+    if (coolingDown) {
+      console.log("live-transfer-intake: parse-failure alert suppressed by cooldown", {
+        emailRecordId, lastAlertAt: priorLog?.last_alert_at, cooldownHours: ALERT_COOLDOWN_HOURS,
+      });
+    }
+    if (alertOnFailure && cfg && !coolingDown) {
       const reasonBits = [
         leadEmailTrusted ? "parsed lead email is the delivery robot's address" : null,
         !isValidMerchantPhone(lead.phone) ? "no valid merchant phone extracted" : null,
@@ -1149,14 +1251,19 @@ Deno.serve(async (req) => {
         !isValidMerchantPhone(lead.phone) ? "no valid merchant phone extracted" : null,
         !hasIdentity ? "no merchant name/business extracted" : null,
       ].filter(Boolean).join("; ") || "no valid merchant",
-      notes: `kind=${kcfg.kind} mode=${sourceMode} parsedFields=${parsedCount}`,
+      notes: `kind=${kcfg.kind} mode=${sourceMode} parsedFields=${parsedCount}. Not a lead? Set do_not_recover=true on this row to stop the sweep re-driving it and to silence the alert for good.`,
+      // Stamp the cooldown ONLY when an alert actually went out, so a send failure
+      // doesn't buy 6 hours of silence.
+      ...(alertSent ? { last_alert_at: new Date().toISOString() } : {}),
     });
     return json({
       ok: true, rejected: true, kind: kcfg.kind,
       reason: alertOnFailure
-        ? "could not extract a valid merchant — team alerted for manual review"
+        ? (coolingDown
+          ? `could not extract a valid merchant — alert suppressed (already alerted within ${ALERT_COOLDOWN_HOURS}h); the ledger row keeps it visible`
+          : "could not extract a valid merchant — team alerted for manual review")
         : "trusted sender, no parseable lead (likely a human reply) — skipped",
-      alertSent, adopted: Boolean(adoptNote),
+      alertSent, alertSuppressed: coolingDown, adopted: Boolean(adoptNote),
     });
   }
 
@@ -1174,6 +1281,87 @@ Deno.serve(async (req) => {
   const phoneFlag = phoneNeedsReview
     ? ` ⚠️ PHONE COULD NOT BE PARSED — raw value from the vendor: "${lead.phoneRaw || "(none)"}". Lead was KEPT (we can still reach them at ${lead.email}); fix the number before calling.`
     : "";
+
+  // ── CLAIM THE MERCHANT — closes the read-then-write dedupe race ──
+  //
+  // Everything below is check-then-act: query customers, query deals, then (seconds
+  // later, after a GHL config fetch, a GHL email-record fetch, provisionPortal's auth
+  // admin createUser, and a campaign lookup) insert. There is NO unique constraint on
+  // customers.email or customers.phone — verified, the table has only customers_pkey —
+  // so two concurrent runs for one merchant BOTH pass the dedupe check and BOTH insert:
+  // two customers, two deals, one merchant. The two runs are not hypothetical: the GHL
+  // workflow fires on the inbound email while the sweep re-drives that same email every
+  // two minutes, and Synergy itself sometimes double-sends.
+  //
+  // We do NOT close this with a unique index. A unique violation makes the INSERT fail,
+  // which returns 500 and DROPS a lead we paid for — strictly worse than the duplicate
+  // it prevents. Instead the second run BACKS OFF: it writes an 'unprocessed' ledger row
+  // and returns. The sweep re-drives it within ~2 minutes, by which time the winner's
+  // deal exists, and the normal 30-day dedupe matches and refreshes it. Nothing is lost;
+  // the worst case is a two-minute delay on a duplicate delivery.
+  //
+  // If the winner CRASHES mid-run, its claim goes stale after CLAIM_TTL_SECONDS and the
+  // next sweep takes it over. The lead still lands.
+  const runId = crypto.randomUUID();
+  const idKey = identityKey(lead);
+  let claimGranted = true;
+  let claimReason = "no identity key";
+  if (idKey) {
+    const { data: claim, error: claimErr } = await db.rpc("claim_lead_intake", {
+      p_identity_key: idKey,
+      p_run_id: runId,
+      p_email_record_id: emailRecordId || null,
+      p_ttl_seconds: CLAIM_TTL_SECONDS,
+    });
+    if (claimErr) {
+      // FAIL OPEN. If the claim mechanism itself is broken, we proceed — a possible
+      // duplicate beats a certain dropped lead.
+      console.error("live-transfer-intake: claim_lead_intake failed — proceeding WITHOUT the race guard", { idKey, error: claimErr.message });
+      claimReason = `claim rpc failed (${claimErr.message}) — proceeded unguarded`;
+    } else {
+      const row = (Array.isArray(claim) ? claim[0] : claim) as
+        { granted?: boolean; reason?: string; holder_email_record_id?: string | null } | undefined;
+      claimGranted = row?.granted !== false;
+      claimReason = row?.reason ?? "";
+      if (!claimGranted) {
+        // Another run owns this merchant right now. Do not create anything.
+        console.log("live-transfer-intake: deferring — concurrent intake in flight", { idKey, emailRecordId, holder: row?.holder_email_record_id });
+        // Give the winner a moment, then check whether it already produced the deal for
+        // THIS email record (the common case: the workflow and the sweep re-driving the
+        // same email). If so there is nothing to report and no ledger row to dirty.
+        await new Promise((r) => setTimeout(r, 1500));
+        const after = await readIntakeLog(db, emailRecordId);
+        if (after?.outcome === "created" || after?.outcome === "deduped") {
+          return json({
+            ok: true, deferred: true, kind: kcfg.kind,
+            reason: `a concurrent intake already handled this email (${after.outcome}) — no second deal created`,
+          });
+        }
+        // Still in flight. Log it as unprocessed so the sweep re-drives it — an
+        // 'unprocessed' row is honest ("we saw this and did not finish it"); marking it
+        // 'deduped' here would tell the sweep everything was fine even if the winner died.
+        await logIntake(db, logBase && {
+          ...logBase,
+          outcome: "unprocessed",
+          reject_reason: "another intake run held the claim on this merchant — deferred to avoid creating a duplicate customer/deal",
+          notes: `Deferred (claim held by run for email record ${row?.holder_email_record_id ?? "unknown"}). The reconcile sweep will re-drive this within ~2 minutes; by then the in-flight run's deal exists and the 30-day dedupe will match it.`,
+        });
+        return json({
+          ok: true, deferred: true, kind: kcfg.kind,
+          reason: "another intake is in flight for this merchant — deferred to the reconcile sweep (no duplicate created, no lead lost)",
+        });
+      }
+    }
+  }
+  // Release the claim on any exit below. p_deal_id null = ABANDON, so a failed run does
+  // not block a retry for the full TTL.
+  const releaseClaim = async (dealId: string | null) => {
+    if (!idKey) return;
+    const { error } = await db.rpc("complete_lead_intake", {
+      p_identity_key: idKey, p_run_id: runId, p_deal_id: dealId,
+    });
+    if (error) console.error("live-transfer-intake: complete_lead_intake failed", { idKey, error: error.message });
+  };
 
   // ── DEDUPE: same phone/email with ANY Synergy deal in the last 30 days ──
   //
@@ -1274,6 +1462,7 @@ Deno.serve(async (req) => {
       // Same merchant, second email — they still need to be able to log in. The dedupe
       // path returns early, so without this a re-sent lead would keep its portal-less state.
       await provisionPortal(db, dup.customer_id as string);
+      await releaseClaim(dup.id as string);
 
       return json({
         ok: true, deduped: true, refreshed: true, kind: kcfg.kind,
@@ -1312,7 +1501,10 @@ Deno.serve(async (req) => {
     customerId = existingCustomerId;
   } else {
     const { data: c, error } = await db.from("customers").insert({ status: "lead", ...custPatch }).select("id").single();
-    if (error) return json({ error: `could not create customer: ${error.message}` }, 500);
+    if (error) {
+      await releaseClaim(null);   // abandon — let the sweep retry immediately
+      return json({ error: `could not create customer: ${error.message}` }, 500);
+    }
     customerId = c.id as string;
   }
 
@@ -1427,9 +1619,15 @@ Deno.serve(async (req) => {
       lead.bestTime && `Best time to reach: ${lead.bestTime}`,
     ].filter(Boolean).join("\n"),
   }).select("id, deal_number").single();
-  if (dErr) return json({ error: `could not create deal: ${dErr.message}` }, 500);
+  if (dErr) {
+    await releaseClaim(null);   // abandon — let the sweep retry immediately
+    return json({ error: `could not create deal: ${dErr.message}` }, 500);
+  }
   const dealId = deal.id as string;
   const dealNumber = deal.deal_number as string | null;
+  // The merchant is now durably ours: mark the claim complete so any concurrent or
+  // subsequent run falls through to the normal 30-day dedupe instead of duplicating.
+  await releaseClaim(dealId);
 
   // ── Full audit: the entire parsed payload, nothing lost ──
   await db.from("activity_log").insert({
@@ -1448,6 +1646,46 @@ Deno.serve(async (req) => {
     customer_id: customerId,
     notes: `${kcfg.kind} · ${lead.business || fullName} · ${dealNumber ?? dealId} (mode=${sourceMode})`,
   });
+
+  // ── DID ANYONE ACTUALLY GET THIS LEAD? ──
+  //
+  // deals_auto_assign_closer runs on INSERT and wraps its whole body in
+  // `exception when others then return new` — so ANY error, plus strategy='manual', plus
+  // "no active closer has a user_id", all silently yield an UNASSIGNED deal. This intake
+  // runs as service role, so created_by is NULL by design, and RLS's closer_owns_deal
+  // wants created_by = uid OR assigned_closer_id = uid. Both NULL meant NO closer could
+  // even SELECT the row: a hot lead we paid for, sitting in the database, visible to
+  // nobody who could call it.
+  //
+  // RLS now lets a closer see and claim an unassigned deal (see the
+  // closer_select_unassigned_deals / closer_claim_unassigned_deals policies), but
+  // "someone might notice it in My Day" is not a guarantee. So we also say it out loud,
+  // immediately, to a human.
+  let unassignedAlertSent = false;
+  {
+    const { data: assignRow } = await db.from("deals")
+      .select("assigned_closer_id").eq("id", dealId).maybeSingle();
+    if (assignRow && !assignRow.assigned_closer_id) {
+      console.error("live-transfer-intake: DEAL CREATED WITH NO CLOSER", { dealId, dealNumber });
+      if (cfg) {
+        const r = await sendTeamAlert(cfg, {
+          subject: `🚨 UNASSIGNED HOT LEAD — ${lead.business || fullName} has NO CLOSER`,
+          headerHtml: "🚨 HOT LEAD CREATED WITH NO CLOSER ASSIGNED",
+          headerText: "HOT LEAD CREATED WITH NO CLOSER ASSIGNED",
+          intro: `A paid ${kcfg.kind.replace("_", " ")} lead was created but auto-assignment produced NOBODY. The deal exists and is visible to closers as an unassigned lead in My Day — but nobody owns it, so nobody is accountable for calling it. Assign it now. (Check Admin → Settings → lead assignment strategy, and that at least one closer is active with a linked user account.)`,
+          rows: [
+            ["Deal #", dealNumber],
+            ["Contact", fullName],
+            ["Business", lead.business || null],
+            ["Phone", lead.phoneRaw || lead.phone || null],
+            ["Requested", lead.requestedAmount != null ? `$${lead.requestedAmount.toLocaleString()}` : null],
+          ],
+        });
+        unassignedAlertSent = r.sent;
+        if (!r.sent) console.error("live-transfer-intake: unassigned-lead alert failed", { dealId, error: r.error });
+      }
+    }
+  }
 
   // ── GHL: proper merchant contact + MCA opportunity at "New Lead" ──
   let ghlContactId: string | null = null;
@@ -1566,6 +1804,8 @@ Deno.serve(async (req) => {
     ghlWarning,
     alertSent,
     alertWarning,
+    unassignedAlertSent,
+    claimReason,
     adopted: Boolean(adoptNote),
     mode: sourceMode,
     emailRecordId: emailRecordId || null,
