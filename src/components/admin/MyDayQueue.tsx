@@ -573,54 +573,39 @@ function QueueCard({
         <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
         {amount && <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 shrink-0">{amount}</span>}
       </div>
-      {/* The number, dialable. tel: hands off to whatever softphone owns the protocol
-          (the VibeReach/GHL desktop app registers itself when installed); the ↗ opens
-          the contact in VibeReach's web app, where its dialer is one click — for anyone
-          whose softphone isn't a tel: handler. stopPropagation so dialing never also
-          opens the deal. */}
+      {/* The number, dialable — VIBEREACH FIRST. tel: was the primary and macOS
+          hands that protocol to FaceTime, which is nobody's dialer here. Clicking the
+          number now opens the contact in VibeReach, where the call button is one click
+          and the call gets recorded + auto-audited like every other GHL dial. The tiny
+          "device" link keeps tel: for anyone whose real softphone registers the
+          protocol. stopPropagation so dialing never also opens the deal. */}
       {deal.customer?.phone && (
         <div className="flex items-center gap-1.5 mt-0.5" onClick={(e) => e.stopPropagation()}>
-          <a
-            href={`tel:${deal.customer.phone.replace(/[^+\d]/g, "")}`}
-            className="inline-flex items-center gap-1 text-[11px] font-semibold text-ocean-blue hover:underline"
-            title="Call with your softphone"
-          >
-            <PhoneIcon className="w-3 h-3" />
-            {deal.customer.phone}
-          </a>
-          {deal.ghl_contact_id && (
+          {deal.ghl_contact_id ? (
             <a
               href={`https://app.vibereach.io/v2/location/t7NmVR4WCy927j4Zon4b/contacts/detail/${deal.ghl_contact_id}`}
               target="_blank"
               rel="noreferrer"
-              className="text-[10px] text-gray-400 hover:text-ocean-blue"
-              title="Open in VibeReach (dial from the web app)"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-ocean-blue hover:underline"
+              title="Open in VibeReach — its call button dials, records, and auto-logs"
             >
-              ↗ VibeReach
+              <PhoneIcon className="w-3 h-3" />
+              {deal.customer.phone}
             </a>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+              <PhoneIcon className="w-3 h-3" />
+              {deal.customer.phone}
+            </span>
           )}
+          <a
+            href={`tel:${deal.customer.phone.replace(/[^+\d]/g, "")}`}
+            className="text-[10px] text-gray-400 hover:text-ocean-blue"
+            title="Dial with this device's phone app instead"
+          >
+            ☎ device
+          </a>
         </div>
-      )}
-      <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-3 mt-0.5">{u.why}</p>
-
-      {/* The merchant's OWN words on when to phone them. Loud on purpose: it is the
-          one instruction on this card that came from the person we're about to call,
-          and it is the thing a 5-minute stopwatch will otherwise steamroll. */}
-      {u.callWindow && (
-        <p className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded px-1.5 py-1">
-          <PhoneIcon className="w-3 h-3 shrink-0" />
-          {/* Their words first, then what it means on OUR clock. A closer on Eastern
-              reading "4:00PM CST" has to convert in their head mid-call, and will get
-              it wrong often enough to lose a call. If it can't be parsed with
-              confidence, only the raw text shows — a wrong conversion is far worse
-              than none. */}
-          <span className="truncate">
-            Call at <b>{u.callWindow}</b>
-            {statedTimeInET(u.callWindow) && (
-              <span className="font-bold"> = {statedTimeInET(u.callWindow)}</span>
-            )}
-          </span>
-        </p>
       )}
 
       {/* WHAT HAPPENED? — the thing the app had no way to hear.
