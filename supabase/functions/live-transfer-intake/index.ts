@@ -1470,7 +1470,7 @@ Deno.serve(async (req) => {
         // Auto-schedule the merchant's stated best time — ONLY into a gap. An
         // existing callback_at is a promise (human-set or already auto-set) and is
         // never overwritten by a re-delivery of the same lead.
-        if (d.callback_at == null) {
+        if (d.callback_at == null && !isLiveTransfer) {
           const sched = scheduleFromBestTime(lead.bestTime);
           if (sched.callbackAt) dpatch.callback_at = sched.callbackAt;
           dedupeCallbackNote = sched.note ? ` ${sched.note}` : "";
@@ -1624,11 +1624,17 @@ Deno.serve(async (req) => {
   }
 
   // ── Create the DEAL — born HOT with a 5-minute call clock ──
-  // The merchant's stated best time becomes the scheduled callback at birth (a new
-  // deal has no callback_at, so "never overwrite" is trivially honored here). My
-  // Day's classify() explicitly lets the 5-minute EMAIL clock outrank this future
-  // callback on an untouched lead — the two instructions coexist on one card.
-  const bestTimeSched = scheduleFromBestTime(lead.bestTime);
+  // The merchant's stated best time becomes the scheduled callback at birth — for
+  // REAL-TIME leads only. A LIVE TRANSFER is a warm handoff happening RIGHT NOW: the
+  // call IS the event, and auto-booking "10am tomorrow" because the stated window
+  // just passed SNOOZED a live merchant off the board while the phone was ringing
+  // (MF-2026-0031, Allman Homes). For live transfers the best time stays a hint the
+  // closer sees in the callback picker if the handoff is missed. My Day's classify()
+  // also guards this (untouched first-touch outranks a future callback), so the two
+  // rules back each other up.
+  const bestTimeSched = isLiveTransfer
+    ? { callbackAt: null, note: "Live transfer — no auto-callback; the handoff is the event." }
+    : scheduleFromBestTime(lead.bestTime);
   const now = Date.now();
   const { data: deal, error: dErr } = await db.from("deals").insert({
     customer_id: customerId,

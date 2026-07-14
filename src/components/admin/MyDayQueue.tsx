@@ -132,8 +132,16 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
   // attempt is logged, first_attempt_at is set, this guard drops away, and the
   // normal callback snooze/resurface takes over. A callback that is already DUE
   // (cbMs <= 0) is never bypassed — "call them now" and "email now" agree.
+  // Covers BOTH untouched first-touch cases, because they both lost to the snooze:
+  //  · real-time: the 5-minute EMAIL clock must show even with a 4pm callback booked;
+  //  · live transfer: the merchant is being warm-handed RIGHT NOW — a future callback
+  //    auto-booked from their "best time" field must not hide "THEY'RE ON THE LINE".
+  //    This exact miss happened on MF-2026-0031 (Allman Homes): transferred at
+  //    10:21 AM, best_time said "10am", the scheduler booked tomorrow 10am, and the
+  //    board sat quiet while the phone rang.
   const emailClockFirst =
-    deal.status === "new" && !deal.first_attempt_at && !!deal.first_call_due_at &&
+    deal.status === "new" && !deal.first_attempt_at &&
+    (!!deal.first_call_due_at || deal.lead_source === "live_transfer") &&
     cbMs !== null && cbMs > 0;
 
   if (cbMs !== null && !emailClockFirst) {
