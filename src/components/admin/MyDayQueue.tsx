@@ -220,8 +220,11 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
     const tries = deal.contact_attempts ?? 1;
     return {
       rank: 3.2,
-      badge: `📵 No answer · tried ${tries}×`,
-      why: `You reached out${deal.first_call_due_at && Date.parse(deal.first_attempt_at) <= Date.parse(deal.first_call_due_at) ? " inside the SLA" : ""} and nobody picked up. Try again, or set a callback time.`,
+      badge: `📵 Tried ${tries}× · no confirmed conversation`,
+      // The attempt may be a GHL dial the system couldn't grade (no duration recorded),
+      // so never assert "nobody picked up" as fact — the owner's PRB call was answered
+      // and this card called it a no-answer. State what is KNOWN and how to correct it.
+      why: `You reached out${deal.first_call_due_at && Date.parse(deal.first_attempt_at) <= Date.parse(deal.first_call_due_at) ? " inside the SLA" : ""} — no confirmed conversation logged. If you spoke to them, tap Reached (or Call back and say so). Otherwise try again.`,
       since: deal.last_attempt_at ?? deal.first_attempt_at,
       tone: "amber",
       callWindow: bestTimeToCall(deal),
@@ -528,10 +531,10 @@ function QueueCard({
   // includes one we've dialled three times and nobody answered.
   const needsOutcome = deal.status === "new" && !deal.contacted_at;
 
-  const log = async (outcome: ContactOutcome, callbackAt?: string) => {
+  const log = async (outcome: ContactOutcome, callbackAt?: string, spoke?: boolean) => {
     setBusy(outcome);
     try {
-      await logContactAttempt(deal.id, { outcome, channel: "call", callbackAt });
+      await logContactAttempt(deal.id, { outcome, channel: "call", callbackAt, spoke });
       setAskCallback(false);
       onTouched();
     } finally {
@@ -570,6 +573,34 @@ function QueueCard({
         <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
         {amount && <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 shrink-0">{amount}</span>}
       </div>
+      {/* The number, dialable. tel: hands off to whatever softphone owns the protocol
+          (the VibeReach/GHL desktop app registers itself when installed); the ↗ opens
+          the contact in VibeReach's web app, where its dialer is one click — for anyone
+          whose softphone isn't a tel: handler. stopPropagation so dialing never also
+          opens the deal. */}
+      {deal.customer?.phone && (
+        <div className="flex items-center gap-1.5 mt-0.5" onClick={(e) => e.stopPropagation()}>
+          <a
+            href={`tel:${deal.customer.phone.replace(/[^+\d]/g, "")}`}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-ocean-blue hover:underline"
+            title="Call with your softphone"
+          >
+            <PhoneIcon className="w-3 h-3" />
+            {deal.customer.phone}
+          </a>
+          {deal.ghl_contact_id && (
+            <a
+              href={`https://app.vibereach.io/v2/location/t7NmVR4WCy927j4Zon4b/contacts/detail/${deal.ghl_contact_id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[10px] text-gray-400 hover:text-ocean-blue"
+              title="Open in VibeReach (dial from the web app)"
+            >
+              ↗ VibeReach
+            </a>
+          )}
+        </div>
+      )}
       <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-3 mt-0.5">{u.why}</p>
 
       {/* The merchant's OWN words on when to phone them. Loud on purpose: it is the
@@ -604,7 +635,7 @@ function QueueCard({
               bestTime={u.callWindow}
               busy={busy === "callback"}
               onCancel={() => setAskCallback(false)}
-              onPick={(iso) => log("callback", iso)}
+              onPick={(iso, spoke) => log("callback", iso, spoke)}
             />
           ) : (
             <div className="flex items-center gap-1.5">
@@ -667,10 +698,15 @@ function CallbackPicker({
 }: {
   bestTime?: string;
   busy: boolean;
-  onPick: (iso: string) => void;
+  onPick: (iso: string, spoke: boolean) => void;
   onCancel: () => void;
 }) {
   const [custom, setCustom] = useState("");
+  // "They answered and said call me later" is the floor's most common outcome — and it
+  // IS a contact. "Voicemail, scheduling a retry" is not. One tap tells them apart, so
+  // the contact rate stays honest in both directions. Defaults YES: most callbacks come
+  // out of a conversation.
+  const [spoke, setSpoke] = useState(true);
   // ── EVERY time here is EASTERN. ──
   // The app renders exclusively in ET (installEasternTime), but writes used to be
   // browser-local: "Tomorrow 9am" from a Phoenix laptop booked 9am ARIZONA (noon ET),
@@ -700,13 +736,30 @@ function CallbackPicker({
           "When will you call them back?"
         )}
       </p>
+      <div className="flex items-center gap-1 mb-1.5 text-[10px]">
+        <span className="text-amber-800 dark:text-amber-300 font-semibold mr-1">Did you speak to them?</span>
+        {[true, false].map((v) => (
+          <button
+            key={String(v)}
+            type="button"
+            onClick={() => setSpoke(v)}
+            className={`px-1.5 py-0.5 rounded font-semibold ${
+              spoke === v
+                ? "bg-amber-600 text-white"
+                : "bg-white dark:bg-gray-800 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700"
+            }`}
+          >
+            {v ? "Yes — they asked for later" : "No — just scheduling"}
+          </button>
+        ))}
+      </div>
       <div className="flex flex-wrap gap-1 mb-1.5">
         {PRESETS.map((p) => (
           <button
             key={p.label}
             type="button"
             disabled={busy}
-            onClick={() => onPick(p.iso())}
+            onClick={() => onPick(p.iso(), spoke)}
             className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white"
           >
             {p.label}
@@ -727,7 +780,7 @@ function CallbackPicker({
         <button
           type="button"
           disabled={busy || !customIso}
-          onClick={() => customIso && onPick(customIso)}
+          onClick={() => customIso && onPick(customIso, spoke)}
           className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white"
         >
           Set

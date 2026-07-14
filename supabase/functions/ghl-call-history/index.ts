@@ -171,7 +171,29 @@ async function syncCallsForDeal(
         to_number: c.to,
         called_at: c.calledAt,
       }, { onConflict: "ghl_message_id", ignoreDuplicates: true }).select("ghl_message_id");
-      if (!insErr && ins && ins.length > 0) fresh.push(c);
+      if (!insErr && ins && ins.length > 0) { fresh.push(c); continue; }
+
+      // LATE-DURATION REFRESH. GHL can record a call with duration null at first and
+      // finalize the number minutes later (the owner's PRB dial did exactly this). The
+      // record-once ledger would freeze that first look forever — so when a known call
+      // comes back with a duration we didn't have, update the row, and if the finalized
+      // duration crosses the answered bar, stamp contacted_at (only if still null:
+      // an earlier real conversation always wins).
+      if (c.durationSeconds != null) {
+        const { data: known } = await db.from("ghl_call_log")
+          .select("ghl_message_id, duration_seconds")
+          .eq("ghl_message_id", c.id).maybeSingle();
+        if (known && known.duration_seconds == null) {
+          await db.from("ghl_call_log")
+            .update({ duration_seconds: c.durationSeconds, call_status: c.status })
+            .eq("ghl_message_id", c.id);
+          if (c.status === "completed" && (c.durationSeconds ?? 0) >= CONTACT_MIN_SECONDS) {
+            await db.from("deals")
+              .update({ contacted_at: c.calledAt })
+              .eq("id", dealId).is("contacted_at", null);
+          }
+        }
+      }
     }
     if (fresh.length > 0) {
       for (const c of fresh) {

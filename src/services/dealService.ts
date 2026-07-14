@@ -1347,6 +1347,11 @@ export async function logContactAttempt(
     channel: "call" | "email" | "sms" | "other";
     /** Required for `callback` — when the merchant asked to be called. */
     callbackAt?: string | null;
+    /** For `callback` only: did a conversation actually happen? "They answered and
+     *  said call me later" is the single most common outcome on the floor, and it IS
+     *  a contact — the merchant spoke to us. "Voicemail, scheduling a retry" is not.
+     *  The picker asks; this carries the answer. */
+    spoke?: boolean;
   },
 ): Promise<void> {
   const { data: cur } = await supabase
@@ -1377,6 +1382,12 @@ export async function logContactAttempt(
     patch.callback_at = opts.callbackAt ?? null;
     // Set by a human, after talking to (or trying) the merchant — a real commitment.
     patch.callback_source = "closer_promised";
+    // "They answered and asked for later" = a REACHED merchant with a scheduled next
+    // step. Count the contact, advance out of New — same rules as the reached outcome.
+    if (opts.spoke) {
+      if (!cur?.contacted_at) patch.contacted_at = nowIso;
+      if (cur?.status === "new") patch.status = "contacted";
+    }
   }
 
   // ANY attempt logged AFTER the callback came due settles it. The card existed to
