@@ -35,6 +35,12 @@ export default function PrivacyPolicyPage() {
               Last updated: {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
             </p>
 
+            <p className="text-text-secondary dark:text-white/70 mb-8">
+              This website (mfunding.net) and the Momentum Funding brand are operated by{' '}
+              <strong>Agentic Voice Inc.</strong> (d/b/a Momentum Funding). In this policy, &ldquo;we,&rdquo;
+              &ldquo;us,&rdquo; and &ldquo;Momentum Funding&rdquo; refer to Agentic Voice Inc.
+            </p>
+
             <section className="mb-8">
               <h2 className="text-2xl font-semibold text-midnight-blue dark:text-white mb-4">
                 Information We Collect
@@ -67,6 +73,34 @@ export default function PrivacyPolicyPage() {
 
             <section className="mb-8">
               <h2 className="text-2xl font-semibold text-midnight-blue dark:text-white mb-4">
+                SMS / Text Messaging
+              </h2>
+              <p className="text-text-secondary dark:text-white/70 mb-4">
+                If you provide your mobile number and give consent, Agentic Voice Inc. (d/b/a Momentum
+                Funding) may send you SMS/text messages about your funding request — such as application
+                updates, document requests, appointment reminders, and related funding offers.
+              </p>
+              <ul className="list-disc pl-6 text-text-secondary dark:text-white/70 space-y-2">
+                <li>Consenting to receive text messages is <strong>not a condition</strong> of applying for or receiving funding.</li>
+                <li>Message frequency varies. Message and data rates may apply.</li>
+                <li>You can opt out at any time by replying <strong>STOP</strong>; reply <strong>HELP</strong> for help.</li>
+                <li>
+                  <strong>
+                    We do not sell, rent, or share your mobile phone number or SMS opt-in information with any
+                    third parties or affiliates for their own marketing or promotional purposes.
+                  </strong>
+                </li>
+              </ul>
+              <p className="text-text-secondary dark:text-white/70 mt-4">
+                To submit your application to funders on your behalf, we share the business and application
+                details you provide with our funding partners — a service you request by applying. Your mobile
+                number and text-messaging consent, however, are used only by us to communicate with you and are
+                never shared with third parties for their marketing.
+              </p>
+            </section>
+
+            <section className="mb-8">
+              <h2 className="text-2xl font-semibold text-midnight-blue dark:text-white mb-4">
                 Information Security
               </h2>
               <p className="text-text-secondary dark:text-white/70">
@@ -90,7 +124,7 @@ export default function PrivacyPolicyPage() {
       <footer className="bg-midnight-blue py-8 mt-auto">
         <div className="container-max text-center">
           <p className="text-white/40 text-sm">
-            &copy; {new Date().getFullYear()} Momentum Funding. All rights reserved.
+            &copy; {new Date().getFullYear()} Agentic Voice Inc. d/b/a Momentum Funding. All rights reserved.
           </p>
         </div>
       </footer>

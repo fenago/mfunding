@@ -136,11 +136,11 @@ export default function Footer() {
         <div className="mt-16 pt-8 border-t border-white/10">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <p className="text-white/40 text-sm">
-              &copy; {currentYear} Momentum Funding. All rights reserved.
+              &copy; {currentYear} Agentic Voice Inc. d/b/a Momentum Funding. All rights reserved.
             </p>
             <p className="text-white/40 text-xs">
-              Momentum Funding is a financial services company. Funding provided is subject to
-              approval and terms may vary based on business qualifications.
+              Momentum Funding is a brand of Agentic Voice Inc., a financial services company. Funding
+              provided is subject to approval and terms may vary based on business qualifications.
             </p>
           </div>
         </div>

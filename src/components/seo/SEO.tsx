@@ -206,6 +206,7 @@ export function generateProductSchema(product: {
     provider: {
       '@type': 'FinancialService',
       name: 'Momentum Funding',
+      legalName: 'Agentic Voice Inc.',
       url: 'https://mfunding.net',
     },
   };

@@ -40,7 +40,7 @@ export default function TermsOfServicePage() {
                 Agreement to Terms
               </h2>
               <p className="text-text-secondary dark:text-white/70">
-                By accessing or using Momentum Funding's services, you agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use our services.
+                These services and the Momentum Funding brand are provided by <strong>Agentic Voice Inc.</strong> (d/b/a Momentum Funding). By accessing or using Momentum Funding's services, you agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use our services.
               </p>
             </section>
 
@@ -102,7 +102,7 @@ export default function TermsOfServicePage() {
       <footer className="bg-midnight-blue py-8 mt-auto">
         <div className="container-max text-center">
           <p className="text-white/40 text-sm">
-            &copy; {new Date().getFullYear()} Momentum Funding. All rights reserved.
+            &copy; {new Date().getFullYear()} Agentic Voice Inc. d/b/a Momentum Funding. All rights reserved.
           </p>
         </div>
       </footer>
