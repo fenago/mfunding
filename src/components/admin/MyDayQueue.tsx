@@ -535,6 +535,28 @@ const SOURCE_STYLE: Record<string, { edge: string; chip: string; label: string }
 const SOURCE_FALLBACK = { edge: "border-l-gray-300 dark:border-l-gray-600", chip: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300", label: "Other" };
 const sourceStyle = (d: QueueDeal) => SOURCE_STYLE[d.lead_source ?? ""] ?? SOURCE_FALLBACK;
 
+// ── Was the warm handoff actually taken? ──
+// A live transfer means a human was mid-phone-call the moment this deal was born.
+// Captured: a closer created the deal at hello via "Start the call" (created_by is
+// set — the intake's own deals are service-role and carry NULL), OR a confirmed
+// conversation landed inside the transfer window around creation. The window
+// reaches BACKWARD too: when the vendor email runs 20-80 min late, the closer's
+// call finishes before the intake's deal even exists, so contacted_at can predate
+// created_at. No capture signal once the grace period passes = the merchant was
+// on the line and nobody got them — the single worst miss on the board.
+const HANDOFF_WINDOW_MS = 15 * 60 * 1000;
+const HANDOFF_GRACE_MS = 10 * 60 * 1000;
+function handoffState(d: QueueDeal, now: number): "captured" | "missed" | null {
+  if (d.lead_source !== "live_transfer") return null;
+  if (d.created_by) return "captured";
+  if (d.contacted_at && Date.parse(d.contacted_at) <= Date.parse(d.created_at) + HANDOFF_WINDOW_MS) {
+    return "captured";
+  }
+  // Too early to call it: the handoff may literally be happening right now.
+  if (now - Date.parse(d.created_at) < HANDOFF_GRACE_MS) return null;
+  return "missed";
+}
+
 type QueueItem = { deal: QueueDeal; u: Urgency };
 
 /** One work card. Unchanged from the single-list version — same tones, same SLA
@@ -733,6 +755,30 @@ function QueueCard({
       <div className="flex items-center justify-between gap-2 mt-1.5">
         <span className="flex items-center gap-1.5 min-w-0">
           <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
+          {(() => {
+            const h = handoffState(deal, now);
+            if (h === "captured") {
+              return (
+                <span
+                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                  title="The warm handoff was taken — a closer had this merchant on the phone when the transfer came in."
+                >
+                  ✅ Handoff captured
+                </span>
+              );
+            }
+            if (h === "missed") {
+              return (
+                <span
+                  className="text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                  title="Nobody took the warm handoff — this merchant was live on the phone and no conversation was captured. Call them back first."
+                >
+                  ❌ Handoff MISSED{deal.contacted_at ? " · reached later" : ""}
+                </span>
+              );
+            }
+            return null;
+          })()}
           <LeadGradeChip grade={deal.lead_grade} expectedValue={deal.expected_value} reasons={deal.score_reasons} />
         </span>
         <span className="text-[11px] font-medium text-ocean-blue opacity-0 group-hover:opacity-100 transition-opacity shrink-0">Open →</span>
