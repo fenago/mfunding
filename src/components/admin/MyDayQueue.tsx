@@ -235,7 +235,26 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
     };
   }
 
-  if (deal.status === "new" && HOT.has(deal.temperature ?? "") && (deal.first_call_due_at || isLiveTransfer)) {
+  // ── REACHED, BUT THE STAGE NEVER MOVED. ──
+  // A confirmed conversation happened (contacted_at is set — Reached button or a
+  // ≥30s GHL call) but the deal still says "new" because nobody advanced it. The
+  // branches below assume UNTOUCHED and would scream "FIRST TOUCH / THEY'RE ON THE
+  // LINE / EMAIL OVERDUE" at a merchant we spoke to yesterday — the owner found
+  // three of these parked in New Work at once. Say what's true instead: you
+  // reached them, the pipeline is lying, move the stage.
+  if (deal.status === "new" && deal.contacted_at) {
+    return {
+      rank: 3.1,
+      badge: "✅ Reached — stage never moved",
+      why: `You spoke to them ${ago(deal.contacted_at, now)} but the deal is still parked in "new". Open it and advance the stage (or park it) so the board tells the truth.`,
+      since: deal.last_attempt_at ?? deal.contacted_at,
+      tone: "amber",
+      callWindow: bestTimeToCall(deal),
+      lane: "followup",
+    };
+  }
+
+  if (deal.status === "new" && !deal.first_attempt_at && HOT.has(deal.temperature ?? "") && (deal.first_call_due_at || isLiveTransfer)) {
     if (isLiveTransfer) {
       return {
         rank: 0,
