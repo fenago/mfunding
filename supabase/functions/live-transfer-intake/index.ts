@@ -1412,7 +1412,11 @@ Deno.serve(async (req) => {
   const sinceIso = new Date(Date.now() - DEDUPE_WINDOW_DAYS * 24 * 3600 * 1000).toISOString();
   const candIds = new Set<string>();
   if (lead.email) {
-    const { data } = await db.from("customers").select("id").eq("email", lead.email);
+    // ilike with no wildcards = case-insensitive exact match. The vendor's email is
+    // lowercased at parse, but a CLOSER-typed capture can be stored as "Ted@PRBeg.com"
+    // — and .eq() is case-sensitive, so the merge would miss on capitalization alone.
+    // Email identity is case-insensitive by definition (RFC be damned, in practice).
+    const { data } = await db.from("customers").select("id").ilike("email", lead.email);
     for (const c of data ?? []) candIds.add(c.id as string);
   }
   if (lead.phone) {

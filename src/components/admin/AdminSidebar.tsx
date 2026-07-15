@@ -87,6 +87,11 @@ const CLOSER_LENS_PATHS = new Set<string>([
   // Funder network (roles: ADMIN) — admins manage the funder relationships even
   // when they also carry a closer row. Pure closers still never see these,
   // because the ADMIN roles array below excludes them.
+  // Same rule for the Dashboard + Deals list: an ADMIN with a closer row (Carlos)
+  // manages the whole pipeline, not just his own book — the lens must not strip
+  // the two most basic management surfaces. Pure closers stay excluded via roles.
+  "/admin",
+  "/admin/deals",
   "/admin/lenders",
   "/admin/funder-directory",
   "/admin/funder-matrix",
