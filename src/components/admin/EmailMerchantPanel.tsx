@@ -35,6 +35,8 @@ import { statedTimeInET } from "@/utils/time";
 interface Props {
   dealId: string;
   merchantEmail?: string | null;
+  /** Extra merchant addresses (customers.additional_emails) — CC'd on every send. */
+  additionalEmails?: string[] | null;
   merchantFirstName?: string | null;
   businessName?: string | null;
   /** deals.lead_source — picks the default template. */
@@ -103,6 +105,7 @@ const TEMPLATES: Template[] = [
 export default function EmailMerchantPanel({
   dealId,
   merchantEmail,
+  additionalEmails,
   merchantFirstName,
   businessName,
   leadSource,
@@ -112,6 +115,13 @@ export default function EmailMerchantPanel({
 }: Props) {
   const { profile } = useUserProfile();
   const [open, setOpen] = useState(false);
+
+  // Extra addresses ride along as CC (the merchant's own email is the To:). The
+  // edge function re-validates + caps at 10; this is just the clean list to show.
+  const cc = useMemo(
+    () => (additionalEmails ?? []).map((e) => e.trim()).filter(Boolean),
+    [additionalEmails],
+  );
 
   const ctx: Ctx = useMemo(
     () => ({
@@ -153,7 +163,7 @@ export default function EmailMerchantPanel({
     setResult(null);
     try {
       const { data, error } = await supabase.functions.invoke("send-merchant-email", {
-        body: { dealId, subject: subject.trim(), body: bodyText.trim() },
+        body: { dealId, subject: subject.trim(), body: bodyText.trim(), cc },
       });
       if (error) throw error;
       const d = data as { error?: string } | null;
@@ -278,6 +288,14 @@ export default function EmailMerchantPanel({
                   Edit freely before sending. Keep it "funding" / "capital" — never call an advance a loan.
                 </p>
               </div>
+
+              {/* So the closer knows the extra addresses are going out — no toggle,
+                  they're always CC'd (managed from the deal's contact chips). */}
+              {cc.length > 0 && (
+                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                  Also sending to: <span className="font-medium text-gray-700 dark:text-gray-300">{cc.join(", ")}</span>
+                </p>
+              )}
 
               {result && (
                 <p

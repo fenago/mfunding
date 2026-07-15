@@ -26,6 +26,8 @@ import {
   ChevronUpIcon,
   ChevronDownIcon,
   MegaphoneIcon,
+  PlusIcon,
+  EnvelopeIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
@@ -45,7 +47,7 @@ import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -707,6 +709,7 @@ export default function PlaybooksPage() {
               campaign={dealCampaign}
               onClear={() => setDeal(null)}
               onAdvance={advanceDeal}
+              onRefresh={() => refreshDeal(deal.id)}
               openCloseDeal={() => setShowCloseDeal(true)}
               openEditLead={() => setShowEditLead(true)}
               splits={splits}
@@ -1314,9 +1317,122 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
 // playbooks.ts stays the single source of truth. Renders nothing for a step
 // with no script (so it's safe to pass for any flow).
 
+// ───────────────────────── Additional-emails editor ─────────────────────────
+// Extra addresses that ride along as CC on every merchant email + the application
+// cover note (the primary stays customers.email, always the To:). Inline chip UI —
+// the closer never leaves the playbook to add the owner's bookkeeper or a partner.
+
+const emailShape = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+
+function AdditionalEmailsEditor({
+  customerId,
+  primaryEmail,
+  emails,
+  onRefresh,
+}: {
+  customerId: string;
+  primaryEmail: string | null;
+  emails: string[];
+  onRefresh: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const persist = async (next: string[]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await updateCustomerAdditionalEmails(customerId, next);
+      onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async () => {
+    const e = value.trim().toLowerCase();
+    if (!emailShape(e)) { setError("Enter a valid email."); return; }
+    if (e === (primaryEmail ?? "").trim().toLowerCase()) { setError("That's already the primary email."); return; }
+    if (emails.some((x) => x.toLowerCase() === e)) { setError("Already added."); return; }
+    setValue("");
+    setAdding(false);
+    await persist([...emails, e]);
+  };
+
+  const remove = (e: string) => persist(emails.filter((x) => x !== e));
+
+  return (
+    <>
+      {emails.map((e) => (
+        <span
+          key={e}
+          className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue dark:text-blue-300 border border-ocean-blue/30"
+          title={`Also CC'd on merchant email: ${e}`}
+        >
+          <EnvelopeIcon className="w-3 h-3" />
+          {e}
+          <button
+            type="button"
+            onClick={() => remove(e)}
+            disabled={busy}
+            title="Remove this address"
+            className="ml-0.5 hover:text-red-600 disabled:opacity-50"
+          >
+            <XMarkIcon className="w-3 h-3" />
+          </button>
+        </span>
+      ))}
+
+      {adding ? (
+        <span className="inline-flex items-center gap-1">
+          <input
+            autoFocus
+            type="email"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); setError(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void add(); } if (e.key === "Escape") { setAdding(false); setValue(""); setError(null); } }}
+            placeholder="bookkeeper@acme.com"
+            className="text-[11px] rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 px-2 py-0.5 w-44"
+          />
+          <button
+            type="button"
+            onClick={() => void add()}
+            disabled={busy}
+            className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-ocean-blue text-white hover:bg-deep-sea disabled:opacity-50"
+          >
+            Add
+          </button>
+          <button
+            type="button"
+            onClick={() => { setAdding(false); setValue(""); setError(null); }}
+            className="text-[11px] text-gray-400 hover:text-gray-600"
+          >
+            cancel
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          title="Add another address that gets CC'd on merchant email"
+          className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-dashed border-ocean-blue/50 text-ocean-blue dark:text-blue-300 hover:bg-ocean-blue/10"
+        >
+          <PlusIcon className="w-3 h-3" /> email
+        </button>
+      )}
+
+      {error && <span className="text-[11px] text-red-600 dark:text-red-400">{error}</span>}
+    </>
+  );
+}
+
 // ───────────────────────── Deal context bar ─────────────────────────
 
-function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
+function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
   const closerName = deal.closer
@@ -1410,6 +1526,7 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
               <EmailMerchantPanel
                 dealId={deal.id}
                 merchantEmail={deal.customer?.email}
+                additionalEmails={deal.customer?.additional_emails ?? []}
                 merchantFirstName={deal.customer?.first_name}
                 businessName={deal.customer?.business_name}
                 leadSource={deal.lead_source}
@@ -1419,6 +1536,18 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, openClos
                   ] as string | undefined
                 }
               />
+
+              {/* Add/remove extra addresses that ride along as CC on every
+                  merchant email + the application cover note — the owner's
+                  bookkeeper, a second partner. Primary stays deal.customer.email. */}
+              {deal.customer?.id && (
+                <AdditionalEmailsEditor
+                  customerId={deal.customer.id}
+                  primaryEmail={deal.customer.email}
+                  emails={deal.customer.additional_emails ?? []}
+                  onRefresh={onRefresh}
+                />
+              )}
 
               {/* Campaign attribution — a subtle chip with the code when it's
                   attached, a loud amber prompt (opens Edit lead → campaign picker)

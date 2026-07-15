@@ -43,7 +43,7 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
     .select(`
       *,
       customer:customers!customer_id (
-        id, first_name, last_name, business_name, email, phone,
+        id, first_name, last_name, business_name, email, additional_emails, phone,
         monthly_revenue, time_in_business, industry
       ),
       closer:profiles!assigned_closer_id (
@@ -141,7 +141,7 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
     .select(`
       *,
       customer:customers!customer_id (
-        id, first_name, last_name, business_name, email, phone,
+        id, first_name, last_name, business_name, email, additional_emails, phone,
         monthly_revenue, time_in_business, industry
       ),
       submissions:deal_submissions ( response_at, status )
@@ -258,7 +258,7 @@ export async function getDealById(id: string): Promise<{
     .select(`
       *,
       customer:customers!customer_id (
-        id, first_name, last_name, business_name, email, phone,
+        id, first_name, last_name, business_name, email, additional_emails, phone,
         monthly_revenue, time_in_business, industry
       ),
       closer:profiles!assigned_closer_id (
@@ -322,6 +322,19 @@ export async function updateDeal(id: string, data: UpdateDealData): Promise<Deal
   }
 
   return d;
+}
+
+/**
+ * Replace a merchant's additional-email list. These are CC'd (never the To:) on
+ * outbound merchant email, so the primary `customers.email` is left untouched.
+ * The caller is responsible for validating/normalizing the addresses; this just
+ * persists the array it's given.
+ */
+export async function updateCustomerAdditionalEmails(customerId: string, emails: string[]): Promise<void> {
+  await mustWrite(
+    "update additional emails",
+    supabase.from("customers").update({ additional_emails: emails }).eq("id", customerId),
+  );
 }
 
 export async function updateDealStatus(id: string, newStatus: DealStatus): Promise<Deal> {

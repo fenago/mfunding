@@ -176,6 +176,8 @@ export interface DealWithCustomer extends Deal {
     last_name: string;
     business_name: string | null;
     email: string | null;
+    /** Extra addresses CC'd on outbound merchant email (primary stays `email`). */
+    additional_emails: string[] | null;
     phone: string | null;
     monthly_revenue: number | null;
     time_in_business: number | null;

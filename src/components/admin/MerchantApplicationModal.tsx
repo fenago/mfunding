@@ -670,8 +670,12 @@ export default function MerchantApplicationModal({
   // which depends on whether the e-sign document already went out.
   async function sendCoverNote(subject: string, body: string, regarding: string): Promise<string | null> {
     try {
+      // Extra merchant addresses ride along as CC (the primary is the To:). The
+      // e-sign document itself goes through GHL to the single contact email; only
+      // this cover note can fan out. Server re-validates + caps the list.
+      const cc = (cust?.additional_emails ?? []).map((e) => e.trim()).filter(Boolean);
       const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
-        body: { dealId: deal.id, subject, body, regarding },
+        body: { dealId: deal.id, subject, body, regarding, cc },
       });
       if (fnErr) await invokeThrow(fnErr);
       if ((data as { error?: string })?.error) throw new Error((data as { error?: string }).error);
