@@ -144,7 +144,7 @@ export default function FreeToolsPage() {
         description="Free calculators and assessments to plan your business funding — estimate working capital, analyze cash flow gaps, stress-test MCA debt, and grade your financial health."
         keywords="free business funding tools, MCA calculator, cash flow analyzer, business health scorecard, working capital calculator"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

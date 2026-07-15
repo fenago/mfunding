@@ -120,7 +120,7 @@ export default function VCFReliefPage() {
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
       <SEO title="MCA Debt Relief & Restructuring" description="Drowning in daily merchant cash advance payments? Momentum Funding helps small businesses restructure, consolidate, and reduce MCA debt. Free consultation, no upfront fees." keywords="MCA debt relief, merchant cash advance consolidation, restructure MCA, reduce daily payments, get out of MCA debt" />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

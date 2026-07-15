@@ -99,7 +99,7 @@ export default function VCFSavingsCalculatorPage() {
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
       <SEO title="MCA Debt Relief Savings Calculator" description="Estimate how much you could save by restructuring your merchant cash advance debt. Free MCA debt relief calculator from Momentum Funding." keywords="MCA debt relief calculator, merchant cash advance savings, MCA payment reduction calculator" />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

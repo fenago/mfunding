@@ -113,7 +113,7 @@ export default function FundingAffordabilityPage() {
         description="Find a safe working-capital amount your business can comfortably afford based on your revenue, expenses, and margin. Free instant assessment — no credit impact."
         keywords="how much funding can my business afford, safe merchant cash advance amount, business funding affordability calculator"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

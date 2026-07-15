@@ -20,7 +20,7 @@ export default function ResourcesPage() {
         description="Guides on business funding, merchant cash advances, cash flow, and growth — from the Momentum Funding team. Learn how to qualify, compare options, and get funded fast."
         keywords="business funding guides, merchant cash advance guide, business cash flow tips, how to get business funding"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-12">
         <div className="text-center mb-10">

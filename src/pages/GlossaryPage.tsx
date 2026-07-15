@@ -54,7 +54,7 @@ export default function GlossaryPage() {
           },
         ]}
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
       <main className="flex-1 max-w-3xl w-full mx-auto px-4 py-12">
         <nav className="text-sm text-gray-400 mb-4">

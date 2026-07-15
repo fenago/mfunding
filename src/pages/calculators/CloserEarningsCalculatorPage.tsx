@@ -79,7 +79,7 @@ export default function CloserEarningsCalculatorPage() {
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
       <SEO title="MCA Closer Earnings Calculator" description="Estimate your potential earnings as a 1099 MCA closer with Momentum Funding. Calculate commission on funded deals." keywords="MCA closer earnings, commission calculator, MCA sales rep income" />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

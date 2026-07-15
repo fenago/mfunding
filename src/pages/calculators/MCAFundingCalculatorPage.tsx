@@ -105,7 +105,7 @@ export default function MCAFundingCalculatorPage() {
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
       <SEO title="How Much Business Funding Can I Get?" description="Estimate how much business funding you qualify for based on your monthly revenue. Free instant calculator — no credit impact." keywords="how much business funding can I get, business funding calculator, merchant cash advance amount calculator" />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

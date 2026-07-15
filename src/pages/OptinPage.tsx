@@ -70,7 +70,7 @@ export default function OptinPage() {
   return (
     <>
       <SEO title="Get Funding Updates" description="Opt in for business funding updates from Momentum Funding." noIndex={true} />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
       <main className="min-h-screen py-24 bg-gray-50 dark:bg-gray-900">
         <div className="container-max max-w-3xl mx-auto px-4 mt-8">

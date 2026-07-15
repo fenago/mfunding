@@ -117,7 +117,7 @@ export default function CashFlowGapAnalyzerPage() {
         description="Find out which months your business runs short, the estimated dollar gap, and the working-capital buffer you need. Free instant cash flow analyzer."
         keywords="cash flow gap analyzer, seasonal cash flow, working capital buffer calculator, business cash flow shortfall"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

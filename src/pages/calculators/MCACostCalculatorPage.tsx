@@ -93,7 +93,7 @@ export default function MCACostCalculatorPage() {
   return (
     <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
       <SEO title="Merchant Cash Advance Cost Calculator" description="Calculate the true cost of a merchant cash advance — factor rate, total payback, and daily/weekly remittance. Free calculator from Momentum Funding." keywords="merchant cash advance cost calculator, factor rate calculator, MCA payback calculator" />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

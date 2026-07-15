@@ -17,7 +17,7 @@ const navLinks = [
   { name: 'FAQ', href: '/#faq' },
 ];
 
-export default function Navbar() {
+export default function Navbar({ lightBg = false }: { lightBg?: boolean } = {}) {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { resolved: theme } = useTheme();
@@ -34,6 +34,12 @@ export default function Navbar() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Pages WITHOUT a dark hero (e.g. /apply) have a light background at the very top,
+  // so the default transparent + white-text navbar is invisible until you scroll.
+  // `lightBg` makes it render solid with dark text at scroll position 0. `solid` is
+  // what the styling below keys off — it's true when scrolled OR on a light page.
+  const solid = isScrolled || lightBg;
+
   const handleSignOut = async () => {
     await supabase.auth.signOut();
     navigate('/');
@@ -45,7 +51,7 @@ export default function Navbar() {
       animate={{ y: 0 }}
       transition={{ duration: 0.5, ease: 'easeOut' }}
       className={`fixed top-0 left-0 right-0 z-[1000] transition-all duration-500 ${
-        isScrolled
+        solid
           ? theme === 'dark'
             ? 'bg-midnight-blue/90 backdrop-blur-lg shadow-lg border-b border-white/10'
             : 'bg-white/90 backdrop-blur-lg shadow-lg border-b border-gray-100/50'
@@ -59,7 +65,7 @@ export default function Navbar() {
             <Logo
               variant="full"
               size="md"
-              theme={isScrolled && theme === 'light' ? 'light' : 'dark'}
+              theme={solid && theme === 'light' ? 'light' : 'dark'}
             />
           </Link>
 
@@ -67,7 +73,7 @@ export default function Navbar() {
           <div className="hidden lg:flex items-center gap-8">
             {navLinks.map((link, index) => {
               const className = `relative text-sm font-medium transition-colors group ${
-                isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
+                solid && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
               }`;
               const inner = (
                 <>
@@ -102,7 +108,7 @@ export default function Navbar() {
                     <Link
                       to="/admin"
                       className={`flex items-center gap-2 text-sm font-medium transition-colors ${
-                        isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
+                        solid && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
                       }`}
                     >
                       <Squares2X2Icon className="w-4 h-4" />
@@ -115,7 +121,7 @@ export default function Navbar() {
                     <Link
                       to="/portal"
                       className={`flex items-center gap-2 text-sm font-medium transition-colors ${
-                        isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
+                        solid && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
                       }`}
                     >
                       <Squares2X2Icon className="w-4 h-4" />
@@ -124,13 +130,13 @@ export default function Navbar() {
                   </motion.div>
                 )}
                 <div className="flex items-center gap-3">
-                  <span className={`text-sm ${isScrolled && theme === 'light' ? 'text-text-secondary' : 'text-white/70'}`}>
+                  <span className={`text-sm ${solid && theme === 'light' ? 'text-text-secondary' : 'text-white/70'}`}>
                     {profile?.display_name || profile?.email?.split('@')[0]}
                   </span>
                   <motion.button
                     onClick={handleSignOut}
                     className={`text-sm font-medium transition-colors ${
-                      isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
+                      solid && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
                     }`}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
@@ -144,7 +150,7 @@ export default function Navbar() {
                 <Link
                   to="/auth/sign-in"
                   className={`text-sm font-medium transition-colors ${
-                    isScrolled && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
+                    solid && theme === 'light' ? 'text-text-secondary hover:text-midnight-blue' : 'text-white/90 hover:text-white'
                   }`}
                 >
                   Sign In
@@ -178,7 +184,7 @@ export default function Navbar() {
                   exit={{ rotate: 90, opacity: 0 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <XMarkIcon className={`w-6 h-6 ${isScrolled && theme === 'light' ? 'text-midnight-blue' : 'text-white'}`} />
+                  <XMarkIcon className={`w-6 h-6 ${solid && theme === 'light' ? 'text-midnight-blue' : 'text-white'}`} />
                 </motion.div>
               ) : (
                 <motion.div
@@ -188,7 +194,7 @@ export default function Navbar() {
                   exit={{ rotate: -90, opacity: 0 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <Bars3Icon className={`w-6 h-6 ${isScrolled && theme === 'light' ? 'text-midnight-blue' : 'text-white'}`} />
+                  <Bars3Icon className={`w-6 h-6 ${solid && theme === 'light' ? 'text-midnight-blue' : 'text-white'}`} />
                 </motion.div>
               )}
             </AnimatePresence>

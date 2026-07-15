@@ -342,7 +342,7 @@ export default function BusinessHealthScorecardPage() {
         description="Grade your business across cash flow, debt load, growth readiness, and margins. Free instant scorecard with tailored funding recommendations."
         keywords="business financial health scorecard, business health assessment, cash flow grade, business funding readiness"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

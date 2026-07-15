@@ -246,7 +246,7 @@ export default function FundingReadinessScorePage() {
         description="Answer 7 quick questions to see your free Funding Readiness Score and which working-capital products your business likely qualifies for. No credit impact."
         keywords="funding readiness score, business funding qualification, merchant cash advance eligibility, do I qualify for business funding"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

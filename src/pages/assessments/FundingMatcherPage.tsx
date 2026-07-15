@@ -253,7 +253,7 @@ export default function FundingMatcherPage() {
         description="Answer 5 quick questions and get matched to the business funding product that fits best — MCA, line of credit, term funding, equipment financing, or SBA. No credit impact."
         keywords="business funding matcher, what funding is right for my business, MCA vs line of credit, best business financing option"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

@@ -170,7 +170,7 @@ export default function ReliefQualifierPage() {
         description="Find out in under a minute whether you qualify for merchant cash advance debt relief — restructuring or an FDIC-bank refinance. Free, confidential, no upfront fees."
         keywords="MCA relief qualification, do I qualify MCA debt relief, merchant cash advance restructuring, FDIC bank refinance, business debt relief"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

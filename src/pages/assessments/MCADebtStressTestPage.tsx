@@ -164,7 +164,7 @@ export default function MCADebtStressTestPage() {
         description="Take the free MCA Debt Stress Test to see how much your merchant cash advances are straining your cash flow — and an estimated path to lower payments. No judgment, no upfront fees."
         keywords="MCA debt stress test, merchant cash advance cash flow, MCA debt relief, debt to revenue ratio, MCA restructuring"
       />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
 
       <main className="flex-1">

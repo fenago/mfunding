@@ -85,7 +85,7 @@ export default function ApplyPage() {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
       <SEO title="Apply for Business Funding" description="Apply for business funding in minutes. Check your rate with no credit impact. $5K–$3M, funding in 24–48 hours, 93% approval. No upfront fees." keywords="apply for business funding, business funding application, merchant cash advance application" />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
       <main className="flex-1 max-w-2xl w-full mx-auto px-4 py-12">
         {submitted ? (

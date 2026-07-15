@@ -54,7 +54,7 @@ export default function PartnersPage() {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
       <SEO title="Referral Partner Program — Earn Per Funded Deal" description="CPAs, bookkeepers, real estate agents and vendors: refer clients who need capital and earn $100 per funded deal. Join the Momentum Funding referral partner program." keywords="funding referral partner program, ISO partner program, refer clients for business funding, earn referral commission" />
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
       <main className="flex-1 max-w-2xl w-full mx-auto px-4 py-12">
         {submitted ? (

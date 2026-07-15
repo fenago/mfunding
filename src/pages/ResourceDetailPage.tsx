@@ -18,7 +18,7 @@ export default function ResourceDetailPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
-      <Navbar />
+      <Navbar lightBg />
       <ScrollToTop />
       <main className="flex-1 max-w-2xl w-full mx-auto px-4 py-12">
         <Link to="/resources" className="text-sm text-ocean-blue hover:underline">← All resources</Link>
