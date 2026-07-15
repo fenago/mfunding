@@ -595,6 +595,18 @@ function QueueCard({
         <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</p>
         {amount && <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 shrink-0">{amount}</span>}
       </div>
+      {/* WHO answers the phone. The title is the business; the closer opens with a
+          person's name or the call starts cold — so the contact name gets its own
+          line whenever we have one and it isn't already the title. */}
+      {(() => {
+        const person = [deal.customer?.first_name, deal.customer?.last_name].filter(Boolean).join(" ");
+        if (!person || person === nameOf(deal)) return null;
+        return (
+          <p className="text-[12px] font-medium text-gray-700 dark:text-gray-200 truncate">
+            👤 {person}
+          </p>
+        );
+      })()}
       {/* The number, dialable — VIBEREACH FIRST. tel: was the primary and macOS
           hands that protocol to FaceTime, which is nobody's dialer here. Clicking the
           number now opens the contact in VibeReach, where the call button is one click
