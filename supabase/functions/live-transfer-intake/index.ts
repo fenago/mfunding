@@ -746,6 +746,19 @@ async function adoptSender(
     if (!contact) return { adopted: false, address: "", error: c.error || "sender contact not found" };
     const address = String(contact.email ?? "");
     const tags = ((contact.tags as string[] | undefined) ?? []).map((t) => String(t).toLowerCase());
+    // ── WHO we are about to mute is decided HERE, by the contact's OWN address —
+    // NEVER by the caller-supplied id. On 2026-07-13 a run reached this function with
+    // a MERCHANT's contact id (First Choice Cleaning, the biggest deal on the board)
+    // and full-channel DND'd her as a "Lead-delivery robot": every automated email to
+    // her was silently suppressed until a human noticed. A sender robot's own email is
+    // by definition on a trusted delivery domain; a merchant's never is. So a contact
+    // whose address fails that test is refused no matter what the caller claims.
+    if (!isTrustedDomain(address)) {
+      return { adopted: false, address, error: `REFUSED: contact ${senderContactId} (${address || "no email"}) is not on a trusted delivery domain — not a sender robot; would have muted a real person` };
+    }
+    if (tags.includes("merchant")) {
+      return { adopted: false, address, error: `REFUSED: contact ${senderContactId} is tagged 'merchant' — never DND a merchant` };
+    }
     const hasTag = tags.includes(SENDER_ADOPT_TAG);
     const dndOn = contact.dnd === true;
     if (hasTag && dndOn) return { adopted: false, address };
@@ -1451,17 +1464,39 @@ Deno.serve(async (req) => {
       // fill fields that are still empty, plus always refresh lead_qual (the vendor's
       // raw answers) and re-stamp the contact details, which are the whole point of a
       // re-send.
+      // A disagreement between what a human typed and what the vendor's email says is
+      // EVIDENCE, not noise. The record always wins (an email never overwrites a
+      // closer), but the vendor's differing value is written into the deal notes so
+      // nobody has to re-open the raw email to see that the two sources disagree.
+      const conflicts: string[] = [];
+      const differs = (a: unknown, b: unknown): boolean => {
+        const sa = String(a ?? "").trim(), sb = String(b ?? "").trim();
+        if (sa === "" || sb === "") return false;
+        const na = Number(sa), nb = Number(sb);
+        if (Number.isFinite(na) && Number.isFinite(nb)) return na !== nb; // "50000" == 50000.00
+        return sa.toLowerCase() !== sb.toLowerCase();
+      };
+
       const { data: cur } = await db.from("customers").select("*").eq("id", dup.customer_id).maybeSingle();
       if (cur) {
         const fresh: Record<string, unknown> = { lead_qual: lead.raw, temperature: "hot" };
         const fill = (col: string, val: unknown) => {
           if (val == null || val === "") return;
           const existing = (cur as Record<string, unknown>)[col];
-          if (existing == null || existing === "") fresh[col] = val;      // fill gaps
+          if (existing == null || existing === "") { fresh[col] = val; return; } // fill gaps
+          if (differs(existing, val)) conflicts.push(`${col}: record has “${existing}”, vendor email says “${val}” — record kept`);
         };
         // Contact details always refresh — a re-send is the vendor correcting them.
-        if (lead.phone) fresh.phone = lead.phone;
-        if (lead.email) fresh.email = lead.email;
+        // These are the one place the vendor OVERWRITES, so the replaced value is
+        // what gets preserved in the note.
+        if (lead.phone) {
+          if (differs((cur as Record<string, unknown>).phone, lead.phone)) conflicts.push(`phone: was “${(cur as Record<string, unknown>).phone}”, vendor corrected to “${lead.phone}” — vendor value applied`);
+          fresh.phone = lead.phone;
+        }
+        if (lead.email) {
+          if (differs((cur as Record<string, unknown>).email, lead.email)) conflicts.push(`email: was “${(cur as Record<string, unknown>).email}”, vendor corrected to “${lead.email}” — vendor value applied`);
+          fresh.email = lead.email;
+        }
         fill("first_name", lead.first);
         fill("last_name", lead.last);
         fill("business_name", lead.business);
@@ -1477,8 +1512,14 @@ Deno.serve(async (req) => {
       if (curDeal) {
         const dpatch: Record<string, unknown> = { lead_qual: lead.raw, temperature: "hot" };
         const d = curDeal as Record<string, unknown>;
-        if ((d.amount_requested == null) && lead.requestedAmount != null) dpatch.amount_requested = lead.requestedAmount;
-        if ((d.use_of_funds == null || d.use_of_funds === "") && lead.useOfFunds) dpatch.use_of_funds = lead.useOfFunds;
+        if (lead.requestedAmount != null) {
+          if (d.amount_requested == null) dpatch.amount_requested = lead.requestedAmount;
+          else if (differs(d.amount_requested, lead.requestedAmount)) conflicts.push(`amount_requested: deal has “${d.amount_requested}”, vendor email says “${lead.requestedAmount}” — deal kept`);
+        }
+        if (lead.useOfFunds) {
+          if (d.use_of_funds == null || d.use_of_funds === "") dpatch.use_of_funds = lead.useOfFunds;
+          else if (differs(d.use_of_funds, lead.useOfFunds)) conflicts.push(`use_of_funds: deal has “${d.use_of_funds}”, vendor email says “${lead.useOfFunds}” — deal kept`);
+        }
         // Auto-schedule the merchant's stated best time — ONLY into a gap. An
         // existing callback_at is a promise (human-set or already auto-set) and is
         // never overwritten by a re-delivery of the same lead.
@@ -1511,7 +1552,10 @@ Deno.serve(async (req) => {
         subject: kcfg.activitySubject.replace(":intake", ":dedupe"),
         content:
           `Duplicate ${kcfg.kind} intake — no second deal created (same ${lead.email ? "email" : "phone"} within ${DEDUPE_WINDOW_DAYS}d), ` +
-          `but the record was REFRESHED from this email. Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.${dedupeCallbackNote}`,
+          `but the record was REFRESHED from this email. Incoming: ${fullName} / ${lead.business} / ${lead.phone || lead.email}.${dedupeCallbackNote}` +
+          (conflicts.length
+            ? `\n\n⚠️ VENDOR EMAIL DISAGREES with data already on this record — differences preserved, nothing typed by a human was overwritten:\n• ${conflicts.join("\n• ")}`
+            : ""),
       }).then(() => {}, () => {});
       await logIntake(db, logBase && {
         ...logBase,
@@ -1550,13 +1594,22 @@ Deno.serve(async (req) => {
     lead_qual: lead.raw,
   };
   let customerId: string;
+  // Same preservation rule as the dedupe path: vendor values that DISAGREE with
+  // what's already on the returning customer are noted on the new deal, not lost.
+  const custConflicts: string[] = [];
   if (existingCustomerId) {
     // Only fill gaps — never blank out existing data.
     const { data: cur } = await db.from("customers").select("*").eq("id", existingCustomerId).maybeSingle();
     const merged: Record<string, unknown> = { is_live_transfer: true, temperature: "hot", lead_qual: lead.raw };
     for (const [k, v] of Object.entries(custPatch)) {
       if (v == null || v === "") continue;
-      if (cur && (cur[k] == null || cur[k] === "")) merged[k] = v;
+      if (!cur) continue;
+      if (cur[k] == null || cur[k] === "") { merged[k] = v; continue; }
+      const sa = String(cur[k]).trim(), sb = String(v).trim();
+      const na = Number(sa), nb = Number(sb);
+      const same = (Number.isFinite(na) && Number.isFinite(nb) && sa !== "" && sb !== "")
+        ? na === nb : sa.toLowerCase() === sb.toLowerCase();
+      if (!same) custConflicts.push(`${k}: record has “${cur[k]}”, vendor email says “${v}” — record kept`);
     }
     await db.from("customers").update(merged).eq("id", existingCustomerId);
     customerId = existingCustomerId;
@@ -1710,7 +1763,7 @@ Deno.serve(async (req) => {
     entity_type: "deal", entity_id: dealId,
     interaction_type: "note",
     subject: kcfg.activitySubject,
-    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${phoneFlag}${bestTimeSched.note ? `\n${bestTimeSched.note}` : ""}${adoptNote ? `\n${adoptNote}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
+    content: `Auto-created from ${sourceMode} ${kcfg.kind} lead. ${attributionNote}${variantFlag}${phoneFlag}${bestTimeSched.note ? `\n${bestTimeSched.note}` : ""}${adoptNote ? `\n${adoptNote}` : ""}${custConflicts.length ? `\n⚠️ VENDOR EMAIL DISAGREES with the returning customer's record — differences preserved, nothing overwritten:\n• ${custConflicts.join("\n• ")}` : ""}\n${JSON.stringify(lead.raw, null, 2)}`,
   }).then(() => {}, () => {});
 
   // ── LEDGER: this email produced a deal. Written BEFORE the GHL sync so a GHL
