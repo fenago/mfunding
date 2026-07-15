@@ -205,6 +205,16 @@ file stays the index, not a copy that drifts.*
   **Option 2 — Native portal application form (full flexibility, bigger build):** the application as a portal form; staff pre-fill ANY subset from admin, merchant sees the values, edits/completes the rest in the portal, signs natively (freeze-and-ledger e-sign already built and dormant); we own write-back to Supabase + GHL. True arbitrary partial fill. Est. a focused build wave (form + admin prefill UI + field sync).
   Recommendation on file: Option 1 matches the closer-on-the-phone motion; Option 2 is the only way to get any-field flexibility.
 
+### Communications — phone & SMS (owner)
+
+- [ ] **O15. Enable SMS (A2P 10DLC registration) — BLOCKS text-back + all SMS automation.**
+  We currently have **no SMS capability** — the account can't send texts until the number is approved for A2P 10DLC. Register in **VibeReach → Settings → Phone → Trust Center / A2P Registration**.
+  ⚠️ **Brand-vs-DBA is the thing that gets registrations rejected.** The **legal entity on the brand registration must be `Agentic Voice Inc.`** (+ its EIN, matching Secretary-of-State/IRS records) — NOT "Momentum Funding". "Momentum Funding" is a **DBA** and goes in the DBA/brand-name field. The website + privacy policy + SMS consent language must make the entity↔DBA link visible, or the vetter can't tie the sending brand to a real company. See the "Momentum → entity/DBA" audit below — the fix is to *declare* the DBA on the legal/footer surfaces, not to erase the Momentum brand.
+  Also needs: a public **Privacy Policy** stating info is not shared for marketing, and a documented **SMS opt-in/consent** flow (the TCPA consent we already capture on `/apply` + opt-in — point the campaign use-case at it).
+
+- [ ] **O16. (Unblocked by O15) Missed-call text-back workflow.**
+  Highest-ROI phone feature for MCA speed-to-lead: a missed inbound call auto-texts the caller within seconds so the lead isn't lost. Build as a GHL **Workflow** — Trigger: *Call Status = missed* on `(954) 737-5692` → Action: *Send SMS* ("Sorry we missed you — this is Momentum Funding, how can we help with funding today?"). **Cannot be built until O15 (SMS) is live.** I can build the workflow the moment texting is approved.
+
 ---
 
 ## 🔴 CRITICAL
