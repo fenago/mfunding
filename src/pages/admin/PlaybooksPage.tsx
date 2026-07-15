@@ -39,6 +39,8 @@ import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabili
 import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
+import NewLeadToast from "../../components/admin/NewLeadToast";
+import VendorEmailBanner from "../../components/admin/VendorEmailBanner";
 import DealAssistant from "../../components/admin/DealAssistant";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import PortalAccessChip from "../../components/admin/PortalAccessChip";
@@ -49,6 +51,7 @@ import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
+import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
@@ -199,6 +202,17 @@ export default function PlaybooksPage() {
   // Renewals are gated per closer: super_admin always, a closer by their flag,
   // anyone without a closer row keeps default access.
   const canRenew = isSuperAdmin || !hasCloser || renewalsEnabled;
+
+  // Realtime alerts for the playbook: (1) the SECOND a live-transfer / real-time
+  // lead becomes a deal, chime + a persistent bottom-right toast; (2) when a
+  // Synergy vendor email dedupes into a deal, either the special in-playbook
+  // banner (if it's the deal on screen — it also auto-refreshes it) or a calm
+  // corner toast (if it's another deal). Clicking a corner card loads that deal
+  // (openAlertDeal below). My Day self-refreshes off the same realtime stream.
+  // openDealId + onRefreshOpenDeal are passed by ref inside the hook, so this
+  // doesn't resubscribe every time the loaded deal changes.
+  const { alerts, dismiss: dismissAlert, matchBanner, dismissBanner, desktopEnabled, enableDesktop } =
+    useNewLeadAlert({ openDealId: deal?.id ?? null, onRefreshOpenDeal: refreshDeal });
 
   // Auto-dismiss the "deal closed" toast.
   useEffect(() => {
@@ -562,6 +576,20 @@ export default function PlaybooksPage() {
     refreshDeal(d.id);
   }
 
+  // Open a deal straight from a new-lead alert: fetch the full record, then route
+  // it through pickFromQueue so it lands on the RIGHT flow tab (live transfer /
+  // real-time) exactly as a My Day click would. Dismisses the alert immediately.
+  async function openAlertDeal(dealId: string) {
+    dismissAlert(dealId);
+    const res = await getDealById(dealId);
+    if (res) {
+      pickFromQueue(res.deal);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      notify("Couldn't open that lead — it may have just changed. Find it in My Day.", "error");
+    }
+  }
+
   // Close a deal to a terminal state from the green context bar. updateDealStatus
   // allows terminal moves (backward-lock exempts declined/dead/nurture) and fires
   // the C/D GHL sequences; we then persist the reason/note, log it, and clear the
@@ -701,6 +729,12 @@ export default function PlaybooksPage() {
               ⇄ Switch lead
             </button>
           </div>
+          {/* SPECIAL: the vendor email for the deal on screen just landed + merged.
+              Shown only for the deal currently loaded (the hook gates on openDealId,
+              and we double-check the id in case the closer switched deals mid-fire). */}
+          {matchBanner && matchBanner.dealId === deal.id && (
+            <VendorEmailBanner banner={matchBanner} onDismiss={dismissBanner} />
+          )}
           {showSticky && <StickyMoneyBar deal={deal} pipeline={active.pipeline} splits={splits} campaign={dealCampaign} />}
           <div ref={contextBarRef}>
             <DealContextBar
@@ -892,6 +926,15 @@ export default function PlaybooksPage() {
 
       {/* Confetti burst on funding — no dependency, self-removes */}
       {confetti && <Confetti />}
+
+      {/* Realtime new-lead alert stack — persists until clicked/dismissed */}
+      <NewLeadToast
+        alerts={alerts}
+        onOpen={openAlertDeal}
+        onDismiss={dismissAlert}
+        desktopEnabled={desktopEnabled}
+        onEnableDesktop={enableDesktop}
+      />
 
       {/* Confirm dialog — replaces window.confirm for stage moves / doc sends */}
       {confirmState && (

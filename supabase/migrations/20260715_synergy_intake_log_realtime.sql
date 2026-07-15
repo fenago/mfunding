@@ -1,0 +1,11 @@
+-- Surface Synergy vendor-email intake events to the in-app realtime alert. When a
+-- vendor email DEDUPES into the deal a closer is already working
+-- (synergy_intake_log.outcome = 'deduped'), the Revenue Playbook shows a live
+-- "the vendor email for THIS deal just landed — lead data refreshed" banner and
+-- pulls the merged fields (revenue, ask, credit, best time) in front of them.
+--
+-- Only INSERT is consumed by the client, so default replica identity is enough.
+-- RLS already gates SELECT on this table to staff (closer/admin/super_admin) via
+-- the existing "Staff read synergy intake log" policy, and realtime respects RLS,
+-- so events only reach staff who can already read the row.
+alter publication supabase_realtime add table public.synergy_intake_log;
