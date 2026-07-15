@@ -1,7 +1,7 @@
 import { lazy, type ComponentType } from "react";
 import { Navigate, type RouteObject } from "react-router-dom";
-import HomePage from "../pages/HomePage.tsx";
 import HeroPreviewPage from "../pages/HeroPreviewPage.tsx";
+import LandingOS from "../pages/LandingOS.tsx";
 import { IS_PORTAL_HOST } from "../config.ts";
 
 // After a new deploy, chunk filenames change. A tab opened before the deploy
@@ -153,12 +153,16 @@ export const routes: RouteObject[] = [
       // runtime hostname check — same bundle serves either host.
       {
         path: "/",
-        element: IS_PORTAL_HOST ? <Navigate to="/portal" replace /> : <HomePage />,
+        element: IS_PORTAL_HOST ? <Navigate to="/portal" replace /> : <LandingOS />,
       },
       {
         // Throwaway design preview of a new hero direction (compare vs the live "/").
         path: "/hero-preview",
         element: <HeroPreviewPage />,
+      },
+      {
+        path: "/landing-os",
+        element: <LandingOS />,
       },
       {
         path: "/auth/sign-in",
