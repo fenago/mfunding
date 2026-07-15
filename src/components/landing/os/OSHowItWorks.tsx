@@ -116,7 +116,7 @@ const CSS = `
 
 .osw-step-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .osw-n{font-family:'Anton',sans-serif;font-size:clamp(40px,4.5vw,56px);line-height:.8;color:var(--tx)}
-.osw-step-done .osw-n{color:var(--go);text-shadow:0 0 34px rgba(22,217,146,.28)}
+.osw-step-done .osw-n{color:var(--go-text);text-shadow:0 0 34px rgba(22,217,146,.28)}
 .osw-step-live .osw-n{color:var(--amber);text-shadow:0 0 34px rgba(246,178,75,.24)}
 .osw-arrow{font-family:'Space Mono',monospace;font-size:20px;color:var(--faint)}
 
@@ -126,12 +126,12 @@ const CSS = `
 .osw-pulse{width:9px;height:9px;border-radius:50%;background:var(--amber);
   animation:os-ping 1.6s ease-out infinite}
 
-.osw-desc{font-size:15px;line-height:1.55;color:#C4CFDA;margin:0 0 18px}
+.osw-desc{font-size:15px;line-height:1.55;color:var(--lede);margin:0 0 18px}
 
 .osw-chip{font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.08em;
   border:1px solid var(--hair);border-radius:999px;padding:7px 14px;display:inline-flex;
   color:var(--muted)}
-.osw-step-done .osw-chip{color:var(--go);border-color:rgba(22,217,146,.32);background:rgba(22,217,146,.06)}
+.osw-step-done .osw-chip{color:var(--go-text);border-color:rgba(22,217,146,.32);background:rgba(22,217,146,.06)}
 .osw-step-live .osw-chip{color:var(--amber);border-color:rgba(246,178,75,.32);background:rgba(246,178,75,.05)}
 
 /* footer CTA row */

@@ -78,6 +78,6 @@ const CSS = `
 .osfoot-sub{font-size:11px;color:var(--faint);margin-top:2px}
 .osfoot-links{display:flex;gap:22px;flex-wrap:wrap}
 .osfoot-links a{color:var(--muted);text-decoration:none;font-size:14px}
-.osfoot-links a:hover{color:var(--go)}
+.osfoot-links a:hover{color:var(--go-text)}
 .osfoot-legal{font-size:11px;line-height:1.7;color:var(--faint);max-width:70em}
 `;

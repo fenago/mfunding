@@ -106,7 +106,7 @@ const CSS = `
 }
 .oswho-tile:hover{background:linear-gradient(180deg,rgba(22,217,146,.06),var(--panel2));box-shadow:inset 0 0 0 1px rgba(22,217,146,.35)}
 .oswho-tile:hover::before{opacity:1}
-.oswho-tile:hover .oswho-ico{color:var(--go)}
+.oswho-tile:hover .oswho-ico{color:var(--go-text)}
 
 .oswho-code{
   grid-row:1 / span 2;align-self:start;margin-top:2px;
@@ -133,7 +133,7 @@ const CSS = `
   font-family:'Space Mono',monospace;font-size:13px;letter-spacing:.05em;font-weight:700;color:var(--tx);
   display:inline-flex;flex-wrap:wrap;align-items:center;gap:10px;
 }
-.oswho-qual-line i{color:var(--go);font-style:normal;font-weight:700}
+.oswho-qual-line i{color:var(--go-text);font-style:normal;font-weight:700}
 
 /* close */
 .oswho-cta{margin-top:30px;display:flex;flex-wrap:wrap;align-items:center;gap:16px 22px}

@@ -72,8 +72,8 @@ export const OS_CSS = `
 .os-root{
   --ink:#F4F0E7; --ink2:#FBF8F1; --panel:#FFFFFF; --panel2:#F6F2E9;
   --hair:rgba(14,24,34,.14); --hair2:rgba(14,24,34,.07);
-  --tx:#101B26; --muted:#586674; --faint:#8A97A3; --lede:#3B4A57;
-  --go:#0BA968; --go-deep:#0A8F58; --amber:#B4740F; --amber-hi:#8A5A0C; --paper:#101B26;
+  --tx:#101B26; --muted:#586674; --faint:#5F6B76; --lede:#3B4A57;
+  --go:#0BA968; --go-deep:#0A8F58; --go-text:#0A7A42; --amber:#B4740F; --amber-hi:#8A5A0C; --paper:#101B26;
   --on-green:#06231A; --shadow:rgba(16,24,34,.16);
   background:var(--ink); color:var(--tx);
   font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased;
@@ -83,7 +83,7 @@ export const OS_CSS = `
   --ink:#070B14; --ink2:#0E1524; --panel:#111A2C; --panel2:#0C1424;
   --hair:rgba(255,255,255,.09); --hair2:rgba(255,255,255,.055);
   --tx:#E9EEF2; --muted:#8695A6; --faint:#57687B; --lede:#C4CFDA;
-  --go:#16D992; --go-deep:#0BA968; --amber:#F6B24B; --amber-hi:#FFD79A; --paper:#F3ECDD;
+  --go:#16D992; --go-deep:#0BA968; --go-text:#16D992; --amber:#F6B24B; --amber-hi:#FFD79A; --paper:#F3ECDD;
   --on-green:#06231A; --shadow:rgba(0,0,0,.7);
 }
 .os-root *{box-sizing:border-box}
@@ -111,7 +111,7 @@ export const OS_CSS = `
   font-family:'Anton',sans-serif; font-weight:400; text-transform:uppercase;
   letter-spacing:.006em; line-height:.92; font-size:clamp(34px,4.6vw,60px); margin:0 0 20px; color:var(--tx);
 }
-.os-go{color:var(--go); text-shadow:0 0 40px rgba(22,217,146,.25)}
+.os-go{color:var(--go-text); text-shadow:0 0 40px rgba(22,217,146,.25)}
 .os-amber{color:var(--amber)}
 .os-lede{font-size:18px; line-height:1.6; color:var(--lede); max-width:38em; margin:0}
 .os-lede strong{color:var(--tx); font-weight:600}
@@ -129,7 +129,7 @@ export const OS_CSS = `
   padding:15px 24px; border-radius:10px; text-decoration:none; display:inline-flex; align-items:center;
   transition:border-color .15s, background .15s;
 }
-.os-cta-ghost:hover{border-color:var(--go); background:rgba(22,217,146,.06)}
+.os-cta-ghost:hover{border-color:var(--go-text); background:rgba(22,217,146,.06)}
 .os-cta-primary:focus-visible,.os-cta-ghost:focus-visible,a:focus-visible,button:focus-visible{outline:2px solid var(--go); outline-offset:3px}
 
 /* card */
@@ -145,7 +145,7 @@ export const OS_CSS = `
   font-family:'Space Mono',monospace; font-size:12px; letter-spacing:.06em; color:var(--muted);
   border:1px solid var(--hair); border-radius:999px; padding:7px 14px; display:inline-flex; align-items:center; gap:8px;
 }
-.os-check{color:var(--go)}
+.os-check{color:var(--go-text)}
 
 @keyframes os-blink{0%,100%{opacity:1} 50%{opacity:.25}}
 @keyframes os-ping{0%{box-shadow:0 0 0 0 rgba(246,178,75,.55)} 70%{box-shadow:0 0 0 10px rgba(246,178,75,0)} 100%{box-shadow:0 0 0 0 rgba(246,178,75,0)}}

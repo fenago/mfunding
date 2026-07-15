@@ -87,7 +87,7 @@ const CSS = `
 }
 .osproof-card{position:relative; display:flex; flex-direction:column; padding:30px 28px}
 .osproof-mark{
-  font-family:'Anton',sans-serif; font-size:62px; line-height:.6; color:var(--go);
+  font-family:'Anton',sans-serif; font-size:62px; line-height:.6; color:var(--go-text);
   opacity:.28; height:26px; margin-bottom:6px; user-select:none;
 }
 .osproof-quote{
@@ -96,7 +96,7 @@ const CSS = `
 }
 .osproof-who{
   font-family:'Space Mono',monospace; font-size:12px; letter-spacing:.1em;
-  color:var(--go); margin:0;
+  color:var(--go-text); margin:0;
 }
 
 .osproof-strip{

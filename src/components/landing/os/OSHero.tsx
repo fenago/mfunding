@@ -133,7 +133,7 @@ const CSS = `
 .osh-board{background:linear-gradient(180deg,var(--panel),var(--ink2));border:1px solid var(--hair);border-radius:16px;padding:22px;box-shadow:0 40px 80px -30px var(--shadow),inset 0 1px 0 rgba(255,255,255,.05)}
 .osh-board-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
 .osh-board-title{font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.12em;color:var(--muted)}
-.osh-liveflag{font-family:'Space Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--go);display:flex;align-items:center;gap:7px}
+.osh-liveflag{font-family:'Space Mono',monospace;font-size:11px;letter-spacing:.14em;color:var(--go-text);display:flex;align-items:center;gap:7px}
 .osh-liveflag-dot{width:7px;height:7px;border-radius:9px;background:var(--go);animation:os-blink 1.6s ease-in-out infinite}
 .osh-clock{text-align:center;padding:22px 12px 20px;margin-bottom:16px;border:1px solid rgba(246,178,75,.22);border-radius:12px;background:rgba(246,178,75,.05)}
 .osh-clock-num{font-family:'Space Mono',monospace;font-weight:700;font-size:clamp(38px,6vw,58px);color:var(--amber);letter-spacing:.02em;line-height:1}
@@ -147,7 +147,7 @@ const CSS = `
 .osh-row-label{color:var(--tx);letter-spacing:.04em}
 .osh-row-status{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.06em;justify-self:end}
 .osh-row-note{color:var(--faint);font-size:12px;min-width:64px;text-align:right}
-.osh-row-done .osh-row-status{color:var(--go)}
+.osh-row-done .osh-row-status{color:var(--go-text)}
 .osh-row-live .osh-row-status{color:var(--amber)}
 .osh-row-wait{opacity:.55}
 .osh-row-wait .osh-row-status{color:var(--muted)}

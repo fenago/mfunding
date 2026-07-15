@@ -128,8 +128,8 @@ const CSS = `
   padding:22px 6px; color:var(--tx); font-family:'Inter',sans-serif;
   transition:color .15s;
 }
-.osfaq-btn:hover{color:var(--go)}
-.osfaq-btn:hover .osfaq-marker{color:var(--go); border-color:var(--go)}
+.osfaq-btn:hover{color:var(--go-text)}
+.osfaq-btn:hover .osfaq-marker{color:var(--go-text); border-color:var(--go-text)}
 
 .osfaq-idx{font-size:12px; letter-spacing:.08em; color:var(--faint)}
 .osfaq-q{font-size:clamp(16px,2.1vw,19px); font-weight:500; line-height:1.35}
@@ -139,17 +139,17 @@ const CSS = `
   border:1px solid var(--hair); border-radius:8px; transition:color .15s, border-color .15s, background .15s;
 }
 .osfaq-item.is-open .osfaq-marker{
-  color:var(--ink); background:var(--go); border-color:var(--go);
+  color:var(--on-green); background:var(--go); border-color:var(--go-text);
 }
 .osfaq-item.is-open .osfaq-q{color:var(--tx)}
-.osfaq-item.is-open .osfaq-idx{color:var(--go)}
+.osfaq-item.is-open .osfaq-idx{color:var(--go-text)}
 
 .osfaq-panel{
   padding:0 6px 24px calc(6px + 12px + 16px);
   animation:osfaq-reveal .22s ease both;
 }
 .osfaq-a{
-  font-family:'Inter',sans-serif; font-size:16px; line-height:1.65; color:#C4CFDA;
+  font-family:'Inter',sans-serif; font-size:16px; line-height:1.65; color:var(--lede);
   max-width:56ch; margin:0;
   border-left:2px solid var(--go); padding-left:16px;
 }

@@ -34,26 +34,26 @@ export default function OSProblem() {
           </Lede>
         </div>
 
-        <div className="osp-ledger" role="table" aria-label="Traditional bank versus Momentum">
+        <div className="osp-ledger">
           {/* Column headers */}
-          <div className="osp-col osp-col-bank" role="columnheader">
+          <div className="osp-col osp-col-bank">
             <span className="osp-col-tag">TRADITIONAL BANK</span>
             <span className="osp-col-verdict osp-x">✗ SLOW · GATED</span>
           </div>
-          <div className="osp-col osp-col-mo" role="columnheader">
+          <div className="osp-col osp-col-mo">
             <span className="osp-col-tag">MOMENTUM</span>
             <span className="osp-col-verdict osp-c">✓ FAST · CASH-FLOW BASED</span>
           </div>
 
           {/* Rows */}
           {ROWS.map((r) => (
-            <div className="osp-rowgroup" key={r.label} role="row">
-              <span className="osp-rlabel" role="rowheader">{r.label}</span>
-              <span className="osp-cell osp-cell-bank" role="cell">
+            <div className="osp-rowgroup" key={r.label}>
+              <span className="osp-rlabel">{r.label}</span>
+              <span className="osp-cell osp-cell-bank">
                 <span className="osp-mk osp-x" aria-hidden>✗</span>
                 <span>{r.bank}</span>
               </span>
-              <span className="osp-cell osp-cell-mo" role="cell">
+              <span className="osp-cell osp-cell-mo">
                 <span className="osp-mk osp-c" aria-hidden>✓</span>
                 <span>{r.mo}</span>
               </span>
@@ -106,7 +106,7 @@ const CSS = `
 .osp-col-mo .osp-col-tag{color:var(--tx)}
 .osp-col-verdict{font-size:11px;letter-spacing:.1em}
 .osp-x{color:#D9553F}
-.osp-c{color:var(--go)}
+.osp-c{color:var(--go-text)}
 
 /* data rows: label | bank | momentum */
 .osp-rowgroup{

@@ -108,7 +108,7 @@ const CSS = `
   display:flex;flex-direction:column;text-decoration:none;position:relative;
   min-height:206px;
 }
-.osprod-card:hover .osprod-see{color:var(--go)}
+.osprod-card:hover .osprod-see{color:var(--go-text)}
 .osprod-card-pop{border-color:rgba(22,217,146,.45)}
 .osprod-card-pop::before{
   content:"";position:absolute;inset:0;border-radius:14px;pointer-events:none;
@@ -117,7 +117,7 @@ const CSS = `
 .osprod-badge{
   position:absolute;top:-9px;left:22px;
   font-family:'Space Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.14em;
-  color:var(--ink);background:var(--go);padding:4px 9px;border-radius:6px;
+  color:var(--on-green);background:var(--go);padding:4px 9px;border-radius:6px;
   box-shadow:0 6px 16px -6px rgba(22,217,146,.6);
 }
 
