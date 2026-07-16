@@ -37,6 +37,7 @@ export default function OSHero() {
             <Link to="/business-loans">Funding</Link>
             <a href="#how">How it works</a>
             <a href="#who">Who we fund</a>
+            <Link to="/auth/sign-in" className="osh-signin">Sign in</Link>
             <Link to="/apply" className="osh-navcta">Check your rate</Link>
           </nav>
         </div>
@@ -119,6 +120,7 @@ const CSS = `
 .osh-links a{color:var(--muted);text-decoration:none;font-size:14px;font-weight:500}
 .osh-links a:hover{color:var(--tx)}
 .osh-navcta{color:var(--on-green)!important;background:var(--go);padding:9px 16px;border-radius:8px;font-weight:600!important}
+.osh-signin{padding:9px 12px;border:1px solid var(--hair2);border-radius:8px}
 
 .osh-grid{position:relative;z-index:2;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:64px;padding-bottom:96px}
 .osh-left{animation:os-in .7s cubic-bezier(.2,.7,.2,1) both}
@@ -158,7 +160,7 @@ const CSS = `
 
 @media (max-width:920px){
   .osh-grid{grid-template-columns:1fr;gap:40px;padding-top:44px;padding-bottom:64px}
-  .osh-links a:not(.osh-navcta){display:none}
+  .osh-links a:not(.osh-navcta):not(.osh-signin){display:none}
   .osh-brandsub{display:none}
 }
 @media (prefers-reduced-motion:reduce){.osh-left,.osh-right{animation:none}.osh-liveflag-dot,.osh-pulse{animation:none}}
