@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { CTAPrimary, CTAGhost } from "./OSKit";
+import ThemeToggle from "../../ui/ThemeToggle";
 
 const START = 48 * 3600;
 const fmt = (t: number): [string, string, string] => {
@@ -39,6 +40,7 @@ export default function OSHero() {
             <a href="#who">Who we fund</a>
             <Link to="/auth/sign-in" className="osh-signin">Sign in</Link>
             <Link to="/apply" className="osh-navcta">Check your rate</Link>
+            <ThemeToggle />
           </nav>
         </div>
       </header>
