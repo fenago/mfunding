@@ -873,6 +873,50 @@ Deno.serve(async (req) => {
     const flags: Array<{ code: string; severity: "info" | "warn" | "critical"; message: string }> = [];
     const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
+    // ── Statement coverage vs the CALENDAR: are we current, and are we continuous? ──
+    // Funders want the newest complete month and an unbroken run. A closer staring
+    // at "6 statements" has no way to notice that June is missing (real case:
+    // K.L. Breen). Deterministic — parsed month labels vs today's date in ET.
+    // Unparseable labels drop out silently: never false-alarm on a naming quirk.
+    {
+      const monthIdx = new Map<number, string>(); // year*12+month → pretty label
+      for (const s of analyzed) {
+        const t = Date.parse(`1 ${String(s.month ?? "").trim()}`);
+        if (Number.isNaN(t)) continue;
+        const d = new Date(t);
+        monthIdx.set(d.getUTCFullYear() * 12 + d.getUTCMonth(), String(s.month).trim());
+      }
+      if (monthIdx.size > 0) {
+        const keys = [...monthIdx.keys()].sort((a, b) => a - b);
+        const fmt = (k: number) =>
+          new Date(Date.UTC(Math.floor(k / 12), k % 12, 1)).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+
+        // Last COMPLETE calendar month, reckoned in Eastern (the business clock).
+        const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+        const lastComplete = nowET.getFullYear() * 12 + nowET.getMonth() - 1;
+        const newest = keys[keys.length - 1];
+        if (newest < lastComplete) {
+          const behind = lastComplete - newest;
+          flags.push({
+            code: "statements_stale",
+            severity: behind >= 2 ? "critical" : "warn",
+            message: `Newest statement is ${fmt(newest)} — ${fmt(lastComplete)} is the last complete month. Missing ${behind === 1 ? fmt(lastComplete) : `the ${behind} most recent month(s)`}; funders will ask for it before an offer.`,
+          });
+        }
+
+        // Continuity: holes inside the covered range.
+        const missing: string[] = [];
+        for (let k = keys[0]; k <= newest; k++) if (!monthIdx.has(k)) missing.push(fmt(k));
+        if (missing.length > 0) {
+          flags.push({
+            code: "month_gap",
+            severity: "warn",
+            message: `Statement months are not continuous — missing ${missing.join(", ")} between ${fmt(keys[0])} and ${fmt(newest)}.`,
+          });
+        }
+      }
+    }
+
     if (revenueQualityPct < numOr0(settings.revenue_quality_flag_pct)) {
       const sev = revenueQualityPct < numOr0(settings.revenue_quality_flag_pct) - 20 ? "critical" : "warn";
       flags.push({
@@ -930,26 +974,23 @@ Deno.serve(async (req) => {
         message: `Per-month data repaired on ${dataQualityIssues.length} field(s): ${dataQualityIssues.join("; ")}.`,
       });
     }
-    // docs_not_analyzed SAFETY NET (always, regardless of the above): surface every
-    // document on file that the underwriter did NOT analyze — anything that isn't a
-    // bank statement (which is analyzed) or an application (loaded as context). Types
-    // were already content-corrected in preflight, so what remains is genuinely
-    // non-bank docs; the flag makes a mis-typed statement impossible to repeat
-    // SILENTLY — a human sees exactly what was skipped and its type.
+    // docs_not_analyzed SAFETY NET: shout ONLY about docs still typed "other" —
+    // after the content-classifier preflight, "other" means genuinely unidentifiable,
+    // and an unidentified file could be a statement (the SIS failure). A photo ID or
+    // voided check sitting unanalyzed is CORRECT, not a warning — flagging those on
+    // every deal would teach closers to ignore this flag.
     try {
       const { data: allDocTypes } = await db
         .from("customer_documents")
-        .select("document_type")
+        .select("document_type, filename")
         .eq("customer_id", deal.customer_id);
-      const notAnalyzed = (allDocTypes ?? []).filter(
-        (d) => d.document_type !== "bank_statement" && d.document_type !== "application",
-      );
-      if (notAnalyzed.length) {
-        const types = Array.from(new Set(notAnalyzed.map((d) => String(d.document_type)))).sort();
+      const unidentified = (allDocTypes ?? []).filter((d) => d.document_type === "other");
+      if (unidentified.length) {
+        const names = unidentified.map((d) => String(d.filename ?? "unnamed")).slice(0, 5);
         flags.push({
           code: "docs_not_analyzed",
           severity: "warn",
-          message: `${notAnalyzed.length} document(s) on file were not analyzed (types: ${types.join(", ")}) — verify their types.`,
+          message: `${unidentified.length} document(s) on file could not be identified and were NOT analyzed (${names.join(", ")}) — check whether any is a bank statement.`,
         });
       }
     } catch (e) {
