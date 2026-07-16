@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import supabase from "../../supabase";
-import Logo from "../../components/ui/Logo";
 import SEO from "../../components/seo/SEO";
 import MerchantLoginLinkForm from "../../components/auth/MerchantLoginLinkForm";
+import OSAuthShell from "../../components/landing/os/trust/OSAuthShell";
 
 type Phase = "signing-in" | "expired";
 
@@ -19,6 +19,8 @@ type Phase = "signing-in" | "expired";
  * https://mfunding.net/auth/merchant. Keep it host-agnostic.
  *
  * This is the very first thing a merchant ever sees — it must be flawless on a phone.
+ *
+ * Reskin to the Momentum OS design — the session-exchange logic is unchanged.
  */
 export default function MerchantAuthPage() {
   const navigate = useNavigate();
@@ -62,37 +64,31 @@ export default function MerchantAuthPage() {
   }, [navigate]);
 
   return (
-    <main className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col items-center justify-center p-6">
+    <OSAuthShell home={false} maxWidth={400}>
       <SEO title="Signing you in" noIndex={true} />
-      <div className="w-full max-w-sm text-center">
-        <div className="flex justify-center mb-8">
-          <div className="dark:hidden">
-            <Logo variant="full" size="md" theme="light" />
-          </div>
-          <div className="hidden dark:block">
-            <Logo variant="full" size="md" theme="dark" />
-          </div>
+      {phase === "signing-in" ? (
+        <div className="os-ma-loading">
+          <span className="os-ma-spinner" aria-hidden />
+          <h1 className="os-auth-title">Signing you in…</h1>
+          <p className="os-auth-sub">One moment while we open your funding dashboard.</p>
         </div>
-
-        {phase === "signing-in" ? (
-          <>
-            <div className="mx-auto mb-6 h-12 w-12 rounded-full border-b-2 border-mint-green animate-spin" />
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">Signing you in…</h1>
-            <p className="text-gray-500 dark:text-gray-400 mt-2">
-              One moment while we open your funding dashboard.
-            </p>
-          </>
-        ) : (
-          <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 text-left">
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white text-center">This link has expired</h1>
-            <p className="text-gray-500 dark:text-gray-400 mt-2 mb-5 text-center">
-              For your security, sign-in links only work for a short time. Enter your email and
-              we'll send you a fresh one.
-            </p>
-            <MerchantLoginLinkForm compact />
-          </div>
-        )}
-      </div>
-    </main>
+      ) : (
+        <div className="os-authcard">
+          <h1 className="os-auth-title">This link has expired</h1>
+          <p className="os-auth-sub">
+            For your security, sign-in links only work for a short time. Enter your email and
+            we'll send you a fresh one.
+          </p>
+          <MerchantLoginLinkForm compact />
+        </div>
+      )}
+      <style>{`
+        .os-ma-loading{text-align:center}
+        .os-ma-spinner{display:inline-block;width:46px;height:46px;border-radius:50%;
+          border:3px solid var(--hair);border-top-color:var(--go);animation:os-ma-spin .8s linear infinite;margin-bottom:22px}
+        @keyframes os-ma-spin{to{transform:rotate(360deg)}}
+        @media (prefers-reduced-motion:reduce){.os-ma-spinner{animation-duration:2s}}
+      `}</style>
+    </OSAuthShell>
   );
 }

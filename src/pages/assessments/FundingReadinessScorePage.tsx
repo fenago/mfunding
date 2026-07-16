@@ -1,24 +1,24 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  ChartBarIcon,
-  LockClosedIcon,
-  CheckCircleIcon,
-  ShieldCheckIcon,
-  ArrowRightIcon,
-  ArrowLeftIcon,
-  SparklesIcon,
-} from "@heroicons/react/24/outline";
-import Navbar from "../../components/landing/Navbar";
-import Footer from "../../components/landing/Footer";
-import ScrollToTop from "../../components/ui/ScrollToTop";
+import { ChartBarIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
 import SEO from "../../components/seo/SEO";
 import supabase from "../../supabase";
-
-const usd = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-
-const MINT = "#00D49D";
+import {
+  AssessLayout,
+  AssessHero,
+  AssessBody,
+  AssessCard,
+  AssessProgress,
+  AssessOption,
+  AssessSlider,
+  AssessNav,
+  AssessVerdict,
+  AssessNote,
+  GateForm,
+  usd,
+  type ContactForm,
+  EMPTY_CONTACT,
+} from "../../components/landing/os/assess/AssessKit";
 
 // ── Answer option sets ───────────────────────────────────────────────────────
 const TIB_OPTIONS = [
@@ -53,21 +53,6 @@ const INDUSTRY_OPTIONS = [
   "E-commerce",
   "Other",
 ];
-
-interface ContactForm {
-  business_name: string;
-  contact_first_name: string;
-  contact_last_name: string;
-  email: string;
-  phone: string;
-}
-const EMPTY_CONTACT: ContactForm = {
-  business_name: "",
-  contact_first_name: "",
-  contact_last_name: "",
-  email: "",
-  phone: "",
-};
 
 const TOTAL_STEPS = 7;
 
@@ -109,10 +94,13 @@ export default function FundingReadinessScorePage() {
 
   const tier =
     score >= 75
-      ? { label: "Strong", color: MINT }
+      ? { label: "Strong", color: "var(--go)" }
       : score >= 50
-      ? { label: "Good", color: "#F59E0B" }
-      : { label: "Building", color: "#EF4444" };
+      ? { label: "Good", color: "var(--amber)" }
+      : { label: "Building", color: "var(--as-danger)" };
+
+  // Kit chip tone mapped from tier
+  const chipTone = score >= 75 ? "is-go" : score >= 50 ? "is-amber" : "is-danger";
 
   // Likely products
   const products: string[] = [];
@@ -169,9 +157,6 @@ export default function FundingReadinessScorePage() {
     }
   }
 
-  const inputCls =
-    "mt-1 w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-ocean-blue outline-none";
-
   // Can the user advance from the current step?
   const canAdvance =
     (step === 0 && tib) ||
@@ -182,31 +167,6 @@ export default function FundingReadinessScorePage() {
     (step === 5 && advances) ||
     (step === 6 && industry);
 
-  // ── Reusable choice button ─────────────────────────────────────────────────
-  function Choice({
-    label,
-    selected,
-    onClick,
-  }: {
-    label: string;
-    selected: boolean;
-    onClick: () => void;
-  }) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        className={`w-full text-left px-4 py-3 rounded-xl border-2 font-medium transition-colors ${
-          selected
-            ? "border-mint-green bg-mint-green/10 text-heading"
-            : "border-gray-200 dark:border-gray-600 hover:border-mint-green/60 text-body"
-        }`}
-      >
-        {label}
-      </button>
-    );
-  }
-
   // ── Radial gauge ───────────────────────────────────────────────────────────
   function Gauge({ value }: { value: number }) {
     const R = 56;
@@ -215,7 +175,7 @@ export default function FundingReadinessScorePage() {
     return (
       <div className="relative w-40 h-40 mx-auto">
         <svg viewBox="0 0 140 140" className="w-40 h-40 -rotate-90">
-          <circle cx="70" cy="70" r={R} fill="none" stroke="#E5E7EB" strokeWidth="12" />
+          <circle cx="70" cy="70" r={R} fill="none" stroke="var(--hair)" strokeWidth="12" />
           <circle
             cx="70"
             cy="70"
@@ -233,194 +193,141 @@ export default function FundingReadinessScorePage() {
           <span className="text-4xl font-bold tabular-nums" style={{ color: tier.color }}>
             {value}
           </span>
-          <span className="text-xs text-text-secondary">out of 100</span>
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            out of 100
+          </span>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
-      <SEO
-        title="Funding Readiness Score — Free Business Assessment"
-        description="Answer 7 quick questions to see your free Funding Readiness Score and which working-capital products your business likely qualifies for. No credit impact."
-        keywords="funding readiness score, business funding qualification, merchant cash advance eligibility, do I qualify for business funding"
+    <AssessLayout
+      seo={
+        <SEO
+          title="Funding Readiness Score — Free Business Assessment"
+          description="Answer 7 quick questions to see your free Funding Readiness Score and which working-capital products your business likely qualifies for. No credit impact."
+          keywords="funding readiness score, business funding qualification, merchant cash advance eligibility, do I qualify for business funding"
+        />
+      }
+    >
+      <AssessHero
+        badge="Funding Readiness Score"
+        icon={<ChartBarIcon />}
+        title={
+          <>
+            How fundable is your{" "}
+            <span className="os-go">business right now?</span>
+          </>
+        }
+        lede={
+          <>
+            Answer 7 quick questions to get your free Funding Readiness Score (0–100), see which
+            working-capital products you likely qualify for, and an estimated funding range. No
+            credit impact, no obligation.
+          </>
+        }
       />
-      <Navbar lightBg />
-      <ScrollToTop />
 
-      <main className="flex-1">
-        {/* Hero */}
-        <section className="bg-brand-gradient-hero text-white">
-          <div className="container-max py-16 lg:py-20">
-            <div className="max-w-3xl">
-              <span className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 border border-white/15 rounded-full text-sm font-medium mb-6">
-                <ChartBarIcon className="w-4 h-4" />
-                Funding Readiness Score
-              </span>
-              <h1 className="text-4xl lg:text-5xl font-bold leading-tight mb-5">
-                How fundable is your{" "}
-                <span className="text-mint-green">business right now?</span>
-              </h1>
-              <p className="text-lg text-white/80 leading-relaxed">
-                Answer 7 quick questions to get your free Funding Readiness Score (0–100), see which
-                working-capital products you likely qualify for, and an estimated funding range. No
-                credit impact, no obligation.
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section className="container-max py-16">
-          {!finished ? (
-            // ── Wizard ──────────────────────────────────────────────────────
-            <div className="max-w-xl mx-auto bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-              {/* Progress */}
-              <div className="flex items-center justify-between mb-2 text-sm text-text-secondary">
-                <span>
-                  Step {step + 1} of {TOTAL_STEPS}
-                </span>
-                <span>{Math.round(((step + 1) / TOTAL_STEPS) * 100)}%</span>
-              </div>
-              <div className="h-2 w-full bg-gray-200 dark:bg-gray-700 rounded-full mb-7 overflow-hidden">
-                <div
-                  className="h-full bg-mint-green rounded-full transition-all"
-                  style={{ width: `${((step + 1) / TOTAL_STEPS) * 100}%` }}
-                />
-              </div>
+      <AssessBody>
+        {!finished ? (
+          // ── Wizard ──────────────────────────────────────────────────────
+          <div className="as-narrow">
+            <AssessCard>
+              <AssessProgress step={step} total={TOTAL_STEPS} />
 
               {step === 0 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">How long in business?</h2>
-                  <div className="space-y-3">
-                    {TIB_OPTIONS.map((o) => (
-                      <Choice
-                        key={o.label}
-                        label={o.label}
-                        selected={tib === o.label}
-                        onClick={() => setTib(o.label)}
-                      />
-                    ))}
-                  </div>
+                  <h2 className="as-qtitle">How long in business?</h2>
+                  {TIB_OPTIONS.map((o) => (
+                    <AssessOption
+                      key={o.label}
+                      label={o.label}
+                      selected={tib === o.label}
+                      onClick={() => setTib(o.label)}
+                    />
+                  ))}
                 </div>
               )}
 
               {step === 1 && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-xl font-bold text-heading">Average monthly revenue</h2>
-                    <span className="text-mint-green font-bold tabular-nums">
-                      {usd(monthlyRevenue)}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={5000}
-                    max={500000}
-                    step={1000}
-                    value={monthlyRevenue}
-                    onChange={(e) => setMonthlyRevenue(Number(e.target.value))}
-                    className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-mint-green mt-2"
-                  />
-                  <div className="flex justify-between text-xs text-text-secondary mt-1">
-                    <span>$5K</span>
-                    <span>$500K+</span>
-                  </div>
-                </div>
+                <AssessSlider
+                  label="Average monthly revenue"
+                  value={monthlyRevenue}
+                  display={usd(monthlyRevenue)}
+                  min={5000}
+                  max={500000}
+                  step={1000}
+                  onChange={setMonthlyRevenue}
+                  minLabel="$5K"
+                  maxLabel="$500K+"
+                />
               )}
 
               {step === 2 && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-xl font-bold text-heading">Average bank balance</h2>
-                    <span className="text-mint-green font-bold tabular-nums">{usd(avgBalance)}</span>
-                  </div>
-                  <p className="text-sm text-text-secondary mb-2">
-                    Roughly what your account holds on a typical day.
-                  </p>
-                  <input
-                    type="range"
-                    min={0}
-                    max={200000}
-                    step={500}
-                    value={avgBalance}
-                    onChange={(e) => setAvgBalance(Number(e.target.value))}
-                    className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-mint-green mt-2"
-                  />
-                  <div className="flex justify-between text-xs text-text-secondary mt-1">
-                    <span>$0</span>
-                    <span>$200K+</span>
-                  </div>
-                </div>
+                <AssessSlider
+                  label="Average bank balance"
+                  value={avgBalance}
+                  display={usd(avgBalance)}
+                  min={0}
+                  max={200000}
+                  step={500}
+                  onChange={setAvgBalance}
+                  minLabel="$0"
+                  maxLabel="$200K+"
+                  hint="Roughly what your account holds on a typical day."
+                />
               )}
 
               {step === 3 && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-xl font-bold text-heading">
-                      Negative days / NSFs per month
-                    </h2>
-                    <span className="text-mint-green font-bold tabular-nums">{nsfs}</span>
-                  </div>
-                  <p className="text-sm text-text-secondary mb-2">
-                    How many times per month your account goes negative or bounces.
-                  </p>
-                  <input
-                    type="range"
-                    min={0}
-                    max={30}
-                    step={1}
-                    value={nsfs}
-                    onChange={(e) => setNsfs(Number(e.target.value))}
-                    className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-mint-green mt-2"
-                  />
-                  <div className="flex justify-between text-xs text-text-secondary mt-1">
-                    <span>0</span>
-                    <span>30+</span>
-                  </div>
-                </div>
+                <AssessSlider
+                  label="Negative days / NSFs per month"
+                  value={nsfs}
+                  display={nsfs}
+                  min={0}
+                  max={30}
+                  step={1}
+                  onChange={setNsfs}
+                  minLabel="0"
+                  maxLabel="30+"
+                  hint="How many times per month your account goes negative or bounces."
+                />
               )}
 
               {step === 4 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">Estimated credit band</h2>
-                  <div className="space-y-3">
-                    {CREDIT_OPTIONS.map((o) => (
-                      <Choice
-                        key={o.label}
-                        label={o.label}
-                        selected={creditBand === o.label}
-                        onClick={() => setCreditBand(o.label)}
-                      />
-                    ))}
-                  </div>
+                  <h2 className="as-qtitle">Estimated credit band</h2>
+                  {CREDIT_OPTIONS.map((o) => (
+                    <AssessOption
+                      key={o.label}
+                      label={o.label}
+                      selected={creditBand === o.label}
+                      onClick={() => setCreditBand(o.label)}
+                    />
+                  ))}
                 </div>
               )}
 
               {step === 5 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">
-                    Existing advances / positions
-                  </h2>
-                  <div className="space-y-3">
-                    {ADVANCE_OPTIONS.map((o) => (
-                      <Choice
-                        key={o.label}
-                        label={o.label}
-                        selected={advances === o.label}
-                        onClick={() => setAdvances(o.label)}
-                      />
-                    ))}
-                  </div>
+                  <h2 className="as-qtitle">Existing advances / positions</h2>
+                  {ADVANCE_OPTIONS.map((o) => (
+                    <AssessOption
+                      key={o.label}
+                      label={o.label}
+                      selected={advances === o.label}
+                      onClick={() => setAdvances(o.label)}
+                    />
+                  ))}
                 </div>
               )}
 
               {step === 6 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">Industry</h2>
-                  <div className="grid grid-cols-2 gap-3">
+                  <h2 className="as-qtitle">Industry</h2>
+                  <div className="as-optgrid">
                     {INDUSTRY_OPTIONS.map((o) => (
-                      <Choice
+                      <AssessOption
                         key={o}
                         label={o}
                         selected={industry === o}
@@ -431,114 +338,98 @@ export default function FundingReadinessScorePage() {
                 </div>
               )}
 
-              {/* Nav */}
-              <div className="flex items-center justify-between mt-8">
-                <button
-                  type="button"
-                  onClick={() => setStep((s) => Math.max(0, s - 1))}
-                  disabled={step === 0}
-                  className="inline-flex items-center gap-1 text-sm font-semibold text-text-secondary disabled:opacity-40"
-                >
-                  <ArrowLeftIcon className="w-4 h-4" /> Back
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStep((s) => s + 1)}
-                  disabled={!canAdvance}
-                  className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-mint-green text-midnight-blue font-bold hover:opacity-90 disabled:opacity-50"
-                >
-                  {step === TOTAL_STEPS - 1 ? "See my score" : "Next"}
-                  <ArrowRightIcon className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ) : (
-            // ── Results: teaser gauge + gate ────────────────────────────────
-            <div className="grid lg:grid-cols-2 gap-8 max-w-6xl mx-auto items-start">
-              {/* Teaser */}
-              <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-                <div className="flex items-center gap-2 mb-6">
-                  <SparklesIcon className="w-6 h-6 text-mint-green" />
-                  <h2 className="text-2xl font-bold text-heading">Your Funding Readiness Score</h2>
-                </div>
-
-                <Gauge value={score} />
-
-                <p className="text-center mt-4 mb-2">
-                  <span
-                    className="inline-block px-4 py-1.5 rounded-full text-sm font-bold"
-                    style={{ backgroundColor: `${tier.color}1A`, color: tier.color }}
-                  >
-                    {tier.label} readiness
-                  </span>
-                </p>
-
-                {unlocked ? (
-                  <>
-                    <div className="rounded-xl bg-mint-green/10 p-6 my-4 text-center">
-                      <p className="text-sm text-text-secondary mb-1">Estimated funding range</p>
-                      <p className="text-3xl font-bold text-mint-green tabular-nums">
-                        {usd(low)} – {usd(high)}
-                      </p>
-                    </div>
-
-                    <h3 className="font-bold text-heading mb-3">Score breakdown</h3>
-                    <div className="space-y-3 mb-5">
-                      {breakdown.map((b) => (
-                        <div key={b.label}>
-                          <div className="flex justify-between text-sm mb-1">
-                            <span className="text-body">{b.label}</span>
-                            <span className="text-text-secondary tabular-nums">
-                              {Math.round(b.value)}/{b.max}
-                            </span>
-                          </div>
-                          <div className="h-2 w-full bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-mint-green rounded-full"
-                              style={{ width: `${(b.value / b.max) * 100}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <h3 className="font-bold text-heading mb-2">Products you likely qualify for</h3>
-                    <ul className="space-y-2">
-                      {products.map((p) => (
-                        <li key={p} className="flex items-center gap-2 text-body">
-                          <CheckCircleIcon className="w-5 h-5 text-mint-green flex-shrink-0" />
-                          {p}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                ) : (
-                  <p className="text-center text-text-secondary text-sm mt-4">
-                    Unlock your full breakdown, estimated funding range, and the products you qualify
-                    for →
-                  </p>
-                )}
+              <AssessNav
+                onBack={() => setStep((s) => Math.max(0, s - 1))}
+                onNext={() => setStep((s) => s + 1)}
+                backDisabled={step === 0}
+                nextDisabled={!canAdvance}
+                nextLabel={step === TOTAL_STEPS - 1 ? "See my score" : "Next"}
+              />
+            </AssessCard>
+          </div>
+        ) : (
+          // ── Results: teaser gauge + gate ────────────────────────────────
+          <div className="as-cols">
+            {/* Teaser */}
+            <AssessCard>
+              <div className="as-card-head">
+                <ChartBarIcon />
+                <h2 className="as-card-title">Your Funding Readiness Score</h2>
               </div>
 
-              {/* Gate */}
-              <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-                {unlocked ? (
-                  <>
-                    <div className="rounded-xl border border-mint-green/30 bg-mint-green/5 p-4 flex items-start gap-3 mb-4">
-                      <CheckCircleIcon className="w-6 h-6 text-mint-green flex-shrink-0" />
-                      <p className="text-sm text-body">
-                        Thanks, {form.contact_first_name || "there"}! A funding specialist will reach
-                        out within 24 hours with real options matched to your {score}/100 readiness
-                        score — checking won't affect your credit.
-                      </p>
-                    </div>
-                    <p className="text-xs text-text-secondary leading-relaxed">
-                      <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                      This score and range are <strong>estimates only</strong>, not an offer,
-                      approval, or guarantee. A merchant cash advance is a purchase of future
-                      receivables, not a loan. Final amounts depend on underwriting and funder
-                      review.
+              <Gauge value={score} />
+
+              <p style={{ textAlign: "center", marginTop: 16 }}>
+                <span className={`as-chip ${chipTone}`}>{tier.label} readiness</span>
+              </p>
+
+              {unlocked ? (
+                <>
+                  <AssessVerdict tone="go">
+                    <p className="as-verdict-cap">Estimated funding range</p>
+                    <p className="as-verdict-big as-t-go">
+                      {usd(low)} – {usd(high)}
                     </p>
+                  </AssessVerdict>
+
+                  <h3 className="as-card-title" style={{ fontSize: 16, margin: "22px 0 12px" }}>
+                    Score breakdown
+                  </h3>
+                  <div style={{ marginBottom: 20 }}>
+                    {breakdown.map((b) => (
+                      <div key={b.label} style={{ marginBottom: 14 }}>
+                        <div className="as-meter-row">
+                          <span>{b.label}</span>
+                          <span className="os-mono">
+                            {Math.round(b.value)}/{b.max}
+                          </span>
+                        </div>
+                        <div className="as-meter">
+                          <div
+                            className="as-meter-fill is-go"
+                            style={{ width: `${(b.value / b.max) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <h3 className="as-card-title" style={{ fontSize: 16, margin: "0 0 8px" }}>
+                    Products you likely qualify for
+                  </h3>
+                  {products.map((p) => (
+                    <div key={p} className="as-checkrow">
+                      <CheckCircleIcon />
+                      {p}
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <p style={{ textAlign: "center", color: "var(--muted)", fontSize: 14, marginTop: 16 }}>
+                  Unlock your full breakdown, estimated funding range, and the products you qualify
+                  for →
+                </p>
+              )}
+            </AssessCard>
+
+            {/* Gate */}
+            <AssessCard>
+              {unlocked ? (
+                <>
+                  <div className="as-success">
+                    <CheckCircleIcon />
+                    <p>
+                      Thanks, {form.contact_first_name || "there"}! A funding specialist will reach
+                      out within 24 hours with real options matched to your {score}/100 readiness
+                      score — checking won't affect your credit.
+                    </p>
+                  </div>
+                  <AssessNote>
+                    This score and range are <strong>estimates only</strong>, not an offer,
+                    approval, or guarantee. A merchant cash advance is a purchase of future
+                    receivables, not a loan. Final amounts depend on underwriting and funder review.
+                  </AssessNote>
+                  <div>
                     <button
                       type="button"
                       onClick={() => {
@@ -546,98 +437,37 @@ export default function FundingReadinessScorePage() {
                         setUnlocked(false);
                         setForm(EMPTY_CONTACT);
                       }}
-                      className="inline-block mt-5 text-ocean-blue hover:underline text-sm"
+                      className="as-backlink"
+                      style={{ background: "none", border: 0, cursor: "pointer" }}
                     >
                       ↺ Retake the assessment
                     </button>
-                    <span className="mx-2 text-gray-300">·</span>
-                    <Link to="/" className="text-ocean-blue hover:underline text-sm">
+                    <span className="as-sep">·</span>
+                    <Link to="/" className="as-backlink">
                       Back to home
                     </Link>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 mb-2">
-                      <LockClosedIcon className="w-6 h-6 text-ocean-blue" />
-                      <h2 className="text-2xl font-bold text-heading">Get your full report</h2>
-                    </div>
-                    <p className="text-text-secondary mb-6">
-                      Enter your info to unlock your full score breakdown, estimated funding range,
-                      and the products you qualify for. Free, no obligation, no credit impact.
-                    </p>
-
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                      <div className="grid sm:grid-cols-2 gap-4">
-                        <label className="text-sm sm:col-span-2">
-                          <span className="text-gray-600 dark:text-gray-300">Business name</span>
-                          <input
-                            value={form.business_name}
-                            onChange={(e) => set("business_name", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">First name *</span>
-                          <input
-                            required
-                            value={form.contact_first_name}
-                            onChange={(e) => set("contact_first_name", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">Last name</span>
-                          <input
-                            value={form.contact_last_name}
-                            onChange={(e) => set("contact_last_name", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">Email *</span>
-                          <input
-                            required
-                            type="email"
-                            value={form.email}
-                            onChange={(e) => set("email", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">Phone *</span>
-                          <input
-                            required
-                            type="tel"
-                            value={form.phone}
-                            onChange={(e) => set("phone", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                      </div>
-
-                      {error && <p className="text-sm text-red-500">{error}</p>}
-
-                      <button
-                        type="submit"
-                        disabled={submitting}
-                        className="w-full py-3 rounded-lg bg-mint-green text-midnight-blue font-bold hover:opacity-90 disabled:opacity-60"
-                      >
-                        {submitting ? "Generating…" : "Get my full report →"}
-                      </button>
-                      <p className="text-xs text-gray-400 text-center leading-relaxed">
-                        <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                        No credit impact to check. Estimates only — not an offer or guarantee.
-                      </p>
-                    </form>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </section>
-      </main>
-
-      <Footer />
-    </div>
+                  </div>
+                </>
+              ) : (
+                <GateForm
+                  form={form}
+                  onSet={set}
+                  onSubmit={handleSubmit}
+                  submitting={submitting}
+                  error={error}
+                  heading="Get your full report"
+                  blurb="Enter your info to unlock your full score breakdown, estimated funding range, and the products you qualify for. Free, no obligation, no credit impact."
+                  submitIdle="Get my full report"
+                  submitBusy="Generating…"
+                  footnote={
+                    <>No credit impact to check. Estimates only — not an offer or guarantee.</>
+                  }
+                />
+              )}
+            </AssessCard>
+          </div>
+        )}
+      </AssessBody>
+    </AssessLayout>
   );
 }

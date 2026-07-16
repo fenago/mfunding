@@ -1,8 +1,7 @@
 import { Link } from "react-router-dom";
-import Navbar from "../components/landing/Navbar";
-import Footer from "../components/landing/Footer";
-import ScrollToTop from "../components/ui/ScrollToTop";
 import SEO, { generateBreadcrumbSchema } from "../components/seo/SEO";
+import { OSSection, Eyebrow, Display, Lede, CTAPrimary } from "../components/landing/os/OSKit";
+import { ToolShell } from "../components/landing/os/tools/ToolsKit";
 
 // Plain-language definitions of business-funding terms. Answer-first format so
 // answer engines (Google AI Overviews, ChatGPT, Perplexity) can quote each entry.
@@ -29,7 +28,8 @@ const TERMS: { term: string; def: string }[] = [
 
 export default function GlossaryPage() {
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
+    <ToolShell>
+      <style>{CSS}</style>
       <SEO
         title="Business Funding Glossary — Key Terms Explained"
         description="Plain-language definitions of business funding terms: merchant cash advance, factor rate, retrieval rate, stips, UCC filing, SBA loan, and more — from Momentum Funding."
@@ -54,39 +54,82 @@ export default function GlossaryPage() {
           },
         ]}
       />
-      <Navbar lightBg />
-      <ScrollToTop />
-      <main className="flex-1 max-w-3xl w-full mx-auto px-4 py-12">
-        <nav className="text-sm text-gray-400 mb-4">
-          <Link to="/resources" className="hover:text-ocean-blue">Resources</Link> · Glossary
-        </nav>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Business Funding Glossary</h1>
-        <p className="text-gray-600 dark:text-gray-300 mt-3">
-          Clear definitions of the business funding terms you'll encounter when getting capital for
-          your business. Don't see a term?{" "}
-          <Link to="/contact" className="text-ocean-blue hover:underline">Ask our team</Link>.
-        </p>
 
-        <dl className="mt-8 divide-y divide-gray-200 dark:divide-gray-800">
-          {TERMS.map((t) => (
-            <div key={t.term} className="py-5">
-              <dt className="text-lg font-semibold text-gray-900 dark:text-white">{t.term}</dt>
-              <dd className="mt-1 text-gray-600 dark:text-gray-300">{t.def}</dd>
+      <OSSection tone="ink">
+        <div className="ost-herobox">
+          <p className="glo-crumb os-mono">
+            <Link to="/resources">RESOURCES</Link> · GLOSSARY
+          </p>
+          <Eyebrow>REFERENCE</Eyebrow>
+          <Display>
+            BUSINESS FUNDING <span className="os-go">GLOSSARY</span>
+          </Display>
+          <Lede>
+            Clear definitions of the business-funding terms you'll encounter when getting capital for
+            your business. Don't see a term?{" "}
+            <Link to="/contact" className="glo-inline">Ask our team</Link>.
+          </Lede>
+        </div>
+      </OSSection>
+
+      <OSSection tone="panel">
+        <div className="glo-boardtop">
+          <span>TERMS · A–Z REFERENCE</span>
+          <span className="glo-boardnote">{TERMS.length} DEFINITIONS</span>
+        </div>
+        <dl className="glo-grid">
+          {TERMS.map((t, i) => (
+            <div className="glo-row" key={t.term}>
+              <span className="glo-code">{String(i + 1).padStart(2, "0")}</span>
+              <dt className="glo-term">{t.term}</dt>
+              <dd className="glo-def">{t.def}</dd>
             </div>
           ))}
         </dl>
 
-        <div className="mt-10 rounded-2xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-6">
-          <h2 className="text-lg font-bold text-gray-900 dark:text-white">Ready to get funded?</h2>
-          <p className="text-gray-600 dark:text-gray-300 mt-2">
-            Compare your options with no credit impact.
-          </p>
-          <Link to="/apply" className="inline-block mt-4 px-6 py-3 rounded-xl bg-ocean-blue text-white font-semibold hover:opacity-90 transition-opacity">
-            Apply for funding →
-          </Link>
+        <div className="ost-ctaband" style={{ marginTop: 44 }}>
+          <h2>Ready to get funded?</h2>
+          <p>Compare your options with no credit impact.</p>
+          <CTAPrimary href="/apply">Apply for funding</CTAPrimary>
         </div>
-      </main>
-      <Footer />
-    </div>
+      </OSSection>
+    </ToolShell>
   );
 }
+
+const CSS = `
+.glo-crumb{font-size:11px;letter-spacing:.14em;color:var(--faint);margin:0 0 18px}
+.glo-crumb a{color:var(--muted);text-decoration:none}
+.glo-crumb a:hover{color:var(--go-text)}
+.glo-inline{color:var(--go-text);text-decoration:none;border-bottom:1px solid rgba(22,217,146,.4)}
+.glo-inline:hover{border-bottom-color:var(--go-text)}
+
+.glo-boardtop{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.14em;color:var(--muted);
+  padding:0 2px 12px;border-bottom:1px solid var(--hair);
+}
+.glo-boardnote{color:var(--faint)}
+.glo-grid{
+  display:grid;gap:1px;background:var(--hair);
+  border:1px solid var(--hair);border-top:none;margin:0;
+}
+.glo-row{
+  position:relative;background:linear-gradient(180deg,var(--panel),var(--panel2));
+  display:grid;grid-template-columns:auto 1fr;gap:4px 16px;padding:22px 24px;
+  transition:background .18s,box-shadow .18s;
+}
+.glo-row::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--go);opacity:0;transition:opacity .18s}
+.glo-row:hover{background:linear-gradient(180deg,rgba(22,217,146,.05),var(--panel2))}
+.glo-row:hover::before{opacity:1}
+.glo-code{
+  grid-row:1 / span 2;align-self:start;margin-top:2px;
+  font-family:'Space Mono',monospace;font-size:12px;color:var(--faint);letter-spacing:.06em;
+}
+.glo-term{grid-column:2;font-size:16px;font-weight:600;color:var(--tx);letter-spacing:.005em;margin:0}
+.glo-def{grid-column:2;font-size:14.5px;line-height:1.55;color:var(--muted);margin:5px 0 0}
+
+@media (max-width:560px){
+  .glo-boardtop{flex-direction:column;align-items:flex-start;gap:4px}
+}
+`;

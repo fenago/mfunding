@@ -1,12 +1,11 @@
 import { Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { ArrowRightIcon } from '@heroicons/react/24/solid';
-import Navbar from '../../components/landing/Navbar';
-import Footer from '../../components/landing/Footer';
-import ProductCard from '../../components/business-loans/ProductCard';
 import ScrollToTop from '../../components/ui/ScrollToTop';
 import SEO, { generateFAQSchema, generateBreadcrumbSchema } from '../../components/seo/SEO';
 import { getAllProducts } from '../../data/products';
+import { OS_CSS, useOSFonts, OSSection, Eyebrow, Display, Lede, CTAPrimary } from '../../components/landing/os/OSKit';
+import OSNav from '../../components/landing/os/OSNav';
+import OSFooter from '../../components/landing/os/OSFooter';
+import { MONEY_CSS, FAQAccordion, MoneyCTA } from '../../components/landing/os/money/MoneyKit';
 
 const HUB_FAQS = [
   {
@@ -37,10 +36,14 @@ const HUB_FAQS = [
 ];
 
 export default function BusinessLoansHubPage() {
+  useOSFonts();
   const products = getAllProducts();
 
   return (
-    <>
+    <div className="os-root">
+      <style>{OS_CSS}</style>
+      <style>{MONEY_CSS}</style>
+      <style>{HUB_CSS}</style>
       <SEO
         title="Business Loans & Funding Options"
         description="Explore Momentum Funding's 6 business financing products: Merchant Cash Advance, Equipment Financing, Startup Loans, SBA 7(a) Loans, Term Loans, and Lines of Credit. Get funded in as little as 24 hours."
@@ -54,274 +57,151 @@ export default function BusinessLoansHubPage() {
           generateFAQSchema(HUB_FAQS),
         ]}
       />
-      <Navbar />
       <ScrollToTop />
+      <OSNav />
 
-      <main>
-        {/* Hero Section */}
-        <section className="relative bg-brand-gradient-hero overflow-hidden">
-          {/* Decorative orbs */}
-          <motion.div
-            className="absolute top-20 right-[15%] w-80 h-80 bg-mint-green/15 rounded-full blur-3xl"
-            animate={{
-              y: [0, -40, 0],
-              scale: [1, 1.15, 1],
-            }}
-            transition={{ duration: 12, repeat: Infinity, ease: 'easeInOut' }}
-          />
-          <motion.div
-            className="absolute bottom-10 left-[5%] w-96 h-96 bg-ocean-blue/15 rounded-full blur-3xl"
-            animate={{
-              y: [0, 30, 0],
-              scale: [1, 0.9, 1],
-            }}
-            transition={{ duration: 14, repeat: Infinity, ease: 'easeInOut' }}
-          />
-
-          <div className="container-max relative z-10 pt-32 pb-16 lg:pt-40 lg:pb-24">
-            <motion.span
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-              className="inline-block px-4 py-2 bg-white/10 rounded-full text-mint-green text-sm font-medium mb-6"
-            >
-              6 Products, One Mission
-            </motion.span>
-
-            <motion.h1
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.1 }}
-              className="heading-1 text-white mb-6 max-w-3xl"
-            >
-              Business{' '}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-mint-green to-teal">
-                Funding
-              </span>{' '}
-              That Fits Your Situation
-            </motion.h1>
-
-            <motion.p
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.2 }}
-              className="text-xl text-white/80 mb-6 max-w-2xl"
-            >
-              Every business is different. Whether you need same-day cash, long-term growth capital, or a safety net for slow months — we have a solution built for you.
-            </motion.p>
-
-            <motion.p
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.3 }}
-              className="text-lg text-white/60 max-w-2xl"
-            >
-              No bank runarounds. No weeks of waiting. Just straightforward capital from people who understand your business.
-            </motion.p>
+      {/* Hero */}
+      <OSSection tone="ink">
+        <div className="hub-hero">
+          <Eyebrow>BUSINESS FUNDING · 6 PRODUCTS</Eyebrow>
+          <Display>
+            FUNDING THAT FITS<br /><span className="os-go">YOUR SITUATION.</span>
+          </Display>
+          <Lede>
+            Every business is different. Same-day cash, long-term growth capital, or a safety net for slow
+            months — Momentum is a <strong>marketplace</strong>, so one application gets matched to the
+            product that actually fits. No bank runarounds, no weeks of waiting.
+          </Lede>
+          <div className="hub-hero-cta">
+            <CTAPrimary href="/apply">Check your rate — free</CTAPrimary>
+            <span className="os-mono hub-fine">5-MIN APPLICATION · WON&rsquo;T AFFECT YOUR CREDIT</span>
           </div>
-        </section>
+        </div>
+      </OSSection>
 
-        {/* Products Grid */}
-        <section className="section-padding bg-white dark:bg-gray-900 relative overflow-hidden">
-          {/* Background orb */}
-          <motion.div
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-mint-green/5 rounded-full blur-3xl"
-            animate={{
-              scale: [1, 1.1, 1],
-            }}
-            transition={{ duration: 20, repeat: Infinity, ease: 'easeInOut' }}
-          />
-
-          <div className="container-max relative z-10">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6 }}
-              className="text-center mb-16"
-            >
-              <span className="inline-block px-4 py-2 bg-mint-green/10 rounded-full text-mint-green text-sm font-medium mb-4">
-                Our Products
-              </span>
-              <h2 className="heading-2 text-gray-900 dark:text-white mb-4">
-                Choose the Right{' '}
-                <span className="text-transparent bg-clip-text bg-gradient-to-r from-mint-green to-teal">
-                  Funding
-                </span>{' '}
-                for Your Business
-              </h2>
-              <p className="text-gray-500 dark:text-gray-400 text-lg max-w-2xl mx-auto">
-                Click on any product below to see full details, calculate payments, and start your application.
-              </p>
-            </motion.div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {products.map((product, index) => (
-                <ProductCard key={product.slug} product={product} index={index} />
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* SEO content + FAQ (answer-first for AEO / AI Overviews) */}
-        <section className="section-padding bg-gray-50 dark:bg-gray-950">
-          <div className="container-max max-w-4xl">
-            <h2 className="heading-2 text-gray-900 dark:text-white mb-6">
-              How to Choose the Right Business Funding
-            </h2>
-            <div className="prose dark:prose-invert max-w-none text-gray-600 dark:text-gray-300">
-              <p>
-                The best business funding depends on three things: how fast you need the capital, how
-                much you need, and the strength of your credit and revenue. If you need money the same
-                day and have steady card or bank deposits, a <Link to="/business-loans/merchant-cash-advance">merchant
-                cash advance</Link> or <Link to="/business-loans/line-of-credit">business line of credit</Link>{' '}
-                is usually fastest. If you want the lowest cost and can wait a few weeks, an{' '}
-                <Link to="/business-loans/sba-loans">SBA 7(a) loan</Link> or{' '}
-                <Link to="/business-loans/term-loans">business term loan</Link> is often the better fit.
-                To buy machinery, vehicles, or equipment, <Link to="/business-loans/equipment-financing">equipment
-                financing</Link> lets the equipment itself serve as collateral.
-              </p>
-              <p>
-                Momentum Funding is a funding marketplace, not a single lender. We submit your profile to
-                a network of funders and lenders, then present you the strongest offers — so you compare
-                real options instead of taking the first quote. There are no upfront fees; we are paid by
-                the funder when your deal closes. Already carrying advances and feeling the daily payments?
-                Our <Link to="/debt-relief">MCA debt relief</Link> program can help you restructure.
-              </p>
-            </div>
-
-            <h2 className="heading-2 text-gray-900 dark:text-white mt-14 mb-6">
-              Compare Business Funding Options
-            </h2>
-            <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-gray-100 dark:bg-gray-900 text-gray-700 dark:text-gray-200">
-                  <tr>
-                    <th className="px-4 py-3 font-semibold">Product</th>
-                    <th className="px-4 py-3 font-semibold">Speed</th>
-                    <th className="px-4 py-3 font-semibold">Amount</th>
-                    <th className="px-4 py-3 font-semibold">Credit Needed</th>
-                    <th className="px-4 py-3 font-semibold">Best For</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200 dark:divide-gray-800 text-gray-600 dark:text-gray-300">
-                  <tr>
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Merchant Cash Advance</td>
-                    <td className="px-4 py-3">Same day–48 hrs</td>
-                    <td className="px-4 py-3">$5K–$5M</td>
-                    <td className="px-4 py-3">None (revenue-based)</td>
-                    <td className="px-4 py-3">Fast cash, lower credit</td>
-                  </tr>
-                  <tr>
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Line of Credit</td>
-                    <td className="px-4 py-3">1–3 days</td>
-                    <td className="px-4 py-3">$10K–$1.25M</td>
-                    <td className="px-4 py-3">Fair+</td>
-                    <td className="px-4 py-3">Flexible, recurring needs</td>
-                  </tr>
-                  <tr>
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Equipment Financing</td>
-                    <td className="px-4 py-3">2–5 days</td>
-                    <td className="px-4 py-3">Up to $3M</td>
-                    <td className="px-4 py-3">Fair+</td>
-                    <td className="px-4 py-3">Buying equipment/vehicles</td>
-                  </tr>
-                  <tr>
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">Term Loan</td>
-                    <td className="px-4 py-3">2–7 days</td>
-                    <td className="px-4 py-3">$25K–$500K</td>
-                    <td className="px-4 py-3">Good</td>
-                    <td className="px-4 py-3">Predictable growth capital</td>
-                  </tr>
-                  <tr>
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">SBA 7(a) Loan</td>
-                    <td className="px-4 py-3">2–6 weeks</td>
-                    <td className="px-4 py-3">Up to $5M</td>
-                    <td className="px-4 py-3">Good–Excellent</td>
-                    <td className="px-4 py-3">Lowest cost, largest amounts</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-3">
-              New to these terms? See the <Link to="/resources/glossary" className="text-ocean-blue hover:underline">business funding glossary</Link>.
-            </p>
-
-            <h2 className="heading-2 text-gray-900 dark:text-white mt-14 mb-6">
-              Frequently Asked Questions
-            </h2>
-            <div className="space-y-6">
-              {HUB_FAQS.map((f) => (
-                <div key={f.question} className="border-b border-gray-200 dark:border-gray-800 pb-5">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{f.question}</h3>
-                  <p className="mt-2 text-gray-600 dark:text-gray-300">{f.answer}</p>
+      {/* Product grid */}
+      <OSSection tone="panel" id="products">
+        <div className="money-secthead">
+          <Eyebrow>OUR PRODUCTS</Eyebrow>
+          <Display>PICK YOUR <span className="os-go">LANE.</span></Display>
+        </div>
+        <div className="hub-grid">
+          {products.map((p) => {
+            const popular = p.slug === 'merchant-cash-advance';
+            return (
+              <Link key={p.slug} to={`/business-loans/${p.slug}`} className={`os-card hub-card${popular ? ' hub-card-pop' : ''}`}>
+                {popular && <span className="hub-badge">MOST POPULAR</span>}
+                <span className="hub-card-ico"><p.icon className="hub-card-svg" /></span>
+                <h3 className="hub-card-name">{p.shortName}</h3>
+                <p className="hub-card-blurb">{p.tagline}</p>
+                <div className="hub-card-foot">
+                  <span className="hub-card-spec os-mono">{p.hero.amountRange}</span>
+                  <span className="hub-card-see os-mono">Details <span aria-hidden>→</span></span>
                 </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* Bottom CTA */}
-        <section
-          className="py-20 lg:py-28"
-          style={{
-            background: 'linear-gradient(135deg, #0A2342 0%, #0C516E 50%, #007EA7 100%)',
-          }}
-        >
-          <div className="container-max text-center">
-            <motion.h2
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6 }}
-              className="heading-2 text-white mb-4"
-            >
-              Not Sure Which Product Is Right for You?
-            </motion.h2>
-
-            <motion.p
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6, delay: 0.1 }}
-              className="text-xl text-white/70 mb-10 max-w-2xl mx-auto"
-            >
-              Apply once, and our team will match you with the best option based on your business profile. 5-minute application, no credit impact.
-            </motion.p>
-
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6, delay: 0.2 }}
-            >
-              <Link
-                to="/apply"
-                className="inline-flex items-center gap-2 bg-mint-green hover:bg-mint-green/90 text-midnight-blue font-bold text-lg px-10 py-4 rounded-xl transition-colors"
-              >
-                Apply Now — Free & No Obligation
-                <ArrowRightIcon className="w-5 h-5" />
               </Link>
-            </motion.div>
+            );
+          })}
+        </div>
+      </OSSection>
 
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6, delay: 0.3 }}
-              className="flex flex-wrap items-center justify-center gap-6 mt-8"
-            >
-              <span className="text-white/50 text-sm">5-Minute Application</span>
-              <span className="text-white/30">|</span>
-              <span className="text-white/50 text-sm">Won't Affect Credit</span>
-              <span className="text-white/30">|</span>
-              <span className="text-white/50 text-sm">24-Hour Decision</span>
-            </motion.div>
-          </div>
-        </section>
-      </main>
+      {/* How to choose + comparison */}
+      <OSSection tone="ink">
+        <div className="hub-prose">
+          <Display>HOW TO CHOOSE THE <span className="os-go">RIGHT FUNDING.</span></Display>
+          <p>
+            The best business funding depends on three things: how fast you need the capital, how much you
+            need, and the strength of your credit and revenue. If you need money the same day and have steady
+            card or bank deposits, a <Link to="/business-loans/merchant-cash-advance">merchant cash advance</Link>{' '}
+            or <Link to="/business-loans/line-of-credit">business line of credit</Link> is usually fastest. If
+            you want the lowest cost and can wait a few weeks, an{' '}
+            <Link to="/business-loans/sba-loans">SBA 7(a) loan</Link> or{' '}
+            <Link to="/business-loans/term-loans">business term loan</Link> is often the better fit. To buy
+            machinery, vehicles, or equipment, <Link to="/business-loans/equipment-financing">equipment
+            financing</Link> lets the equipment itself serve as collateral.
+          </p>
+          <p>
+            Momentum Funding is a funding marketplace, not a single lender. We submit your profile to a network
+            of funders and lenders, then present you the strongest offers — so you compare real options instead
+            of taking the first quote. There are no upfront fees; we are paid by the funder when your deal
+            closes. Already carrying advances and feeling the daily payments? Our{' '}
+            <Link to="/debt-relief">MCA debt relief</Link> program can help you restructure.
+          </p>
+        </div>
 
-      <Footer />
-    </>
+        <div className="hub-table-wrap">
+          <table className="hub-table">
+            <thead>
+              <tr>
+                <th>Product</th><th>Speed</th><th>Amount</th><th>Credit needed</th><th>Best for</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td className="hub-td-name">Merchant Cash Advance</td><td>Same day–48 hrs</td><td>$5K–$5M</td><td>None (revenue-based)</td><td>Fast cash, lower credit</td></tr>
+              <tr><td className="hub-td-name">Line of Credit</td><td>1–3 days</td><td>$10K–$1.25M</td><td>Fair+</td><td>Flexible, recurring needs</td></tr>
+              <tr><td className="hub-td-name">Equipment Financing</td><td>2–5 days</td><td>Up to $3M</td><td>Fair+</td><td>Buying equipment/vehicles</td></tr>
+              <tr><td className="hub-td-name">Term Loan</td><td>2–7 days</td><td>$25K–$500K</td><td>Good</td><td>Predictable growth capital</td></tr>
+              <tr><td className="hub-td-name">SBA 7(a) Loan</td><td>2–6 weeks</td><td>Up to $5M</td><td>Good–Excellent</td><td>Lowest cost, largest amounts</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="hub-glossary os-mono">
+          New to these terms? See the <Link to="/resources/glossary">business funding glossary</Link>.
+        </p>
+      </OSSection>
+
+      <FAQAccordion faqs={HUB_FAQS} tone="panel" />
+
+      <MoneyCTA
+        eyebrow="NOT SURE WHICH FITS?"
+        title={<>APPLY ONCE. <span className="os-go">WE MATCH YOU.</span></>}
+        sub="Our team matches you with the best option based on your business profile. 5-minute application, no credit impact."
+        chips={['5-MINUTE APPLICATION', "WON'T AFFECT CREDIT", '24-HOUR DECISION']}
+      />
+
+      <OSFooter />
+    </div>
   );
 }
+
+const HUB_CSS = `
+.hub-hero{max-width:44em}
+.hub-hero-cta{display:flex;flex-wrap:wrap;align-items:center;gap:16px 22px;margin-top:30px}
+.hub-fine{font-size:11px;letter-spacing:.05em;color:var(--faint)}
+
+.hub-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.hub-card{position:relative;display:flex;flex-direction:column;text-decoration:none;min-height:210px}
+.hub-card-ico{width:44px;height:44px;border-radius:11px;display:grid;place-items:center;margin-bottom:16px;
+  color:var(--go-text);background:rgba(22,217,146,.08);border:1px solid rgba(22,217,146,.22)}
+.hub-card-svg{width:22px;height:22px}
+.hub-card-pop{border-color:rgba(22,217,146,.45)}
+.hub-card-pop::before{content:"";position:absolute;inset:0;border-radius:14px;pointer-events:none;
+  box-shadow:inset 0 0 0 1px rgba(22,217,146,.28),0 0 44px -14px rgba(22,217,146,.5)}
+.hub-badge{position:absolute;top:-9px;left:22px;font-family:'Space Mono',monospace;font-size:10px;font-weight:700;
+  letter-spacing:.14em;color:var(--on-green);background:var(--go);padding:4px 9px;border-radius:6px;
+  box-shadow:0 6px 16px -6px rgba(22,217,146,.6)}
+.hub-card-name{font-family:'Anton',sans-serif;font-weight:400;text-transform:uppercase;letter-spacing:.01em;
+  font-size:21px;line-height:1.03;color:var(--tx);margin:0 0 10px}
+.hub-card-blurb{font-size:14px;line-height:1.55;color:var(--muted);margin:0 0 20px;flex:1}
+.hub-card-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:14px;border-top:1px solid var(--hair)}
+.hub-card-spec{font-weight:700;font-size:13px;letter-spacing:.03em;color:var(--tx)}
+.hub-card-see{font-size:11.5px;letter-spacing:.04em;color:var(--faint);display:inline-flex;align-items:center;gap:6px}
+.hub-card:hover .hub-card-see{color:var(--go-text)}
+
+.hub-prose{max-width:52em;margin-bottom:36px}
+.hub-prose p{font-size:16px;line-height:1.7;color:var(--lede);margin:0 0 18px}
+.hub-prose a{color:var(--go-text);text-decoration:none;border-bottom:1px solid rgba(22,217,146,.35)}
+.hub-prose a:hover{border-bottom-color:var(--go-text)}
+
+.hub-table-wrap{overflow-x:auto;border:1px solid var(--hair);border-radius:14px}
+.hub-table{width:100%;border-collapse:collapse;font-size:14px;min-width:640px}
+.hub-table th{font-family:'Space Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  text-align:left;color:var(--muted);padding:14px 16px;background:var(--ink2);border-bottom:1px solid var(--hair)}
+.hub-table td{padding:14px 16px;color:var(--lede);border-bottom:1px solid var(--hair2)}
+.hub-table tr:last-child td{border-bottom:none}
+.hub-td-name{font-weight:600;color:var(--tx)}
+.hub-glossary{font-size:12px;color:var(--faint);margin:14px 0 0}
+.hub-glossary a{color:var(--go-text);text-decoration:none}
+
+@media (max-width:900px){.hub-grid{grid-template-columns:1fr 1fr}}
+@media (max-width:560px){.hub-grid{grid-template-columns:1fr}.hub-card{min-height:0}}
+`;

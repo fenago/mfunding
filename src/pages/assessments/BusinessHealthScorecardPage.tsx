@@ -4,18 +4,26 @@ import {
   ClipboardDocumentCheckIcon,
   LockClosedIcon,
   CheckCircleIcon,
-  ShieldCheckIcon,
-  ArrowLeftIcon,
   BanknotesIcon,
   ScaleIcon,
   RocketLaunchIcon,
   ChartBarIcon,
 } from "@heroicons/react/24/outline";
-import Navbar from "../../components/landing/Navbar";
-import Footer from "../../components/landing/Footer";
-import ScrollToTop from "../../components/ui/ScrollToTop";
 import SEO from "../../components/seo/SEO";
 import supabase from "../../supabase";
+import {
+  AssessLayout,
+  AssessHero,
+  AssessBody,
+  AssessCard,
+  AssessProgress,
+  AssessOption,
+  AssessVerdict,
+  AssessNote,
+  GateForm,
+  type ContactForm,
+  EMPTY_CONTACT,
+} from "../../components/landing/os/assess/AssessKit";
 
 // ── Categories ───────────────────────────────────────────────────────────────
 type CategoryKey = "cashflow" | "debt" | "growth" | "margins";
@@ -161,15 +169,17 @@ function scoreToGrade(score: number): string {
   if (score >= 60) return "D";
   return "F";
 }
-function gradeColor(grade: string): string {
-  if (grade === "A" || grade === "B") return "text-mint-green";
-  if (grade === "C") return "text-warning";
-  return "text-error";
+/** Grade → OS tone name for AssessVerdict. */
+function gradeTone(grade: string): "go" | "amber" | "danger" {
+  if (grade === "A" || grade === "B") return "go";
+  if (grade === "C") return "amber";
+  return "danger";
 }
-function gradeBg(grade: string): string {
-  if (grade === "A" || grade === "B") return "bg-mint-green/10 border-mint-green/30";
-  if (grade === "C") return "bg-warning/10 border-warning/30";
-  return "bg-error/10 border-error/30";
+/** Grade → OS text-color class. */
+function gradeTextClass(grade: string): string {
+  if (grade === "A" || grade === "B") return "as-t-go";
+  if (grade === "C") return "as-t-amber";
+  return "as-t-danger";
 }
 
 const RECS: Record<CategoryKey, { good: string; poor: string }> = {
@@ -189,21 +199,6 @@ const RECS: Record<CategoryKey, { good: string; poor: string }> = {
     good: "Healthy margins make your business attractive to funders.",
     poor: "Thin margins are a risk — improving profitability strengthens your funding options.",
   },
-};
-
-interface ContactForm {
-  business_name: string;
-  contact_first_name: string;
-  contact_last_name: string;
-  email: string;
-  phone: string;
-}
-const EMPTY_CONTACT: ContactForm = {
-  business_name: "",
-  contact_first_name: "",
-  contact_last_name: "",
-  email: "",
-  phone: "",
 };
 
 export default function BusinessHealthScorecardPage() {
@@ -328,314 +323,240 @@ export default function BusinessHealthScorecardPage() {
     }
   }
 
-  const inputCls =
-    "mt-1 w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-ocean-blue outline-none";
-
   const progress = onResults
     ? 100
     : Math.round((answers.filter((a) => a !== null).length / QUESTIONS.length) * 100);
 
   return (
-    <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
-      <SEO
-        title="Business Financial Health Scorecard"
-        description="Grade your business across cash flow, debt load, growth readiness, and margins. Free instant scorecard with tailored funding recommendations."
-        keywords="business financial health scorecard, business health assessment, cash flow grade, business funding readiness"
+    <AssessLayout
+      seo={
+        <SEO
+          title="Business Financial Health Scorecard"
+          description="Grade your business across cash flow, debt load, growth readiness, and margins. Free instant scorecard with tailored funding recommendations."
+          keywords="business financial health scorecard, business health assessment, cash flow grade, business funding readiness"
+        />
+      }
+    >
+      <AssessHero
+        badge="Business Health Assessment"
+        icon={<ClipboardDocumentCheckIcon />}
+        title={
+          <>
+            Your Business Financial{" "}
+            <span className="os-go">Health Scorecard</span>
+          </>
+        }
+        lede={
+          <>
+            Answer {QUESTIONS.length} quick questions to grade your business across cash flow, debt
+            load, growth readiness, and margins — then get tailored recommendations.{" "}
+            <strong>Free, no credit impact.</strong>
+          </>
+        }
       />
-      <Navbar lightBg />
-      <ScrollToTop />
 
-      <main className="flex-1">
-        {/* Hero */}
-        <section className="bg-brand-gradient-hero text-white">
-          <div className="container-max py-14 lg:py-16">
-            <div className="max-w-3xl">
-              <span className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 border border-white/15 rounded-full text-sm font-medium mb-6">
-                <ClipboardDocumentCheckIcon className="w-4 h-4" />
-                Business Health Assessment
-              </span>
-              <h1 className="text-4xl lg:text-5xl font-bold leading-tight mb-5">
-                Your Business Financial{" "}
-                <span className="text-mint-green">Health Scorecard</span>
-              </h1>
-              <p className="text-lg text-white/80 leading-relaxed">
-                Answer {QUESTIONS.length} quick questions to grade your business across cash flow,
-                debt load, growth readiness, and margins — then get tailored recommendations. Free,
-                no credit impact.
+      <AssessBody>
+        <div className="as-narrow">
+          {/* ── Question steps ── */}
+          {!onResults && (
+            <AssessCard>
+              <AssessProgress
+                step={step}
+                total={QUESTIONS.length}
+                percentOverride={progress}
+                label={`Question ${step + 1} of ${QUESTIONS.length} · ${CATEGORIES[QUESTIONS[step].category].label}`}
+              />
+
+              <p className="as-qlabel">
+                {(() => {
+                  const Icon = CATEGORIES[QUESTIONS[step].category].icon;
+                  return <Icon />;
+                })()}
+                {CATEGORIES[QUESTIONS[step].category].label}
               </p>
-            </div>
-          </div>
-        </section>
+              <h2 className="as-qtitle">{QUESTIONS[step].prompt}</h2>
 
-        <section className="container-max py-14">
-          <div className="max-w-3xl mx-auto">
-            {/* Progress bar */}
-            <div className="mb-8">
-              <div className="flex justify-between text-xs text-text-secondary mb-2">
-                <span>
-                  {onResults
-                    ? "Complete"
-                    : `Question ${step + 1} of ${QUESTIONS.length} · ${CATEGORIES[QUESTIONS[step].category].label}`}
-                </span>
-                <span>{progress}%</span>
-              </div>
-              <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                <div
-                  className="h-full bg-mint-green transition-all duration-300"
-                  style={{ width: `${progress}%` }}
+              {QUESTIONS[step].options.map((opt, i) => (
+                <AssessOption
+                  key={opt.label}
+                  label={opt.label}
+                  selected={answers[step] === i}
+                  onClick={() => choose(i)}
                 />
-              </div>
-            </div>
+              ))}
 
-            {/* ── Question steps ── */}
-            {!onResults && (
-              <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm animate-scale-in">
-                <p className="text-sm font-semibold text-ocean-blue mb-2 inline-flex items-center gap-2">
-                  {(() => {
-                    const Icon = CATEGORIES[QUESTIONS[step].category].icon;
-                    return <Icon className="w-4 h-4" />;
-                  })()}
-                  {CATEGORIES[QUESTIONS[step].category].label}
-                </p>
-                <h2 className="text-2xl font-bold text-heading mb-6">{QUESTIONS[step].prompt}</h2>
-                <div className="space-y-3">
-                  {QUESTIONS[step].options.map((opt, i) => {
-                    const selected = answers[step] === i;
-                    return (
-                      <button
-                        key={opt.label}
-                        type="button"
-                        onClick={() => choose(i)}
-                        className={`w-full text-left px-5 py-4 rounded-xl border transition-all ${
-                          selected
-                            ? "border-mint-green bg-mint-green/10 ring-2 ring-mint-green"
-                            : "border-gray-200 dark:border-gray-600 hover:border-ocean-blue hover:bg-ocean-blue/5"
-                        }`}
-                      >
-                        <span className="text-body font-medium">{opt.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {step > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setStep((s) => Math.max(0, s - 1))}
-                    className="mt-6 inline-flex items-center gap-1 text-sm text-ocean-blue hover:underline"
-                  >
-                    <ArrowLeftIcon className="w-4 h-4" /> Back
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* ── Results: teaser + gate / unlocked ── */}
-            {onResults && (
-              <div className="space-y-6">
-                {/* LIVE teaser — overall grade is always visible */}
-                <div
-                  className={`rounded-2xl border p-8 text-center ${gradeBg(overallGrade)} animate-scale-in`}
+              {step > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStep((s) => Math.max(0, s - 1))}
+                  className="as-back"
+                  style={{ marginTop: 20 }}
                 >
-                  <p className="text-sm text-text-secondary mb-1">Your overall health grade</p>
-                  <p className={`text-7xl font-extrabold leading-none ${gradeColor(overallGrade)}`}>
-                    {overallGrade}
-                  </p>
-                  <p className="text-sm text-text-secondary mt-2">Score: {overallScore} / 100</p>
-                </div>
+                  <span aria-hidden>←</span> Back
+                </button>
+              )}
+            </AssessCard>
+          )}
 
-                {unlocked ? (
-                  <>
-                    {/* Full report card */}
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-                      <div className="flex items-center gap-2 mb-6">
-                        <CheckCircleIcon className="w-6 h-6 text-mint-green" />
-                        <h2 className="text-2xl font-bold text-heading">Your full report card</h2>
-                      </div>
+          {/* ── Results: teaser + gate / unlocked ── */}
+          {onResults && (
+            <div className="as-stack">
+              {/* LIVE teaser — overall grade is always visible */}
+              <AssessVerdict tone={gradeTone(overallGrade)}>
+                <p className="as-verdict-cap">Your overall health grade</p>
+                <p className={`as-grade ${gradeTextClass(overallGrade)}`}>{overallGrade}</p>
+                <p className="as-verdict-sub">Score: {overallScore} / 100</p>
+              </AssessVerdict>
 
-                      <div className="space-y-4">
-                        {(Object.keys(CATEGORIES) as CategoryKey[]).map((cat) => {
-                          const score = catScores[cat];
-                          const grade = scoreToGrade(score);
-                          const Icon = CATEGORIES[cat].icon;
-                          const good = score >= 70;
-                          return (
-                            <div
-                              key={cat}
-                              className="rounded-xl border border-gray-200 dark:border-gray-700 p-4"
+              {unlocked ? (
+                <AssessCard>
+                  <div className="as-card-head">
+                    <CheckCircleIcon />
+                    <h2 className="as-card-title">Your full report card</h2>
+                  </div>
+
+                  <div className="as-stack">
+                    {(Object.keys(CATEGORIES) as CategoryKey[]).map((cat) => {
+                      const score = catScores[cat];
+                      const grade = scoreToGrade(score);
+                      const Icon = CATEGORIES[cat].icon;
+                      const good = score >= 70;
+                      const fill = good ? "is-go" : score >= 60 ? "is-amber" : "is-danger";
+                      return (
+                        <div key={cat} className="as-rowcard">
+                          <div className="as-meter-row">
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 8,
+                                color: "var(--tx)",
+                                fontWeight: 600,
+                              }}
                             >
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="inline-flex items-center gap-2 font-semibold text-heading">
-                                  <Icon className="w-5 h-5 text-ocean-blue" />
-                                  {CATEGORIES[cat].label}
-                                </span>
-                                <span className={`text-2xl font-extrabold ${gradeColor(grade)}`}>
-                                  {grade}
-                                </span>
-                              </div>
-                              <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden mb-2">
-                                <div
-                                  className={`h-full ${good ? "bg-mint-green" : score >= 60 ? "bg-warning" : "bg-error"}`}
-                                  style={{ width: `${score}%` }}
-                                />
-                              </div>
-                              <p className="text-sm text-body">
-                                {good ? RECS[cat].good : RECS[cat].poor}
-                              </p>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* Tailored next step */}
-                      <div className="rounded-xl border border-mint-green/30 bg-mint-green/5 p-5 mt-6 flex items-start gap-3">
-                        <CheckCircleIcon className="w-6 h-6 text-mint-green flex-shrink-0" />
-                        <p className="text-sm text-body">
-                          {isDistress ? (
-                            <>
-                              Thanks, {form.contact_first_name || "there"}! Your debt load graded{" "}
-                              <strong>{debtGrade}</strong>. A debt-relief specialist will reach out
-                              within 24 hours to review your positions and build a plan to lower your
-                              daily payments before taking on anything new.
-                            </>
-                          ) : (
-                            <>
-                              Thanks, {form.contact_first_name || "there"}! Your business looks
-                              well-positioned. A funding specialist will reach out within 24 hours
-                              with working-capital options matched to your numbers — no credit impact
-                              to check.
-                            </>
-                          )}
-                        </p>
-                      </div>
-
-                      <p className="text-xs text-text-secondary leading-relaxed mt-5">
-                        <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                        This scorecard is an <strong>estimate for educational purposes only</strong>
-                        — not financial advice, an offer, an approval, or a guarantee. A merchant
-                        cash advance is a purchase of future receivables, not a loan. Estimated debt-
-                        relief outcomes vary and are never guaranteed.
-                      </p>
-
-                      <Link to="/tools" className="inline-block mt-5 text-ocean-blue hover:underline text-sm">
-                        ← Explore more free tools
-                      </Link>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    {/* Locked breakdown preview */}
-                    <div className="relative bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm overflow-hidden">
-                      <div className="space-y-3 blur-sm select-none pointer-events-none" aria-hidden>
-                        {(Object.keys(CATEGORIES) as CategoryKey[]).map((cat) => {
-                          const Icon = CATEGORIES[cat].icon;
-                          return (
-                            <div
-                              key={cat}
-                              className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 p-4"
+                              <Icon style={{ width: 18, height: 18, color: "var(--go-text)" }} />
+                              {CATEGORIES[cat].label}
+                            </span>
+                            <span
+                              className={gradeTextClass(grade)}
+                              style={{ fontFamily: "'Anton',sans-serif", fontSize: 24, lineHeight: 1 }}
                             >
-                              <span className="inline-flex items-center gap-2 font-semibold text-heading">
-                                <Icon className="w-5 h-5 text-ocean-blue" />
+                              {grade}
+                            </span>
+                          </div>
+                          <div className="as-meter" style={{ marginBottom: 10 }}>
+                            <div className={`as-meter-fill ${fill}`} style={{ width: `${score}%` }} />
+                          </div>
+                          <p style={{ fontSize: 14, lineHeight: 1.55, color: "var(--lede)", margin: 0 }}>
+                            {good ? RECS[cat].good : RECS[cat].poor}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Tailored next step */}
+                  <div className="as-success" style={{ marginTop: 22 }}>
+                    <CheckCircleIcon />
+                    <p>
+                      {isDistress ? (
+                        <>
+                          Thanks, {form.contact_first_name || "there"}! Your debt load graded{" "}
+                          <strong>{debtGrade}</strong>. A debt-relief specialist will reach out within
+                          24 hours to review your positions and build a plan to lower your daily
+                          payments before taking on anything new.
+                        </>
+                      ) : (
+                        <>
+                          Thanks, {form.contact_first_name || "there"}! Your business looks
+                          well-positioned. A funding specialist will reach out within 24 hours with
+                          working-capital options matched to your numbers — no credit impact to check.
+                        </>
+                      )}
+                    </p>
+                  </div>
+
+                  <AssessNote>
+                    This scorecard is an <strong>estimate for educational purposes only</strong> — not
+                    financial advice, an offer, an approval, or a guarantee. A merchant cash advance is
+                    a purchase of future receivables, not a loan. Estimated debt-relief outcomes vary
+                    and are never guaranteed.
+                  </AssessNote>
+
+                  <div>
+                    <Link to="/tools" className="as-backlink">
+                      ← Explore more free tools
+                    </Link>
+                  </div>
+                </AssessCard>
+              ) : (
+                <>
+                  {/* Locked breakdown preview */}
+                  <AssessCard className="as-locked">
+                    <div className="as-blur as-stack" aria-hidden>
+                      {(Object.keys(CATEGORIES) as CategoryKey[]).map((cat) => {
+                        const Icon = CATEGORIES[cat].icon;
+                        return (
+                          <div key={cat} className="as-rowcard">
+                            <div className="as-meter-row" style={{ marginBottom: 0 }}>
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  color: "var(--tx)",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                <Icon style={{ width: 18, height: 18, color: "var(--go-text)" }} />
                                 {CATEGORIES[cat].label}
                               </span>
-                              <span className="text-2xl font-extrabold text-gray-400">?</span>
+                              <span
+                                style={{
+                                  fontFamily: "'Anton',sans-serif",
+                                  fontSize: 24,
+                                  lineHeight: 1,
+                                  color: "var(--faint)",
+                                }}
+                              >
+                                ?
+                              </span>
                             </div>
-                          );
-                        })}
-                      </div>
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-midnight-blue/80 text-white text-sm font-semibold">
-                          <LockClosedIcon className="w-4 h-4" /> Full breakdown locked
-                        </span>
-                      </div>
+                          </div>
+                        );
+                      })}
                     </div>
-
-                    {/* Gate form */}
-                    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-                      <div className="flex items-center gap-2 mb-2">
-                        <LockClosedIcon className="w-6 h-6 text-ocean-blue" />
-                        <h2 className="text-2xl font-bold text-heading">
-                          Unlock your full report card
-                        </h2>
-                      </div>
-                      <p className="text-text-secondary mb-6">
-                        Get your grade in every category plus tailored recommendations. Free, no
-                        obligation, and checking won't affect your credit.
-                      </p>
-
-                      <form onSubmit={handleSubmit} className="space-y-4">
-                        <div className="grid sm:grid-cols-2 gap-4">
-                          <label className="text-sm sm:col-span-2">
-                            <span className="text-gray-600 dark:text-gray-300">Business name</span>
-                            <input
-                              value={form.business_name}
-                              onChange={(e) => set("business_name", e.target.value)}
-                              className={inputCls}
-                            />
-                          </label>
-                          <label className="text-sm">
-                            <span className="text-gray-600 dark:text-gray-300">First name *</span>
-                            <input
-                              required
-                              value={form.contact_first_name}
-                              onChange={(e) => set("contact_first_name", e.target.value)}
-                              className={inputCls}
-                            />
-                          </label>
-                          <label className="text-sm">
-                            <span className="text-gray-600 dark:text-gray-300">Last name</span>
-                            <input
-                              value={form.contact_last_name}
-                              onChange={(e) => set("contact_last_name", e.target.value)}
-                              className={inputCls}
-                            />
-                          </label>
-                          <label className="text-sm">
-                            <span className="text-gray-600 dark:text-gray-300">Email *</span>
-                            <input
-                              required
-                              type="email"
-                              value={form.email}
-                              onChange={(e) => set("email", e.target.value)}
-                              className={inputCls}
-                            />
-                          </label>
-                          <label className="text-sm">
-                            <span className="text-gray-600 dark:text-gray-300">Phone *</span>
-                            <input
-                              required
-                              type="tel"
-                              value={form.phone}
-                              onChange={(e) => set("phone", e.target.value)}
-                              className={inputCls}
-                            />
-                          </label>
-                        </div>
-
-                        {error && <p className="text-sm text-red-500">{error}</p>}
-
-                        <button
-                          type="submit"
-                          disabled={submitting || !allAnswered}
-                          className="w-full py-3 rounded-lg bg-mint-green text-midnight-blue font-bold hover:opacity-90 disabled:opacity-60"
-                        >
-                          {submitting ? "Generating…" : "Unlock my full report card →"}
-                        </button>
-                        <p className="text-xs text-gray-400 text-center leading-relaxed">
-                          <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                          No credit impact. Educational estimate only — not an offer or guarantee.
-                        </p>
-                      </form>
+                    <div className="as-lockchip">
+                      <span>
+                        <LockClosedIcon /> Full breakdown locked
+                      </span>
                     </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
-      </main>
+                  </AssessCard>
 
-      <Footer />
-    </div>
+                  {/* Gate form */}
+                  <AssessCard>
+                    <GateForm
+                      form={form}
+                      onSet={set}
+                      onSubmit={handleSubmit}
+                      submitting={submitting}
+                      error={error}
+                      heading="Unlock your full report card"
+                      blurb="Get your grade in every category plus tailored recommendations. Free, no obligation, and checking won't affect your credit."
+                      submitIdle="Unlock my full report card"
+                      submitBusy="Generating…"
+                      footnote={
+                        <>No credit impact. Educational estimate only — not an offer or guarantee.</>
+                      }
+                      disabled={!allAnswered}
+                    />
+                  </AssessCard>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </AssessBody>
+    </AssessLayout>
   );
 }

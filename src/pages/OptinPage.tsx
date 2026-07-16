@@ -1,15 +1,12 @@
 import { useState } from 'react';
-import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import Navbar from '../components/landing/Navbar';
-import Footer from '../components/landing/Footer';
-import ScrollToTop from '../components/ui/ScrollToTop';
 import SEO from '../components/seo/SEO';
-import { ShimmerButton } from '../components/ui/shimmer-button';
 import { CheckCircleIcon } from '@heroicons/react/24/outline';
 import supabase from '../supabase';
 import TcpaConsent from '../components/ui/TcpaConsent';
 import { recordConsent } from '../lib/consent';
+import { OSSection, Eyebrow, Display, Lede } from '../components/landing/os/OSKit';
+import { ToolShell, ToolPanel, Field } from '../components/landing/os/tools/ToolsKit';
 
 export default function OptinPage() {
   const [formData, setFormData] = useState({
@@ -33,7 +30,7 @@ export default function OptinPage() {
       setError("Please agree to the consent terms to proceed.");
       return;
     }
-    
+
     setIsSubmitting(true);
     setError(null);
 
@@ -68,129 +65,87 @@ export default function OptinPage() {
   };
 
   return (
-    <>
+    <ToolShell>
       <SEO title="Get Funding Updates" description="Opt in for business funding updates from Momentum Funding." noIndex={true} />
-      <Navbar lightBg />
-      <ScrollToTop />
-      <main className="min-h-screen py-24 bg-gray-50 dark:bg-gray-900">
-        <div className="container-max max-w-3xl mx-auto px-4 mt-8">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-8 md:p-12"
-          >
+
+      <OSSection tone="panel">
+        <div className="ost-optin">
+          <ToolPanel>
             {isSubmitted ? (
-              <div className="text-center py-10">
-                <div className="w-16 h-16 bg-mint-green rounded-full flex items-center justify-center mx-auto mb-6">
-                  <CheckCircleIcon className="w-8 h-8 text-midnight-blue" />
+              <div className="ost-optin-done">
+                <div className="ost-optin-badge">
+                  <CheckCircleIcon />
                 </div>
-                <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
-                  Thank You for Subscribing!
-                </h2>
-                <p className="text-gray-600 dark:text-gray-300 mb-8 max-w-lg mx-auto">
-                  You have successfully opted in to receive communications from mFunding. We look forward to connecting with you.
-                </p>
-                <Link
-                  to="/"
-                  className="bg-ocean-blue hover:bg-ocean-blue/90 text-white font-medium px-6 py-3 rounded-lg transition-colors inline-block"
-                >
-                  Return to Homepage
-                </Link>
+                <Display>You're on the list.</Display>
+                <Lede>
+                  You've successfully opted in to receive communications from Momentum Funding. We
+                  look forward to connecting with you.
+                </Lede>
+                <Link to="/" className="os-cta-ghost">Return to homepage</Link>
               </div>
             ) : (
               <>
-                <div className="text-center mb-10">
-                  <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white mb-4">
-                    Stay Connected
-                  </h1>
-                  <p className="text-gray-600 dark:text-gray-300">
-                    Opt-in to receive important funding updates, exclusive offers, and expert advice directly to your phone.
-                  </p>
+                <div className="ost-optin-head">
+                  <Eyebrow>STAY CONNECTED</Eyebrow>
+                  <Display>
+                    FUNDING UPDATES, <span className="os-go">STRAIGHT TO YOU.</span>
+                  </Display>
+                  <Lede>
+                    Opt in to receive important funding updates, exclusive offers, and expert advice
+                    directly to your phone.
+                  </Lede>
                 </div>
 
-                <form onSubmit={handleSubmit} className="space-y-6">
-                  <div className="space-y-4">
-                    <div>
-                      <label htmlFor="name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Full Name *
-                      </label>
-                      <input
-                        type="text"
-                        id="name"
-                        name="name"
-                        required
-                        value={formData.name}
-                        onChange={handleChange}
-                        className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white transition-colors focus:ring-2 focus:ring-ocean-blue"
-                        placeholder="John Doe"
-                      />
-                    </div>
-
-                    <div className="grid md:grid-cols-2 gap-4">
-                      <div>
-                        <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                          Email Address *
-                        </label>
-                        <input
-                          type="email"
-                          id="email"
-                          name="email"
-                          required
-                          value={formData.email}
-                          onChange={handleChange}
-                          className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white transition-colors focus:ring-2 focus:ring-ocean-blue"
-                          placeholder="john@example.com"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="phone" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                          Mobile Phone Number *
-                        </label>
-                        <input
-                          type="tel"
-                          id="phone"
-                          name="phone"
-                          required
-                          value={formData.phone}
-                          onChange={handleChange}
-                          className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white transition-colors focus:ring-2 focus:ring-ocean-blue"
-                          placeholder="(555) 123-4567"
-                        />
-                      </div>
-                    </div>
+                <form onSubmit={handleSubmit} className="ost-fullform">
+                  <Field
+                    label="Full name *"
+                    id="name"
+                    name="name"
+                    required
+                    value={formData.name}
+                    onChange={handleChange}
+                    placeholder="John Doe"
+                  />
+                  <div className="ost-formgrid">
+                    <Field
+                      label="Email address *"
+                      id="email"
+                      name="email"
+                      type="email"
+                      required
+                      value={formData.email}
+                      onChange={handleChange}
+                      placeholder="john@example.com"
+                    />
+                    <Field
+                      label="Mobile phone number *"
+                      id="phone"
+                      name="phone"
+                      type="tel"
+                      required
+                      value={formData.phone}
+                      onChange={handleChange}
+                      placeholder="(555) 123-4567"
+                    />
                   </div>
 
-                  <div className="mt-6 md:mt-8">
-                    <TcpaConsent checked={agreedToSms} onChange={setAgreedToSms} />
-                  </div>
+                  <TcpaConsent checked={agreedToSms} onChange={setAgreedToSms} />
 
-                  {error && (
-                    <div className="text-red-600 text-sm font-medium bg-red-50 p-3 rounded-md border border-red-100">
-                      {error}
-                    </div>
-                  )}
+                  {error && <p className="ost-err">{error}</p>}
 
-                  <div className="pt-4">
-                    <ShimmerButton
-                      type="submit"
-                      shimmerColor="#ffffff"
-                      shimmerSize="0.1em"
-                      shimmerDuration="2s"
-                      background="linear-gradient(135deg, #007EA7 0%, #0C516E 100%)"
-                      className="w-full text-white font-bold text-lg py-4 transition-transform hover:scale-[1.02]"
-                      borderRadius="0.75rem"
-                      disabled={isSubmitting || !agreedToSms}
-                    >
-                      {isSubmitting ? 'Processing...' : 'Subscribe & Opt-In'}
-                    </ShimmerButton>
-                  </div>
+                  <button
+                    type="submit"
+                    className="os-cta-primary ost-submit"
+                    disabled={isSubmitting || !agreedToSms}
+                  >
+                    {isSubmitting ? 'Processing…' : 'Subscribe & opt in →'}
+                  </button>
                 </form>
               </>
             )}
-          </motion.div>
+          </ToolPanel>
         </div>
-      </main>
-      <Footer />
-    </>
+      </OSSection>
+    </ToolShell>
   );
 }

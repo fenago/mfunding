@@ -7,11 +7,19 @@ import {
   ShieldCheckIcon,
   BoltIcon,
 } from "@heroicons/react/24/outline";
-import Navbar from "../../components/landing/Navbar";
-import Footer from "../../components/landing/Footer";
-import ScrollToTop from "../../components/ui/ScrollToTop";
-import SEO from '../../components/seo/SEO';
+import SEO from "../../components/seo/SEO";
 import supabase from "../../supabase";
+import { OSSection } from "../../components/landing/os/OSKit";
+import {
+  ToolShell,
+  ToolHero,
+  ToolPanel,
+  PanelTitle,
+  Slider,
+  Field,
+  SelectField,
+  ResultHero,
+} from "../../components/landing/os/tools/ToolsKit";
 
 const usd = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -99,224 +107,162 @@ export default function MCAFundingCalculatorPage() {
     }
   }
 
-  const inputCls =
-    "mt-1 w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-ocean-blue outline-none";
-
   return (
-    <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
+    <ToolShell>
       <SEO title="How Much Business Funding Can I Get?" description="Estimate how much business funding you qualify for based on your monthly revenue. Free instant calculator — no credit impact." keywords="how much business funding can I get, business funding calculator, merchant cash advance amount calculator" />
-      <Navbar lightBg />
-      <ScrollToTop />
 
-      <main className="flex-1">
-        {/* Hero */}
-        <section className="bg-brand-gradient-hero text-white">
-          <div className="container-max py-16 lg:py-20">
-            <div className="max-w-3xl">
-              <span className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 border border-white/15 rounded-full text-sm font-medium mb-6">
-                <BanknotesIcon className="w-4 h-4" />
-                Working Capital Calculator
-              </span>
-              <h1 className="text-4xl lg:text-5xl font-bold leading-tight mb-5">
-                How much working capital{" "}
-                <span className="text-mint-green">can you get?</span>
-              </h1>
-              <p className="text-lg text-white/80 leading-relaxed">
-                Approvals typically run 50%–150% of your average monthly sales — no minimum credit
-                score, all industries welcome, funded in as little as 24 hours. Tell us your revenue
-                to see your estimated range.
-              </p>
+      <ToolHero
+        eyebrow="WORKING CAPITAL CALCULATOR"
+        title={
+          <>
+            HOW MUCH WORKING CAPITAL
+            <br />
+            <span className="os-go">CAN YOU GET?</span>
+          </>
+        }
+        lede={
+          <>
+            Approvals typically run <strong>50%–150% of your average monthly sales</strong> — no
+            minimum credit score, all industries welcome, funded in as little as 24 hours. Tell us
+            your revenue to see your estimated range.
+          </>
+        }
+      />
+
+      <OSSection tone="panel">
+        <div className="ost-cols">
+          {/* Inputs */}
+          <ToolPanel>
+            <PanelTitle>
+              <BanknotesIcon /> Your business
+            </PanelTitle>
+
+            <Slider
+              label="Average monthly revenue"
+              valueLabel={usd(monthlyRevenue)}
+              min={5000}
+              max={1000000}
+              step={5000}
+              value={monthlyRevenue}
+              onChange={(e) => setMonthlyRevenue(Number(e.target.value))}
+              minTick="$5K"
+              maxTick="$1M"
+            />
+
+            <div style={{ marginBottom: 20 }}>
+              <SelectField
+                label="Time in business (optional)"
+                value={timeInBusiness}
+                onChange={setTimeInBusiness}
+                placeholder="Select duration"
+                options={TIME_OPTIONS}
+              />
             </div>
-          </div>
-        </section>
 
-        {/* Calculator */}
-        <section className="container-max py-16">
-          <div className="grid lg:grid-cols-2 gap-8 max-w-6xl mx-auto items-start">
-            {/* Inputs */}
-            <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-              <h2 className="text-2xl font-bold text-heading mb-6">Your business</h2>
+            <SelectField
+              label="Industry (optional)"
+              value={industry}
+              onChange={setIndustry}
+              placeholder="Select industry"
+              options={INDUSTRY_OPTIONS}
+            />
+          </ToolPanel>
 
-              <div className="mb-7">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-                    Average monthly revenue
-                  </label>
-                  <span className="text-mint-green font-bold tabular-nums">{usd(monthlyRevenue)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={5000}
-                  max={1000000}
-                  step={5000}
-                  value={monthlyRevenue}
-                  onChange={(e) => setMonthlyRevenue(Number(e.target.value))}
-                  className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-mint-green"
+          {/* Result + gate */}
+          <ToolPanel>
+            {unlocked ? (
+              <>
+                <PanelTitle>
+                  <BoltIcon /> Your estimated funding
+                </PanelTitle>
+
+                <ResultHero
+                  cap="Estimated advance range"
+                  value={`${usd(low)} – ${usd(high)}`}
+                  sub={`based on ${usd(monthlyRevenue)}/mo in revenue`}
                 />
-                <div className="flex justify-between text-xs text-text-secondary mt-1">
-                  <span>$5K</span>
-                  <span>$1M</span>
+
+                <div className="ost-note" style={{ margin: "18px 0 16px" }}>
+                  <CheckCircleIcon />
+                  <p>
+                    Thanks, {form.contact_first_name || "there"}! A funding specialist will reach out
+                    within 24 hours with real options matched to your business — no credit impact to
+                    check your rate.
+                  </p>
                 </div>
-              </div>
 
-              <div className="mb-6">
-                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">
-                  Time in business <span className="font-normal text-text-secondary">(optional)</span>
-                </label>
-                <select
-                  value={timeInBusiness}
-                  onChange={(e) => setTimeInBusiness(e.target.value)}
-                  className={inputCls}
-                >
-                  <option value="">Select duration</option>
-                  {TIME_OPTIONS.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                <p className="ost-fine">
+                  <ShieldCheckIcon />
+                  This is an <strong>estimate only</strong>, not an offer, approval, or guarantee. A
+                  merchant cash advance is a purchase of future receivables, not a loan. Final amounts
+                  depend on underwriting and funder review.
+                </p>
 
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">
-                  Industry <span className="font-normal text-text-secondary">(optional)</span>
-                </label>
-                <select
-                  value={industry}
-                  onChange={(e) => setIndustry(e.target.value)}
-                  className={inputCls}
-                >
-                  <option value="">Select industry</option>
-                  {INDUSTRY_OPTIONS.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+                <Link to="/" className="ost-back">
+                  ← Back to home
+                </Link>
+              </>
+            ) : (
+              <>
+                <div className="ost-lockhead">
+                  <LockClosedIcon />
+                  <PanelTitle>See your estimate</PanelTitle>
+                </div>
+                <p className="ost-lead">
+                  Enter your info to unlock your estimated working-capital range and get matched with
+                  funders. Free, no obligation, and checking won't affect your credit.
+                </p>
 
-            {/* Result + gate */}
-            <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-              {unlocked ? (
-                <>
-                  <div className="flex items-center gap-2 mb-6">
-                    <BoltIcon className="w-6 h-6 text-mint-green" />
-                    <h2 className="text-2xl font-bold text-heading">Your estimated funding</h2>
+                <form onSubmit={handleSubmit} className="ost-form">
+                  <div className="ost-formgrid">
+                    <Field
+                      label="Business name"
+                      col2
+                      value={form.business_name}
+                      onChange={(e) => set("business_name", e.target.value)}
+                    />
+                    <Field
+                      label="First name *"
+                      required
+                      value={form.contact_first_name}
+                      onChange={(e) => set("contact_first_name", e.target.value)}
+                    />
+                    <Field
+                      label="Last name"
+                      value={form.contact_last_name}
+                      onChange={(e) => set("contact_last_name", e.target.value)}
+                    />
+                    <Field
+                      label="Email *"
+                      required
+                      type="email"
+                      value={form.email}
+                      onChange={(e) => set("email", e.target.value)}
+                    />
+                    <Field
+                      label="Phone *"
+                      required
+                      type="tel"
+                      value={form.phone}
+                      onChange={(e) => set("phone", e.target.value)}
+                    />
                   </div>
 
-                  <div className="rounded-xl bg-mint-green/10 p-6 mb-4 text-center">
-                    <p className="text-sm text-text-secondary mb-1">Estimated advance range</p>
-                    <p className="text-3xl font-bold text-mint-green tabular-nums">
-                      {usd(low)} – {usd(high)}
-                    </p>
-                    <p className="text-xs text-text-secondary mt-1">
-                      based on {usd(monthlyRevenue)}/mo in revenue
-                    </p>
-                  </div>
+                  {error && <p className="ost-err">{error}</p>}
 
-                  <div className="rounded-xl border border-mint-green/30 bg-mint-green/5 p-4 flex items-start gap-3 mb-4">
-                    <CheckCircleIcon className="w-6 h-6 text-mint-green flex-shrink-0" />
-                    <p className="text-sm text-body">
-                      Thanks, {form.contact_first_name || "there"}! A funding specialist will reach out
-                      within 24 hours with real options matched to your business — no credit impact to
-                      check your rate.
-                    </p>
-                  </div>
-
-                  <p className="text-xs text-text-secondary leading-relaxed">
-                    <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                    This is an <strong>estimate only</strong>, not an offer, approval, or guarantee. A
-                    merchant cash advance is a purchase of future receivables, not a loan. Final amounts
-                    depend on underwriting and funder review.
+                  <button type="submit" disabled={submitting} className="os-cta-primary ost-submit">
+                    {submitting ? "Calculating…" : "Show my funding estimate →"}
+                  </button>
+                  <p className="ost-fine" style={{ textAlign: "center" }}>
+                    <ShieldCheckIcon />
+                    No credit impact to check. Estimates only — not an offer or guarantee.
                   </p>
-
-                  <Link to="/" className="inline-block mt-5 text-ocean-blue hover:underline text-sm">
-                    ← Back to home
-                  </Link>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-2 mb-2">
-                    <LockClosedIcon className="w-6 h-6 text-ocean-blue" />
-                    <h2 className="text-2xl font-bold text-heading">See your estimate</h2>
-                  </div>
-                  <p className="text-text-secondary mb-6">
-                    Enter your info to unlock your estimated working-capital range and get matched with
-                    funders. Free, no obligation, and checking won't affect your credit.
-                  </p>
-
-                  <form onSubmit={handleSubmit} className="space-y-4">
-                    <div className="grid sm:grid-cols-2 gap-4">
-                      <label className="text-sm sm:col-span-2">
-                        <span className="text-gray-600 dark:text-gray-300">Business name</span>
-                        <input
-                          value={form.business_name}
-                          onChange={(e) => set("business_name", e.target.value)}
-                          className={inputCls}
-                        />
-                      </label>
-                      <label className="text-sm">
-                        <span className="text-gray-600 dark:text-gray-300">First name *</span>
-                        <input
-                          required
-                          value={form.contact_first_name}
-                          onChange={(e) => set("contact_first_name", e.target.value)}
-                          className={inputCls}
-                        />
-                      </label>
-                      <label className="text-sm">
-                        <span className="text-gray-600 dark:text-gray-300">Last name</span>
-                        <input
-                          value={form.contact_last_name}
-                          onChange={(e) => set("contact_last_name", e.target.value)}
-                          className={inputCls}
-                        />
-                      </label>
-                      <label className="text-sm">
-                        <span className="text-gray-600 dark:text-gray-300">Email *</span>
-                        <input
-                          required
-                          type="email"
-                          value={form.email}
-                          onChange={(e) => set("email", e.target.value)}
-                          className={inputCls}
-                        />
-                      </label>
-                      <label className="text-sm">
-                        <span className="text-gray-600 dark:text-gray-300">Phone *</span>
-                        <input
-                          required
-                          type="tel"
-                          value={form.phone}
-                          onChange={(e) => set("phone", e.target.value)}
-                          className={inputCls}
-                        />
-                      </label>
-                    </div>
-
-                    {error && <p className="text-sm text-red-500">{error}</p>}
-
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="w-full py-3 rounded-lg bg-mint-green text-midnight-blue font-bold hover:opacity-90 disabled:opacity-60"
-                    >
-                      {submitting ? "Calculating…" : "Show my funding estimate →"}
-                    </button>
-                    <p className="text-xs text-gray-400 text-center leading-relaxed">
-                      <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                      No credit impact to check. Estimates only — not an offer or guarantee.
-                    </p>
-                  </form>
-                </>
-              )}
-            </div>
-          </div>
-        </section>
-      </main>
-
-      <Footer />
-    </div>
+                </form>
+              </>
+            )}
+          </ToolPanel>
+        </div>
+      </OSSection>
+    </ToolShell>
   );
 }

@@ -1,6 +1,6 @@
 import { useParams, Navigate } from 'react-router-dom';
 import { getCREProductBySlug } from '../../data/cre-products';
-import CREPageLayout from '../../components/real-estate/CREPageLayout';
+import OSCREDetail from '../../components/landing/os/money/OSCREDetail';
 import SEO, {
   generateProductSchema,
   generateFAQSchema,
@@ -43,7 +43,7 @@ export default function RealEstateDetailPage() {
         ogType="product"
         structuredData={structuredData}
       />
-      <CREPageLayout product={product} />
+      <OSCREDetail product={product} />
     </>
   );
 }

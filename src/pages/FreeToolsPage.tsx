@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import supabase from "../supabase";
 import {
-  WrenchScrewdriverIcon,
   LifebuoyIcon,
   BanknotesIcon,
   CalculatorIcon,
@@ -13,12 +12,10 @@ import {
   ExclamationTriangleIcon,
   HandRaisedIcon,
   ChartBarSquareIcon,
-  ArrowRightIcon,
 } from "@heroicons/react/24/outline";
-import Navbar from "../components/landing/Navbar";
-import Footer from "../components/landing/Footer";
-import ScrollToTop from "../components/ui/ScrollToTop";
 import SEO from "../components/seo/SEO";
+import { OSSection, Eyebrow, Display, Lede, CTAPrimary } from "../components/landing/os/OSKit";
+import { ToolShell } from "../components/landing/os/tools/ToolsKit";
 
 interface ToolCard {
   to: string;
@@ -99,20 +96,17 @@ const ASSESSMENTS: ToolCard[] = [
   },
 ];
 
-function Card({ tool }: { tool: ToolCard }) {
+function ToolTile({ tool }: { tool: ToolCard }) {
   const Icon = tool.icon;
   return (
-    <Link
-      to={tool.to}
-      className="group relative flex flex-col rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-xl hover:border-mint-green"
-    >
-      <div className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-xl bg-mint-green/10 text-mint-green">
-        <Icon className="h-6 w-6" />
-      </div>
-      <h3 className="text-lg font-bold text-heading mb-1.5">{tool.title}</h3>
-      <p className="text-sm text-body leading-relaxed flex-1">{tool.desc}</p>
-      <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-ocean-blue group-hover:gap-2 transition-all">
-        Open tool <ArrowRightIcon className="h-4 w-4" />
+    <Link to={tool.to} className="os-card ost-toolcard">
+      <span className="ost-toolico">
+        <Icon />
+      </span>
+      <h3 className="ost-toolname">{tool.title}</h3>
+      <p className="ost-tooldesc">{tool.desc}</p>
+      <span className="ost-toolopen">
+        Open tool <span aria-hidden>→</span>
       </span>
     </Link>
   );
@@ -138,85 +132,75 @@ export default function FreeToolsPage() {
   const assessments = ASSESSMENTS.filter(show);
 
   return (
-    <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
+    <ToolShell>
       <SEO
         title="Free Business Funding Tools & Calculators"
         description="Free calculators and assessments to plan your business funding — estimate working capital, analyze cash flow gaps, stress-test MCA debt, and grade your financial health."
         keywords="free business funding tools, MCA calculator, cash flow analyzer, business health scorecard, working capital calculator"
       />
-      <Navbar lightBg />
-      <ScrollToTop />
 
-      <main className="flex-1">
-        {/* Hero */}
-        <section className="bg-brand-gradient-hero text-white">
-          <div className="container-max py-16 lg:py-20">
-            <div className="max-w-3xl">
-              <span className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 border border-white/15 rounded-full text-sm font-medium mb-6">
-                <WrenchScrewdriverIcon className="w-4 h-4" />
-                Free for Business Owners
+      <OSSection tone="ink">
+        <div className="ost-herobox">
+          <Eyebrow>FREE FOR BUSINESS OWNERS</Eyebrow>
+          <Display>
+            TOOLS &amp; <span className="os-go">CALCULATORS</span>
+          </Display>
+          <Lede>
+            Plan smarter before you fund. Estimate your working capital, analyze seasonal cash-flow
+            gaps, stress-test existing advances, and grade your financial health — all free, with{" "}
+            <strong>no credit impact</strong>.
+          </Lede>
+        </div>
+      </OSSection>
+
+      <OSSection tone="panel">
+        {calculators.length > 0 && (
+          <div className="ost-group">
+            <div className="ost-groupbar">
+              <span className="ost-groupbar-title">
+                <CalculatorIcon /> Calculators
               </span>
-              <h1 className="text-4xl lg:text-5xl font-bold leading-tight mb-5">
-                Free Tools &amp; <span className="text-mint-green">Calculators</span>
-              </h1>
-              <p className="text-lg text-white/80 leading-relaxed">
-                Plan smarter before you fund. Estimate your working capital, analyze seasonal cash
-                flow gaps, stress-test existing advances, and grade your financial health — all free,
-                with no credit impact.
-              </p>
+              <span className="ost-groupbar-count">
+                {calculators.length} {calculators.length === 1 ? "TOOL" : "TOOLS"}
+              </span>
             </div>
-          </div>
-        </section>
-
-        {/* Calculators */}
-        <section className="container-max py-14">
-          <div className="max-w-6xl mx-auto">
-            <div className="flex items-center gap-2 mb-6">
-              <CalculatorIcon className="w-6 h-6 text-ocean-blue" />
-              <h2 className="text-2xl font-bold text-heading">Calculators</h2>
-            </div>
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="ost-toolgrid">
               {calculators.map((t) => (
-                <Card key={t.to} tool={t} />
+                <ToolTile key={t.to} tool={t} />
               ))}
             </div>
           </div>
-        </section>
+        )}
 
-        {/* Assessments */}
-        <section className="container-max pb-16">
-          <div className="max-w-6xl mx-auto">
-            <div className="flex items-center gap-2 mb-6">
-              <ClipboardDocumentCheckIcon className="w-6 h-6 text-ocean-blue" />
-              <h2 className="text-2xl font-bold text-heading">Assessments</h2>
+        {assessments.length > 0 && (
+          <div className="ost-group">
+            <div className="ost-groupbar">
+              <span className="ost-groupbar-title">
+                <ClipboardDocumentCheckIcon /> Assessments
+              </span>
+              <span className="ost-groupbar-count">
+                {assessments.length} {assessments.length === 1 ? "TOOL" : "TOOLS"}
+              </span>
             </div>
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="ost-toolgrid">
               {assessments.map((t) => (
-                <Card key={t.to} tool={t} />
+                <ToolTile key={t.to} tool={t} />
               ))}
             </div>
           </div>
-        </section>
+        )}
+      </OSSection>
 
-        {/* CTA */}
-        <section className="container-max pb-20">
-          <div className="max-w-6xl mx-auto rounded-2xl bg-brand-gradient-hero text-white p-10 text-center">
-            <h2 className="text-2xl lg:text-3xl font-bold mb-3">Ready to talk to a specialist?</h2>
-            <p className="text-white/80 mb-6 max-w-2xl mx-auto">
-              Skip the tools and get matched to real funding options. Free, no obligation, and no
-              credit impact to check.
-            </p>
-            <Link
-              to="/apply"
-              className="inline-flex items-center gap-2 px-8 py-3.5 rounded-lg bg-mint-green text-midnight-blue font-bold hover:opacity-90"
-            >
-              Get started <ArrowRightIcon className="w-5 h-5" />
-            </Link>
-          </div>
-        </section>
-      </main>
-
-      <Footer />
-    </div>
+      <OSSection tone="ink">
+        <div className="ost-ctaband">
+          <h2>Ready to talk to a specialist?</h2>
+          <p>
+            Skip the tools and get matched to real funding options. Free, no obligation, and no
+            credit impact to check.
+          </p>
+          <CTAPrimary href="/apply">Get started</CTAPrimary>
+        </div>
+      </OSSection>
+    </ToolShell>
   );
 }

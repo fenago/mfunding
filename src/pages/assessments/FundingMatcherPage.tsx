@@ -1,22 +1,24 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  PuzzlePieceIcon,
-  LockClosedIcon,
-  CheckCircleIcon,
-  ShieldCheckIcon,
-  ArrowRightIcon,
-  ArrowLeftIcon,
-  SparklesIcon,
-} from "@heroicons/react/24/outline";
-import Navbar from "../../components/landing/Navbar";
-import Footer from "../../components/landing/Footer";
-import ScrollToTop from "../../components/ui/ScrollToTop";
+import { PuzzlePieceIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
 import SEO from "../../components/seo/SEO";
 import supabase from "../../supabase";
-
-const usd = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+import {
+  AssessLayout,
+  AssessHero,
+  AssessBody,
+  AssessCard,
+  AssessProgress,
+  AssessOption,
+  AssessSlider,
+  AssessNav,
+  AssessVerdict,
+  AssessNote,
+  GateForm,
+  usd,
+  type ContactForm,
+  EMPTY_CONTACT,
+} from "../../components/landing/os/assess/AssessKit";
 
 type ProductKey =
   | "Merchant Cash Advance"
@@ -50,21 +52,6 @@ const USE_OPTIONS = [
   "Marketing",
   "Refinance / consolidate",
 ];
-
-interface ContactForm {
-  business_name: string;
-  contact_first_name: string;
-  contact_last_name: string;
-  email: string;
-  phone: string;
-}
-const EMPTY_CONTACT: ContactForm = {
-  business_name: "",
-  contact_first_name: "",
-  contact_last_name: "",
-  email: "",
-  phone: "",
-};
 
 const TOTAL_STEPS = 5;
 
@@ -212,9 +199,6 @@ export default function FundingMatcherPage() {
     }
   }
 
-  const inputCls =
-    "mt-1 w-full px-3 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-ocean-blue outline-none";
-
   const canAdvance =
     (step === 0 && speed) ||
     step === 1 ||
@@ -222,245 +206,186 @@ export default function FundingMatcherPage() {
     (step === 3 && creditBand) ||
     (step === 4 && useOfFunds);
 
-  function Choice({
-    label,
-    selected,
-    onClick,
-  }: {
-    label: string;
-    selected: boolean;
-    onClick: () => void;
-  }) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        className={`w-full text-left px-4 py-3 rounded-xl border-2 font-medium transition-colors ${
-          selected
-            ? "border-mint-green bg-mint-green/10 text-heading"
-            : "border-gray-200 dark:border-gray-600 hover:border-mint-green/60 text-body"
-        }`}
-      >
-        {label}
-      </button>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-white dark:bg-gray-950 flex flex-col">
-      <SEO
-        title="What Funding Fits Your Business? — Free Matcher"
-        description="Answer 5 quick questions and get matched to the business funding product that fits best — MCA, line of credit, term funding, equipment financing, or SBA. No credit impact."
-        keywords="business funding matcher, what funding is right for my business, MCA vs line of credit, best business financing option"
+    <AssessLayout
+      seo={
+        <SEO
+          title="What Funding Fits Your Business? — Free Matcher"
+          description="Answer 5 quick questions and get matched to the business funding product that fits best — MCA, line of credit, term funding, equipment financing, or SBA. No credit impact."
+          keywords="business funding matcher, what funding is right for my business, MCA vs line of credit, best business financing option"
+        />
+      }
+    >
+      <AssessHero
+        badge="Funding Matcher"
+        icon={<PuzzlePieceIcon />}
+        title={
+          <>
+            What funding <span className="os-go">fits your business?</span>
+          </>
+        }
+        lede={
+          <>
+            Answer 5 quick questions and we'll match you to the funding product that fits best — from
+            a merchant cash advance to a line of credit, term funding, equipment financing, or an SBA
+            program. <strong>Free, no credit impact.</strong>
+          </>
+        }
       />
-      <Navbar lightBg />
-      <ScrollToTop />
 
-      <main className="flex-1">
-        {/* Hero */}
-        <section className="bg-brand-gradient-hero text-white">
-          <div className="container-max py-16 lg:py-20">
-            <div className="max-w-3xl">
-              <span className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 border border-white/15 rounded-full text-sm font-medium mb-6">
-                <PuzzlePieceIcon className="w-4 h-4" />
-                Funding Matcher
-              </span>
-              <h1 className="text-4xl lg:text-5xl font-bold leading-tight mb-5">
-                What funding{" "}
-                <span className="text-mint-green">fits your business?</span>
-              </h1>
-              <p className="text-lg text-white/80 leading-relaxed">
-                Answer 5 quick questions and we'll match you to the funding product that fits best —
-                from a merchant cash advance to a line of credit, term funding, equipment financing,
-                or an SBA program. Free, no credit impact.
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section className="container-max py-16">
-          {!finished ? (
-            <div className="max-w-xl mx-auto bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-              <div className="flex items-center justify-between mb-2 text-sm text-text-secondary">
-                <span>
-                  Step {step + 1} of {TOTAL_STEPS}
-                </span>
-                <span>{Math.round(((step + 1) / TOTAL_STEPS) * 100)}%</span>
-              </div>
-              <div className="h-2 w-full bg-gray-200 dark:bg-gray-700 rounded-full mb-7 overflow-hidden">
-                <div
-                  className="h-full bg-mint-green rounded-full transition-all"
-                  style={{ width: `${((step + 1) / TOTAL_STEPS) * 100}%` }}
-                />
-              </div>
+      <AssessBody>
+        {!finished ? (
+          <div className="as-narrow">
+            <AssessCard>
+              <AssessProgress step={step} total={TOTAL_STEPS} />
 
               {step === 0 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">How fast do you need it?</h2>
-                  <div className="space-y-3">
-                    {SPEED_OPTIONS.map((o) => (
-                      <Choice key={o} label={o} selected={speed === o} onClick={() => setSpeed(o)} />
-                    ))}
-                  </div>
+                  <h2 className="as-qtitle">How fast do you need it?</h2>
+                  {SPEED_OPTIONS.map((o) => (
+                    <AssessOption
+                      key={o}
+                      label={o}
+                      selected={speed === o}
+                      onClick={() => setSpeed(o)}
+                    />
+                  ))}
                 </div>
               )}
 
               {step === 1 && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-xl font-bold text-heading">How much do you need?</h2>
-                    <span className="text-mint-green font-bold tabular-nums">{usd(amount)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={5000}
-                    max={500000}
-                    step={5000}
-                    value={amount}
-                    onChange={(e) => setAmount(Number(e.target.value))}
-                    className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-mint-green mt-2"
-                  />
-                  <div className="flex justify-between text-xs text-text-secondary mt-1">
-                    <span>$5K</span>
-                    <span>$500K+</span>
-                  </div>
-                </div>
+                <AssessSlider
+                  label="How much do you need?"
+                  value={amount}
+                  display={usd(amount)}
+                  min={5000}
+                  max={500000}
+                  step={5000}
+                  onChange={setAmount}
+                  minLabel="$5K"
+                  maxLabel="$500K+"
+                />
               )}
 
               {step === 2 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">
-                    Do you have collateral available?
-                  </h2>
-                  <div className="space-y-3">
-                    {COLLATERAL_OPTIONS.map((o) => (
-                      <Choice
-                        key={o}
-                        label={o}
-                        selected={collateral === o}
-                        onClick={() => setCollateral(o)}
-                      />
-                    ))}
-                  </div>
+                  <h2 className="as-qtitle">Do you have collateral available?</h2>
+                  {COLLATERAL_OPTIONS.map((o) => (
+                    <AssessOption
+                      key={o}
+                      label={o}
+                      selected={collateral === o}
+                      onClick={() => setCollateral(o)}
+                    />
+                  ))}
                 </div>
               )}
 
               {step === 3 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">Estimated credit band</h2>
-                  <div className="space-y-3">
-                    {CREDIT_OPTIONS.map((o) => (
-                      <Choice
-                        key={o}
-                        label={o}
-                        selected={creditBand === o}
-                        onClick={() => setCreditBand(o)}
-                      />
-                    ))}
-                  </div>
+                  <h2 className="as-qtitle">Estimated credit band</h2>
+                  {CREDIT_OPTIONS.map((o) => (
+                    <AssessOption
+                      key={o}
+                      label={o}
+                      selected={creditBand === o}
+                      onClick={() => setCreditBand(o)}
+                    />
+                  ))}
                 </div>
               )}
 
               {step === 4 && (
                 <div>
-                  <h2 className="text-xl font-bold text-heading mb-5">What's it for?</h2>
-                  <div className="grid grid-cols-1 gap-3">
-                    {USE_OPTIONS.map((o) => (
-                      <Choice
-                        key={o}
-                        label={o}
-                        selected={useOfFunds === o}
-                        onClick={() => setUseOfFunds(o)}
-                      />
-                    ))}
-                  </div>
+                  <h2 className="as-qtitle">What's it for?</h2>
+                  {USE_OPTIONS.map((o) => (
+                    <AssessOption
+                      key={o}
+                      label={o}
+                      selected={useOfFunds === o}
+                      onClick={() => setUseOfFunds(o)}
+                    />
+                  ))}
                 </div>
               )}
 
-              <div className="flex items-center justify-between mt-8">
-                <button
-                  type="button"
-                  onClick={() => setStep((s) => Math.max(0, s - 1))}
-                  disabled={step === 0}
-                  className="inline-flex items-center gap-1 text-sm font-semibold text-text-secondary disabled:opacity-40"
-                >
-                  <ArrowLeftIcon className="w-4 h-4" /> Back
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStep((s) => s + 1)}
-                  disabled={!canAdvance}
-                  className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-mint-green text-midnight-blue font-bold hover:opacity-90 disabled:opacity-50"
-                >
-                  {step === TOTAL_STEPS - 1 ? "See my match" : "Next"}
-                  <ArrowRightIcon className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="grid lg:grid-cols-2 gap-8 max-w-6xl mx-auto items-start">
-              {/* Teaser / result */}
-              <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-                <div className="flex items-center gap-2 mb-6">
-                  <SparklesIcon className="w-6 h-6 text-mint-green" />
-                  <h2 className="text-2xl font-bold text-heading">Your best-fit funding</h2>
-                </div>
-
-                {unlocked ? (
-                  <>
-                    <div className="rounded-xl bg-mint-green/10 p-6 mb-5 text-center">
-                      <p className="text-sm text-text-secondary mb-1">Recommended product</p>
-                      <p className="text-2xl font-bold text-mint-green">{best.key}</p>
-                    </div>
-                    <p className="text-body mb-6">{PRODUCT_BLURB[best.key]}</p>
-
-                    <h3 className="font-bold text-heading mb-3">Also worth considering</h3>
-                    <div className="space-y-3">
-                      {runnersUp.map((r) => (
-                        <div
-                          key={r.key}
-                          className="rounded-xl border border-gray-200 dark:border-gray-600 p-4"
-                        >
-                          <p className="font-semibold text-heading mb-1">{r.key}</p>
-                          <p className="text-sm text-text-secondary">{PRODUCT_BLURB[r.key]}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="rounded-xl bg-mint-green/10 p-6 mb-4 text-center relative overflow-hidden">
-                      <p className="text-sm text-text-secondary mb-1">Recommended product</p>
-                      <p className="text-2xl font-bold text-mint-green blur-md select-none">
-                        ●●●●●●●●●
-                      </p>
-                    </div>
-                    <p className="text-center text-text-secondary text-sm">
-                      We've matched your answers to a best-fit product plus two runner-ups. Enter your
-                      info to reveal your recommendation →
-                    </p>
-                  </>
-                )}
+              <AssessNav
+                onBack={() => setStep((s) => Math.max(0, s - 1))}
+                onNext={() => setStep((s) => s + 1)}
+                backDisabled={step === 0}
+                nextDisabled={!canAdvance}
+                nextLabel={step === TOTAL_STEPS - 1 ? "See my match" : "Next"}
+              />
+            </AssessCard>
+          </div>
+        ) : (
+          <div className="as-cols">
+            {/* Teaser / result */}
+            <AssessCard>
+              <div className="as-card-head">
+                <PuzzlePieceIcon />
+                <h2 className="as-card-title">Your best-fit funding</h2>
               </div>
 
-              {/* Gate */}
-              <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-8 shadow-sm">
-                {unlocked ? (
-                  <>
-                    <div className="rounded-xl border border-mint-green/30 bg-mint-green/5 p-4 flex items-start gap-3 mb-4">
-                      <CheckCircleIcon className="w-6 h-6 text-mint-green flex-shrink-0" />
-                      <p className="text-sm text-body">
-                        Thanks, {form.contact_first_name || "there"}! A funding specialist will reach
-                        out within 24 hours to walk through your {best.key} match and your{" "}
-                        {usd(amount)} request — no credit impact to explore options.
-                      </p>
-                    </div>
-                    <p className="text-xs text-text-secondary leading-relaxed">
-                      <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                      This match is an <strong>estimate only</strong>, not an offer, approval, or
-                      guarantee. A merchant cash advance is a purchase of future receivables, not a
-                      loan. Final products and terms depend on underwriting and funder review.
+              {unlocked ? (
+                <>
+                  <AssessVerdict tone="go">
+                    <p className="as-verdict-cap">Recommended product</p>
+                    <p className="as-verdict-big as-t-go">{best.key}</p>
+                  </AssessVerdict>
+
+                  <p className="as-hint" style={{ marginTop: 16 }}>
+                    {PRODUCT_BLURB[best.key]}
+                  </p>
+
+                  <h3 className="as-card-title" style={{ fontSize: 16, margin: "18px 0 12px" }}>
+                    Also worth considering
+                  </h3>
+                  <div className="as-stack">
+                    {runnersUp.map((r) => (
+                      <div key={r.key} className="as-rowcard">
+                        <p className="as-slider-label" style={{ marginBottom: 6 }}>
+                          {r.key}
+                        </p>
+                        <p className="as-hint" style={{ margin: 0 }}>
+                          {PRODUCT_BLURB[r.key]}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <AssessVerdict tone="go" className="as-locked">
+                    <p className="as-verdict-cap">Recommended product</p>
+                    <p className="as-verdict-big as-t-go as-blur">Best-Fit Funding</p>
+                  </AssessVerdict>
+                  <p className="as-hint" style={{ marginTop: 14, textAlign: "center" }}>
+                    We've matched your answers to a best-fit product plus two runner-ups. Enter your
+                    info to reveal your recommendation →
+                  </p>
+                </>
+              )}
+            </AssessCard>
+
+            {/* Gate */}
+            <AssessCard>
+              {unlocked ? (
+                <>
+                  <div className="as-success">
+                    <CheckCircleIcon />
+                    <p>
+                      Thanks, {form.contact_first_name || "there"}! A funding specialist will reach
+                      out within 24 hours to walk through your {best.key} match and your{" "}
+                      {usd(amount)} request — no credit impact to explore options.
                     </p>
+                  </div>
+                  <AssessNote>
+                    This match is an <strong>estimate only</strong>, not an offer, approval, or
+                    guarantee. A merchant cash advance is a purchase of future receivables, not a
+                    loan. Final products and terms depend on underwriting and funder review.
+                  </AssessNote>
+                  <div>
                     <button
                       type="button"
                       onClick={() => {
@@ -468,98 +393,35 @@ export default function FundingMatcherPage() {
                         setUnlocked(false);
                         setForm(EMPTY_CONTACT);
                       }}
-                      className="inline-block mt-5 text-ocean-blue hover:underline text-sm"
+                      className="as-backlink"
+                      style={{ background: "none", border: 0, cursor: "pointer" }}
                     >
                       ↺ Start over
                     </button>
-                    <span className="mx-2 text-gray-300">·</span>
-                    <Link to="/" className="text-ocean-blue hover:underline text-sm">
+                    <span className="as-sep">·</span>
+                    <Link to="/" className="as-backlink">
                       Back to home
                     </Link>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 mb-2">
-                      <LockClosedIcon className="w-6 h-6 text-ocean-blue" />
-                      <h2 className="text-2xl font-bold text-heading">Reveal your match</h2>
-                    </div>
-                    <p className="text-text-secondary mb-6">
-                      Enter your info to unlock your recommended funding product, why it fits, and two
-                      runner-ups. Free, no obligation, no credit impact.
-                    </p>
-
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                      <div className="grid sm:grid-cols-2 gap-4">
-                        <label className="text-sm sm:col-span-2">
-                          <span className="text-gray-600 dark:text-gray-300">Business name</span>
-                          <input
-                            value={form.business_name}
-                            onChange={(e) => set("business_name", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">First name *</span>
-                          <input
-                            required
-                            value={form.contact_first_name}
-                            onChange={(e) => set("contact_first_name", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">Last name</span>
-                          <input
-                            value={form.contact_last_name}
-                            onChange={(e) => set("contact_last_name", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">Email *</span>
-                          <input
-                            required
-                            type="email"
-                            value={form.email}
-                            onChange={(e) => set("email", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                        <label className="text-sm">
-                          <span className="text-gray-600 dark:text-gray-300">Phone *</span>
-                          <input
-                            required
-                            type="tel"
-                            value={form.phone}
-                            onChange={(e) => set("phone", e.target.value)}
-                            className={inputCls}
-                          />
-                        </label>
-                      </div>
-
-                      {error && <p className="text-sm text-red-500">{error}</p>}
-
-                      <button
-                        type="submit"
-                        disabled={submitting}
-                        className="w-full py-3 rounded-lg bg-mint-green text-midnight-blue font-bold hover:opacity-90 disabled:opacity-60"
-                      >
-                        {submitting ? "Matching…" : "Reveal my match →"}
-                      </button>
-                      <p className="text-xs text-gray-400 text-center leading-relaxed">
-                        <ShieldCheckIcon className="w-4 h-4 inline-block mr-1 -mt-0.5" />
-                        No credit impact to check. Matches are estimates, not offers.
-                      </p>
-                    </form>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </section>
-      </main>
-
-      <Footer />
-    </div>
+                  </div>
+                </>
+              ) : (
+                <GateForm
+                  form={form}
+                  onSet={set}
+                  onSubmit={handleSubmit}
+                  submitting={submitting}
+                  error={error}
+                  heading="Reveal your match"
+                  blurb="Enter your info to unlock your recommended funding product, why it fits, and two runner-ups. Free, no obligation, no credit impact."
+                  submitIdle="Reveal my match"
+                  submitBusy="Matching…"
+                  footnote={<>No credit impact to check. Matches are estimates, not offers.</>}
+                />
+              )}
+            </AssessCard>
+          </div>
+        )}
+      </AssessBody>
+    </AssessLayout>
   );
 }

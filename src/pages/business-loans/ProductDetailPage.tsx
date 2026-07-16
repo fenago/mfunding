@@ -1,6 +1,6 @@
 import { useParams, Navigate } from 'react-router-dom';
 import { getProductBySlug } from '../../data/products';
-import ProductPageLayout from '../../components/business-loans/ProductPageLayout';
+import OSProductDetail from '../../components/landing/os/money/OSProductDetail';
 import SEO, {
   generateProductSchema,
   generateFAQSchema,
@@ -46,7 +46,7 @@ export default function ProductDetailPage() {
         ogType="product"
         structuredData={structuredData}
       />
-      <ProductPageLayout product={product} />
+      <OSProductDetail product={product} />
     </>
   );
 }
