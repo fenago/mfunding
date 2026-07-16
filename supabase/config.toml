@@ -172,6 +172,13 @@ verify_jwt = true
 [functions.merchant-doc-uploaded]
 verify_jwt = true
 
+# Content-classify a customer_documents row (read its first page with a cheap vision
+# model) and reconcile document_type. Fired by the admin/portal uploaders after an
+# upload so a mis-typed doc is corrected before the underwriter runs. Signed-in;
+# caller must be ops staff OR own the document's customer (in-code check).
+[functions.classify-document]
+verify_jwt = true
+
 # Staff (or the owning closer) generate + freeze + send a merchant e-signable
 # document from a template for a deal. Injects the state disclosure at merge time.
 [functions.send-merchant-document]

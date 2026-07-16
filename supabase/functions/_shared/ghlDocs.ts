@@ -20,6 +20,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getGhlConfig, ghlFetch } from "./ghl.ts";
+import { reconcileDocumentType } from "./docClassify.ts";
 
 export const DOC_BUCKET = "customer-documents";
 
@@ -37,14 +38,26 @@ export function contentTypeFor(name: string): string {
 // The enum (verified in the DB) is: bank_statement | application | tax_return |
 // id | business_license | voided_check | credit_authorization | personal_guarantee
 // | other. Do NOT invent values — a bad value fails the insert.
+//
+// This is the FAST first pass only. Content classification (docClassify.ts) is the
+// AUTHORITY whenever this returns "other" or disagrees — so it's fine to be a bit
+// liberal here: the SIS incident was a bank statement named
+// "Business_Enhanced_Checking...4340_APR_2026.pdf" that the old bare /statement/
+// regex typed "other" and the underwriter never saw. The specific types are checked
+// BEFORE the broad bank-statement signals so "checking-account authorization" style
+// names don't get mislabeled.
 export function docTypeFor(s: string): string {
   const n = s.toLowerCase();
-  if (/statement/.test(n)) return "bank_statement";
   if (/applica/.test(n)) return "application";
   if (/void|cheque|\bcheck\b/.test(n)) return "voided_check";
-  if (/tax\s*return|1120|1040|schedule\s*c/.test(n)) return "tax_return";
-  if (/business licen|articles|incorporat|ein letter/.test(n)) return "business_license";
+  if (/tax\s*return|1120|1040|schedule\s*c|w-?2\b|1099/.test(n)) return "tax_return";
+  if (/business licen|articles|incorporat|ein letter|operating agreement/.test(n)) return "business_license";
+  if (/credit auth|background check|consent to pull/.test(n)) return "credit_authorization";
+  if (/personal guarant|\bpg\b/.test(n)) return "personal_guarantee";
   if (/driver|licen|passport|photo id|\bid\b/.test(n)) return "id";
+  // Bank-statement signals — deliberately LAST so the specific types above win. Adds
+  // the checking/savings/account patterns that the SIS filenames used.
+  if (/statement|\bstmt\b|e-?statement|checking|\bchk\b|savings|\bsav\b|\bacct\b|\baccount\b|bank/.test(n)) return "bank_statement";
   return "other";
 }
 
@@ -126,6 +139,10 @@ export async function ingestGhlDocuments(
   if (exErr) throw new Error(`could not read existing documents: ${exErr.message}`);
   const have = new Set((existingDocs ?? []).map((r: { external_ref: string }) => r.external_ref));
 
+  // Newly-synced docs whose filename typed them "other" — content-classified after
+  // the loop so a mis-named bank statement never lands invisible to the underwriter.
+  const otherDocIds: string[] = [];
+
   for (const file of files.slice(0, limit)) {
     if (have.has(file.ref)) { out.skipped++; continue; }
     try {
@@ -148,7 +165,7 @@ export async function ingestGhlDocuments(
       const up = await db.storage.from(DOC_BUCKET).upload(path, bytes, { contentType: ct, upsert: true });
       if (up.error) { out.failed++; console.warn(`[ghlDocs] storage upload failed: ${up.error.message}`); continue; }
 
-      const { error: insErr } = await db.from("customer_documents").insert({
+      const { data: insRow, error: insErr } = await db.from("customer_documents").insert({
         customer_id: customerId,
         document_type: docType,
         filename: file.name,
@@ -158,7 +175,7 @@ export async function ingestGhlDocuments(
         status: "pending",
         external_ref: file.ref,
         description: "Auto-synced from the merchant's GHL upload.",
-      });
+      }).select("id").maybeSingle();
       if (insErr) {
         // 23505 = the unique (customer_id, external_ref) index — another run beat us
         // to it. That IS the idempotency guarantee working, not a failure.
@@ -170,9 +187,29 @@ export async function ingestGhlDocuments(
       out.synced++;
       out.documents.push({ filename: file.name, document_type: docType, external_ref: file.ref });
       if (docType === "bank_statement") out.bankStatementsAdded++;
+      // Filename couldn't type it → let CONTENT decide before it becomes invisible to
+      // the underwriter (the SIS failure). Only the "other" case here to keep ingest
+      // cheap; disagreements on typed docs are caught on the upload/underwrite paths.
+      if (docType === "other" && insRow?.id) otherDocIds.push(insRow.id as string);
     } catch (e) {
       out.failed++;
       console.warn(`[ghlDocs] ingest error for ${file.name}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // Content-classify the "other"-typed docs (concurrently; best-effort — a
+  // classification hiccup must never fail the ingest). A corrected bank_statement
+  // updates the row before the underwriter reads it.
+  if (otherDocIds.length) {
+    try {
+      const outcomes = await Promise.all(
+        otherDocIds.map((id) => reconcileDocumentType(db, { documentId: id, authority: "machine" })),
+      );
+      // Count any that content promoted to bank_statement — the DB row is already
+      // corrected; this only keeps the returned tally honest for the caller's log.
+      for (const oc of outcomes) if (oc.changed && oc.to === "bank_statement") out.bankStatementsAdded++;
+    } catch (e) {
+      console.warn(`[ghlDocs] content reclassify pass failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 

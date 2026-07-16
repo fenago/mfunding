@@ -28,6 +28,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
+import { reconcileDocumentType } from "../_shared/docClassify.ts";
 import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 
@@ -356,6 +357,34 @@ Deno.serve(async (req) => {
       if (error) throw new Error(`could not read documents: ${error.message}`);
       return (rows ?? []) as Any[];
     };
+
+    // ── PREFLIGHT: content-classify any "other"-typed docs BEFORE selecting bank
+    // statements. This is the direct fix for the SIS-Financial failure: three bank
+    // statements were typed "other" (filename had no "statement") and the underwriter
+    // never saw them. Reading the first page corrects the type so they're analyzed.
+    // Best-effort, never throws (docClassify guarantees it).
+    let reclassifiedNote: string | null = null;
+    try {
+      const { data: otherDocs } = await db
+        .from("customer_documents")
+        .select("id")
+        .eq("customer_id", deal.customer_id)
+        .eq("document_type", "other");
+      if (otherDocs && otherDocs.length) {
+        const outcomes = await Promise.all(
+          otherDocs.map((d) => reconcileDocumentType(db, { documentId: d.id as string, authority: "machine" })),
+        );
+        const promoted = outcomes.filter((o) => o.changed);
+        if (promoted.length) {
+          const toBank = promoted.filter((o) => o.to === "bank_statement").length;
+          reclassifiedNote = `Content-corrected ${promoted.length} previously-"other" document(s) before underwriting` +
+            (toBank ? ` (${toBank} now bank statement${toBank === 1 ? "" : "s"})` : "") + ".";
+          console.log(`[underwrite-deal] preflight reclassify for deal ${deal.deal_number}: ${reclassifiedNote}`);
+        }
+      }
+    } catch (e) {
+      console.warn("[underwrite-deal] preflight reclassify failed:", e instanceof Error ? e.message : e);
+    }
 
     let docs = await loadDocs();
     let bankDocs = docs.filter((d) => d.document_type === "bank_statement");
@@ -896,6 +925,31 @@ Deno.serve(async (req) => {
         message: `Per-month data repaired on ${dataQualityIssues.length} field(s): ${dataQualityIssues.join("; ")}.`,
       });
     }
+    // docs_not_analyzed SAFETY NET (always, regardless of the above): surface every
+    // document on file that the underwriter did NOT analyze — anything that isn't a
+    // bank statement (which is analyzed) or an application (loaded as context). Types
+    // were already content-corrected in preflight, so what remains is genuinely
+    // non-bank docs; the flag makes a mis-typed statement impossible to repeat
+    // SILENTLY — a human sees exactly what was skipped and its type.
+    try {
+      const { data: allDocTypes } = await db
+        .from("customer_documents")
+        .select("document_type")
+        .eq("customer_id", deal.customer_id);
+      const notAnalyzed = (allDocTypes ?? []).filter(
+        (d) => d.document_type !== "bank_statement" && d.document_type !== "application",
+      );
+      if (notAnalyzed.length) {
+        const types = Array.from(new Set(notAnalyzed.map((d) => String(d.document_type)))).sort();
+        flags.push({
+          code: "docs_not_analyzed",
+          severity: "warn",
+          message: `${notAnalyzed.length} document(s) on file were not analyzed (types: ${types.join(", ")}) — verify their types.`,
+        });
+      }
+    } catch (e) {
+      console.warn("[underwrite-deal] docs_not_analyzed check failed:", e instanceof Error ? e.message : e);
+    }
 
     // ---- Affordability rating (capacity vs. amount requested) ----
     let affordabilityRating: "strong" | "adequate" | "tight" | "unaffordable";
@@ -1129,6 +1183,8 @@ Deno.serve(async (req) => {
       run_mode: mode,
       // Set when this run had to pull the merchant's documents out of GHL first.
       ingest_note: ingestNote,
+      // Set when preflight content-corrected any "other"-typed docs before analysis.
+      reclassified_note: reclassifiedNote,
       docs_hash: docsHash,
       risk_rating: riskRating,
       affordability_rating: affordabilityRating,

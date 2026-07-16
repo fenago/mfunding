@@ -48,6 +48,7 @@ import {
   serviceClient,
   upsertContact,
 } from "../_shared/ghl.ts";
+import { reconcileDocumentType } from "../_shared/docClassify.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -129,8 +130,20 @@ Deno.serve(async (req) => {
   }
   if (!isOwner && !isStaff) return json({ error: "Forbidden" }, 403);
 
-  const docType = (doc.document_type as string) ?? "other";
+  // --- 0) Content classification. The merchant picks the slot/type in the portal,
+  // so it can be wrong (a bank statement dropped into the wrong request, or an
+  // untyped ad-hoc upload). Read the first page and correct the type BEFORE we
+  // decide whether to run the underwriter or stop a chase — otherwise a mis-slotted
+  // statement stays invisible (the SIS failure, portal edition). Best-effort:
+  // authority 'machine' since a merchant's pick isn't ops-authoritative.
+  let docType = (doc.document_type as string) ?? "other";
   const filename = (doc.filename as string) ?? "document";
+  try {
+    const oc = await reconcileDocumentType(db, { documentId, authority: "machine" });
+    if (oc.changed && oc.to) docType = oc.to;
+  } catch (e) {
+    console.warn("[merchant-doc-uploaded] content classify failed (upload unaffected):", e instanceof Error ? e.message : e);
+  }
 
   // --- 1) Activity trail (merchant can't write activity_log directly). ---
   // interaction_type 'document_uploaded' is an allowed activity_log value;

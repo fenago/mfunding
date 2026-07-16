@@ -178,6 +178,17 @@ export default function DocumentUploader({
         prev.map((f) => (f.id === id ? { ...f, status: "success" as const } : f))
       );
 
+      // Content-classify the upload server-side (fire-and-forget). The ops user's
+      // dropdown pick is authoritative ('human' → a specific type is never
+      // overwritten, only a disagreement is logged), but an explicit "other" still
+      // gets filled, and a mis-slotted statement is caught before it goes invisible
+      // to the underwriter.
+      if (entityType === "customer") {
+        void supabase.functions
+          .invoke("classify-document", { body: { document_id: data.id, authority: "human" } })
+          .catch((e) => console.warn("[classify-document] notify failed (non-blocking):", e));
+      }
+
       // Auto-run the AI underwriter when a bank statement lands (fire-and-forget;
       // resolves the customer's deal server-side). The GHL-side auto-run already
       // covers statements that arrive through GHL.
