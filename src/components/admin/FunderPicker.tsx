@@ -953,15 +953,49 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               a fan-out when the signed application isn't attached app-side, so say
               so BEFORE the click (not after). Loud red when it's signed in GHL and
               just needs uploading; softer red when it isn't signed yet. */}
+          {/* The FIX lives in the same box as the block. This banner used to point
+              at "the slot below" — which only rendered when GHL showed the doc as
+              signed, so in the commonest blocked state there was no upload control
+              on the page at all. The banner IS the slot now. */}
           {!signedAppInApp && (
-            <div className="rounded-md border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 text-[12px] text-rose-700 dark:text-rose-300 flex items-start gap-2">
-              <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              <span>
-                <span className="font-semibold">Submissions blocked</span> — the signed application isn't attached in the system.{" "}
-                {signedAppInGhl
-                  ? "It's signed in GHL — upload it in the slot below to unblock every funder submission."
-                  : "Once the merchant e-signs it, upload it in the slot below. Nothing goes out to funders until it's on file."}
-              </span>
+            <div className="rounded-md border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-3 py-2 space-y-2">
+              <div className="flex items-start gap-2 text-[12px] text-rose-700 dark:text-rose-300">
+                <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>
+                  <span className="font-semibold">Submissions blocked</span> — the signed application isn't attached in the system.{" "}
+                  {signedAppInGhl
+                    ? "It's signed in GHL — download it once and upload it right here."
+                    : "Nothing goes out to funders until it's on file. Have the signed PDF (e-signed, or scanned from email)? Upload it right here."}
+                </span>
+              </div>
+              {signedAppInGhl && (
+                <a
+                  href={GHL_COMPLETED_DOCS_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] text-ocean-blue hover:underline inline-flex items-center gap-1"
+                >
+                  Open GHL → Documents &amp; Contracts (Completed) <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+                </a>
+              )}
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => { setSignedAppFile(e.target.files?.[0] ?? null); setUploadAppError(null); }}
+                  className="text-[11px] text-gray-600 dark:text-gray-300 file:mr-2 file:rounded file:border-0 file:bg-ocean-blue/10 file:px-2 file:py-1 file:text-ocean-blue"
+                />
+                <button
+                  type="button"
+                  disabled={!signedAppFile || uploadingApp}
+                  onClick={uploadSignedApp}
+                  className="text-[11px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                >
+                  {uploadingApp ? <ArrowPathIcon className="w-3 h-3 animate-spin" /> : <DocumentArrowUpIcon className="w-3 h-3" />}
+                  {uploadingApp ? "Uploading…" : "Upload signed application — unblocks submissions"}
+                </button>
+              </div>
+              {uploadAppError && <p className="text-[11px] text-red-600 dark:text-red-400">{uploadAppError}</p>}
             </div>
           )}
 
@@ -982,48 +1016,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
             )}
           </div>
 
-          {/* Signed application slot — download the signed PDF from GHL once, drop
-              it here, and the engine attaches it to every funder submission. */}
-          {signedAppInApp ? (
+          {/* Signed-application status — the upload lives in the blocked banner
+              above; this is only the green all-clear once it's on file. */}
+          {signedAppInApp && (
             <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-[12px] text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1.5">
               <CheckCircleIcon className="w-4 h-4 flex-shrink-0" />
               Signed application on file — attaches to every submission.
-            </div>
-          ) : signedAppInGhl ? (
-            <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 space-y-2">
-              <p className="text-[12px] text-amber-700 dark:text-amber-300">
-                Signed in GHL — download it once and drop it here so it attaches to every funder submission.
-              </p>
-              <a
-                href={GHL_COMPLETED_DOCS_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="text-[11px] text-ocean-blue hover:underline inline-flex items-center gap-1"
-              >
-                Open GHL → Documents &amp; Contracts (Completed) <ArrowTopRightOnSquareIcon className="w-3 h-3" />
-              </a>
-              <div className="flex items-center gap-2 flex-wrap">
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  onChange={(e) => { setSignedAppFile(e.target.files?.[0] ?? null); setUploadAppError(null); }}
-                  className="text-[11px] text-gray-600 dark:text-gray-300 file:mr-2 file:rounded file:border-0 file:bg-ocean-blue/10 file:px-2 file:py-1 file:text-ocean-blue"
-                />
-                <button
-                  type="button"
-                  disabled={!signedAppFile || uploadingApp}
-                  onClick={uploadSignedApp}
-                  className="text-[11px] font-semibold px-2 py-1 rounded border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                >
-                  {uploadingApp ? <ArrowPathIcon className="w-3 h-3 animate-spin" /> : <DocumentArrowUpIcon className="w-3 h-3" />}
-                  {uploadingApp ? "Uploading…" : "Upload signed application"}
-                </button>
-              </div>
-              {uploadAppError && <p className="text-[11px] text-red-600 dark:text-red-400">{uploadAppError}</p>}
-            </div>
-          ) : (
-            <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-[12px] text-gray-400">
-              No signed application yet.
             </div>
           )}
 
