@@ -547,7 +547,12 @@ Deno.serve(async (req) => {
     // Aggregation runs over the UNIQUE set only, so months_covered /
     // statements_analyzed / all revenue math never double-count a duplicate.
     const analyzed = perStatement.filter((s) => !s._error);
-    const monthsCovered = analyzed.length;
+    // DISTINCT calendar months — a two-account merchant's pair of April statements
+    // is ONE month of coverage, not two. (statements_analyzed carries the file
+    // count.) Fall back to the statement count only when no month labels came back.
+    const monthsCovered =
+      new Set(analyzed.map((s) => String(s.month ?? "").trim().toLowerCase()).filter(Boolean)).size ||
+      analyzed.length;
 
     // Explicit per-month table rows (chronologically sortable in the UI):
     // month | true deposit count | true-deposit $ | ending balance | avg daily balance | negative days.

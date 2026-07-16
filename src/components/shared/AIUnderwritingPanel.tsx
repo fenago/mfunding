@@ -299,7 +299,9 @@ function ResultView({ r }: { r: DealUnderwriting }) {
             </span>
           )}
           <span className="text-xs opacity-80 ml-auto">
-            {num(m.statements_analyzed)} statements · {num(m.months_covered)} months
+            {/* Months = DISTINCT calendar months, computed from the statement labels
+                so runs stored before the months_covered fix also render right. */}
+            {num(m.statements_analyzed)} statements · {num(new Set(stmtMonths.filter(Boolean)).size || m.months_covered)} months
           </span>
         </div>
 
