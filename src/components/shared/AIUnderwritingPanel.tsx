@@ -264,14 +264,18 @@ function ResultView({ r }: { r: DealUnderwriting }) {
   // per_statement (which is in UPLOAD order, not calendar order) — zip the month
   // labels in, then sort chronologically so the trend reads left-to-right.
   const stmtMonths = (r.per_statement ?? []).map((s) => (s as { month?: string } | null)?.month ?? "");
-  const chartData = (m.net_retained_by_month ?? [])
-    .map((d, i) => {
-      const isObj = typeof d === "object" && d !== null;
-      return {
-        month: (isObj ? (d as { month?: string }).month : undefined) ?? stmtMonths[i] ?? `Month ${i + 1}`,
-        net_retained: Number(isObj ? (d as { net_retained?: number }).net_retained ?? 0 : d) || 0,
-      };
-    })
+  // One bar per CALENDAR month. A merchant with two bank accounts yields two
+  // per-statement entries for the same month — a reader thinks in months, not
+  // files, so same-month values SUM here (total retained across all accounts).
+  const chartByMonth = new Map<string, number>();
+  (m.net_retained_by_month ?? []).forEach((d, i) => {
+    const isObj = typeof d === "object" && d !== null;
+    const month = (isObj ? (d as { month?: string }).month : undefined) ?? stmtMonths[i] ?? `Month ${i + 1}`;
+    const val = Number(isObj ? (d as { net_retained?: number }).net_retained ?? 0 : d) || 0;
+    chartByMonth.set(month, (chartByMonth.get(month) ?? 0) + val);
+  });
+  const chartData = [...chartByMonth.entries()]
+    .map(([month, net_retained]) => ({ month, net_retained }))
     .sort((a, b) => {
       const ta = Date.parse(`1 ${a.month}`);
       const tb = Date.parse(`1 ${b.month}`);
@@ -352,6 +356,10 @@ function ResultView({ r }: { r: DealUnderwriting }) {
               <YAxis tick={{ fontSize: 12 }} stroke="#8B949E" tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`} />
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
+                // Recharts colors item text from the series fill by default, which
+                // reads near-black on this dark tooltip — pin label AND items light.
+                labelStyle={{ color: "#F0F6FC", fontWeight: 600 }}
+                itemStyle={{ color: "#F0F6FC" }}
                 formatter={(value) => [`$${Math.round(Number(value) || 0).toLocaleString()}`, "Net retained"]}
               />
               <Bar dataKey="net_retained" radius={[4, 4, 0, 0]}>
@@ -534,7 +542,37 @@ function AffordabilitySection({ a }: { a: UWAffordability }) {
 }
 
 // ── Explicit per-month metrics table (chronological) ─────────────────────────
-function PerMonthTable({ rows }: { rows: UWPerMonth[] }) {
+// One row per CALENDAR month: same-month statements from different bank accounts
+// merge — flows and balances SUM (total deposits, total cash across accounts),
+// negative days sum (account-days in the red). `accounts` drives the "2 accounts"
+// tag so a merged row is visibly a merge, not a single statement.
+function mergeMonths(rows: UWPerMonth[]): (UWPerMonth & { accounts: number })[] {
+  const nsum = (a: number | null | undefined, b: number | null | undefined): number | null =>
+    a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+  const by = new Map<string, UWPerMonth & { accounts: number }>();
+  rows.forEach((r, i) => {
+    const key = r.month ?? `Month ${i + 1}`;
+    const cur = by.get(key);
+    if (!cur) {
+      by.set(key, { ...r, month: key, accounts: 1 });
+      return;
+    }
+    cur.accounts += 1;
+    cur.deposit_count = nsum(cur.deposit_count, r.deposit_count);
+    cur.true_deposits = (cur.true_deposits ?? 0) + (r.true_deposits ?? 0);
+    cur.ending_balance = nsum(cur.ending_balance, r.ending_balance);
+    cur.average_daily_balance = nsum(cur.average_daily_balance, r.average_daily_balance);
+    cur.negative_days = (cur.negative_days ?? 0) + (r.negative_days ?? 0);
+  });
+  return [...by.values()].sort((a, b) => {
+    const ta = Date.parse(`1 ${a.month}`);
+    const tb = Date.parse(`1 ${b.month}`);
+    return Number.isNaN(ta) || Number.isNaN(tb) ? 0 : ta - tb;
+  });
+}
+
+function PerMonthTable({ rows: rawRows }: { rows: UWPerMonth[] }) {
+  const rows = mergeMonths(rawRows);
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 overflow-x-auto">
       <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Per-month metrics</h4>
@@ -552,7 +590,12 @@ function PerMonthTable({ rows }: { rows: UWPerMonth[] }) {
         <tbody>
           {rows.map((r, i) => (
             <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
-              <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white">{r.month ?? `Month ${i + 1}`}</td>
+              <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white">
+                {r.month ?? `Month ${i + 1}`}
+                {r.accounts > 1 && (
+                  <span className="ml-1.5 text-[10px] font-normal text-gray-400 dark:text-gray-500">· {r.accounts} accounts</span>
+                )}
+              </td>
               <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{num(r.deposit_count)}</td>
               <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(r.true_deposits)}</td>
               <td className={`py-2 px-4 text-right ${(r.ending_balance ?? 0) < 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
