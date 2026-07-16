@@ -3,7 +3,7 @@ import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIco
 import { getOpenDealsForQueue, logContactAttempt, STIPS_PENDING_STATUSES, type ContactOutcome, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
-import { dateTimeET, etDateTimeLocalToUtcIso, statedTimeInET, timeET, tomorrowAtEtIso } from "../../utils/time";
+import { dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, statedTimeInET, timeET, tomorrowAtEtIso } from "../../utils/time";
 import LeadGradeChip from "./LeadGradeChip";
 
 const HOUR = 3_600_000;
@@ -482,6 +482,31 @@ function matchesQuery(d: QueueDeal, q: string): boolean {
     .split(/\s+/)
     .filter(Boolean)
     .every((word) => hay.includes(word) || flat.includes(word.replace(/\s+/g, "")));
+}
+
+/** One exclusive chip group: exactly one option active; the "all" option renders
+ *  as the quiet default. Generic over the union type so each filter keeps its own. */
+function FilterChips<T extends string>({
+  value, onPick, options,
+}: { value: T; onPick: (v: T) => void; options: [T, string][] }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {options.map(([v, label]) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => onPick(v)}
+          className={`px-2 py-0.5 rounded-full border font-medium transition-colors ${
+            value === v
+              ? "bg-mint-green/20 border-mint-green text-emerald-700 dark:text-emerald-300"
+              : "border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </span>
+  );
 }
 
 function nameOf(d: QueueDeal): string {
@@ -1006,7 +1031,15 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
 
   const mineScope = (d: QueueDeal) => !d.assigned_closer_id || d.assigned_closer_id === effectiveUserId;
 
-  const items = useMemo(() => {
+  // Pre-built filters (owner ask: "too difficult to find stuff in My Day").
+  // Three independent axes that AND together; each is a one-click chip row.
+  const [kindFilter, setKindFilter] = useState<"all" | "live_transfer" | "realtime_appt">("all");
+  const [ageFilter, setAgeFilter] = useState<"all" | "today" | "24h" | "48h">("all");
+  const [needFilter, setNeedFilter] = useState<"all" | "untouched" | "missed_handoff" | "callback">("all");
+  const filtersActive = kindFilter !== "all" || ageFilter !== "all" || needFilter !== "all";
+  const clearFilters = () => { setKindFilter("all"); setAgeFilter("all"); setNeedFilter("all"); };
+
+  const baseItems = useMemo(() => {
     const scoped = deals.filter((d) => {
       if (!canToggle) return mineScope(d);
       return scope === "all" ? true : mineScope(d);
@@ -1043,6 +1076,26 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         Date.parse(a.u.since) - Date.parse(b.u.since));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deals, scope, canToggle, effectiveUserId, now, query]);
+
+  // Second pass: the chip filters. Applied AFTER search/scope/ranking so
+  // "showing N of M" can tell the truth about what the chips hid.
+  const items = useMemo(() => {
+    if (!filtersActive) return baseItems;
+    return baseItems.filter(({ deal: d }) => {
+      if (kindFilter !== "all" && d.lead_source !== kindFilter) return false;
+      if (ageFilter === "today") {
+        // "Today" is the EASTERN calendar day — the business clock, not the laptop's.
+        if (dateKeyET(d.created_at) !== dateKeyET(new Date(now))) return false;
+      } else if (ageFilter !== "all") {
+        const hours = ageFilter === "24h" ? 24 : 48;
+        if (now - Date.parse(d.created_at) > hours * 3600_000) return false;
+      }
+      if (needFilter === "untouched" && (d.first_attempt_at || d.contacted_at)) return false;
+      if (needFilter === "missed_handoff" && handoffState(d, now) !== "missed") return false;
+      if (needFilter === "callback" && !d.callback_at) return false;
+      return true;
+    });
+  }, [baseItems, filtersActive, kindFilter, ageFilter, needFilter, now]);
 
   // Two lanes off the ONE classification. Rank ordering is preserved inside each
   // lane (items is already sorted; filter keeps that order).
@@ -1125,8 +1178,49 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         </div>
       </div>
 
+      {/* Pre-built filter chips — one click each, they AND together. */}
+      {!collapsed && !loading && baseItems.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-3 text-[11px]">
+          <FilterChips
+            value={kindFilter}
+            onPick={setKindFilter}
+            options={[["all", "All kinds"], ["live_transfer", "📞 Live transfers"], ["realtime_appt", "⏱ Real-time"]]}
+          />
+          <span className="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-0.5" />
+          <FilterChips
+            value={ageFilter}
+            onPick={setAgeFilter}
+            options={[["all", "Any time"], ["today", "Today"], ["24h", "Last 24h"], ["48h", "Last 48h"]]}
+          />
+          <span className="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-0.5" />
+          <FilterChips
+            value={needFilter}
+            onPick={setNeedFilter}
+            options={[["all", "Everything"], ["untouched", "⚡ Untouched"], ["missed_handoff", "❌ Missed handoff"], ["callback", "🕐 Has callback"]]}
+          />
+          {filtersActive && (
+            <>
+              <span className="text-gray-400 ml-1">{items.length} of {baseItems.length}</span>
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="inline-flex items-center gap-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                title="Clear all filters"
+              >
+                <XMarkIcon className="w-3 h-3" /> clear
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {!collapsed && (loading ? (
         <p className="text-sm text-gray-400 py-2">Loading your queue…</p>
+      ) : items.length === 0 && filtersActive ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400 py-2">
+          Nothing matches these filters ({baseItems.length} card{baseItems.length === 1 ? "" : "s"} hidden) —{" "}
+          <button type="button" onClick={clearFilters} className="text-ocean-blue hover:underline">clear filters</button>.
+        </p>
       ) : items.length === 0 ? (
         query.trim() ? (
           <p className="text-sm text-gray-500 dark:text-gray-400 py-2">
