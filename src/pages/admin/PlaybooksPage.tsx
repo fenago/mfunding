@@ -1259,6 +1259,49 @@ function SignedAppActionBanner({ customerId, attached, onUploaded }: { customerI
   );
 }
 
+// Compact e-sign status for the CONTEXT BAR — the answer to "did they sign the
+// disclosure and the application?" without scrolling to the full panel below.
+// Same data source as DocsBackPanel (ghl-docs-status), rendered as one chip per
+// document group: ✓ signed (emerald) / ⏳ current status (amber).
+function DocsBackChips({ ghlContactId }: { ghlContactId: string }) {
+  const [groups, setGroups] = useState<DocGroup[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setGroups(null);
+    supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
+      .then(({ data }) => {
+        if (cancelled || data?.error) return;
+        setGroups(groupDocs((data?.documents ?? []) as GhlDoc[]));
+      })
+      .catch(() => { /* the full panel below surfaces errors; chips stay quiet */ });
+    return () => { cancelled = true; };
+  }, [ghlContactId]);
+
+  if (!groups || groups.length === 0) return null;
+  const short = (name: string) =>
+    /broker\s*compensation|broker\s*agreement/i.test(name) ? "Broker agmt"
+    : /application|04b|04c/i.test(name) ? "Application"
+    : /tcpa|consent/i.test(name) ? "Consent"
+    : name.length > 16 ? `${name.slice(0, 14)}…` : name;
+  return (
+    <>
+      {groups.map((g) => (
+        <span
+          key={g.key}
+          title={`${g.latest.name} — ${g.latest.signed ? "signed" : g.latest.status}${g.latest.updatedAt ? ` · ${dateTimeET(g.latest.updatedAt)}` : ""}`}
+          className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border ${
+            g.latest.signed
+              ? "bg-emerald-50 dark:bg-emerald-900/30 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300"
+              : "bg-amber-50 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300"
+          }`}
+        >
+          {g.latest.signed ? "✍️" : "⏳"} {short(g.latest.name)} {g.latest.signed ? "✓ signed" : `· ${g.latest.status}`}
+        </span>
+      ))}
+    </>
+  );
+}
+
 function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; customerId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1572,6 +1615,9 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {/* Send any document RIGHT NOW, at any stage — the application paths
                   plus the registered agreements (broker/TCPA consent). */}
               <AdHocSendMenu dealId={deal.id} merchantEmail={deal.customer?.email} />
+              {/* Signature status at a glance — did they sign the disclosure + the
+                  application? No scrolling to the Docs-back panel to find out. */}
+              {deal.ghl_contact_id && <DocsBackChips ghlContactId={deal.ghl_contact_id} />}
 
               {/* The shared company Google Voice line — call/text on the company
                   number, with the staff-only login one reveal away. */}
