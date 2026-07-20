@@ -341,12 +341,30 @@ interface CallRow {
   direction: string | null;
   duration_seconds: number | null;
   called_at: string | null;
+  call_status: string | null;
+  disposition: string | null;
 }
-// Per-deal outbound-call summary folded from ghl_call_log.
+// Per-deal outbound-call summary folded from ghl_call_log. Contact tiers PREFER the
+// human disposition (ground truth), duration/status heuristic as fallback — kept
+// identical to campaignAuditService (the definition of record).
 interface CallSummary {
-  calls: number;         // outbound call count
-  maxDuration: number;   // longest outbound call (seconds)
+  calls: number;             // outbound call count
   firstDialAt: string | null;
+  realConversation: boolean; // any call is a genuine conversation
+  connected: boolean;        // any call connected (incl. voicemail pickups / gatekeeper)
+}
+
+// Disposition overrides duration: a graded 'voicemail' is NOT connected even if it
+// ran long. Keep in sync with campaignAuditService.classifyCall.
+const REAL_DISPOSITIONS = new Set(["spoke", "never_requested", "callback_set"]);
+function callIsReal(c: CallRow): boolean {
+  if (c.disposition) return REAL_DISPOSITIONS.has(c.disposition);
+  return c.call_status === "completed" && (Number(c.duration_seconds) || 0) >= REAL_CONVO_SECS;
+}
+function callIsConnected(c: CallRow): boolean {
+  if (callIsReal(c)) return true;
+  if (c.disposition) return c.disposition === "gatekeeper";
+  return (Number(c.duration_seconds) || 0) >= CONNECTED_SECS;
 }
 
 /**
@@ -362,13 +380,14 @@ async function fetchCallSummaries(deals: DealRow[]): Promise<Map<string, CallSum
   if (dealIds.length === 0) return map;
   const contactIds = [...new Set(deals.map((d) => d.ghl_contact_id).filter(Boolean) as string[])];
 
+  const CALL_COLS = "deal_id, ghl_contact_id, direction, duration_seconds, called_at, call_status, disposition";
   const [a, b] = await Promise.all([
     supabase.from("ghl_call_log")
-      .select("deal_id, ghl_contact_id, direction, duration_seconds, called_at")
+      .select(CALL_COLS)
       .eq("direction", "outbound").in("deal_id", dealIds),
     contactIds.length
       ? supabase.from("ghl_call_log")
-          .select("deal_id, ghl_contact_id, direction, duration_seconds, called_at")
+          .select(CALL_COLS)
           .eq("direction", "outbound").is("deal_id", null).in("ghl_contact_id", contactIds)
       : Promise.resolve({ data: [] as CallRow[], error: null }),
   ]);
@@ -389,10 +408,11 @@ async function fetchCallSummaries(deals: DealRow[]): Promise<Map<string, CallSum
     }
   }
   const apply = (dealId: string, c: CallRow) => {
-    const s = map.get(dealId) ?? { calls: 0, maxDuration: 0, firstDialAt: null };
+    const s = map.get(dealId) ?? { calls: 0, firstDialAt: null, realConversation: false, connected: false };
     s.calls += 1;
-    s.maxDuration = Math.max(s.maxDuration, Number(c.duration_seconds) || 0);
     if (c.called_at && (!s.firstDialAt || c.called_at < s.firstDialAt)) s.firstDialAt = c.called_at;
+    if (callIsReal(c)) s.realConversation = true;
+    if (callIsConnected(c)) s.connected = true;
     map.set(dealId, s);
   };
   for (const c of byId) if (c.deal_id) apply(c.deal_id, c);
@@ -426,12 +446,12 @@ function foldDeal(a: Acc, d: DealRow, cs: CallSummary | undefined) {
   a.leads += 1;
   a.byStatus[d.status] = (a.byStatus[d.status] || 0) + 1;
 
-  // Contactability from the call log — never contacted_at.
+  // Contactability from the call log — never contacted_at. Dispositions preferred,
+  // duration/status heuristic as fallback (see callIsReal / callIsConnected).
   const calls = cs?.calls ?? 0;
-  const maxDur = cs?.maxDuration ?? 0;
   if (calls > 0) a.dialed += 1;
-  if (maxDur >= CONNECTED_SECS) a.connected += 1;
-  if (maxDur >= REAL_CONVO_SECS) a.realConversations += 1;
+  if (cs?.connected) a.connected += 1;
+  if (cs?.realConversation) a.realConversations += 1;
   if (cs?.firstDialAt && has(d.created_at)) {
     const hrs = (Date.parse(cs.firstDialAt) - Date.parse(d.created_at as string)) / 3_600_000;
     if (Number.isFinite(hrs) && hrs >= 0) a.firstDialHours.push(hrs); // guard negatives / garbage

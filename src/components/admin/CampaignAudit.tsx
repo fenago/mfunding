@@ -31,6 +31,10 @@ const dialTone = (v: number | null): Tone => (v == null ? "neutral" : v >= 85 ? 
 const badEmailTone = (v: number | null): Tone => (v == null ? "neutral" : v <= 5 ? "good" : v <= 15 ? "warn" : "bad");
 const realRevTone = (v: number | null): Tone => (v == null ? "neutral" : v >= 80 ? "good" : v >= 60 ? "warn" : "bad");
 const bogusTone = (v: number | null): Tone => (v == null ? "neutral" : v === 0 ? "good" : v <= 5 ? "warn" : "bad");
+const wrongNumTone = (n: number): Tone => (n === 0 ? "neutral" : "bad");
+// Higher graded coverage = more human-verified truth; low coverage means the tiers
+// still lean on the duration heuristic.
+const gradedTone = (v: number | null): Tone => (v == null ? "neutral" : v >= 60 ? "good" : v >= 25 ? "warn" : "neutral");
 
 const GRADE_CHIP: Record<string, string> = {
   A: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
@@ -155,6 +159,7 @@ function ComparisonTable({ ranked }: { ranked: { c: Campaign; m?: AuditMetrics }
               <th className="px-4 py-3 font-medium">Dialed</th>
               <th className="px-4 py-3 font-medium">Real convo</th>
               <th className="px-4 py-3 font-medium">Median 1st dial</th>
+              <th className="px-4 py-3 font-medium">Wrong #</th>
               <th className="px-4 py-3 font-medium">Bad email</th>
               <th className="px-4 py-3 font-medium">Revenue real</th>
               <th className="px-4 py-3 font-medium">Bogus</th>
@@ -183,6 +188,9 @@ function ComparisonTable({ ranked }: { ranked: { c: Campaign; m?: AuditMetrics }
                     {m.realConversations} <span className="font-normal text-gray-400">({pct(m.realConversationsPct)})</span>
                   </td>
                   <td className="px-4 py-3 text-gray-700 dark:text-gray-200">{mins(m.medianMinutesToFirstDial)}</td>
+                  <td className={`px-4 py-3 font-semibold ${toneCls(wrongNumTone(m.wrongNumbers))}`}>
+                    {m.wrongNumbers > 0 ? `${m.wrongNumbers} (${pct(m.wrongNumbersPct)})` : "0"}
+                  </td>
                   <td className={`px-4 py-3 ${toneCls(badEmailTone(m.badEmailPct))}`}>{pct(m.badEmailPct)}</td>
                   <td className={`px-4 py-3 ${toneCls(realRevTone(m.avgRevenueQualityPct))}`}>{pct(m.avgRevenueQualityPct)}</td>
                   <td className={`px-4 py-3 font-semibold ${toneCls(bogusTone(m.bogusPct))}`}>
@@ -240,6 +248,8 @@ function CampaignAuditCard({ campaign: c, m }: { campaign: Campaign; m: AuditMet
             <Cell label="Real conversation ≥120s" value={pct(m.realConversationsPct)} sub={`${m.realConversations} genuine talks`} tone={convoTone(m.realConversationsPct)} />
             <Cell label="Median to 1st dial" value={mins(m.medianMinutesToFirstDial)} sub="target < 5 min" />
             <Cell label="Never reached @ 7+ dials" value={int(m.neverReached7Plus)} sub={pct(m.neverReached7PlusPct)} tone={m.neverReached7Plus > 0 ? "warn" : "good"} />
+            <Cell label="Wrong numbers" value={m.wrongNumbers > 0 ? `${m.wrongNumbers}` : "0"} sub={`${pct(m.wrongNumbersPct)} of leads`} tone={wrongNumTone(m.wrongNumbers)} />
+            <Cell label="Graded (human-verified)" value={pct(m.gradedCoveragePct)} sub={`${m.gradedCalls}/${m.totalCalls} calls tapped`} tone={gradedTone(m.gradedCoveragePct)} />
             <Cell label="Calls 1–2 / 3–6 / 7+" value={`${m.callBuckets.light} / ${m.callBuckets.medium} / ${m.callBuckets.heavy}`} />
           </MetricRow>
 

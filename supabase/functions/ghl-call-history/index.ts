@@ -59,6 +59,11 @@ export interface CallRecord {
   userName: string | null;   // "Carlos Marquez"
   from: string | null;
   to: string | null;
+  // Human disposition (ground truth) layered over the GHL status heuristic — set
+  // one-tap from the Revenue Playbook call history. Null until someone grades it.
+  disposition: string | null;
+  dispositionAt: string | null;
+  dispositionBy: string | null; // grader's name, resolved from profiles
 }
 
 // A call counts as an actual CONTACT (conversation happened) only when it
@@ -103,6 +108,9 @@ async function fetchContactCalls(cfg: GhlConfig, contactId: string): Promise<Cal
         userName: null,
         from: m.from ?? null,
         to: m.to ?? null,
+        disposition: null,
+        dispositionAt: null,
+        dispositionBy: null,
       };
       calls.push(rec);
       if (rec.userId) userIds.add(rec.userId);
@@ -235,6 +243,43 @@ async function syncCallsForDeal(
   return { synced, syncError };
 }
 
+/**
+ * Layer the human disposition (and grader name) onto each returned call, read
+ * from the ledger by GHL message id. Best-effort: a read error leaves the calls
+ * ungraded rather than blanking the panel. Only outbound calls are ever in the
+ * ledger, so inbound rows always come back ungraded (there's nothing to grade).
+ */
+async function attachDispositions(
+  db: ReturnType<typeof serviceClient>,
+  calls: CallRecord[],
+): Promise<void> {
+  const ids = calls.map((c) => c.id);
+  if (ids.length === 0) return;
+  const { data: logs, error } = await db.from("ghl_call_log")
+    .select("ghl_message_id, disposition, disposition_at, disposition_by")
+    .in("ghl_message_id", ids);
+  if (error || !logs) return;
+
+  const byId = new Map(logs.map((r) => [r.ghl_message_id as string, r]));
+  const graderIds = [...new Set(logs.map((r) => r.disposition_by).filter(Boolean) as string[])];
+  const names = new Map<string, string>();
+  if (graderIds.length) {
+    const { data: profs } = await db.from("profiles")
+      .select("id, first_name, last_name, email").in("id", graderIds);
+    for (const p of profs ?? []) {
+      const n = [p.first_name, p.last_name].filter(Boolean).join(" ").trim() || (p.email as string) || null;
+      if (n) names.set(p.id as string, n);
+    }
+  }
+  for (const c of calls) {
+    const row = byId.get(c.id);
+    if (!row?.disposition) continue;
+    c.disposition = row.disposition as string;
+    c.dispositionAt = (row.disposition_at as string) ?? null;
+    c.dispositionBy = row.disposition_by ? (names.get(row.disposition_by as string) ?? null) : null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -310,6 +355,10 @@ Deno.serve(async (req) => {
         ({ synced, syncError } = await syncCallsForDeal(db, dealId, contactId, calls));
       }
     }
+
+    // Layer human dispositions on AFTER the sync so freshly-logged outbound calls
+    // are covered the first time the panel opens.
+    await attachDispositions(db, calls);
 
     return json({ ok: true, calls, synced, sync_error: syncError });
   } catch (e) {

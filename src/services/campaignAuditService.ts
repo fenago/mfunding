@@ -61,8 +61,16 @@ export interface AuditMetrics {
   realConversationsPct: number | null;   // the tier the quality grade uses
   medianMinutesToFirstDial: number | null; // created_at → first outbound call (guards negatives)
   callBuckets: { light: number; medium: number; heavy: number }; // outbound calls 1-2 / 3-6 / 7+
-  neverReached7Plus: number;     // 7+ dials and never a real (≥120s) conversation
+  neverReached7Plus: number;     // 7+ dials and never a real conversation
   neverReached7PlusPct: number | null;
+  // Wrong numbers — leads with ≥1 call graded 'wrong_number'. Red vendor signal;
+  // feeds nothing else (not the quality grade).
+  wrongNumbers: number;
+  wrongNumbersPct: number | null;
+  // Graded coverage — how much of the contact truth is human-verified vs heuristic.
+  totalCalls: number;            // outbound calls logged for this campaign
+  gradedCalls: number;           // of those, dispositioned by a human
+  gradedCoveragePct: number | null; // gradedCalls / totalCalls
 
   // ── Email health ────────────────────────────────────────────────────────────
   withEmail: number;
@@ -191,13 +199,35 @@ interface CallRow {
   direction: string | null;
   duration_seconds: number | null;
   called_at: string | null;
+  call_status: string | null;
+  disposition: string | null;
 }
 
-// Per-deal call summary folded from ghl_call_log.
+// Per-deal call summary folded from ghl_call_log. Contact tiers PREFER the human
+// disposition (ground truth); the duration/status heuristic is the fallback when a
+// call is ungraded. See classifyCall for the exact rule.
 interface CallSummary {
-  calls: number;         // outbound call count
-  maxDuration: number;   // longest outbound call (seconds)
+  calls: number;             // outbound call count
   firstDialAt: string | null;
+  realConversation: boolean; // any call is a genuine conversation
+  connected: boolean;        // any call connected (incl. voicemail pickups / gatekeeper)
+  dispositioned: number;     // calls with a human grade (graded coverage numerator)
+  wrongNumber: number;       // calls graded 'wrong_number' (vendor evidence)
+  neverRequested: number;    // calls graded 'never_requested' (feeds bogus)
+}
+
+// A call's contact tier. Disposition overrides duration: a graded 'voicemail' is
+// NOT connected even if it ran long; only a real grade or the ungraded ≥30s/≥120s
+// heuristic counts. Keep in sync with campaignService.classifyCall.
+const REAL_DISPOSITIONS = new Set(["spoke", "never_requested", "callback_set"]);
+function callIsReal(c: CallRow): boolean {
+  if (c.disposition) return REAL_DISPOSITIONS.has(c.disposition);
+  return c.call_status === "completed" && (Number(c.duration_seconds) || 0) >= REAL_CONVO_SECS;
+}
+function callIsConnected(c: CallRow): boolean {
+  if (callIsReal(c)) return true;
+  if (c.disposition) return c.disposition === "gatekeeper"; // voicemail/no_answer/wrong_number → not connected
+  return (Number(c.duration_seconds) || 0) >= CONNECTED_SECS; // ungraded: catches voicemail pickups
 }
 
 const DEAL_SELECT =
@@ -255,13 +285,14 @@ async function fetchCallSummaries(
   const map = new Map<string, CallSummary>();
   if (dealIds.length === 0) return map;
 
+  const CALL_COLS = "deal_id, ghl_contact_id, direction, duration_seconds, called_at, call_status, disposition";
   const [a, b] = await Promise.all([
     supabase.from("ghl_call_log")
-      .select("deal_id, ghl_contact_id, direction, duration_seconds, called_at")
+      .select(CALL_COLS)
       .eq("direction", "outbound").in("deal_id", dealIds),
     contactIds.length
       ? supabase.from("ghl_call_log")
-          .select("deal_id, ghl_contact_id, direction, duration_seconds, called_at")
+          .select(CALL_COLS)
           .eq("direction", "outbound").is("deal_id", null).in("ghl_contact_id", contactIds)
       : Promise.resolve({ data: [] as CallRow[], error: null }),
   ]);
@@ -279,10 +310,17 @@ async function fetchCallSummaries(
   }
 
   const apply = (dealId: string, c: CallRow) => {
-    const s = map.get(dealId) ?? { calls: 0, maxDuration: 0, firstDialAt: null };
+    const s = map.get(dealId) ?? {
+      calls: 0, firstDialAt: null, realConversation: false, connected: false,
+      dispositioned: 0, wrongNumber: 0, neverRequested: 0,
+    };
     s.calls += 1;
-    s.maxDuration = Math.max(s.maxDuration, Number(c.duration_seconds) || 0);
     if (c.called_at && (!s.firstDialAt || c.called_at < s.firstDialAt)) s.firstDialAt = c.called_at;
+    if (callIsReal(c)) s.realConversation = true;
+    if (callIsConnected(c)) s.connected = true;
+    if (c.disposition) s.dispositioned += 1;
+    if (c.disposition === "wrong_number") s.wrongNumber += 1;
+    if (c.disposition === "never_requested") s.neverRequested += 1;
     map.set(dealId, s);
   };
   for (const c of byId) if (c.deal_id) apply(c.deal_id, c);
@@ -359,6 +397,7 @@ function foldCampaign(
 
   // Contactability (from calls)
   let dialed = 0, connected = 0, realConversations = 0, neverReached7Plus = 0;
+  let wrongNumbers = 0, totalCalls = 0, gradedCalls = 0;
   const callBuckets = { light: 0, medium: 0, heavy: 0 };
   const firstDialMinutes: number[] = [];
 
@@ -383,14 +422,16 @@ function foldCampaign(
   let reportedSum = 0, reportedN = 0, trueSum = 0, trueN = 0;
 
   for (const d of deals) {
-    // ── contactability (calls only) ──
+    // ── contactability (calls only; dispositions preferred, duration fallback) ──
     const cs = callByDeal.get(d.id);
     const calls = cs?.calls ?? 0;
-    const maxDur = cs?.maxDuration ?? 0;
-    const didConverse = maxDur >= REAL_CONVO_SECS;
+    const didConverse = cs?.realConversation ?? false;
+    totalCalls += calls;
+    gradedCalls += cs?.dispositioned ?? 0;
     if (calls > 0) dialed += 1;
-    if (maxDur >= CONNECTED_SECS) connected += 1;
+    if (cs?.connected) connected += 1;
     if (didConverse) realConversations += 1;
+    if ((cs?.wrongNumber ?? 0) > 0) wrongNumbers += 1;
     if (calls >= 1 && calls <= 2) callBuckets.light += 1;
     else if (calls >= 3 && calls <= 6) callBuckets.medium += 1;
     else if (calls >= 7) callBuckets.heavy += 1;
@@ -430,11 +471,11 @@ function foldCampaign(
     if (has(d.funded_at) || FUNDED_STATUSES.has(d.status)) funded += 1;
 
     if (TERMINAL_STATUSES.has(d.status)) terminalCounts[d.status] = (terminalCounts[d.status] || 0) + 1;
-    if (has(d.closed_reason)) {
-      closeReasons[d.closed_reason!] = (closeReasons[d.closed_reason!] || 0) + 1;
-      if (d.closed_reason === BOGUS_REASON) bogus += 1;
-    }
+    if (has(d.closed_reason)) closeReasons[d.closed_reason!] = (closeReasons[d.closed_reason!] || 0) + 1;
     if (has(d.lost_reason)) lostReasons[d.lost_reason!] = (lostReasons[d.lost_reason!] || 0) + 1;
+    // Bogus = the closer marked it bogus_never_requested OR a call was graded
+    // 'never_requested'. Deduped per deal (one lead counts once no matter how many).
+    if (d.closed_reason === BOGUS_REASON || (cs?.neverRequested ?? 0) > 0) bogus += 1;
 
     // ── truth gap ──
     const uw = uwByDeal.get(d.id);
@@ -493,6 +534,11 @@ function foldCampaign(
     callBuckets,
     neverReached7Plus,
     neverReached7PlusPct: rate(neverReached7Plus, leads),
+    wrongNumbers,
+    wrongNumbersPct: rate(wrongNumbers, leads),
+    totalCalls,
+    gradedCalls,
+    gradedCoveragePct: rate(gradedCalls, totalCalls),
 
     withEmail,
     noEmail,
