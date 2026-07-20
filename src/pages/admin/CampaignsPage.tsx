@@ -66,10 +66,14 @@ const benchTone = (v: Verdict) =>
       ? "text-red-600 dark:text-red-400"
       : "text-gray-700 dark:text-gray-200";
 
-function judge(kind: "contact" | "close" | "cpf" | "roas", value: number | null): Verdict {
+function judge(kind: "realconvo" | "close" | "cpf" | "roas", value: number | null): Verdict {
   if (value == null) return "neutral";
   switch (kind) {
-    case "contact": return value >= 65 ? "good" : "bad";
+    // REAL-conversation rate (≥2min outbound call) — a call-truth tier, NOT the old
+    // contacted_at "contact" flag. Genuine two-way conversations run far lower than a
+    // stage-move contact rate, so 10% is not a failure the way 10% "contact" was: only
+    // flag red below 5%, green above 18%, neutral between.
+    case "realconvo": return value >= 18 ? "good" : value < 5 ? "bad" : "neutral";
     case "close": return value >= 8 ? "good" : "bad";
     case "cpf": return value < 1500 ? "good" : "bad";
     case "roas": return value >= 1 ? "good" : "bad";
@@ -78,7 +82,7 @@ function judge(kind: "contact" | "close" | "cpf" | "roas", value: number | null)
 
 const FUNNEL: { key: keyof CampaignMetrics | "leads"; label: string }[] = [
   { key: "leads", label: "Leads in" },
-  { key: "contacted", label: "Contacted" },
+  { key: "connected", label: "Connected (incl. vm)" },
   { key: "qualified", label: "Qualified" },
   { key: "appSent", label: "Application" },
   { key: "docs", label: "Docs collected" },
@@ -327,7 +331,12 @@ function ChannelRollupTable({ rollups }: { rollups: ReturnType<typeof channelRol
               <th className="px-4 py-3 font-medium">Channel</th>
               <th className="px-4 py-3 font-medium">Spend</th>
               <th className="px-4 py-3 font-medium">Leads</th>
-              <th className="px-4 py-3 font-medium">Contact</th>
+              <th
+                className="px-4 py-3 font-medium"
+                title="Real conversation = an outbound call ≥2 min (from call logs, not the contacted_at stage flag). Connected (≥30s, incl. voicemail pickups) shown beneath."
+              >
+                Real convo %
+              </th>
               <th className="px-4 py-3 font-medium">Funded</th>
               <th className="px-4 py-3 font-medium">Close</th>
               <th className="px-4 py-3 font-medium">Cost / funded</th>
@@ -346,7 +355,15 @@ function ChannelRollupTable({ rollups }: { rollups: ReturnType<typeof channelRol
                   </td>
                   <td className="px-4 py-3 text-gray-700 dark:text-gray-200">{money(m.spent)}</td>
                   <td className="px-4 py-3 text-gray-700 dark:text-gray-200">{m.leads}</td>
-                  <td className={`px-4 py-3 ${benchTone(judge("contact", m.contactPct))}`}>{pct(m.contactPct)}</td>
+                  <td className={`px-4 py-3 ${benchTone(judge("realconvo", m.realConversationsPct))}`}>
+                    {pct(m.realConversationsPct)}
+                    <span
+                      className="block text-[11px] font-normal text-gray-400"
+                      title="connected ≥30s incl. voicemail"
+                    >
+                      {pct(m.connectedPct)} conn
+                    </span>
+                  </td>
                   <td className="px-4 py-3 font-semibold text-gray-900 dark:text-white">{m.funded}</td>
                   <td className={`px-4 py-3 ${benchTone(judge("close", m.closePct))}`}>{pct(m.closePct)}</td>
                   <td className={`px-4 py-3 ${benchTone(judge("cpf", m.costPerFunded))}`}>{money(m.costPerFunded)}</td>
@@ -481,13 +498,14 @@ function KpiGrid({ m }: { m: CampaignMetrics }) {
         <Stat label="Spend" value={money(m.spent)} />
         <Stat label="CPL" value={money(m.costPerLead)} sub="per attributed lead" />
         <Stat label="Acquisition CPL" value={money(m.acquisitionCpl)} sub="per lead bought" />
-        <Stat label="Cost / contact" value={money(m.costPerContact)} />
-        <Stat label="Speed to 1st touch" value={hrs(m.speedToFirstTouchHours)} sub="target < 5 min transfers" />
+        <Stat label="Cost / connect" value={money(m.costPerConnect)} sub="per ≥30s answer" />
+        <Stat label="Speed to 1st dial" value={hrs(m.speedToFirstDialHours)} sub="median, first outbound call" />
       </Section>
 
       <Section title="Funnel conversion vs targets">
-        <Stat label="Contact rate" value={pct(m.contactPct)} sub="target ≥ 65%" tone={judge("contact", m.contactPct)} />
-        <Stat label="Qualify rate" value={pct(m.qualifyPct)} sub="of contacted" />
+        <Stat label="Real convo rate" value={pct(m.realConversationsPct)} sub="≥2min talk (call-truth)" tone={judge("realconvo", m.realConversationsPct)} />
+        <Stat label="Connected" value={pct(m.connectedPct)} sub="≥30s incl. voicemail" />
+        <Stat label="Qualify rate" value={pct(m.qualifyPct)} sub="of connected" />
         <Stat label="Application rate" value={pct(m.applicationPct)} sub="of qualified" />
         <Stat label="Submission rate" value={pct(m.submissionPct)} sub="of applications" />
         <Stat label="Close rate" value={pct(m.closePct)} sub="target 8–12%" tone={judge("close", m.closePct)} />

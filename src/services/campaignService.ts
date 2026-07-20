@@ -254,8 +254,16 @@ export interface CampaignMetrics {
   spendLogged: boolean;          // false = no actual spend recorded yet -> cost metrics are null, not $0.
   leads: number;                 // attributed deals (leads that entered the pipeline)
   leadsPurchased: number | null; // leads we bought (from the campaign record)
+  // ── Contactability — from ghl_call_log ONLY, never deals.contacted_at ─────────
+  // contacted_at is stamped by stage moves + a July backfill, not by real calls, so
+  // it inflates "contact" (showed 72% where call logs prove 6/58 real conversations).
+  // Three honest tiers, mirroring campaignAuditService.getCampaignAudit — THAT service
+  // is the definition of record; the call query is duplicated (not imported) here
+  // because a sibling agent owns the audit module. Keep the two in sync.
+  dialed: number;                // >=1 outbound call attempted
+  connected: number;             // an outbound call answered >=30s (incl. voicemail pickups)
+  realConversations: number;     // an outbound call >=120s — a genuine conversation
   // Cumulative funnel counts (via stage timestamps).
-  contacted: number;
   qualified: number;
   appSent: number;
   docs: number;
@@ -267,21 +275,23 @@ export interface CampaignMetrics {
   estCommission: number;         // fundedAmount * commissionRate (the "revenue" to us)
   pipelineValue: number;         // amount_requested still in flight
   // Rates (0–100).
-  contactPct: number | null;     // contacted / leads
-  qualifyPct: number | null;     // qualified / contacted
-  applicationPct: number | null; // appSent / qualified
-  submissionPct: number | null;  // submitted / appSent
-  closePct: number | null;       // funded / leads (overall close rate)
+  dialedPct: number | null;              // dialed / leads
+  connectedPct: number | null;           // connected / leads (≥30s incl. voicemail — the caveated tier)
+  realConversationsPct: number | null;   // realConversations / leads — the PRIMARY owner-facing contact number
+  qualifyPct: number | null;             // qualified / connected
+  applicationPct: number | null;         // appSent / qualified
+  submissionPct: number | null;          // submitted / appSent
+  closePct: number | null;               // funded / leads (overall close rate)
   // Cost / efficiency.
   acquisitionCpl: number | null; // spent / leadsPurchased — TRUE cost per lead bought
   costPerLead: number | null;    // spent / attributed leads
-  costPerContact: number | null; // spent / contacted
+  costPerConnect: number | null; // spent / connected (call-truth, not a stage flag)
   costPerFunded: number | null;  // spent / funded — the number that matters most
   cpc: number | null;            // spent / clicks (click channels only)
   avgDealSize: number | null;    // fundedAmount / funded
   roas: number | null;           // estCommission / spent
   roiPct: number | null;         // (estCommission - spent) / spent
-  speedToFirstTouchHours: number | null;
+  speedToFirstDialHours: number | null;  // created_at → first OUTBOUND dial (median; guards negatives)
 }
 
 // Average broker commission on a funded deal ≈ 8 points.
@@ -290,17 +300,29 @@ export const COMMISSION_RATE = 0.08;
 const FUNDED = new Set(["funded", "restructure_executed"]);
 const DEAD = new Set(["declined", "lost", "nurture", "closed_lost"]);
 
+// Call-tier thresholds (seconds), mirroring campaignAuditService. Connected catches
+// voicemail pickups; a real conversation needs two minutes of talk time.
+const CONNECTED_SECS = 30;
+const REAL_CONVO_SECS = 120;
+
 const has = (v: unknown) => v != null && v !== "";
 const rate = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
 const div = (a: number, b: number) => (b > 0 ? a / b : null);
+const median = (xs: number[]): number | null => {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+};
 
 interface DealRow {
+  id: string;
   campaign_id: string;
+  ghl_contact_id: string | null;
   status: string;
   amount_funded: number | null;
   amount_requested: number | null;
   created_at: string | null;
-  contacted_at: string | null;
   qualified_at: string | null;
   application_sent_at: string | null;
   docs_collected_at: string | null;
@@ -311,26 +333,110 @@ interface DealRow {
   funded_at: string | null;
 }
 
+// ── Call-log contact truth (duplicated from campaignAuditService — see note on
+// CampaignMetrics; a sibling owns that module so we can't import it). ────────────
+interface CallRow {
+  deal_id: string | null;
+  ghl_contact_id: string | null;
+  direction: string | null;
+  duration_seconds: number | null;
+  called_at: string | null;
+}
+// Per-deal outbound-call summary folded from ghl_call_log.
+interface CallSummary {
+  calls: number;         // outbound call count
+  maxDuration: number;   // longest outbound call (seconds)
+  firstDialAt: string | null;
+}
+
+/**
+ * Outbound calls folded per deal. DEFINITION OF RECORD:
+ * campaignAuditService.fetchCallSummaries — this is a deliberate duplicate (that
+ * module belongs to another agent), so keep the join logic identical to it. A call
+ * attributes to a deal by deal_id, or — when the row has no deal_id — by matching
+ * ghl_contact_id (a lead usually has one deal per contact). Outbound only.
+ */
+async function fetchCallSummaries(deals: DealRow[]): Promise<Map<string, CallSummary>> {
+  const map = new Map<string, CallSummary>();
+  const dealIds = deals.map((d) => d.id);
+  if (dealIds.length === 0) return map;
+  const contactIds = [...new Set(deals.map((d) => d.ghl_contact_id).filter(Boolean) as string[])];
+
+  const [a, b] = await Promise.all([
+    supabase.from("ghl_call_log")
+      .select("deal_id, ghl_contact_id, direction, duration_seconds, called_at")
+      .eq("direction", "outbound").in("deal_id", dealIds),
+    contactIds.length
+      ? supabase.from("ghl_call_log")
+          .select("deal_id, ghl_contact_id, direction, duration_seconds, called_at")
+          .eq("direction", "outbound").is("deal_id", null).in("ghl_contact_id", contactIds)
+      : Promise.resolve({ data: [] as CallRow[], error: null }),
+  ]);
+  // Degrade LOUDLY, never silently: a swallowed read here renders a false 0% contact
+  // rate (exactly how ghl_call_log's missing RLS policy hid for a while). Keep the page
+  // alive but make the failure impossible to miss in the console.
+  if (a.error) console.error("[campaignService] ghl_call_log read (by deal_id) failed — contact tiers will under-report:", a.error);
+  if (b.error) console.error("[campaignService] ghl_call_log read (by contact_id) failed — contact tiers will under-report:", b.error);
+  const byId = (a.error ? [] : (a.data ?? [])) as CallRow[];
+  const byContact = (b.error ? [] : (b.data ?? [])) as CallRow[];
+
+  const dealsByContact = new Map<string, string[]>();
+  for (const d of deals) {
+    if (d.ghl_contact_id) {
+      const arr = dealsByContact.get(d.ghl_contact_id) ?? [];
+      arr.push(d.id);
+      dealsByContact.set(d.ghl_contact_id, arr);
+    }
+  }
+  const apply = (dealId: string, c: CallRow) => {
+    const s = map.get(dealId) ?? { calls: 0, maxDuration: 0, firstDialAt: null };
+    s.calls += 1;
+    s.maxDuration = Math.max(s.maxDuration, Number(c.duration_seconds) || 0);
+    if (c.called_at && (!s.firstDialAt || c.called_at < s.firstDialAt)) s.firstDialAt = c.called_at;
+    map.set(dealId, s);
+  };
+  for (const c of byId) if (c.deal_id) apply(c.deal_id, c);
+  for (const c of byContact) {
+    if (!c.ghl_contact_id) continue;
+    for (const dealId of dealsByContact.get(c.ghl_contact_id) ?? []) apply(dealId, c);
+  }
+  return map;
+}
+
 // Mutable accumulator while we fold over deals.
 interface Acc {
   leads: number;
   byStatus: Record<string, number>;
-  contacted: number; qualified: number; appSent: number;
+  dialed: number; connected: number; realConversations: number;
+  qualified: number; appSent: number;
   docs: number; submitted: number; offer: number; funded: number;
   fundedAmount: number; pipelineValue: number;
-  touchSumHours: number; touchCount: number;
+  firstDialHours: number[];              // per-deal created→first-dial gap → campaign median
+  touchSumHours: number; touchCount: number; // channel-level weighted approximation (rollups only)
 }
 
 const blankAcc = (): Acc => ({
-  leads: 0, byStatus: {}, contacted: 0, qualified: 0, appSent: 0,
+  leads: 0, byStatus: {}, dialed: 0, connected: 0, realConversations: 0,
+  qualified: 0, appSent: 0,
   docs: 0, submitted: 0, offer: 0, funded: 0, fundedAmount: 0, pipelineValue: 0,
-  touchSumHours: 0, touchCount: 0,
+  firstDialHours: [], touchSumHours: 0, touchCount: 0,
 });
 
-function foldDeal(a: Acc, d: DealRow) {
+function foldDeal(a: Acc, d: DealRow, cs: CallSummary | undefined) {
   a.leads += 1;
   a.byStatus[d.status] = (a.byStatus[d.status] || 0) + 1;
-  if (has(d.contacted_at)) a.contacted += 1;
+
+  // Contactability from the call log — never contacted_at.
+  const calls = cs?.calls ?? 0;
+  const maxDur = cs?.maxDuration ?? 0;
+  if (calls > 0) a.dialed += 1;
+  if (maxDur >= CONNECTED_SECS) a.connected += 1;
+  if (maxDur >= REAL_CONVO_SECS) a.realConversations += 1;
+  if (cs?.firstDialAt && has(d.created_at)) {
+    const hrs = (Date.parse(cs.firstDialAt) - Date.parse(d.created_at as string)) / 3_600_000;
+    if (Number.isFinite(hrs) && hrs >= 0) a.firstDialHours.push(hrs); // guard negatives / garbage
+  }
+
   if (has(d.qualified_at)) a.qualified += 1;
   if (has(d.application_sent_at)) a.appSent += 1;
   if (has(d.docs_collected_at) || has(d.bank_statements_at)) a.docs += 1;
@@ -343,13 +449,6 @@ function foldDeal(a: Acc, d: DealRow) {
     a.fundedAmount += Number(d.amount_funded) || 0;
   } else if (!DEAD.has(d.status)) {
     a.pipelineValue += Number(d.amount_requested) || 0;
-  }
-  if (has(d.contacted_at) && has(d.created_at)) {
-    const hrs = (new Date(d.contacted_at as string).getTime() - new Date(d.created_at as string).getTime()) / 3_600_000;
-    if (Number.isFinite(hrs) && hrs >= 0) {
-      a.touchSumHours += hrs;
-      a.touchCount += 1;
-    }
   }
 }
 
@@ -366,32 +465,41 @@ function metricsFromAcc(
   // introduced in the first place (see IMPORTANT_TODO #3): someone swapped a $0 lie
   // for a budget lie. Both are wrong; the honest answer is "—".
   const paid = spent > 0;
+  // Per-campaign speed uses the median of real first-dial gaps; channel rollups have
+  // no raw array (they re-fold from per-campaign metrics) so they fall back to the
+  // dial-weighted mean carried in touchSum/touchCount.
+  const speed = a.firstDialHours.length
+    ? median(a.firstDialHours)
+    : (a.touchCount > 0 ? a.touchSumHours / a.touchCount : null);
   return {
     spent,
     budget,
     spendLogged: paid,
     leads: a.leads,
     leadsPurchased,
-    contacted: a.contacted, qualified: a.qualified, appSent: a.appSent,
+    dialed: a.dialed, connected: a.connected, realConversations: a.realConversations,
+    qualified: a.qualified, appSent: a.appSent,
     docs: a.docs, submitted: a.submitted, offer: a.offer, funded: a.funded,
     byStatus: a.byStatus,
     fundedAmount: a.fundedAmount,
     estCommission,
     pipelineValue: a.pipelineValue,
-    contactPct: rate(a.contacted, a.leads),
-    qualifyPct: rate(a.qualified, a.contacted),
+    dialedPct: rate(a.dialed, a.leads),
+    connectedPct: rate(a.connected, a.leads),
+    realConversationsPct: rate(a.realConversations, a.leads),
+    qualifyPct: rate(a.qualified, a.connected),
     applicationPct: rate(a.appSent, a.qualified),
     submissionPct: rate(a.submitted, a.appSent),
     closePct: rate(a.funded, a.leads),
     acquisitionCpl: paid && leadsPurchased && leadsPurchased > 0 ? spent / leadsPurchased : null,
     costPerLead: paid ? div(spent, a.leads) : null,
-    costPerContact: paid ? div(spent, a.contacted) : null,
+    costPerConnect: paid ? div(spent, a.connected) : null,
     costPerFunded: paid ? div(spent, a.funded) : null,
     cpc: paid && clicks && clicks > 0 ? spent / clicks : null,
     avgDealSize: div(a.fundedAmount, a.funded),
     roas: div(estCommission, spent),
     roiPct: paid ? ((estCommission - spent) / spent) * 100 : null,
-    speedToFirstTouchHours: a.touchCount > 0 ? Math.round((a.touchSumHours / a.touchCount) * 10) / 10 : null,
+    speedToFirstDialHours: speed == null ? null : Math.round(speed * 10) / 10,
   };
 }
 
@@ -455,18 +563,20 @@ export async function updateChecklist(id: string, checklist: ChecklistItem[]): P
 }
 
 const DEAL_SELECT =
-  "campaign_id, status, amount_funded, amount_requested, created_at, contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, funded_at";
+  "id, campaign_id, ghl_contact_id, status, amount_funded, amount_requested, created_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, funded_at";
 
 /** Compute metrics for every campaign in one pass over attributed deals. */
 export async function getCampaignMetrics(campaigns: Campaign[]): Promise<Record<string, CampaignMetrics>> {
   const { data, error } = await supabase.from("deals").select(DEAL_SELECT).not("campaign_id", "is", null);
   if (error) throw error;
+  const deals = (data ?? []) as DealRow[];
+  const callByDeal = await fetchCallSummaries(deals);
 
   const acc: Record<string, Acc> = {};
-  for (const d of (data ?? []) as DealRow[]) {
+  for (const d of deals) {
     const cid = d.campaign_id;
     if (!acc[cid]) acc[cid] = blankAcc();
-    foldDeal(acc[cid], d);
+    foldDeal(acc[cid], d, callByDeal.get(d.id));
   }
 
   const out: Record<string, CampaignMetrics> = {};
@@ -503,14 +613,16 @@ export function channelRollups(campaigns: Campaign[], metrics: Record<string, Ca
     g.clicks += c.clicks ?? 0;
     const a = g.acc;
     a.leads += m.leads;
-    a.contacted += m.contacted; a.qualified += m.qualified; a.appSent += m.appSent;
+    a.dialed += m.dialed; a.connected += m.connected; a.realConversations += m.realConversations;
+    a.qualified += m.qualified; a.appSent += m.appSent;
     a.docs += m.docs; a.submitted += m.submitted; a.offer += m.offer; a.funded += m.funded;
     a.fundedAmount += m.fundedAmount; a.pipelineValue += m.pipelineValue;
     for (const [s, n] of Object.entries(m.byStatus)) a.byStatus[s] = (a.byStatus[s] || 0) + n;
-    // Speed-to-touch: weight by contacted count (approximate but directional).
-    if (m.speedToFirstTouchHours != null && m.contacted > 0) {
-      a.touchSumHours += m.speedToFirstTouchHours * m.contacted;
-      a.touchCount += m.contacted;
+    // Speed-to-first-dial at channel level: weight the campaign median by its dial
+    // count (approximate but directional — we don't re-query raw calls here).
+    if (m.speedToFirstDialHours != null && m.dialed > 0) {
+      a.touchSumHours += m.speedToFirstDialHours * m.dialed;
+      a.touchCount += m.dialed;
     }
   }
 

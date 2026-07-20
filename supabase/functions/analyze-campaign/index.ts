@@ -31,6 +31,12 @@ const COMMISSION_RATE = 0.08;
 const FUNDED_STATUS = new Set(["funded", "restructure_executed"]);
 const DEAD_STATUS = new Set(["declined", "lost", "nurture", "closed_lost"]);
 
+// Call-tier thresholds (seconds). Contactability comes from ghl_call_log ONLY —
+// deals.contacted_at is stamped by stage moves + a July backfill, so it inflates
+// "contact" well above real call truth. Mirrors campaignAuditService's tiers.
+const CONNECTED_SECS = 30;
+const REAL_CONVO_SECS = 120;
+
 // deno-lint-ignore no-explicit-any
 type Deal = Record<string, any>;
 
@@ -43,9 +49,19 @@ const rate = (num0: number, den: number) => (den > 0 ? (num0 / den) * 100 : null
 const div = (a: number, b: number) => (b > 0 ? a / b : null);
 const round1 = (n: number | null) => (n == null ? null : Math.round(n * 10) / 10);
 
+const median = (xs: number[]): number | null => {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+};
+
 interface Kpis {
   leads: number;
-  contacted: number;
+  // Contactability from call logs (see CONNECTED_SECS/REAL_CONVO_SECS), NOT contacted_at.
+  dialed: number;                // >=1 outbound call
+  connected: number;             // an outbound call >=30s (incl. voicemail pickups)
+  realConversations: number;     // an outbound call >=120s — a genuine conversation
   qualified: number;
   appSent: number;
   docs: number;
@@ -56,9 +72,11 @@ interface Kpis {
   fundedAmount: number;
   revenue: number;
   cpl: number | null;
-  costPerContact: number | null;
-  contactRate: number | null;
-  qualifyRate: number | null;
+  costPerConnect: number | null;
+  dialedRate: number | null;
+  connectedRate: number | null;
+  realConversationRate: number | null;  // the PRIMARY contact number — a call-truth tier
+  qualifyRate: number | null;           // qualified / connected
   applicationRate: number | null;
   submissionRate: number | null;
   closeRate: number | null;
@@ -66,18 +84,75 @@ interface Kpis {
   roas: number | null;
   avgDealSize: number | null;
   pipelineValue: number;
-  speedToFirstTouchHours: number | null;
+  speedToFirstDialHours: number | null; // median created_at → first outbound dial
 }
 
-// Compute the full KPI set from a set of deals + a spend figure.
-function computeKpis(deals: Deal[], spend: number): Kpis {
+// Per-deal outbound-call summary folded from ghl_call_log.
+interface CallSummary { calls: number; maxDuration: number; firstDialAt: string | null; }
+
+// Fold outbound calls per deal. Attribute by deal_id, or — for rows with no deal_id —
+// by matching ghl_contact_id (a lead usually has one deal per contact). Mirrors
+// campaignAuditService.fetchCallSummaries and the frontend campaignService duplicate.
+// deno-lint-ignore no-explicit-any
+async function fetchCallSummaries(db: any, deals: Deal[]): Promise<Map<string, CallSummary>> {
+  const map = new Map<string, CallSummary>();
+  const dealIds = deals.map((d) => d.id as string);
+  if (dealIds.length === 0) return map;
+  const contactIds = [...new Set(deals.map((d) => d.ghl_contact_id).filter(Boolean) as string[])];
+  const cols = "deal_id, ghl_contact_id, direction, duration_seconds, called_at";
+
+  const [a, b] = await Promise.all([
+    db.from("ghl_call_log").select(cols).eq("direction", "outbound").in("deal_id", dealIds),
+    contactIds.length
+      ? db.from("ghl_call_log").select(cols).eq("direction", "outbound").is("deal_id", null).in("ghl_contact_id", contactIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const byId = (a.error ? [] : (a.data ?? [])) as Deal[];
+  const byContact = (b.error ? [] : (b.data ?? [])) as Deal[];
+
+  const dealsByContact = new Map<string, string[]>();
+  for (const d of deals) {
+    if (d.ghl_contact_id) {
+      const arr = dealsByContact.get(d.ghl_contact_id) ?? [];
+      arr.push(d.id as string);
+      dealsByContact.set(d.ghl_contact_id, arr);
+    }
+  }
+  const apply = (dealId: string, c: Deal) => {
+    const s = map.get(dealId) ?? { calls: 0, maxDuration: 0, firstDialAt: null };
+    s.calls += 1;
+    s.maxDuration = Math.max(s.maxDuration, num(c.duration_seconds));
+    if (c.called_at && (!s.firstDialAt || c.called_at < s.firstDialAt)) s.firstDialAt = c.called_at;
+    map.set(dealId, s);
+  };
+  for (const c of byId) if (c.deal_id) apply(c.deal_id as string, c);
+  for (const c of byContact) {
+    if (!c.ghl_contact_id) continue;
+    for (const dealId of dealsByContact.get(c.ghl_contact_id) ?? []) apply(dealId, c);
+  }
+  return map;
+}
+
+// Compute the full KPI set from a set of deals + a spend figure + call summaries.
+function computeKpis(deals: Deal[], spend: number, callByDeal: Map<string, CallSummary>): Kpis {
   const leads = deals.length;
-  let contacted = 0, qualified = 0, appSent = 0, docs = 0, submitted = 0, offer = 0, funded = 0;
+  let dialed = 0, connected = 0, realConversations = 0;
+  let qualified = 0, appSent = 0, docs = 0, submitted = 0, offer = 0, funded = 0;
   let fundedAmount = 0, pipelineValue = 0;
-  let touchSumHours = 0, touchCount = 0;
+  const firstDialHours: number[] = [];
 
   for (const d of deals) {
-    if (has(d.contacted_at)) contacted++;
+    const cs = callByDeal.get(d.id as string);
+    const calls = cs?.calls ?? 0;
+    const maxDur = cs?.maxDuration ?? 0;
+    if (calls > 0) dialed++;
+    if (maxDur >= CONNECTED_SECS) connected++;
+    if (maxDur >= REAL_CONVO_SECS) realConversations++;
+    if (cs?.firstDialAt && has(d.created_at)) {
+      const hrs = (new Date(cs.firstDialAt).getTime() - new Date(d.created_at).getTime()) / 3_600_000;
+      if (Number.isFinite(hrs) && hrs >= 0) firstDialHours.push(hrs); // guard negatives
+    }
+
     if (has(d.qualified_at)) qualified++;
     if (has(d.application_sent_at)) appSent++;
     if (has(d.docs_collected_at) || has(d.bank_statements_at)) docs++;
@@ -91,26 +166,22 @@ function computeKpis(deals: Deal[], spend: number): Kpis {
     } else if (!DEAD_STATUS.has(d.status)) {
       pipelineValue += num(d.amount_requested);
     }
-
-    if (has(d.contacted_at) && has(d.created_at)) {
-      const hrs = (new Date(d.contacted_at).getTime() - new Date(d.created_at).getTime()) / 3_600_000;
-      if (Number.isFinite(hrs) && hrs >= 0) {
-        touchSumHours += hrs;
-        touchCount++;
-      }
-    }
   }
 
   const revenue = fundedAmount * COMMISSION_RATE;
+  const speed = median(firstDialHours);
   return {
-    leads, contacted, qualified, appSent, docs, submitted, offer, funded,
+    leads, dialed, connected, realConversations,
+    qualified, appSent, docs, submitted, offer, funded,
     spend,
     fundedAmount,
     revenue,
     cpl: div(spend, leads),
-    costPerContact: div(spend, contacted),
-    contactRate: rate(contacted, leads),
-    qualifyRate: rate(qualified, contacted),
+    costPerConnect: div(spend, connected),
+    dialedRate: rate(dialed, leads),
+    connectedRate: rate(connected, leads),
+    realConversationRate: rate(realConversations, leads),
+    qualifyRate: rate(qualified, connected),
     applicationRate: rate(appSent, qualified),
     submissionRate: rate(submitted, appSent),
     closeRate: rate(funded, leads),
@@ -118,7 +189,7 @@ function computeKpis(deals: Deal[], spend: number): Kpis {
     roas: div(revenue, spend),
     avgDealSize: div(fundedAmount, funded),
     pipelineValue,
-    speedToFirstTouchHours: touchCount > 0 ? round1(touchSumHours / touchCount) : null,
+    speedToFirstDialHours: speed == null ? null : round1(speed),
   };
 }
 
@@ -157,12 +228,12 @@ Deno.serve(async (req) => {
     if (cErr || !campaign) return json({ error: `campaign not found: ${cErr?.message}` }, 404);
 
     // 2) This campaign's deals → KPIs.
-    const dealCols = "id, campaign_id, status, amount_funded, amount_requested, created_at, contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, funded_at, declined_at, nurture_at";
+    const dealCols = "id, campaign_id, ghl_contact_id, status, amount_funded, amount_requested, created_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, funded_at, declined_at, nurture_at";
     const { data: dealsRaw, error: dErr } = await db
       .from("deals").select(dealCols).eq("campaign_id", campaignId);
     if (dErr) return json({ error: `could not load deals: ${dErr.message}` }, 502);
     const deals = (dealsRaw ?? []) as Deal[];
-    const kpis = computeKpis(deals, spendOf(campaign));
+    const kpis = computeKpis(deals, spendOf(campaign), await fetchCallSummaries(db, deals));
 
     // 3) Channel peers → aggregate KPIs for head-to-head comparison.
     const { data: peersRaw } = await db
@@ -177,12 +248,20 @@ Deno.serve(async (req) => {
     if (peerIds.length > 1) {
       const { data: peerDealsRaw } = await db
         .from("deals").select(dealCols).in("campaign_id", peerIds);
-      const peerKpis = computeKpis((peerDealsRaw ?? []) as Deal[], peerSpend);
+      const peerDeals = (peerDealsRaw ?? []) as Deal[];
+      const peerKpis = computeKpis(peerDeals, peerSpend, await fetchCallSummaries(db, peerDeals));
       channelAverages = { ...peerKpis, campaigns: peers.length };
     }
 
     const benchmarks = {
-      contact_rate_target_pct: ">= 65",
+      // contactability is measured from CALL LOGS in three tiers (dialedRate,
+      // connectedRate ≥30s incl. voicemail, realConversationRate ≥2min). These are
+      // NOT the old contacted_at stage flag and run far lower — a single-digit to
+      // low-double-digit realConversationRate is normal for outbound MCA, not a
+      // failure. Judge reach by dialing effort + connect/real-convo tiers together.
+      dialed_rate_note: "share of leads with >=1 outbound dial — a dialing-effort/coverage signal",
+      connected_rate_note: ">=30s answered (incl. voicemail); healthy outbound often 30-60%",
+      real_conversation_rate_note: ">=2min live talk; typically 5-15% — do NOT treat 10% as a failure",
       close_rate_target_pct: "8 - 12",
       cost_per_funded_target: "< 1500",
       roas_target: ">= 1 (revenue >= spend)",
@@ -197,7 +276,10 @@ Deno.serve(async (req) => {
       "benchmarks and its channel peers. Be concrete and numeric; cite the actual KPI values. Never invent " +
       "data that was not provided. If the sample size is tiny (few leads, or no funded deals yet), say the " +
       "read is provisional and focus on setup/leading indicators rather than declaring the campaign a " +
-      "success or failure. Compare against the benchmarks and the channelAverages when present. " +
+      "success or failure. Contactability is measured from CALL LOGS in three tiers — dialedRate, " +
+      "connectedRate (>=30s, incl. voicemail), and realConversationRate (>=2min live talk) — NOT a stage " +
+      "flag; real-conversation rates in outbound MCA are structurally low (single digits to ~15%), so do " +
+      "not call a 10% real-conversation rate a failure. Compare against the benchmarks and channelAverages when present. " +
       "Return ONLY strict JSON, no prose or markdown, of the EXACT shape: " +
       '{"verdict":"scale"|"keep"|"fix"|"kill","headline":string,"whats_working":string[],' +
       '"underperforming":string[],"projected_cost_per_funded":string,"recommendations":string[]}. ' +
@@ -225,7 +307,9 @@ Deno.serve(async (req) => {
           benchmarks,
           funnel: {
             leads: kpis.leads,
-            contacted: kpis.contacted,
+            dialed: kpis.dialed,
+            connected: kpis.connected,
+            real_conversations: kpis.realConversations,
             qualified: kpis.qualified,
             application_sent: kpis.appSent,
             docs_collected: kpis.docs,
