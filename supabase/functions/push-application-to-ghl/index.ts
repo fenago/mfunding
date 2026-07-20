@@ -71,9 +71,21 @@ type GhlDoc = {
   createdAt?: string;
   updatedAt?: string;
   recipients?: Array<{ id?: string; email?: string }>;
+  links?: Array<{ recipientId?: string; referenceId?: string }>;
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// The per-recipient viewer/signing link for THIS contact on a document record,
+// derived exactly as ghl-docs-status does: links[] entry whose recipientId is ours
+// → its referenceId → the bearer viewer URL. Null when the record carries no link
+// for this contact. Bearer link — only ever returned to the gated caller, never
+// logged. Handed back so a closer whose merchant has a dead email can TEXT the link.
+function signingUrlFor(doc: GhlDoc, contactId: string): string | null {
+  const myLink = (doc.links ?? []).find((l) => l.recipientId === contactId);
+  const referenceId = myLink?.referenceId;
+  return referenceId ? `https://link.vibereach.io/documents/v1/${referenceId}?locale=en-US` : null;
+}
 
 /**
  * Ask GHL what it ACTUALLY created for this contact, and confirm it is the template
@@ -102,7 +114,7 @@ async function verifyDocumentSent(
   email: string,
   mode: SendMode,
   sinceMs: number,
-): Promise<{ verification: Verification; template: string | null }> {
+): Promise<{ verification: Verification; template: string | null; signingUrl: string | null }> {
   const expected = EXPECTED_DOC[mode];
   const wantEmail = email.trim().toLowerCase();
 
@@ -133,15 +145,15 @@ async function verifyDocumentSent(
       const apps = mine.filter((d) => !DOC_COMPANION.test(d.name ?? ""));
 
       const right = apps.find((d) => expected.test(d.name ?? ""));
-      if (right) return { verification: "confirmed", template: right.name ?? null };
+      if (right) return { verification: "confirmed", template: right.name ?? null, signingUrl: signingUrlFor(right, contactId) };
 
       // ANY other application document — one of the two other known templates, or
       // something unrecognized — is not what the closer asked to send.
       const wrong = apps[0];
-      if (wrong) return { verification: "wrong_template", template: wrong.name ?? null };
+      if (wrong) return { verification: "wrong_template", template: wrong.name ?? null, signingUrl: null };
     }
 
-    if (Date.now() >= deadline) return { verification: "unconfirmed", template: null };
+    if (Date.now() >= deadline) return { verification: "unconfirmed", template: null, signingUrl: null };
     delay = Math.min(Math.round(delay * 1.6), 4_000);
   }
 }
@@ -492,10 +504,17 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let payload: { dealId?: string; blank?: boolean; partial?: boolean; resend?: boolean };
+  let payload: { dealId?: string; blank?: boolean; partial?: boolean; resend?: boolean; mintAnyway?: boolean };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const dealId = payload.dealId;
   if (!dealId) return json({ error: "dealId is required" }, 400);
+  // mintAnyway: override ONLY the email-deliverability guards (dead mailbox) so the
+  // application document mints and its per-recipient signing link can be TEXTED. Every
+  // other guard — the prefill raw-tag/completeness guards, the no-email guard — stays.
+  const mintAnyway = payload.mintAnyway === true;
+  // Set when a deliverability guard would have blocked but mintAnyway overrode it —
+  // recorded in the audit note so the timeline shows the send went out to a dead email.
+  let mintedDespiteBadEmail: string | null = null;
   // blank = "send the original docs, no prefill" (the merchant fills it out).
   // resend = re-fire the send even if the deal is already at Application Sent.
   const blank = payload.blank === true;
@@ -640,27 +659,33 @@ Deno.serve(async (req) => {
     const why = known === "bounced"
       ? `the last email to it bounced (${health?.email_bounce_reason ?? "hard bounce"})`
       : `our email verifier says the mailbox does not exist`;
-    try {
-      await db.from("activity_log").insert({
-        entity_type: "deal",
-        entity_id: dealId,
-        interaction_type: "note",
-        subject: "application:pushed-to-ghl",
-        content: `BLOCKED the application send: ${merchantEmail} is undeliverable — ${why}. ` +
-          `No document was sent and no e-sign record was created. Needs a working email from the merchant.`,
-        logged_by: caller.id,
-      });
-    } catch { /* best-effort */ }
-    return json({
-      error: `The application was NOT sent. ${merchantEmail} is undeliverable — ${why}. ` +
-        `Sending would only create documents the merchant can never receive. ` +
-        `Call them, get a working email, put it on the deal (that re-verifies it automatically), then send. ` +
-        `Nothing was created in GHL — there is no document waiting for them to sign.`,
-      email_bounced: known === "bounced",
-      email_invalid: known === "invalid",
-      attempted_email: merchantEmail,
-      contactId,
-    }, 422);
+    if (mintAnyway) {
+      // Closer override: mint the document anyway so its signing link can be texted.
+      mintedDespiteBadEmail = why;
+    } else {
+      try {
+        await db.from("activity_log").insert({
+          entity_type: "deal",
+          entity_id: dealId,
+          interaction_type: "note",
+          subject: "application:pushed-to-ghl",
+          content: `BLOCKED the application send: ${merchantEmail} is undeliverable — ${why}. ` +
+            `No document was sent and no e-sign record was created. Needs a working email from the merchant.`,
+          logged_by: caller.id,
+        });
+      } catch { /* best-effort */ }
+      return json({
+        error: `The application was NOT sent. ${merchantEmail} is undeliverable — ${why}. ` +
+          `Sending would only create documents the merchant can never receive. ` +
+          `Call them, get a working email, put it on the deal (that re-verifies it automatically), then send. ` +
+          `Nothing was created in GHL — there is no document waiting for them to sign.`,
+        email_bounced: known === "bounced",
+        email_invalid: known === "invalid",
+        email_undeliverable: true,
+        attempted_email: merchantEmail,
+        contactId,
+      }, 422);
+    }
   }
 
   // (b) The AUTHORITATIVE check: ask GHL what happened to the last email it actually
@@ -668,7 +693,7 @@ Deno.serve(async (req) => {
   // Only a bounce to the address we are about to USE can block this send. A bounce to
   // an old, since-corrected address must never veto a good one.
   const bounce = await lastEmailFailure(cfg, contactId, merchantEmail);
-  if (bounce.bounced) {
+  if (bounce.bounced && !mintAnyway) {
     await recordEmailOutcome(db, customer.id as string, merchantEmail, bounce);
     try {
       await db.from("activity_log").insert({
@@ -685,13 +710,17 @@ Deno.serve(async (req) => {
       error: `The application was NOT sent. ${bounceMessage(merchantEmail, bounce)} ` +
         `Nothing was created in GHL — there is no document waiting for them to sign.`,
       email_bounced: true,
+      email_undeliverable: true,
       attempted_email: merchantEmail,
       bounce_reason: bounce.error,
       contactId,
     }, 422);
   }
-  // No bounce on record → the address is live as far as GHL knows. Clear any stale
-  // "bounced" flag so a corrected address stops showing the red chip.
+  // mintAnyway override on a proven bounce: remember it for the audit note; the
+  // document still mints below and we return its signing link for texting.
+  if (bounce.bounced) mintedDespiteBadEmail = mintedDespiteBadEmail ?? `GHL: ${bounce.error ?? bounce.status}`;
+  // Record the outcome either way. A real bounce is stamped (accurate truth); no
+  // bounce clears any stale "bounced" flag so a corrected address stops showing red.
   await recordEmailOutcome(db, customer.id as string, merchantEmail, bounce);
 
   // Push the merge fields. Prefill = the closer's completed application; partial =
@@ -820,7 +849,7 @@ Deno.serve(async (req) => {
     mode === "blank" ? "MCA_Merchant_Funding_Application"
     : mode === "partial" ? "04C MCA PARTIAL"
     : "04B MCA PREFILL";
-  const { verification, template } = await verifyDocumentSent(
+  const { verification, template, signingUrl } = await verifyDocumentSent(
     cfg, contactId, merchantEmail, mode, sendStartedMs,
   );
 
@@ -891,7 +920,10 @@ Deno.serve(async (req) => {
           : ` Delivery left to the Application Sent stage trigger to fire MCA 04 (deal already has an opportunity).`)
         + (verification === "confirmed"
           ? ` VERIFIED: GHL created "${template}" for ${merchantEmail}.`
-          : ` NOT YET CONFIRMED: no document from GHL within 15s — expected "${expectedName}". Check GHL → Documents & Contracts.`),
+          : ` NOT YET CONFIRMED: no document from GHL within 15s — expected "${expectedName}". Check GHL → Documents & Contracts.`)
+        + (mintedDespiteBadEmail
+          ? ` NOTE: email known bad (${mintedDespiteBadEmail}) — the document was minted anyway so the closer can TEXT the signing link.`
+          : ``),
       logged_by: caller.id,
     });
   } catch { /* best-effort */ }
@@ -908,5 +940,9 @@ Deno.serve(async (req) => {
     verification,
     verified_template: template,
     expected_template: expectedName,
+    // Per-recipient signing link (null if not extractable within the verify window),
+    // so the closer can text it — the free win, and the payoff of mintAnyway.
+    signing_url: signingUrl,
+    minted_despite_bad_email: !!mintedDespiteBadEmail,
   });
 });

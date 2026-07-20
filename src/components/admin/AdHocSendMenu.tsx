@@ -41,24 +41,44 @@ interface SentDocLink { name: string; signed: boolean; url: string | null }
 
 // supabase-js buries the server's JSON error under error.context and surfaces
 // only "Edge Function returned a non-2xx status code" — useless to a closer.
-// Dig the real message out so a 422 guard ("no business name on file…") is
-// SHOWN, not hidden.
-async function realError(e: unknown, fallback: string): Promise<string> {
+// Dig the real message AND the machine flags out, so a 422 guard ("no business
+// name on file…") is SHOWN, and the specific email-undeliverable failure can be
+// told apart from every other 422 (only IT gets the mint-anyway offer).
+async function errorInfo(
+  e: unknown,
+  fallback: string,
+): Promise<{ message: string; undeliverable: boolean }> {
   const ctx = (e as { context?: Response })?.context;
   if (ctx && typeof ctx.clone === "function") {
     try {
-      const j = await ctx.clone().json() as { error?: string };
-      if (j?.error) return j.error;
+      const j = (await ctx.clone().json()) as { error?: string; email_undeliverable?: boolean };
+      return {
+        message: j?.error || fallback,
+        undeliverable: j?.email_undeliverable === true,
+      };
     } catch { /* not JSON — fall through */ }
   }
-  return e instanceof Error && e.message && !/non-2xx/i.test(e.message) ? e.message : fallback;
+  const message = e instanceof Error && e.message && !/non-2xx/i.test(e.message) ? e.message : fallback;
+  return { message, undeliverable: false };
+}
+
+/** The status note under the button. Beyond ok/text it can carry an inline action:
+ *  · signingUrl — a "📋 Copy their signing link" tap after any send that minted one
+ *  · onMintAnyway — the "📱 email is dead — mint it anyway" retry after an
+ *    email-undeliverable failure (armed two-step, like the send items). */
+interface NoteState {
+  ok: boolean;
+  text: string;
+  signingUrl?: string | null;
+  onMintAnyway?: (() => void) | null;
 }
 
 export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: Props) {
   const [open, setOpen] = useState(false);
   const [docs, setDocs] = useState<AdhocDocDef[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [note, setNote] = useState<NoteState | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Two-step inline confirm — NO browser confirm() popups (owner rule). First
   // tap arms the item ("tap again to send"), second tap fires; disarms after 5s.
   const [armed, setArmed] = useState<string | null>(null);
@@ -107,13 +127,18 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const finish = (ok: boolean, text: string) => {
+  // Show a note. Notes carrying an inline action (copy-link / mint-anyway) linger
+  // longer so the closer has time to tap; plain notes clear in 8s.
+  const finish = (n: NoteState) => {
     setBusy(null);
-    setNote({ ok, text });
-    setTimeout(() => setNote(null), 8000);
+    setNote(n);
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+    const ttl = n.signingUrl || n.onMintAnyway ? 30000 : 8000;
+    noteTimer.current = setTimeout(() => setNote(null), ttl);
   };
+  const flash = (ok: boolean, text: string) => finish({ ok, text });
 
-  const sendApp = async (kind: "partial" | "blank" | "prefill") => {
+  const sendApp = async (kind: "partial" | "blank" | "prefill", mintAnyway = false) => {
     const label =
       kind === "partial" ? "partial application (04C)"
       : kind === "blank" ? "blank application"
@@ -124,30 +149,53 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
       // 422 if the application form hasn't been completed yet.
       const body: Record<string, unknown> = { dealId, resend: true };
       if (kind !== "prefill") body[kind] = true;
+      if (mintAnyway) body.mintAnyway = true;
       const { data, error } = await supabase.functions.invoke("push-application-to-ghl", {
         body,
       });
       if (error) throw error;
-      const d = data as { error?: string } | null;
+      const d = data as { error?: string; signing_url?: string | null } | null;
       if (d?.error) throw new Error(d.error);
-      finish(true, `✓ ${label} sent`);
+      finish({
+        ok: true,
+        text: `✓ ${label} sent${mintAnyway ? " — email is dead, text them the link" : ""}`,
+        signingUrl: d?.signing_url ?? null,
+      });
     } catch (e) {
-      finish(false, await realError(e, `Could not send the ${label}.`));
+      const { message, undeliverable } = await errorInfo(e, `Could not send the ${label}.`);
+      finish({
+        ok: false,
+        text: message,
+        // Offer mint-anyway ONLY for the email-undeliverable failure, and never on a
+        // send that was already a mint-anyway attempt (that would loop).
+        onMintAnyway: undeliverable && !mintAnyway ? () => void sendApp(kind, true) : null,
+      });
     }
   };
 
-  const sendAdhoc = async (def: AdhocDocDef) => {
+  const sendAdhoc = async (def: AdhocDocDef, mintAnyway = false) => {
     setBusy(def.key);
     try {
       const { data, error } = await supabase.functions.invoke("send-adhoc-doc", {
-        body: { dealId, docKey: def.key },
+        body: { dealId, docKey: def.key, ...(mintAnyway ? { mintAnyway: true } : {}) },
       });
       if (error) throw error;
-      const d = data as { error?: string; verification?: string } | null;
+      const d = data as { error?: string; verification?: string; signing_url?: string | null } | null;
       if (d?.error) throw new Error(d.error);
-      finish(true, d?.verification === "confirmed" ? `✓ ${def.label} sent + verified` : `✓ ${def.label} sent (verify in GHL)`);
+      finish({
+        ok: true,
+        text: d?.verification === "confirmed"
+          ? `✓ ${def.label} sent + verified${mintAnyway ? " — email dead, text the link" : ""}`
+          : `✓ ${def.label} sent (verify in GHL)${mintAnyway ? " — email dead, text the link" : ""}`,
+        signingUrl: d?.signing_url ?? null,
+      });
     } catch (e) {
-      finish(false, await realError(e, `Could not send ${def.label}.`));
+      const { message, undeliverable } = await errorInfo(e, `Could not send ${def.label}.`);
+      finish({
+        ok: false,
+        text: message,
+        onMintAnyway: undeliverable && !mintAnyway ? () => void sendAdhoc(def, true) : null,
+      });
     }
   };
 
@@ -209,7 +257,7 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
                   type="button"
                   onClick={() => {
                     void navigator.clipboard.writeText(d.public_link!);
-                    finish(true, "📋 Blank form link copied — paste it into a text.");
+                    flash(true, "📋 Blank form link copied — paste it into a text.");
                   }}
                   className="w-full text-left px-3 pb-1.5 -mt-0.5 text-[11px] text-ocean-blue hover:underline"
                   title="Copies the public blank form link for this document — anyone with the link can fill and sign"
@@ -239,7 +287,7 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
                     type="button"
                     onClick={() => {
                       void navigator.clipboard.writeText(l.url!);
-                      finish(true, `📋 Copied their "${l.name}" link — paste it into a text.`);
+                      flash(true, `📋 Copied their "${l.name}" link — paste it into a text.`);
                     }}
                     className={itemCls}
                     title={`Copies this merchant's own link for ${l.name}`}
@@ -254,9 +302,43 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
       )}
 
       {note && (
-        <p className={`absolute left-0 top-full mt-1 w-72 text-[11px] z-30 rounded-md px-2 py-1 border ${note.ok ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-800" : "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800"}`}>
-          {note.text}
-        </p>
+        <div className={`absolute left-0 top-full mt-1 w-72 text-[11px] z-30 rounded-md px-2 py-1 border ${note.ok ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-800" : "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800"}`}>
+          <p>{note.text}</p>
+
+          {/* Success that minted a per-recipient link → one tap to text it. */}
+          {note.ok && note.signingUrl && (
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(note.signingUrl!);
+                flash(true, "📋 Signing link copied — paste it into a text.");
+              }}
+              className="mt-1 w-full text-left font-semibold text-ocean-blue hover:underline"
+              title="Copies this merchant's own signing link for the document just sent"
+            >
+              📋 Copy their signing link
+            </button>
+          )}
+
+          {/* Email-undeliverable failure → don't dead-end. Two-step inline confirm
+              (armed pattern, no popups): first tap arms, second mints anyway and
+              the resulting success note carries the copy-link affordance above. */}
+          {!note.ok && note.onMintAnyway && (
+            <button
+              type="button"
+              disabled={!!busy}
+              onClick={() => { if (armOrFire("mint-anyway")) note.onMintAnyway!(); }}
+              className={`mt-1 w-full text-left font-semibold text-amber-700 dark:text-amber-300 hover:underline ${armed === "mint-anyway" ? "underline" : ""}`}
+              title="Mint the document despite the dead email, so you can text the signing link"
+            >
+              {busy
+                ? "Minting…"
+                : armed === "mint-anyway"
+                ? "⚠️ Tap again — mint it anyway & get the texting link →"
+                : "📱 Their email is dead — mint it anyway and copy the texting link"}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
