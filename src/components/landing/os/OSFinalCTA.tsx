@@ -19,7 +19,7 @@ export default function OSFinalCTA() {
           </p>
           <div className="osf-ctas">
             <CTAPrimary href="/apply">Check your rate — free</CTAPrimary>
-            <a href="tel:+19547375692" className="osf-call">or call (954) 737-5692</a>
+            <a href="tel:+17542333461" className="osf-call">or call / text a human — (754) 233-3461</a>
           </div>
           <p className="osf-fine os-mono">MON–FRI · 9AM–6PM ET · MCA = A PURCHASE OF FUTURE RECEIVABLES, NOT A LOAN</p>
         </div>

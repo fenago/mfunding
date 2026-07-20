@@ -16,8 +16,12 @@ type Product = {
 const PRODUCTS: Product[] = [
   {
     name: "Merchant Cash Advance",
-    blurb: "Cash flow-based funding you repay as a % of daily sales. Slow week, smaller payment.",
-    spec: "$5K – $1M",
+    // Pre-frame the size at the marketing layer: first positions are sized off
+    // monthly revenue (~70-100%), so say THAT instead of a "$5K – $1M" fantasy
+    // range — fewer calls, dramatically better ones, and no $100K expectation
+    // to un-sell when the deposits say $15K. Renewals are where amounts grow.
+    blurb: "Cash flow-based funding you repay as a % of daily sales. Sized to about one month of your real revenue — and renewable as you pay down, so the amount grows with you.",
+    spec: "≈ 1 MONTH'S REVENUE",
     href: "/business-loans/merchant-cash-advance",
     popular: true,
   },

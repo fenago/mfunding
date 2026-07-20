@@ -58,6 +58,11 @@ export default function OSHero() {
             <CTAPrimary href="/apply">Check your rate — free</CTAPrimary>
             <CTAGhost href="#how">How it works</CTAGhost>
           </div>
+          {/* A real phone number, framed as a human — merchants in this segment
+              trust a person who picks up over any form. tel: also carries texts. */}
+          <p className="osh-human">
+            📱 Prefer to talk? <a href="tel:+17542333461">Call or text a human — (754) 233-3461</a>
+          </p>
           <p className="osh-trust">WON&rsquo;T AFFECT YOUR CREDIT&nbsp;&nbsp;·&nbsp;&nbsp;NO UPFRONT FEES&nbsp;&nbsp;·&nbsp;&nbsp;5-MIN APPLICATION</p>
           <p className="osh-fine">Not a loan. An MCA is a purchase of future receivables.</p>
         </div>
@@ -123,6 +128,10 @@ const CSS = `
 .osh-links a:hover{color:var(--tx)}
 .osh-navcta{color:var(--on-green)!important;background:var(--go);padding:9px 16px;border-radius:8px;font-weight:600!important}
 .osh-signin{padding:9px 12px;border:1px solid var(--hair2);border-radius:8px}
+
+.osh-human{font-size:14px;color:var(--muted);margin:0 0 22px}
+.osh-human a{color:var(--go-text);font-weight:600;text-decoration:none}
+.osh-human a:hover{text-decoration:underline}
 
 .osh-grid{position:relative;z-index:2;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:64px;padding-bottom:96px}
 .osh-left{animation:os-in .7s cubic-bezier(.2,.7,.2,1) both}
