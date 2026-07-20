@@ -615,6 +615,24 @@ function QueueCard({
   const sla = slaMs(u.rank);
   const overdue = sla !== null && now - Date.parse(u.since) > sla;
   const [busy, setBusy] = useState<string | null>(null);
+  // Dial clicked → sync this deal's calls without waiting for the 5-minute sweep.
+  // GHL creates the call record within seconds of the dial, so the first sync
+  // (30s) stamps the ATTEMPT — which is what walks the card out of First Touch —
+  // and the second (2.5min) catches the finished call's duration so a ≥30s
+  // conversation stamps "reached". Each sync refreshes the queue. Fire-and-forget;
+  // the sweep remains the backstop for anything these misses.
+  const syncCallsSoon = () => {
+    if (!deal.ghl_contact_id) return;
+    [30_000, 150_000].forEach((delay) =>
+      setTimeout(() => {
+        supabase.functions
+          .invoke("ghl-call-history", { body: { ghl_contact_id: deal.ghl_contact_id, deal_id: deal.id } })
+          .then(() => onTouched())
+          .catch(() => { /* sweep will catch it */ });
+      }, delay),
+    );
+  };
+
   // The 7-call off-ramp: close to nurture (terminal; fires the GHL re-engagement
   // sequence) and the card leaves the board on the refetch. Two-step INLINE
   // confirm — no browser confirm() popups (owner rule).
@@ -692,6 +710,7 @@ function QueueCard({
               href={`https://app.vibereach.io/v2/location/t7NmVR4WCy927j4Zon4b/contacts/detail/${deal.ghl_contact_id}`}
               target="_blank"
               rel="noreferrer"
+              onClick={syncCallsSoon}
               className="inline-flex items-center gap-1 text-[11px] font-semibold text-ocean-blue hover:underline"
               title="Open in VibeReach — its call button dials, records, and auto-logs"
             >
@@ -706,6 +725,7 @@ function QueueCard({
           )}
           <a
             href={`tel:${deal.customer.phone.replace(/[^+\d]/g, "")}`}
+            onClick={syncCallsSoon}
             className="text-[10px] text-gray-400 hover:text-ocean-blue"
             title="Dial with this device's phone app instead"
           >
