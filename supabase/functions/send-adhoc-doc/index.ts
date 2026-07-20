@@ -144,6 +144,28 @@ Deno.serve(async (req) => {
   const failure = await lastEmailFailure(cfg, contactId, email);
   if (failure) return json({ error: bounceMessage(email, failure) }, 422);
 
+  // ── Guarantee the doc's merge tags resolve BEFORE the document mints. ──
+  // The Business Name custom field ({{contact.business_name}}) is normally
+  // written by the APPLICATION push — an ad-hoc agreement send can precede that,
+  // and GHL prints an empty merge field as its literal {{tag}} on the signed
+  // document (the 2026-07-13 lesson). So: no business name on file → refuse;
+  // have one → write it to the contact (custom field + native company name)
+  // and refuse if the write fails.
+  const BUSINESS_NAME_FIELD = "uUpbL8PP2iGbGKkof7jX"; // contact.business_name (TEXT)
+  const bizName = (cust?.business_name ?? "").trim();
+  if (!bizName) {
+    return json({
+      error: "No business name on file for this merchant — the document would print a raw merge tag. Add it via Edit lead info, then send again.",
+    }, 422);
+  }
+  const fieldPush = await ghlFetch(cfg, "PUT", `/contacts/${contactId}`, {
+    companyName: bizName,
+    customFields: [{ id: BUSINESS_NAME_FIELD, value: bizName }],
+  });
+  if (!fieldPush.ok) {
+    return json({ error: `Could not stamp the business name onto the GHL contact (${fieldPush.error ?? "update failed"}) — refusing to mint a document with unresolved merge tags. Nothing was sent.` }, 502);
+  }
+
   // Deliver: always remove→enroll so a repeat ad-hoc send re-fires instead of
   // no-oping on "already in workflow". NEVER touches the application workflows.
   const sendStartedMs = Date.now();
