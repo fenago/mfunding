@@ -47,6 +47,7 @@ import PortalAccessChip from "../../components/admin/PortalAccessChip";
 import PortalInviteButton from "../../components/admin/PortalInviteButton";
 import { DealDocumentsButton } from "../../components/admin/DealDocumentsModal";
 import CompanyVoiceChip from "../../components/admin/CompanyVoiceChip";
+import AdHocSendMenu from "../../components/admin/AdHocSendMenu";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
@@ -1568,6 +1569,10 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {deal.customer?.id && (
                 <DealDocumentsButton customerId={deal.customer.id} merchantName={dealName(deal)} />
               )}
+              {/* Send any document RIGHT NOW, at any stage — the application paths
+                  plus the registered agreements (broker/TCPA consent). */}
+              <AdHocSendMenu dealId={deal.id} merchantEmail={deal.customer?.email} />
+
               {/* The shared company Google Voice line — call/text on the company
                   number, with the staff-only login one reveal away. */}
               <CompanyVoiceChip />

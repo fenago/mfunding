@@ -78,6 +78,13 @@ verify_jwt = true
 [functions.push-application-to-ghl]
 verify_jwt = true
 
+# Ad-hoc, any-time send of a standalone document (broker agreement / TCPA consent,
+# per the platform_settings adhoc_docs registry) — enrollment-only delivery with
+# read-back verification; staff-only + closer-owns-deal enforced in code. Never
+# touches the application-path workflows.
+[functions.send-adhoc-doc]
+verify_jwt = true
+
 # Syncs a lead's edited identity (name/email/phone) into the EXISTING GHL contact
 # so delivery follows the fix — staff-only + closer-owns-deal enforced in code.
 [functions.sync-lead-to-ghl]
