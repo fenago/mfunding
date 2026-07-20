@@ -262,6 +262,27 @@ export async function reconcileDocumentType(
     out.ran = result.type != null;
     if (result.type == null) return out; // couldn't classify — leave the type alone.
 
+    // Persist the verdict on the row itself so the admin "What is this?" view (the
+    // Deal Documents modal) can show the classified type + one-sentence evidence
+    // without re-running the model, and so "Analyze all" can tell which docs still
+    // lack a verdict (classification IS NULL). Best-effort — a write failure here
+    // never blocks the type reconcile below. This runs for BOTH authorities: even
+    // when a human's specific pick is kept, the content read is worth showing.
+    await db
+      .from("customer_documents")
+      .update({
+        classification: {
+          type: result.type,
+          confidence: result.confidence,
+          evidence: result.evidence,
+          bank_hint: result.bank_hint,
+          model: result.model ?? null,
+          authority,
+          classified_at: new Date().toISOString(),
+        },
+      })
+      .eq("id", opts.documentId);
+
     const contentType = result.type;
     const agrees = contentType === currentType;
     const filename = (doc.filename as string) ?? "document";

@@ -44,6 +44,9 @@ import VendorEmailBanner from "../../components/admin/VendorEmailBanner";
 import DealAssistant from "../../components/admin/DealAssistant";
 import PipelineFlow from "../../components/shared/PipelineFlow";
 import PortalAccessChip from "../../components/admin/PortalAccessChip";
+import PortalInviteButton from "../../components/admin/PortalInviteButton";
+import { DealDocumentsButton } from "../../components/admin/DealDocumentsModal";
+import CompanyVoiceChip from "../../components/admin/CompanyVoiceChip";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
@@ -1556,6 +1559,18 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                   can't upload, can't e-sign. The state AND the one-click fix live
                   here so the closer never leaves the playbook to grant access. */}
               {deal.customer?.id && <PortalAccessChip customerId={deal.customer.id} />}
+              {/* Send portal invite as a FIRST-CLASS button (not just buried in the
+                  chip popover) — the one press that grants portal access, right on
+                  the bar. The chip above still shows/repairs the access STATE. */}
+              {deal.customer?.id && <PortalInviteButton customerId={deal.customer.id} compact />}
+              {/* Every document on the deal — view, upload, and "what is this?" per
+                  file — without leaving the playbook. */}
+              {deal.customer?.id && (
+                <DealDocumentsButton customerId={deal.customer.id} merchantName={dealName(deal)} />
+              )}
+              {/* The shared company Google Voice line — call/text on the company
+                  number, with the staff-only login one reveal away. */}
+              <CompanyVoiceChip />
               <LeadGradeChip grade={deal.lead_grade} expectedValue={deal.expected_value} reasons={deal.score_reasons} />
               {/* A DEAD merchant email is worth more than a warning — it's the whole
                   deal. A vendor-supplied mailbox that never existed (or that already

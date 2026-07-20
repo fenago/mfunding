@@ -129,6 +129,11 @@ function relTime(iso: string): string {
 }
 // The core package the checklist surfaces (customer_document_type enum values).
 const CORE_STIPS = ["application", "bank_statement", "id", "voided_check"];
+// Doc types pre-checked in the "Package contents" picker — the standard funder
+// package. Everything else on file starts unchecked (the closer opts it in).
+const DEFAULT_PACKAGE_TYPES = new Set(["application", "bank_statement", "id", "voided_check"]);
+
+interface InventoryDoc { id: string; document_type: string; filename: string | null }
 
 // Everything the FunderPicker tracks per existing submission — includes the
 // offer economics so a logged offer renders inline and in the compare strip
@@ -190,6 +195,10 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // automatically) vs only in GHL (must be downloaded + re-uploaded here).
   const [appDocs, setAppDocs] = useState<Set<string>>(new Set());
   const [ghlDocs, setGhlDocs] = useState<Set<string>>(new Set());
+  // The deal's app-side document inventory + which of them ride with the next
+  // submission (pick-and-choose). Passed to submit-to-funders as documentIds.
+  const [inventory, setInventory] = useState<InventoryDoc[]>([]);
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
   // Signed-application upload slot.
   const [signedAppFile, setSignedAppFile] = useState<File | null>(null);
   const [uploadingApp, setUploadingApp] = useState(false);
@@ -248,7 +257,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         const [profRes, lendRes, docRes, subRes] = await Promise.all([
           ids.length ? supabase.from("funder_submission_profiles").select("lender_id, method, required_stips, to_email").in("lender_id", ids) : Promise.resolve({ data: [] }),
           ids.length ? supabase.from("lenders").select("id, submission_email, submission_portal_url").in("id", ids) : Promise.resolve({ data: [] }),
-          deal.customer_id ? supabase.from("customer_documents").select("document_type").eq("customer_id", deal.customer_id) : Promise.resolve({ data: [] }),
+          deal.customer_id ? supabase.from("customer_documents").select("id, document_type, filename").eq("customer_id", deal.customer_id) : Promise.resolve({ data: [] }),
           supabase.from("deal_submissions").select("id, lender_id, status, submission_method, error, portal_confirmed_at, response_at, offer_amount, factor_rate, term_months, daily_payment, weekly_payment, total_payback, decline_reason").eq("deal_id", deal.id),
         ]);
         if (cancelled) return;
@@ -267,7 +276,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         // GHL side (signed e-sign docs + files from the upload form) — a signed
         // application in GHL counts, statements uploaded to GHL count. Kept in
         // two sets so the signed-app slot can tell app-side from GHL-only.
-        const appPresent = new Set(((docRes.data ?? []) as { document_type: string }[]).map((d) => d.document_type));
+        const invRows = (docRes.data ?? []) as InventoryDoc[];
+        if (!cancelled) {
+          setInventory(invRows);
+          // Pre-check the standard package; extras start off.
+          setSelectedDocIds(new Set(invRows.filter((d) => DEFAULT_PACKAGE_TYPES.has(d.document_type)).map((d) => d.id)));
+        }
+        const appPresent = new Set(invRows.map((d) => d.document_type));
         const ghlPresent = new Set<string>();
         if (deal.ghl_contact_id) {
           try {
@@ -381,13 +396,24 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     });
   };
 
+  const toggleDoc = (id: string) => {
+    setSelectedDocIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
   async function submit(ids: string[], resubmit = false) {
     if (ids.length === 0) return;
     setSubmitting(true);
     setError(null);
     try {
       const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
-        body: { dealId: deal.id, lenderIds: ids, resubmit },
+        // documentIds = the picked "Package contents". Empty → engine falls back
+        // to its default attach set (backward compatible), so uncheck-all never
+        // sends a zero-doc package.
+        body: { dealId: deal.id, lenderIds: ids, resubmit, documentIds: [...selectedDocIds] },
       });
       if (fnErr) throw fnErr;
       const rows = (data?.results ?? []) as FunderResult[];
@@ -1075,6 +1101,37 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
               {acceptedHint && (
                 <p className="text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 rounded px-2 py-1.5">
                   Offer accepted. Now advance the deal: <span className="font-medium">Offer Received → Offer Presented → Accepted</span> via the step buttons below — the stage move stays manual on purpose.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Package contents — pick exactly which documents ride with this
+              submission. Standard package pre-checked; extras opt-in. GHL-side
+              merchant uploads (bank statements, stips) still ride automatically. */}
+          {inventory.length > 0 && (
+            <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">Package contents</span>
+                <span className="text-[10px] text-gray-400">{selectedDocIds.size} doc{selectedDocIds.size === 1 ? "" : "s"} selected</span>
+              </div>
+              <div className="space-y-1">
+                {inventory.map((d) => (
+                  <label key={d.id} className="flex items-center gap-2 text-[11px] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="w-3.5 h-3.5 text-ocean-blue rounded border-gray-300 focus:ring-ocean-blue"
+                      checked={selectedDocIds.has(d.id)}
+                      onChange={() => toggleDoc(d.id)}
+                    />
+                    <span className="text-gray-700 dark:text-gray-200 flex-shrink-0">{docLabel(d.document_type)}</span>
+                    {d.filename && <span className="text-gray-400 truncate">— {d.filename}</span>}
+                  </label>
+                ))}
+              </div>
+              {inventory.some((d) => d.document_type === "other") && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  ⚠ Unidentified docs on file — check the Documents popup to confirm what they are.
                 </p>
               )}
             </div>

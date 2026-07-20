@@ -148,7 +148,7 @@ function render(tpl: string, tokens: Record<string, string>): string {
   return tpl.replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, (_m, k) => tokens[k] ?? "");
 }
 
-interface DocRow { document_type: string; filename: string | null; storage_path: string; status: string; file_size?: number | null }
+interface DocRow { id: string; document_type: string; filename: string | null; storage_path: string; status: string; file_size?: number | null }
 
 // Email attachment ceiling (GHL/SendGrid ~25MB total; stay under it). Anything
 // that would exceed it stays a secure link instead of failing the send.
@@ -165,6 +165,12 @@ Deno.serve(async (req) => {
     lenderId?: string;
     notes?: string;
     resubmit?: boolean;
+    /** Pick-and-choose which app-side customer_documents ride with this
+     * submission. When a NON-EMPTY array is given, only those documents attach
+     * (each ownership-checked against the deal's customer). Absent or empty →
+     * current behavior (every doc the recipe's attach_docs asks for). GHL-side
+     * merchant uploads are unaffected — they're not customer_documents. */
+    documentIds?: string[];
     /** When true, this is a recipe QA send: the engine renders each lender's
      * recipe against a SAMPLE deal and emails ONLY the logged-in admin. It never
      * emails a real funder and never writes deal_submissions. */
@@ -570,7 +576,7 @@ Deno.serve(async (req) => {
   // All docs on file for this deal's customer, grouped by type.
   const { data: docRows } = await db
     .from("customer_documents")
-    .select("document_type, filename, storage_path, status, file_size")
+    .select("id, document_type, filename, storage_path, status, file_size")
     .eq("customer_id", deal.customer_id);
   const docsByType = new Map<string, DocRow[]>();
   for (const d of (docRows ?? []) as DocRow[]) {
@@ -578,6 +584,22 @@ Deno.serve(async (req) => {
     arr.push(d);
     docsByType.set(d.document_type, arr);
   }
+
+  // --- Optional pick-and-choose attachment set. A non-empty documentIds means
+  // "attach exactly these app-side docs". HARD GATE (same as message_funder):
+  // every requested id must belong to THIS deal's customer, or 403. The query
+  // above is already scoped to deal.customer_id, so any requested id missing
+  // from it is either a foreign customer's doc or a bad id. The gates below
+  // (signed-app 422, stips guard) still read the FULL inventory — deselecting a
+  // doc narrows what attaches, it never relaxes a gate. ---
+  const requestedDocIds = Array.from(new Set((payload.documentIds ?? []).filter(Boolean)));
+  if (requestedDocIds.length) {
+    const onFile = new Set(((docRows ?? []) as DocRow[]).map((d) => d.id));
+    if (requestedDocIds.some((id) => !onFile.has(id))) {
+      return json({ error: "One or more documents don't belong to this deal's merchant." }, 403);
+    }
+  }
+  const selectedDocIds = requestedDocIds.length ? new Set(requestedDocIds) : null;
 
   // HARD GATE: the signed application must be ON FILE (app-side) so it attaches
   // to every funder email — a submission without it burns credibility. The
@@ -669,6 +691,8 @@ Deno.serve(async (req) => {
     for (const slug of attachSlugs) {
       const list = docsByType.get(slug) ?? [];
       for (const d of list) {
+        // Pick-and-choose: when a selection was passed, skip anything not in it.
+        if (selectedDocIds && !selectedDocIds.has(d.id)) continue;
         const { data: signed } = await db.storage.from(DOC_BUCKET).createSignedUrl(d.storage_path, SIGNED_URL_TTL);
         const url = signed?.signedUrl;
         if (!url) continue;

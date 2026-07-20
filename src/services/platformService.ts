@@ -114,3 +114,22 @@ export const DEFAULT_CLOSER_DOC_SETTINGS: CloserDocSettings = {
 export const getCloserDocSettings = () =>
   getSetting<CloserDocSettings>("closer_docs", DEFAULT_CLOSER_DOC_SETTINGS);
 export const saveCloserDocSettings = (s: CloserDocSettings) => saveSetting("closer_docs", s);
+
+// --- Shared company phone line (Google Voice) ---------------------------------
+// The team's shared Google Voice login. Stored under key "company_voice"; the row is
+// gated by a RESTRICTIVE RLS policy so ONLY authenticated staff can read it (every
+// other platform_settings key stays publicly readable for the marketing site). The
+// password is NEVER hardcoded in the repo — it lives only in the DB, set via SQL.
+export interface CompanyVoice {
+  url: string;
+  username: string;
+  password: string;
+}
+
+export const DEFAULT_COMPANY_VOICE: CompanyVoice = {
+  url: "https://voice.google.com",
+  username: "",
+  password: "",
+};
+
+export const getCompanyVoice = () => getSetting<CompanyVoice>("company_voice", DEFAULT_COMPANY_VOICE);

@@ -5,6 +5,11 @@ import supabase from "../../supabase";
 interface PortalInviteButtonProps {
   customerId: string;
   className?: string;
+  /**
+   * Compact renders a single chip-style button (for the playbook deal context bar)
+   * instead of the full label+button card. Same invite action and state either way.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -14,7 +19,7 @@ interface PortalInviteButtonProps {
  * customers.portal_invited_at. Self-contained — reads its own invite state — so
  * host pages only drop in <PortalInviteButton customerId={...} />.
  */
-export default function PortalInviteButton({ customerId, className = "" }: PortalInviteButtonProps) {
+export default function PortalInviteButton({ customerId, className = "", compact = false }: PortalInviteButtonProps) {
   // undefined = still loading the current invite state.
   const [invitedAt, setInvitedAt] = useState<string | null | undefined>(undefined);
   const [sending, setSending] = useState(false);
@@ -62,6 +67,45 @@ export default function PortalInviteButton({ customerId, className = "" }: Porta
           day: "numeric",
         })}`
       : "Not invited";
+
+  if (compact) {
+    return (
+      <span className={`relative inline-flex items-center ${className}`}>
+        <button
+          type="button"
+          onClick={sendInvite}
+          disabled={sending || invitedAt === undefined}
+          title={
+            invitedAt
+              ? "Resend the merchant's portal invite — the sign-in link that lets them upload docs and e-sign"
+              : "Send the merchant their portal invite — the sign-in link that lets them upload docs and e-sign"
+          }
+          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-ocean-blue hover:bg-deep-sea text-white disabled:opacity-60 transition-colors"
+        >
+          {sending ? (
+            <span className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+          ) : (
+            <PaperAirplaneIcon className="w-3 h-3" />
+          )}
+          {invitedAt ? "Resend portal invite" : "Send portal invite"}
+        </button>
+        {feedback && (
+          <span
+            className={`ml-1.5 inline-flex items-center gap-1 text-[11px] ${
+              feedback.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"
+            }`}
+          >
+            {feedback.ok ? (
+              <CheckCircleIcon className="w-3.5 h-3.5 flex-shrink-0" />
+            ) : (
+              <ExclamationCircleIcon className="w-3.5 h-3.5 flex-shrink-0" />
+            )}
+            {feedback.text}
+          </span>
+        )}
+      </span>
+    );
+  }
 
   return (
     <div className={className}>
