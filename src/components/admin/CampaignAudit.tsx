@@ -105,9 +105,10 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
       <div className="flex items-start gap-2 rounded-lg bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800 px-4 py-3 text-[12px] text-sky-800 dark:text-sky-200">
         <InformationCircleIcon className="w-4 h-4 shrink-0 mt-0.5" />
         <span>
-          <b>Email opens are now tracked</b> going forward (since {OPEN_TRACKING_SINCE}) — GoHighLevel open events land
-          in a per-lead ledger via the webhook, and "Emails opened" below reads it. Opens <i>before</i> that date were
-          never persisted, so they're not available. <b>Portal sign-ins</b> are not shown — that lives in the auth
+          <b>Email opens are real</b> — a background poll reads each email record's open status from GoHighLevel and
+          persists it per lead, covering opens back to the campaign start ({OPEN_TRACKING_SINCE}). "Emails opened" below
+          is that data. Note it's pixel-based (GHL/Mailgun open tracking), so it's an upper bound — inflated by
+          image-prefetch and by anyone cc'd on the send. <b>Portal sign-ins</b> are not shown — that lives in the auth
           system (service-role only). Everything else on this page is a live read of real data.
         </span>
       </div>

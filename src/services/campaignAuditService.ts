@@ -120,9 +120,11 @@ export interface AuditMetrics {
 // info — the headline vendor-junk signal. Kept here so the audit and the dialog agree.
 export const BOGUS_REASON = "bogus_never_requested";
 
-// Per-lead email-open tracking began when the ghl-webhook change deployed. Opens
-// before this date were never persisted, so the open metric is forward-only.
-export const OPEN_TRACKING_SINCE = "2026-07-20";
+// Opens are collected by the ghl-email-open-sweep poll (the webhook push stream is
+// dead — zero events ever arrived). The poll reads each email record's status on a
+// 14-day rolling window, so it captured opens back to the campaign's start — not just
+// the day the collector shipped. This is the earliest campaign date it covers.
+export const OPEN_TRACKING_SINCE = "2026-07-07";
 
 // Call-tier thresholds (seconds). Connected catches voicemail pickups; a real
 // conversation needs two minutes of talk time.
