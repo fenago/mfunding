@@ -72,13 +72,22 @@ export interface AuditMetrics {
   gradedCalls: number;           // of those, dispositioned by a human
   gradedCoveragePct: number | null; // gradedCalls / totalCalls
 
-  // ── Email health ────────────────────────────────────────────────────────────
+  // ── Email health (Good / Bad / Unverified sum to withEmail — the unverified bucket
+  //    is NEVER hidden). GOOD = verifier says valid AND no hard bounce. BAD = verifier
+  //    invalid/undeliverable/disposable OR a recorded bounce. UNVERIFIED = everything
+  //    else (not-yet-checked, rate-limited, catch-all, risky) — deliverability unproven.
   withEmail: number;
   noEmail: number;
-  badEmail: number;              // invalid / bounced / has email_bounced_at
-  unverifiedEmail: number;       // unknown / catch_all — deliverability unproven
+  goodEmail: number;             // verified & not bounced
+  badEmail: number;              // invalid / bounced / undeliverable / disposable / has email_bounced_at
+  unverifiedEmail: number;       // withEmail − good − bad (null / unknown / catch_all / risky)
   noEmailPct: number | null;
-  badEmailPct: number | null;
+  goodEmailPct: number | null;   // good / withEmail
+  badEmailPct: number | null;    // bad / withEmail (display)
+  unverifiedEmailPct: number | null; // unverified / withEmail
+  // Grade input — BAD as a share of DECIDED addresses only (good+bad), so a big
+  // unverified backlog never drags a vendor's grade down before we've checked them.
+  verifiedBadPct: number | null;
 
   // ── Engagement / matriculation ──────────────────────────────────────────────
   merchantReplies: number;       // merchant_reply_at — confirmed inbound engagement
@@ -140,7 +149,6 @@ const CONNECTED_SECS = 30;
 const REAL_CONVO_SECS = 120;
 
 const BAD_EMAIL_STATUSES = new Set(["invalid", "bounced", "undeliverable", "disposable"]);
-const UNVERIFIED_EMAIL_STATUSES = new Set(["unknown", "catch_all", "catchall"]);
 const FUNDED_STATUSES = new Set(["funded", "restructure_executed"]);
 const TERMINAL_STATUSES = new Set(["nurture", "declined", "dead"]);
 
@@ -402,7 +410,7 @@ function foldCampaign(
   const firstDialMinutes: number[] = [];
 
   // Email health
-  let withEmail = 0, noEmail = 0, badEmail = 0, unverifiedEmail = 0;
+  let withEmail = 0, noEmail = 0, goodEmail = 0, badEmail = 0;
 
   // Engagement
   let merchantReplies = 0, emailOpens = 0;
@@ -447,8 +455,11 @@ function foldCampaign(
     if (email) {
       withEmail += 1;
       const st = (cust?.email_status ?? "").toLowerCase();
+      // A recorded bounce is proof and outranks any verifier verdict (even "verified").
       if (BAD_EMAIL_STATUSES.has(st) || has(cust?.email_bounced_at)) badEmail += 1;
-      else if (UNVERIFIED_EMAIL_STATUSES.has(st)) unverifiedEmail += 1;
+      else if (st === "verified") goodEmail += 1;
+      // everything else (null / unknown / catch_all / risky / pending) is UNVERIFIED,
+      // computed as the remainder so the three buckets always sum to withEmail.
     } else {
       noEmail += 1;
     }
@@ -503,10 +514,13 @@ function foldCampaign(
   // Each input is 0–100 where higher = healthier. Reach uses the REAL-CONVERSATION
   // tier (≥120s), never a stage flag. Missing inputs drop out and weights renormalize.
   const realConvPct = rate(realConversations, leads);
-  const badEmailPct = rate(badEmail, withEmail || leads);
+  const unverifiedEmail = Math.max(0, withEmail - goodEmail - badEmail);
+  const badEmailPct = rate(badEmail, withEmail); // display: bad as a share of all emails
+  // Grade uses BAD of DECIDED (good+bad) — an unchecked backlog must not punish a vendor.
+  const verifiedBadPct = rate(badEmail, goodEmail + badEmail);
   const inputs: { label: string; value: number | null; weight: number }[] = [
     { label: "Real-conversation rate", value: realConvPct, weight: 0.30 },
-    { label: "Email deliverability", value: badEmailPct == null ? null : 100 - badEmailPct, weight: 0.20 },
+    { label: "Email deliverability", value: verifiedBadPct == null ? null : 100 - verifiedBadPct, weight: 0.20 },
     { label: "Revenue is real (bank-verified)", value: avgQuality == null ? null : Math.min(100, avgQuality), weight: 0.30 },
     { label: "Not bogus", value: bogusPct == null ? null : 100 - bogusPct, weight: 0.20 },
   ];
@@ -542,10 +556,14 @@ function foldCampaign(
 
     withEmail,
     noEmail,
+    goodEmail,
     badEmail,
     unverifiedEmail,
     noEmailPct: rate(noEmail, leads),
+    goodEmailPct: rate(goodEmail, withEmail),
     badEmailPct,
+    unverifiedEmailPct: rate(unverifiedEmail, withEmail),
+    verifiedBadPct,
 
     merchantReplies,
     merchantRepliesPct: rate(merchantReplies, leads),

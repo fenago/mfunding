@@ -39,6 +39,10 @@ export interface VerifyResult {
   catchAll: boolean;
   /** Set when the lookup itself failed (network/API) — health is then "unknown". */
   error?: string;
+  /** Instantly returned HTTP 403/429 — we are RATE-LIMITED, not told the mailbox is bad.
+   * health stays "unknown"; a batch driver should stop and retry the whole address later.
+   * A rate-limit must NEVER be recorded as a verdict (see the sweep). */
+  rateLimited?: boolean;
 }
 
 /** Load the Instantly API key from the vault. */
@@ -101,14 +105,25 @@ export async function verifyEmail(
   const delayMs = opts?.delayMs ?? 5000;
   const enc = encodeURIComponent(email);
 
+  // A 403/429 from Instantly means we are RATE-LIMITED — it is NOT a verdict on the
+  // mailbox. Bail immediately (don't burn the poll loop) and flag it so the caller can
+  // retry the whole address later. It must never look like "invalid".
+  const isRateLimit = (status: number) => status === 403 || status === 429;
+
   try {
     const post = await call(apiKey, "POST", "/email-verification", { email });
+    if (isRateLimit(post.status)) {
+      return { health: "unknown", raw: null, catchAll: false, rateLimited: true, error: `rate-limited (HTTP ${post.status})` };
+    }
     let raw = String(post.data.verification_status ?? "");
     let catchAll = post.data.catch_all === true;
 
     for (let i = 0; i < attempts && (raw === "" || raw === "pending"); i++) {
       await new Promise((r) => setTimeout(r, delayMs));
       const get = await call(apiKey, "GET", `/email-verification/${enc}`);
+      if (isRateLimit(get.status)) {
+        return { health: "unknown", raw: raw || null, catchAll, rateLimited: true, error: `rate-limited (HTTP ${get.status})` };
+      }
       raw = String(get.data.verification_status ?? raw);
       catchAll = get.data.catch_all === true;
     }

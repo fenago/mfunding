@@ -10,6 +10,7 @@ import {
 import { CHANNEL_META, type Campaign } from "@/services/campaignService";
 import { getCampaignAudit, AUDIT_FUNNEL, OPEN_TRACKING_SINCE, type AuditMetrics } from "@/services/campaignAuditService";
 import { dateTimeET } from "@/utils/time";
+import supabase from "@/supabase";
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 const money = (n: number | null | undefined) => (n == null ? "—" : `$${Math.round(n).toLocaleString()}`);
@@ -50,6 +51,8 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [sweepMsg, setSweepMsg] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -65,6 +68,48 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
   }
   // Reload whenever the campaign set changes (and on mount).
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [campaigns]);
+
+  // "Verify all now" — drive the email-verify-sweep repeatedly (each call checks a
+  // capped batch) until the backlog is drained, Instantly rate-limits us, or a run makes
+  // no progress. Progress is reported inline (no popups). The sweep authenticates with
+  // the signed-in staff JWT that functions.invoke attaches automatically.
+  async function verifyAll() {
+    setVerifying(true);
+    setSweepMsg("Starting verification…");
+    let totalChecked = 0, totalCredits = 0, lastRemaining = Number.POSITIVE_INFINITY;
+    try {
+      for (let i = 0; i < 60; i++) { // hard loop cap — the sweep is self-limiting per call
+        const { data, error: fnErr } = await supabase.functions.invoke("email-verify-sweep", { body: { limit: 15 } });
+        if (fnErr) { setSweepMsg(`Verification error: ${fnErr.message}`); break; }
+        const checked = Number(data?.checked ?? 0);
+        const remaining = Number(data?.remaining ?? 0);
+        totalChecked += checked;
+        totalCredits += Number(data?.credits_spent ?? 0);
+        if (data?.rate_limited) {
+          setSweepMsg(`Instantly rate-limited us — checked ${totalChecked} so far (~${totalCredits.toFixed(2)} credits), ${remaining} still pending. The hourly sweep will finish the rest automatically.`);
+          break;
+        }
+        if (remaining <= 0) {
+          setSweepMsg(totalChecked === 0
+            ? "Every campaign email already has a current verdict — nothing pending to check."
+            : `Done — every pending campaign email has been checked (${totalChecked} this run, ~${totalCredits.toFixed(2)} credits).`);
+          break;
+        }
+        // No progress (nothing checked and backlog didn't shrink) → stop rather than spin.
+        if (checked === 0 && remaining >= lastRemaining) {
+          setSweepMsg(`Stopped — ${remaining} could not be verified right now; they'll retry on the hourly sweep.`);
+          break;
+        }
+        setSweepMsg(`Verifying… ${totalChecked} checked, ${remaining} remaining (~${totalCredits.toFixed(2)} credits)`);
+        lastRemaining = remaining;
+      }
+      await load(); // refresh the audit numbers with the fresh verdicts
+    } catch (e) {
+      setSweepMsg(`Verification failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   // Worst-first: the owner is hunting for junk, so the lowest grades float up. No
   // score (no data yet) sinks to the bottom.
@@ -96,6 +141,14 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
         <div className="flex items-center gap-3">
           {loadedAt && <span className="text-[11px] text-gray-400">as of {dateTimeET(loadedAt)} ET</span>}
           <button
+            onClick={verifyAll}
+            disabled={verifying || loading}
+            title="Check every campaign-attributed email against Instantly and refresh the Good/Bad/Unverified split"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ocean-blue/40 bg-ocean-blue/5 px-3 py-2 text-sm text-ocean-blue hover:bg-ocean-blue/10 disabled:opacity-50"
+          >
+            <ShieldExclamationIcon className={`w-4 h-4 ${verifying ? "animate-pulse" : ""}`} /> {verifying ? "Verifying…" : "Verify all now"}
+          </button>
+          <button
             onClick={load}
             disabled={loading}
             className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
@@ -104,6 +157,14 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
           </button>
         </div>
       </div>
+
+      {/* Inline sweep progress — no popups (owner rule). */}
+      {sweepMsg && (
+        <div className="flex items-start gap-2 rounded-lg bg-ocean-blue/5 border border-ocean-blue/30 px-4 py-2.5 text-[12px] text-ocean-blue">
+          <ShieldExclamationIcon className={`w-4 h-4 shrink-0 mt-0.5 ${verifying ? "animate-pulse" : ""}`} />
+          <span>{sweepMsg}</span>
+        </div>
+      )}
 
       {/* What we can and can't see — honest about opens + portal sign-ins. */}
       <div className="flex items-start gap-2 rounded-lg bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800 px-4 py-3 text-[12px] text-sky-800 dark:text-sky-200">
@@ -253,12 +314,14 @@ function CampaignAuditCard({ campaign: c, m }: { campaign: Campaign; m: AuditMet
             <Cell label="Calls 1–2 / 3–6 / 7+" value={`${m.callBuckets.light} / ${m.callBuckets.medium} / ${m.callBuckets.heavy}`} />
           </MetricRow>
 
-          {/* Email health */}
-          <MetricRow title="Email health">
+          {/* Email health — Good / Bad / Unverified sum to the addresses on file.
+              GOOD = Instantly-verified & no bounce; BAD = invalid/bounced; UNVERIFIED =
+              not yet checked / catch-all / no verdict (never hidden). */}
+          <MetricRow title="Email health (of the addresses the vendor supplied)">
+            <Cell label="Good email" value={pct(m.goodEmailPct)} sub={`${m.goodEmail} verified deliverable`} tone={m.goodEmailPct == null ? "neutral" : m.goodEmailPct >= 80 ? "good" : m.goodEmailPct >= 50 ? "warn" : "bad"} />
             <Cell label="Bad email" value={pct(m.badEmailPct)} sub={`${m.badEmail} invalid/bounced`} tone={badEmailTone(m.badEmailPct)} />
-            <Cell label="No email" value={pct(m.noEmailPct)} sub={`${m.noEmail} missing`} tone={m.noEmailPct != null && m.noEmailPct > 20 ? "warn" : "neutral"} />
-            <Cell label="Unverified" value={int(m.unverifiedEmail)} sub="unknown/catch-all" />
-            <Cell label="Has email" value={int(m.withEmail)} sub={`of ${m.leads}`} />
+            <Cell label="Unverified" value={pct(m.unverifiedEmailPct)} sub={`${m.unverifiedEmail} unchecked/catch-all`} tone={m.unverifiedEmailPct != null && m.unverifiedEmailPct > 30 ? "warn" : "neutral"} />
+            <Cell label="Has email" value={int(m.withEmail)} sub={`of ${m.leads} · ${m.noEmail} missing`} tone={m.noEmailPct != null && m.noEmailPct > 20 ? "warn" : "neutral"} />
           </MetricRow>
 
           {/* Application — two distinct gates */}
