@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -12,36 +12,45 @@ import {
 } from "recharts";
 import { CubeTransparentIcon, ArrowPathIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
 import type { Campaign, CampaignMetrics } from "../../services/campaignService";
+import {
+  getCampaignMcInputs,
+  type CampaignMcInputs,
+  type McStageKey,
+} from "../../services/campaignMonteCarloService";
 
 /*
- * Monte Carlo projection for a single campaign.
+ * Monte Carlo projection for a single campaign — where is it HEADING as real,
+ * week-2 data (small samples, zero funded) accumulates?
  *
- * MODEL — two layers of randomness per simulation:
- *   1. Parameter uncertainty. Each funnel stage rate is re-sampled from a Beta
- *      distribution centered on the knob value. Its width tightens with evidence:
- *      Beta(α, β) with α = k·p + 1, β = k·(1−p) + 1, where k is the observed
- *      sample size behind that rate (capped) when we have data, or a weak prior
- *      (k = BENCHMARK_K) when we're leaning on a playbook benchmark. More real
- *      leads ⇒ tighter bands; a campaign with ~no data ⇒ wide bands (correct).
- *   2. Sampling noise. With that sampled rate, leads flow through the funnel as
- *      binomial draws (Bernoulli loop for small n, Normal approx for large n).
+ * The funnel is the campaign audit's HONEST 8-stage chain, grounded in signals a
+ * closer can't fake with a click — call seconds and signed application docs:
+ *   leads → dialed → connected(≥30s) → real conversation(≥2m) → app sent →
+ *   app returned → submitted → offer → funded
+ * (see campaignMonteCarloService for exactly how each is read from live tables).
  *
- * The funnel is a strict 5-stage chain:
- *   leads → contacted → qualified → app sent → submitted → funded
- * The final "close" knob is the submitted→funded conversion. The benchmark
- * chain (65·60·70·55·65 %) lands at ~9.8% OVERALL close (funded/leads), matching
- * the playbook's 8–12% target — we show that implied overall close read-only.
+ * TWO layers of randomness per simulation, mirroring the app's other Monte Carlo:
+ *   1. Parameter uncertainty. Each stage's pass-through rate is re-sampled from a
+ *      Beta POSTERIOR that blends a playbook prior with the campaign's own
+ *      observations: prior Beta(k·p₀+1, k·(1−p₀)+1) updated by s successes in n
+ *      trials → Beta(k·p₀+1+s, k·(1−p₀)+1+(n−s)). More real leads behind a stage
+ *      ⇒ the blend leans on data and the band tightens; ~no data ⇒ it leans on the
+ *      prior and the band stays honestly wide. The (+1,+1) keeps every Gamma shape
+ *      ≥ 1 so the sampler is valid — the same convention as the unit-economics MC.
+ *   2. Sampling noise. With that sampled rate, leads flow through as binomial draws
+ *      (Bernoulli loop for small n, Normal approx for large n).
  *
- * Funded dollars per sim: each funded deal draws a lognormal around the avg
- * (CV ≈ 40%); for large deal counts we use a CLT Normal approx of the sum.
- * Revenue (our commission) = funded$ × points%. ROAS = revenue ÷ spend, where
- * spend = leadVolume × costPerLead (the money the knobs put at risk).
+ * Funded dollars per sim: each funded deal draws a lognormal whose μ/σ are FITTED
+ * from the campaign's own bank-verified advance sizes (max-affordable-advance, else
+ * ~1 month verified revenue, else stated ask); with too few observations it falls
+ * back to the book default ($50k, CV 40%). Revenue (our commission) = funded$ ×
+ * points%. Cost-per-funded and ROAS only appear when a cost per lead is known.
  *
- * RNG is a seeded mulberry32; the seed is derived from the knob-set hash so a
- * given configuration is fully reproducible.
+ * CLIENT-SIDE: Math.random-free seeded RNG (mulberry32) so a knob-set is fully
+ * reproducible. This runs in the browser app — the no-Date/random rule is for
+ * Workflow scripts, not app code.
  */
 
-// ── Seeded RNG + distribution samplers ───────────────────────────────────────
+// ── Seeded RNG + distribution samplers (mirrors the unit-economics MC) ────────
 function mulberry32(seed: number) {
   let a = seed >>> 0;
   return function () {
@@ -54,7 +63,6 @@ function mulberry32(seed: number) {
 }
 
 function makeNormal(rng: () => number) {
-  // Box–Muller with a cached second value.
   let cached: number | null = null;
   return function normal(): number {
     if (cached !== null) {
@@ -93,95 +101,92 @@ function makeGamma(rng: () => number, normal: () => number) {
   };
 }
 
-// ── Percentile over a pre-sorted ascending array ─────────────────────────────
 function pctile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.round((p / 100) * (sorted.length - 1))));
   return sorted[idx];
 }
 
+// ── Playbook priors for the honest 8-stage chain ─────────────────────────────
+// Prior MEANS for a generic cold campaign. Live-transfer campaigns observe
+// near-100% dial/connect and their own data overrides these where samples exist.
+const BENCHMARK: Record<McStageKey, number> = {
+  dial: 0.9, // most leads get dialed
+  connect: 0.5, // ≥30s pickup per dial
+  conversation: 0.6, // ≥2-min talk per pickup
+  appSent: 0.6, // app sent per real conversation
+  appBack: 0.55, // app returned per app sent — the classic doc-chase leak
+  submit: 0.8, // submitted per app returned
+  offer: 0.6, // funder offer per submission
+  fund: 0.65, // funded per offer
+};
+const FUNDED_CV_LABEL = 0.4;
+
 // ── Knobs ────────────────────────────────────────────────────────────────────
 interface Knobs {
-  simulations: number;
-  leadVolume: number;
-  costPerLead: number;
-  contactRate: number; // %
-  qualifyRate: number; // %
-  appRate: number; // %
-  submissionRate: number; // %
-  closeRate: number; // % submitted → funded
-  avgFunded: number;
+  trials: number;
+  projectedLeads: number;
+  priorStrength: number; // k — pseudo-count weight of the playbook prior
+  avgFunded: number; // shifts the fitted lognormal's center; σ stays data-fitted
+  costPerLead: number; // 0 ⇒ unknown ⇒ cost metrics show "—"
   points: number; // commission points
 }
 
-type RateKey = "contactRate" | "qualifyRate" | "appRate" | "submissionRate" | "closeRate";
-type Source = "observed" | "benchmark";
+interface StageParam {
+  key: McStageKey;
+  label: string;
+  observed: number | null; // s/n
+  blended: number; // posterior mean
+  prior: number; // p₀
+  n: number; // evidence (denominator)
+  dataWeight: number; // n / (n + k) — share of the blend that's real data
+  alpha: number;
+  beta: number;
+}
 
-const BENCHMARK: Record<RateKey, number> = {
-  contactRate: 65,
-  qualifyRate: 60,
-  appRate: 70,
-  submissionRate: 55,
-  closeRate: 65, // submitted→funded; chains to ~9.8% overall close
-};
-const BENCHMARK_K = 8; // weak prior → wide bands when we have no data
-const EVIDENCE_CAP = 500; // bound how tight real data lets the bands get
-const MIN_SAMPLE = 20; // below this we fall back to the benchmark
-const FUNDED_CV = 0.4; // lognormal spread on funded amounts
-
-// Per-rate evidence: the sampled Beta pseudo-count k for the uncertainty width.
-type RateMeta = Record<RateKey, { source: Source; k: number }>;
-
-function computeDefaults(c: Campaign, m?: CampaignMetrics): { knobs: Knobs; meta: RateMeta } {
-  const contractedCpl = c.cost_per_lead_contracted ?? null;
-  const observedCpl = m?.acquisitionCpl ?? m?.costPerLead ?? null;
-  const cpl = contractedCpl ?? observedCpl ?? 60;
-
-  const remaining = (c.budget ?? 0) - (c.spent ?? 0);
-  const leadVolume =
-    remaining > 0 && cpl > 0 ? Math.round(remaining / cpl) : m?.leads && m.leads > 0 ? m.leads : 100;
-
-  // Stage rate defaults: observed where the denominator clears MIN_SAMPLE, else benchmark.
-  const closeObserved = m && m.submitted > 0 ? (m.funded / m.submitted) * 100 : null;
-  const stages: Array<{ key: RateKey; observed: number | null; denom: number }> = [
-    { key: "contactRate", observed: m?.contactPct ?? null, denom: m?.leads ?? 0 },
-    { key: "qualifyRate", observed: m?.qualifyPct ?? null, denom: m?.contacted ?? 0 },
-    { key: "appRate", observed: m?.applicationPct ?? null, denom: m?.qualified ?? 0 },
-    { key: "submissionRate", observed: m?.submissionPct ?? null, denom: m?.appSent ?? 0 },
-    { key: "closeRate", observed: closeObserved, denom: m?.submitted ?? 0 },
-  ];
-
-  const rates = {} as Record<RateKey, number>;
-  const meta = {} as RateMeta;
-  for (const s of stages) {
-    const useObserved = s.observed != null && s.denom >= MIN_SAMPLE;
-    if (useObserved) {
-      rates[s.key] = Math.round(s.observed as number);
-      meta[s.key] = { source: "observed", k: Math.min(s.denom, EVIDENCE_CAP) };
-    } else {
-      rates[s.key] = BENCHMARK[s.key];
-      meta[s.key] = { source: "benchmark", k: BENCHMARK_K };
-    }
-  }
-
+function computeDefaults(inputs: CampaignMcInputs, metrics?: CampaignMetrics): Knobs {
+  const projectedLeads = inputs.weeklyPace
+    ? Math.max(1, Math.round(inputs.weeklyPace * 4))
+    : inputs.leads > 0
+      ? inputs.leads
+      : 100;
+  const cpl =
+    inputs.costPerLead ?? metrics?.acquisitionCpl ?? metrics?.costPerLead ?? 0;
   return {
-    knobs: {
-      simulations: 5000,
-      leadVolume,
-      costPerLead: Math.round(cpl),
-      contactRate: rates.contactRate,
-      qualifyRate: rates.qualifyRate,
-      appRate: rates.appRate,
-      submissionRate: rates.submissionRate,
-      closeRate: rates.closeRate,
-      avgFunded: Math.round(m?.avgDealSize ?? 50000),
-      points: 8,
-    },
-    meta,
+    trials: 10_000,
+    projectedLeads,
+    priorStrength: 12,
+    avgFunded: Math.round(inputs.dealSize.mean),
+    costPerLead: Math.max(0, Math.round(cpl)),
+    points: 8,
   };
 }
 
-// ── Simulation engine ────────────────────────────────────────────────────────
+// Posterior Beta per stage: prior Beta(k·p₀+1, k·(1−p₀)+1) updated by the campaign's
+// observed s successes in n trials. Observed successes are clamped to the honest
+// denominator so a non-monotone data blip can't push a rate past 100%.
+function stageParams(inputs: CampaignMcInputs, k: number): StageParam[] {
+  return inputs.stages.map((st) => {
+    const p0 = BENCHMARK[st.key];
+    const n = Math.max(0, st.denom);
+    const s = Math.min(Math.max(0, st.num), n);
+    const alpha = k * p0 + 1 + s;
+    const beta = k * (1 - p0) + 1 + (n - s);
+    return {
+      key: st.key,
+      label: st.label,
+      observed: n > 0 ? s / n : null,
+      blended: alpha / (alpha + beta),
+      prior: p0,
+      n,
+      dataWeight: n > 0 ? n / (n + k) : 0,
+      alpha,
+      beta,
+    };
+  });
+}
+
+// ── Simulation ───────────────────────────────────────────────────────────────
 interface StageStat {
   label: string;
   p10: number;
@@ -193,21 +198,21 @@ interface SimResult {
   seed: number;
   ms: number;
   ranAt: string;
-  spend: number;
-  impliedOverallClose: number; // % funded / leads at the knob midpoints
+  spend: number | null;
+  impliedOverallClose: number; // % funded/leads at the blended stage means
   funded: { p10: number; p50: number; p90: number };
   revenue: { p10: number; p50: number; p90: number };
-  roas: { p10: number; p50: number; p90: number };
+  roas: { p10: number; p50: number; p90: number } | null;
   costPerFunded: { p10: number; p50: number; p90: number } | null;
-  pProfit: number;
+  pProfit: number | null;
   pAnyFunded: number;
   stages: StageStat[];
   histogram: Array<{ label: string; mid: number; count: number }>;
   refBuckets: { worst: string; likely: string; best: string };
 }
 
-function hashKnobs(k: Knobs): number {
-  const str = JSON.stringify(k);
+function hashKnobs(k: Knobs, inputs: CampaignMcInputs): number {
+  const str = JSON.stringify(k) + inputs.campaignId + inputs.stages.map((s) => `${s.num}/${s.denom}`).join(",");
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
@@ -216,16 +221,14 @@ function hashKnobs(k: Knobs): number {
   return h >>> 0;
 }
 
-function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
+function runSimulation(knobs: Knobs, inputs: CampaignMcInputs, params: StageParam[]): SimResult {
   const t0 = performance.now();
-  const seed = hashKnobs(knobs);
+  const seed = hashKnobs(knobs, inputs);
   const rng = mulberry32(seed);
   const normal = makeNormal(rng);
   const gamma = makeGamma(rng, normal);
 
-  const beta = (p: number, k: number): number => {
-    const a = k * p + 1;
-    const b = k * (1 - p) + 1;
+  const betaSample = (a: number, b: number): number => {
     const ga = gamma(a);
     const gb = gamma(b);
     return ga / (ga + gb);
@@ -239,14 +242,15 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
       for (let i = 0; i < n; i++) if (rng() < p) c++;
       return c;
     }
-    // Normal approximation for large n.
     const mean = n * p;
     const sd = Math.sqrt(n * p * (1 - p));
     const v = Math.round(mean + sd * normal());
     return Math.min(n, Math.max(0, v));
   };
 
-  const sigma = Math.sqrt(Math.log(1 + FUNDED_CV * FUNDED_CV));
+  // Deal-size lognormal: σ is the data-fitted shape; μ is re-centered on the knob's
+  // avg-funded so the owner can shift the center while keeping the fitted spread.
+  const sigma = inputs.dealSize.sigma;
   const mu = Math.log(Math.max(1, knobs.avgFunded)) - (sigma * sigma) / 2;
   const fundedDollars = (count: number): number => {
     if (count <= 0) return 0;
@@ -255,71 +259,50 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
       for (let i = 0; i < count; i++) sum += Math.exp(mu + sigma * normal());
       return sum;
     }
-    // CLT Normal approx of the lognormal sum for large deal counts.
     const mean = count * knobs.avgFunded;
-    const sd = Math.sqrt(count) * knobs.avgFunded * FUNDED_CV;
+    const sd = Math.sqrt(count) * knobs.avgFunded * (Math.exp(sigma * sigma) - 1 > 0 ? Math.sqrt(Math.exp(sigma * sigma) - 1) : FUNDED_CV_LABEL);
     return Math.max(0, mean + sd * normal());
   };
 
-  const N = knobs.simulations;
-  const leads = Math.max(0, Math.round(knobs.leadVolume));
-  const spend = leads * knobs.costPerLead;
+  const N = knobs.trials;
+  const leads = Math.max(0, Math.round(knobs.projectedLeads));
+  const cplKnown = knobs.costPerLead > 0;
+  const spend = cplKnown ? leads * knobs.costPerLead : null;
   const pointsFrac = knobs.points / 100;
-
-  const rateP: Record<RateKey, number> = {
-    contactRate: knobs.contactRate / 100,
-    qualifyRate: knobs.qualifyRate / 100,
-    appRate: knobs.appRate / 100,
-    submissionRate: knobs.submissionRate / 100,
-    closeRate: knobs.closeRate / 100,
-  };
 
   const revenue = new Float64Array(N);
   const fundedArr = new Float64Array(N);
   const roasArr = new Float64Array(N);
-  const contactedArr = new Float64Array(N);
-  const qualifiedArr = new Float64Array(N);
-  const appArr = new Float64Array(N);
-  const submittedArr = new Float64Array(N);
+  const stageArrs = params.map(() => new Float64Array(N));
 
   let profitCount = 0;
   let anyFundedCount = 0;
 
   for (let i = 0; i < N; i++) {
-    const pc = beta(rateP.contactRate, meta.contactRate.k);
-    const pq = beta(rateP.qualifyRate, meta.qualifyRate.k);
-    const pa = beta(rateP.appRate, meta.appRate.k);
-    const ps = beta(rateP.submissionRate, meta.submissionRate.k);
-    const pf = beta(rateP.closeRate, meta.closeRate.k);
-
-    const contacted = binomial(leads, pc);
-    const qualified = binomial(contacted, pq);
-    const appSent = binomial(qualified, pa);
-    const submitted = binomial(appSent, ps);
-    const funded = binomial(submitted, pf);
-
+    let count = leads;
+    for (let sIdx = 0; sIdx < params.length; sIdx++) {
+      const p = betaSample(params[sIdx].alpha, params[sIdx].beta);
+      count = binomial(count, p);
+      stageArrs[sIdx][i] = count;
+    }
+    const funded = count;
     const dollars = fundedDollars(funded);
     const rev = dollars * pointsFrac;
 
     revenue[i] = rev;
     fundedArr[i] = funded;
-    roasArr[i] = spend > 0 ? rev / spend : 0;
-    contactedArr[i] = contacted;
-    qualifiedArr[i] = qualified;
-    appArr[i] = appSent;
-    submittedArr[i] = submitted;
-
-    if (spend > 0 && rev > spend) profitCount++;
+    if (spend != null && spend > 0) {
+      roasArr[i] = rev / spend;
+      if (rev > spend) profitCount++;
+    }
     if (funded >= 1) anyFundedCount++;
   }
 
   const sortedRev = Array.from(revenue).sort((a, b) => a - b);
   const sortedFunded = Array.from(fundedArr).sort((a, b) => a - b);
-  const sortedRoas = Array.from(roasArr).sort((a, b) => a - b);
 
-  // Cost per funded only over sims that actually funded ≥1 deal.
   const cpfVals: number[] = [];
-  if (spend > 0) {
+  if (spend != null && spend > 0) {
     for (let i = 0; i < N; i++) if (fundedArr[i] > 0) cpfVals.push(spend / fundedArr[i]);
     cpfVals.sort((a, b) => a - b);
   }
@@ -334,14 +317,10 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
 
   const stages: StageStat[] = [
     { label: "Leads", p10: leads, p50: leads, p90: leads },
-    stageStat("Contacted", sortAsc(contactedArr)),
-    stageStat("Qualified", sortAsc(qualifiedArr)),
-    stageStat("Application", sortAsc(appArr)),
-    stageStat("Submitted", sortAsc(submittedArr)),
-    stageStat("Funded", sortedFunded),
+    ...params.map((prm, idx) => stageStat(prm.label, sortAsc(stageArrs[idx]))),
   ];
 
-  // Histogram of revenue — 30 buckets from 0 to P99 (keeps a long tail readable).
+  // Revenue histogram — 30 buckets from 0 to P99 (keeps the long tail readable).
   const BUCKETS = 30;
   const hi = Math.max(pctile(sortedRev, 99), 1);
   const width = hi / BUCKETS;
@@ -351,10 +330,7 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
     counts[idx]++;
   }
   const fmtK = (n: number) => (n >= 1000 ? `$${Math.round(n / 1000)}k` : `$${Math.round(n)}`);
-  const histogram = counts.map((count, i) => {
-    const mid = (i + 0.5) * width;
-    return { label: fmtK(i * width), mid, count };
-  });
+  const histogram = counts.map((count, i) => ({ label: fmtK(i * width), mid: (i + 0.5) * width, count }));
   const bucketLabel = (v: number) =>
     histogram[Math.min(BUCKETS - 1, Math.max(0, Math.floor(v / width)))].label;
 
@@ -362,8 +338,9 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
   const p50rev = pctile(sortedRev, 50);
   const p90rev = pctile(sortedRev, 90);
 
-  const impliedOverallClose =
-    rateP.contactRate * rateP.qualifyRate * rateP.appRate * rateP.submissionRate * rateP.closeRate * 100;
+  const impliedOverallClose = params.reduce((acc, prm) => acc * prm.blended, 1) * 100;
+
+  const sortedRoas = spend != null && spend > 0 ? Array.from(roasArr).sort((a, b) => a - b) : null;
 
   return {
     n: N,
@@ -378,16 +355,14 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
       p90: Math.round(pctile(sortedFunded, 90)),
     },
     revenue: { p10: p10rev, p50: p50rev, p90: p90rev },
-    roas: {
-      p10: pctile(sortedRoas, 10),
-      p50: pctile(sortedRoas, 50),
-      p90: pctile(sortedRoas, 90),
-    },
+    roas: sortedRoas
+      ? { p10: pctile(sortedRoas, 10), p50: pctile(sortedRoas, 50), p90: pctile(sortedRoas, 90) }
+      : null,
     costPerFunded:
       cpfVals.length > 0
         ? { p10: pctile(cpfVals, 10), p50: pctile(cpfVals, 50), p90: pctile(cpfVals, 90) }
         : null,
-    pProfit: (profitCount / N) * 100,
+    pProfit: spend != null && spend > 0 ? (profitCount / N) * 100 : null,
     pAnyFunded: (anyFundedCount / N) * 100,
     stages,
     histogram,
@@ -398,48 +373,81 @@ function runSimulation(knobs: Knobs, meta: RateMeta): SimResult {
 // ── Formatters ───────────────────────────────────────────────────────────────
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
 const mult = (n: number) => `${n.toFixed(2)}×`;
+const pct = (n: number | null) => (n == null ? "—" : `${(n * 100).toFixed(0)}%`);
 const OCEAN = "#007EA7";
 const RED = "#ef4444";
 const GRAY = "#9ca3af";
 const GREEN = "#10b981";
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function CampaignMonteCarlo({ campaign, metrics }: { campaign: Campaign; metrics?: CampaignMetrics }) {
+export default function CampaignMonteCarlo({
+  campaign,
+  metrics,
+}: {
+  campaign: Campaign;
+  metrics?: CampaignMetrics;
+}) {
   const [open, setOpen] = useState(false);
-  const defaults = useMemo(() => computeDefaults(campaign, metrics), [campaign, metrics]);
-  const [knobs, setKnobs] = useState<Knobs>(defaults.knobs);
+  const [inputs, setInputs] = useState<CampaignMcInputs | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [knobs, setKnobs] = useState<Knobs | null>(null);
   const [result, setResult] = useState<SimResult | null>(null);
   const [running, setRunning] = useState(false);
-  const hasRun = useRef(false);
+  const hasLoaded = useRef(false);
 
-  const run = useCallback(
-    (k: Knobs) => {
-      setRunning(true);
-      // Yield a frame so the "running" state paints before a heavy sync loop.
-      requestAnimationFrame(() => {
-        const res = runSimulation(k, defaults.meta);
-        setResult(res);
-        setRunning(false);
-      });
-    },
-    [defaults.meta],
+  const params = useMemo(
+    () => (inputs && knobs ? stageParams(inputs, knobs.priorStrength) : null),
+    [inputs, knobs],
   );
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const data = await getCampaignMcInputs(campaign);
+      setInputs(data);
+      setKnobs(computeDefaults(data, metrics));
+      setResult(null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load campaign data");
+    } finally {
+      setLoading(false);
+    }
+  }, [campaign, metrics]);
 
   function toggle() {
     const next = !open;
     setOpen(next);
-    if (next && !hasRun.current) {
-      hasRun.current = true;
-      run(knobs);
+    if (next && !hasLoaded.current) {
+      hasLoaded.current = true;
+      void load();
     }
   }
 
-  function reset() {
-    setKnobs(defaults.knobs);
-    run(defaults.knobs);
-  }
+  const run = useCallback(() => {
+    if (!inputs || !knobs) return;
+    const prm = stageParams(inputs, knobs.priorStrength);
+    setRunning(true);
+    requestAnimationFrame(() => {
+      setResult(runSimulation(knobs, inputs, prm));
+      setRunning(false);
+    });
+  }, [inputs, knobs]);
 
-  const set = (patch: Partial<Knobs>) => setKnobs((k) => ({ ...k, ...patch }));
+  // First simulation runs automatically once the data + defaults are in place.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (inputs && knobs && !autoRan.current) {
+      autoRan.current = true;
+      run();
+    }
+  }, [inputs, knobs, run]);
+
+  function reset() {
+    if (inputs) setKnobs(computeDefaults(inputs, metrics));
+  }
+  const set = (patch: Partial<Knobs>) => setKnobs((k) => (k ? { ...k, ...patch } : k));
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
@@ -449,199 +457,295 @@ export default function CampaignMonteCarlo({ campaign, metrics }: { campaign: Ca
       >
         <span className="flex items-center gap-2 font-semibold text-gray-900 dark:text-white">
           <span className="text-lg">🎲</span> Monte Carlo projection
-          <span className="text-xs font-normal text-gray-400">best / most likely / worst outcomes</span>
+          <span className="text-xs font-normal text-gray-400">
+            where this campaign is heading — best / likely / worst
+          </span>
         </span>
         <ChevronDownIcon className={`w-5 h-5 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
         <div className="border-t border-gray-100 dark:border-gray-700 p-4 space-y-5">
-          {/* Knobs */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                Knobs
-              </h4>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={reset}
-                  className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-ocean-blue"
-                >
-                  <ArrowPathIcon className="w-3.5 h-3.5" /> Reset to defaults
-                </button>
-                <button onClick={() => run(knobs)} disabled={running} className="btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs disabled:opacity-50">
-                  <CubeTransparentIcon className="w-4 h-4" /> {running ? "Running…" : "Run simulation"}
-                </button>
-              </div>
+          {loading && <p className="text-sm text-gray-400">Reading this campaign's live funnel…</p>}
+          {loadError && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+              <span>Couldn't load campaign data: {loadError}</span>
+              <button onClick={() => void load()} className="underline hover:no-underline">
+                Retry
+              </button>
             </div>
+          )}
 
-            <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
-              <Knob label="# simulations" value={knobs.simulations} min={500} max={200000} step={500} onChange={(v) => set({ simulations: Math.min(200000, Math.max(500, v)) })}
-                hint="How many simulated futures of this campaign to run. More sims = smoother, more stable estimates (and a slightly longer run). 5,000 is plenty for a gut check; crank it up for final numbers." />
-              <Knob label="Lead volume" value={knobs.leadVolume} min={0} onChange={(v) => set({ leadVolume: Math.max(0, v) })}
-                hint="How many leads this campaign will deliver (e.g. the number of transfers you ordered)." />
-              <Knob label="Cost per lead ($)" value={knobs.costPerLead} min={0} onChange={(v) => set({ costPerLead: Math.max(0, v) })}
-                hint="What you pay per lead. Synergy examples: live transfers $20–40, real-time $10–20, aged $0.01–0.05." />
-              <Knob label="Avg funded ($)" value={knobs.avgFunded} min={0} onChange={(v) => set({ avgFunded: Math.max(0, v) })}
-                hint="Typical funded advance size. Your book's average deal is ~$50,000; a clean first position funds ≈ one month of the merchant's revenue." />
-              <Knob label="Contact rate (%)" value={knobs.contactRate} min={0} max={100} source={defaults.meta.contactRate.source} onChange={(v) => set({ contactRate: clampPct(v) })}
-                hint="Of the leads you get, how many you actually reach on the phone. Target: 65%+. Live transfers are ~100% by definition (they're already on the line); cold/aged lists run much lower." />
-              <Knob label="Qualify rate (%)" value={knobs.qualifyRate} min={0} max={100} source={defaults.meta.qualifyRate.source} onChange={(v) => set({ qualifyRate: clampPct(v) })}
-                hint="Of the people you reach, how many actually qualify — enough monthly revenue ($15K+), time in business (6+ months), a real funding need. Target: 55–65%." />
-              <Knob label="Application rate (%)" value={knobs.appRate} min={0} max={100} source={defaults.meta.appRate.source} onChange={(v) => set({ appRate: clampPct(v) })}
-                hint="Of qualified merchants, how many complete + sign the application. Target: 65–75% — best done on the first call while they're hot." />
-              <Knob label="Submission rate (%)" value={knobs.submissionRate} min={0} max={100} source={defaults.meta.submissionRate.source} onChange={(v) => set({ submissionRate: clampPct(v) })}
-                hint="Of signed applications, how many get their bank statements/docs in so you can submit to funders. Target: 50–60% — this is the #1 leak in the funnel (doc chasing)." />
-              <Knob label="Close: submit→fund (%)" value={knobs.closeRate} min={0} max={100} source={defaults.meta.closeRate.source} onChange={(v) => set({ closeRate: clampPct(v) })}
-                hint="Of submitted files, how many end up FUNDED (funder approves → merchant accepts → money moves). Target: ~65%. Combined with the other rates, a healthy campaign closes 8–12% of all leads." />
-              <Knob label="Commission points" value={knobs.points} min={0} max={20} onChange={(v) => set({ points: Math.max(0, v) })}
-                hint="Your commission as % of the funded amount. Standard: 8 points on new deals ($4,000 on a $50K deal), 6 on renewals." />
-            </div>
-            <p className="text-[11px] text-gray-400 mt-2">
-              Spend at risk ={" "}
-              <span className="font-semibold text-gray-600 dark:text-gray-300">{money(knobs.leadVolume * knobs.costPerLead)}</span>{" "}
-              ({knobs.leadVolume.toLocaleString()} leads × {money(knobs.costPerLead)}). Rates tagged{" "}
-              <span className="text-emerald-600 dark:text-emerald-400">observed</span> use this campaign's data;{" "}
-              <span className="text-amber-600 dark:text-amber-400">benchmark</span> uses the playbook (wider bands).
-            </p>
-          </div>
-
-          {running && !result && <p className="text-sm text-gray-400">Running simulation…</p>}
-
-          {result && (
+          {inputs && knobs && params && (
             <>
-              {/* Headline cards */}
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Outcome
-                  title="Funded deals"
-                  worst={`${result.funded.p10}`}
-                  likely={`${result.funded.p50}`}
-                  best={`${result.funded.p90}`}
-                />
-                <Outcome
-                  title="Commission revenue"
-                  worst={money(result.revenue.p10)}
-                  likely={money(result.revenue.p50)}
-                  best={money(result.revenue.p90)}
-                />
-                <Outcome
-                  title="ROAS (rev ÷ spend)"
-                  worst={mult(result.roas.p10)}
-                  likely={mult(result.roas.p50)}
-                  best={mult(result.roas.p90)}
-                />
-                <Outcome
-                  title="⭐ Cost / funded"
-                  worst={result.costPerFunded ? money(result.costPerFunded.p90) : "—"}
-                  likely={result.costPerFunded ? money(result.costPerFunded.p50) : "—"}
-                  best={result.costPerFunded ? money(result.costPerFunded.p10) : "—"}
-                  invert
-                />
-              </div>
-
-              {/* Probability callouts */}
-              <div className="flex flex-wrap gap-2">
-                <Callout
-                  label="P(profit)"
-                  value={`${result.pProfit.toFixed(0)}%`}
-                  hint="ROAS > 1"
-                  good={result.pProfit >= 50}
-                />
-                <Callout
-                  label="P(≥1 funded deal)"
-                  value={`${result.pAnyFunded.toFixed(0)}%`}
-                  hint="at least one close"
-                  good={result.pAnyFunded >= 50}
-                />
-                <div className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300">
-                  Implied overall close{" "}
-                  <span className="font-semibold text-gray-900 dark:text-white">
-                    {result.impliedOverallClose.toFixed(1)}%
+              {/* Provenance line */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                <span>
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">{inputs.leads.toLocaleString()}</span>{" "}
+                  leads observed
+                </span>
+                <span>
+                  Pace:{" "}
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">
+                    {inputs.weeklyPace ? `${inputs.weeklyPace.toFixed(1)}/wk` : "—"}
                   </span>
-                  <span className="text-gray-400">target 8–12%</span>
-                </div>
+                </span>
+                <span>
+                  Deal size:{" "}
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">{money(inputs.dealSize.mean)}</span>{" "}
+                  {inputs.dealSize.source === "fitted" ? (
+                    <span className="text-emerald-600 dark:text-emerald-400">fitted · n={inputs.dealSize.n}</span>
+                  ) : (
+                    <span className="text-amber-600 dark:text-amber-400">book default</span>
+                  )}
+                </span>
+                <span>
+                  Cost/lead:{" "}
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">
+                    {inputs.costPerLead ? money(inputs.costPerLead) : "—"}
+                  </span>
+                  {inputs.costSource && <span className="text-gray-400"> ({inputs.costSource})</span>}
+                </span>
+                <button onClick={() => void load()} className="inline-flex items-center gap-1 text-gray-400 hover:text-ocean-blue">
+                  <ArrowPathIcon className="w-3.5 h-3.5" /> Refresh data
+                </button>
               </div>
 
-              {/* Revenue distribution histogram */}
+              {/* Controls */}
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                    Commission revenue distribution
-                  </h4>
-                  <span className="text-[11px] text-gray-400">
-                    {result.n.toLocaleString()} sims · seed {result.seed} · {result.ms} ms · ran {result.ranAt}
-                  </span>
-                </div>
-                <div className="w-full overflow-x-auto">
-                  <div className="min-w-[520px] h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={result.histogram} margin={{ top: 16, right: 12, left: 4, bottom: 4 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.2} vertical={false} />
-                        <XAxis
-                          dataKey="label"
-                          tick={{ fontSize: 10, fill: "#9CA3AF" }}
-                          axisLine={{ stroke: "#374151", opacity: 0.3 }}
-                          interval={4}
-                        />
-                        <YAxis
-                          tick={{ fontSize: 10, fill: "#9CA3AF" }}
-                          axisLine={{ stroke: "#374151", opacity: 0.3 }}
-                          allowDecimals={false}
-                        />
-                        <Tooltip
-                          cursor={{ fill: "#00000010" }}
-                          contentStyle={{
-                            backgroundColor: "#21262D",
-                            border: "1px solid #30363D",
-                            borderRadius: "8px",
-                            fontSize: "12px",
-                            color: "#F0F6FC",
-                          }}
-                          labelFormatter={(l) => `Revenue ≥ ${l}`}
-                          formatter={(value) => [`${Number(value) || 0} sims`, "Frequency"]}
-                        />
-                        <ReferenceLine x={result.refBuckets.worst} stroke={RED} strokeDasharray="4 3" label={{ value: "worst", position: "top", fill: RED, fontSize: 10 }} />
-                        <ReferenceLine x={result.refBuckets.likely} stroke={GRAY} strokeDasharray="4 3" label={{ value: "likely", position: "top", fill: GRAY, fontSize: 10 }} />
-                        <ReferenceLine x={result.refBuckets.best} stroke={GREEN} strokeDasharray="4 3" label={{ value: "best", position: "top", fill: GREEN, fontSize: 10 }} />
-                        <Bar dataKey="count" radius={[2, 2, 0, 0]}>
-                          {result.histogram.map((_, i) => (
-                            <Cell key={i} fill={OCEAN} fillOpacity={0.75} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Controls</h4>
+                  <div className="flex items-center gap-2">
+                    <button onClick={reset} className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-ocean-blue">
+                      <ArrowPathIcon className="w-3.5 h-3.5" /> Reset to defaults
+                    </button>
+                    <button
+                      onClick={run}
+                      disabled={running}
+                      className="btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-xs disabled:opacity-50"
+                    >
+                      <CubeTransparentIcon className="w-4 h-4" /> {running ? "Running…" : "Run simulation"}
+                    </button>
                   </div>
                 </div>
+
+                <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+                  <Knob
+                    label="Projected leads"
+                    value={knobs.projectedLeads}
+                    min={0}
+                    onChange={(v) => set({ projectedLeads: Math.max(0, v) })}
+                    hint="How many leads this campaign delivers over the projection window. Default = current weekly pace × 4 (a month ahead)."
+                  />
+                  <Knob
+                    label="# trials"
+                    value={knobs.trials}
+                    min={1000}
+                    max={200000}
+                    step={1000}
+                    onChange={(v) => set({ trials: Math.min(200000, Math.max(1000, v)) })}
+                    hint="How many simulated futures to run. More = smoother estimates, slightly longer run. 10,000 is a solid default."
+                  />
+                  <Knob
+                    label="Prior strength (k)"
+                    value={knobs.priorStrength}
+                    min={0}
+                    max={200}
+                    onChange={(v) => set({ priorStrength: Math.max(0, v) })}
+                    hint="How hard the playbook benchmark pulls a stage with little data. k is a pseudo-count: a stage blends toward its observed rate once its real sample size passes k. Low k = trust this campaign's thin data sooner; high k = stay anchored to the playbook until more leads land."
+                  />
+                  <Knob
+                    label="Avg funded ($)"
+                    value={knobs.avgFunded}
+                    min={0}
+                    onChange={(v) => set({ avgFunded: Math.max(0, v) })}
+                    hint="Center of the funded-advance distribution. Defaults to a lognormal fitted from THIS campaign's bank-verified sizes; the spread stays fitted even if you shift the center."
+                  />
+                  <Knob
+                    label="Cost / lead ($)"
+                    value={knobs.costPerLead}
+                    min={0}
+                    onChange={(v) => set({ costPerLead: Math.max(0, v) })}
+                    hint="What you pay per lead. Prefilled from the campaign's contracted or observed cost. Leave 0 if unknown — ROAS and cost-per-funded then show “—” rather than a made-up number."
+                  />
+                </div>
+                <p className="text-[11px] text-gray-400 mt-2">
+                  {knobs.costPerLead > 0 ? (
+                    <>
+                      Spend at risk ={" "}
+                      <span className="font-semibold text-gray-600 dark:text-gray-300">
+                        {money(knobs.projectedLeads * knobs.costPerLead)}
+                      </span>{" "}
+                      ({knobs.projectedLeads.toLocaleString()} leads × {money(knobs.costPerLead)}).{" "}
+                    </>
+                  ) : (
+                    <>Cost per lead unknown — cost metrics show “—”. </>
+                  )}
+                  Commission = {knobs.points} points (8% of funded). Each stage rate blends a{" "}
+                  <span className="text-amber-600 dark:text-amber-400">playbook prior</span> with this campaign's{" "}
+                  <span className="text-emerald-600 dark:text-emerald-400">observed</span> data (below).
+                </p>
               </div>
 
-              {/* Funnel table with ranges */}
-              <div>
-                <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
-                  Funnel — median with P10–P90 range
-                </h4>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="text-gray-500 dark:text-gray-400 text-xs uppercase">
-                      <tr>
-                        <th className="py-1.5 pr-4 font-medium">Stage</th>
-                        <th className="py-1.5 pr-4 font-medium text-right">Worst (P10)</th>
-                        <th className="py-1.5 pr-4 font-medium text-right">Most likely (P50)</th>
-                        <th className="py-1.5 font-medium text-right">Best (P90)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                      {result.stages.map((s) => (
-                        <tr key={s.label}>
-                          <td className="py-1.5 pr-4 text-gray-700 dark:text-gray-200">{s.label}</td>
-                          <td className="py-1.5 pr-4 text-right text-red-600 dark:text-red-400">{s.p10.toLocaleString()}</td>
-                          <td className="py-1.5 pr-4 text-right font-semibold text-gray-900 dark:text-white">{s.p50.toLocaleString()}</td>
-                          <td className="py-1.5 text-right text-emerald-600 dark:text-emerald-400">{s.p90.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              {running && !result && <p className="text-sm text-gray-400">Running simulation…</p>}
+
+              {result && (
+                <>
+                  {/* Headline cards */}
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <Outcome title="Funded deals" worst={`${result.funded.p10}`} likely={`${result.funded.p50}`} best={`${result.funded.p90}`} />
+                    <Outcome
+                      title="Commission revenue"
+                      worst={money(result.revenue.p10)}
+                      likely={money(result.revenue.p50)}
+                      best={money(result.revenue.p90)}
+                    />
+                    <Outcome
+                      title="ROAS (rev ÷ spend)"
+                      worst={result.roas ? mult(result.roas.p10) : "—"}
+                      likely={result.roas ? mult(result.roas.p50) : "—"}
+                      best={result.roas ? mult(result.roas.p90) : "—"}
+                    />
+                    <Outcome
+                      title="⭐ Cost / funded"
+                      worst={result.costPerFunded ? money(result.costPerFunded.p90) : "—"}
+                      likely={result.costPerFunded ? money(result.costPerFunded.p50) : "—"}
+                      best={result.costPerFunded ? money(result.costPerFunded.p10) : "—"}
+                      invert
+                    />
+                  </div>
+
+                  {/* Probability callouts */}
+                  <div className="flex flex-wrap gap-2">
+                    {result.pProfit != null && (
+                      <Callout label="P(profit)" value={`${result.pProfit.toFixed(0)}%`} hint="ROAS > 1" good={result.pProfit >= 50} />
+                    )}
+                    <Callout
+                      label="P(≥1 funded deal)"
+                      value={`${result.pAnyFunded.toFixed(0)}%`}
+                      hint="at least one close"
+                      good={result.pAnyFunded >= 50}
+                    />
+                    <div className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300">
+                      Implied overall close{" "}
+                      <span className="font-semibold text-gray-900 dark:text-white">{result.impliedOverallClose.toFixed(1)}%</span>
+                      <span className="text-gray-400">funded ÷ leads (blended)</span>
+                    </div>
+                  </div>
+
+                  {/* Revenue distribution histogram */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        Commission revenue distribution
+                      </h4>
+                      <span className="text-[11px] text-gray-400">
+                        {result.n.toLocaleString()} sims · seed {result.seed} · {result.ms} ms · ran {result.ranAt}
+                      </span>
+                    </div>
+                    <div className="w-full overflow-x-auto">
+                      <div className="min-w-[520px] h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={result.histogram} margin={{ top: 16, right: 12, left: 4, bottom: 4 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.2} vertical={false} />
+                            <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#9CA3AF" }} axisLine={{ stroke: "#374151", opacity: 0.3 }} interval={4} />
+                            <YAxis tick={{ fontSize: 10, fill: "#9CA3AF" }} axisLine={{ stroke: "#374151", opacity: 0.3 }} allowDecimals={false} />
+                            <Tooltip
+                              cursor={{ fill: "#00000010" }}
+                              contentStyle={{ backgroundColor: "#21262D", border: "1px solid #30363D", borderRadius: "8px", fontSize: "12px", color: "#F0F6FC" }}
+                              labelFormatter={(l) => `Revenue ≥ ${l}`}
+                              formatter={(value) => [`${Number(value) || 0} sims`, "Frequency"]}
+                            />
+                            <ReferenceLine x={result.refBuckets.worst} stroke={RED} strokeDasharray="4 3" label={{ value: "worst", position: "top", fill: RED, fontSize: 10 }} />
+                            <ReferenceLine x={result.refBuckets.likely} stroke={GRAY} strokeDasharray="4 3" label={{ value: "likely", position: "top", fill: GRAY, fontSize: 10 }} />
+                            <ReferenceLine x={result.refBuckets.best} stroke={GREEN} strokeDasharray="4 3" label={{ value: "best", position: "top", fill: GREEN, fontSize: 10 }} />
+                            <Bar dataKey="count" radius={[2, 2, 0, 0]}>
+                              {result.histogram.map((_, i) => (
+                                <Cell key={i} fill={OCEAN} fillOpacity={0.75} />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Observed vs blended per-stage table — how much is data vs prior */}
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                      Stage rates — observed vs blended
+                    </h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="text-gray-500 dark:text-gray-400 text-xs uppercase">
+                          <tr>
+                            <th className="py-1.5 pr-4 font-medium">Stage</th>
+                            <th className="py-1.5 pr-4 font-medium text-right">Observed</th>
+                            <th className="py-1.5 pr-4 font-medium text-right">Prior</th>
+                            <th className="py-1.5 pr-4 font-medium text-right">Blended (used)</th>
+                            <th className="py-1.5 font-medium text-right">Data weight</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                          {params.map((p) => (
+                            <tr key={p.key}>
+                              <td className="py-1.5 pr-4 text-gray-700 dark:text-gray-200">{p.label}</td>
+                              <td className="py-1.5 pr-4 text-right text-emerald-600 dark:text-emerald-400">
+                                {p.observed == null ? "—" : pct(p.observed)}
+                                {p.n > 0 && <span className="text-gray-400"> (n={p.n})</span>}
+                              </td>
+                              <td className="py-1.5 pr-4 text-right text-amber-600 dark:text-amber-400">{pct(p.prior)}</td>
+                              <td className="py-1.5 pr-4 text-right font-semibold text-gray-900 dark:text-white">{pct(p.blended)}</td>
+                              <td className="py-1.5 text-right">
+                                <DataWeightBar weight={p.dataWeight} />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[11px] text-gray-400 mt-1.5">
+                      “Blended” is the posterior mean the sim uses: a stage with little data sits near its{" "}
+                      <span className="text-amber-600 dark:text-amber-400">prior</span>; as leads accumulate it slides toward the{" "}
+                      <span className="text-emerald-600 dark:text-emerald-400">observed</span> rate. Data weight = n ÷ (n + k).
+                    </p>
+                  </div>
+
+                  {/* Projected funnel counts */}
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                      Projected funnel — median with P10–P90 range
+                    </h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="text-gray-500 dark:text-gray-400 text-xs uppercase">
+                          <tr>
+                            <th className="py-1.5 pr-4 font-medium">Stage</th>
+                            <th className="py-1.5 pr-4 font-medium text-right">Worst (P10)</th>
+                            <th className="py-1.5 pr-4 font-medium text-right">Most likely (P50)</th>
+                            <th className="py-1.5 font-medium text-right">Best (P90)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                          {result.stages.map((s) => (
+                            <tr key={s.label}>
+                              <td className="py-1.5 pr-4 text-gray-700 dark:text-gray-200">{s.label}</td>
+                              <td className="py-1.5 pr-4 text-right text-red-600 dark:text-red-400">{s.p10.toLocaleString()}</td>
+                              <td className="py-1.5 pr-4 text-right font-semibold text-gray-900 dark:text-white">{s.p50.toLocaleString()}</td>
+                              <td className="py-1.5 text-right text-emerald-600 dark:text-emerald-400">{s.p90.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-gray-400">
+                    Deal size drawn lognormal ({inputs.dealSize.source === "fitted" ? "fitted σ" : `default CV ${FUNDED_CV_LABEL * 100}%`}) around{" "}
+                    {money(knobs.avgFunded)}. Client-side, seeded — same knobs reproduce the same run.
+                  </p>
+                </>
+              )}
             </>
           )}
         </div>
@@ -650,11 +754,19 @@ export default function CampaignMonteCarlo({ campaign, metrics }: { campaign: Ca
   );
 }
 
-function clampPct(v: number) {
-  return Math.min(100, Math.max(0, v));
+// ── Small pieces ─────────────────────────────────────────────────────────────
+function DataWeightBar({ weight }: { weight: number }) {
+  const pctW = Math.round(weight * 100);
+  return (
+    <span className="inline-flex items-center gap-1.5 justify-end">
+      <span className="w-16 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+        <span className="block h-full bg-ocean-blue" style={{ width: `${pctW}%` }} />
+      </span>
+      <span className="text-[11px] tabular-nums text-gray-500 dark:text-gray-400 w-9">{pctW}%</span>
+    </span>
+  );
 }
 
-// ── Small pieces ─────────────────────────────────────────────────────────────
 function Knob({
   label,
   value,
@@ -662,7 +774,6 @@ function Knob({
   min,
   max,
   step,
-  source,
   hint,
 }: {
   label: string;
@@ -671,7 +782,6 @@ function Knob({
   min?: number;
   max?: number;
   step?: number;
-  source?: Source;
   hint?: string;
 }) {
   return (
@@ -687,17 +797,6 @@ function Knob({
             i
           </span>
         )}
-        {source && (
-          <span
-            className={`text-[9px] font-semibold px-1 py-0.5 rounded uppercase ${
-              source === "observed"
-                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
-            }`}
-          >
-            {source === "observed" ? "obs" : "bench"}
-          </span>
-        )}
       </span>
       <KnobInput value={value} min={min} max={max} step={step} onChange={onChange} />
     </label>
@@ -705,8 +804,8 @@ function Knob({
 }
 
 // Free-typing numeric input: holds a local DRAFT while focused so the user can
-// clear the field and type any number (e.g. "200000") without min/max clamping
-// rewriting every keystroke. The clamped value commits on blur or Enter.
+// clear the field and type any number without min/max clamping rewriting every
+// keystroke. The clamped value commits on blur or Enter.
 function KnobInput({
   value,
   onChange,
@@ -738,7 +837,9 @@ function KnobInput({
       step={step ?? 1}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={(e) => commit(e.target.value)}
-      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
       className="mt-1 w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100"
     />
   );
@@ -757,7 +858,6 @@ function Outcome({
   best: string;
   invert?: boolean;
 }) {
-  // `invert` flips the color mapping for metrics where lower is better (cost/funded).
   const worstColor = invert ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400";
   const bestColor = invert ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400";
   return (
