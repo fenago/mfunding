@@ -6,7 +6,7 @@
 
 > **Read the top 3 first.** #1 exposes every merchant's bank statements to any logged-in user. #2 means the payout numbers on screen today are ~2.2× wrong. #O1/#O2 are credential rotations only the owner can perform.
 
-**Sections:** [Owner Actions](#-owner-actions--only-the-owner-can-do-these) · [Critical](#-critical) · [High](#-high) · [Medium](#-medium) · [Low](#-low--polish) · [Doc-audit findings](#-documentation-audit--additional-findings-july-11-2026) · [Fixed](#-fixed-since-this-audit-was-written) · [Verified solid](#-verified-solid-no-action--confirmed-correct-by-auditors) · [Fix order](#suggested-fix-order)
+**Sections:** [July 19 — Documents + call flow](#-july-19--document-intake-overhaul--call-flow-changes-owner-dictated) · [Owner Actions](#-owner-actions--only-the-owner-can-do-these) · [Critical](#-critical) · [High](#-high) · [Medium](#-medium) · [Low](#-low--polish) · [Doc-audit findings](#-documentation-audit--additional-findings-july-11-2026) · [Fixed](#-fixed-since-this-audit-was-written) · [Verified solid](#-verified-solid-no-action--confirmed-correct-by-auditors) · [Fix order](#suggested-fix-order)
 
 **How to use this file:** every open item is a `- [ ]` checkbox. Each carries **what** it is, **why it matters**, and **how to fix it**. Owner-only items are `O#`, code-audit findings are `#1–37`, documentation-audit findings are `D#`. Tick items off as they land.
 
@@ -139,6 +139,59 @@ file stays the index, not a copy that drifts.*
       (verified: remove-from-workflow API returns 200) + adds the portal line to every cover
       note and playbook script. Additive to email always — the "primary door" framing stays
       rejected.
+
+---
+
+## 🟤 JULY 19 — DOCUMENT INTAKE OVERHAUL + CALL-FLOW CHANGES (owner-dictated)
+
+*Owner's words: "We need a much better way of adding documents… that's going to be the first
+to-do." Today the ONLY document path opens after we send the merchant an email — but documents
+now arrive by email reply, by text, by whatever channel the merchant prefers. The playbook must
+accept a document from anywhere, at any step.*
+
+### T1 — Documents from anywhere (FIRST PRIORITY)
+- [ ] **T1a. In-playbook document manager.** A "Documents" button on the Revenue Playbook deal
+      context bar → popup showing EVERY document on file for that merchant (filename, type,
+      classifier verdict + confidence, who/when) with upload right in the popup (drag-drop,
+      any file, any step — mirrors how the signed application got its in-banner slot).
+      Reuses `DocumentUploader` + the content classifier (July 16) so anything dropped in is
+      identified by its first page automatically.
+- [ ] **T1b. Auto-scrape documents from inbound email.** A merchant replying to ANY of our
+      emails with attachments should land those files on their `customer_documents`
+      automatically — classified, visible in the T1a popup, no human copy-paste. Wire:
+      GHL inbound-message webhook (or the existing sweep pattern) → download attachments →
+      classifier → attach to the matching merchant/deal → activity note "N document(s)
+      scraped from their email".
+- [ ] **T1c. Closer uploads anything they receive anyhow.** Text message, personal email,
+      carrier pigeon — if the closer has the file, T1a's popup takes it. Kill the assumption
+      that documents only exist after our outbound email flow.
+- [ ] **T1d. Pick-and-choose at submission.** In Submit-to-funders, show the deal's document
+      inventory as a checklist — the closer selects exactly which documents ride with each
+      funder package (defaults sensible: statements + app + ID + voided check).
+
+### T2 — Google Voice company line in the playbook
+- [ ] Link to **voice.google.com** (company number) from the Revenue Playbook so closers can
+      send/receive texts and calls on the company line. Shared login: `sales@mfunding.net` /
+      `Descartes2!` — ⚠️ build note: store the credential in `platform_settings` and render it
+      staff-only in the UI; do NOT hardcode it in the repo. (It is written here at the owner's
+      direction — repo must stay private, and rotate if that ever changes.)
+
+### T3 — Call-flow change: confirm-first + micro broker agreement
+- [ ] **First 15 seconds of every live call** — the script's opening block confirms, in order:
+      ① phone number ② cell phone number ③ email ④ name. Reorder the Start-the-call step
+      so these four are the first fields typed.
+- [ ] **Micro broker agreement out within the first 2–3 minutes.** A short agreement the
+      merchant e-signs on their phone mid-call — its load-bearing purpose: *written permission
+      to text them* (TCPA consent) plus broker authorization. Needs: owner builds the micro
+      template in GHL (enrollment-only workflow, NO stage trigger — the July 13 rule) → code
+      adds a one-click "Send micro agreement" to the early playbook steps → consent stamped
+      on the deal when signed.
+- [ ] Playbook step order updated so confirm-4-fields → micro agreement → qualification.
+
+### T4 — Portal invite button
+- [ ] One-press **"Send portal invite"** button, first-class in the Revenue Playbook context
+      bar. (The PortalAccessChip's send-sign-in-link exists — promote it from chip menu to a
+      visible button so it's never hunted for.)
 
 ---
 
