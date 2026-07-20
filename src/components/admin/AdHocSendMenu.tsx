@@ -54,13 +54,20 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
     setTimeout(() => setNote(null), 8000);
   };
 
-  const sendApp = async (kind: "partial" | "blank") => {
-    const label = kind === "partial" ? "partial application (04C)" : "blank application";
+  const sendApp = async (kind: "partial" | "blank" | "prefill") => {
+    const label =
+      kind === "partial" ? "partial application (04C)"
+      : kind === "blank" ? "blank application"
+      : "prefilled application (04B)";
     if (!confirm(`Send the ${label} to ${merchantEmail || "the merchant"} now?`)) return;
     setBusy(kind);
     try {
+      // prefill = the function's default mode (no flag); it refuses with a clear
+      // 422 if the application form hasn't been completed yet.
+      const body: Record<string, unknown> = { dealId, resend: true };
+      if (kind !== "prefill") body[kind] = true;
       const { data, error } = await supabase.functions.invoke("push-application-to-ghl", {
-        body: { dealId, [kind]: true, resend: true },
+        body,
       });
       if (error) throw error;
       const d = data as { error?: string } | null;
@@ -111,6 +118,9 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
           </button>
           <button type="button" disabled={!!busy} onClick={() => void sendApp("blank")} className={itemCls}>
             {busy === "blank" ? "Sending…" : "📨 Blank application — they fill everything"}
+          </button>
+          <button type="button" disabled={!!busy} onClick={() => void sendApp("prefill")} className={itemCls}>
+            {busy === "prefill" ? "Sending…" : "📄 Prefilled application (04B) — needs the form completed"}
           </button>
           {docs.length > 0 && (
             <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100 dark:border-gray-700">Agreements</p>
