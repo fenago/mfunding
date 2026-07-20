@@ -40,6 +40,7 @@ import {
   AdjustmentsHorizontalIcon,
   AcademicCapIcon,
   CalendarDaysIcon,
+  LightBulbIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -76,6 +77,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/todos", // Task Board
   "/admin/resources",
   "/admin/docs", // 📚 how the business + the product work — closers read the functional set
+  "/admin/strategy", // 💡 sales doctrine — closers NEED the training
   "/admin/closer-comp", // their comp offer sheet + payout calculator (OPS)
   "/admin/closer-docs", // 📝 their onboarding paperwork — they have to read + e-sign it
   "/admin/my-earnings", // 💰 their own commissions + projected pipeline (OPS)
@@ -124,6 +126,8 @@ const navGroups: NavGroup[] = [
       // Documentation — every staff role reads it. OPS here also covers `employee`,
       // which is mapped onto the "admin" NavRole below.
       { name: "Documentation", path: "/admin/docs", icon: AcademicCapIcon, roles: OPS },
+      // Strategy — sales doctrine. Closers NEED it, so OPS + in the closer lens.
+      { name: "Strategy", path: "/admin/strategy", icon: LightBulbIcon, roles: OPS },
     ],
   },
   {

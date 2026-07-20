@@ -117,6 +117,7 @@ const UsersPage = lazyWithReload(() => import("../pages/admin/UsersPage.tsx"));
 const SequencesPage = lazyWithReload(() => import("../pages/admin/SequencesPage.tsx"));
 const ResourcesAdminPage = lazyWithReload(() => import("../pages/admin/ResourcesAdminPage.tsx"));
 const FunderGuidePage = lazyWithReload(() => import("../pages/admin/FunderGuidePage.tsx"));
+const StrategyPage = lazyWithReload(() => import("../pages/admin/StrategyPage.tsx"));
 const CommsPage = lazyWithReload(() => import("../pages/admin/CommsPage.tsx"));
 const CalendarPage = lazyWithReload(() => import("../pages/admin/CalendarPage.tsx"));
 const DealListPage = lazyWithReload(() => import("../pages/admin/deals/DealListPage.tsx"));
@@ -419,6 +420,14 @@ export const routes: RouteObject[] = [
                   { index: true, element: <DocsIndexPage /> },
                   { path: ":set/:slug", element: <DocViewerPage /> },
                 ],
+              },
+              // Sales doctrine — training every closer needs. Same visibility as
+              // docs: no extra guard, so AdminProtectedRoute's isStaff check
+              // (closer + employee + admin + super_admin) gates it. Merchants fail
+              // isStaff and never reach it.
+              {
+                path: "strategy",
+                element: <StrategyPage />,
               },
               // Sub-ISOs (super_admin only)
               {
