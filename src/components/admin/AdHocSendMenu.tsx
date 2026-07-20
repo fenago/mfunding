@@ -15,8 +15,12 @@ import { getSetting } from "../../services/platformService";
 interface AdhocDocDef {
   key: string;
   label: string;
-  workflow_id: string;
-  doc_pattern: string;
+  /** GHL delivery: enrollment-only workflow (send-adhoc-doc). */
+  workflow_id?: string;
+  doc_pattern?: string;
+  /** NATIVE delivery: our own e-sign — send-merchant-document per template id.
+   *  Merges against the deal, freezes, lands in the merchant portal + email. */
+  native_template_ids?: string[];
   tag?: string;
 }
 
