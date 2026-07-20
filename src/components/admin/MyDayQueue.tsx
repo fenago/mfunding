@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { getOpenDealsForQueue, logContactAttempt, updateDealStatus, STIPS_PENDING_STATUSES, type ContactOutcome, type QueueDeal } from "../../services/dealService";
+import { getOpenDealsForQueue, updateDealStatus, STIPS_PENDING_STATUSES, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
-import { dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, statedTimeInET, timeET, tomorrowAtEtIso } from "../../utils/time";
+import { dateKeyET, timeET } from "../../utils/time";
 import LeadGradeChip from "./LeadGradeChip";
 
 const HOUR = 3_600_000;
@@ -615,23 +615,6 @@ function QueueCard({
   const sla = slaMs(u.rank);
   const overdue = sla !== null && now - Date.parse(u.since) > sla;
   const [busy, setBusy] = useState<string | null>(null);
-  const [askCallback, setAskCallback] = useState(false);
-
-  // The outcome buttons belong on any lead we haven't actually SPOKEN to yet — which
-  // includes one we've dialled three times and nobody answered.
-  const needsOutcome = deal.status === "new" && !deal.contacted_at;
-
-  const log = async (outcome: ContactOutcome, callbackAt?: string, spoke?: boolean) => {
-    setBusy(outcome);
-    try {
-      await logContactAttempt(deal.id, { outcome, channel: "call", callbackAt, spoke });
-      setAskCallback(false);
-      onTouched();
-    } finally {
-      setBusy(null);
-    }
-  };
-
   // The 7-call off-ramp: close to nurture (terminal; fires the GHL re-engagement
   // sequence) and the card leaves the board on the refetch. Two-step INLINE
   // confirm — no browser confirm() popups (owner rule).
@@ -788,53 +771,11 @@ function QueueCard({
         </div>
       )}
 
-      {/* WHAT HAPPENED? — the thing the app had no way to hear.
-          A closer dials a real-time lead and one of three things is true. Until now the
-          app modelled none of them, so the red SLA badge sat there forever no matter
-          what the closer did, and "call me at 4pm" merchants screamed CALL NOW all day
-          — which is exactly how a team learns to ignore red badges. */}
-      {needsOutcome && (
-        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
-          {askCallback ? (
-            <CallbackPicker
-              bestTime={u.callWindow}
-              busy={busy === "callback"}
-              onCancel={() => setAskCallback(false)}
-              onPick={(iso, spoke) => log("callback", iso, spoke)}
-            />
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => log("reached")}
-                disabled={!!busy}
-                title="You spoke to the merchant"
-                className="flex-1 px-2 py-1 rounded-md text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white transition-colors"
-              >
-                {busy === "reached" ? "…" : "✅ Reached"}
-              </button>
-              <button
-                type="button"
-                onClick={() => log("attempted")}
-                disabled={!!busy}
-                title="You tried — nobody picked up. You were still on time."
-                className="flex-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-gray-400 dark:border-gray-500 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-60 transition-colors"
-              >
-                {busy === "attempted" ? "…" : "📵 No answer"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setAskCallback(true)}
-                disabled={!!busy}
-                title="They asked you to call at a specific time — snooze until then"
-                className="flex-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-amber-500 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-60 transition-colors"
-              >
-                🕐 Call back
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      {/* The Reached / No answer / Call back button row is GONE (owner call,
+          2026-07-20): every VibeReach dial is auto-audited by the call sweep, so
+          "No answer" was double-entry, and a row that never left the card read as
+          confusion, not affordance. Conversations and callbacks are logged from
+          the playbook (open the card) and the Calendar's "+ Schedule call". */}
 
       <div className="flex items-center justify-between gap-2 mt-1.5">
         <span className="flex items-center gap-1.5 min-w-0">
@@ -871,127 +812,6 @@ function QueueCard({
   );
 }
 
-/**
- * "Call me at 4pm" → snooze this deal until 4pm.
- *
- * A closer is on the phone when they use this, so it has to be one tap. The presets do
- * the work; the datetime field is the escape hatch for anything they don't cover.
- *
- * We deliberately do NOT try to parse the merchant's free-text best_time ("4:00PM CST",
- * "10am PST") into a timestamp. It's inconsistent, timezone-laden, and a mis-parse would
- * silently bury a hot lead until the wrong hour. It's shown as a reminder, and a human
- * picks the actual time.
- */
-function CallbackPicker({
-  bestTime, busy, onPick, onCancel,
-}: {
-  bestTime?: string;
-  busy: boolean;
-  onPick: (iso: string, spoke: boolean) => void;
-  onCancel: () => void;
-}) {
-  const [custom, setCustom] = useState("");
-  // "They answered and said call me later" is the floor's most common outcome — and it
-  // IS a contact. "Voicemail, scheduling a retry" is not. One tap tells them apart, so
-  // the contact rate stays honest in both directions. Defaults YES: most callbacks come
-  // out of a conversation.
-  const [spoke, setSpoke] = useState(true);
-  // ── EVERY time here is EASTERN. ──
-  // The app renders exclusively in ET (installEasternTime), but writes used to be
-  // browser-local: "Tomorrow 9am" from a Phoenix laptop booked 9am ARIZONA (noon ET),
-  // and a custom "4:00 PM" booked 4pm browser time — then the card rendered the ET
-  // translation and nothing looked wrong until the call was hours late. The relative
-  // presets (1h/3h) are timezone-free; everything wall-clock goes through the ET
-  // helpers and is labelled ET so the closer knows whose clock they're reading.
-  const customIso = custom ? etDateTimeLocalToUtcIso(custom) : null;
-
-  const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
-
-  const PRESETS: { label: string; iso: () => string }[] = [
-    { label: "1h", iso: () => inMinutes(60) },
-    { label: "3h", iso: () => inMinutes(180) },
-    { label: "Tomorrow 9am ET", iso: () => tomorrowAtEtIso(9) },
-  ];
-
-  return (
-    <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 p-2">
-      <p className="text-[10px] font-semibold text-amber-800 dark:text-amber-300 mb-1.5">
-        {bestTime ? (
-          <>
-            They said <b>{bestTime}</b>
-            {statedTimeInET(bestTime) && <> = <b>{statedTimeInET(bestTime)}</b></>} — when will you call?
-          </>
-        ) : (
-          "When will you call them back?"
-        )}
-      </p>
-      <div className="flex items-center gap-1 mb-1.5 text-[10px]">
-        <span className="text-amber-800 dark:text-amber-300 font-semibold mr-1">Did you speak to them?</span>
-        {[true, false].map((v) => (
-          <button
-            key={String(v)}
-            type="button"
-            onClick={() => setSpoke(v)}
-            className={`px-1.5 py-0.5 rounded font-semibold ${
-              spoke === v
-                ? "bg-amber-600 text-white"
-                : "bg-white dark:bg-gray-800 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700"
-            }`}
-          >
-            {v ? "Yes — they asked for later" : "No — just scheduling"}
-          </button>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-1 mb-1.5">
-        {PRESETS.map((p) => (
-          <button
-            key={p.label}
-            type="button"
-            disabled={busy}
-            onClick={() => onPick(p.iso(), spoke)}
-            className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white"
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-      <div className="flex items-center gap-1">
-        <input
-          type="datetime-local"
-          value={custom}
-          onChange={(e) => setCustom(e.target.value)}
-          title="Eastern time — the whole app runs on ET"
-          className="flex-1 min-w-0 rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-gray-800 px-1 py-0.5 text-[10px] text-gray-900 dark:text-white"
-        />
-        <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300 shrink-0" title="This time is Eastern, not your laptop's timezone">
-          ET
-        </span>
-        <button
-          type="button"
-          disabled={busy || !customIso}
-          onClick={() => customIso && onPick(customIso, spoke)}
-          className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white"
-        >
-          Set
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-1 py-0.5 text-[10px] text-amber-700 dark:text-amber-300 hover:underline"
-        >
-          ✕
-        </button>
-      </div>
-      {/* Echo the exact instant back before it's committed — the cheap insurance
-          against every remaining way to misread a datetime field. */}
-      {customIso && (
-        <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
-          Will call back at <b>{dateTimeET(customIso)}</b>
-        </p>
-      )}
-    </div>
-  );
-}
 
 /** One lane: a labelled header with a count badge, then the lane's cards in rank
  * order (or its own empty state). */
