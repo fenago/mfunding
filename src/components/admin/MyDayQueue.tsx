@@ -633,9 +633,17 @@ function QueueCard({
   };
 
   // The 7-call off-ramp: close to nurture (terminal; fires the GHL re-engagement
-  // sequence) and the card leaves the board on the refetch.
+  // sequence) and the card leaves the board on the refetch. Two-step INLINE
+  // confirm — no browser confirm() popups (owner rule).
+  const [nurtureArmed, setNurtureArmed] = useState(false);
+  useEffect(() => {
+    if (!nurtureArmed) return;
+    const t = setTimeout(() => setNurtureArmed(false), 5000);
+    return () => clearTimeout(t);
+  }, [nurtureArmed]);
   const moveToNurture = async () => {
-    if (!confirm(`Move ${nameOf(deal)} to long-term nurture? They leave My Day; the email sequence keeps working them.`)) return;
+    if (!nurtureArmed) { setNurtureArmed(true); return; }
+    setNurtureArmed(false);
     setBusy("nurture");
     try {
       await updateDealStatus(deal.id, "nurture");
@@ -775,7 +783,7 @@ function QueueCard({
             className="w-full px-2 py-1.5 rounded-md text-[11px] font-bold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-60 transition-colors"
             title="Terminal move: leaves My Day; the long-term email sequence takes over"
           >
-            {busy === "nurture" ? "Moving…" : "🏁 Move to long-term nurture"}
+            {busy === "nurture" ? "Moving…" : nurtureArmed ? "⚠️ Tap again to confirm — they leave My Day" : "🏁 Move to long-term nurture"}
           </button>
         </div>
       )}

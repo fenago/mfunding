@@ -1297,6 +1297,24 @@ function DocsBackChips({ ghlContactId }: { ghlContactId: string }) {
           }`}
         >
           {g.latest.signed ? "✍️" : "⏳"} {short(g.latest.name)} {g.latest.signed ? "✓ signed" : `· ${g.latest.status}`}
+          {/* THIS merchant's signing link — copy it to text them ("just tap this
+              and sign"). Bearer link straight from the GHL doc record. */}
+          {!g.latest.signed && g.latest.url && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void navigator.clipboard.writeText(g.latest.url!);
+                const el = e.currentTarget;
+                el.textContent = "✓";
+                setTimeout(() => { el.textContent = "📋"; }, 1500);
+              }}
+              title={`Copy ${short(g.latest.name)}'s signing link for this merchant — paste it into a text`}
+              className="ml-0.5 hover:opacity-70"
+            >
+              📋
+            </button>
+          )}
         </span>
       ))}
     </>

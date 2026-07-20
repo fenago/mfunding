@@ -21,6 +21,8 @@ interface AdhocDocDef {
   /** NATIVE delivery: our own e-sign — send-merchant-document per template id.
    *  Merges against the deal, freezes, lands in the merchant portal + email. */
   native_template_ids?: string[];
+  /** Public blank-form link for this doc (textable) — copy affordance in the menu. */
+  public_link?: string;
   tag?: string;
 }
 
@@ -36,7 +38,23 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
   const [docs, setDocs] = useState<AdhocDocDef[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  // Two-step inline confirm — NO browser confirm() popups (owner rule). First
+  // tap arms the item ("tap again to send"), second tap fires; disarms after 5s.
+  const [armed, setArmed] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(null), 5000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  /** Returns true when the item is armed and should FIRE; otherwise arms it. */
+  const armOrFire = (key: string): boolean => {
+    if (armed === key) { setArmed(null); return true; }
+    setArmed(key);
+    return false;
+  };
 
   useEffect(() => {
     getSetting<{ docs?: AdhocDocDef[] }>("adhoc_docs", {}).then((v) => setDocs(v.docs ?? []));
@@ -63,7 +81,6 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
       kind === "partial" ? "partial application (04C)"
       : kind === "blank" ? "blank application"
       : "prefilled application (04B)";
-    if (!confirm(`Send the ${label} to ${merchantEmail || "the merchant"} now?`)) return;
     setBusy(kind);
     try {
       // prefill = the function's default mode (no flag); it refuses with a clear
@@ -83,7 +100,6 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
   };
 
   const sendAdhoc = async (def: AdhocDocDef) => {
-    if (!confirm(`Send "${def.label}" to ${merchantEmail || "the merchant"} now?`)) return;
     setBusy(def.key);
     try {
       const { data, error } = await supabase.functions.invoke("send-adhoc-doc", {
@@ -117,29 +133,55 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
       {open && (
         <div className="absolute z-30 mt-1 w-72 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg py-1">
           <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-400">Application</p>
-          <button type="button" disabled={!!busy} onClick={() => void sendApp("partial")} className={itemCls}>
-            {busy === "partial" ? "Sending…" : "⚡ Partial application (04C) — we prefill, they finish"}
-          </button>
-          <button type="button" disabled={!!busy} onClick={() => void sendApp("blank")} className={itemCls}>
-            {busy === "blank" ? "Sending…" : "📨 Blank application — they fill everything"}
-          </button>
-          <button type="button" disabled={!!busy} onClick={() => void sendApp("prefill")} className={itemCls}>
-            {busy === "prefill" ? "Sending…" : "📄 Prefilled application (04B) — needs the form completed"}
-          </button>
+          {([
+            ["partial", "⚡ Partial application (04C) — we prefill, they finish"],
+            ["blank", "📨 Blank application — they fill everything"],
+            ["prefill", "📄 Prefilled application (04B) — needs the form completed"],
+          ] as const).map(([kind, label]) => (
+            <button
+              key={kind}
+              type="button"
+              disabled={!!busy}
+              onClick={() => { if (armOrFire(kind)) void sendApp(kind); }}
+              className={`${itemCls} ${armed === kind ? "bg-amber-50 dark:bg-amber-900/30 font-semibold" : ""}`}
+            >
+              {busy === kind ? "Sending…" : armed === kind ? `⚠️ Tap again to send to ${merchantEmail || "the merchant"} →` : label}
+            </button>
+          ))}
           {docs.length > 0 && (
             <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100 dark:border-gray-700">Agreements</p>
           )}
-          {docs.map((d) =>
-            d.workflow_id ? (
-              <button key={d.key} type="button" disabled={!!busy} onClick={() => void sendAdhoc(d)} className={itemCls}>
-                {busy === d.key ? "Sending…" : `📝 ${d.label}`}
-              </button>
-            ) : (
-              <div key={d.key} className="px-3 py-1.5 text-[12px] text-gray-400" title="Create the enrollment-only GHL workflow for this document and save its id in the adhoc_docs setting.">
-                📝 {d.label} <span className="text-[10px] text-amber-600">· setup needed</span>
-              </div>
-            ),
-          )}
+          {docs.map((d) => (
+            <div key={d.key}>
+              {d.workflow_id ? (
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() => { if (armOrFire(d.key)) void sendAdhoc(d); }}
+                  className={`${itemCls} ${armed === d.key ? "bg-amber-50 dark:bg-amber-900/30 font-semibold" : ""}`}
+                >
+                  {busy === d.key ? "Sending…" : armed === d.key ? `⚠️ Tap again to send to ${merchantEmail || "the merchant"} →` : `📝 ${d.label}`}
+                </button>
+              ) : (
+                <div className="px-3 py-1.5 text-[12px] text-gray-400" title="Create the enrollment-only GHL workflow for this document and save its id in the adhoc_docs setting.">
+                  📝 {d.label} <span className="text-[10px] text-amber-600">· setup needed</span>
+                </div>
+              )}
+              {d.public_link && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(d.public_link!);
+                    finish(true, "📋 Blank form link copied — paste it into a text.");
+                  }}
+                  className="w-full text-left px-3 pb-1.5 -mt-0.5 text-[11px] text-ocean-blue hover:underline"
+                  title="Copies the public blank form link for this document — anyone with the link can fill and sign"
+                >
+                  📋 Copy blank form link (textable)
+                </button>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
