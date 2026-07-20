@@ -1633,7 +1633,7 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               )}
               {/* Send any document RIGHT NOW, at any stage — the application paths
                   plus the registered agreements (broker/TCPA consent). */}
-              <AdHocSendMenu dealId={deal.id} merchantEmail={deal.customer?.email} />
+              <AdHocSendMenu dealId={deal.id} merchantEmail={deal.customer?.email} ghlContactId={deal.ghl_contact_id} />
               {/* Signature status at a glance — did they sign the disclosure + the
                   application? No scrolling to the Docs-back panel to find out. */}
               {deal.ghl_contact_id && <DocsBackChips ghlContactId={deal.ghl_contact_id} />}

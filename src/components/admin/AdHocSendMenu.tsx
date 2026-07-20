@@ -29,11 +29,32 @@ interface AdhocDocDef {
 interface Props {
   dealId: string;
   merchantEmail?: string | null;
+  /** GHL contact — enables the "Their signing links" section (per-merchant
+   *  bearer links, copyable for texting). */
+  ghlContactId?: string | null;
 }
 
 type Busy = string | null; // the in-flight item key
 
-export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
+/** A sent document's per-merchant signing link (from ghl-docs-status). */
+interface SentDocLink { name: string; signed: boolean; url: string | null }
+
+// supabase-js buries the server's JSON error under error.context and surfaces
+// only "Edge Function returned a non-2xx status code" — useless to a closer.
+// Dig the real message out so a 422 guard ("no business name on file…") is
+// SHOWN, not hidden.
+async function realError(e: unknown, fallback: string): Promise<string> {
+  const ctx = (e as { context?: Response })?.context;
+  if (ctx && typeof ctx.clone === "function") {
+    try {
+      const j = await ctx.clone().json() as { error?: string };
+      if (j?.error) return j.error;
+    } catch { /* not JSON — fall through */ }
+  }
+  return e instanceof Error && e.message && !/non-2xx/i.test(e.message) ? e.message : fallback;
+}
+
+export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: Props) {
   const [open, setOpen] = useState(false);
   const [docs, setDocs] = useState<AdhocDocDef[]>([]);
   const [busy, setBusy] = useState<Busy>(null);
@@ -59,6 +80,22 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
   useEffect(() => {
     getSetting<{ docs?: AdhocDocDef[] }>("adhoc_docs", {}).then((v) => setDocs(v.docs ?? []));
   }, []);
+
+  // THIS merchant's signing links — fetched when the menu opens, so "copy the
+  // link and text it to them" is one click away from where sends happen.
+  const [sentLinks, setSentLinks] = useState<SentDocLink[] | null>(null);
+  useEffect(() => {
+    if (!open || !ghlContactId) return;
+    let cancelled = false;
+    setSentLinks(null);
+    supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
+      .then(({ data }) => {
+        if (cancelled || data?.error) { if (!cancelled) setSentLinks([]); return; }
+        setSentLinks(((data?.documents ?? []) as SentDocLink[]).filter((d) => d.url));
+      })
+      .catch(() => { if (!cancelled) setSentLinks([]); });
+    return () => { cancelled = true; };
+  }, [open, ghlContactId]);
 
   // Close on outside click.
   useEffect(() => {
@@ -95,7 +132,7 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
       if (d?.error) throw new Error(d.error);
       finish(true, `✓ ${label} sent`);
     } catch (e) {
-      finish(false, e instanceof Error ? e.message : `Could not send the ${label}.`);
+      finish(false, await realError(e, `Could not send the ${label}.`));
     }
   };
 
@@ -110,7 +147,7 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
       if (d?.error) throw new Error(d.error);
       finish(true, d?.verification === "confirmed" ? `✓ ${def.label} sent + verified` : `✓ ${def.label} sent (verify in GHL)`);
     } catch (e) {
-      finish(false, e instanceof Error ? e.message : `Could not send ${def.label}.`);
+      finish(false, await realError(e, `Could not send ${def.label}.`));
     }
   };
 
@@ -182,6 +219,37 @@ export default function AdHocSendMenu({ dealId, merchantEmail }: Props) {
               )}
             </div>
           ))}
+
+          {/* THIS merchant's signing links — every document already sent to them,
+              one copy-click from a text message. Bearer links: whoever holds one
+              can open + sign that document. */}
+          {ghlContactId && (
+            <>
+              <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100 dark:border-gray-700">
+                Their signing links
+              </p>
+              {sentLinks === null ? (
+                <p className="px-3 py-1.5 text-[11px] text-gray-400">Checking…</p>
+              ) : sentLinks.length === 0 ? (
+                <p className="px-3 py-1.5 text-[11px] text-gray-400">Nothing sent yet — send a document above and its link appears here.</p>
+              ) : (
+                sentLinks.map((l, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(l.url!);
+                      finish(true, `📋 Copied their "${l.name}" link — paste it into a text.`);
+                    }}
+                    className={itemCls}
+                    title={`Copies this merchant's own link for ${l.name}`}
+                  >
+                    📋 {l.name} {l.signed ? "· ✓ signed (view link)" : "· awaiting signature"}
+                  </button>
+                ))
+              )}
+            </>
+          )}
         </div>
       )}
 
