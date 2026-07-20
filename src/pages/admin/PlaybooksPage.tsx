@@ -1700,6 +1700,36 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* The two numbers a closer sizes every call with — monthly revenue and the
+              ask — plus the MULTIPLE between them (an advance sizes off ~70-120% of
+              monthly revenue, so ≤1.2× is in range, ≤1.5× a stretch, beyond that the
+              first job is resetting the ask). Mirrors the My Day card line + thresholds. */}
+          {(() => {
+            const rev = Number(deal.customer?.monthly_revenue ?? 0);
+            const ask = Number(deal.amount_requested ?? 0);
+            if (!rev && !ask) return null;
+            const mult = rev > 0 && ask > 0 ? ask / rev : null;
+            const tone =
+              mult === null ? "text-gray-500 dark:text-gray-400"
+              : mult <= 1.2 ? "text-emerald-600 dark:text-emerald-400"
+              : mult <= 1.5 ? "text-amber-600 dark:text-amber-400"
+              : "text-red-600 dark:text-red-400";
+            return (
+              <span
+                className="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-200"
+                title="Monthly revenue vs. the ask — an advance sizes off ~70-120% of monthly revenue"
+              >
+                {rev > 0 && <><b>${Math.round(rev / 1000)}K</b>/mo</>}
+                {rev > 0 && ask > 0 && " · "}
+                {ask > 0 && <>asking <b>${Math.round(ask / 1000)}K</b></>}
+                {mult !== null && (
+                  <span className={`ml-1 ${tone}`}>
+                    ({mult.toFixed(1)}×{mult > 1.5 ? " — reset the ask" : ""})
+                  </span>
+                )}
+              </span>
+            );
+          })()}
           {deal.amount_requested ? (
             <>
               <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
