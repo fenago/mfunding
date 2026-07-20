@@ -17,6 +17,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "@/context/UserProfileContext";
 import CampaignMonteCarlo from "@/components/admin/CampaignMonteCarlo";
+import CampaignAudit from "@/components/admin/CampaignAudit";
 import {
   listCampaigns,
   saveCampaign,
@@ -95,6 +96,7 @@ export default function CampaignsPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editing, setEditing] = useState<Campaign | null>(null);
   const [rateCardOpen, setRateCardOpen] = useState(false);
+  const [view, setView] = useState<"overview" | "audit">("overview");
 
   async function load() {
     setLoading(true);
@@ -184,6 +186,27 @@ export default function CampaignsPage() {
         </div>
       )}
 
+      {/* Tabs — spend/ROI overview vs the lead-quality audit */}
+      <div className="flex items-center gap-1 border-b border-gray-200 dark:border-gray-700">
+        {([["overview", "Overview"], ["audit", "Audit"]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 transition-colors ${
+              view === key
+                ? "border-ocean-blue text-ocean-blue"
+                : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "audit" ? (
+        <CampaignAudit campaigns={rows} />
+      ) : (
+      <>
       {/* Roll-up — the numbers that decide if the whole program is worth it */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Stat label="Total spend" value={money(totals.spent)} />
@@ -210,6 +233,8 @@ export default function CampaignsPage() {
 
       {/* Per-channel head-to-head */}
       {rollups.length > 0 && <ChannelRollupTable rollups={rollups} />}
+      </>
+      )}
 
       {wizardOpen && (
         <CampaignWizardModal

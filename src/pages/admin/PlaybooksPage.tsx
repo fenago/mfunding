@@ -2062,6 +2062,9 @@ const CLOSE_REASONS: { value: string; label: string }[] = [
   { value: "too_many_positions", label: "Too many positions" },
   { value: "docs_never_arrived", label: "Docs never arrived" },
   { value: "funders_declined", label: "Funders declined" },
+  // Vendor-junk signal: the merchant denies ever asking for funding info. Counted
+  // per campaign in the Campaign Audit to prove a lead source is selling garbage.
+  { value: "bogus_never_requested", label: "Bogus — says they never requested info" },
   { value: "other", label: "Other" },
 ];
 
