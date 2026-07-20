@@ -268,6 +268,26 @@ interface InboundResult {
   result: Record<string, unknown>;
 }
 
+// Best-effort email/message id from an open event, for deduping repeat opens of
+// the same email. GHL open payloads vary by how the workflow is wired, so we probe
+// the common shapes (flat fields, customData, a nested email object, meta.email).
+function emailMessageIdOf(evt: Record<string, unknown>): string | null {
+  const cd = (evt.customData ?? {}) as Record<string, unknown>;
+  const email = (evt.email ?? cd.email ?? {}) as Record<string, unknown>;
+  const meta = (evt.meta ?? {}) as Record<string, unknown>;
+  const metaEmail = (meta.email ?? {}) as Record<string, unknown>;
+  const metaIds = Array.isArray(metaEmail.messageIds) ? (metaEmail.messageIds as unknown[]) : [];
+  const candidate =
+    evt.messageId ?? evt.message_id ?? evt.emailMessageId ?? evt.emailId ?? evt.email_id ??
+    cd.messageId ?? cd.message_id ?? cd.emailMessageId ?? cd.email_message_id ?? cd.emailId ??
+    email.id ?? email.messageId ?? metaIds[0] ?? null;
+  const s = candidate == null ? "" : String(candidate).trim();
+  return s || null;
+}
+
+interface LeadOpenRow { matched: boolean; is_new: boolean; customer_id: string | null }
+interface SubRow { id: string; opened_at: string | null; open_count: number | null }
+
 // ── Funder email OPEN → stamp submission.opened_at (time-to-open metric) ─────
 // The funder's GHL contactId maps to a lender (ghl_contact_id). We stamp that
 // funder's most recent still-unopened submission as opened (first open), and
@@ -279,20 +299,45 @@ async function handleEmailOpen(db: DB, evt: Record<string, unknown>): Promise<In
   const contactId = String(c.id ?? evt.contactId ?? evt.contact_id ?? cd.contactId ?? cd.contact_id ?? "");
   if (!contactId) return { outcome: "ignored", detail: "email-open: no contactId", result: {} };
 
+  // (1) Per-LEAD open: record it for the merchant behind this contact (going
+  // forward). Best-effort and isolated — never let it break the funder path below.
+  // The recorder dedupes on the email/message id when GHL sends one, and bumps the
+  // customers aggregate (email_last_opened_at / email_open_count) the audit reads.
+  let leadOpen: LeadOpenRow | null = null;
+  try {
+    const messageId = emailMessageIdOf(evt);
+    const { data } = await db.rpc("record_lead_email_open", { p_contact_id: contactId, p_message_id: messageId });
+    const rows = data as unknown as LeadOpenRow[] | LeadOpenRow | null;
+    leadOpen = Array.isArray(rows) ? (rows[0] ?? null) : (rows ?? null);
+  } catch (e) {
+    console.warn("[ghl-webhook] record_lead_email_open skipped:", e instanceof Error ? e.message : e);
+  }
+
+  // (2) Funder submission stamp (existing behavior). A contact is a merchant XOR a
+  // funder; when it isn't a lender, we still return "processed" if we logged a lead open.
   const { data: lender } = await db.from("lenders").select("id, company_name").eq("ghl_contact_id", contactId).maybeSingle();
-  if (!lender) return { outcome: "ignored", detail: `email-open: no lender for contact ${contactId}`, result: {} };
+  if (!lender) {
+    if (leadOpen?.matched) {
+      return {
+        outcome: "processed",
+        detail: `email-open: lead ${leadOpen.customer_id} (${leadOpen.is_new ? "new open" : "repeat"})`,
+        result: { customerId: leadOpen.customer_id, firstOpen: leadOpen.is_new },
+      };
+    }
+    return { outcome: "ignored", detail: `email-open: no lender/customer for contact ${contactId}`, result: {} };
+  }
 
   // Prefer the most recent still-unopened sent submission; else the most recent sent one.
-  let sub: { id: string; opened_at: string | null; open_count: number | null } | null = null;
+  let sub: SubRow | null = null;
   const un = await db.from("deal_submissions").select("id, opened_at, open_count")
     .eq("lender_id", lender.id).not("submitted_at", "is", null).is("opened_at", null)
     .order("submitted_at", { ascending: false }).limit(1).maybeSingle();
-  sub = (un.data as typeof sub) ?? null;
+  sub = (un.data as unknown as SubRow | null) ?? null;
   if (!sub) {
     const any = await db.from("deal_submissions").select("id, opened_at, open_count")
       .eq("lender_id", lender.id).not("submitted_at", "is", null)
       .order("submitted_at", { ascending: false }).limit(1).maybeSingle();
-    sub = (any.data as typeof sub) ?? null;
+    sub = (any.data as unknown as SubRow | null) ?? null;
   }
   if (!sub) return { outcome: "ignored", detail: `email-open: no sent submission for ${lender.company_name}`, result: {} };
 

@@ -73,13 +73,14 @@ export interface AuditMetrics {
   badEmailPct: number | null;
 
   // ── Engagement / matriculation ──────────────────────────────────────────────
-  merchantReplies: number;       // merchant_reply_at — the confirmed-engagement proxy for opens
+  merchantReplies: number;       // merchant_reply_at — confirmed inbound engagement
   merchantRepliesPct: number | null;
   docsReceived: number;          // customers with >=1 uploaded document
   docsReceivedPct: number | null;
   esignCompletions: number;      // customers with a recorded e-sign completion
+  emailOpens: number;            // leads whose customer opened >=1 email (forward-only, see OPEN_TRACKING_SINCE)
+  emailOpensPct: number | null;  // emailOpens / withEmail
   // portal sign-ins: omitted — auth.users.last_sign_in_at is service-role only.
-  // email opens: omitted as a live rate — see file header + UI note.
 
   // ── Funnel waterfall ────────────────────────────────────────────────────────
   qualified: number;
@@ -118,6 +119,10 @@ export interface AuditMetrics {
 // The reason value the close-deal dialog writes when a lead denies ever asking for
 // info — the headline vendor-junk signal. Kept here so the audit and the dialog agree.
 export const BOGUS_REASON = "bogus_never_requested";
+
+// Per-lead email-open tracking began when the ghl-webhook change deployed. Opens
+// before this date were never persisted, so the open metric is forward-only.
+export const OPEN_TRACKING_SINCE = "2026-07-20";
 
 // Call-tier thresholds (seconds). Connected catches voicemail pickups; a real
 // conversation needs two minutes of talk time.
@@ -167,6 +172,7 @@ interface CustomerRow {
   email: string | null;
   email_status: string | null;
   email_bounced_at: string | null;
+  email_last_opened_at: string | null;
 }
 
 interface UwRow {
@@ -290,7 +296,7 @@ async function fetchCustomers(ids: string[]): Promise<Map<string, CustomerRow>> 
   if (ids.length === 0) return map;
   const { data, error } = await supabase
     .from("customers")
-    .select("id, email, email_status, email_bounced_at")
+    .select("id, email, email_status, email_bounced_at, email_last_opened_at")
     .in("id", ids);
   if (error) return map;
   for (const r of (data ?? []) as CustomerRow[]) map.set(r.id, r);
@@ -358,7 +364,7 @@ function foldCampaign(
   let withEmail = 0, noEmail = 0, badEmail = 0, unverifiedEmail = 0;
 
   // Engagement
-  let merchantReplies = 0;
+  let merchantReplies = 0, emailOpens = 0;
   const docCustomers = new Set<string>();
   const esignCustomers = new Set<string>();
 
@@ -406,6 +412,7 @@ function foldCampaign(
 
     // ── engagement ──
     if (has(d.merchant_reply_at)) merchantReplies += 1;
+    if (has(cust?.email_last_opened_at)) emailOpens += 1;
     if (d.customer_id && docCustomerIds.has(d.customer_id)) docCustomers.add(d.customer_id);
     if (d.customer_id && esignCustomerIds.has(d.customer_id)) esignCustomers.add(d.customer_id);
 
@@ -497,6 +504,8 @@ function foldCampaign(
     docsReceived: docCustomers.size,
     docsReceivedPct: rate(docCustomers.size, leads),
     esignCompletions: esignCustomers.size,
+    emailOpens,
+    emailOpensPct: rate(emailOpens, withEmail),
 
     qualified,
     appSent,

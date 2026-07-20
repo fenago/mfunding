@@ -8,7 +8,7 @@ import {
   ChevronRightIcon,
 } from "@heroicons/react/24/outline";
 import { CHANNEL_META, type Campaign } from "@/services/campaignService";
-import { getCampaignAudit, AUDIT_FUNNEL, type AuditMetrics } from "@/services/campaignAuditService";
+import { getCampaignAudit, AUDIT_FUNNEL, OPEN_TRACKING_SINCE, type AuditMetrics } from "@/services/campaignAuditService";
 import { dateTimeET } from "@/utils/time";
 
 // ── Formatters ───────────────────────────────────────────────────────────────
@@ -105,11 +105,10 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
       <div className="flex items-start gap-2 rounded-lg bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800 px-4 py-3 text-[12px] text-sky-800 dark:text-sky-200">
         <InformationCircleIcon className="w-4 h-4 shrink-0 mt-0.5" />
         <span>
-          <b>Email opens:</b> GoHighLevel <i>does</i> track opens (an email record reads sent → delivered → opened via
-          Mailgun), but we don't persist that per lead, and reading it live would be one API call per lead — so it isn't
-          shown as a per-campaign rate here. <b>Merchant replies</b> (below) are the live confirmed-engagement signal
-          instead. <b>Portal sign-ins</b> are also not shown — that lives in the auth system (service-role only).
-          Everything else on this page is a live read of real data.
+          <b>Email opens are now tracked</b> going forward (since {OPEN_TRACKING_SINCE}) — GoHighLevel open events land
+          in a per-lead ledger via the webhook, and "Emails opened" below reads it. Opens <i>before</i> that date were
+          never persisted, so they're not available. <b>Portal sign-ins</b> are not shown — that lives in the auth
+          system (service-role only). Everything else on this page is a live read of real data.
         </span>
       </div>
 
@@ -259,7 +258,8 @@ function CampaignAuditCard({ campaign: c, m }: { campaign: Campaign; m: AuditMet
 
           {/* Engagement / matriculation */}
           <MetricRow title="Engagement">
-            <Cell label="Merchant replies" value={int(m.merchantReplies)} sub={`${pct(m.merchantRepliesPct)} · opens proxy`} tone={m.merchantReplies > 0 ? "good" : "neutral"} />
+            <Cell label="Emails opened" value={int(m.emailOpens)} sub={`${pct(m.emailOpensPct)} of emailed · since ${OPEN_TRACKING_SINCE}`} tone={m.emailOpens > 0 ? "good" : "neutral"} />
+            <Cell label="Merchant replies" value={int(m.merchantReplies)} sub={pct(m.merchantRepliesPct)} tone={m.merchantReplies > 0 ? "good" : "neutral"} />
             <Cell label="Docs received" value={int(m.docsReceived)} sub={pct(m.docsReceivedPct)} tone={m.docsReceived > 0 ? "good" : "neutral"} />
             <Cell label="E-sign completions" value={m.esignCompletions > 0 ? int(m.esignCompletions) : "—"} sub="signed docs on file" tone={m.esignCompletions > 0 ? "good" : "neutral"} />
           </MetricRow>
