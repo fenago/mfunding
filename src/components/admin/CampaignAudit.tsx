@@ -30,6 +30,10 @@ const toneCls = (t: Tone) =>
 const convoTone = (v: number | null): Tone => (v == null ? "neutral" : v >= 20 ? "good" : v >= 8 ? "warn" : "bad");
 const dialTone = (v: number | null): Tone => (v == null ? "neutral" : v >= 85 ? "good" : v >= 60 ? "warn" : "bad");
 const badEmailTone = (v: number | null): Tone => (v == null ? "neutral" : v <= 5 ? "good" : v <= 15 ? "warn" : "bad");
+// Phone: higher good = healthier; bad/suspect are concerning at any level.
+const goodPhoneTone = (v: number | null): Tone => (v == null ? "neutral" : v >= 60 ? "good" : v >= 30 ? "warn" : "neutral");
+const badPhoneTone = (v: number | null): Tone => (v == null ? "neutral" : v <= 5 ? "good" : v <= 15 ? "warn" : "bad");
+const suspectPhoneTone = (n: number): Tone => (n === 0 ? "neutral" : "warn");
 const realRevTone = (v: number | null): Tone => (v == null ? "neutral" : v >= 80 ? "good" : v >= 60 ? "warn" : "bad");
 const bogusTone = (v: number | null): Tone => (v == null ? "neutral" : v === 0 ? "good" : v <= 5 ? "warn" : "bad");
 const wrongNumTone = (n: number): Tone => (n === 0 ? "neutral" : "bad");
@@ -208,7 +212,7 @@ function ComparisonTable({ ranked }: { ranked: { c: Campaign; m?: AuditMetrics }
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
         <h3 className="font-semibold text-gray-900 dark:text-white">Vendor scoreboard</h3>
-        <p className="text-xs text-gray-400">One row per campaign. Grade = real-conversation rate, email health, real revenue, and bogus rate.</p>
+        <p className="text-xs text-gray-400">One row per campaign. Grade = real-conversation rate, email + phone health, real revenue, and bogus rate.</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
@@ -221,6 +225,7 @@ function ComparisonTable({ ranked }: { ranked: { c: Campaign; m?: AuditMetrics }
               <th className="px-4 py-3 font-medium">Real convo</th>
               <th className="px-4 py-3 font-medium">Median 1st dial</th>
               <th className="px-4 py-3 font-medium">Wrong #</th>
+              <th className="px-4 py-3 font-medium">Good phone</th>
               <th className="px-4 py-3 font-medium">Bad email</th>
               <th className="px-4 py-3 font-medium">Revenue real</th>
               <th className="px-4 py-3 font-medium">Bogus</th>
@@ -251,6 +256,10 @@ function ComparisonTable({ ranked }: { ranked: { c: Campaign; m?: AuditMetrics }
                   <td className="px-4 py-3 text-gray-700 dark:text-gray-200">{mins(m.medianMinutesToFirstDial)}</td>
                   <td className={`px-4 py-3 font-semibold ${toneCls(wrongNumTone(m.wrongNumbers))}`}>
                     {m.wrongNumbers > 0 ? `${m.wrongNumbers} (${pct(m.wrongNumbersPct)})` : "0"}
+                  </td>
+                  <td className={`px-4 py-3 ${toneCls(goodPhoneTone(m.goodPhonePct))}`}>
+                    {pct(m.goodPhonePct)}
+                    {m.suspectPhone > 0 && <span className="text-amber-500 font-normal"> · {m.suspectPhone} susp</span>}
                   </td>
                   <td className={`px-4 py-3 ${toneCls(badEmailTone(m.badEmailPct))}`}>{pct(m.badEmailPct)}</td>
                   <td className={`px-4 py-3 ${toneCls(realRevTone(m.avgRevenueQualityPct))}`}>{pct(m.avgRevenueQualityPct)}</td>
@@ -322,6 +331,23 @@ function CampaignAuditCard({ campaign: c, m }: { campaign: Campaign; m: AuditMet
             <Cell label="Bad email" value={pct(m.badEmailPct)} sub={`${m.badEmail} invalid/bounced`} tone={badEmailTone(m.badEmailPct)} />
             <Cell label="Unverified" value={pct(m.unverifiedEmailPct)} sub={`${m.unverifiedEmail} unchecked/catch-all`} tone={m.unverifiedEmailPct != null && m.unverifiedEmailPct > 30 ? "warn" : "neutral"} />
             <Cell label="Has email" value={int(m.withEmail)} sub={`of ${m.leads} · ${m.noEmail} missing`} tone={m.noEmailPct != null && m.noEmailPct > 20 ? "warn" : "neutral"} />
+          </MetricRow>
+
+          {/* Phone health — sibling of email health. Good/Bad/Suspect/Unchecked sum to
+              the numbers ON FILE. GOOD = the line is proven live (a completed ≥30s call
+              or good disposition — voicemail counts, it proves the line works); BAD =
+              a human said "wrong number" OR the format is invalid; SUSPECT = "never
+              connects" (3+ dials, never once connected); UNCHECKED = format-valid but
+              unproven (carrier lookup not configured). */}
+          <MetricRow title="Phone health (of the numbers the vendor supplied)">
+            <Cell label="Good phone" value={pct(m.goodPhonePct)} sub={`${m.goodPhone} line proven live`} tone={goodPhoneTone(m.goodPhonePct)} />
+            <Cell label="Bad phone" value={pct(m.badPhonePct)} sub={`${m.badPhone} wrong # / invalid`} tone={badPhoneTone(m.badPhonePct)} />
+            <Cell label="Suspect (never connects)" value={m.suspectPhone > 0 ? `${m.suspectPhone}` : "0"} sub={`${pct(m.suspectPhonePct)} · 3+ dials, no connect`} tone={suspectPhoneTone(m.suspectPhone)} />
+            <Cell label="Unchecked" value={pct(m.uncheckedPhonePct)} sub={`${m.uncheckedPhone} format-ok, unproven`} tone={m.uncheckedPhonePct != null && m.uncheckedPhonePct > 30 ? "warn" : "neutral"} />
+            <Cell label="Has phone" value={int(m.withPhone)} sub={`of ${m.leads} · ${m.noPhone} missing`} tone={m.noPhonePct != null && m.noPhonePct > 20 ? "warn" : "neutral"} />
+            {m.phoneLookupConfigured
+              ? <Cell label="VoIP / burner lines" value={pct(m.voipPhonesPct)} sub={`${int(m.voipPhones)} on VoIP — junk signal`} tone={m.voipPhonesPct != null && m.voipPhonesPct > 20 ? "bad" : m.voipPhonesPct ? "warn" : "neutral"} />
+              : <Cell label="Line type / VoIP" value="—" sub="carrier lookup not configured — format + human truth only" />}
           </MetricRow>
 
           {/* Application — two distinct gates */}

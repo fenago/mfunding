@@ -89,6 +89,35 @@ export interface AuditMetrics {
   // unverified backlog never drags a vendor's grade down before we've checked them.
   verifiedBadPct: number | null;
 
+  // ── Phone health — the sibling of email health. Good / Bad / Suspect / Unchecked
+  //    sum to the phone numbers ON FILE (withPhone). Precedence: HUMAN behavioral
+  //    (ghl_call_log — a completed ≥30s call or a good disposition PROVES the line;
+  //    'wrong_number' PROVES it bad) > FORMAT (NANP validity) > carrier LOOKUP
+  //    (not configured today). SUSPECT = "never connects" (3+ dials, never once
+  //    connected) — its own visible bucket, never folded into bad. The verdict is
+  //    computed by recompute_phone_status() and read here; the audit refreshes it
+  //    live on load. wrongNumbers above stays a distinct call-log signal.
+  withPhone: number;
+  noPhone: number;
+  goodPhone: number;             // line proven live (human) — or a real carrier lookup, when configured
+  badPhone: number;             // wrong_number (human) OR NANP-invalid (format)
+  suspectPhone: number;          // 3+ dials, never connected ("never connects")
+  uncheckedPhone: number;        // format-valid, no behavioral proof, no lookup
+  noPhonePct: number | null;
+  goodPhonePct: number | null;   // good / withPhone
+  badPhonePct: number | null;    // bad / withPhone (display)
+  suspectPhonePct: number | null;// suspect / withPhone
+  uncheckedPhonePct: number | null;
+  // Grade input — BAD of DECIDED phones only (good+bad), on PROVEN signals
+  // (human + format). Suspect and unchecked are excluded, mirroring email.
+  verifiedBadPhonePct: number | null;
+  // Carrier lookup — line type / VoIP. Null / not-configured today (no provider on
+  // the GHL token). A 'live-transfer merchant' on a burner VoIP line is a junk signal,
+  // surfaced here once a provider (Twilio Lookup / IPQS) is wired.
+  phoneLookupConfigured: boolean;
+  voipPhones: number | null;     // null when lookup not configured
+  voipPhonesPct: number | null;
+
   // ── Engagement / matriculation ──────────────────────────────────────────────
   merchantReplies: number;       // merchant_reply_at — confirmed inbound engagement
   merchantRepliesPct: number | null;
@@ -191,6 +220,10 @@ interface CustomerRow {
   email_status: string | null;
   email_bounced_at: string | null;
   email_last_opened_at: string | null;
+  phone: string | null;
+  phone_status: string | null;        // good | bad | suspect | unchecked (canonical, from recompute_phone_status)
+  phone_status_source: string | null; // human | format | lookup
+  line_type: string | null;           // mobile | landline | voip — null until carrier lookup is configured
 }
 
 interface UwRow {
@@ -263,6 +296,15 @@ export async function getCampaignAudit(campaigns: Campaign[]): Promise<Record<st
   const contactIds = [...new Set(deals.map((d) => d.ghl_contact_id).filter(Boolean) as string[])];
   const customerIds = [...new Set(deals.map((d) => d.customer_id).filter(Boolean) as string[])];
 
+  // Phone census is LIVE: recompute each campaign customer's verdict from ghl_call_log
+  // (behavioral) + format via the canonical SQL classifier BEFORE we read the columns,
+  // so the humanness we show is never stale and always matches the persisted store /
+  // the 30-min cron. Best-effort: a failure just means we read the last cron result.
+  const phoneLookup = await fetchPhoneLookupConfig();
+  if (customerIds.length > 0) {
+    await supabase.rpc("recompute_phone_status", { p_customer_ids: customerIds });
+  }
+
   const [callByDeal, custMap, uwByDeal, docCustomerIds, appDocCustomerIds, esignCustomerIds] = await Promise.all([
     fetchCallSummaries(deals, dealIds, contactIds),
     fetchCustomers(customerIds),
@@ -279,9 +321,21 @@ export async function getCampaignAudit(campaigns: Campaign[]): Promise<Record<st
   for (const c of campaigns) {
     out[c.id] = foldCampaign(
       c, byCampaign[c.id] ?? [], callByDeal, custMap, uwByDeal, docCustomerIds, appDocCustomerIds, esignCustomerIds,
+      phoneLookup,
     );
   }
   return out;
+}
+
+// Carrier-lookup availability, read from platform_settings.phone_lookup (public-readable).
+// provider !== 'none' would mean line_type / VoIP% are trustworthy; today it's 'none'
+// (no phone-lookup endpoint on the GHL token — see the phone_census migration).
+export interface PhoneLookupConfig { configured: boolean; provider: string }
+async function fetchPhoneLookupConfig(): Promise<PhoneLookupConfig> {
+  const { data, error } = await supabase
+    .from("platform_settings").select("value").eq("key", "phone_lookup").maybeSingle();
+  const provider = (!error && (data?.value as { provider?: string } | null)?.provider) || "none";
+  return { configured: provider !== "none", provider };
 }
 
 // Outbound calls, folded per deal. A call attributes to a deal by deal_id, or — when
@@ -344,7 +398,7 @@ async function fetchCustomers(ids: string[]): Promise<Map<string, CustomerRow>> 
   if (ids.length === 0) return map;
   const { data, error } = await supabase
     .from("customers")
-    .select("id, email, email_status, email_bounced_at, email_last_opened_at")
+    .select("id, email, email_status, email_bounced_at, email_last_opened_at, phone, phone_status, phone_status_source, line_type")
     .in("id", ids);
   if (error) return map;
   for (const r of (data ?? []) as CustomerRow[]) map.set(r.id, r);
@@ -400,6 +454,7 @@ function foldCampaign(
   docCustomerIds: Set<string>,
   appDocCustomerIds: Set<string>,
   esignCustomerIds: Set<string>,
+  phoneLookup: PhoneLookupConfig,
 ): AuditMetrics {
   const leads = deals.length;
 
@@ -411,6 +466,9 @@ function foldCampaign(
 
   // Email health
   let withEmail = 0, noEmail = 0, goodEmail = 0, badEmail = 0;
+
+  // Phone health (canonical verdict from recompute_phone_status, read off the customer)
+  let withPhone = 0, noPhone = 0, goodPhone = 0, badPhone = 0, suspectPhone = 0, uncheckedPhone = 0, voipPhones = 0;
 
   // Engagement
   let merchantReplies = 0, emailOpens = 0;
@@ -462,6 +520,21 @@ function foldCampaign(
       // computed as the remainder so the three buckets always sum to withEmail.
     } else {
       noEmail += 1;
+    }
+
+    // ── phone health (canonical verdict; the RPC refreshed it live above) ──
+    const phone = cust?.phone?.trim();
+    if (phone) {
+      withPhone += 1;
+      switch (cust?.phone_status) {
+        case "good": goodPhone += 1; break;
+        case "bad": badPhone += 1; break;
+        case "suspect": suspectPhone += 1; break;
+        default: uncheckedPhone += 1; break; // 'unchecked' or not-yet-classified
+      }
+      if (phoneLookup.configured && (cust?.line_type ?? "").toLowerCase() === "voip") voipPhones += 1;
+    } else {
+      noPhone += 1;
     }
 
     // ── engagement ──
@@ -518,9 +591,12 @@ function foldCampaign(
   const badEmailPct = rate(badEmail, withEmail); // display: bad as a share of all emails
   // Grade uses BAD of DECIDED (good+bad) — an unchecked backlog must not punish a vendor.
   const verifiedBadPct = rate(badEmail, goodEmail + badEmail);
+  // Phone: BAD of DECIDED phones (good+bad), proven signals only — mirrors email.
+  const verifiedBadPhonePct = rate(badPhone, goodPhone + badPhone);
   const inputs: { label: string; value: number | null; weight: number }[] = [
     { label: "Real-conversation rate", value: realConvPct, weight: 0.30 },
     { label: "Email deliverability", value: verifiedBadPct == null ? null : 100 - verifiedBadPct, weight: 0.20 },
+    { label: "Phone reachability", value: verifiedBadPhonePct == null ? null : 100 - verifiedBadPhonePct, weight: 0.15 },
     { label: "Revenue is real (bank-verified)", value: avgQuality == null ? null : Math.min(100, avgQuality), weight: 0.30 },
     { label: "Not bogus", value: bogusPct == null ? null : 100 - bogusPct, weight: 0.20 },
   ];
@@ -564,6 +640,22 @@ function foldCampaign(
     badEmailPct,
     unverifiedEmailPct: rate(unverifiedEmail, withEmail),
     verifiedBadPct,
+
+    withPhone,
+    noPhone,
+    goodPhone,
+    badPhone,
+    suspectPhone,
+    uncheckedPhone,
+    noPhonePct: rate(noPhone, leads),
+    goodPhonePct: rate(goodPhone, withPhone),
+    badPhonePct: rate(badPhone, withPhone),
+    suspectPhonePct: rate(suspectPhone, withPhone),
+    uncheckedPhonePct: rate(uncheckedPhone, withPhone),
+    verifiedBadPhonePct,
+    phoneLookupConfigured: phoneLookup.configured,
+    voipPhones: phoneLookup.configured ? voipPhones : null,
+    voipPhonesPct: phoneLookup.configured ? rate(voipPhones, withPhone) : null,
 
     merchantReplies,
     merchantRepliesPct: rate(merchantReplies, leads),
