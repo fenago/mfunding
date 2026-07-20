@@ -11,6 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import DocumentUploader from "../shared/DocumentUploader";
+import { setDocumentStatus } from "../../services/documentService";
 
 /**
  * Deal Documents manager — every piece of paperwork on a merchant's file, in one
@@ -155,6 +156,20 @@ export default function DealDocumentsModal({
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number } | null>(null);
   const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set());
+  const [reviewBusy, setReviewBusy] = useState<string | null>(null);
+
+  // Approve/reject without leaving the modal — same call the Doc Review page makes.
+  const review = useCallback(async (id: string, status: "approved" | "rejected") => {
+    setReviewBusy(id);
+    try {
+      await setDocumentStatus(id, status);
+      setDocs((prev) => prev?.map((d) => (d.id === id ? { ...d, status } : d)) ?? prev);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Could not update the document status.");
+    } finally {
+      setReviewBusy(null);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -339,6 +354,28 @@ export default function DealDocumentsModal({
                           </div>
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
+                          {/* Review right here — same setDocumentStatus the Doc Review
+                              page uses; no separate trip to /admin/documents. */}
+                          {doc.status === "pending" && (
+                            <>
+                              <button
+                                onClick={() => void review(doc.id, "approved")}
+                                disabled={reviewBusy === doc.id}
+                                title="Approve this document"
+                                className="px-2 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md disabled:opacity-60"
+                              >
+                                {reviewBusy === doc.id ? "…" : "✓ Approve"}
+                              </button>
+                              <button
+                                onClick={() => void review(doc.id, "rejected")}
+                                disabled={reviewBusy === doc.id}
+                                title="Reject this document"
+                                className="px-2 py-1 text-[11px] font-semibold text-red-600 border border-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md disabled:opacity-60"
+                              >
+                                ✕
+                              </button>
+                            </>
+                          )}
                           <button
                             onClick={() => void openSigned(doc, false)}
                             title="View"
