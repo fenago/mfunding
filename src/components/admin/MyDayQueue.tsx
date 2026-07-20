@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { getOpenDealsForQueue, logContactAttempt, STIPS_PENDING_STATUSES, type ContactOutcome, type QueueDeal } from "../../services/dealService";
+import { getOpenDealsForQueue, logContactAttempt, updateDealStatus, STIPS_PENDING_STATUSES, type ContactOutcome, type QueueDeal } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import { dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, statedTimeInET, timeET, tomorrowAtEtIso } from "../../utils/time";
@@ -34,6 +34,9 @@ interface Urgency {
    *  emphatically not "new work" — nobody should make first contact with it, it's a
    *  promise already made. Deriving lane from rank alone can't express that. */
   lane?: Lane;
+  /** 7+ call attempts, never a conversation — the card offers one-click "move to
+   *  long-term nurture" so the board stops carrying leads that never pick up. */
+  nurtureFlag?: boolean;
 }
 
 /**
@@ -216,6 +219,24 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
   // We responded IN TIME — a merchant not picking up does not make us slow — so this
   // must NOT keep shouting "SLA MISSED". It says what's true: you tried N times, try
   // again. Speed-to-lead is already banked in first_attempt_at.
+  // ── THE 7-CALL CAP: flagged for closure. ──
+  // Seven dials without one confirmed conversation is the board telling the
+  // truth: this merchant is not picking up. The card stops asking for an 8th
+  // call and offers the off-ramp instead — one click to long-term nurture
+  // (Sequence C keeps working them by email at zero closer cost) so My Day
+  // stays a list of winnable work, not a graveyard.
+  if (deal.status === "new" && !deal.contacted_at && (deal.contact_attempts ?? 0) >= 7) {
+    return {
+      rank: 8.5,
+      badge: `🏁 Tried ${deal.contact_attempts}× — flag for nurture`,
+      why: `${deal.contact_attempts} call attempts and never a confirmed conversation. Move them to long-term nurture — the email sequence keeps the door open and your board stays workable.`,
+      since: deal.last_attempt_at ?? deal.first_attempt_at ?? deal.created_at,
+      tone: "gray",
+      lane: "followup",
+      nurtureFlag: true,
+    };
+  }
+
   if (deal.status === "new" && deal.first_attempt_at && !deal.contacted_at) {
     const tries = deal.contact_attempts ?? 1;
     return {
@@ -611,6 +632,19 @@ function QueueCard({
     }
   };
 
+  // The 7-call off-ramp: close to nurture (terminal; fires the GHL re-engagement
+  // sequence) and the card leaves the board on the refetch.
+  const moveToNurture = async () => {
+    if (!confirm(`Move ${nameOf(deal)} to long-term nurture? They leave My Day; the email sequence keeps working them.`)) return;
+    setBusy("nurture");
+    try {
+      await updateDealStatus(deal.id, "nurture");
+      onTouched();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     // A div, not a button: the card now carries its own action buttons, and a button
     // inside a button is invalid and swallows the inner click.
@@ -727,6 +761,23 @@ function QueueCard({
           {(deal.contact_attempts ?? 0) > 0 && <> · {deal.contact_attempts} attempt{(deal.contact_attempts ?? 0) === 1 ? "" : "s"}</>}
           {deal.contacted_at && <> · reached {ago(deal.contacted_at, now)} ago</>}
         </p>
+      )}
+
+      {/* THE 7-CALL OFF-RAMP — one click clears a never-answers lead off the board
+          into long-term nurture. Sits above the outcome buttons: at this point
+          "close it" is the primary action, another dial is the exception. */}
+      {u.nurtureFlag && (
+        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => void moveToNurture()}
+            className="w-full px-2 py-1.5 rounded-md text-[11px] font-bold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-60 transition-colors"
+            title="Terminal move: leaves My Day; the long-term email sequence takes over"
+          >
+            {busy === "nurture" ? "Moving…" : "🏁 Move to long-term nurture"}
+          </button>
+        </div>
       )}
 
       {/* WHAT HAPPENED? — the thing the app had no way to hear.
