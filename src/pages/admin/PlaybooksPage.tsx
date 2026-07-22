@@ -28,6 +28,7 @@ import {
   MegaphoneIcon,
   PlusIcon,
   EnvelopeIcon,
+  PhoneIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
@@ -1646,10 +1647,51 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                 <PencilSquareIcon className="w-3.5 h-3.5" /> Edit lead info
               </button>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {[deal.customer?.phone, deal.customer?.email].filter(Boolean).join(" · ") || "No contact info yet"}
+            <p className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5 flex-wrap">
+              {/* The number DIALS — same VibeReach-first link as the My Day cards
+                  (its call button records + auto-audits), tiny tel: fallback for a
+                  real softphone. Clicking also arms the delayed call-sync so the
+                  attempt logs without waiting for the 5-minute sweep. */}
+              {deal.customer?.phone ? (
+                deal.ghl_contact_id ? (
+                  <>
+                    <a
+                      href={`https://app.vibereach.io/v2/location/t7NmVR4WCy927j4Zon4b/contacts/detail/${deal.ghl_contact_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => {
+                        const gid = deal.ghl_contact_id, did = deal.id;
+                        [30_000, 150_000].forEach((delay) =>
+                          setTimeout(() => {
+                            supabase.functions
+                              .invoke("ghl-call-history", { body: { ghl_contact_id: gid, deal_id: did } })
+                              .catch(() => { /* sweep will catch it */ });
+                          }, delay),
+                        );
+                      }}
+                      className="inline-flex items-center gap-1 font-semibold text-ocean-blue hover:underline"
+                      title="Open in VibeReach — its call button dials, records, and auto-logs"
+                    >
+                      <PhoneIcon className="w-3.5 h-3.5" />
+                      {deal.customer.phone}
+                    </a>
+                    <a
+                      href={`tel:${deal.customer.phone.replace(/[^+\d]/g, "")}`}
+                      className="text-[10px] text-gray-400 hover:text-ocean-blue"
+                      title="Dial with this device's phone app instead"
+                    >
+                      ☎ device
+                    </a>
+                  </>
+                ) : (
+                  <span>{deal.customer.phone}</span>
+                )
+              ) : null}
+              {deal.customer?.phone && deal.customer?.email && <span>·</span>}
+              {deal.customer?.email && <span>{deal.customer.email}</span>}
+              {!deal.customer?.phone && !deal.customer?.email && <span>No contact info yet</span>}
               {!deal.customer?.email && (
-                <span className="ml-1 text-amber-600 dark:text-amber-400">— add an email so you can send the application</span>
+                <span className="text-amber-600 dark:text-amber-400">— add an email so you can send the application</span>
               )}
             </p>
 
