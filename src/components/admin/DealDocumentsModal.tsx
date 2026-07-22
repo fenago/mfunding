@@ -91,16 +91,23 @@ function whenUploaded(iso: string): string {
 }
 
 /**
- * The "📄 Documents (N)" button for the deal context bar. Self-contained: loads the
- * live document count for the customer, opens the manager modal, and refreshes the
- * count when the modal closes (an upload inside may have changed it).
+ * The "📄 Documents (N)" button for the deal context bar. Self-contained for the
+ * FILE count (customer_documents), refreshed when the modal closes. The optional
+ * `esign` summary is the e-sign picture from GHL — passed in by the context bar's
+ * single ghl-docs-status fetch (shared with the DocsBack chips) so a doc that's
+ * out for signature but has no file on record still shows: "Documents (0 · 2 out)"
+ * reads as work-in-flight, not data loss.
  */
 export function DealDocumentsButton({
   customerId,
   merchantName,
+  esign,
 }: {
   customerId: string;
   merchantName?: string | null;
+  /** e-sign docs sent to the merchant, from GHL: how many out (awaiting signature)
+   *  and how many signed. Undefined/null while the bar's fetch is still resolving. */
+  esign?: { out: number; signed: number } | null;
 }) {
   const [count, setCount] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
@@ -117,15 +124,25 @@ export function DealDocumentsButton({
     void loadCount();
   }, [loadCount]);
 
+  // "3 · 1 out · 2 signed" — files on record, then the e-sign state (each segment
+  // only shows when non-zero, so it's compact and never claims a zero).
+  const segments: string[] = [];
+  if (count !== null) segments.push(String(count));
+  if (esign) {
+    if (esign.out > 0) segments.push(`${esign.out} out`);
+    if (esign.signed > 0) segments.push(`${esign.signed} signed`);
+  }
+  const label = segments.length ? ` (${segments.join(" · ")})` : "";
+
   return (
     <>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title="Every document on this deal — view, upload, and see what each file is"
+        title="Every document on this deal — view, upload, and see what each file is. First number = files on record; e-sign docs sent to the merchant show as 'out' (awaiting signature) or 'signed'."
         className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-200 dark:hover:bg-emerald-900/60 transition-colors"
       >
-        <DocumentIcon className="w-3 h-3" /> Documents{count !== null ? ` (${count})` : ""}
+        <DocumentIcon className="w-3 h-3" /> Documents{label}
       </button>
       <DealDocumentsModal
         isOpen={open}

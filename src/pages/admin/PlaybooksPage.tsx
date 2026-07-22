@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { Link } from "react-router-dom";
 import {
@@ -16,6 +16,7 @@ import {
   ComputerDesktopIcon,
   CheckCircleIcon,
   UserCircleIcon,
+  UserIcon,
   XMarkIcon,
   LockClosedIcon,
   PencilSquareIcon,
@@ -55,8 +56,7 @@ import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, listActiveCloserOptions, reassignDealCloser, updateDealProducts, type CloserOption } from "../../services/dealService";
-import { useActivityLog } from "../../hooks/useActivityLog";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -195,7 +195,6 @@ export default function PlaybooksPage() {
   // bar AND the "Send the application" step can both open them.
   const [showEditLead, setShowEditLead] = useState(false);
   const [showApplication, setShowApplication] = useState(false);
-  const { addActivity } = useActivityLog("customer", deal?.customer_id);
   // Campaigns — loaded once so the context bar can show the loaded deal's
   // campaign code (or the loud "no campaign" prompt when it's missing).
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -513,7 +512,10 @@ export default function PlaybooksPage() {
         await mustWrite("Couldn't save the step", supabase.from("deals").update(dealUpdates).eq("id", deal.id));
       }
 
-      // Log it to the deal's activity feed (the same feed the deal page shows).
+      // Log it to the deal's activity feed (the same feed the deal page + the
+      // Notes panel show), author-stamped. When the closer typed a freeform note
+      // it ALSO mirrors to the GHL contact; a pure field/checklist touch logs
+      // locally but doesn't spam GHL with structured captures.
       const parts: string[] = [];
       if (note.trim()) parts.push(note.trim());
       if (checked.length) parts.push(`Collected: ${checked.join(", ")}`);
@@ -522,10 +524,13 @@ export default function PlaybooksPage() {
         .map((f) => `${f.label}: ${values[f.key]}`);
       if (changed.length) parts.push(changed.join(" · "));
       if (parts.length) {
-        await addActivity({
-          interaction_type: outcome || "note",
+        await addDealNote({
+          dealId: deal.id,
+          customerId: deal.customer_id,
+          interactionType: outcome || "note",
           subject: `Playbook · ${step.title}`,
           content: parts.join("\n"),
+          syncToGhl: note.trim().length > 0,
         });
       }
 
@@ -613,8 +618,10 @@ export default function PlaybooksPage() {
           .update({ closed_reason: reason, closed_note: note.trim() || null })
           .eq("id", deal.id),
       );
-      await addActivity({
-        interaction_type: "note",
+      await addDealNote({
+        dealId: deal.id,
+        customerId: deal.customer_id,
+        interactionType: "note",
         subject: `Deal closed · ${label}`,
         content: [`Outcome: ${label}`, `Reason: ${reason.replace(/_/g, " ")}`, note.trim()]
           .filter(Boolean)
@@ -1263,22 +1270,10 @@ function SignedAppActionBanner({ customerId, attached, onUploaded }: { customerI
 
 // Compact e-sign status for the CONTEXT BAR — the answer to "did they sign the
 // disclosure and the application?" without scrolling to the full panel below.
-// Same data source as DocsBackPanel (ghl-docs-status), rendered as one chip per
-// document group: ✓ signed (emerald) / ⏳ current status (amber).
-function DocsBackChips({ ghlContactId }: { ghlContactId: string }) {
-  const [groups, setGroups] = useState<DocGroup[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setGroups(null);
-    supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
-      .then(({ data }) => {
-        if (cancelled || data?.error) return;
-        setGroups(groupDocs((data?.documents ?? []) as GhlDoc[]));
-      })
-      .catch(() => { /* the full panel below surfaces errors; chips stay quiet */ });
-    return () => { cancelled = true; };
-  }, [ghlContactId]);
-
+// The `groups` come from the context bar's SINGLE ghl-docs-status fetch (shared
+// with the Documents button), rendered as one chip per document group:
+// ✓ signed (emerald) / ⏳ current status (amber).
+function DocsBackChips({ groups }: { groups: DocGroup[] | null }) {
   if (!groups || groups.length === 0) return null;
   const short = (name: string) =>
     /broker\s*compensation|broker\s*agreement/i.test(name) ? "Broker agmt"
@@ -1540,6 +1535,325 @@ function AdditionalEmailsEditor({
   );
 }
 
+// ─────────────────────── Additional-phones editor ───────────────────────
+// Extra cell numbers a merchant can be reached on (a second cell, a partner's
+// line). The primary stays customers.phone (the canonical dial + identity key);
+// these ride alongside as dialable chips. Same inline chip UI as the additional-
+// emails editor — the closer never leaves the playbook to add a number. Stored
+// canonical (+1XXXXXXXXXX) so it dedupes cleanly against the primary.
+
+function AdditionalPhonesEditor({
+  customerId,
+  primaryPhone,
+  phones,
+  ghlContactId,
+  onRefresh,
+}: {
+  customerId: string;
+  primaryPhone: string | null;
+  phones: string[];
+  ghlContactId: string | null;
+  onRefresh: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const persist = async (next: string[]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await updateCustomerAdditionalPhones(customerId, next);
+      onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async () => {
+    const digits = value.replace(/\D/g, "");
+    if (!(digits.length === 10 || (digits.length === 11 && digits.startsWith("1")))) {
+      setError("Enter a 10-digit US number.");
+      return;
+    }
+    const normalized = normalizePhoneForStorage(value);
+    if (normalized === normalizePhoneForStorage(primaryPhone ?? "")) { setError("That's already the primary number."); return; }
+    if (phones.some((p) => normalizePhoneForStorage(p) === normalized)) { setError("Already added."); return; }
+    setValue("");
+    setAdding(false);
+    await persist([...phones, normalized]);
+  };
+
+  const remove = (p: string) => persist(phones.filter((x) => x !== p));
+
+  return (
+    <>
+      {phones.map((p) => {
+        const tel = p.replace(/[^+\d]/g, "");
+        return (
+          <span
+            key={p}
+            className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue dark:text-blue-300 border border-ocean-blue/30"
+            title={`Additional cell for this merchant: ${p}`}
+          >
+            {/* Dials via VibeReach (records + auto-logs) when the contact exists,
+                like the header number; a plain tel: link otherwise. */}
+            {ghlContactId ? (
+              <a
+                href={`https://app.vibereach.io/v2/location/${GHL_LOCATION}/contacts/detail/${ghlContactId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 hover:underline"
+                title="Open in VibeReach — its call button dials, records, and auto-logs"
+              >
+                <PhoneIcon className="w-3 h-3" /> {p}
+              </a>
+            ) : (
+              <a href={`tel:${tel}`} className="inline-flex items-center gap-1 hover:underline" title="Dial this number">
+                <PhoneIcon className="w-3 h-3" /> {p}
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => remove(p)}
+              disabled={busy}
+              title="Remove this number"
+              className="ml-0.5 hover:text-red-600 disabled:opacity-50"
+            >
+              <XMarkIcon className="w-3 h-3" />
+            </button>
+          </span>
+        );
+      })}
+
+      {adding ? (
+        <span className="inline-flex items-center gap-1">
+          <input
+            autoFocus
+            type="tel"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); setError(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void add(); } if (e.key === "Escape") { setAdding(false); setValue(""); setError(null); } }}
+            placeholder="(555) 123-4567"
+            className="text-[11px] rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 px-2 py-0.5 w-36"
+          />
+          <button
+            type="button"
+            onClick={() => void add()}
+            disabled={busy}
+            className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-ocean-blue text-white hover:bg-deep-sea disabled:opacity-50"
+          >
+            Add
+          </button>
+          <button
+            type="button"
+            onClick={() => { setAdding(false); setValue(""); setError(null); }}
+            className="text-[11px] text-gray-400 hover:text-gray-600"
+          >
+            cancel
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          title="Add another cell number this merchant can be reached on"
+          className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-dashed border-ocean-blue/50 text-ocean-blue dark:text-blue-300 hover:bg-ocean-blue/10"
+        >
+          <PlusIcon className="w-3 h-3" /> cell
+        </button>
+      )}
+
+      {error && <span className="text-[11px] text-red-600 dark:text-red-400">{error}</span>}
+    </>
+  );
+}
+
+// ─────────────────────── Deal notes (history + add + GHL sync) ───────────────
+// Closer notes were effectively vanishing — logged to activity_log but shown
+// NOWHERE in the playbook, and never reaching GHL. This chip opens an inline
+// panel with the full HUMAN note history (newest first, author + ET time), an
+// add box that saves locally AND mirrors the note to the deal's GHL contact, and
+// a per-note sync indicator with a quiet retry. Human notes are told apart from
+// the system's machine notes by subject (isHumanNoteSubject): 'closer-note',
+// 'Playbook · …', 'Deal closed · …'.
+
+interface DealNoteRow {
+  id: string;
+  subject: string | null;
+  content: string | null;
+  interaction_type: string;
+  created_at: string;
+  author: string | null;
+}
+
+// A short label for where a note came from (the plain add box has none).
+function noteKind(subject: string | null): string | null {
+  if (!subject || subject === CLOSER_NOTE_SUBJECT) return null;
+  if (subject.startsWith("Playbook · ")) return `Step: ${subject.slice("Playbook · ".length)}`;
+  return subject; // 'Deal closed · …'
+}
+
+function DealNotesButton({ dealId, customerId }: { dealId: string; customerId: string }) {
+  const [open, setOpen] = useState(false);
+  const [notes, setNotes] = useState<DealNoteRow[] | null>(null);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // GHL sync state for notes touched THIS session, keyed by note id.
+  const [sync, setSync] = useState<Record<string, { synced: boolean; noContact?: boolean; retrying?: boolean; error?: string }>>({});
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase
+      .from("activity_log")
+      .select("id, subject, content, interaction_type, created_at, profiles:logged_by(first_name,last_name)")
+      .eq("entity_type", "customer")
+      .eq("entity_id", customerId)
+      .order("created_at", { ascending: false });
+    const rows = ((data ?? []) as unknown as Array<Record<string, any>>) // eslint-disable-line @typescript-eslint/no-explicit-any
+      .filter((r) => isHumanNoteSubject(r.subject))
+      .map((r) => ({
+        id: r.id as string,
+        subject: r.subject as string | null,
+        content: r.content as string | null,
+        interaction_type: r.interaction_type as string,
+        created_at: r.created_at as string,
+        author: r.profiles
+          ? `${r.profiles.first_name ?? ""} ${r.profiles.last_name ?? ""}`.trim() || null
+          : null,
+      }));
+    setNotes(rows);
+  }, [customerId]);
+
+  useEffect(() => { void load(); }, [load]);
+  // Reload on open so a note added elsewhere (a step or the close-deal box) is
+  // always reflected when the closer opens the history.
+  useEffect(() => { if (open) void load(); }, [open, load]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const save = async () => {
+    const content = text.trim();
+    if (!content) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await addDealNote({ dealId, customerId, content });
+      setSync((m) => ({ ...m, [res.noteId]: { synced: res.synced, noContact: res.noContact, error: res.syncError } }));
+      setText("");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't save the note.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const retry = async (n: DealNoteRow) => {
+    setSync((m) => ({ ...m, [n.id]: { ...(m[n.id] ?? { synced: false }), retrying: true, error: undefined } }));
+    const s = await syncDealNoteToGhl(dealId, n.content ?? "", n.subject ?? CLOSER_NOTE_SUBJECT);
+    setSync((m) => ({ ...m, [n.id]: { synced: s.synced, noContact: s.noContact, error: s.syncError, retrying: false } }));
+  };
+
+  const count = notes?.length ?? 0;
+
+  return (
+    <div ref={rootRef} className="relative inline-block" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="Every note on this deal — read the history and add a note; new notes also post to the GHL contact"
+        className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-200 dark:border-amber-800 hover:bg-amber-200 dark:hover:bg-amber-900/60 transition-colors"
+      >
+        🗒 Notes{notes !== null ? ` (${count})` : ""}
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1.5 w-96 max-w-[92vw] rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3">
+          {/* Add a note */}
+          <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Add a note</p>
+          <textarea
+            value={text}
+            onChange={(e) => { setText(e.target.value); setError(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void save(); } }}
+            rows={2}
+            placeholder="What happened on this deal…"
+            className="w-full text-[12px] rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1.5 resize-y"
+          />
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <span className="text-[10px] text-gray-400">Saved here + posted to the GHL contact · ⌘/Ctrl+Enter</span>
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={saving || !text.trim()}
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-ocean-blue text-white hover:bg-deep-sea disabled:opacity-50 flex-shrink-0"
+            >
+              {saving ? "Saving…" : "Save note"}
+            </button>
+          </div>
+          {error && <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">{error}</p>}
+
+          {/* History */}
+          <div className="mt-3 border-t border-gray-100 dark:border-gray-700 pt-2">
+            <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1.5">History ({count})</p>
+            {notes === null ? (
+              <p className="text-[11px] text-gray-400 py-2">Loading…</p>
+            ) : count === 0 ? (
+              <p className="text-[11px] text-gray-400 py-2">No notes yet. Add the first one above.</p>
+            ) : (
+              <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                {notes.map((n) => {
+                  const kind = noteKind(n.subject);
+                  const s = sync[n.id];
+                  return (
+                    <div key={n.id} className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-2.5 py-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-gray-500 dark:text-gray-400">
+                        <span className="font-semibold text-gray-700 dark:text-gray-200">{n.author || "Unknown"}</span>
+                        <span>· {dateTimeET(n.created_at)}</span>
+                        {kind && <span className="px-1.5 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{kind}</span>}
+                        {s?.retrying ? (
+                          <span className="text-gray-400">· syncing…</span>
+                        ) : s?.synced ? (
+                          <span className="text-emerald-600 dark:text-emerald-400">· synced to GHL ✓</span>
+                        ) : s?.noContact ? (
+                          <span className="text-gray-400" title="This deal has no linked GHL contact yet">· no GHL contact yet</span>
+                        ) : s && !s.synced ? (
+                          <button
+                            type="button"
+                            onClick={() => void retry(n)}
+                            className="text-amber-600 dark:text-amber-400 hover:underline"
+                            title={s.error || "Retry posting this note to the GHL contact"}
+                          >
+                            · not synced to GHL — retry
+                          </button>
+                        ) : null}
+                      </div>
+                      {n.content && (
+                        <p className="mt-0.5 text-[12px] text-gray-800 dark:text-gray-100 whitespace-pre-line">{n.content}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ───────────────────────── Deal context bar ─────────────────────────
 
 /**
@@ -1631,14 +1945,57 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
     ? `${deal.closer.first_name || ""} ${deal.closer.last_name || ""}`.trim()
     : null;
   const isMine = !!myProfileId && deal.assigned_closer_id === myProfileId;
+
+  // ONE ghl-docs-status fetch for the whole bar — feeds both the e-sign chips and
+  // the Documents button's "· N out / N signed" suffix, so a doc out for signature
+  // is never invisible behind "Documents (0)". (The full DocsBack panel below keeps
+  // its own fetch; it also pulls uploads + the signed-app banner.)
+  const ghlContactId = deal.ghl_contact_id;
+  const [docGroups, setDocGroups] = useState<DocGroup[] | null>(null);
+  useEffect(() => {
+    if (!ghlContactId) { setDocGroups(null); return; }
+    let cancelled = false;
+    setDocGroups(null);
+    supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
+      .then(({ data }) => {
+        if (cancelled || data?.error) return;
+        setDocGroups(groupDocs((data?.documents ?? []) as GhlDoc[]));
+      })
+      .catch(() => { /* the full panel below surfaces errors; the bar stays quiet */ });
+    return () => { cancelled = true; };
+  }, [ghlContactId]);
+  const esign = docGroups
+    ? {
+        out: docGroups.filter((g) => !g.latest.signed).length,
+        signed: docGroups.filter((g) => g.latest.signed).length,
+      }
+    : null;
+
+  // The PERSON on the call — shown alongside the business name only when we have a
+  // name AND it isn't already what the header title is showing (dealName prefers
+  // the business name, so this fills in "who am I talking to" without duplicating).
+  const personName = [deal.customer?.first_name, deal.customer?.last_name].filter(Boolean).join(" ").trim();
+  const showPerson = !!personName && personName !== dealName(deal);
+
   return (
     <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <UserCircleIcon className="w-9 h-9 text-emerald-600 dark:text-emerald-400" />
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <p className="font-semibold text-gray-900 dark:text-white">{dealName(deal)}</p>
+              {/* WHO you're talking to — the contact's name next to the business,
+                  same spirit as the My Day card line. Only when it adds something
+                  the title isn't already showing. */}
+              {showPerson && (
+                <span
+                  className="inline-flex items-center gap-1 text-[13px] font-medium text-gray-600 dark:text-gray-300"
+                  title="The contact on this deal"
+                >
+                  <UserIcon className="w-3.5 h-3.5 text-gray-400" /> {personName}
+                </span>
+              )}
               <button
                 onClick={openEditLead}
                 title="Fix or add the lead's info — name, business name, email, phone"
@@ -1753,18 +2110,22 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {/* Every document on the deal — view, upload, and "what is this?" per
                   file — without leaving the playbook. */}
               {deal.customer?.id && (
-                <DealDocumentsButton customerId={deal.customer.id} merchantName={dealName(deal)} />
+                <DealDocumentsButton customerId={deal.customer.id} merchantName={dealName(deal)} esign={esign} />
               )}
               {/* Send any document RIGHT NOW, at any stage — the application paths
                   plus the registered agreements (broker/TCPA consent). */}
               <AdHocSendMenu dealId={deal.id} merchantEmail={deal.customer?.email} ghlContactId={deal.ghl_contact_id} />
               {/* Signature status at a glance — did they sign the disclosure + the
-                  application? No scrolling to the Docs-back panel to find out. */}
-              {deal.ghl_contact_id && <DocsBackChips ghlContactId={deal.ghl_contact_id} />}
+                  application? Fed by the bar's single ghl-docs-status fetch above. */}
+              {deal.ghl_contact_id && <DocsBackChips groups={docGroups} />}
 
               {/* The shared company Google Voice line — call/text on the company
                   number, with the staff-only login one reveal away. */}
               <CompanyVoiceChip />
+              {/* Every note on the deal — full history + add box, and new notes
+                  post to the GHL contact. Notes used to log invisibly and never
+                  reach GHL; this is where they live now. */}
+              {deal.customer?.id && <DealNotesButton dealId={deal.id} customerId={deal.customer.id} />}
               <LeadGradeChip grade={deal.lead_grade} expectedValue={deal.expected_value} reasons={deal.score_reasons} />
               {/* A DEAD merchant email is worth more than a warning — it's the whole
                   deal. A vendor-supplied mailbox that never existed (or that already
@@ -1797,6 +2158,18 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                   customerId={deal.customer.id}
                   primaryEmail={deal.customer.email}
                   emails={deal.customer.additional_emails ?? []}
+                  onRefresh={onRefresh}
+                />
+              )}
+
+              {/* Extra cell numbers the merchant can be reached on — a second
+                  cell, a partner's line. Primary stays deal.customer.phone. */}
+              {deal.customer?.id && (
+                <AdditionalPhonesEditor
+                  customerId={deal.customer.id}
+                  primaryPhone={deal.customer.phone}
+                  phones={deal.customer.additional_phones ?? []}
+                  ghlContactId={deal.ghl_contact_id}
                   onRefresh={onRefresh}
                 />
               )}

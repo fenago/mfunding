@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  PhoneIcon,
+  ChatBubbleLeftRightIcon,
   ArrowTopRightOnSquareIcon,
   EyeIcon,
   EyeSlashIcon,
@@ -61,16 +61,16 @@ export default function CompanyVoiceChip() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title="Open the shared company Google Voice line — call or text on the company number"
+        title="Text (or call) a merchant on the shared company Google Voice line"
         className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-200 dark:hover:bg-indigo-900/60 transition-colors"
       >
-        <PhoneIcon className="w-3 h-3" /> Company line
+        <ChatBubbleLeftRightIcon className="w-3 h-3" /> Text — company line
       </button>
 
       {open && (
         <div className="absolute left-0 top-full z-30 mt-1.5 w-72 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3">
           <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">
-            The shared company Google Voice line. Sign in with the team login below.
+            Text (or call) merchants on the shared company Google Voice line. Sign in with the team login below.
           </p>
 
           <a

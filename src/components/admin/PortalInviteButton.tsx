@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { PaperAirplaneIcon, CheckCircleIcon, ExclamationCircleIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import { parseEdgeError } from "../../lib/edgeError";
 
 interface PortalInviteButtonProps {
   customerId: string;
@@ -23,6 +24,8 @@ export default function PortalInviteButton({ customerId, className = "", compact
   // undefined = still loading the current invite state.
   const [invitedAt, setInvitedAt] = useState<string | null | undefined>(undefined);
   const [sending, setSending] = useState(false);
+  // Second attempt in flight after a transient 5xx — surfaced inline as "Retrying…".
+  const [retrying, setRetrying] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
@@ -40,21 +43,46 @@ export default function PortalInviteButton({ customerId, className = "", compact
     };
   }, [customerId]);
 
+  const FALLBACK = "Couldn't send the invite. Try again.";
+  const invoke = async () => {
+    const { error } = await supabase.functions.invoke("merchant-invite", {
+      body: { customer_id: customerId },
+    });
+    if (error) throw error;
+  };
+  const succeed = () => {
+    setInvitedAt(new Date().toISOString());
+    setFeedback({ ok: true, text: "Portal invite sent." });
+  };
+
   const sendInvite = async () => {
     setSending(true);
+    setRetrying(false);
     setFeedback(null);
     try {
-      const { error } = await supabase.functions.invoke("merchant-invite", {
-        body: { customer_id: customerId },
-      });
-      if (error) throw error;
-      setInvitedAt(new Date().toISOString());
-      setFeedback({ ok: true, text: "Portal invite sent." });
+      await invoke();
+      succeed();
     } catch (err) {
-      setFeedback({
-        ok: false,
-        text: err instanceof Error ? err.message : "Couldn't send the invite. Try again.",
-      });
+      const info = await parseEdgeError(err, FALLBACK);
+      // A 5xx here is the transient portal-user ensure / link-gen hiccup we've
+      // seen self-heal on an identical retry (one succeeded 4 min later). Auto-
+      // retry ONCE after ~2s before surfacing anything; every other failure
+      // (4xx guard, network) shows its real message immediately.
+      if (info.status !== null && info.status >= 500) {
+        setRetrying(true);
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          await invoke();
+          succeed();
+        } catch (retryErr) {
+          const retryInfo = await parseEdgeError(retryErr, FALLBACK);
+          setFeedback({ ok: false, text: retryInfo.message });
+        } finally {
+          setRetrying(false);
+        }
+      } else {
+        setFeedback({ ok: false, text: info.message });
+      }
     } finally {
       setSending(false);
     }
@@ -87,7 +115,7 @@ export default function PortalInviteButton({ customerId, className = "", compact
           ) : (
             <PaperAirplaneIcon className="w-3 h-3" />
           )}
-          {invitedAt ? "Resend portal invite" : "Send portal invite"}
+          {retrying ? "Retrying…" : invitedAt ? "Resend portal invite" : "Send portal invite"}
         </button>
         {feedback && (
           <span
@@ -127,7 +155,7 @@ export default function PortalInviteButton({ customerId, className = "", compact
           ) : (
             <PaperAirplaneIcon className="w-4 h-4" />
           )}
-          {invitedAt ? "Resend invite" : "Send portal invite"}
+          {retrying ? "Retrying…" : invitedAt ? "Resend invite" : "Send portal invite"}
         </button>
       </div>
 

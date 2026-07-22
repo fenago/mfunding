@@ -1,5 +1,6 @@
 import supabase from "../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
+import { parseEdgeError } from "../lib/edgeError";
 import type {
   Deal,
   DealWithCustomer,
@@ -50,7 +51,7 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
     .select(`
       *,
       customer:customers!customer_id (
-        id, first_name, last_name, business_name, email, additional_emails, phone,
+        id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry
       ),
       closer:profiles!assigned_closer_id (
@@ -148,7 +149,7 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
     .select(`
       *,
       customer:customers!customer_id (
-        id, first_name, last_name, business_name, email, additional_emails, phone,
+        id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry
       ),
       submissions:deal_submissions ( response_at, status )
@@ -265,7 +266,7 @@ export async function getDealById(id: string): Promise<{
     .select(`
       *,
       customer:customers!customer_id (
-        id, first_name, last_name, business_name, email, additional_emails, phone,
+        id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry
       ),
       closer:profiles!assigned_closer_id (
@@ -342,6 +343,110 @@ export async function updateCustomerAdditionalEmails(customerId: string, emails:
     "update additional emails",
     supabase.from("customers").update({ additional_emails: emails }).eq("id", customerId),
   );
+}
+
+/**
+ * Replace a merchant's additional-phone list — extra dialable cells beyond the
+ * primary `customers.phone`. The caller validates/normalizes each number
+ * (normalizePhoneForStorage → +1XXXXXXXXXX) and dedupes; this just persists the
+ * array it's given. The primary `customers.phone` is left untouched.
+ */
+export async function updateCustomerAdditionalPhones(customerId: string, phones: string[]): Promise<void> {
+  await mustWrite(
+    "update additional phones",
+    supabase.from("customers").update({ additional_phones: phones }).eq("id", customerId),
+  );
+}
+
+// ── Deal notes (freeform closer notes) ──────────────────────────────────────
+// A human note on a deal is saved to activity_log (entity = the customer, so it
+// shares the deal's activity feed) with the AUTHOR stamped, THEN best-effort
+// synced to the deal's GHL contact as a contact note. Local save happens FIRST —
+// a GHL hiccup must never lose the note. Subjects discriminate these human notes
+// from the system's machine notes (doc:*, portal:*, …) in the history view:
+//   · 'closer-note'        — the Notes panel's add box
+//   · 'Playbook · <step>'  — a step's freeform note (routed through here too)
+//   · 'Deal closed · <x>'  — the close-deal note
+export const CLOSER_NOTE_SUBJECT = "closer-note";
+
+/** True for subjects that are HUMAN freeform notes (vs. the system's namespaced
+ *  machine notes). Shared by the writer and the Notes history reader. */
+export function isHumanNoteSubject(subject: string | null | undefined): boolean {
+  return (
+    subject === CLOSER_NOTE_SUBJECT ||
+    (!!subject && (subject.startsWith("Playbook · ") || subject.startsWith("Deal closed · ")))
+  );
+}
+
+export interface AddDealNoteInput {
+  dealId: string;
+  customerId: string;
+  content: string;
+  subject?: string; // default CLOSER_NOTE_SUBJECT
+  interactionType?: string; // default 'note'
+  syncToGhl?: boolean; // default true
+}
+export interface DealNoteSyncResult {
+  synced: boolean;
+  /** Present when the sync did not land — a real error to retry, or … */
+  syncError?: string;
+  /** …the benign "the deal has no GHL contact yet" case (no retry to offer). */
+  noContact?: boolean;
+}
+export interface DealNoteSaveResult extends DealNoteSyncResult {
+  noteId: string;
+}
+
+/**
+ * Push an already-saved note to the deal's GHL contact via push-deal-note. Used
+ * on first save AND on a manual retry. Best-effort: returns synced=false with a
+ * reason on any failure (surfacing the real edge-function message), never throws.
+ */
+export async function syncDealNoteToGhl(
+  dealId: string,
+  content: string,
+  subject: string,
+): Promise<DealNoteSyncResult> {
+  try {
+    const { data, error } = await supabase.functions.invoke("push-deal-note", {
+      body: { deal_id: dealId, content, subject },
+    });
+    if (error) throw error;
+    const d = data as { ok?: boolean; skipped?: string; error?: string } | null;
+    if (d?.error) return { synced: false, syncError: d.error };
+    if (d?.skipped) return { synced: false, noContact: true };
+    return { synced: d?.ok === true };
+  } catch (e) {
+    const { message } = await parseEdgeError(e, "GHL sync failed");
+    return { synced: false, syncError: message };
+  }
+}
+
+/**
+ * Save a human note on a deal: activity_log first (author stamped), then a
+ * best-effort GHL contact-note sync. Returns the new note's id plus the sync
+ * outcome so the caller can show "synced ✓" or a retry affordance. Throws only
+ * if the LOCAL save fails (that's a real error the closer must see).
+ */
+export async function addDealNote(input: AddDealNoteInput): Promise<DealNoteSaveResult> {
+  const subject = input.subject ?? CLOSER_NOTE_SUBJECT;
+  const { data: auth } = await supabase.auth.getUser();
+  const uid = auth?.user?.id ?? null;
+  const rows = await mustWrite<{ id: string }>(
+    "save note",
+    supabase.from("activity_log").insert({
+      entity_type: "customer",
+      entity_id: input.customerId,
+      interaction_type: input.interactionType ?? "note",
+      subject,
+      content: input.content,
+      logged_by: uid,
+    }),
+  );
+  const noteId = rows[0]?.id as string;
+  if (input.syncToGhl === false) return { noteId, synced: false };
+  const sync = await syncDealNoteToGhl(input.dealId, input.content, subject);
+  return { noteId, ...sync };
 }
 
 /**

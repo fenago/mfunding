@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { PaperAirplaneIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { getSetting } from "../../services/platformService";
+import { parseEdgeError } from "../../lib/edgeError";
 
 interface AdhocDocDef {
   key: string;
@@ -39,27 +40,16 @@ type Busy = string | null; // the in-flight item key
 /** A sent document's per-merchant signing link (from ghl-docs-status). */
 interface SentDocLink { name: string; signed: boolean; url: string | null }
 
-// supabase-js buries the server's JSON error under error.context and surfaces
-// only "Edge Function returned a non-2xx status code" — useless to a closer.
-// Dig the real message AND the machine flags out, so a 422 guard ("no business
-// name on file…") is SHOWN, and the specific email-undeliverable failure can be
-// told apart from every other 422 (only IT gets the mint-anyway offer).
+// The shared parseEdgeError digs the server's real message + JSON body out from
+// under supabase-js's useless "non-2xx status code". Here we add the one flag
+// this menu cares about: email_undeliverable, so the specific dead-email failure
+// can be told apart from every other 422 (only IT gets the mint-anyway offer).
 async function errorInfo(
   e: unknown,
   fallback: string,
 ): Promise<{ message: string; undeliverable: boolean }> {
-  const ctx = (e as { context?: Response })?.context;
-  if (ctx && typeof ctx.clone === "function") {
-    try {
-      const j = (await ctx.clone().json()) as { error?: string; email_undeliverable?: boolean };
-      return {
-        message: j?.error || fallback,
-        undeliverable: j?.email_undeliverable === true,
-      };
-    } catch { /* not JSON — fall through */ }
-  }
-  const message = e instanceof Error && e.message && !/non-2xx/i.test(e.message) ? e.message : fallback;
-  return { message, undeliverable: false };
+  const { message, body } = await parseEdgeError(e, fallback);
+  return { message, undeliverable: body?.email_undeliverable === true };
 }
 
 /** The status note under the button. Beyond ok/text it can carry an inline action:

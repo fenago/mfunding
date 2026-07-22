@@ -90,6 +90,11 @@ verify_jwt = true
 [functions.sync-lead-to-ghl]
 verify_jwt = true
 
+# Mirrors a human closer note onto the deal's GHL contact as a contact note.
+# Best-effort (note is saved locally first) — staff-only + closer-owns-deal.
+[functions.push-deal-note]
+verify_jwt = true
+
 # Bulk CSV lead importer — ops-only. Runs service-role; JWT gate keeps it internal.
 [functions.bulk-lead-import]
 verify_jwt = true

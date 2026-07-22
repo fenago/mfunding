@@ -214,6 +214,8 @@ export interface DealWithCustomer extends Deal {
     /** Extra addresses CC'd on outbound merchant email (primary stays `email`). */
     additional_emails: string[] | null;
     phone: string | null;
+    /** Extra dialable cell numbers (E.164); primary stays `phone`. */
+    additional_phones: string[] | null;
     monthly_revenue: number | null;
     time_in_business: number | null;
     industry: string | null;
