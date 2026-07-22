@@ -378,6 +378,14 @@ export async function addContactTags(cfg: GhlConfig, contactId: string, tags: st
   );
 }
 
+/** Remove one or more tags from a contact. GHL takes the tag list in the DELETE
+ * body (verified against the LeadConnector v2 API). */
+export async function removeContactTags(cfg: GhlConfig, contactId: string, tags: string[]) {
+  return await ghlFetch<{ tags: string[] }>(
+    cfg, "DELETE", `/contacts/${contactId}/tags`, { tags },
+  );
+}
+
 // ---- Workflows (contact-level enrollment control) -----------------------------
 
 /**

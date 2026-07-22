@@ -33,6 +33,38 @@ export type DealType =
   | "equipment_financing"
   | "vcf";
 
+/** Products a merchant can be shopping for. Multi-select on the deal
+ *  (deals.products_interested) — a merchant may want several. Values match the
+ *  DB CHECK constraint exactly; do not rename without a migration. */
+export type ProductInterest =
+  | "mca"
+  | "term_loan"
+  | "sba_loan"
+  | "line_of_credit"
+  | "equipment_financing"
+  | "cre"
+  | "debt_relief";
+
+/** Display order + short chip labels for the products a merchant wants. The GHL
+ *  contact tag is derived mechanically: `product-` + value with underscores → dashes
+ *  (mca → product-mca, sba_loan → product-sba-loan). One source of truth for the
+ *  chip cluster in the Revenue Playbook. */
+export const PRODUCT_INTEREST_OPTIONS: { value: ProductInterest; label: string; full: string }[] = [
+  { value: "mca", label: "MCA", full: "Merchant Cash Advance" },
+  { value: "term_loan", label: "Term", full: "Term / business loan" },
+  { value: "sba_loan", label: "SBA", full: "SBA loan" },
+  { value: "line_of_credit", label: "LOC", full: "Line of credit" },
+  { value: "equipment_financing", label: "Equip", full: "Equipment financing" },
+  { value: "cre", label: "CRE", full: "Commercial real estate" },
+  { value: "debt_relief", label: "Relief", full: "Debt relief" },
+];
+
+/** The GHL contact tag for a product interest (mca → product-mca). Kept in sync
+ *  with the edge function `sync-deal-product-tags`, which owns the write. */
+export function productTag(value: ProductInterest): string {
+  return `product-${value.replace(/_/g, "-")}`;
+}
+
 export type SubmissionStatus =
   | "pending"
   | "submitted"
@@ -58,6 +90,9 @@ export interface Deal {
   customer_id: string;
   deal_number: string | null;
   deal_type: DealType;
+  /** Products the merchant is shopping for (multi-select, ≥1). Deal-scoped truth;
+   *  synced to product-* tags on the GHL contact. Defaults to '{mca}'. */
+  products_interested: ProductInterest[];
   status: DealStatus;
   /** The last ACTIVE stage this deal was in before it got parked (nurture/declined/dead),
    *  captured on the way out so "Bring back" can restore it. */

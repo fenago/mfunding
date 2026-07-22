@@ -54,15 +54,15 @@ import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, listActiveCloserOptions, reassignDealCloser, type CloserOption } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, listActiveCloserOptions, reassignDealCloser, updateDealProducts, type CloserOption } from "../../services/dealService";
 import { useActivityLog } from "../../hooks/useActivityLog";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
 import { hasSignedApplicationOnFile, uploadSignedApplication } from "../../services/signedApplication";
-import type { DealWithCustomer, DealStatus, Deal, Market } from "../../types/deals";
-import { DEAL_STATUS_CONFIG, MARKET_CONFIG } from "../../types/deals";
+import type { DealWithCustomer, DealStatus, Deal, Market, ProductInterest } from "../../types/deals";
+import { DEAL_STATUS_CONFIG, MARKET_CONFIG, PRODUCT_INTEREST_OPTIONS } from "../../types/deals";
 import { listCampaigns, campaignLabel, type Campaign } from "../../services/campaignService";
 import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commissions";
 import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits";
@@ -1541,6 +1541,88 @@ function AdditionalEmailsEditor({
 
 // ───────────────────────── Deal context bar ─────────────────────────
 
+/**
+ * Compact multi-select for the products a merchant is shopping for. The chips are
+ * both the control and the display: filled = selected. At least one product must
+ * stay on (the last active chip locks). Each toggle persists to
+ * deals.products_interested and reconciles the product-* tags on the GHL contact
+ * (via updateDealProducts → sync-deal-product-tags). Optimistic, inline, no popup.
+ */
+function ProductsChips({ deal, onRefresh }: { deal: DealWithCustomer; onRefresh: () => void }) {
+  const fromDeal = (d: DealWithCustomer): ProductInterest[] =>
+    d.products_interested && d.products_interested.length > 0
+      ? d.products_interested
+      : (["mca"] as ProductInterest[]);
+  const [products, setProducts] = useState<ProductInterest[]>(fromDeal(deal));
+  const [saving, setSaving] = useState<ProductInterest | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  // Re-seed when the deal (or its products) changes underneath us.
+  useEffect(() => {
+    setProducts(fromDeal(deal));
+    setWarning(null);
+  }, [deal.id, deal.products_interested]);
+
+  async function toggle(value: ProductInterest) {
+    const on = products.includes(value);
+    if (on && products.length === 1) return; // keep at least one
+    const next = on ? products.filter((p) => p !== value) : [...products, value];
+    const prev = products;
+    setProducts(next); // optimistic
+    setWarning(null);
+    setSaving(value);
+    try {
+      const res = await updateDealProducts(deal.id, next);
+      setProducts(res.products);
+      if (res.ghlWarning) setWarning(res.ghlWarning);
+      onRefresh();
+    } catch (e) {
+      setProducts(prev); // revert
+      setWarning(e instanceof Error ? e.message : "Could not save products.");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Products:</span>
+      {PRODUCT_INTEREST_OPTIONS.map((opt) => {
+        const active = products.includes(opt.value);
+        const busy = saving === opt.value;
+        const lockLast = active && products.length === 1;
+        return (
+          <button
+            key={opt.value}
+            onClick={() => toggle(opt.value)}
+            disabled={busy || lockLast}
+            title={
+              lockLast
+                ? `${opt.full} — at least one product must stay selected`
+                : `${active ? "Remove" : "Add"} ${opt.full}`
+            }
+            className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${
+              active
+                ? "bg-emerald-600 text-white border-emerald-600 dark:bg-emerald-500 dark:border-emerald-500"
+                : "bg-white text-gray-600 border-gray-300 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 dark:hover:bg-gray-700"
+            } ${busy ? "opacity-60" : ""} ${lockLast ? "cursor-not-allowed" : ""}`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+      {warning && (
+        <span
+          className="text-[11px] text-amber-600 dark:text-amber-400"
+          title={warning}
+        >
+          ⚠ saved; GHL tags: {warning.length > 40 ? warning.slice(0, 40) + "…" : warning}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
@@ -1697,6 +1779,12 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                 </button>
               )}
             </div>
+
+            {/* Which product(s) the merchant is shopping for — multi-select, at
+                least one always on. Toggling a chip persists to the deal AND
+                reconciles the product-* tags on the GHL contact. The chips ARE
+                the display. */}
+            <ProductsChips deal={deal} onRefresh={onRefresh} />
           </div>
         </div>
         <div className="flex items-center gap-2">

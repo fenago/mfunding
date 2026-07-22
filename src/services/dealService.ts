@@ -10,7 +10,9 @@ import type {
   CreateDealData,
   UpdateDealData,
   DealFilters,
+  ProductInterest,
 } from "../types/deals";
+import { PRODUCT_INTEREST_OPTIONS } from "../types/deals";
 import { calculateCommission, createCommission } from "./commissionService";
 import { syncDealToGHL } from "./ghlService";
 import { COMMISSION_DEFAULTS, expectedCommissionInPlay, resolveCommissionLeadSource } from "../types/commissions";
@@ -20,6 +22,11 @@ import type { CommissionLeadSource, Commission } from "../types/commissions";
 // Parked (off-pipeline) statuses shared by both product lines. A deal in one of
 // these is "on the bench" and can be pulled back with reactivateDeal().
 const PARKED_STATUSES: DealStatus[] = ["nurture", "declined", "dead"];
+
+// The allowed product-interest values (mirrors the DB CHECK constraint).
+const VALID_PRODUCT_INTERESTS = new Set<ProductInterest>(
+  PRODUCT_INTEREST_OPTIONS.map((o) => o.value),
+);
 
 // Stage → timestamp column mapping
 const STATUS_TIMESTAMP_MAP: Partial<Record<DealStatus, string>> = {
@@ -335,6 +342,55 @@ export async function updateCustomerAdditionalEmails(customerId: string, emails:
     "update additional emails",
     supabase.from("customers").update({ additional_emails: emails }).eq("id", customerId),
   );
+}
+
+/**
+ * Set the products a merchant is shopping for on a deal (multi-select). Persists
+ * deals.products_interested (deal-scoped truth), then reconciles the matching
+ * `product-*` tags on the deal's GHL contact via sync-deal-product-tags.
+ *
+ * At least one product must stay selected — the DB CHECK enforces it too, but we
+ * guard here so the UI gets a clean error instead of a raw constraint violation.
+ *
+ * The GHL tag sync is best-effort: the DB is the source of truth, so a GHL hiccup
+ * NEVER rolls back the save. On sync failure we return a `ghlWarning` the caller
+ * can surface, without failing the whole call.
+ */
+export async function updateDealProducts(
+  dealId: string,
+  products: ProductInterest[],
+): Promise<{ products: ProductInterest[]; ghlWarning?: string }> {
+  const valid = products.filter((p) => VALID_PRODUCT_INTERESTS.has(p));
+  const unique = [...new Set(valid)];
+  if (unique.length === 0) {
+    throw new Error("Pick at least one product the merchant is interested in.");
+  }
+
+  await mustWrite(
+    "update deal products",
+    supabase.from("deals").update({ products_interested: unique }).eq("id", dealId),
+  );
+
+  // Reconcile the product-* tags on the GHL contact (adds new, removes toggled-off).
+  // Best-effort — the DB write above already succeeded.
+  let ghlWarning: string | undefined;
+  try {
+    const { data, error } = await supabase.functions.invoke("sync-deal-product-tags", {
+      body: { dealId },
+    });
+    if (error) {
+      const ctx = (error as { context?: { json?: () => Promise<unknown> } }).context;
+      const body = ctx?.json ? ((await ctx.json().catch(() => null)) as { error?: string } | null) : null;
+      ghlWarning = body?.error ?? (error as { message?: string }).message ?? "GHL tag sync failed";
+    } else if ((data as { error?: string } | null)?.error) {
+      ghlWarning = (data as { error?: string }).error;
+    }
+  } catch (e) {
+    ghlWarning = e instanceof Error ? e.message : String(e);
+  }
+  if (ghlWarning) console.warn("updateDealProducts: GHL tag sync warning:", ghlWarning);
+
+  return { products: unique, ghlWarning };
 }
 
 export async function updateDealStatus(id: string, newStatus: DealStatus): Promise<Deal> {
