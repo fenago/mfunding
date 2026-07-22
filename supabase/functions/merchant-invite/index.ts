@@ -122,8 +122,14 @@ Deno.serve(async (req) => {
   let smsSent = false;
   const phone = ((customer.phone as string | null) ?? "").trim();
   if (phone) {
+    // NEVER text the raw magic link. Carriers' A2P spam filters kill long
+    // unbranded auth URLs intermittently (two straight `failed` sends on
+    // 2026-07-22 were exactly this), and carrier link-scanners can pre-click a
+    // one-time link and consume the token before the merchant ever taps it.
+    // The portal sign-in page self-serves a fresh magic link, so the SMS sends
+    // the short branded door instead; the full link still goes by EMAIL.
     const smsText =
-      `MFunding: your secure application portal is ready. Tap to log in (no password): ${actionLink}`;
+      `MFunding: your secure application portal is ready. Log in at my.mfunding.net — enter your email and we'll send you a sign-in link. No password needed.`;
     const smsRes = await sendSmsToContact(cfg, contactId, smsText);
     if (smsRes.ok) smsSent = true;
     else smsWarning = `SMS not sent: ${smsRes.error ?? "unknown"}`;
