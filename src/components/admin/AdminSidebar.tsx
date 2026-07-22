@@ -99,6 +99,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/funder-directory",
   "/admin/funder-matrix",
   "/admin/funder-contacts",
+  "/admin/lender-catalog", // ADMIN-roled below, so pure closers still never see it
 ]);
 
 const navGroups: NavGroup[] = [
@@ -116,9 +117,10 @@ const navGroups: NavGroup[] = [
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
+      // Directly under Lenders — owner-specified order.
+      { name: "Lender Catalog", path: "/admin/lender-catalog", icon: RectangleStackIcon, roles: ADMIN },
       { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: ADMIN },
       { name: "Funder Approval Matrix", path: "/admin/funder-matrix", icon: TableCellsIcon, roles: ADMIN },
-      { name: "Lender Catalog", path: "/admin/lender-catalog", icon: RectangleStackIcon, roles: ADMIN },
       { name: "Funder Contacts", path: "/admin/funder-contacts", icon: UserGroupIcon, roles: ADMIN },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
