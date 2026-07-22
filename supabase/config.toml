@@ -249,3 +249,12 @@ verify_jwt = true
 # file id). Staff (user JWT + role check in code) or a service-role bearer.
 [functions.ingest-ghl-documents]
 verify_jwt = true
+
+# Single pane of glass for lender/vendor relationships: mirrors every GHL/VibeReach
+# conversation message (email in/out, SMS, call) with a lender's/vendor's linked
+# contacts into that entity's activity_log, so the whole relationship reads in one
+# timeline. Record-once via ghl_conversation_log (PK = GHL message id). Two callers:
+# pg_cron every 15 min (?secret=<GHL webhook secret> + anon-key Bearer for the
+# gateway) OR staff "Sync now" (user JWT + role check in code).
+[functions.vendor-conversation-sweep]
+verify_jwt = true

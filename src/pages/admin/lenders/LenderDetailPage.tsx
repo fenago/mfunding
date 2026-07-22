@@ -27,7 +27,7 @@ import LenderContactList from "../../../components/lenders/LenderContactList";
 import FunderRecipeCard from "../../../components/lenders/FunderRecipeCard";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
-import InteractionTimeline from "../../../components/shared/InteractionTimeline";
+import RelationshipActivityTab from "../../../components/shared/RelationshipActivityTab";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 import {
   extractLenderFromWebsite,
@@ -205,7 +205,7 @@ export default function LenderDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"overview" | "contacts" | "documents" | "activity" | "ai">("overview");
   const [documentType, setDocumentType] = useState("agreement");
-  const { activities, isLoading: isLoadingActivities, addActivity } = useActivityLog("lender", id);
+  const { activities, isLoading: isLoadingActivities, addActivity, refetch: refetchActivities } = useActivityLog("lender", id);
 
   // Form state for inline editing
   const [formData, setFormData] = useState<LenderFormData>(initialFormData);
@@ -1605,14 +1605,14 @@ export default function LenderDetailPage() {
       )}
 
       {activeTab === "activity" && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-          <InteractionTimeline
-            interactions={activities}
-            onAddInteraction={addActivity}
-            showAddForm={true}
-            isLoading={isLoadingActivities}
-          />
-        </div>
+        <RelationshipActivityTab
+          entityType="lender"
+          entityId={id}
+          activities={activities}
+          isLoading={isLoadingActivities}
+          addActivity={addActivity}
+          onSynced={refetchActivities}
+        />
       )}
 
       {activeTab === "ai" && (

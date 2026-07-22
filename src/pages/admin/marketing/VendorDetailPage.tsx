@@ -10,7 +10,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../../supabase";
 import { mustWrite } from "@/supabase/writes";
-import InteractionTimeline from "../../../components/shared/InteractionTimeline";
+import RelationshipActivityTab from "../../../components/shared/RelationshipActivityTab";
 import VendorEditModal from "../../../components/marketing/VendorEditModal";
 import DocumentUploader from "../../../components/shared/DocumentUploader";
 import DocumentList from "../../../components/shared/DocumentList";
@@ -97,7 +97,7 @@ export default function VendorDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"overview" | "pricing" | "documents" | "activity" | "leads" | "analytics">("overview");
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const { activities, isLoading: isLoadingActivities, addActivity } = useActivityLog("marketing_vendor", id);
+  const { activities, isLoading: isLoadingActivities, addActivity, refetch: refetchActivities } = useActivityLog("marketing_vendor", id);
 
   const fetchVendor = async () => {
     if (!id) return;
@@ -449,14 +449,14 @@ export default function VendorDetailPage() {
       )}
 
       {activeTab === "activity" && (
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700">
-          <InteractionTimeline
-            interactions={activities}
-            onAddInteraction={addActivity}
-            showAddForm={true}
-            isLoading={isLoadingActivities}
-          />
-        </div>
+        <RelationshipActivityTab
+          entityType="marketing_vendor"
+          entityId={id}
+          activities={activities}
+          isLoading={isLoadingActivities}
+          addActivity={addActivity}
+          onSynced={refetchActivities}
+        />
       )}
 
       {activeTab === "leads" && (

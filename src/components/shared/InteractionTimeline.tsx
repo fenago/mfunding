@@ -80,6 +80,30 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+// Render content as text, turning bare http(s) URLs into clickable links. Used so
+// synced GHL rows can carry a "View in GHL: <url>" deep-link that staff can click
+// straight from the timeline (content is a plain-text column, so the writer emits a
+// bare URL and this linkifies it on render).
+const URL_RE = /(https?:\/\/[^\s]+)/g;
+const IS_URL = /^https?:\/\/[^\s]+$/;
+function renderContent(text: string): React.ReactNode[] {
+  return text.split(URL_RE).map((part, i) =>
+    IS_URL.test(part) ? (
+      <a
+        key={i}
+        href={part}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-ocean-blue underline break-all hover:text-ocean-blue/80"
+      >
+        {part}
+      </a>
+    ) : (
+      <span key={i}>{part}</span>
+    )
+  );
+}
+
 function formatTimeAgo(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -285,7 +309,7 @@ export default function InteractionTimeline({
                     {/* Content */}
                     {interaction.content && (
                       <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                        {interaction.content}
+                        {renderContent(interaction.content)}
                       </p>
                     )}
 
