@@ -104,6 +104,12 @@ export interface Deal {
   application_type: string | null;
   // Stage timestamps
   contacted_at: string | null;
+  /** First REAL conversation with the merchant — the truthful "have we actually
+   *  spoken to them?" signal. Stamped ONLY by a human call disposition
+   *  (spoke/callback_set/never_requested) or a completed outbound call ≥120s;
+   *  NEVER by a stage move. `contacted_at` is the looser ≥30s heuristic (voicemail
+   *  pickups qualify), which is why it can't answer "did anyone actually talk to them". */
+  spoke_at?: string | null;
   qualified_at: string | null;
   application_sent_at: string | null;
   docs_collected_at: string | null;

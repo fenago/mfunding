@@ -697,6 +697,40 @@ function QueueCard({
           </p>
         );
       })()}
+      {/* THE GLANCEABLE VERDICT: have we ACTUALLY had a conversation? spoke_at is the
+          honest signal (a human disposition or a ≥120s call) — unlike the "reached"
+          line below, which reads contacted_at (any ≥30s pickup, voicemail included).
+          Emerald ✓ when we've talked; a subdued "never spoken to" once we've TRIED and
+          haven't; nothing at all on an untouched lead — that's not "never spoken to",
+          it's simply not worked yet. */}
+      {(() => {
+        const attempted = (deal.contact_attempts ?? 0) > 0 || !!deal.first_attempt_at;
+        if (deal.spoke_at) {
+          return (
+            <p className="mt-0.5">
+              <span
+                className="inline-flex items-center gap-1 text-[11px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                title={`First real conversation ${ago(deal.spoke_at, now)} ago — a human confirmed it or a call ran 2+ minutes.`}
+              >
+                🗣 Spoke ✓ {ago(deal.spoke_at, now)}
+              </span>
+            </p>
+          );
+        }
+        if (attempted) {
+          return (
+            <p className="mt-0.5">
+              <span
+                className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
+                title="We've tried, but no confirmed conversation yet — no human disposition and no call over 2 minutes."
+              >
+                🔇 Never spoken to
+              </span>
+            </p>
+          );
+        }
+        return null;
+      })()}
       {/* The number, dialable — VIBEREACH FIRST. tel: was the primary and macOS
           hands that protocol to FaceTime, which is nobody's dialer here. Clicking the
           number now opens the contact in VibeReach, where the call button is one click

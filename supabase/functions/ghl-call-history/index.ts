@@ -72,8 +72,15 @@ export interface CallRecord {
 // completed alone is an attempt, not a contact. Keep in sync with the comment
 // on ghl_apply_call_telemetry() in 20260714_ghl_call_log.sql.
 const CONTACT_MIN_SECONDS = 30;
+// A call is a real CONVERSATION (stamps spoke_at) only when it connected AND ran
+// ≥ 120s — twice the contact bar, because a 30-45s "completed" call is usually a
+// voicemail greeting or a "wrong number, bye". Two full minutes on the line is a
+// talk. Keep in sync with the disposition RPC's spoke-set and the migration.
+const SPOKE_MIN_SECONDS = 120;
 const answered = (c: CallRecord) =>
   c.status === "completed" && (c.durationSeconds ?? 0) >= CONTACT_MIN_SECONDS;
+const spokeCall = (c: CallRecord) =>
+  c.status === "completed" && (c.durationSeconds ?? 0) >= SPOKE_MIN_SECONDS;
 
 async function fetchContactCalls(cfg: GhlConfig, contactId: string): Promise<CallRecord[]> {
   // 1) Every conversation for this contact (a contact virtually always has one
@@ -207,6 +214,13 @@ async function syncCallsForDeal(
             .update({ contacted_at: c.calledAt })
             .eq("id", dealId).is("contacted_at", null);
         }
+        // A finalized ≥120s call is a real conversation → stamp spoke_at (only if
+        // still null; an earlier conversation always wins), same as contacted_at above.
+        if (spokeCall(c)) {
+          await db.from("deals")
+            .update({ spoke_at: c.calledAt })
+            .eq("id", dealId).is("spoke_at", null);
+        }
       }
     }
     if (fresh.length > 0) {
@@ -224,15 +238,16 @@ async function syncCallsForDeal(
         });
       }
       const times = fresh.map((c) => c.calledAt).sort();
-      const answered = (c: CallRecord) =>
-        c.status === "completed" && (c.durationSeconds ?? 0) >= CONTACT_MIN_SECONDS;
       const contactedTs = fresh.filter(answered).map((c) => c.calledAt).sort()[0] ?? null;
+      // Earliest fresh ≥120s call → spoke_at. Coalesced only-if-null in the RPC.
+      const spokeTs = fresh.filter(spokeCall).map((c) => c.calledAt).sort()[0] ?? null;
       const { error: rpcErr } = await db.rpc("ghl_apply_call_telemetry", {
         p_deal_id: dealId,
         p_first_at: times[0],
         p_last_at: times[times.length - 1],
         p_new_attempts: fresh.length,
         p_contacted_at: contactedTs,
+        p_spoke_at: spokeTs,
       });
       if (rpcErr) syncError = `telemetry stamp failed: ${rpcErr.message}`;
       synced = fresh.length;

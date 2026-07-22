@@ -1996,6 +1996,37 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                   <UserIcon className="w-3.5 h-3.5 text-gray-400" /> {personName}
                 </span>
               )}
+              {/* THE GLANCEABLE VERDICT: has anyone ACTUALLY had a conversation with
+                  this merchant? spoke_at is the honest signal (a human call
+                  disposition or a ≥120s call), not contacted_at (any ≥30s pickup).
+                  Emerald ✓ with the first-conversation timestamp when we've talked;
+                  a subdued "never spoken to — N attempts" once we've TRIED and
+                  haven't; nothing on an untouched deal (not worked yet ≠ never spoken). */}
+              {(() => {
+                const attempts = deal.contact_attempts ?? 0;
+                const attempted = attempts > 0 || !!deal.first_attempt_at;
+                if (deal.spoke_at) {
+                  return (
+                    <span
+                      className="inline-flex items-center gap-1 text-[12px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      title="A human confirmed a conversation, or a call ran 2+ minutes. This is the truthful 'we've talked to them' signal — stronger than 'contacted'."
+                    >
+                      🗣 Spoke ✓ (first conversation {dateTimeET(deal.spoke_at)})
+                    </span>
+                  );
+                }
+                if (attempted) {
+                  return (
+                    <span
+                      className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
+                      title="We've tried, but no confirmed conversation yet — no human disposition and no call over 2 minutes."
+                    >
+                      🔇 Never spoken to{attempts > 0 ? ` — ${attempts} attempt${attempts === 1 ? "" : "s"}` : ""}
+                    </span>
+                  );
+                }
+                return null;
+              })()}
               <button
                 onClick={openEditLead}
                 title="Fix or add the lead's info — name, business name, email, phone"
