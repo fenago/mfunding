@@ -97,6 +97,7 @@ const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
 const FunderMatrixPage = lazyWithReload(() => import("../pages/admin/FunderMatrixPage.tsx"));
+const LenderCatalogPage = lazyWithReload(() => import("../pages/admin/LenderCatalogPage.tsx"));
 const EmailPage = lazyWithReload(() => import("../pages/admin/EmailPage.tsx"));
 const ColdEmailPlannerPage = lazyWithReload(() => import("../pages/admin/ColdEmailPlannerPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
@@ -475,6 +476,13 @@ export const routes: RouteObject[] = [
                 path: "funder-matrix",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <FunderMatrixPage /> }],
+              },
+              // Lender product catalog — read-only, data-driven view of the whole
+              // funder network grouped by readiness (admin + super_admin, NOT closers)
+              {
+                path: "lender-catalog",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <LenderCatalogPage /> }],
               },
               // Cold-email (Instantly) dashboard + strategy (admins + super_admin)
               {
