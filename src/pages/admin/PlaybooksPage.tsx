@@ -548,6 +548,28 @@ export default function PlaybooksPage() {
 
       await refreshDeal(deal.id);
       if (didAdvance && step.stageKey) celebrateAdvance(step.stageKey, prevIdx);
+
+      // ── STEP-vs-REALITY GUARD (Colorful Garden, 2026-07-23): completing the
+      // "send the application" step advances the stage even when the actual doc
+      // send 502'd seconds earlier — the deal then LOOKS sent with nothing out.
+      // The stage move stands (it's a pipeline update), but the closer gets a
+      // loud, honest warning when GHL shows no application awaiting signature.
+      // Best-effort: a status-check failure must never break step completion.
+      if (didAdvance && step.stageKey === "application_sent" && deal.ghl_contact_id) {
+        supabase.functions
+          .invoke("ghl-docs-status", { body: { ghl_contact_id: deal.ghl_contact_id } })
+          .then(({ data }) => {
+            const docs = (data?.documents ?? []) as Array<{ name?: string }>;
+            const appOut = docs.some((d) => /application|04b|04c/i.test(d.name ?? ""));
+            if (!appOut) {
+              notify(
+                "⚠️ Stage moved to App Sent, but GHL shows NO application out for signature — the send may have failed. Use Send docs to actually send it.",
+                "error",
+              );
+            }
+          })
+          .catch(() => { /* chips + Docs-back panel still tell the truth */ });
+      }
     } catch (e) {
       console.error("completeStep failed:", e);
       notify(e instanceof Error ? e.message : "Could not save this step. Please try again.", "error");
