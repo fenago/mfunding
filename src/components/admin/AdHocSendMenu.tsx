@@ -87,8 +87,12 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
     return false;
   };
 
+  const [uploadFormUrl, setUploadFormUrl] = useState<string | null>(null);
   useEffect(() => {
-    getSetting<{ docs?: AdhocDocDef[] }>("adhoc_docs", {}).then((v) => setDocs(v.docs ?? []));
+    getSetting<{ docs?: AdhocDocDef[]; upload_form_url?: string }>("adhoc_docs", {}).then((v) => {
+      setDocs(v.docs ?? []);
+      setUploadFormUrl(v.upload_form_url ?? null);
+    });
   }, []);
 
   // THIS merchant's signing links — fetched when the menu opens, so "copy the
@@ -257,6 +261,31 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
               )}
             </div>
           ))}
+
+          {/* The document-UPLOAD link — the GHL 'Bank Statements & Documents
+              Upload' form, email-prefilled so submissions land on THIS merchant's
+              contact. The link keeps working; every submission adds files. */}
+          {uploadFormUrl && (
+            <>
+              <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100 dark:border-gray-700">
+                Document upload
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  const url = merchantEmail
+                    ? `${uploadFormUrl}?email=${encodeURIComponent(merchantEmail)}`
+                    : uploadFormUrl;
+                  void navigator.clipboard.writeText(url);
+                  finish({ ok: true, text: "📤 Upload link copied — text it; their files land on this contact automatically." });
+                }}
+                className={itemCls}
+                title="Copies the secure upload-form link (bank statements, ID, voided check) prefilled with their email so uploads attach to this merchant"
+              >
+                📤 Copy their upload link (statements, ID, voided check)
+              </button>
+            </>
+          )}
 
           {/* THIS merchant's signing links — every document already sent to them,
               one copy-click from a text message. Bearer links: whoever holds one

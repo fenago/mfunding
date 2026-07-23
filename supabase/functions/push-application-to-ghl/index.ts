@@ -102,6 +102,22 @@ function signingUrlFor(doc: GhlDoc, contactId: string): string | null {
  * right back to asserting things we haven't checked.
  */
 type SendMode = "prefill" | "blank" | "partial";
+
+// GHL's API intermittently fails single calls (Colorful Garden 2026-07-23: the
+// enrollment POST errored once; the identical call succeeded minutes later and
+// three times this week the same class of blip cost a real send). Enrollment is
+// the one call that actually triggers delivery, so it gets up to 2 retries with
+// backoff before we give up and report the failure.
+async function enrollWithRetry(cfg: GhlConfig, contactId: string, workflowId: string) {
+  let wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${workflowId}`, {});
+  for (const delay of [1200, 2500]) {
+    if (wf.ok) break;
+    console.warn(`[push-app] enrollment failed (${wf.status}) — retrying in ${delay}ms`, wf.error?.slice(0, 300));
+    await sleep(delay);
+    wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${workflowId}`, {});
+  }
+  return wf;
+}
 const EXPECTED_DOC: Record<SendMode, RegExp> = {
   prefill: DOC_PREFILL,
   blank: DOC_SELF_FILL,
@@ -797,7 +813,7 @@ Deno.serve(async (req) => {
     // pipeline update, not a delivery mechanism.
     enrollDirect = true;
     if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // allow re-fire
-    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {});
+    const wf = await enrollWithRetry(cfg, contactId, MCA_04_WORKFLOW_ID);
     reenrolled = wf.ok;
     if (!wf.ok) {
       return json({
@@ -817,7 +833,7 @@ Deno.serve(async (req) => {
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {}); // best-effort
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [PREFILL_TAG] }); // best-effort
     if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04C_WORKFLOW_ID}`, {});
-    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04C_WORKFLOW_ID}`, {});
+    const wf = await enrollWithRetry(cfg, contactId, MCA_04C_WORKFLOW_ID);
     reenrolled = wf.ok;
     if (!wf.ok) {
       return json({
@@ -837,7 +853,7 @@ Deno.serve(async (req) => {
     await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04_WORKFLOW_ID}`, {}); // best-effort
     // Re-sends must re-fire: remove from 04B first so re-enrollment isn't a no-op.
     if (resend) await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {});
-    const wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${MCA_04B_WORKFLOW_ID}`, {});
+    const wf = await enrollWithRetry(cfg, contactId, MCA_04B_WORKFLOW_ID);
     reenrolled = wf.ok;
     if (!wf.ok) return json({ error: `Could not enroll the merchant into the prefill doc workflow (MCA 04B): ${wf.error ?? "enrollment failed"} — the document was NOT sent.` }, 502);
   }
