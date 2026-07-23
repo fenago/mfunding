@@ -3130,6 +3130,21 @@ function StepCard({
               <ClockIcon className="w-3.5 h-3.5" /> {step.sla}
             </span>
           )}
+          {/* Panic button. Once the application-send step is done it collapses and
+              the resend receipt (below, inside the openCard body) disappears — a
+              closer whose send just FAILED had no way to re-fire it without hunting.
+              This always-visible affordance on the collapsed header expands the step
+              straight to the resend options. Only this step, only when folded. */}
+          {step.stageKey === "application_sent" && done && !openCard && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setOpenCard(true); }}
+              title="Re-send the application + e-sign docs — opens the send options below"
+              className="ml-auto inline-flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full border border-ocean-blue/60 text-ocean-blue font-semibold hover:bg-ocean-blue/10"
+            >
+              ↻ Resend docs
+            </button>
+          )}
         </div>
 
         {/* Jargon popover — renders even when the card is folded */}
@@ -3324,6 +3339,9 @@ function StepCard({
                 </a>
               )}
             </div>
+            <p className="text-[11px] text-amber-700 dark:text-amber-300">
+              ⚠ Resending replaces nothing — it re-fires the same documents. Safe to hit again if the first send failed.
+            </p>
             <p className="text-[11px] text-gray-500 dark:text-gray-400">
               “Sent” means it left our system — <b>confirm the merchant actually received it</b> in the live status above. If nothing shows there or they never got it, hit <b>Resend</b>.
             </p>
