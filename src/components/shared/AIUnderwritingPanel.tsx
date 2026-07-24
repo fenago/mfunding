@@ -8,7 +8,7 @@ import {
 import {
   getUnderwritingHistory, runUnderwriting,
   type DealUnderwriting, type UWFlag, type UWMetrics, type UWPerMonth, type UWAffordability,
-  type AffordabilityRating, type RiskRating,
+  type UWScenario, type UWPath, type AffordabilityRating, type RiskRating,
 } from "../../services/aiUnderwritingService";
 import { useUserProfile } from "../../context/UserProfileContext";
 
@@ -264,6 +264,9 @@ function ResultView({ r }: { r: DealUnderwriting }) {
   // per_statement (which is in UPLOAD order, not calendar order) — zip the month
   // labels in, then sort chronologically so the trend reads left-to-right.
   const stmtMonths = (r.per_statement ?? []).map((s) => (s as { month?: string } | null)?.month ?? "");
+  // DISTINCT calendar months — recomputed from statement labels so runs stored
+  // before the months_covered fix still read right (and drives the thin-evidence note).
+  const monthsCovered = new Set(stmtMonths.filter(Boolean)).size || m.months_covered || 0;
   // One bar per CALENDAR month. A merchant with two bank accounts yields two
   // per-statement entries for the same month — a reader thinks in months, not
   // files, so same-month values SUM here (total retained across all accounts).
@@ -301,7 +304,10 @@ function ResultView({ r }: { r: DealUnderwriting }) {
           <span className="text-xs opacity-80 ml-auto">
             {/* Months = DISTINCT calendar months, computed from the statement labels
                 so runs stored before the months_covered fix also render right. */}
-            {num(m.statements_analyzed)} statements · {num(new Set(stmtMonths.filter(Boolean)).size || m.months_covered)} months
+            {num(m.statements_analyzed)} statements · {num(monthsCovered)} months
+            {monthsCovered === 1 && (
+              <span className="font-semibold"> · single month — thin evidence</span>
+            )}
           </span>
         </div>
 
@@ -328,6 +334,19 @@ function ResultView({ r }: { r: DealUnderwriting }) {
 
       {/* Affordability — the headline read, directly under the verdict */}
       {m.affordability && <AffordabilitySection a={m.affordability} />}
+
+      {/* How we make this deal work — paths to revenue (scenarios collapse under
+          as "the math"). Older runs without paths fall back to the scenarios card. */}
+      {m.paths && m.paths.length > 0 ? (
+        <PathsSection
+          paths={m.paths}
+          verdict={m.paths_verdict}
+          scenarios={m.scenarios}
+          scenariosVerdict={m.scenarios_verdict}
+        />
+      ) : m.scenarios && m.scenarios.length > 0 ? (
+        <ScenariosSection scenarios={m.scenarios} verdict={m.scenarios_verdict} />
+      ) : null}
 
       {/* Metric cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -539,6 +558,145 @@ function AffordabilitySection({ a }: { a: UWAffordability }) {
         balance buffer {pct(a.balance_buffer_pct)}{a.balance_basis != null ? ` of worst-month avg balance (${money(a.balance_basis)})` : ""},
         {" "}{a.factor_rate}× factor, {num(a.term_daily_biz_days)} biz-days daily / {num(a.term_weekly_weeks)} weeks weekly.
       </p>
+    </div>
+  );
+}
+
+// ── What would it take? — deterministic what-if scenarios ────────────────────
+// Four reads on the two levers a closer asks about: crediting full stated
+// revenue, and a clean restructure that zeroes existing debits. Same
+// affordability math as above — only the inputs move. Chip = advance vs the ask.
+const VS_ASK_CHIP: Record<string, string> = {
+  green: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
+  amber: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
+  red: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300",
+  na: "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400",
+};
+function vsAskLabel(v: UWScenario["affordable_vs_ask"]): string {
+  if (v.status === "na" || v.delta == null) return "no ask";
+  if (v.delta >= 0) return `+${money(v.delta)} vs ask`;
+  return `${money(v.delta)} vs ask`;
+}
+
+// The bare scenarios table + verdict + caveat — reused standalone (older runs)
+// and embedded under the paths card as "the math".
+function ScenariosBody({ scenarios, verdict }: { scenarios: UWScenario[]; verdict?: string }) {
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
+              <th className="text-left py-2 pr-4 font-medium">Scenario</th>
+              <th className="text-right py-2 px-4 font-medium">Capacity/day</th>
+              <th className="text-right py-2 px-4 font-medium">Max advance</th>
+              <th className="text-right py-2 pl-4 font-medium">vs ask</th>
+            </tr>
+          </thead>
+          <tbody>
+            {scenarios.map((s) => (
+              <tr key={s.key} className="border-b border-gray-100 dark:border-gray-700 last:border-0 align-top">
+                <td className="py-2.5 pr-4">
+                  <div className="font-medium text-gray-900 dark:text-white">{s.label}</div>
+                  <div className="text-xs text-gray-400 mt-0.5 max-w-md">{s.note}</div>
+                </td>
+                <td className="py-2.5 px-4 text-right text-gray-900 dark:text-white whitespace-nowrap">{money(s.capacity_per_day)}</td>
+                <td className="py-2.5 px-4 text-right font-semibold text-gray-900 dark:text-white whitespace-nowrap">{money(s.max_affordable_advance)}</td>
+                <td className="py-2.5 pl-4 text-right whitespace-nowrap">
+                  <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full ${VS_ASK_CHIP[s.affordable_vs_ask.status] ?? VS_ASK_CHIP.na}`}>
+                    {vsAskLabel(s.affordable_vs_ask)}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {verdict && (
+        <p className="mt-4 text-sm text-gray-700 dark:text-gray-300 leading-relaxed">{verdict}</p>
+      )}
+      <p className="mt-2 text-xs text-gray-400">
+        The restructure row is an <span className="font-medium">upper bound</span> — it assumes existing positions are
+        fully cleared. Post-restructure reality lands between as-is and that row.
+      </p>
+    </>
+  );
+}
+
+// Standalone card — only for older stored runs that have scenarios but no paths.
+function ScenariosSection({ scenarios, verdict }: { scenarios: UWScenario[]; verdict?: string }) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">What would it take?</h4>
+        <span className="text-xs text-gray-400">daily-remit capacity under each lever</span>
+      </div>
+      <ScenariosBody scenarios={scenarios} verdict={verdict} />
+    </div>
+  );
+}
+
+// ── Paths to revenue — "How we make this deal work" ──────────────────────────
+// The product: every run surfaces at least one actionable path. Ranked rows with
+// an action callout; the what-if scenarios collapse underneath as the evidence.
+const PATH_ACCENT: Record<string, string> = {
+  counter_as_is: "border-l-emerald-400 dark:border-l-emerald-500",
+  counter_full_revenue: "border-l-emerald-400 dark:border-l-emerald-500",
+  restructure_vcf: "border-l-violet-400 dark:border-l-violet-500",
+  micro_mca: "border-l-sky-400 dark:border-l-sky-500",
+  product_switch: "border-l-amber-400 dark:border-l-amber-500",
+  nurture_trigger: "border-l-gray-300 dark:border-l-gray-600",
+};
+
+function PathsSection({
+  paths, verdict, scenarios, scenariosVerdict,
+}: {
+  paths: UWPath[]; verdict?: string; scenarios?: UWScenario[]; scenariosVerdict?: string;
+}) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-1">
+        <h4 className="font-semibold text-gray-900 dark:text-white">How we make this deal work</h4>
+        <span className="text-xs text-gray-400">{paths.length} path{paths.length === 1 ? "" : "s"}, ranked</span>
+      </div>
+      {verdict && (
+        <p className="text-sm font-medium text-gray-900 dark:text-white mb-4">{verdict}</p>
+      )}
+
+      <div className="space-y-3">
+        {paths.map((p) => (
+          <div
+            key={p.key}
+            className={`rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${PATH_ACCENT[p.key] ?? "border-l-gray-300 dark:border-l-gray-600"} p-3.5`}
+          >
+            <div className="flex items-start gap-3">
+              <span className="shrink-0 w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs font-bold flex items-center justify-center mt-0.5">
+                {p.rank}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-gray-900 dark:text-white">{p.label}</div>
+                <div className="mt-1.5 flex items-start gap-1.5 text-sm text-ocean-blue dark:text-blue-300">
+                  <span className="shrink-0 mt-0.5">▸</span>
+                  <span className="font-medium">{p.action}</span>
+                </div>
+                <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">{p.expected_note}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {scenarios && scenarios.length > 0 && (
+        <details className="mt-4 group">
+          <summary className="flex items-center gap-1.5 cursor-pointer list-none text-sm font-medium text-gray-600 dark:text-gray-300">
+            <ChevronDownIcon className="w-4 h-4 text-gray-400 group-open:rotate-180 transition-transform" />
+            The math — what-if scenarios
+          </summary>
+          <div className="mt-3">
+            <ScenariosBody scenarios={scenarios} verdict={scenariosVerdict} />
+          </div>
+        </details>
+      )}
     </div>
   );
 }

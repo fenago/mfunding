@@ -830,6 +830,262 @@ Deno.serve(async (req) => {
         : null,
     };
 
+    // money formatter — hoisted here (was in the flags block) so the scenario
+    // notes/verdict below can use it too.
+    const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
+    // ── FUNDER BOXES (for path box-matching AND the judge minimums) ──
+    // Load every active MCA program once, with the lender's onboarding STATUS +
+    // name, so the paths below can name which funders' recorded boxes fit a given
+    // size/revenue/TIB. Box-matching is deterministic (never an AI call).
+    const { data: mcaPrograms } = await db
+      .from("lender_programs")
+      .select("monthly_revenue_required, min_credit_score, approval_min, approval_max, time_in_business_months, lenders!inner(company_name, status)")
+      .eq("product_type", "mca").eq("is_active", true);
+    const funderBoxes = ((mcaPrograms ?? []) as Any[]).map((p) => {
+      const l = (Array.isArray(p.lenders) ? p.lenders[0] : p.lenders) as Any | undefined;
+      return {
+        name: (l?.company_name as string) ?? "Funder",
+        status: (l?.status as string) ?? "",
+        rev_req: num(p.monthly_revenue_required),
+        approval_min: num(p.approval_min),
+        approval_max: num(p.approval_max),
+        tib: num(p.time_in_business_months),
+        min_credit_score: num(p.min_credit_score),
+      };
+    });
+
+    // ── WHAT-IF SCENARIOS (deterministic — NO extra LLM call) ──
+    // The single verdict can't answer the two questions a closer actually asks on a
+    // stacked, padded deal: "if he RESTRUCTURES his existing MCAs, does the math
+    // change?" and "what if ALL his revenue were real?". We answer both with the
+    // SAME first-class affordability math (payment cap, balance buffer, factor, term
+    // — see affordabilityFor above); only two inputs move: the revenue basis (true
+    // vs reported) and the existing monthly debt (as-is vs zeroed by a clean
+    // restructure). Each scenario reports the daily-remit capacity + max advance and
+    // how it stacks against the ask.
+    const askAmt = amountRequested != null && amountRequested > 0 ? amountRequested : null;
+    const vsAsk = (adv: number): { status: "green" | "amber" | "red" | "na"; delta: number | null } => {
+      if (askAmt == null) return { status: "na", delta: null };
+      const delta = round2(adv - askAmt);
+      const status = adv >= askAmt ? "green" : adv >= askAmt * 0.7 ? "amber" : "red";
+      return { status, delta };
+    };
+    // Daily-remit affordability for an arbitrary (revenue, existing-monthly-debt)
+    // pair — identical revenue-cap + balance-buffer logic to affordabilityFor, but
+    // the existing debt is a parameter so a restructure can zero it out.
+    const scenarioDaily = (monthlyRevenue: number, existingMonthly: number) => {
+      const allowedTotalMonthly = maxPayPct * Math.max(0, monthlyRevenue);
+      const allowedNewMonthly = Math.max(0, allowedTotalMonthly - Math.max(0, existingMonthly));
+      const revDaily = allowedNewMonthly / BIZ_DAYS_PER_MONTH;
+      const balDaily = worstMonthAvgBalance != null && worstMonthAvgBalance > 0
+        ? bufferPct * worstMonthAvgBalance
+        : (worstMonthAvgBalance != null ? 0 : Infinity); // <=0 balance ⇒ no room; unknown ⇒ no cap
+      const capacity = round2(Math.max(0, Math.min(revDaily, balDaily)));
+      const binding = balDaily < revDaily ? "balance" : "revenue";
+      const advance = round2((capacity * termDailyDays) / factorRate);
+      return { capacity, advance, binding };
+    };
+    const buildScenario = (
+      key: string, label: string, monthlyRevenue: number, existingMonthly: number, note: string,
+    ) => {
+      const r = scenarioDaily(monthlyRevenue, existingMonthly);
+      return {
+        key, label,
+        capacity_per_day: r.capacity,
+        max_affordable_advance: r.advance,
+        binding_constraint: r.binding,
+        affordable_vs_ask: vsAsk(r.advance),
+        note,
+      };
+    };
+    const scAsIs = buildScenario(
+      "as_is", "As-is (current verdict)", trueAvgMonthlyRevenue, existingMonthlyDebt,
+      `True revenue ${money(trueAvgMonthlyRevenue)}/mo with ${money(existingDailyDebit)}/day existing debits netted out; ${affBase.binding_daily}-bound.`,
+    );
+    const scRevReal = buildScenario(
+      "revenue_all_real", "If all stated revenue were real", reportedAvgMonthlyRevenue, existingMonthlyDebt,
+      `Credits the full ${money(reportedAvgMonthlyRevenue)}/mo of reported deposits (no padding stripped); existing debits unchanged.`,
+    );
+    const scRestruct = buildScenario(
+      "debt_restructured", "If existing positions were restructured (upper bound)", trueAvgMonthlyRevenue, 0,
+      "UPPER BOUND — assumes existing positions FULLY cleared; post-restructure reality lands between as-is and this.",
+    );
+    const scBoth = buildScenario(
+      "both", "Both (absolute ceiling)", reportedAvgMonthlyRevenue, 0,
+      "Absolute ceiling — full stated revenue AND zero existing debits; every real position lands below this.",
+    );
+    const scenarios = [scAsIs, scRevReal, scRestruct, scBoth];
+
+    // One-line derived verdict summarizing the two levers vs. the ask.
+    const restructUnlock = round2(scRestruct.max_affordable_advance - scAsIs.max_affordable_advance);
+    const revenueUnlock = round2(scRevReal.max_affordable_advance - scAsIs.max_affordable_advance);
+    const scParts: string[] = [];
+    if (restructUnlock > 0) scParts.push(`restructuring existing positions unlocks ~${money(restructUnlock)}`);
+    if (revenueUnlock > 0) scParts.push(`full-revenue credit unlocks ~${money(revenueUnlock)}`);
+    let askClause = "";
+    if (askAmt != null) {
+      if (scAsIs.max_affordable_advance >= askAmt) {
+        askClause = `the ${money(askAmt)} ask is already covered as-is`;
+      } else {
+        const firstCover = scenarios.find((s) => s.max_affordable_advance >= askAmt);
+        askClause = firstCover
+          ? `the ${money(askAmt)} ask is reachable only under "${firstCover.label}"`
+          : `the ${money(askAmt)} ask is unreachable in every scenario`;
+      }
+    }
+    const lead = scParts.join("; ");
+    let scenariosVerdict: string;
+    if (lead && askClause) scenariosVerdict = `${lead.charAt(0).toUpperCase() + lead.slice(1)} — ${askClause}.`;
+    else if (lead) scenariosVerdict = `${lead.charAt(0).toUpperCase() + lead.slice(1)}.`;
+    else if (askClause) scenariosVerdict = `${askClause.charAt(0).toUpperCase() + askClause.slice(1)}.`;
+    else scenariosVerdict = "Neither a restructure nor crediting full revenue changes capacity materially here.";
+
+    // ── PATHS TO REVENUE (deterministic) — the product. The IRON RULE: every run
+    // emits at least one ACTIONABLE path; a bare "decline" is forbidden output.
+    // Each path is derived from the scenarios above + our real funder rails (box-
+    // matching, NEVER an AI call), ranked by expected revenue.
+    const tibMonths = num(cust.time_in_business);
+    const POINTS = 0.08;          // MFunding's new-deal commission (8 points).
+    const COUNTER_FLOOR = 5000;   // smallest advance worth countering / a funder box wants.
+    const cleanTo = (n: number) => Math.max(0, Math.floor(n / 1000) * 1000); // clean counter figure
+    const listNames = (a: string[], max = 4) =>
+      a.length <= max ? a.join(", ") : `${a.slice(0, max).join(", ")} +${a.length - max} more`;
+
+    // Which onboarded funders' recorded boxes fit a given (advance, revenue)?
+    // Partitioned by how we'd submit TODAY. Credit score UNKNOWN never disqualifies
+    // (MCA = cash-flow underwriting); missing box fields don't exclude a funder.
+    const fitFunders = (advance: number, revenue: number) => {
+      const live: string[] = []; const referral: string[] = []; const pending: string[] = [];
+      for (const b of funderBoxes) {
+        if (b.rev_req != null && revenue < b.rev_req) continue;
+        if (b.approval_min != null && advance < b.approval_min) continue;
+        if (b.approval_max != null && advance > b.approval_max) continue;
+        if (b.tib != null && tibMonths != null && tibMonths < b.tib) continue;
+        if (b.status === "live_vendor") live.push(b.name);
+        else if (b.status === "affiliate_referral") referral.push(b.name);
+        else if (b.status === "application_submitted") pending.push(b.name);
+      }
+      return { live, referral, pending };
+    };
+
+    type Path = {
+      rank: number; key: string; label: string; action: string; expected_note: string;
+      expected_revenue: number; // internal — drives ranking only
+    };
+    const paths: Path[] = [];
+
+    // 1) RIGHT-SIZED COUNTER — when a "now" scenario (no restructure) supports ≥ $5K.
+    //    Emit the as-is counter AND the full-revenue counter when they differ.
+    const counterSeen = new Set<number>();
+    for (const c of [
+      { adv: scAsIs.max_affordable_advance, cap: scAsIs.capacity_per_day, rev: trueAvgMonthlyRevenue, basis: "as_is" as const },
+      { adv: scRevReal.max_affordable_advance, cap: scRevReal.capacity_per_day, rev: reportedAvgMonthlyRevenue, basis: "full_revenue" as const },
+    ]) {
+      const amt = cleanTo(c.adv);
+      if (amt < COUNTER_FLOOR || counterSeen.has(amt)) continue;
+      counterSeen.add(amt);
+      const fit = fitFunders(amt, c.rev);
+      const submitNow = [...fit.live, ...fit.referral];
+      const action = submitNow.length
+        ? `Counter at ${money(amt)} → submit to ${listNames(submitNow)}`
+        : fit.pending.length
+          ? `Counter at ${money(amt)} → ${listNames(fit.pending)} (ISO app pending — call to expedite)`
+          : `Counter at ${money(amt)} — no onboarded funder box fits this size yet; widen the network`;
+      paths.push({
+        rank: 0,
+        key: c.basis === "as_is" ? "counter_as_is" : "counter_full_revenue",
+        label: c.basis === "as_is" ? `Right-sized counter — ${money(amt)}` : `Full-revenue counter — ${money(amt)}`,
+        action,
+        expected_note: `Capacity ${money(c.cap)}/day supports ${money(amt)}` +
+          (c.basis === "full_revenue" ? ` if the full ${money(reportedAvgMonthlyRevenue)}/mo verifies` : "") +
+          `. ${fit.live.length} live + ${fit.referral.length} referral fit, ${fit.pending.length} pending.`,
+        expected_revenue: amt * POINTS,
+      });
+    }
+
+    // 2) RESTRUCTURE FIRST (VCF) — heavily stacked: OUR relief product is the play.
+    //    Frame the post-restructure capacity as revenue, not consolation.
+    if (debtServicePct > 50 && scRestruct.max_affordable_advance >= COUNTER_FLOOR) {
+      const z = cleanTo(scRestruct.max_affordable_advance);
+      paths.push({
+        rank: 0, key: "restructure_vcf",
+        label: `Restructure first (Relief) → unlocks ~${money(z)} new money`,
+        action: "Toggle this deal to Relief and run the VCF flow; after a clean restructure this merchant supports new financing",
+        expected_note: `Existing debits eat ${Math.round(debtServicePct)}% of true revenue. Clear them and capacity opens to ~${money(scRestruct.capacity_per_day)}/day → ~${money(z)} new money (upper bound — real post-restructure lands between as-is and this).`,
+        expected_revenue: z * POINTS,
+      });
+    }
+
+    // 3) MICRO-MCA TIER — real revenue but below mainstream live floors.
+    if (trueAvgMonthlyRevenue >= COUNTER_FLOOR && trueAvgMonthlyRevenue < 15000) {
+      const microNames = ["Bitty Advance", "Greenbox Capital", "Giggle Finance"];
+      const statusOf = new Map(funderBoxes.map((b) => [b.name, b.status]));
+      const statusLabel = (s?: string) =>
+        s === "live_vendor" ? "live" : s === "affiliate_referral" ? "live via referral"
+        : s === "application_submitted" ? "ISO app pending" : "not onboarded";
+      const parts = microNames.filter((n) => statusOf.has(n)).map((n) => `${n} (${statusLabel(statusOf.get(n))})`);
+      if (parts.length) {
+        paths.push({
+          rank: 0, key: "micro_mca",
+          label: "Micro-MCA tier",
+          action: `Route to the micro rail: ${parts.join(", ")}`,
+          expected_note: `True revenue ${money(trueAvgMonthlyRevenue)}/mo clears the $5K micro floors but sits below most mainstream live funders — the micro rail is where this funds.`,
+          expected_revenue: Math.max(cleanTo(scRevReal.max_affordable_advance), COUNTER_FLOOR) * POINTS * 0.5,
+        });
+      }
+    }
+
+    // 4) PRODUCT SWITCH — MCA unaffordable but revenue steady. Statements can't see
+    //    collateral / receivables, so emit as closer QUESTIONS, not a verdict.
+    if (scAsIs.max_affordable_advance < COUNTER_FLOOR && trueAvgMonthlyRevenue >= COUNTER_FLOOR && revenueTrend !== "down") {
+      paths.push({
+        rank: 0, key: "product_switch",
+        label: "Product switch — ask two questions",
+        action: "Ask the merchant: (1) equipment owned free-and-clear? (2) unpaid B2B invoices / receivables? A yes on either opens Equipment financing or invoice factoring where an MCA can't fit",
+        expected_note: `Steady ${money(trueAvgMonthlyRevenue)}/mo revenue but the MCA math is tight — a collateral- or receivables-backed product may work. Catalog: /admin/lender-catalog`,
+        expected_revenue: 1, // unknown size — ranks below sized paths, above nurture.
+      });
+    }
+
+    // 5) NURTURE WITH A CONCRETE RE-ENTRY TRIGGER — never "dead". Compute the exact
+    //    condition that would flip the verdict (paydown target OR revenue target).
+    {
+      const requiredCapacity = (COUNTER_FLOOR * factorRate) / termDailyDays; // $/day to support a $5K advance
+      const requiredNewMonthly = requiredCapacity * BIZ_DAYS_PER_MONTH;
+      const roomFromRevenue = maxPayPct * trueAvgMonthlyRevenue - requiredNewMonthly;
+      let action: string; let note: string;
+      if (existingMonthlyDebt > 0 && roomFromRevenue > 0) {
+        const targetDaily = roomFromRevenue / BIZ_DAYS_PER_MONTH; // existing daily debit at/below which a $5K counter clears
+        const paydownPct = existingDailyDebit > 0
+          ? Math.max(0, Math.min(99, Math.round((1 - targetDaily / existingDailyDebit) * 100)))
+          : 0;
+        action = `Nurture until existing daily debits drop below ${money(targetDaily)}/day, then re-run`;
+        note = `At today's ${money(existingDailyDebit)}/day that's ≈${paydownPct}% paydown of the current position(s). Set the re-entry trigger and move on — not dead, just early.`;
+      } else {
+        const targetRev = (requiredNewMonthly + existingMonthlyDebt) / maxPayPct;
+        action = `Nurture until true revenue reaches ~${money(targetRev)}/mo (2+ clean months), then re-run`;
+        note = `Revenue is the binding constraint, not stacking — re-enter on growth, not a paydown.`;
+      }
+      paths.push({
+        rank: 0, key: "nurture_trigger",
+        label: "Nurture with a concrete re-entry trigger",
+        action, expected_note: note,
+        expected_revenue: 0.5, // fallback sentinel — always lowest, guarantees a path exists.
+      });
+    }
+
+    // Rank by expected revenue (desc); renumber 1..n.
+    paths.sort((a, b) => b.expected_revenue - a.expected_revenue);
+    paths.forEach((p, i) => { p.rank = i + 1; });
+
+    // Reframe the headline as the PLAY — never a bare decline.
+    const topPath = paths[0];
+    const pathsVerdict = topPath
+      ? `${topPath.label} is the play` +
+        (askAmt != null && scAsIs.max_affordable_advance < askAmt ? ` — the ${money(askAmt)} ask is unreachable as-is.` : ".")
+      : scenariosVerdict;
+
     const metrics = {
       statements_analyzed: monthsCovered,
       months_covered: monthsCovered,
@@ -867,11 +1123,18 @@ Deno.serve(async (req) => {
       // old rows lack them and the UI hides those sections).
       per_month: perMonth,
       affordability,
+      // What-if scenarios (additive; older stored runs lack them and the UI hides
+      // the section). Four deterministic reads on the two levers a closer asks about.
+      scenarios,
+      scenarios_verdict: scenariosVerdict,
+      // Paths to revenue — the product. Always ≥1 actionable path. `expected_revenue`
+      // is internal ranking only, dropped from what we persist/return.
+      paths: paths.map(({ expected_revenue: _er, ...p }) => p),
+      paths_verdict: pathsVerdict,
     };
 
     // ---- Flags from the admin-tunable thresholds ----
     const flags: Array<{ code: string; severity: "info" | "warn" | "critical"; message: string }> = [];
-    const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
     // ── Statement coverage vs the CALENDAR: are we current, and are we continuous? ──
     // Funders want the newest complete month and an unbroken run. A closer staring
@@ -1068,15 +1331,12 @@ Deno.serve(async (req) => {
     // ---- PASS C: JUDGE (Claude — narrative + risk_rating + funder-fit note) ----
     // Load active MCA funder minimums so the judge can say which paper grade / which
     // funders this true-revenue profile fits.
-    const { data: programs } = await db
-      .from("lender_programs")
-      .select("lender_id, monthly_revenue_required, min_credit_score, approval_min, approval_max")
-      .eq("product_type", "mca").eq("is_active", true);
-    const funderMinimums = (programs ?? []).map((p) => ({
-      monthly_revenue_required: num(p.monthly_revenue_required),
-      min_credit_score: num(p.min_credit_score),
-      approval_min: num(p.approval_min),
-      approval_max: num(p.approval_max),
+    // Reuse the funder boxes already loaded above (no second query).
+    const funderMinimums = funderBoxes.map((b) => ({
+      monthly_revenue_required: b.rev_req,
+      min_credit_score: b.min_credit_score,
+      approval_min: b.approval_min,
+      approval_max: b.approval_max,
     }));
     // Distinct revenue floors present in the network (compact signal for the judge).
     const revenueFloors = Array.from(
@@ -1097,6 +1357,10 @@ Deno.serve(async (req) => {
       "assumption(s) in the narrative and give the SENSITIVITY: the base case (assumption holds) vs. the " +
       "conservative case (assumption is wrong), using the base and conservative numbers provided. Then still " +
       "land on ONE clear recommendation so the read is complete without a merchant round-trip. " +
+      "IRON RULE — a bare 'decline' is NOT an acceptable read: the deterministic PATHS TO REVENUE provided are " +
+      "the options, and your Recommendation MUST be the top path (or another listed path), phrased as the concrete " +
+      "next step (counter at $X to named funders, flip to Relief and restructure, route to the micro rail, ask the " +
+      "product-switch questions, or nurture until a specific trigger). Even when the ask is unreachable, there is a play. " +
       "Return ONLY strict JSON: " +
       '{"risk_rating":"low"|"medium"|"high","narrative":string,"funder_fit_note":string}. ' +
       "FORMAT the narrative as lightweight markdown the closer can scan in 5 seconds — NOT a wall of prose:\n" +
@@ -1143,6 +1407,9 @@ Deno.serve(async (req) => {
           ? `Requested ${money(amountRequested ?? 0)} needs ${money(reqDailyPayment)}/day or ${money(reqWeeklyPayment ?? 0)}/week → ` +
             `daily ${affordableDaily ? "AFFORDABLE" : "UNAFFORDABLE"}, weekly ${affordableWeekly ? "AFFORDABLE" : "UNAFFORDABLE"}.`
           : "No requested amount on file.") +
+      "\n\nPATHS TO REVENUE (deterministic, ranked — your Recommendation MUST be the top one or another listed here; " +
+        "NEVER a bare decline):\n" +
+        paths.map((p) => `${p.rank}. ${p.label} — ${p.action}`).join("\n") +
       "\n\nAFFORDABILITY RATING (code-derived, base case): " + affordabilityRating +
       "\n\nFUNDER NETWORK MONTHLY-REVENUE FLOORS (distinct, USD): " +
       (revenueFloors.length ? revenueFloors.map((f) => `$${f.toLocaleString("en-US")}`).join(", ") : "none on file") +

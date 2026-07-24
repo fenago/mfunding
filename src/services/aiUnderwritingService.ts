@@ -64,6 +64,30 @@ export interface UWAffordability {
   } | null;
 }
 
+// What-if scenario: the daily-remit affordability recomputed under a different
+// revenue basis and/or existing-debt assumption. `affordable_vs_ask.status`
+// drives the green/amber/red chip; `delta` is max advance minus the ask.
+export interface UWScenario {
+  key: "as_is" | "revenue_all_real" | "debt_restructured" | "both" | string;
+  label: string;
+  capacity_per_day: number;
+  max_affordable_advance: number;
+  binding_constraint?: "revenue" | "balance";
+  affordable_vs_ask: { status: "green" | "amber" | "red" | "na"; delta: number | null };
+  note: string;
+}
+
+// Paths to revenue — the deterministic "how we make this deal work" options.
+// Every run emits at least one; a bare decline is forbidden. Ranked (1 = best).
+export interface UWPath {
+  rank: number;
+  key: "counter_as_is" | "counter_full_revenue" | "restructure_vcf" | "micro_mca"
+    | "product_switch" | "nurture_trigger" | string;
+  label: string;
+  action: string;       // the exact in-app next step
+  expected_note: string;
+}
+
 export interface UWMetrics {
   reported_avg_monthly_revenue: number;
   true_avg_monthly_revenue: number;
@@ -92,6 +116,12 @@ export interface UWMetrics {
   // Additive (older runs won't have these — render conditionally).
   per_month?: UWPerMonth[];
   affordability?: UWAffordability;
+  // What-if scenarios + a one-line derived verdict (additive — older runs lack them).
+  scenarios?: UWScenario[];
+  scenarios_verdict?: string;
+  // Paths to revenue (the product) + the reframed play verdict (additive).
+  paths?: UWPath[];
+  paths_verdict?: string;
 }
 
 export interface UWPerStatement {
