@@ -42,6 +42,7 @@ import {
   CalendarDaysIcon,
   LightBulbIcon,
   RectangleStackIcon,
+  HeartIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -189,6 +190,7 @@ const navGroups: NavGroup[] = [
   {
     title: "System",
     items: [
+      { name: "System Health", path: "/admin/system", icon: HeartIcon, roles: ADMIN },
       { name: "Users", path: "/admin/users", icon: UsersIcon, roles: SUPER },
       { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: SUPER },
       { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: SUPER },

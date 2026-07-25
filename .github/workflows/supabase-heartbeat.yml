@@ -4,6 +4,14 @@ name: Supabase Heartbeat
 # from auto-pausing after ~7 days of inactivity. Free projects sleep when idle,
 # which makes every query time out until manually resumed. This pings the REST
 # API twice a day so the database registers regular activity and stays awake.
+#
+# DOUBLES AS THE EXTERNAL DEAD-MAN SWITCH for the System Health monitor: the
+# in-app /admin/system checks live INSIDE Supabase, so they can't alert about
+# Supabase itself being down or paused. This workflow runs on GitHub's
+# infrastructure — when the ping does NOT return 2xx/3xx (a paused/unreachable
+# project returns 000 on timeout) the run EXITS NON-ZERO, and GitHub emails the
+# repo owner about the failed scheduled run. The timeouts below make that failure
+# fast and deterministic instead of letting curl hang.
 
 on:
   schedule:
@@ -35,7 +43,11 @@ jobs:
           # PostgREST root /rest/v1/ is gated at the API gateway and returns 401
           # without touching the DB, so it would NOT count as activity).
           # `lenders` is always populated; select+limit keeps it cheap.
+          # --max-time / --connect-timeout: a paused or unreachable project must
+          # make this ping FAIL FAST (curl returns 000) so the dead-man switch trips
+          # promptly, rather than hanging until GitHub's job wall.
           status=$(curl -sS -o /dev/null -w "%{http_code}" \
+            --connect-timeout 15 --max-time 30 \
             -H "apikey: ${SUPABASE_ANON_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
             "${SUPABASE_URL}/rest/v1/lenders?select=id&limit=1")

@@ -111,6 +111,7 @@ const LeadSourcesPage = lazyWithReload(() => import("../pages/admin/LeadSourcesP
 const LeadImportPage = lazyWithReload(() => import("../pages/admin/LeadImportPage.tsx"));
 const ReferralPartnersPage = lazyWithReload(() => import("../pages/admin/ReferralPartnersPage.tsx"));
 const SyncLogPage = lazyWithReload(() => import("../pages/admin/SyncLogPage.tsx"));
+const SystemHealthPage = lazyWithReload(() => import("../pages/admin/SystemHealthPage.tsx"));
 const FunderContactsPage = lazyWithReload(() => import("../pages/admin/FunderContactsPage.tsx"));
 const PlatformConfigPage = lazyWithReload(() => import("../pages/admin/PlatformConfigPage.tsx"));
 const UnderwritingSettingsPage = lazyWithReload(() => import("../pages/admin/UnderwritingSettingsPage.tsx"));
@@ -719,6 +720,12 @@ export const routes: RouteObject[] = [
                 path: "sync-log",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <SyncLogPage /> }],
+              },
+              // System health — live external-API/service monitoring (admin + super_admin)
+              {
+                path: "system",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <SystemHealthPage /> }],
               },
               // Funder-reply reconciler — associate funder replies with lenders (admin + super_admin)
               {
