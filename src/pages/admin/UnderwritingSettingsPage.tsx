@@ -4,6 +4,11 @@ import {
   getUnderwritingSettings, saveUnderwritingSettings,
   type UnderwritingSettings,
 } from "../../services/aiUnderwritingService";
+import {
+  getUnderwritingModels, saveUnderwritingModels,
+  DEFAULT_UNDERWRITING_MODELS, UNDERWRITING_MODEL_OPTIONS,
+  type UnderwritingModels,
+} from "../../services/platformService";
 
 // Human labels for padding categories — "which deposit types count as padding."
 const PADDING_LABELS: Record<string, string> = {
@@ -71,20 +76,26 @@ function NumberField({
 
 export default function UnderwritingSettingsPage() {
   const [settings, setSettings] = useState<UnderwritingSettings | null>(null);
+  const [models, setModels] = useState<UnderwritingModels>(DEFAULT_UNDERWRITING_MODELS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getUnderwritingSettings()
-      .then(setSettings)
+    Promise.all([getUnderwritingSettings(), getUnderwritingModels()])
+      .then(([s, m]) => { setSettings(s); setModels(m); })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load settings"))
       .finally(() => setLoading(false));
   }, []);
 
   function patch(p: Partial<UnderwritingSettings>) {
     setSettings((s) => (s ? { ...s, ...p } : s));
+    setSaved(false);
+  }
+
+  function patchModel(p: Partial<UnderwritingModels>) {
+    setModels((m) => ({ ...m, ...p }));
     setSaved(false);
   }
 
@@ -104,7 +115,10 @@ export default function UnderwritingSettingsPage() {
     try {
       const { id, updated_at: _u, updated_by: _b, ...rest } = settings;
       void _u; void _b;
-      const updated = await saveUnderwritingSettings(id, rest);
+      const [updated] = await Promise.all([
+        saveUnderwritingSettings(id, rest),
+        saveUnderwritingModels(models),
+      ]);
       setSettings(updated);
       setSaved(true);
     } catch (e) {
@@ -198,31 +212,50 @@ export default function UnderwritingSettingsPage() {
         </div>
       </div>
 
-      {/* Models */}
+      {/* AI Underwriter models */}
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-        <h2 className="font-semibold text-gray-900 dark:text-white mb-4">Models</h2>
+        <h2 className="font-semibold text-gray-900 dark:text-white mb-1">AI Underwriter models</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+          Which Claude models run the underwriter. Owner default is{" "}
+          <span className="font-medium">Claude Opus 5</span> (judge) and{" "}
+          <span className="font-medium">Claude Sonnet 5</span> (extraction). Applied on the next run — no redeploy.
+        </p>
         <div className="grid sm:grid-cols-2 gap-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Extraction model</label>
-            <input
-              type="text"
-              value={settings.extraction_model ?? ""}
-              onChange={(e) => patch({ extraction_model: e.target.value })}
-              placeholder="e.g. claude-opus-4-8"
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Judge model</label>
+            <select
+              value={models.judge_model}
+              onChange={(e) => patchModel({ judge_model: e.target.value })}
               className="input-field w-full"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Reads the PDFs and extracts per-statement figures.</p>
+            >
+              {UNDERWRITING_MODEL_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}{o.id === DEFAULT_UNDERWRITING_MODELS.judge_model ? " (default)" : ""}
+                </option>
+              ))}
+              {!UNDERWRITING_MODEL_OPTIONS.some((o) => o.id === models.judge_model) && (
+                <option value={models.judge_model}>{models.judge_model} (custom)</option>
+              )}
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Produces the risk/affordability verdict + narrative.</p>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Judge model</label>
-            <input
-              type="text"
-              value={settings.judge_model ?? ""}
-              onChange={(e) => patch({ judge_model: e.target.value })}
-              placeholder="e.g. claude-opus-4-8"
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Extraction model</label>
+            <select
+              value={models.extraction_model}
+              onChange={(e) => patchModel({ extraction_model: e.target.value })}
               className="input-field w-full"
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Produces the risk/affordability verdict + narrative.</p>
+            >
+              {UNDERWRITING_MODEL_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}{o.id === DEFAULT_UNDERWRITING_MODELS.extraction_model ? " (default)" : ""}
+                </option>
+              ))}
+              {!UNDERWRITING_MODEL_OPTIONS.some((o) => o.id === models.extraction_model) && (
+                <option value={models.extraction_model}>{models.extraction_model} (custom)</option>
+              )}
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Reads the PDFs and extracts per-statement figures.</p>
           </div>
         </div>
       </div>

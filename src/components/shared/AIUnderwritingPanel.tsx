@@ -11,6 +11,7 @@ import {
   type DealUnderwriting, type UWFlag, type UWMetrics, type UWPerMonth, type UWAffordability,
   type UWScenario, type UWPath, type UWDocumentLedgerRow, type AffordabilityRating, type RiskRating,
 } from "../../services/aiUnderwritingService";
+import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
 
 interface Props {
@@ -309,7 +310,8 @@ export default function AIUnderwritingPanel({ dealId }: Props) {
           {current && (
             <span className="text-xs text-gray-400">
               {new Date(current.created_at).toLocaleString()}
-              {current.extraction_model && ` · ${current.extraction_model}`}
+              {current.judge_model && ` · Judged by ${modelLabel(current.judge_model)}`}
+              {current.extraction_model && ` · Extracted by ${modelLabel(current.extraction_model)}`}
             </span>
           )}
         </div>

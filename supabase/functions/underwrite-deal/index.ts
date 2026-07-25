@@ -344,6 +344,20 @@ Deno.serve(async (req) => {
       .filter(([, on]) => on === true)
       .map(([k]) => k);
 
+    // --- Model resolution (owner-switchable) ---
+    // platform_settings key "underwriting_models" is the top-priority override the
+    // super-admin sets in the UI; it falls back to the underwriting_settings row and
+    // then the hardcoded code defaults, so a missing/partial row NEVER breaks a run.
+    // A bad model id is NOT silently swapped — the run fails loudly (extraction errors
+    // land in the ledger + coverage flags; a judge failure surfaces in the narrative).
+    const { data: pmRow } = await db
+      .from("platform_settings").select("value").eq("key", "underwriting_models").maybeSingle();
+    const modelOverride = (pmRow?.value ?? {}) as { judge_model?: string; extraction_model?: string };
+    const extractionModel =
+      (modelOverride.extraction_model || settings.extraction_model || DEFAULT_SETTINGS.extraction_model).trim();
+    const judgeModel =
+      (modelOverride.judge_model || settings.judge_model || DEFAULT_SETTINGS.judge_model).trim();
+
     // --- Deal + customer. ---
     const { data: deal, error: dErr } = await db
       .from("deals")
@@ -510,7 +524,7 @@ Deno.serve(async (req) => {
         try {
           const text = await callAnthropicBlocks(
             db,
-            settings.extraction_model,
+            extractionModel,
             [
               { type: "document", source: { type: "base64", media_type: "application/pdf", data: g.b64 } },
               { type: "text", text: "Extract this bank statement per your instructions and call the report_statement tool." },
@@ -1517,6 +1531,9 @@ Deno.serve(async (req) => {
         temperature: 0.2,
         jsonMode: true,
         task: "underwrite_judge",
+        // Owner-switchable judge model (platform_settings) — overrides the llm_settings
+        // resolution so the UI control is the single source of truth for the judge model.
+        model: judgeModel,
       });
       const parsed = safeParseJson(judgeText);
       if (parsed) {
@@ -1562,8 +1579,9 @@ Deno.serve(async (req) => {
         affordability_rating: affordabilityRating,
         ai_narrative: narrativeOut,
         settings_snapshot: settings,
-        extraction_model: settings.extraction_model,
-        judge_model: settings.judge_model,
+        // Record the models that ACTUALLY ran (resolved override), not the code defaults.
+        extraction_model: extractionModel,
+        judge_model: judgeModel,
         created_by: callerId,
       })
       .select("id, version, created_at")
@@ -1593,8 +1611,8 @@ Deno.serve(async (req) => {
       flags,
       assumptions,
       per_statement: perStatement,
-      extraction_model: settings.extraction_model,
-      judge_model: settings.judge_model,
+      extraction_model: extractionModel,
+      judge_model: judgeModel,
       created_at: inserted?.created_at,
     });
   } catch (e) {

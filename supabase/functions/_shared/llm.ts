@@ -45,6 +45,10 @@ export interface CallLLMOptions {
   task?: string;
   /** Sampling temperature. Sent to providers that accept it; omitted when undefined. */
   temperature?: number;
+  /** Explicit model override — wins over llm_settings/task resolution for THIS call. */
+  model?: string;
+  /** Explicit provider override — pairs with `model` when the caller pins both. */
+  provider?: string;
 }
 
 export interface ResolvedConfig {
@@ -92,13 +96,38 @@ function stripFences(text: string): string {
   return text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
 }
 
-// Claude 5-tier models (opus/sonnet/haiku/fable/mythos -5) no longer accept the
-// `temperature` parameter — the API 400s with "`temperature` is deprecated for this
-// model." Omit it for them; 4.x Claude models and every other provider keep sending
-// temperature exactly as before. Matches "claude-opus-5", "claude-sonnet-5-20xx",
-// etc. but NOT "claude-haiku-4-5" or "claude-opus-4-8".
-function anthropicAcceptsTemperature(model: string): boolean {
-  return !/claude-(?:opus|sonnet|haiku|fable|mythos)-5(?:$|[-_])/i.test(model);
+// Newer Anthropic models reject the `temperature` parameter, 400ing with
+// "`temperature` is deprecated for this model." We handle this two ways:
+//  (a) fast path — skip sending temperature for models we KNOW deprecate it (the
+//      Claude 5 tier + Opus 4.8), so the common case never wastes a round trip;
+//  (b) self-healing net — anthropicFetch retries once WITHOUT temperature on that
+//      exact 400, so any future model that drops the param just works.
+function anthropicOmitsTemperature(model: string): boolean {
+  return /claude-(?:opus|sonnet|haiku|fable|mythos)-5(?:$|[-_])/i.test(model)
+    || /claude-opus-4-8/i.test(model);
+}
+
+// POST to Anthropic, returning the raw response text. On a temperature-deprecated
+// 400, strip `temperature` from the body and retry once (body is mutated).
+async function anthropicFetch(key: string, body: Record<string, unknown>): Promise<string> {
+  const doFetch = () => fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(body),
+  });
+  let res = await doFetch();
+  let text = await res.text();
+  if (!res.ok && res.status === 400 && "temperature" in body && /temperature[^]*deprecated/i.test(text)) {
+    delete body.temperature;
+    res = await doFetch();
+    text = await res.text();
+  }
+  if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${bodyPrefix(text)}`);
+  return text;
 }
 
 // ---- Adapters ---------------------------------------------------------------
@@ -110,19 +139,9 @@ async function callAnthropic(key: string, model: string, o: CallLLMOptions): Pro
     messages: [{ role: "user", content: o.prompt }],
   };
   if (o.system) body.system = o.system;
-  if (o.temperature != null && anthropicAcceptsTemperature(model)) body.temperature = o.temperature;
+  if (o.temperature != null && !anthropicOmitsTemperature(model)) body.temperature = o.temperature;
 
-  const res = await fetch(ANTHROPIC_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": ANTHROPIC_VERSION,
-    },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${bodyPrefix(text)}`);
+  const text = await anthropicFetch(key, body);
   const jsonRes = JSON.parse(text) as { content?: Array<{ type?: string; text?: string }> };
   return (jsonRes.content ?? [])
     .filter((b) => b?.type === "text")
@@ -231,21 +250,11 @@ export async function callAnthropicBlocks(
     messages: [{ role: "user", content }],
   };
   if (opts.system) body.system = opts.system;
-  if (opts.temperature != null && anthropicAcceptsTemperature(model)) body.temperature = opts.temperature;
+  if (opts.temperature != null && !anthropicOmitsTemperature(model)) body.temperature = opts.temperature;
   if (opts.tools) body.tools = opts.tools;
   if (opts.toolChoice) body.tool_choice = opts.toolChoice;
 
-  const res = await fetch(ANTHROPIC_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": ANTHROPIC_VERSION,
-    },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`anthropic HTTP ${res.status}: ${bodyPrefix(text)}`);
+  const text = await anthropicFetch(key, body);
   const jsonRes = JSON.parse(text) as {
     content?: Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
   };
@@ -263,7 +272,11 @@ export async function callAnthropicBlocks(
 }
 
 export async function callLLM(db: SupabaseClient, opts: CallLLMOptions): Promise<string> {
-  const { provider, model } = await resolveConfig(db, opts.task);
+  const resolved = await resolveConfig(db, opts.task);
+  // An explicit model/provider on the call wins over llm_settings/task resolution —
+  // lets a feature pin its own model (e.g. the owner-switchable underwriter judge).
+  const provider = opts.provider ?? resolved.provider;
+  const model = opts.model ?? resolved.model;
   const key = await getKey(db, provider);
 
   let out: string;

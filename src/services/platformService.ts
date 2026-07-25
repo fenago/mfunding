@@ -152,3 +152,37 @@ export const DEFAULT_INSTANTLY_SETTINGS: InstantlySettings = {
 export const getInstantlySettings = () =>
   getSetting<InstantlySettings>("instantly_settings", DEFAULT_INSTANTLY_SETTINGS);
 export const saveInstantlySettings = (s: InstantlySettings) => saveSetting("instantly_settings", s);
+
+// --- AI underwriter models ----------------------------------------------------
+// Which Claude models the underwrite-deal edge function uses. Read at RUN TIME by
+// the function (platform_settings key "underwriting_models"); when unset it falls
+// back to the hardcoded defaults in code, so a missing row never breaks a run.
+// The owner default is Opus 5 (judge) + Sonnet 5 (extraction); super-admin can
+// switch either from /admin/settings/underwriting.
+export interface UnderwritingModels {
+  judge_model: string;      // produces the risk/affordability verdict + narrative
+  extraction_model: string; // reads the PDFs and extracts per-statement figures
+}
+
+export const DEFAULT_UNDERWRITING_MODELS: UnderwritingModels = {
+  judge_model: "claude-opus-5",
+  extraction_model: "claude-sonnet-5",
+};
+
+// Curated, verified-available model ids (checked against Anthropic /v1/models).
+// Keep in sync with the edge function's expectations; only ids known to work here.
+export const UNDERWRITING_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: "claude-opus-5", label: "Claude Opus 5" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+];
+
+// Friendly label for a model id (falls back to the raw id for custom/unknown ids).
+export const modelLabel = (id: string | null | undefined): string =>
+  (id ? (UNDERWRITING_MODEL_OPTIONS.find((o) => o.id === id)?.label ?? id) : "—");
+
+export const getUnderwritingModels = () =>
+  getSetting<UnderwritingModels>("underwriting_models", DEFAULT_UNDERWRITING_MODELS);
+export const saveUnderwritingModels = (m: UnderwritingModels) => saveSetting("underwriting_models", m);
