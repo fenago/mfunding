@@ -133,3 +133,22 @@ export const DEFAULT_COMPANY_VOICE: CompanyVoice = {
 };
 
 export const getCompanyVoice = () => getSetting<CompanyVoice>("company_voice", DEFAULT_COMPANY_VOICE);
+
+// --- Instantly cold-email settings --------------------------------------------
+// Instantly's v2 /accounts endpoint does NOT report a per-mailbox daily send
+// limit for MANAGED accounts, so the Email page can't derive send capacity from
+// the API alone. This workspace default fills that gap: it's the per-mailbox
+// daily cap we ASSUME when the API doesn't report one. 30 = Instantly's own
+// default. Editable inline on /admin/email (super-admin) to match your real
+// Instantly setting.
+export interface InstantlySettings {
+  default_daily_limit: number;
+}
+
+export const DEFAULT_INSTANTLY_SETTINGS: InstantlySettings = {
+  default_daily_limit: 30,
+};
+
+export const getInstantlySettings = () =>
+  getSetting<InstantlySettings>("instantly_settings", DEFAULT_INSTANTLY_SETTINGS);
+export const saveInstantlySettings = (s: InstantlySettings) => saveSetting("instantly_settings", s);

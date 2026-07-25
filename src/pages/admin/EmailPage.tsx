@@ -3,12 +3,20 @@ import supabase from "@/supabase";
 import {
   EnvelopeIcon,
   ArrowPathIcon,
+  ArrowLeftIcon,
   ExclamationTriangleIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CheckCircleIcon,
+  CheckIcon,
+  XMarkIcon,
+  PencilSquareIcon,
   FireIcon,
+  PaperAirplaneIcon,
 } from "@heroicons/react/24/outline";
 import { BarChart, Bar, XAxis, YAxis, Cell, ReferenceLine, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { useUserProfile } from "@/context/UserProfileContext";
+import { getInstantlySettings, saveInstantlySettings } from "@/services/platformService";
 
 // ── Live Instantly data ──────────────────────────────────────────────────────
 // The warmup model + domain grouping live in a shared module so this page and
@@ -19,6 +27,7 @@ import {
   WARM_TONE,
   groupDomains,
   type InstantlyAccount,
+  type InstantlyCampaign,
   type Overview,
   type DomainGroup,
 } from "@/lib/instantlyWarmup";
@@ -26,10 +35,41 @@ import {
 const ACCOUNT_STATUS: Record<string, string> = { "1": "Active", "2": "Paused", "-1": "Error", "-2": "Suspended", "0": "Setup pending" };
 const WARMUP_STATUS: Record<string, string> = { "0": "Paused", "1": "Active", "-1": "Error" };
 const CAMPAIGN_STATUS: Record<string, string> = { "0": "Draft", "1": "Active", "2": "Paused", "3": "Completed", "4": "Running (subseq.)" };
+// Instantly provider_code → human label (verified against the live accounts payload).
+const PROVIDER_CODE: Record<string, string> = { "1": "Custom IMAP/SMTP", "2": "Google", "3": "Microsoft", "4": "AWS" };
 
 function label(map: Record<string, string>, v: unknown): string {
   if (v === undefined || v === null) return "—";
   return map[String(v)] ?? String(v);
+}
+
+function fmtDate(iso: unknown): string {
+  if (!iso || typeof iso !== "string") return "—";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "—";
+  return new Date(t).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+// ── Send-capacity resolution ──────────────────────────────────────────────────
+// A mailbox counts toward capacity only when it's Active (status 1) and finished
+// provisioning. Its per-day limit comes from the API when present; otherwise we
+// fall back to the workspace default (Instantly doesn't report a limit for
+// managed accounts, so in practice every mailbox here is "assumed").
+function isActive(a: InstantlyAccount): boolean {
+  return String(a.status) === "1" && !a.setup_pending;
+}
+
+/** Resolve a mailbox's daily send limit. `assumed` = we used the workspace
+ * default because the API didn't report a real per-mailbox limit. */
+function resolveDailyLimit(a: InstantlyAccount, fallback: number): { limit: number; assumed: boolean } {
+  const raw = a.daily_limit;
+  if (typeof raw === "number" && raw > 0) return { limit: raw, assumed: false };
+  return { limit: fallback, assumed: true };
+}
+
+/** Sum resolved daily limits over the ACTIVE mailboxes in a set. */
+function capacityOf(accounts: InstantlyAccount[], fallback: number): number {
+  return accounts.filter(isActive).reduce((s, a) => s + resolveDailyLimit(a, fallback).limit, 0);
 }
 
 // Step-by-step runbook for standing up a new sending domain (from our Instantly playbook).
@@ -118,11 +158,16 @@ const STEPS: { title: string; body: ReactNode }[] = [
 ];
 
 export default function EmailPage() {
+  const { isSuperAdmin } = useUserProfile();
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showStrategy, setShowStrategy] = useState(true);
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
+  // Assumed per-mailbox daily limit (workspace default from platform_settings).
+  const [defaultLimit, setDefaultLimit] = useState(30);
+  // Which domain's detail is open (null = the cards/overview view).
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
   const toggleStep = (i: number) =>
     setOpenSteps((prev) => {
       const n = new Set(prev);
@@ -158,6 +203,7 @@ export default function EmailPage() {
 
   useEffect(() => {
     load();
+    getInstantlySettings().then((s) => setDefaultLimit(s.default_daily_limit)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -165,6 +211,28 @@ export default function EmailPage() {
   const campaigns = data?.campaigns ?? [];
   const warmScore = (a: InstantlyAccount) => a.stat_warmup_score ?? a.warmup_score;
   const domains = groupDomains(accounts, data?.forwarding ?? {}, Date.now());
+
+  // ── Send capacity ────────────────────────────────────────────────────────
+  // Total = active mailboxes × their resolved per-day limit. "Safe" only counts
+  // mailboxes whose DOMAIN has cleared the 6-week (42-day) warmup line — before
+  // that, sending burns the domain, so real safe capacity is 0.
+  const activeCount = accounts.filter(isActive).length;
+  const perDay = capacityOf(accounts, defaultLimit);
+  const safePerDay = domains
+    .filter((g) => g.ws.tone === "green")
+    .reduce((s, g) => s + capacityOf(g.accts, defaultLimit), 0);
+  // Are any capacity figures based on the assumed default rather than the API?
+  const anyAssumed = accounts.filter(isActive).some((a) => resolveDailyLimit(a, defaultLimit).assumed);
+  // Uniform per-mailbox number to show ("varies" when limits differ).
+  const activeLimits = accounts.filter(isActive).map((a) => resolveDailyLimit(a, defaultLimit).limit);
+  const uniformLimit = activeLimits.length && activeLimits.every((l) => l === activeLimits[0]) ? activeLimits[0] : null;
+
+  const selectedGroup = selectedDomain ? domains.find((g) => g.domain === selectedDomain) ?? null : null;
+
+  async function saveDefaultLimit(n: number) {
+    setDefaultLimit(n);
+    await saveInstantlySettings({ default_daily_limit: n });
+  }
 
   return (
     <div className="max-w-[1200px] mx-auto px-4 py-8">
@@ -204,6 +272,19 @@ export default function EmailPage() {
         />
       </div>
 
+      {/* ── Send capacity ───────────────────────────────────────────────── */}
+      <SendCapacityCard
+        loading={loading}
+        activeCount={activeCount}
+        perDay={perDay}
+        safePerDay={safePerDay}
+        anyAssumed={anyAssumed}
+        uniformLimit={uniformLimit}
+        defaultLimit={defaultLimit}
+        canEdit={isSuperAdmin}
+        onSaveDefault={saveDefaultLimit}
+      />
+
       {error && (
         <div className="mt-4 flex items-start gap-2 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-300">
           <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0" />
@@ -217,8 +298,18 @@ export default function EmailPage() {
         </div>
       )}
 
-      {/* Domain warmup — countdown clocks + forwarding + progress chart */}
-      <DomainWarmupDashboard domains={domains} realSite={data?.real_site ?? "mfunding.net"} loading={loading} />
+      {/* Domain warmup — countdown clocks + forwarding + progress chart, with
+          per-domain drill-down. */}
+      <DomainWarmupDashboard
+        domains={domains}
+        realSite={data?.real_site ?? "mfunding.net"}
+        loading={loading}
+        campaigns={campaigns}
+        defaultLimit={defaultLimit}
+        selectedGroup={selectedGroup}
+        onSelect={setSelectedDomain}
+        onBack={() => setSelectedDomain(null)}
+      />
 
       {/* Sending accounts */}
       <section className="mt-6">
@@ -240,6 +331,7 @@ export default function EmailPage() {
               )}
               {accounts.map((a, i) => {
                 const score = Number(warmScore(a));
+                const dl = resolveDailyLimit(a, defaultLimit);
                 return (
                   <tr key={(a.email as string) ?? i} className="border-t border-gray-100 dark:border-gray-700/50">
                     <td className="py-2 px-3 font-medium text-gray-900 dark:text-gray-100">{a.email ?? "—"}</td>
@@ -252,13 +344,30 @@ export default function EmailPage() {
                         </span>
                       ) : "—"}
                     </td>
-                    <td className="py-2 px-3">{a.daily_limit ?? "—"}</td>
+                    <td className="py-2 px-3">
+                      {dl.assumed ? (
+                        <span
+                          className="text-gray-700 dark:text-gray-300"
+                          title="Assumed workspace default — Instantly's API doesn't report a per-mailbox limit for managed accounts."
+                        >
+                          {dl.limit}<span className="text-amber-500">*</span>
+                        </span>
+                      ) : (
+                        <span className="text-gray-900 dark:text-gray-100 font-medium">{dl.limit}</span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
+        {!loading && anyAssumed && (
+          <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            <span className="text-amber-500">*</span> Assumed <b>{defaultLimit}/day</b> — Instantly's API doesn't report a per-mailbox
+            limit for managed accounts. Edit the default in the <b>Send capacity</b> card above to match your real Instantly setting.
+          </p>
+        )}
       </section>
 
       {/* Campaigns */}
@@ -365,11 +474,34 @@ export default function EmailPage() {
 }
 
 // ── Domain warmup dashboard ───────────────────────────────────────────────────
-function DomainWarmupDashboard({ domains, realSite, loading }: { domains: DomainGroup[]; realSite: string; loading: boolean }) {
+function DomainWarmupDashboard({
+  domains,
+  realSite,
+  loading,
+  campaigns,
+  defaultLimit,
+  selectedGroup,
+  onSelect,
+  onBack,
+}: {
+  domains: DomainGroup[];
+  realSite: string;
+  loading: boolean;
+  campaigns: InstantlyCampaign[];
+  defaultLimit: number;
+  selectedGroup: DomainGroup | null;
+  onSelect: (domain: string) => void;
+  onBack: () => void;
+}) {
   if (loading && domains.length === 0) {
     return <section className="mt-6"><p className="text-sm text-gray-400">Loading domain warmup…</p></section>;
   }
   if (domains.length === 0) return null;
+
+  // Drill-down: a single domain's mailboxes, rollup, and campaigns.
+  if (selectedGroup) {
+    return <DomainDetail group={selectedGroup} realSite={realSite} campaigns={campaigns} defaultLimit={defaultLimit} onBack={onBack} />;
+  }
 
   const chartData = domains.map((g) => ({ name: g.domain.replace(/\.com$|\.net$/, ""), days: g.ws.days, tone: g.ws.tone }));
 
@@ -385,12 +517,17 @@ function DomainWarmupDashboard({ domains, realSite, loading }: { domains: Domain
         <span className="text-emerald-600 dark:text-emerald-400 font-medium">Green ≥ 6 wks (safe)</span>.
       </p>
 
-      {/* Countdown cards */}
+      {/* Countdown cards — click to drill into a domain */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {domains.map((g) => {
           const t = WARM_TONE[g.ws.tone];
           return (
-            <div key={g.domain} className={`rounded-xl border-2 ${t.ring} bg-white dark:bg-gray-900 p-4`}>
+            <button
+              key={g.domain}
+              type="button"
+              onClick={() => onSelect(g.domain)}
+              className={`text-left rounded-xl border-2 ${t.ring} bg-white dark:bg-gray-900 p-4 cursor-pointer transition hover:shadow-md hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-ocean-blue`}
+            >
               <div className="flex items-center justify-between gap-2">
                 <span className="font-semibold text-gray-900 dark:text-white truncate">{g.domain}</span>
                 <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${t.chip}`}>
@@ -440,7 +577,11 @@ function DomainWarmupDashboard({ domains, realSite, loading }: { domains: Domain
                   )}
                 </div>
               </div>
-            </div>
+
+              <div className="mt-3 flex items-center justify-end gap-1 text-xs font-medium text-ocean-blue">
+                View details <ChevronRightIcon className="w-3.5 h-3.5" />
+              </div>
+            </button>
           );
         })}
       </div>
@@ -465,6 +606,335 @@ function DomainWarmupDashboard({ domains, realSite, loading }: { domains: Domain
         </ResponsiveContainer>
       </div>
     </section>
+  );
+}
+
+// ── Domain drill-down ─────────────────────────────────────────────────────────
+function DomainDetail({
+  group,
+  realSite,
+  campaigns,
+  defaultLimit,
+  onBack,
+}: {
+  group: DomainGroup;
+  realSite: string;
+  campaigns: InstantlyCampaign[];
+  defaultLimit: number;
+  onBack: () => void;
+}) {
+  const t = WARM_TONE[group.ws.tone];
+  const dayCap = capacityOf(group.accts, defaultLimit);
+  const anyAssumed = group.accts.filter(isActive).some((a) => resolveDailyLimit(a, defaultLimit).assumed);
+  // Campaigns that send from at least one of this domain's mailboxes.
+  const domainEmails = new Set(group.accts.map((a) => String(a.email ?? "").toLowerCase()));
+  const usingCampaigns = campaigns.filter((c) => {
+    const list = Array.isArray(c.email_list) ? (c.email_list as unknown[]) : [];
+    return list.some((e) => domainEmails.has(String(e).toLowerCase()));
+  });
+
+  return (
+    <section className="mt-6">
+      <button
+        onClick={onBack}
+        className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300 hover:text-ocean-blue mb-3"
+      >
+        <ArrowLeftIcon className="w-4 h-4" /> All domains
+      </button>
+
+      <div className="flex items-center gap-2 mb-3">
+        <FireIcon className="w-5 h-5 text-amber-500" />
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white">{group.domain}</h2>
+        <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${t.chip}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${t.dot}`} /> {group.ws.tone}
+        </span>
+      </div>
+
+      {/* Rollup */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+        <MiniStat label="Mailboxes" value={String(group.accts.length)} />
+        <MiniStat label="Daily capacity" value={`${dayCap.toLocaleString()}${anyAssumed ? "*" : ""}`} sub="emails/day" />
+        <MiniStat label="Avg health" value={`${group.avgHealth}%`} />
+        <MiniStat label="Days warming" value={group.ws.started ? String(group.ws.days) : "—"} />
+        <MiniStat
+          label="Safe to send"
+          value={group.ws.tone === "green" ? "Now ✓" : group.ws.started ? `${group.ws.toGreen}d` : "—"}
+          sub={group.ws.tone === "green" ? "warmed" : "until 42-day line"}
+          tone={group.ws.tone === "green" ? "green" : "red"}
+        />
+        <MiniStat
+          label="Forwarding"
+          value={group.fwd?.ok ? "OK ✓" : group.fwd?.target ? "Wrong ✕" : "—"}
+          sub={group.fwd?.ok ? realSite : group.fwd?.target ? `→ ${group.fwd.target}` : "unknown"}
+          tone={group.fwd?.ok ? "green" : group.fwd?.target ? "red" : undefined}
+        />
+      </div>
+
+      {/* Mailboxes */}
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Mailboxes</h3>
+      <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 mb-5">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs uppercase text-gray-500">
+            <tr>
+              <th className="py-2 px-3">Email</th>
+              <th className="py-2 px-3">Name</th>
+              <th className="py-2 px-3">Status</th>
+              <th className="py-2 px-3">Warmup</th>
+              <th className="py-2 px-3">Health</th>
+              <th className="py-2 px-3">Provider</th>
+              <th className="py-2 px-3">Tracking domain</th>
+              <th className="py-2 px-3">Created</th>
+              <th className="py-2 px-3">Warmup start</th>
+              <th className="py-2 px-3">Days</th>
+              <th className="py-2 px-3">Daily limit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {group.accts.map((a, i) => {
+              const score = Number(a.stat_warmup_score ?? a.warmup_score);
+              const dl = resolveDailyLimit(a, defaultLimit);
+              const name = [a.first_name, a.last_name].filter(Boolean).join(" ") || "—";
+              const start = a.timestamp_warmup_start || null;
+              const daysWarming = start ? Math.max(0, Math.floor((Date.now() - Date.parse(start)) / 86_400_000)) : null;
+              const trackStatus = String(a.tracking_domain_status ?? "");
+              return (
+                <tr key={(a.email as string) ?? i} className="border-t border-gray-100 dark:border-gray-700/50">
+                  <td className="py-2 px-3 font-medium text-gray-900 dark:text-gray-100">{a.email ?? "—"}</td>
+                  <td className="py-2 px-3 text-gray-700 dark:text-gray-300">{name}</td>
+                  <td className="py-2 px-3">{a.setup_pending ? <span className="text-amber-600">Setup pending</span> : label(ACCOUNT_STATUS, a.status)}</td>
+                  <td className="py-2 px-3">{label(WARMUP_STATUS, a.warmup_status)}</td>
+                  <td className="py-2 px-3">
+                    {Number.isFinite(score) && score > 0 ? (
+                      <span className={score >= 90 ? "text-mint-green font-semibold" : score >= 60 ? "text-amber-600" : "text-red-500"}>{score}%</span>
+                    ) : "—"}
+                  </td>
+                  <td className="py-2 px-3 text-gray-700 dark:text-gray-300">{label(PROVIDER_CODE, a.provider_code)}</td>
+                  <td className="py-2 px-3 text-gray-700 dark:text-gray-300">
+                    {a.tracking_domain_name ? (
+                      <span className="inline-flex items-center gap-1">
+                        {String(a.tracking_domain_name)}
+                        {/CTD_ACTIVE|ACTIVE/i.test(trackStatus) ? (
+                          <CheckCircleIcon className="w-3.5 h-3.5 text-emerald-500" />
+                        ) : trackStatus ? (
+                          <ExclamationTriangleIcon className="w-3.5 h-3.5 text-amber-500" />
+                        ) : null}
+                      </span>
+                    ) : "—"}
+                  </td>
+                  <td className="py-2 px-3 text-gray-500">{fmtDate(a.timestamp_created)}</td>
+                  <td className="py-2 px-3 text-gray-500">{fmtDate(a.timestamp_warmup_start)}</td>
+                  <td className="py-2 px-3 tabular-nums text-gray-700 dark:text-gray-300">{daysWarming ?? "—"}</td>
+                  <td className="py-2 px-3">
+                    {dl.assumed ? (
+                      <span title="Assumed workspace default — API doesn't report a per-mailbox limit for managed accounts.">
+                        {dl.limit}<span className="text-amber-500">*</span>
+                      </span>
+                    ) : (
+                      <span className="font-medium">{dl.limit}</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {anyAssumed && (
+        <p className="-mt-3 mb-5 text-xs text-gray-500 dark:text-gray-400">
+          <span className="text-amber-500">*</span> Assumed <b>{defaultLimit}/day</b> — Instantly's API doesn't report per-mailbox limits for managed accounts.
+        </p>
+      )}
+
+      {/* Campaigns using this domain */}
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Campaigns sending from this domain</h3>
+      {usingCampaigns.length === 0 ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          None — no campaign's sending list includes a mailbox on {group.domain}.
+        </p>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs uppercase text-gray-500">
+              <tr>
+                <th className="py-2 px-3">Campaign</th>
+                <th className="py-2 px-3">Status</th>
+                <th className="py-2 px-3">Daily limit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usingCampaigns.map((c, i) => (
+                <tr key={(c.id as string) ?? i} className="border-t border-gray-100 dark:border-gray-700/50">
+                  <td className="py-2 px-3 font-medium text-gray-900 dark:text-gray-100">{c.name ?? "—"}</td>
+                  <td className="py-2 px-3">{label(CAMPAIGN_STATUS, c.status)}</td>
+                  <td className="py-2 px-3 tabular-nums text-gray-700 dark:text-gray-300">
+                    {typeof c.daily_limit === "number" ? c.daily_limit : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MiniStat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "green" | "red" }) {
+  const valClass = tone === "green" ? "text-emerald-600 dark:text-emerald-400" : tone === "red" ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-white";
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-3">
+      <div className="text-[10px] uppercase text-gray-500">{label}</div>
+      <div className={`text-lg font-bold tabular-nums ${valClass}`}>{value}</div>
+      {sub && <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate" title={sub}>{sub}</div>}
+    </div>
+  );
+}
+
+// ── Send capacity card ────────────────────────────────────────────────────────
+function SendCapacityCard({
+  loading,
+  activeCount,
+  perDay,
+  safePerDay,
+  anyAssumed,
+  uniformLimit,
+  defaultLimit,
+  canEdit,
+  onSaveDefault,
+}: {
+  loading: boolean;
+  activeCount: number;
+  perDay: number;
+  safePerDay: number;
+  anyAssumed: boolean;
+  uniformLimit: number | null;
+  defaultLimit: number;
+  canEdit: boolean;
+  onSaveDefault: (n: number) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(defaultLimit));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(String(defaultLimit));
+  }, [defaultLimit, editing]);
+
+  async function commit() {
+    const n = Math.round(Number(draft));
+    if (!Number.isFinite(n) || n <= 0) return; // ignore junk; keep editing
+    setSaving(true);
+    try {
+      await onSaveDefault(n);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const perMailbox = uniformLimit != null ? `${uniformLimit}/day` : "varies";
+
+  return (
+    <div className="mt-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        {/* Headline capacity */}
+        <div className="min-w-[200px]">
+          <div className="flex items-center gap-1.5 text-xs uppercase text-gray-500">
+            <PaperAirplaneIcon className="w-3.5 h-3.5" /> Send capacity
+          </div>
+          <div className="mt-1 flex items-baseline gap-2">
+            <span className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">
+              {loading ? "…" : perDay.toLocaleString()}
+            </span>
+            <span className="text-sm text-gray-500">emails/day</span>
+          </div>
+          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 space-x-3">
+            <span><b className="text-gray-700 dark:text-gray-200">{loading ? "…" : (perDay * 7).toLocaleString()}</b>/week</span>
+            <span><b className="text-gray-700 dark:text-gray-200">{loading ? "…" : (perDay * 30).toLocaleString()}</b>/month</span>
+          </div>
+          <div className="mt-1 text-xs text-gray-500">
+            {loading ? "" : <>{activeCount} active {activeCount === 1 ? "mailbox" : "mailboxes"} · per mailbox: <b className="text-gray-700 dark:text-gray-200">{perMailbox}</b></>}
+          </div>
+        </div>
+
+        {/* Warmup-gated truth */}
+        <div className="min-w-[180px]">
+          <div className="text-xs uppercase text-gray-500">Safe to send today</div>
+          <div className="mt-1 flex items-baseline gap-2">
+            <span className={`text-3xl font-bold tabular-nums ${safePerDay > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+              {loading ? "…" : safePerDay.toLocaleString()}
+            </span>
+            <span className="text-sm text-gray-500">emails/day</span>
+          </div>
+          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {loading
+              ? ""
+              : safePerDay > 0
+                ? "Only counts domains past the 6-week (42-day) warmup line."
+                : "0 — domains still warming (need ≥ 42 days before any cold send)."}
+          </div>
+        </div>
+
+        {/* Editable default */}
+        <div className="min-w-[170px]">
+          <div className="text-xs uppercase text-gray-500">Assumed per-mailbox limit</div>
+          {editing ? (
+            <div className="mt-1 flex items-center gap-1.5">
+              <input
+                type="number"
+                min={1}
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commit();
+                  if (e.key === "Escape") setEditing(false);
+                }}
+                className="w-20 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+              />
+              <span className="text-xs text-gray-500">/day</span>
+              <button
+                onClick={commit}
+                disabled={saving}
+                className="p-1 rounded-md text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 disabled:opacity-50"
+                title="Save"
+              >
+                <CheckIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setEditing(false)}
+                disabled={saving}
+                className="p-1 rounded-md text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                title="Cancel"
+              >
+                <XMarkIcon className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="mt-1 flex items-center gap-1.5">
+              <span className="text-lg font-semibold text-gray-900 dark:text-white tabular-nums">{defaultLimit}</span>
+              <span className="text-xs text-gray-500">/day</span>
+              {canEdit && (
+                <button
+                  onClick={() => setEditing(true)}
+                  className="p-1 rounded-md text-gray-400 hover:text-ocean-blue hover:bg-gray-100 dark:hover:bg-gray-800"
+                  title="Edit assumed per-mailbox daily limit"
+                >
+                  <PencilSquareIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {!loading && anyAssumed && (
+        <p className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+          Assumed <b>{defaultLimit}/day</b> per mailbox (Instantly default — the API doesn't report limits for managed accounts;
+          {canEdit ? " tap ✎ to match your Instantly setting" : " a super-admin can adjust it above"}).
+        </p>
+      )}
+    </div>
   );
 }
 
