@@ -6,9 +6,11 @@ import {
   InformationCircleIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  DocumentChartBarIcon,
 } from "@heroicons/react/24/outline";
 import { CHANNEL_META, type Campaign } from "@/services/campaignService";
 import { getCampaignAudit, AUDIT_FUNNEL, OPEN_TRACKING_SINCE, type AuditMetrics } from "@/services/campaignAuditService";
+import { REPORTS } from "@/components/admin/reports";
 import { dateTimeET } from "@/utils/time";
 import supabase from "@/supabase";
 
@@ -162,6 +164,8 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
         </div>
       </div>
 
+      <ReportsSection campaigns={campaigns} />
+
       {/* Inline sweep progress — no popups (owner rule). */}
       {sweepMsg && (
         <div className="flex items-start gap-2 rounded-lg bg-ocean-blue/5 border border-ocean-blue/30 px-4 py-2.5 text-[12px] text-ocean-blue">
@@ -201,6 +205,57 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
             {ranked.map(({ c, m }) => <CampaignAuditCard key={c.id} campaign={c} m={m!} />)}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ── Reports — on-demand, copy-and-paste generators (registry-driven) ─────────
+// Closed by default (owner rule: reference/browse folds; active work stays open).
+// Every report in the registry gets a picker entry; the selected one's Panel mounts
+// with the campaign list. New reports slot in via src/components/admin/reports.
+function ReportsSection({ campaigns }: { campaigns: Campaign[] }) {
+  const [open, setOpen] = useState(false);
+  const [activeId, setActiveId] = useState(REPORTS[0]?.id ?? "");
+  const active = REPORTS.find((r) => r.id === activeId) ?? REPORTS[0];
+  if (REPORTS.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40"
+      >
+        {open ? <ChevronDownIcon className="w-4 h-4 text-gray-400 shrink-0" /> : <ChevronRightIcon className="w-4 h-4 text-gray-400 shrink-0" />}
+        <DocumentChartBarIcon className="w-5 h-5 text-ocean-blue shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold text-gray-900 dark:text-white">Reports</div>
+          <div className="text-[11px] text-gray-400">On-demand, copy-and-paste reports you can send from anywhere. {REPORTS.length} available.</div>
+        </div>
+      </button>
+
+      {open && active && (
+        <div className="border-t border-gray-100 dark:border-gray-700 p-4 space-y-4">
+          {REPORTS.length > 1 && (
+            <div className="flex flex-wrap gap-2">
+              {REPORTS.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => setActiveId(r.id)}
+                  className={`rounded-lg border px-3 py-1.5 text-sm ${
+                    r.id === activeId
+                      ? "border-ocean-blue bg-ocean-blue/5 text-ocean-blue"
+                      : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  {r.name}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-gray-500 dark:text-gray-400">{active.description}</p>
+          <active.Panel campaigns={campaigns} />
+        </div>
       )}
     </div>
   );
