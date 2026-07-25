@@ -140,6 +140,18 @@ export default function EmailPage() {
       setError(res.error);
     } else {
       setData(res as Overview);
+      // The overview DEGRADES rather than fails: a dead API (e.g. lapsed
+      // Instantly plan → 402) comes back as empty arrays + errors{}. Rendering
+      // "0 mailboxes" for that is a lie — surface the real reason loudly.
+      const o = res as Overview;
+      const apiErr = o?.errors?.accounts || o?.errors?.campaigns;
+      if (apiErr) {
+        setError(
+          /402|paid plan|Payment Required/i.test(apiErr)
+            ? "Instantly plan is INACTIVE (API returned 402 'Workspace does not have an active paid plan'). Mailboxes, warmup, campaigns AND lead email-verification are suspended until the plan is renewed at instantly.ai → Billing. The zeros below reflect the dead API, not your real infrastructure."
+            : `Instantly API degraded: ${apiErr}`,
+        );
+      }
     }
     setLoading(false);
   }
