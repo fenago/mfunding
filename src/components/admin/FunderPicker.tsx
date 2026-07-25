@@ -19,6 +19,10 @@ import {
   CurrencyDollarIcon,
   XMarkIcon,
   HandThumbDownIcon,
+  EyeIcon,
+  PaperClipIcon,
+  LinkIcon,
+  ArrowUturnLeftIcon,
 } from "@heroicons/react/24/outline";
 import { TrophyIcon } from "@heroicons/react/24/solid";
 import supabase from "../../supabase";
@@ -100,6 +104,25 @@ interface FunderResult {
   blockedLabels?: string[];
   portal?: { url: string | null; steps: string[]; hint: string | null };
   submissionId?: string;
+}
+
+// One selected funder's rendered email, returned by action:"preview" — exactly
+// what the real send would produce (the server ran the same render/gather path).
+interface PreviewDoc { label: string; filename: string; delivery: "attached" | "link" }
+interface PreviewFunder {
+  lenderId: string;
+  name: string;
+  method: Method;
+  isPortalOnly?: boolean;
+  to?: string;
+  cc?: string[];
+  subject?: string;
+  body?: string;
+  docs?: PreviewDoc[];
+  docsWarning?: string;
+  portal?: { url: string | null; steps: string[]; hint: string | null };
+  blocked?: string[];
+  blockedLabels?: string[];
 }
 
 const DOC_LABELS: Record<string, string> = {
@@ -404,7 +427,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     });
   };
 
-  async function submit(ids: string[], resubmit = false) {
+  async function submit(ids: string[], resubmit = false, overridesArg?: Record<string, { subject?: string; body?: string }>) {
     if (ids.length === 0) return;
     setSubmitting(true);
     setError(null);
@@ -412,8 +435,12 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
       const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
         // documentIds = the picked "Package contents". Empty → engine falls back
         // to its default attach set (backward compatible), so uncheck-all never
-        // sends a zero-doc package.
-        body: { dealId: deal.id, lenderIds: ids, resubmit, documentIds: [...selectedDocIds] },
+        // sends a zero-doc package. overrides = per-funder subject/body edits made
+        // in the preview (only funders the owner actually changed are included).
+        body: {
+          dealId: deal.id, lenderIds: ids, resubmit, documentIds: [...selectedDocIds],
+          ...(overridesArg && Object.keys(overridesArg).length ? { overrides: overridesArg } : {}),
+        },
       });
       if (fnErr) throw fnErr;
       const rows = (data?.results ?? []) as FunderResult[];
@@ -434,6 +461,94 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // ---- Preview + edit before send -----------------------------------------
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previews, setPreviews] = useState<PreviewFunder[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  // Per-funder editable subject/body, seeded from the server-rendered originals.
+  const [edits, setEdits] = useState<Record<string, { subject: string; body: string }>>({});
+  const [originals, setOriginals] = useState<Record<string, { subject: string; body: string }>>({});
+  // Two-step arm/fire for the in-modal send (no browser popups — house rule).
+  const [armedSend, setArmedSend] = useState(false);
+  useEffect(() => {
+    if (!armedSend) return;
+    const t = setTimeout(() => setArmedSend(false), 5000);
+    return () => clearTimeout(t);
+  }, [armedSend]);
+
+  // Ask the engine to render (not send) every selected funder, then open the
+  // editable preview. Same render/gather path as the real send — the truth.
+  async function openPreview() {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    setArmedSend(false);
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
+        body: { dealId: deal.id, lenderIds: ids, action: "preview", documentIds: [...selectedDocIds] },
+      });
+      if (fnErr) throw fnErr;
+      const rows = (data?.previews ?? []) as PreviewFunder[];
+      const seedEdits: Record<string, { subject: string; body: string }> = {};
+      const seedOrig: Record<string, { subject: string; body: string }> = {};
+      for (const p of rows) {
+        if (p.blocked) continue;
+        const s = p.subject ?? "", b = p.body ?? "";
+        seedEdits[p.lenderId] = { subject: s, body: b };
+        seedOrig[p.lenderId] = { subject: s, body: b };
+      }
+      setPreviews(rows);
+      setEdits(seedEdits);
+      setOriginals(seedOrig);
+      setPreviewOpen(true);
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : "Preview failed");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  // Only funders whose subject/body the owner actually changed carry an override.
+  function buildOverrides(): Record<string, { subject?: string; body?: string }> {
+    const out: Record<string, { subject?: string; body?: string }> = {};
+    for (const p of previews) {
+      if (p.blocked) continue;
+      const e = edits[p.lenderId], o = originals[p.lenderId];
+      if (!e || !o) continue;
+      const entry: { subject?: string; body?: string } = {};
+      if (e.subject !== o.subject) entry.subject = e.subject;
+      if (e.body !== o.body) entry.body = e.body;
+      if (entry.subject !== undefined || entry.body !== undefined) out[p.lenderId] = entry;
+    }
+    return out;
+  }
+
+  const previewSendable = previews.filter((p) => !p.blocked && !p.isPortalOnly);
+  const previewPortalOnly = previews.filter((p) => !p.blocked && p.isPortalOnly);
+  const previewSendCount = previews.filter((p) => !p.blocked).length;
+
+  function isPreviewEdited(lenderId: string): boolean {
+    const e = edits[lenderId], o = originals[lenderId];
+    return !!e && !!o && (e.subject !== o.subject || e.body !== o.body);
+  }
+
+  function resetPreview(lenderId: string) {
+    const o = originals[lenderId];
+    if (!o) return;
+    setEdits((prev) => ({ ...prev, [lenderId]: { subject: o.subject, body: o.body } }));
+  }
+
+  // Fire the real submit for every non-blocked previewed funder, carrying edits.
+  async function sendFromPreview() {
+    const ids = previews.filter((p) => !p.blocked).map((p) => p.lenderId);
+    if (ids.length === 0) return;
+    await submit(ids, false, buildOverrides());
+    setPreviewOpen(false);
+    setArmedSend(false);
   }
 
   // A lender the closer can actually check right now: it's in the scored list,
@@ -1137,18 +1252,30 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
             </div>
           )}
 
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              disabled={submitting || selected.size === 0 || !signedAppInApp}
-              title={!signedAppInApp ? "Upload the signed application first — it must attach to every submission" : undefined}
-              onClick={() => submit([...selected])}
-              className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
-            >
-              {submitting ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />}
-              {submitting ? "Sending…" : !signedAppInApp ? "Upload the signed application to submit" : `Submit to ${selected.size || 0} selected`}
-            </button>
-            {error && <span className="text-[11px] text-amber-600 dark:text-amber-400 text-right flex-1">{error}</span>}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                disabled={submitting || previewLoading || selected.size === 0}
+                title="See (and edit) exactly what each funder will receive before anything sends"
+                onClick={openPreview}
+                className="text-sm font-semibold px-4 py-2 rounded-lg border border-ocean-blue/50 text-ocean-blue hover:bg-ocean-blue/5 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+              >
+                {previewLoading ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <EyeIcon className="w-4 h-4" />}
+                {previewLoading ? "Rendering…" : `👁 Preview emails${selected.size ? ` (${selected.size})` : ""}`}
+              </button>
+              <button
+                type="button"
+                disabled={submitting || selected.size === 0 || !signedAppInApp}
+                title={!signedAppInApp ? "Upload the signed application first — it must attach to every submission" : undefined}
+                onClick={() => submit([...selected])}
+                className="text-sm font-semibold px-4 py-2 rounded-lg bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+              >
+                {submitting ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />}
+                {submitting ? "Sending…" : !signedAppInApp ? "Upload the signed application to submit" : `Submit to ${selected.size || 0} selected`}
+              </button>
+            </div>
+            {(error || previewError) && <span className="text-[11px] text-amber-600 dark:text-amber-400 text-right flex-1">{error || previewError}</span>}
           </div>
 
           {/* Live results */}
@@ -1211,6 +1338,163 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
             </div>
           )}
         </>
+      )}
+
+      {/* Preview + edit modal — one section per selected funder, showing exactly
+          what the engine will send (server-rendered; the same code path the real
+          send runs). Subject/body are editable per funder; the attachments list
+          shows the server's real attach-vs-link decision. No browser popups. */}
+      {previewOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !submitting && setPreviewOpen(false)}>
+          <div className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-lg bg-white dark:bg-gray-800 shadow-xl border border-gray-200 dark:border-gray-700" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+              <span className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                <EyeIcon className="w-4 h-4 text-ocean-blue" /> Preview funder emails — {previews.length} funder{previews.length === 1 ? "" : "s"}
+              </span>
+              <button type="button" onClick={() => !submitting && setPreviewOpen(false)} className="text-gray-400 hover:text-gray-600">
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                Edit any funder's subject or body below — changes apply to <span className="font-semibold">this submission only</span> and never touch the saved recipe. Attachments are decided by the funder's recipe.
+              </p>
+
+              {previews.map((p) => {
+                const e = edits[p.lenderId] ?? { subject: "", body: "" };
+                const badge = methodBadge(p.method);
+                const edited = isPreviewEdited(p.lenderId);
+                return (
+                  <div key={p.lenderId} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40">
+                    <div className="flex items-center gap-2 flex-wrap px-3 py-2 border-b border-gray-200 dark:border-gray-700">
+                      <span className="font-semibold text-gray-900 dark:text-white text-sm">{p.name}</span>
+                      <span className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full ${badge.cls}`}>
+                        <badge.icon className="w-3 h-3" /> {badge.label}
+                      </span>
+                      {edited && <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">edited</span>}
+                    </div>
+
+                    {/* Blocked funder — no email, show the reason instead. */}
+                    {p.blocked ? (
+                      <div className="px-3 py-3 text-[12px] text-amber-700 dark:text-amber-300 inline-flex items-start gap-1.5">
+                        <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                        <span>Blocked — missing: {(p.blockedLabels ?? p.blocked).join(", ")}. Nothing will be sent to this funder.</span>
+                      </div>
+                    ) : p.isPortalOnly ? (
+                      /* Portal-only funder — no email is sent. */
+                      <div className="px-3 py-3 space-y-1.5">
+                        <p className="text-[12px] font-medium text-purple-700 dark:text-purple-300 inline-flex items-center gap-1.5">
+                          <GlobeAltIcon className="w-4 h-4" /> Portal submission — no email is sent to this funder.
+                        </p>
+                        {p.portal?.url && (
+                          <a href={p.portal.url.startsWith("http") ? p.portal.url : `https://${p.portal.url}`} target="_blank" rel="noreferrer" className="text-[11px] text-ocean-blue hover:underline inline-flex items-center gap-1">
+                            {p.portal.url} <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+                          </a>
+                        )}
+                        {p.portal?.hint && <p className="text-[11px] text-gray-400">{p.portal.hint}</p>}
+                        {(p.portal?.steps?.length ?? 0) > 0 && (
+                          <ol className="list-decimal pl-4 text-[11px] text-gray-600 dark:text-gray-300">
+                            {p.portal!.steps.map((s, i) => <li key={i}>{s}</li>)}
+                          </ol>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="px-3 py-3 space-y-2">
+                        {/* To + CC — read-only */}
+                        <div className="text-[11px] text-gray-600 dark:text-gray-300 space-y-0.5">
+                          <div><span className="text-gray-400">To</span> <span className="font-medium text-gray-900 dark:text-white">{p.to || "— no email on file —"}</span></div>
+                          {(p.cc?.length ?? 0) > 0 && <div><span className="text-gray-400">CC</span> <span className="text-gray-700 dark:text-gray-200">{p.cc!.join(", ")}</span></div>}
+                        </div>
+
+                        {/* Editable subject */}
+                        <label className="block text-[11px] font-medium text-gray-500">Subject
+                          <input
+                            type="text"
+                            value={e.subject}
+                            onChange={(ev) => setEdits((prev) => ({ ...prev, [p.lenderId]: { ...prev[p.lenderId], subject: ev.target.value } }))}
+                            className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[13px] text-gray-900 dark:text-white"
+                          />
+                        </label>
+
+                        {/* Editable body — monospace + tall */}
+                        <label className="block text-[11px] font-medium text-gray-500">Body
+                          <textarea
+                            value={e.body}
+                            onChange={(ev) => setEdits((prev) => ({ ...prev, [p.lenderId]: { ...prev[p.lenderId], body: ev.target.value } }))}
+                            rows={14}
+                            className="mt-1 w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-[12px] font-mono text-gray-900 dark:text-white resize-y"
+                          />
+                        </label>
+
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            disabled={!edited}
+                            onClick={() => resetPreview(p.lenderId)}
+                            className="text-[11px] font-medium text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                          >
+                            <ArrowUturnLeftIcon className="w-3.5 h-3.5" /> Reset to template
+                          </button>
+                        </div>
+
+                        {/* Attachments — server's real attach-vs-link decision */}
+                        <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-2">
+                          <p className="text-[11px] font-medium text-gray-500 mb-1">Documents ({p.docs?.length ?? 0})</p>
+                          {(p.docs?.length ?? 0) === 0 ? (
+                            <p className="text-[11px] text-gray-400">No documents will ride with this email.</p>
+                          ) : (
+                            <ul className="space-y-1">
+                              {p.docs!.map((d, i) => (
+                                <li key={i} className="flex items-center gap-2 text-[11px] text-gray-700 dark:text-gray-200">
+                                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${d.delivery === "attached" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"}`}>
+                                    {d.delivery === "attached" ? <><PaperClipIcon className="w-3 h-3" /> attached</> : <><LinkIcon className="w-3 h-3" /> link</>}
+                                  </span>
+                                  <span className="font-medium">{d.label}</span>
+                                  <span className="text-gray-400 truncate">— {d.filename}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {p.docsWarning && <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">⚠ {p.docsWarning}</p>}
+                        </div>
+
+                        {p.method === "email_and_portal" && p.portal?.url && (
+                          <p className="text-[11px] text-purple-600 dark:text-purple-300 inline-flex items-center gap-1">
+                            <GlobeAltIcon className="w-3.5 h-3.5" /> This funder also has a portal step after the email.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer — armed two-step send (fires the real submit with edits) */}
+            <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex-shrink-0 flex-wrap">
+              <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                {previewSendable.length} email{previewSendable.length === 1 ? "" : "s"}
+                {previewPortalOnly.length > 0 ? ` · ${previewPortalOnly.length} portal` : ""}
+                {!signedAppInApp && <span className="text-rose-500"> · upload the signed application first</span>}
+              </span>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => { setPreviewOpen(false); setArmedSend(false); }} className="text-[12px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 inline-flex items-center gap-1">
+                  <XMarkIcon className="w-4 h-4" /> Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={submitting || previewSendCount === 0 || !signedAppInApp}
+                  onClick={() => { if (armedSend) void sendFromPreview(); else setArmedSend(true); }}
+                  className={`text-sm font-semibold px-4 py-2 rounded-lg text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 ${armedSend ? "bg-amber-600" : "bg-ocean-blue"}`}
+                >
+                  {submitting ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : <PaperAirplaneIcon className="w-4 h-4" />}
+                  {submitting ? "Sending…" : armedSend ? `⚠️ Tap again to send to ${previewSendCount} funder${previewSendCount === 1 ? "" : "s"} →` : `Send to ${previewSendCount} funder${previewSendCount === 1 ? "" : "s"}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

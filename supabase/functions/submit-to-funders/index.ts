@@ -101,6 +101,8 @@ interface Recipe {
   active: boolean;
 }
 
+type Method = "email" | "portal" | "email_and_portal";
+
 const GENERIC_SUBJECT =
   "Agentic Voice, Inc : Momentum Funding — New MCA Submission — {{business_name}} — {{amount_requested}}";
 // Owner is CC'd on every funder submission (also merged with recipe cc_emails).
@@ -181,12 +183,16 @@ Deno.serve(async (req) => {
      * attached (e.g. reply to a stip request from the Step 7 board).
      * "withdraw" → pull the file back from a funder with a courteous "no longer
      * moving forward on this one" note (relationship-safe cancellation). */
-    action?: "courtesy_decline" | "message_funder" | "withdraw";
+    action?: "courtesy_decline" | "message_funder" | "withdraw" | "preview";
     subject?: string;
     body?: string;
     cc?: string[];
     bcc?: string[];
     attachments?: { documentIds?: string[]; urls?: string[] };
+    /** Per-submission owner edits to the rendered email, keyed by lenderId.
+     * Applied AFTER template render, recorded verbatim in sent_payload. Only
+     * ever an override for THIS send — recipes/templates are never touched. */
+    overrides?: Record<string, { subject?: string; body?: string }>;
   };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const lenderIds = (payload.lenderIds ?? []).filter(Boolean);
@@ -196,6 +202,8 @@ Deno.serve(async (req) => {
   const courtesyMode = payload.action === "courtesy_decline";
   const messageFunderMode = payload.action === "message_funder";
   const withdrawMode = payload.action === "withdraw";
+  const previewMode = payload.action === "preview";
+  const overrides = payload.overrides ?? {};
   if (!courtesyMode && !messageFunderMode && !withdrawMode && lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
   if (!testMode && !payload.dealId) return json({ error: "dealId is required" }, 400);
 
@@ -601,15 +609,6 @@ Deno.serve(async (req) => {
   }
   const selectedDocIds = requestedDocIds.length ? new Set(requestedDocIds) : null;
 
-  // HARD GATE: the signed application must be ON FILE (app-side) so it attaches
-  // to every funder email — a submission without it burns credibility. The
-  // closer uploads it once via the Step 6 "Signed application" slot.
-  if (!docsByType.has("application")) {
-    return json({
-      error: "Signed application is not on file. Download it from GHL (Documents & Contracts → Completed) and upload it in the 'Signed application' slot on Step 6 — it will then attach to every submission.",
-    }, 422);
-  }
-
   // --- Merchant docs uploaded GHL-side. Bank statements and stips usually come
   // in through the GHL upload form and live on the contact's FILE_UPLOAD custom
   // fields, NOT Supabase storage. Fetch them once (contact-level, same for every
@@ -634,33 +633,45 @@ Deno.serve(async (req) => {
   if (ghlBank.length) ghlPresentTypes.add("bank_statement");
   if (ghlStips.length) { ghlPresentTypes.add("id"); ghlPresentTypes.add("voided_check"); }
 
-  const results: Array<Record<string, unknown>> = [];
+  // ---------- SHARED RENDER/GATHER PIPELINE (single source of truth) ----------
+  // Both action:"preview" and the real send run EXACTLY this per-lender code:
+  // recipe resolution, the stips gate, doc gathering with real attach-vs-link
+  // decisions, and subject/body render. It performs NO GHL send and NO
+  // deal_submissions write — the caller owns those (preview → return, send →
+  // dispatch). Signed doc URLs are read-only, so minting them for a preview is
+  // safe. This guarantees the preview is the TRUTH: what you see is what sends.
+  interface Rendered {
+    lenderId: string; name: string; method: Method; recipe?: Recipe;
+    isPortalOnly: boolean;
+    to: string; cc: string[];
+    subject: string; bodyText: string; bodyHtml: string;
+    docs: Array<{ label: string; filename: string; delivery: "attached" | "link" }>;
+    attachmentUrls: string[]; attachedNames: string[]; docLinkLines: string[];
+    sentPayload: Record<string, unknown>;
+    docsWarning?: string;
+    blocked?: string[]; blockedLabels?: string[];
+  }
 
-  for (const lenderId of lenderIds) {
+  async function renderForLender(lenderId: string): Promise<Rendered> {
     const lender = lenderById.get(lenderId) ?? { id: lenderId, company_name: "Funder" };
     const name = (lender.company_name as string) ?? "Funder";
     const recipe = recipeByLender.get(lenderId);
-    const method = recipe?.method ?? (lender.submission_email ? "email" : (lender.submission_portal_url ? "portal" : "email"));
-
-    // --- Idempotency: skip a lender that already has an active submission. ---
-    const { data: existing } = await db.from("deal_submissions")
-      .select("id, status, submitted_at, portal_confirmed_at, error")
-      .eq("deal_id", dealId).eq("lender_id", lenderId).maybeSingle();
-    const existingActive = existing &&
-      existing.status !== "withdrawn" &&
-      !existing.error &&
-      (existing.submitted_at || existing.portal_confirmed_at);
-    if (existingActive && !resubmit) {
-      results.push({ lenderId, name, method, status: "already_submitted", submissionId: existing!.id });
-      continue;
-    }
+    const method = (recipe?.method ?? (lender.submission_email ? "email" : (lender.submission_portal_url ? "portal" : "email"))) as Method;
+    const isPortalOnly = method === "portal";
+    const to = recipe?.to_email || (lender.submission_email as string) || "";
+    // Effective CC the funder actually gets — recipe CC plus the always-on owner.
+    const cc = Array.from(new Set([...(recipe?.cc_emails ?? []), ...ALWAYS_CC]));
 
     // --- Stips guard: every required stip must be on file before we send. ---
     const requiredStips = recipe?.required_stips ?? [];
     const missing = requiredStips.filter((slug) => !(docsByType.get(slug)?.length) && !ghlPresentTypes.has(slug));
     if (missing.length > 0) {
-      results.push({ lenderId, name, method, status: "blocked", blocked: missing, blockedLabels: missing.map(docLabel) });
-      continue;
+      return {
+        lenderId, name, method, recipe, isPortalOnly, to, cc,
+        subject: "", bodyText: "", bodyHtml: "",
+        docs: [], attachmentUrls: [], attachedNames: [], docLinkLines: [],
+        sentPayload: {}, blocked: missing, blockedLabels: missing.map(docLabel),
+      };
     }
 
     // --- Gather docs. Every doc becomes a secure link; per the recipe's
@@ -675,15 +686,18 @@ Deno.serve(async (req) => {
     const docLinkHtml: string[] = [];
     const attachmentUrls: string[] = [];
     const attachedNames: string[] = [];
+    // Per-doc delivery record for the preview UI (attached vs link — exactly what
+    // the server decided, cap included).
+    const docs: Array<{ label: string; filename: string; delivery: "attached" | "link" }> = [];
     let attachBytes = 0;
     // Add a signed URL as an attachment if there's room; return whether attached.
-    const tryAttach = (url: string, name: string, size?: number | null): boolean => {
+    const tryAttach = (url: string, fname: string, size?: number | null): boolean => {
       if (!wantAttach) return false;
       if (attachmentUrls.length >= MAX_ATTACH_COUNT) return false;
       const sz = Number(size) || 0;
       if (sz && attachBytes + sz > MAX_ATTACH_BYTES) return false; // known-oversized → keep as link
       attachmentUrls.push(url);
-      attachedNames.push(name);
+      attachedNames.push(fname);
       attachBytes += sz;
       return true;
     };
@@ -699,7 +713,8 @@ Deno.serve(async (req) => {
         const label = `${docLabel(slug)}${d.filename ? ` (${d.filename})` : ""}`;
         docLinkLines.push(`${label} — ${url}`);
         docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
-        tryAttach(url, d.filename || `${slug}.pdf`, d.file_size);
+        const attached = tryAttach(url, d.filename || `${slug}.pdf`, d.file_size);
+        docs.push({ label: docLabel(slug), filename: d.filename || `${slug}.pdf`, delivery: attached ? "attached" : "link" });
         if (slug === "application") appLinkCount++;
       }
     }
@@ -712,7 +727,11 @@ Deno.serve(async (req) => {
     const pushGroup = (heading: string, files: Array<{ name: string; url: string }>) => {
       if (!files.length) return;
       docLinkLines.push(`${heading} (${files.length}):`);
-      for (const f of files) { docLinkLines.push(`  ${f.name} — ${f.url}`); tryAttach(f.url, f.name); }
+      for (const f of files) {
+        docLinkLines.push(`  ${f.name} — ${f.url}`);
+        const attached = tryAttach(f.url, f.name);
+        docs.push({ label: heading, filename: f.name, delivery: attached ? "attached" : "link" });
+      }
       docLinkHtml.push(
         `<li>${esc(heading)} (${files.length}):<ul style="margin:2px 0">` +
         files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a></li>`).join("") + `</ul></li>`,
@@ -738,9 +757,6 @@ Deno.serve(async (req) => {
       ? (attachedNames.length ? `See attached: ${attachedNames.join(", ")}` : "(documents attached)")
       : (docLinkLines.length ? docLinkLines.join("\n") : "(documents will be sent on request)");
 
-    // Portal-only funders: no funder email — return the guided portal flow.
-    const isPortalOnly = method === "portal";
-
     // --- Render the recipe (subject + body) ---
     const tokens = buildTokens(deal as Record<string, unknown>, c, closer);
     tokens.doc_links = docLinksText;
@@ -761,15 +777,117 @@ Deno.serve(async (req) => {
       (bizSummary ? `<div style="margin-top:12px;padding-top:8px;border-top:1px solid #e2e8f0"><strong style="color:#334155">Deal Overview</strong><p style="margin:4px 0;color:#334155;white-space:pre-wrap">${esc(bizSummary)}</p></div>` : "") +
       `</div>`;
 
-    const to = recipe?.to_email || (lender.submission_email as string) || "";
-    const cc = recipe?.cc_emails ?? [];
-
     const sentPayload: Record<string, unknown> = {
       method, to, cc, subject, body: bodyText,
       docLinks: docLinkLines, attachSlugs, attachment_mode: mode,
       attachedFiles: attachedNames, attachedCount: attachmentUrls.length,
       docsWarning, usedRecipe: !!recipe, renderedAt: nowIso,
     };
+
+    return {
+      lenderId, name, method, recipe, isPortalOnly, to, cc,
+      subject, bodyText, bodyHtml, docs, attachmentUrls, attachedNames,
+      docLinkLines, sentPayload, docsWarning,
+    };
+  }
+
+  const portalInfoOf = (R: Rendered) => ({
+    url: R.recipe?.portal_url || (lenderById.get(R.lenderId)?.submission_portal_url as string) || null,
+    steps: R.recipe?.portal_steps ?? [],
+    hint: R.recipe?.portal_credentials_hint ?? null,
+  });
+
+  // ---------- PREVIEW: render every selected lender, send nothing ----------
+  // Powers the FunderPicker "👁 Preview emails" step. Returns exactly what the
+  // real send would produce (to/cc/subject/body + per-doc attach-vs-link), so
+  // the owner can eyeball and edit before committing. Runs BEFORE the deal-level
+  // signed-app gate on purpose: the owner can preview and fix docs, then send.
+  if (previewMode) {
+    const previews: Array<Record<string, unknown>> = [];
+    for (const lenderId of lenderIds) {
+      const R = await renderForLender(lenderId);
+      if (R.blocked) {
+        previews.push({ lenderId: R.lenderId, name: R.name, method: R.method, blocked: R.blocked, blockedLabels: R.blockedLabels });
+        continue;
+      }
+      previews.push({
+        lenderId: R.lenderId, name: R.name, method: R.method,
+        isPortalOnly: R.isPortalOnly,
+        to: R.to, cc: R.cc, subject: R.subject, body: R.bodyText,
+        docs: R.docs, docsWarning: R.docsWarning,
+        portal: (R.isPortalOnly || R.method === "email_and_portal") ? portalInfoOf(R) : undefined,
+      });
+    }
+    return json({ ok: true, preview: true, dealId, previews });
+  }
+
+  // HARD GATE (send only): the signed application must be ON FILE (app-side) so
+  // it attaches to every funder email — a submission without it burns
+  // credibility. The closer uploads it once via the Step 6 "Signed application"
+  // slot. Placed after the preview branch so a preview is never blocked by it.
+  if (!docsByType.has("application")) {
+    return json({
+      error: "Signed application is not on file. Download it from GHL (Documents & Contracts → Completed) and upload it in the 'Signed application' slot on Step 6 — it will then attach to every submission.",
+    }, 422);
+  }
+
+  const results: Array<Record<string, unknown>> = [];
+
+  for (const lenderId of lenderIds) {
+    const lender = lenderById.get(lenderId) ?? { id: lenderId, company_name: "Funder" };
+    const name = (lender.company_name as string) ?? "Funder";
+    const recipe = recipeByLender.get(lenderId);
+    const method = recipe?.method ?? (lender.submission_email ? "email" : (lender.submission_portal_url ? "portal" : "email"));
+
+    // --- Idempotency: skip a lender that already has an active submission. ---
+    const { data: existing } = await db.from("deal_submissions")
+      .select("id, status, submitted_at, portal_confirmed_at, error")
+      .eq("deal_id", dealId).eq("lender_id", lenderId).maybeSingle();
+    const existingActive = existing &&
+      existing.status !== "withdrawn" &&
+      !existing.error &&
+      (existing.submitted_at || existing.portal_confirmed_at);
+    if (existingActive && !resubmit) {
+      results.push({ lenderId, name, method, status: "already_submitted", submissionId: existing!.id });
+      continue;
+    }
+
+    // --- Render + gather via the SHARED pipeline (same code the preview ran). ---
+    const R = await renderForLender(lenderId);
+    if (R.blocked) {
+      results.push({ lenderId, name, method, status: "blocked", blocked: R.blocked, blockedLabels: R.blockedLabels });
+      continue;
+    }
+    const isPortalOnly = R.isPortalOnly;
+    const to = R.to;
+    const attachmentUrls = R.attachmentUrls;
+    const attachedNames = R.attachedNames;
+    const docsWarning = R.docsWarning;
+    const sentPayload = R.sentPayload;
+
+    // --- Per-submission owner overrides — applied AFTER the template render,
+    // recorded verbatim in sent_payload. Only funders whose subject/body the
+    // owner actually edited carry an override; recipes are never modified. ---
+    let subject = R.subject;
+    let bodyText = R.bodyText;
+    let bodyHtml = R.bodyHtml;
+    const ov = overrides[lenderId];
+    if (ov && (typeof ov.subject === "string" || typeof ov.body === "string")) {
+      if (typeof ov.subject === "string" && ov.subject.trim()) subject = ov.subject;
+      if (typeof ov.body === "string" && ov.body.trim()) {
+        bodyText = ov.body;
+        // The owner edited the full body text (doc links already inline where the
+        // template put them); wrap it verbatim and keep the attachment note.
+        bodyHtml =
+          `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0f172a;max-width:600px">` +
+          `<div style="white-space:pre-wrap">${esc(bodyText)}</div>` +
+          (attachedNames.length ? `<p style="margin:8px 0;color:#334155">📎 Attached: ${attachedNames.map(esc).join(", ")}</p>` : "") +
+          `</div>`;
+      }
+      sentPayload.subject = subject;
+      sentPayload.body = bodyText;
+      sentPayload.override = { subject: ov.subject ?? null, body: ov.body ?? null };
+    }
 
     // ---- PORTAL branch ----
     if (isPortalOnly) {
