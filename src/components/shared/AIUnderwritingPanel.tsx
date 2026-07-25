@@ -3,12 +3,13 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import {
-  SparklesIcon, ArrowPathIcon, ExclamationTriangleIcon, ChevronDownIcon,
+  SparklesIcon, ArrowPathIcon, ExclamationTriangleIcon, ChevronDownIcon, CheckCircleIcon,
 } from "@heroicons/react/24/outline";
 import {
   getUnderwritingHistory, runUnderwriting,
+  getUnderwritingContext, saveUnderwritingContext,
   type DealUnderwriting, type UWFlag, type UWMetrics, type UWPerMonth, type UWAffordability,
-  type UWScenario, type UWPath, type AffordabilityRating, type RiskRating,
+  type UWScenario, type UWPath, type UWDocumentLedgerRow, type AffordabilityRating, type RiskRating,
 } from "../../services/aiUnderwritingService";
 import { useUserProfile } from "../../context/UserProfileContext";
 
@@ -111,6 +112,92 @@ const FLAG_BADGE: Record<UWFlag["severity"], string> = {
 
 const trendLabel: Record<string, string> = { up: "Trending up", flat: "Flat", down: "Trending down" };
 
+// ── Owner context for the underwriter ────────────────────────────────────────
+// A deal-level free-text note for things the statements can't tell (seasonality,
+// a baseline the analyzed months undershoot, expected volume). Injected into the
+// judge prompt as broker context. Inline save only — no browser popups.
+function ContextEditor({ dealId, canEdit }: { dealId: string; canEdit: boolean }) {
+  const [value, setValue] = useState("");
+  const [saved, setSaved] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getUnderwritingContext(dealId)
+      .then((t) => { if (alive) { setValue(t); setSaved(t); } })
+      .catch(() => { /* non-fatal — leave empty */ })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [dealId]);
+
+  const dirty = value.trim() !== saved.trim();
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      await saveUnderwritingContext(dealId, value);
+      setSaved(value);
+      setJustSaved(true);
+      setTimeout(() => setJustSaved(false), 2500);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not save context");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Read-only view for non-admins: show the note only if one exists.
+  if (!canEdit) {
+    if (loading || !saved.trim()) return null;
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+        <div className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1">Context for the underwriter</div>
+        <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{saved}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-2">
+        <label className="text-sm font-semibold text-gray-900 dark:text-white">Context for the underwriter</label>
+        <span className="text-xs text-gray-400">Factored into the AI read — never overrides the statements</span>
+      </div>
+      <textarea
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        disabled={loading || saving}
+        rows={3}
+        placeholder="Things the statements can't tell — e.g. 'Baseline revenue is $100K/mo; Mar–Jun is the seasonal low; owner expects normal volume from August.'"
+        className="w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-ocean-blue/40 disabled:opacity-60"
+      />
+      <div className="flex items-center gap-3 mt-2">
+        <button
+          onClick={save}
+          disabled={!dirty || saving || loading}
+          className="px-3 py-1.5 text-sm font-medium text-white bg-ocean-blue rounded-lg hover:bg-ocean-blue/90 disabled:opacity-50 inline-flex items-center gap-1.5"
+        >
+          {saving ? <ArrowPathIcon className="w-4 h-4 animate-spin" /> : null}
+          {saving ? "Saving…" : "Save context"}
+        </button>
+        {justSaved && !dirty && (
+          <span className="text-xs text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1">
+            <CheckCircleIcon className="w-4 h-4" /> Saved — will apply on the next run
+          </span>
+        )}
+        {dirty && !saving && (
+          <span className="text-xs text-gray-400">Unsaved — re-run underwriting after saving to apply</span>
+        )}
+        {err && <span className="text-xs text-red-600 dark:text-red-400">{err}</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function AIUnderwritingPanel({ dealId }: Props) {
   const { isAdmin, isSuperAdmin } = useUserProfile();
   const canRun = isAdmin || isSuperAdmin;
@@ -165,7 +252,9 @@ export default function AIUnderwritingPanel({ dealId }: Props) {
   // ── Empty state ──────────────────────────────────────────────────────────
   if (history.length === 0) {
     return (
-      <div className="bg-white dark:bg-gray-800 rounded-xl p-10 border border-gray-200 dark:border-gray-700 text-center">
+      <div className="space-y-4">
+        <ContextEditor dealId={dealId} canEdit={canRun} />
+        <div className="bg-white dark:bg-gray-800 rounded-xl p-10 border border-gray-200 dark:border-gray-700 text-center">
         <SparklesIcon className="w-12 h-12 text-ocean-blue/60 mx-auto mb-4" />
         <h3 className="font-semibold text-gray-900 dark:text-white mb-1">No AI underwriting yet</h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 max-w-md mx-auto mb-6">
@@ -191,6 +280,7 @@ export default function AIUnderwritingPanel({ dealId }: Props) {
         ) : (
           <p className="text-xs text-gray-400">Ask an admin to run underwriting on this deal.</p>
         )}
+        </div>
       </div>
     );
   }
@@ -251,6 +341,8 @@ export default function AIUnderwritingPanel({ dealId }: Props) {
         </div>
       )}
 
+      <ContextEditor dealId={dealId} canEdit={canRun} />
+
       {current && <ResultView r={current} />}
     </div>
   );
@@ -299,6 +391,11 @@ function ResultView({ r }: { r: DealUnderwriting }) {
           {r.risk_rating && (
             <span className={`px-2.5 py-1 text-xs font-semibold rounded-full capitalize ${RATING_BADGE[r.risk_rating]}`}>
               {r.risk_rating} risk
+            </span>
+          )}
+          {m.owner_context_used && (
+            <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 inline-flex items-center gap-1">
+              <SparklesIcon className="w-3.5 h-3.5" /> Owner context factored in
             </span>
           )}
           <span className="text-xs opacity-80 ml-auto">
@@ -365,6 +462,9 @@ function ResultView({ r }: { r: DealUnderwriting }) {
 
       {/* Explicit per-month metrics table */}
       {m.per_month && m.per_month.length > 0 && <PerMonthTable rows={m.per_month} />}
+
+      {/* Per-document coverage ledger — every uploaded file → its disposition */}
+      {m.document_ledger && m.document_ledger.length > 0 && <DocumentLedger rows={m.document_ledger} />}
 
       {/* Net retained by month chart */}
       {chartData.length > 0 && (
@@ -765,6 +865,57 @@ function PerMonthTable({ rows: rawRows }: { rows: UWPerMonth[] }) {
               <td className={`py-2 pl-4 text-right ${r.negative_days > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
                 {num(r.negative_days)}
               </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Per-document coverage ledger ─────────────────────────────────────────────
+// One row per SOURCE file → analyzed (with the month extracted), a deduplicated
+// duplicate, or an error. Errors are shown loudly (their month is NOT in coverage);
+// this is the anti-SILENT-ZERO guarantee made visible to the closer.
+const LEDGER_BADGE: Record<UWDocumentLedgerRow["status"], string> = {
+  analyzed: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
+  duplicate: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
+  error: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300",
+};
+function DocumentLedger({ rows }: { rows: UWDocumentLedgerRow[] }) {
+  const analyzed = rows.filter((r) => r.status === "analyzed").length;
+  const dup = rows.filter((r) => r.status === "duplicate").length;
+  const errored = rows.filter((r) => r.status === "error").length;
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 overflow-x-auto">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Statement coverage</h4>
+        <span className="text-xs text-gray-400">
+          {analyzed} analyzed{dup ? ` · ${dup} duplicate` : ""}{errored ? ` · ${errored} error` : ""}
+        </span>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
+            <th className="text-left py-2 pr-4 font-medium">File</th>
+            <th className="text-left py-2 px-4 font-medium">Status</th>
+            <th className="text-left py-2 px-4 font-medium">Month</th>
+            <th className="text-left py-2 pl-4 font-medium">Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-b border-gray-100 dark:border-gray-700 last:border-0 align-top">
+              <td className="py-2 pr-4 text-gray-900 dark:text-white">
+                <span className="block truncate max-w-[220px]" title={r.filename}>{r.filename}</span>
+              </td>
+              <td className="py-2 px-4">
+                <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full capitalize ${LEDGER_BADGE[r.status]}`}>
+                  {r.status}
+                </span>
+              </td>
+              <td className="py-2 px-4 text-gray-700 dark:text-gray-300 whitespace-nowrap">{r.month ?? "—"}</td>
+              <td className="py-2 pl-4 text-xs text-gray-500 dark:text-gray-400 max-w-md">{r.detail}</td>
             </tr>
           ))}
         </tbody>

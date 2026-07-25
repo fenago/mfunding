@@ -88,6 +88,17 @@ export interface UWPath {
   expected_note: string;
 }
 
+// One row of the per-document extraction ledger — a SOURCE bank-statement file and
+// its final disposition. Makes coverage verifiable: an errored or deduplicated file
+// is recorded explicitly, never silently dropped.
+export interface UWDocumentLedgerRow {
+  filename: string;
+  status: "analyzed" | "duplicate" | "error";
+  month: string | null;
+  account_last4: string | null;
+  detail: string;
+}
+
 export interface UWMetrics {
   reported_avg_monthly_revenue: number;
   true_avg_monthly_revenue: number;
@@ -122,6 +133,10 @@ export interface UWMetrics {
   // Paths to revenue (the product) + the reframed play verdict (additive).
   paths?: UWPath[];
   paths_verdict?: string;
+  // Per-document extraction ledger — verifiable coverage (additive; older runs lack it).
+  document_ledger?: UWDocumentLedgerRow[];
+  // Whether owner-supplied context was factored into this run (drives the chip).
+  owner_context_used?: boolean;
 }
 
 export interface UWPerStatement {
@@ -243,6 +258,29 @@ export function autoUnderwriteForCustomer(customerId: string): void {
       if (data?.id) autoUnderwriteDeal(data.id);
     })
     .then(undefined, () => {});
+}
+
+// ── Owner context (deal-level free text for the underwriter) ──────────────────
+
+// Read the broker's saved context note for a deal (empty string if none).
+export async function getUnderwritingContext(dealId: string): Promise<string> {
+  const { data, error } = await supabase
+    .from("deals")
+    .select("underwriting_context")
+    .eq("id", dealId)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data?.underwriting_context as string | null) ?? "");
+}
+
+// Save (or clear) the broker's context note for a deal. Empty string persists null.
+export async function saveUnderwritingContext(dealId: string, text: string): Promise<void> {
+  const trimmed = text.trim();
+  const { error } = await supabase
+    .from("deals")
+    .update({ underwriting_context: trimmed.length ? trimmed : null })
+    .eq("id", dealId);
+  if (error) throw error;
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────

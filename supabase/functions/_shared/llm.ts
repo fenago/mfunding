@@ -92,6 +92,15 @@ function stripFences(text: string): string {
   return text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
 }
 
+// Claude 5-tier models (opus/sonnet/haiku/fable/mythos -5) no longer accept the
+// `temperature` parameter — the API 400s with "`temperature` is deprecated for this
+// model." Omit it for them; 4.x Claude models and every other provider keep sending
+// temperature exactly as before. Matches "claude-opus-5", "claude-sonnet-5-20xx",
+// etc. but NOT "claude-haiku-4-5" or "claude-opus-4-8".
+function anthropicAcceptsTemperature(model: string): boolean {
+  return !/claude-(?:opus|sonnet|haiku|fable|mythos)-5(?:$|[-_])/i.test(model);
+}
+
 // ---- Adapters ---------------------------------------------------------------
 
 async function callAnthropic(key: string, model: string, o: CallLLMOptions): Promise<string> {
@@ -101,7 +110,7 @@ async function callAnthropic(key: string, model: string, o: CallLLMOptions): Pro
     messages: [{ role: "user", content: o.prompt }],
   };
   if (o.system) body.system = o.system;
-  if (o.temperature != null) body.temperature = o.temperature;
+  if (o.temperature != null && anthropicAcceptsTemperature(model)) body.temperature = o.temperature;
 
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
@@ -222,7 +231,7 @@ export async function callAnthropicBlocks(
     messages: [{ role: "user", content }],
   };
   if (opts.system) body.system = opts.system;
-  if (opts.temperature != null) body.temperature = opts.temperature;
+  if (opts.temperature != null && anthropicAcceptsTemperature(model)) body.temperature = opts.temperature;
   if (opts.tools) body.tools = opts.tools;
   if (opts.toolChoice) body.tool_choice = opts.toolChoice;
 

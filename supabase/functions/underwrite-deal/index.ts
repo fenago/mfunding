@@ -85,8 +85,8 @@ const DEFAULT_SETTINGS = {
   // judgment call between business commission income and personal W-2 pay.
   // 'count' | 'flag_and_discount' (default: count but flag + compute downside) | 'exclude'.
   owner_payroll_treatment: "flag_and_discount" as "count" | "flag_and_discount" | "exclude",
-  extraction_model: "claude-sonnet-4-6",
-  judge_model: "claude-opus-4-8",
+  extraction_model: "claude-sonnet-5",
+  judge_model: "claude-opus-5",
 };
 
 type Settings = typeof DEFAULT_SETTINGS;
@@ -139,6 +139,11 @@ interface PerStatement {
   questionable_deposits: Array<{ date?: string; desc?: string; amount?: number; source?: string; reason?: string }>;
   mca_debits: Array<{ date?: string; desc?: string; amount?: number; cadence?: string }>;
   _filename?: string;
+  // EVERY source filename represented by this statement — the byte-identical group
+  // members PLUS any files period-dedup folded in. Drives the per-document ledger so
+  // no source file is ever silently dropped. _filename stays as the representative
+  // (first) name for back-compat with the existing per-statement UI drilldown.
+  _filenames?: string[];
   _error?: string;
   // Provenance for post-extraction period dedup (not sent to Claude / persisted for
   // debugging only): how many source files collapsed into this unique period.
@@ -342,10 +347,16 @@ Deno.serve(async (req) => {
     // --- Deal + customer. ---
     const { data: deal, error: dErr } = await db
       .from("deals")
-      .select("id, deal_number, deal_type, amount_requested, use_of_funds, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, ghl_contact_id)")
+      .select("id, deal_number, deal_type, amount_requested, use_of_funds, underwriting_context, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, ghl_contact_id)")
       .eq("id", dealId).maybeSingle();
     if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
     const cust = (deal.customer ?? {}) as Any;
+    // Owner-supplied free-text context (things the statements can't tell — seasonality,
+    // a baseline the current months undershoot, etc.). Injected into the JUDGE prompt
+    // as a clearly-labeled block: weighed in the verdict/paths, but it NEVER overrides
+    // hard evidence (a $100K-baseline claim against $12K statements produces a
+    // "verify with prior-year statements" path, not a fabricated approval).
+    const ownerContext = ((deal.underwriting_context as string | null | undefined) ?? "").trim();
 
     // --- Documents: bank statements (analyzed) + applications (context only). ---
     const loadDocs = async (): Promise<Any[]> => {
@@ -519,6 +530,7 @@ Deno.serve(async (req) => {
             const st = normalizeStatement(parsed, filename);
             // A byte-identical duplicate uploaded twice yields the SAME result as once.
             st._dupe_count = g.filenames.length;
+            st._filenames = [...g.filenames];
             return st;
           }
         } catch (e) {
@@ -526,14 +538,15 @@ Deno.serve(async (req) => {
         }
         if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 600));
       }
-      return emptyStatement(filename, lastErr);
+      // A whole byte-group that never extracted: every member is an error row.
+      return emptyStatement(filename, lastErr, g.filenames);
     };
 
     // Extract one statement per unique byte-set, plus carry through the non-PDF /
     // fetch-error docs as _error statements (so extraction_gaps still counts them).
     const errorStatements = loaded
       .filter((l) => !l.b64)
-      .map((l) => emptyStatement(l.filename, l.err ?? "could not load file"));
+      .map((l) => emptyStatement(l.filename, l.err ?? "could not load file", [l.filename]));
     const extracted = await Promise.all(Array.from(groups.values()).map(extractGroup));
     let perStatement: PerStatement[] = [...extracted, ...errorStatements];
 
@@ -542,6 +555,50 @@ Deno.serve(async (req) => {
     // (account, period); keep the richer extraction (more line items), first on tie.
     // Net effect: the same statement uploaded twice produces the same result as once.
     perStatement = dedupByPeriod(perStatement);
+
+    // ---- PER-DOCUMENT EXTRACTION LEDGER ----
+    // One row per SOURCE bank-statement file → its final disposition (analyzed with
+    // the month extracted, a duplicate folded into another file, or an error). This
+    // is the anti-SILENT-ZERO guarantee: a file that fails to load, fails extraction,
+    // or collapses in dedup is recorded EXPLICITLY here (and, for errors, surfaced as
+    // a loud coverage flag below) — never dropped without a trace. Verifiable in the
+    // UI against the file list the merchant/closer uploaded.
+    type LedgerRow = {
+      filename: string;
+      status: "analyzed" | "duplicate" | "error";
+      month: string | null;
+      account_last4: string | null;
+      detail: string;
+    };
+    const documentLedger: LedgerRow[] = [];
+    for (const s of perStatement) {
+      const names = (s._filenames && s._filenames.length ? s._filenames : [s._filename ?? "statement.pdf"]);
+      if (s._error) {
+        for (const fn of names) {
+          documentLedger.push({ filename: fn, status: "error", month: null, account_last4: null, detail: s._error });
+        }
+        continue;
+      }
+      documentLedger.push({
+        filename: names[0],
+        status: "analyzed",
+        month: s.month,
+        account_last4: s.account_last4,
+        detail: `${s.deposits?.length ?? 0} deposit line(s), ${s.mca_debits?.length ?? 0} debit line(s)`,
+      });
+      // Extra source files folded into this one statement (byte-identical re-uploads
+      // OR the same account+period from a different file) — expected + harmless, but
+      // shown so coverage is auditable.
+      for (const fn of names.slice(1)) {
+        documentLedger.push({
+          filename: fn,
+          status: "duplicate",
+          month: s.month,
+          account_last4: s.account_last4,
+          detail: `same statement as "${names[0]}" — deduplicated, not double-counted`,
+        });
+      }
+    }
 
     // ---- PASS B: AGGREGATION (deterministic — no AI) ----
     // Aggregation runs over the UNIQUE set only, so months_covered /
@@ -1122,6 +1179,12 @@ Deno.serve(async (req) => {
       // Explicit per-month table + first-class affordability block (both additive;
       // old rows lack them and the UI hides those sections).
       per_month: perMonth,
+      // Per-document extraction ledger — verifiable coverage: every source file → its
+      // disposition (analyzed + month, duplicate, or error). Additive; old rows lack it.
+      document_ledger: documentLedger,
+      // Whether owner-supplied context was factored into the judge read (drives the
+      // "Context factored in" chip). Additive; old rows are undefined → chip hidden.
+      owner_context_used: ownerContext.length > 0,
       affordability,
       // What-if scenarios (additive; older stored runs lack them and the UI hides
       // the section). Four deterministic reads on the two levers a closer asks about.
@@ -1225,10 +1288,18 @@ Deno.serve(async (req) => {
       flags.push({ code: "low_balance", severity: "warn", message: `Average daily balance ${money(avgDailyBalance)} is below the ${money(numOr0(settings.min_avg_daily_balance))} floor.` });
     }
     // Extraction gaps count only genuine FAILURES (couldn't load/parse a file) — NOT
-    // duplicates removed by dedup, which are expected and harmless.
-    const failedStatements = perStatement.filter((s) => s._error).length;
+    // duplicates removed by dedup, which are expected and harmless. Counted from the
+    // per-document ledger (files, not statements) and named LOUDLY: a silently-dropped
+    // statement is exactly the SILENT-ZERO failure this must never repeat.
+    const failedDocs = documentLedger.filter((r) => r.status === "error");
+    const failedStatements = failedDocs.length;
     if (failedStatements > 0) {
-      flags.push({ code: "extraction_gaps", severity: "info", message: `${failedStatements} of ${bankDocs.length} statement file(s) could not be analyzed.` });
+      const names = failedDocs.map((r) => r.filename).slice(0, 5).join(", ");
+      flags.push({
+        code: "extraction_gaps",
+        severity: "warn",
+        message: `${failedStatements} of ${bankDocs.length} statement file(s) could not be analyzed (${names}) — their month(s) are NOT in this coverage.`,
+      });
     }
     if (dataQualityIssues.length > 0) {
       flags.push({
@@ -1361,6 +1432,17 @@ Deno.serve(async (req) => {
       "the options, and your Recommendation MUST be the top path (or another listed path), phrased as the concrete " +
       "next step (counter at $X to named funders, flip to Relief and restructure, route to the micro rail, ask the " +
       "product-switch questions, or nurture until a specific trigger). Even when the ask is unreachable, there is a play. " +
+      (ownerContext
+        ? "OWNER CONTEXT — an OWNER CONTEXT block from the broker is provided below. Treat it as broker-supplied " +
+          "context about things the statements cannot show (seasonality, a baseline the analyzed months undershoot, " +
+          "expected upcoming volume, one-off events). WEIGH it in the scenarios/paths/verdict and EXPLICITLY reference " +
+          "it in your Recommendation reasoning (e.g. name the seasonality or the claimed baseline). But it NEVER " +
+          "overrides hard evidence: the affordability math above is computed from the actual statements and stands. If " +
+          "the context claims materially higher revenue than the statements show, do NOT fabricate an approval — instead " +
+          "make the concrete next step a 'verify with additional docs' path (prior-year / trailing-12-month statements, " +
+          "or the seasonal high months) that would substantiate the claim before sizing to it. State plainly when the " +
+          "context, if it verifies, would change the verdict. "
+        : "") +
       "Return ONLY strict JSON: " +
       '{"risk_rating":"low"|"medium"|"high","narrative":string,"funder_fit_note":string}. ' +
       "FORMAT the narrative as lightweight markdown the closer can scan in 5 seconds — NOT a wall of prose:\n" +
@@ -1378,6 +1460,11 @@ Deno.serve(async (req) => {
       "funder_fit_note = one line (plain text, bold key numbers) on which revenue floors this clears and the likely paper grade.";
 
     const judgeUser =
+      (ownerContext
+        ? "OWNER CONTEXT (broker-supplied — weigh it, reference it in your reasoning, but it does NOT override the " +
+          "statement-derived math; if it claims more than the statements show, make the play a verify-with-docs path):\n" +
+          ownerContext + "\n\n"
+        : "") +
       "MERCHANT: " + JSON.stringify({
         business: cust.business_name ?? null,
         industry: cust.industry ?? cust.business_type ?? null,
@@ -1517,13 +1604,13 @@ Deno.serve(async (req) => {
 
 // ---- helpers ----------------------------------------------------------------
 
-function emptyStatement(filename: string, err: string): PerStatement {
+function emptyStatement(filename: string, err: string, filenames?: string[]): PerStatement {
   return {
     month: null, account_last4: null, opening_balance: null, closing_balance: null,
     total_deposits: null, total_withdrawals: null, avg_daily_balance: null,
     min_balance: null, negative_days: null, nsf_count: null, deposit_count: null,
     deposits: [], padding_deposits: [], questionable_deposits: [], mca_debits: [],
-    _filename: filename, _error: err,
+    _filename: filename, _filenames: filenames ?? [filename], _error: err,
   };
 }
 
@@ -1550,13 +1637,39 @@ function monthFromText(s: string): string | null {
   return null;
 }
 
-// The statement's month, consistent + accurate. The FILENAME wins when it names
-// a month (merchants/closers name them "February 2026 Statement.pdf" — that's
-// authoritative and beats a mis-parsed statement period). Otherwise normalize
-// the AI's month. Fixes both the format drift ("2026-03") and mis-reads (a Feb
-// statement the AI called "January").
+// A statement month derived FROM A FILENAME — deliberately stricter than
+// monthFromText. A human naming a statement writes the MONTH NAME ("February 2026
+// Statement.pdf") — that is trustworthy and beats a mis-parsed period. A bare
+// numeric date is NOT: machine-generated names embed the EMAIL/UPLOAD date, not the
+// statement period (real bug: five statements all named "Merchant email 2026-07-23
+// — <uuid>.pdf" every one parsed to "July 2026" from the email date, so all five
+// collapsed to ONE period in dedup and four months of coverage vanished). So we
+// (1) strip full calendar dates (YYYY-MM-DD / MM-DD-YYYY — those are always a
+// received/upload date, never a statement label) and (2) accept ONLY an explicit
+// month name/abbr from the filename. A purely numeric filename month falls through
+// to the AI's read of the PDF content, which is correct by construction.
+function monthFromFilename(filename: string): string | null {
+  const cleaned = (filename || "").toLowerCase()
+    .replace(/\b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b/g, " ")   // 2026-07-23 (email/upload date)
+    .replace(/\b\d{1,2}[-/.]\d{1,2}[-/.]20\d{2}\b/g, " ");  // 07-23-2026
+  const ym = cleaned.match(/\b(20\d{2})\b/);
+  const year = ym ? ym[1] : null;
+  for (let i = 0; i < 12; i++) {
+    if (new RegExp(`\\b${MONTH_NAMES[i]}\\b`).test(cleaned) || new RegExp(`\\b${MONTH_ABBR[i]}\\b`).test(cleaned)) {
+      return year ? `${capMonth(MONTH_NAMES[i])} ${year}` : null;
+    }
+  }
+  return null;
+}
+
+// The statement's month, consistent + accurate. A month NAME in the FILENAME wins
+// (merchants/closers name them "February 2026 Statement.pdf" — authoritative and
+// beats a mis-parsed statement period). A numeric date in the filename is IGNORED
+// (see monthFromFilename) — we then normalize the AI's read of the PDF content.
+// Fixes format drift ("2026-03"), AI mis-reads (a Feb statement called "January"),
+// AND the email-date collapse (every file named with the same received date).
 function deriveMonth(aiMonth: unknown, filename: string): string | null {
-  return monthFromText(filename) ?? monthFromText(String(aiMonth ?? "")) ?? (aiMonth ? String(aiMonth) : null);
+  return monthFromFilename(filename) ?? monthFromText(String(aiMonth ?? "")) ?? (aiMonth ? String(aiMonth) : null);
 }
 
 function normalizeStatement(p: Any, filename: string): PerStatement {
@@ -1601,6 +1714,7 @@ function dedupByPeriod(statements: PerStatement[]): PerStatement[] {
   const richness = (s: PerStatement) =>
     (s.deposits?.length ?? 0) + (s.padding_deposits?.length ?? 0) +
     (s.questionable_deposits?.length ?? 0) + (s.mca_debits?.length ?? 0);
+  const namesOf = (s: PerStatement) => s._filenames ?? (s._filename ? [s._filename] : []);
   const byPeriod = new Map<string, number>(); // period key → index in `out`
   const out: PerStatement[] = [];
   for (const s of statements) {
@@ -1611,12 +1725,20 @@ function dedupByPeriod(statements: PerStatement[]): PerStatement[] {
     if (existingIdx == null) {
       byPeriod.set(key, out.length);
       out.push(s);
-    } else if (richness(s) > richness(out[existingIdx])) {
-      // Prefer the richer extraction; carry a merged dupe_count for provenance.
-      s._dupe_count = (out[existingIdx]._dupe_count ?? 1) + (s._dupe_count ?? 1);
-      out[existingIdx] = s;
     } else {
-      out[existingIdx]._dupe_count = (out[existingIdx]._dupe_count ?? 1) + (s._dupe_count ?? 1);
+      const cur = out[existingIdx];
+      // Union of every source filename either statement represents — so a folded
+      // period-duplicate still appears in the per-document ledger, never silently.
+      const merged = [...namesOf(cur), ...namesOf(s)];
+      if (richness(s) > richness(cur)) {
+        // Prefer the richer extraction; carry merged filenames + dupe_count.
+        s._filenames = merged;
+        s._dupe_count = (cur._dupe_count ?? 1) + (s._dupe_count ?? 1);
+        out[existingIdx] = s;
+      } else {
+        cur._filenames = merged;
+        cur._dupe_count = (cur._dupe_count ?? 1) + (s._dupe_count ?? 1);
+      }
     }
   }
   return out;
