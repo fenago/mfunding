@@ -1348,6 +1348,11 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
   // ground truth for the action banner. Null until the first check resolves, so
   // the LOUD banner never flashes before we know.
   const [appAttached, setAppAttached] = useState<boolean | null>(null);
+  // APP-SIDE documents (email-scraped, portal uploads, manual drops). The owner
+  // couldn't find a merchant's emailed bank statements because this panel only
+  // showed GHL e-sign docs — one question ("what came back?") must have ONE
+  // answer, so everything on file renders here too.
+  const [appDocs, setAppDocs] = useState<Array<{ id: string; filename: string; document_type: string; status: string; storage_path: string; created_at: string }>>([]);
 
   async function load() {
     setLoading(true);
@@ -1374,7 +1379,19 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
       /* leave prior value; the banner just won't flip until the next check */
     }
   }
-  useEffect(() => { load(); checkAttached(); }, [ghlContactId, customerId]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function loadAppDocs() {
+    const { data } = await supabase
+      .from("customer_documents")
+      .select("id, filename, document_type, status, storage_path, created_at")
+      .eq("customer_id", customerId)
+      .order("created_at", { ascending: false });
+    setAppDocs((data as typeof appDocs) ?? []);
+  }
+  const viewAppDoc = async (path: string) => {
+    const { data } = await supabase.storage.from("customer-documents").createSignedUrl(path, 600);
+    if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noreferrer");
+  };
+  useEffect(() => { load(); checkAttached(); loadAppDocs(); }, [ghlContactId, customerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fileCount = uploads.reduce((n, u) => n + u.files.length, 0);
 
@@ -1426,6 +1443,43 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
                       )}
                     </span>
                   ))}
+                </div>
+              ))}
+            </div>
+          )}
+          {/* APP-SIDE files — email-scraped attachments, portal uploads, manual
+              drops. Grouped by type so "did his statements come back?" reads in
+              one glance, right here, without opening the Documents modal. */}
+          {appDocs.length > 0 && (
+            <div className="pt-2 border-t border-gray-100 dark:border-gray-700">
+              <p className="text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">
+                📥 Received into the app ({appDocs.length}) — emailed / portal / uploaded
+              </p>
+              {Object.entries(
+                appDocs.reduce<Record<string, typeof appDocs>>((acc, d) => {
+                  (acc[d.document_type] ??= []).push(d);
+                  return acc;
+                }, {}),
+              ).map(([type, rows]) => (
+                <div key={type} className="text-xs mb-1 flex items-start gap-1.5">
+                  <span className="font-medium text-gray-700 dark:text-gray-200 shrink-0">
+                    {type === "bank_statement" ? "Bank statements" : type.replace(/_/g, " ")} ({rows.length}):
+                  </span>
+                  <span className="min-w-0">
+                    {rows.map((d, j) => (
+                      <span key={d.id}>
+                        {j > 0 && " · "}
+                        <button
+                          type="button"
+                          onClick={() => void viewAppDoc(d.storage_path)}
+                          className="text-ocean-blue hover:underline"
+                          title={`${d.filename} — ${d.status} · opens in a new tab`}
+                        >
+                          {dateTimeET(d.created_at)}
+                        </button>
+                      </span>
+                    ))}
+                  </span>
                 </div>
               ))}
             </div>
