@@ -11,6 +11,7 @@ import {
 import { CHANNEL_META, type Campaign } from "@/services/campaignService";
 import { getCampaignAudit, AUDIT_FUNNEL, OPEN_TRACKING_SINCE, type AuditMetrics } from "@/services/campaignAuditService";
 import { REPORTS } from "@/components/admin/reports";
+import CallQualityAudit from "@/components/admin/CallQualityAudit";
 import { dateTimeET } from "@/utils/time";
 import supabase from "@/supabase";
 
@@ -165,6 +166,9 @@ export default function CampaignAudit({ campaigns }: { campaigns: Campaign[] }) 
       </div>
 
       <ReportsSection campaigns={campaigns} />
+
+      {/* Call / Transfer Quality — phone-call sibling of the email census. */}
+      <CallQualityAudit campaigns={campaigns} />
 
       {/* Inline sweep progress — no popups (owner rule). */}
       {sweepMsg && (
