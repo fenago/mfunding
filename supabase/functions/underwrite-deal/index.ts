@@ -137,7 +137,7 @@ interface PerStatement {
   // owner-personal-income patterns) — a distinct bucket from padding. Whether it
   // counts as true revenue is a judgment call resolved by owner_payroll_treatment.
   questionable_deposits: Array<{ date?: string; desc?: string; amount?: number; source?: string; reason?: string }>;
-  mca_debits: Array<{ date?: string; desc?: string; amount?: number; cadence?: string }>;
+  mca_debits: Array<{ date?: string; desc?: string; amount?: number; cadence?: string; funder?: string; debit_class?: string }>;
   _filename?: string;
   // EVERY source filename represented by this statement — the byte-identical group
   // members PLUS any files period-dedup folded in. Drives the per-document ledger so
@@ -172,8 +172,17 @@ function extractionSystem(enabledCategories: string[]): string {
     "owner-personal-income patterns like recurring W-2-style direct deposits to the owner). These are AMBIGUOUS: " +
     "they may be legitimate business commission income OR personal employment pay — do NOT put them in " +
     "padding_deposits and do NOT silently drop them; capture each with the paying source and why it's ambiguous. " +
-    "Also list MCA/advance DEBITS — recurring daily or weekly fixed withdrawals that look like an existing " +
-    "merchant cash advance / receivables purchase remittance (cadence: 'daily' | 'weekly' | 'unknown'). " +
+    "Also list RECURRING FINANCING DEBITS in mca_debits — scheduled fixed withdrawals that repay a financing " +
+    "obligation. For EACH occurrence you see (do NOT pre-aggregate — the underwriter groups them), return the " +
+    "amount, the cadence ('daily' | 'weekly' | 'monthly' | 'unknown'), the creditor as a clean 'funder' name " +
+    "(strip transaction/account ids, e.g. 'Calabria Funding LLC 51647' -> 'Calabria Funding'; 'Dedicated Financ " +
+    "D002703625' -> 'Dedicated Financial'), and a 'debit_class' classifying WHAT KIND of obligation it is: " +
+    "'mca' = a merchant cash advance / future-receivables purchase remittance (typically daily or weekly, to an " +
+    "advance funder); 'sba_loan' = an SBA or bank TERM-LOAN payment (e.g. 'SBA EIDL', 'NORTHEAST BANK SBA PYMT', " +
+    "ReadyCap / bank loan servicing); 'equipment_lease' = an equipment finance/lease payment (e.g. Marlin Leasing); " +
+    "'consumer_finance' = a consumer-installment lender (e.g. Lendmark Financial); 'vendor_other' = a one-off or " +
+    "vendor/supplier/bill ACH that is NOT a financing obligation. Put the SAME funder's two distinct recurring " +
+    "amounts as SEPARATE lines (they are separate tranches — e.g. Calabria at $352.95/day and $230.77/day). " +
     "Return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
     "You MUST fill every field of the report_statement tool for THIS statement — do not omit any. " +
     "Every real bank statement shows an ENDING balance and a statement period, so closing_balance and month are " +
@@ -241,10 +250,14 @@ const EXTRACTION_TOOL = {
       },
       mca_debits: {
         type: "array",
+        description: "Every recurring FINANCING debit occurrence (MCA remittances, SBA/term-loan payments, equipment leases, consumer-finance installments). One entry per occurrence; the underwriter groups + dedupes them.",
         items: {
           type: "object",
           properties: {
-            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" }, cadence: { type: "string" },
+            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" },
+            cadence: { type: "string", description: "'daily' | 'weekly' | 'monthly' | 'unknown'" },
+            funder: { type: "string", description: "Clean creditor name with transaction/account ids stripped." },
+            debit_class: { type: "string", description: "'mca' | 'sba_loan' | 'equipment_lease' | 'consumer_finance' | 'vendor_other'" },
           },
         },
       },
@@ -651,9 +664,6 @@ Deno.serve(async (req) => {
     // (e.g. the model returned deposit_count 0 despite deposits, or omitted a
     // balance). Surfaced as a data_quality flag — never silently stored.
     const dataQualityIssues: string[] = [];
-    let mcaDebitTotal = 0;
-    let mcaDebitDaily = 0; // best estimate of existing daily debit
-    const openPositionKeys = new Set<string>();
 
     for (const s of analyzed) {
       const reported = numOr0(s.total_deposits);
@@ -710,17 +720,221 @@ Deno.serve(async (req) => {
         average_daily_balance: s.avg_daily_balance != null ? round2(numOr0(s.avg_daily_balance)) : null,
         negative_days: monthNegDays,
       });
+    }
 
+    // ── MCA POSITIONS — grouped, classified, LATEST-MONTH-anchored ──────────────
+    // The core fix for the position-inflation bug. Previously mca_debits were unioned
+    // across ALL months as if concurrent, so (a) a daily remittance's ~22 dated lines
+    // counted as ~22 positions, (b) paid-off advances (LCF, Likety, Marlin, ReadyCap)
+    // were summed alongside still-open ones, and (c) non-MCA debt (SBA/EIDL, equipment
+    // leases, consumer finance, one-off vendor ACHs) was swept into the MCA bucket —
+    // inflating "~24 positions at $6,349/day (267% of revenue)" for a merchant actually
+    // carrying ~6 open MCAs. Instead we:
+    //   1) group each month's debits into POSITIONS by (funder, recurring amount) —
+    //      many dated occurrences of ONE daily amount collapse to one position; the
+    //      SAME funder's two distinct recurring amounts stay as two tranches;
+    //   2) classify each (mca vs sba_loan / equipment_lease / consumer_finance /
+    //      vendor_other) — only 'mca' counts toward stacking + capacity math;
+    //   3) ANCHOR active positions + daily debt service to the LATEST month only;
+    //      MCA funders seen earlier but absent from the latest month are PAID OFF /
+    //      ENDED (reported separately — a positive paydown signal).
+    // Because a position's contribution is a per-business-day RATE, a partial latest
+    // month (e.g. July through the 21st) neither over- nor under-states the burden.
+    type DebitClass = "mca" | "sba_loan" | "equipment_lease" | "consumer_finance" | "vendor_other";
+    const NON_MCA_OBLIGATIONS: DebitClass[] = ["sba_loan", "equipment_lease", "consumer_finance"];
+    interface PosAgg {
+      funderKey: string; funderDisplay: string; amount: number;
+      cadenceVotes: Record<string, number>; count: number;
+    }
+    const monthPositions = new Map<number, { label: string; positions: Map<string, PosAgg> }>();
+    // Cross-month funder rollups: class/cadence backfill + ended-position detection.
+    const funderClassVotes = new Map<string, Record<string, number>>();
+    const funderCadenceVotes = new Map<string, Record<string, number>>();
+    const funderLastMonthKey = new Map<string, number>();
+    const funderLastMonthLabel = new Map<string, string>();
+    const funderDisplayName = new Map<string, string>();
+    // Per-funder occurrence count per month — the deterministic CADENCE signal. A
+    // daily remittance hits ~20x in a full month; a weekly one ~4-5x. Occurrence
+    // count beats the model's per-line cadence LABEL, which drifts run-to-run (it
+    // has called the same $500 weekly Dedicated remittance 'daily' on some runs,
+    // swinging the daily-debt figure). funderKey → monthKey → occurrence count.
+    const funderMonthCount = new Map<string, Map<number, number>>();
+    // An exact recurring AMOUNT's class per month — independent of the funder name.
+    // Guards against a latest-month funder RELABEL: e.g. a $1,175.08 weekly debit
+    // booked as "Marlin Leasing"/equipment_lease for 3 months, then relabeled
+    // "Dedicated Financial"/mca once — the amount's history keeps it out of the MCA
+    // stacking count. amount(rounded) → monthKey → class-vote counts.
+    const amountMonthClass = new Map<number, Map<number, Record<string, number>>>();
+
+    for (const s of analyzed) {
+      const t = Date.parse(`1 ${String(s.month ?? "").trim()}`);
+      if (Number.isNaN(t)) continue; // a periodless statement can't be anchored — its debits drop out
+      const d = new Date(t);
+      const mKey = d.getUTCFullYear() * 12 + d.getUTCMonth();
+      const label = String(s.month).trim();
+      let bucket = monthPositions.get(mKey);
+      if (!bucket) { bucket = { label, positions: new Map() }; monthPositions.set(mKey, bucket); }
       for (const dbt of (s.mca_debits ?? [])) {
         const amt = Math.abs(numOr0(dbt.amount));
-        mcaDebitTotal += amt;
-        // Cadence → normalized daily amount. A distinct funder/amount is one position.
+        if (amt <= 0) continue;
+        const rawFunder = (dbt.funder && String(dbt.funder).trim()) || String(dbt.desc ?? "").trim() || "Unknown";
+        const funderKey = normFunder(rawFunder) || "UNKNOWN";
         const cadence = (dbt.cadence || "unknown").toLowerCase();
-        const daily = cadence === "weekly" ? amt / 5 : cadence === "daily" ? amt : amt; // unknown ≈ per-hit
-        mcaDebitDaily += daily;
-        openPositionKeys.add(`${Math.round(amt)}:${cadence}`);
+        const klass = normDebitClass(dbt.debit_class);
+        // A position = (funder, recurring amount). Many dated hits of the same daily
+        // amount fold into one; a second distinct amount for the same funder is a tranche.
+        const posKey = `${funderKey}|${Math.round(amt)}`;
+        let pos = bucket.positions.get(posKey);
+        if (!pos) {
+          pos = { funderKey, funderDisplay: cleanFunderDisplay(rawFunder), amount: amt, cadenceVotes: {}, count: 0 };
+          bucket.positions.set(posKey, pos);
+        }
+        pos.count += 1;
+        pos.cadenceVotes[cadence] = (pos.cadenceVotes[cadence] ?? 0) + 1;
+        const fcv = funderClassVotes.get(funderKey) ?? {};
+        fcv[klass] = (fcv[klass] ?? 0) + 1; funderClassVotes.set(funderKey, fcv);
+        if (cadence !== "unknown") {
+          const fca = funderCadenceVotes.get(funderKey) ?? {};
+          fca[cadence] = (fca[cadence] ?? 0) + 1; funderCadenceVotes.set(funderKey, fca);
+        }
+        if (!funderDisplayName.has(funderKey)) funderDisplayName.set(funderKey, cleanFunderDisplay(rawFunder));
+        if ((funderLastMonthKey.get(funderKey) ?? -Infinity) < mKey) {
+          funderLastMonthKey.set(funderKey, mKey); funderLastMonthLabel.set(funderKey, label);
+        }
+        const fmc = funderMonthCount.get(funderKey) ?? new Map<number, number>();
+        fmc.set(mKey, (fmc.get(mKey) ?? 0) + 1); funderMonthCount.set(funderKey, fmc);
+        const amtKey = Math.round(amt);
+        let amc = amountMonthClass.get(amtKey);
+        if (!amc) { amc = new Map(); amountMonthClass.set(amtKey, amc); }
+        const mc = amc.get(mKey) ?? {}; mc[klass] = (mc[klass] ?? 0) + 1; amc.set(mKey, mc);
       }
     }
+
+    const majorityVote = (votes: Record<string, number>): string | null => {
+      let best: string | null = null; let bestN = -1;
+      for (const [k, n] of Object.entries(votes)) if (n > bestN) { best = k; bestN = n; }
+      return best;
+    };
+    // A funder's class is decided ONCE across all months (a line the model missed one
+    // month can't split one funder across two classes). Default 'mca' = conservative.
+    const funderClass = (fk: string): DebitClass =>
+      (majorityVote(funderClassVotes.get(fk) ?? {}) as DebitClass) || "mca";
+    // Cross-month majority CLASS for an exact recurring amount, counted by DISTINCT
+    // months (each month casts one vote — its own majority class for that amount).
+    const amountClassMajority = (amount: number): { klass: DebitClass; months: number } | null => {
+      const amc = amountMonthClass.get(Math.round(amount));
+      if (!amc) return null;
+      const monthsByClass: Record<string, number> = {};
+      for (const mc of amc.values()) {
+        const w = majorityVote(mc);
+        if (w) monthsByClass[w] = (monthsByClass[w] ?? 0) + 1;
+      }
+      const w = majorityVote(monthsByClass);
+      return w ? { klass: w as DebitClass, months: monthsByClass[w] } : null;
+    };
+    const resolveCadence = (pos: PosAgg): string => {
+      // (1) DETERMINISTIC occurrence count wins — it doesn't drift like the label.
+      //     A funder hitting ~daily shows up ~20x in a month; ~10x is already
+      //     unambiguously daily. A count of 2-8 in a FULL (non-latest) month proves
+      //     it is NOT daily (a daily funder would show ~20 there) ⇒ weekly. The
+      //     latest month is excluded from the "weekly" test because it may be partial.
+      const fm = funderMonthCount.get(pos.funderKey);
+      if (fm) {
+        let maxAll = 0; let maxFull = 0;
+        for (const [mk, c] of fm) {
+          if (c > maxAll) maxAll = c;
+          if (mk !== latestKey && c > maxFull) maxFull = c;
+        }
+        if (maxAll >= 10) return "daily";
+        if (maxFull >= 2) return "weekly";
+      }
+      // (2) Fall back to the model's cadence LABEL for this position.
+      const known = Object.entries(pos.cadenceVotes).filter(([c]) => c !== "unknown");
+      if (known.length) return majorityVote(Object.fromEntries(known))!;
+      // (3) Then the same funder's label in other months, then a last-ditch heuristic.
+      const fk = majorityVote(funderCadenceVotes.get(pos.funderKey) ?? {});
+      if (fk) return fk;
+      if (pos.count >= 8) return "daily";
+      if (pos.count >= 2) return "weekly";
+      return "unknown";
+    };
+    const dailyRateOf = (amount: number, cadence: string): number =>
+      cadence === "daily" ? amount
+      : cadence === "weekly" ? amount / BIZ_DAYS_PER_WEEK
+      : cadence === "monthly" ? amount / BIZ_DAYS_PER_MONTH
+      : amount / BIZ_DAYS_PER_WEEK; // unknown ≈ weekly (mid estimate, avoids understating)
+
+    const latestKey = monthPositions.size ? Math.max(...monthPositions.keys()) : null;
+    const latestBucket = latestKey != null ? monthPositions.get(latestKey)! : null;
+    const latestMonthLabel = latestBucket?.label ?? null;
+
+    const activePositions: Array<{ funder: string; cadence: string; amount: number; daily_amount: number; class: DebitClass }> = [];
+    const otherObligations: Array<{ funder: string; class: DebitClass; cadence: string; amount: number; monthly: number }> = [];
+    let mcaDailyLatest = 0;
+    let otherObligationsMonthly = 0;
+    const latestMcaFunders = new Set<string>();
+    if (latestBucket) {
+      for (const pos of latestBucket.positions.values()) {
+        let klass = funderClass(pos.funderKey);
+        // Stabilize a latest-month relabel: if this EXACT recurring amount was a
+        // NON-MCA obligation in >=2 earlier months, trust that over a lone 'mca'
+        // relabel (the Marlin-lease-as-Dedicated case). Only ever moves OUT of mca.
+        const amtMaj = amountClassMajority(pos.amount);
+        if (klass === "mca" && amtMaj && amtMaj.klass !== "mca" &&
+            NON_MCA_OBLIGATIONS.includes(amtMaj.klass) && amtMaj.months >= 2) {
+          klass = amtMaj.klass;
+        }
+        const cadence = resolveCadence(pos);
+        const daily = round2(dailyRateOf(pos.amount, cadence));
+        if (klass === "mca") {
+          latestMcaFunders.add(pos.funderKey);
+          mcaDailyLatest += daily;
+          activePositions.push({ funder: pos.funderDisplay, cadence, amount: round2(pos.amount), daily_amount: daily, class: "mca" });
+        } else if (NON_MCA_OBLIGATIONS.includes(klass)) {
+          const monthly = round2(daily * BIZ_DAYS_PER_MONTH);
+          otherObligationsMonthly += monthly;
+          otherObligations.push({ funder: pos.funderDisplay, class: klass, cadence, amount: round2(pos.amount), monthly });
+        }
+        // vendor_other: dropped — one-off supplier/bill ACHs are not a recurring obligation.
+      }
+    }
+    mcaDailyLatest = round2(mcaDailyLatest);
+    otherObligationsMonthly = round2(otherObligationsMonthly);
+    activePositions.sort((a, b) => b.daily_amount - a.daily_amount);
+    otherObligations.sort((a, b) => b.monthly - a.monthly);
+
+    // Ended MCA positions — funders that debited as MCA in an EARLIER month but are
+    // GONE from the latest month (paid off / ended). A positive paydown signal.
+    // The model's funder spelling drifts between months ("Unifie Fund" vs "Unified
+    // Funding", "Likety Cap" vs "Liketycap"), so match on a first-token prefix (>=4
+    // chars) to (a) NOT report a still-active funder as ended under a name variant,
+    // and (b) collapse variant duplicates within the ended list itself.
+    const firstTok = (k: string) => k.split(" ")[0] ?? k;
+    const sameFunder = (a: string, b: string): boolean => {
+      const ta = firstTok(a); const tb = firstTok(b);
+      if (ta === tb) return true;
+      const [short, long] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+      return short.length >= 4 && long.startsWith(short);
+    };
+    const activeFunderKeys = [...latestMcaFunders];
+    const endedByKey = new Map<string, { funderKey: string; funder: string; monthKey: number; last_seen_month: string }>();
+    for (const [fk, klassVotes] of funderClassVotes.entries()) {
+      if (((majorityVote(klassVotes) as DebitClass) || "mca") !== "mca") continue;
+      if (activeFunderKeys.some((af) => sameFunder(af, fk))) continue; // still open under any name variant
+      const mKey = funderLastMonthKey.get(fk) ?? 0;
+      // Collapse variant duplicates — keep the most recently-seen spelling.
+      const dupeKey = [...endedByKey.keys()].find((k) => sameFunder(k, fk));
+      if (dupeKey) {
+        const cur = endedByKey.get(dupeKey)!;
+        if (mKey > cur.monthKey) endedByKey.set(dupeKey, { funderKey: fk, funder: funderDisplayName.get(fk) ?? fk, monthKey: mKey, last_seen_month: funderLastMonthLabel.get(fk) ?? "" });
+      } else {
+        endedByKey.set(fk, { funderKey: fk, funder: funderDisplayName.get(fk) ?? fk, monthKey: mKey, last_seen_month: funderLastMonthLabel.get(fk) ?? "" });
+      }
+    }
+    const endedPositions: Array<{ funder: string; last_seen_month: string; class: DebitClass }> =
+      [...endedByKey.values()]
+        .sort((a, b) => b.monthKey - a.monthKey)
+        .map((e) => ({ funder: e.funder, last_seen_month: e.last_seen_month, class: "mca" as DebitClass }));
 
     const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
     const reportedAvgMonthlyRevenue = round2(avg(perMonthReported));
@@ -748,11 +962,12 @@ Deno.serve(async (req) => {
       : 100;
 
     // Existing daily MCA debit — prefer the deal's known VCF daily debit if set,
-    // else the statement-derived estimate (averaged per analyzed month).
+    // else the LATEST-MONTH active-MCA daily remittance (NOT a cross-month union of
+    // every debit ever seen; see the MCA POSITIONS block above).
     const dealDailyDebit = num(deal.vcf_daily_debit);
     const existingDailyDebit = dealDailyDebit != null && dealDailyDebit > 0
       ? round2(dealDailyDebit)
-      : round2(monthsCovered ? mcaDebitDaily / monthsCovered : mcaDebitDaily);
+      : mcaDailyLatest;
 
     // Affordability math (see BIZ_DAYS constants above).
     const trueDailyRevenue = trueAvgMonthlyRevenue / BIZ_DAYS_PER_MONTH;
@@ -763,7 +978,7 @@ Deno.serve(async (req) => {
       ? round2(((existingDailyDebit * BIZ_DAYS_PER_MONTH) / trueAvgMonthlyRevenue) * 100)
       : 0;
 
-    const estOpenPositions = openPositionKeys.size ||
+    const estOpenPositions = activePositions.length ||
       (num(deal.vcf_active_positions) ?? 0) || (existingDailyDebit > 0 ? 1 : 0);
 
     // Revenue trend across the analyzed months (first vs last third).
@@ -1185,6 +1400,15 @@ Deno.serve(async (req) => {
       est_open_positions: estOpenPositions,
       existing_daily_debit: existingDailyDebit,
       debt_service_pct: debtServicePct,
+      // Latest-month-anchored MCA positions (additive — older runs lack them). active =
+      // MCA advances open in the newest statement month; ended = MCA funders paid off /
+      // gone since; other_obligations = non-MCA fixed debts (SBA/term loans, equipment
+      // leases, consumer finance) that are cash-flow context, NOT MCA stacking.
+      latest_statement_month: latestMonthLabel,
+      active_positions: activePositions,
+      ended_positions: endedPositions,
+      other_obligations: otherObligations,
+      other_obligations_monthly: otherObligationsMonthly,
       safe_daily_debit_capacity: safeDailyDebitCapacity,
       max_affordable_advance: maxAffordableAdvance,
       amount_requested: amountRequested,
@@ -1437,6 +1661,13 @@ Deno.serve(async (req) => {
       "what is given. Consider whether this merchant's TRUE revenue clears the funder revenue floors in the " +
       "network and, roughly, what paper grade (A/B/C/D) the profile suggests (A = clean/high revenue/low " +
       "stacking; D = heavily stacked/low quality). " +
+      "POSITIONS: the metrics carry 'active_positions' (the merchant's CURRENTLY-OPEN MCA advances, anchored to the " +
+      "LATEST statement month — each with funder, cadence, and daily amount), 'ended_positions' (MCA advances that " +
+      "were being repaid earlier but are GONE from the latest month — i.e. PAID OFF, a POSITIVE paydown signal worth " +
+      "citing by name), and 'other_obligations' (non-MCA fixed debts — SBA/term loans, equipment leases, consumer " +
+      "finance — that are cash-flow CONTEXT but do NOT count as MCA stacking). Base the stacking read on the ACTIVE " +
+      "count and the provided debt_service_pct; NEVER sum positions across months, and NEVER call a paid-off or " +
+      "non-MCA debit an open MCA position. " +
       "This is INTERNAL underwriting done BEFORE funder submission from the submitted docs ALONE — you must " +
       "NOT ask the merchant anything. Where a judgment call was made (see ASSUMPTIONS), STATE the key " +
       "assumption(s) in the narrative and give the SENSITIVITY: the base case (assumption holds) vs. the " +
@@ -1466,7 +1697,7 @@ Deno.serve(async (req) => {
       "  - **Key assumption:** the judgment call made (only when one exists)\n" +
       "  - **Base case (assumption holds):** revenue, capacity, max advance → verdict\n" +
       "  - **Conservative case (assumption wrong):** same numbers → verdict\n" +
-      "  - **Cash position:** balances, negative days, NSFs, positions\n" +
+      "  - **Cash position:** balances, negative days, NSFs, active MCA positions (and note any recently paid-off ones)\n" +
       "  - **Recommendation:** the ONE clear action\n" +
       "Use **bold** for every dollar figure, multiple, and verdict word (decline, approve, counter-offer); " +
       "use <u>underline</u> ONLY for the single most critical warning in the read (at most one). " +
@@ -1688,6 +1919,53 @@ function monthFromFilename(filename: string): string | null {
 // AND the email-date collapse (every file named with the same received date).
 function deriveMonth(aiMonth: unknown, filename: string): string | null {
   return monthFromFilename(filename) ?? monthFromText(String(aiMonth ?? "")) ?? (aiMonth ? String(aiMonth) : null);
+}
+
+// Normalize a debit's classification to one of the five buckets. Matches the
+// model's exact values first; a fuzzy fallback maps close variants. Default 'mca'
+// (conservative — an unclassified financing debit counts toward stacking).
+function normDebitClass(raw: unknown): "mca" | "sba_loan" | "equipment_lease" | "consumer_finance" | "vendor_other" {
+  const s = String(raw ?? "").toLowerCase().trim();
+  if (s === "mca" || s === "sba_loan" || s === "equipment_lease" || s === "consumer_finance" || s === "vendor_other") {
+    return s as "mca" | "sba_loan" | "equipment_lease" | "consumer_finance" | "vendor_other";
+  }
+  if (s.includes("sba") || s.includes("term") || (s.includes("loan") && !s.includes("mca"))) return "sba_loan";
+  if (s.includes("equip") || s.includes("lease")) return "equipment_lease";
+  if (s.includes("consumer") || s.includes("installment")) return "consumer_finance";
+  if (s.includes("vendor") || s.includes("supplier") || s.includes("bill") || s === "other") return "vendor_other";
+  return "mca";
+}
+
+// Funder GROUPING key — aggressive normalization so the same creditor collapses to
+// one identity across months regardless of transaction/account ids or product-word
+// noise ("Calabria Funding LLC 51647", "Calabria Funding", "Calabria Funding LLC
+// (2nd debit)" → "CALABRIA"). Product words (funding/capital/lending/leasing/
+// financial…) are stripped so a funder named consistently across months matches.
+const FUNDER_NOISE = new Set([
+  "LLC", "INC", "CO", "CORP", "COMPANY", "THE", "SCHEDULED", "REMITTANCE", "REMIT",
+  "DAILY", "WEEKLY", "MONTHLY", "PAYMENT", "PYMT", "PMT", "CUSTPYMT", "ACH", "ACHPAYMENT",
+  "TRANS", "DES", "INDN", "LOAN", "LOANS", "SECOND", "FIRST", "DEBIT", "RECURRING",
+  "OF", "AND", "FUNDING", "FUND", "CAPITAL", "CAP", "LENDING", "LEASING",
+  "FINANCIAL", "FINANC", "FINANCE", "FINANCI",
+]);
+function normFunder(raw: string): string {
+  let s = (raw || "").toUpperCase();
+  s = s.replace(/\([^)]*\)/g, " ");          // drop parentheticals
+  s = s.replace(/[^A-Z0-9 ]+/g, " ");         // punctuation → space
+  s = s.replace(/\b[A-Z]*\d[A-Z0-9]*\b/g, " "); // alnum ids: D002703625, 6FV75R6, LC03310839, 51647
+  const toks = s.split(/\s+/).filter((t) => t && !FUNDER_NOISE.has(t));
+  return toks.slice(0, 3).join(" ").trim();
+}
+
+// Funder DISPLAY name — readable, ids/noise trimmed but casing kept (for the panel).
+function cleanFunderDisplay(raw: string): string {
+  let s = (raw || "").replace(/\([^)]*\)/g, " ");
+  s = s.replace(/[-–]\s*(daily|weekly|monthly|second|first)\b.*$/i, " ");
+  s = s.replace(/\b(scheduled remittance|daily remittance|weekly remittance|custpymt|trans pmt)\b/gi, " ");
+  s = s.replace(/\b[A-Z]*\d[A-Z0-9]{3,}\b/g, " "); // id tokens like D002703625, LC03310839
+  s = s.replace(/\b\d{4,}\b/g, " ");                 // long number runs (phone/acct)
+  s = s.replace(/\s{2,}/g, " ").trim();
+  return s || (raw || "").trim();
 }
 
 function normalizeStatement(p: Any, filename: string): PerStatement {

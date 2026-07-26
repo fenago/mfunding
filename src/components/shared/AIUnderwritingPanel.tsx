@@ -10,6 +10,7 @@ import {
   getUnderwritingContext, saveUnderwritingContext,
   type DealUnderwriting, type UWFlag, type UWMetrics, type UWPerMonth, type UWAffordability,
   type UWScenario, type UWPath, type UWDocumentLedgerRow, type AffordabilityRating, type RiskRating,
+  type UWPosition, type UWEndedPosition, type UWOtherObligation,
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -454,13 +455,27 @@ function ResultView({ r }: { r: DealUnderwriting }) {
         <Metric label="Negative days" value={num(m.negative_days)} tone={(m.negative_days ?? 0) > 0 ? "bad" : undefined} />
         <Metric label="NSF total" value={num(m.nsf_total)} tone={(m.nsf_total ?? 0) > 0 ? "bad" : undefined} />
         <Metric label="Avg net retained" value={money(m.avg_net_retained)} />
-        <Metric label="Est. open positions" value={num(m.est_open_positions)} tone={(m.est_open_positions ?? 0) >= 3 ? "bad" : undefined} />
-        <Metric label="Existing daily debit" value={money(m.existing_daily_debit)} />
+        <Metric label="Active MCA positions" value={num(m.est_open_positions)} tone={(m.est_open_positions ?? 0) >= 3 ? "bad" : undefined} />
+        <Metric label="MCA daily debit" value={money(m.existing_daily_debit)} />
         <Metric label="Debt service" value={pct(m.debt_service_pct)} tone={(m.debt_service_pct ?? 0) >= 25 ? "bad" : undefined} />
         <Metric label="Safe daily capacity" value={money(m.safe_daily_debit_capacity)} />
         <Metric label="Deposit concentration" value={pct(m.deposit_concentration_pct)} tone={(m.deposit_concentration_pct ?? 0) >= 40 ? "bad" : undefined} />
         <Metric label="Revenue trend" value={m.revenue_trend ? (trendLabel[m.revenue_trend] ?? m.revenue_trend) : "—"} />
       </div>
+
+      {/* Positions — active MCA (latest month), paid-off history, other obligations */}
+      {((m.active_positions && m.active_positions.length > 0) ||
+        (m.ended_positions && m.ended_positions.length > 0) ||
+        (m.other_obligations && m.other_obligations.length > 0)) && (
+        <PositionsSection
+          active={m.active_positions ?? []}
+          ended={m.ended_positions ?? []}
+          other={m.other_obligations ?? []}
+          otherMonthly={m.other_obligations_monthly}
+          dailyMca={m.existing_daily_debit}
+          latestMonth={m.latest_statement_month}
+        />
+      )}
 
       {/* Explicit per-month metrics table */}
       {m.per_month && m.per_month.length > 0 && <PerMonthTable rows={m.per_month} />}
@@ -798,6 +813,115 @@ function PathsSection({
             <ScenariosBody scenarios={scenarios} verdict={scenariosVerdict} />
           </div>
         </details>
+      )}
+    </div>
+  );
+}
+
+// ── Positions — active MCA (latest month), paid-off history, other obligations ─
+// The corrected stacking picture: only advances still debiting in the NEWEST
+// statement month are "open positions"; advances gone from the latest month are
+// paid off (a positive signal); non-MCA fixed debts are cash-flow context, not
+// stacking. Replaces the old cross-month union that inflated the position count.
+const OBLIGATION_LABEL: Record<string, string> = {
+  sba_loan: "SBA / term loan",
+  equipment_lease: "Equipment lease",
+  consumer_finance: "Consumer finance",
+  vendor_other: "Vendor / other",
+};
+function PositionsSection({
+  active, ended, other, otherMonthly, dailyMca, latestMonth,
+}: {
+  active: UWPosition[];
+  ended: UWEndedPosition[];
+  other: UWOtherObligation[];
+  otherMonthly?: number;
+  dailyMca?: number;
+  latestMonth?: string | null;
+}) {
+  const cadence = (c: string) => (c === "unknown" ? "" : ` ${c}`);
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 overflow-x-auto">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Positions</h4>
+        <span className="text-xs text-gray-400">
+          open MCAs in the latest month{latestMonth ? ` (${latestMonth})` : ""}
+        </span>
+      </div>
+
+      {/* Active MCA positions */}
+      {active.length > 0 ? (
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+              Active MCA positions ({active.length})
+            </span>
+            <span className="text-sm font-semibold text-gray-900 dark:text-white">
+              {money(dailyMca)}/day
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {active.map((p, i) => (
+              <div key={i} className="flex items-center justify-between text-sm">
+                <span className="text-gray-700 dark:text-gray-300">{p.funder}</span>
+                <span className="text-gray-500 dark:text-gray-400">
+                  <span className="font-medium text-gray-900 dark:text-white">{money(p.amount)}</span>
+                  {cadence(p.cadence)}
+                  <span className="text-xs text-gray-400"> · {money(p.daily_amount)}/day</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">No open MCA positions in the latest month.</p>
+      )}
+
+      {/* Paid-off / ended history */}
+      {ended.length > 0 && (
+        <div className="mb-4 border-t border-gray-100 dark:border-gray-700 pt-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400 mb-2">
+            Paid off / ended ({ended.length}) · positive paydown signal
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {ended.map((p, i) => (
+              <span key={i} className="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300">
+                {p.funder}{p.last_seen_month ? ` — last seen ${p.last_seen_month}` : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Non-MCA fixed obligations */}
+      {other.length > 0 && (
+        <div className="border-t border-gray-100 dark:border-gray-700 pt-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+              Other fixed obligations (not MCA stacking)
+            </span>
+            {otherMonthly != null && otherMonthly > 0 && (
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{money(otherMonthly)}/mo</span>
+            )}
+          </div>
+          <div className="space-y-1.5">
+            {other.map((p, i) => (
+              <div key={i} className="flex items-center justify-between text-sm">
+                <span className="text-gray-700 dark:text-gray-300">
+                  {p.funder}
+                  <span className="ml-1.5 text-[10px] uppercase tracking-wide text-gray-400">
+                    {OBLIGATION_LABEL[p.class] ?? p.class}
+                  </span>
+                </span>
+                <span className="text-gray-500 dark:text-gray-400">
+                  <span className="font-medium text-gray-900 dark:text-white">{money(p.amount)}</span>
+                  {cadence(p.cadence)}
+                  <span className="text-xs text-gray-400"> · {money(p.monthly)}/mo</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

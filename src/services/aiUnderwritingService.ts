@@ -99,6 +99,31 @@ export interface UWDocumentLedgerRow {
   detail: string;
 }
 
+// A currently-open MCA position, anchored to the latest statement month.
+export interface UWPosition {
+  funder: string;
+  cadence: string;        // 'daily' | 'weekly' | 'monthly' | 'unknown'
+  amount: number;         // the recurring remittance amount
+  daily_amount: number;   // normalized per-business-day burden
+  class: string;          // always 'mca' for active positions
+}
+// An MCA position that was being repaid in an earlier month but is gone from the
+// latest (paid off / ended — a positive paydown signal).
+export interface UWEndedPosition {
+  funder: string;
+  last_seen_month: string;
+  class: string;
+}
+// A non-MCA fixed obligation (SBA/term loan, equipment lease, consumer finance) —
+// cash-flow context, NOT counted toward MCA stacking.
+export interface UWOtherObligation {
+  funder: string;
+  class: "sba_loan" | "equipment_lease" | "consumer_finance" | string;
+  cadence: string;
+  amount: number;
+  monthly: number;
+}
+
 export interface UWMetrics {
   reported_avg_monthly_revenue: number;
   true_avg_monthly_revenue: number;
@@ -118,6 +143,15 @@ export interface UWMetrics {
   existing_daily_debit: number;
   debt_service_pct: number;
   safe_daily_debit_capacity: number;
+  // Latest-month-anchored positions (additive — older runs lack these). active =
+  // open MCA advances in the newest month; ended = paid off since; other = non-MCA
+  // fixed debts (context only). existing_daily_debit / debt_service_pct / the
+  // affordability math are now computed from ACTIVE positions only.
+  latest_statement_month?: string | null;
+  active_positions?: UWPosition[];
+  ended_positions?: UWEndedPosition[];
+  other_obligations?: UWOtherObligation[];
+  other_obligations_monthly?: number;
   max_affordable_advance: number;
   amount_requested: number;
   revenue_trend: "up" | "flat" | "down";
