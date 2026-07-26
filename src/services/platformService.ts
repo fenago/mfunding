@@ -153,20 +153,23 @@ export const getInstantlySettings = () =>
   getSetting<InstantlySettings>("instantly_settings", DEFAULT_INSTANTLY_SETTINGS);
 export const saveInstantlySettings = (s: InstantlySettings) => saveSetting("instantly_settings", s);
 
-// --- AI underwriter models ----------------------------------------------------
-// Which Claude models the underwrite-deal edge function uses. Read at RUN TIME by
-// the function (platform_settings key "underwriting_models"); when unset it falls
+// --- AI models (underwriter + deal assistant) --------------------------------
+// Which Claude models the AI edge functions use. Read at RUN TIME by the
+// functions (platform_settings key "underwriting_models"); when unset each falls
 // back to the hardcoded defaults in code, so a missing row never breaks a run.
-// The owner default is Opus 5 (judge) + Sonnet 5 (extraction); super-admin can
-// switch either from /admin/settings/underwriting.
+// Owner defaults: Opus 5 (judge), Sonnet 5 (extraction), Opus 5 (deal assistant).
+// Super-admin switches any of them from /admin/settings/underwriting — the
+// deal-assistant function reads assistant_model on every call (no redeploy).
 export interface UnderwritingModels {
   judge_model: string;      // produces the risk/affordability verdict + narrative
   extraction_model: string; // reads the PDFs and extracts per-statement figures
+  assistant_model: string;  // powers the deal-desk chat assistant
 }
 
 export const DEFAULT_UNDERWRITING_MODELS: UnderwritingModels = {
   judge_model: "claude-opus-5",
   extraction_model: "claude-sonnet-5",
+  assistant_model: "claude-opus-5",
 };
 
 // Curated, verified-available model ids (checked against Anthropic /v1/models).

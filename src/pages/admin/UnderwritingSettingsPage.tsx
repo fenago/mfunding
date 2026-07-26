@@ -212,13 +212,14 @@ export default function UnderwritingSettingsPage() {
         </div>
       </div>
 
-      {/* AI Underwriter models */}
+      {/* AI models */}
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 border border-gray-200 dark:border-gray-700">
-        <h2 className="font-semibold text-gray-900 dark:text-white mb-1">AI Underwriter models</h2>
+        <h2 className="font-semibold text-gray-900 dark:text-white mb-1">AI models</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-          Which Claude models run the underwriter. Owner default is{" "}
-          <span className="font-medium">Claude Opus 5</span> (judge) and{" "}
-          <span className="font-medium">Claude Sonnet 5</span> (extraction). Applied on the next run — no redeploy.
+          Which Claude models run the AI features. Owner defaults are{" "}
+          <span className="font-medium">Claude Opus 5</span> (judge),{" "}
+          <span className="font-medium">Claude Sonnet 5</span> (extraction), and{" "}
+          <span className="font-medium">Claude Opus 5</span> (deal assistant). Applied on the next run — no redeploy.
         </p>
         <div className="grid sm:grid-cols-2 gap-5">
           <div>
@@ -256,6 +257,24 @@ export default function UnderwritingSettingsPage() {
               )}
             </select>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Reads the PDFs and extracts per-statement figures.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Deal Assistant</label>
+            <select
+              value={models.assistant_model}
+              onChange={(e) => patchModel({ assistant_model: e.target.value })}
+              className="input-field w-full"
+            >
+              {UNDERWRITING_MODEL_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}{o.id === DEFAULT_UNDERWRITING_MODELS.assistant_model ? " (default)" : ""}
+                </option>
+              ))}
+              {!UNDERWRITING_MODEL_OPTIONS.some((o) => o.id === models.assistant_model) && (
+                <option value={models.assistant_model}>{models.assistant_model} (custom)</option>
+              )}
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Powers the deal-desk chat assistant.</p>
           </div>
         </div>
       </div>

@@ -39,6 +39,7 @@ import QualificationPanel from "../../../components/admin/QualificationPanel";
 import DealDocRequests from "../../../components/admin/DealDocRequests";
 import SendForSignature from "../../../components/admin/SendForSignature";
 import RenewalProjectionEditor from "../../../components/admin/RenewalProjectionEditor";
+import DealAssistant from "../../../components/admin/DealAssistant";
 import { useActivityLog } from "../../../hooks/useActivityLog";
 
 // Required stip document types for a deal
@@ -354,6 +355,12 @@ export default function DealDetailPage() {
                 Bring back
               </button>
             )}
+            <DealAssistant
+              dealId={deal.id}
+              merchantLabel={deal.customer?.business_name || deal.deal_number}
+              placement="button"
+              buttonLabel="Ask about this file"
+            />
             <SyncToGHLButton entity="deal" id={deal.id} onSynced={() => fetchDeal()} />
             {deal.customer && (
               <Link

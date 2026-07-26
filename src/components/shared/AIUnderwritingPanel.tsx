@@ -16,6 +16,7 @@ import {
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
+import DealAssistant from "../admin/DealAssistant";
 
 interface Props {
   dealId: string;
@@ -267,23 +268,26 @@ export default function AIUnderwritingPanel({ dealId }: Props) {
           merchant can support.
         </p>
         {error && <p className="text-sm text-red-600 dark:text-red-400 mb-4">{error}</p>}
-        {canRun ? (
-          <button onClick={run} disabled={running} className="btn-primary inline-flex items-center gap-2 disabled:opacity-60">
-            {running ? (
-              <>
-                <ArrowPathIcon className="w-4 h-4 animate-spin" />
-                Claude is reading the statements… ~1 min
-              </>
-            ) : (
-              <>
-                <SparklesIcon className="w-4 h-4" />
-                Run underwriting
-              </>
-            )}
-          </button>
-        ) : (
-          <p className="text-xs text-gray-400">Ask an admin to run underwriting on this deal.</p>
-        )}
+        <div className="flex items-center justify-center gap-2 flex-wrap">
+          {canRun ? (
+            <button onClick={run} disabled={running} className="btn-primary inline-flex items-center gap-2 disabled:opacity-60">
+              {running ? (
+                <>
+                  <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                  Claude is reading the statements… ~1 min
+                </>
+              ) : (
+                <>
+                  <SparklesIcon className="w-4 h-4" />
+                  Run underwriting
+                </>
+              )}
+            </button>
+          ) : (
+            <p className="text-xs text-gray-400">Ask an admin to run underwriting on this deal.</p>
+          )}
+          <DealAssistant dealId={dealId} placement="button" buttonLabel="Ask about this file" />
+        </div>
         </div>
       </div>
     );
@@ -318,25 +322,28 @@ export default function AIUnderwritingPanel({ dealId }: Props) {
             </span>
           )}
         </div>
-        {canRun && (
-          <button
-            onClick={run}
-            disabled={running}
-            className="px-3 py-2 text-sm font-medium text-ocean-blue border border-ocean-blue rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 inline-flex items-center gap-2 disabled:opacity-60"
-          >
-            {running ? (
-              <>
-                <ArrowPathIcon className="w-4 h-4 animate-spin" />
-                Claude is reading… ~1 min
-              </>
-            ) : (
-              <>
-                <ArrowPathIcon className="w-4 h-4" />
-                Re-run
-              </>
-            )}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          <DealAssistant dealId={dealId} placement="button" buttonLabel="Ask about this file" />
+          {canRun && (
+            <button
+              onClick={run}
+              disabled={running}
+              className="px-3 py-2 text-sm font-medium text-ocean-blue border border-ocean-blue rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 inline-flex items-center gap-2 disabled:opacity-60"
+            >
+              {running ? (
+                <>
+                  <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                  Claude is reading… ~1 min
+                </>
+              ) : (
+                <>
+                  <ArrowPathIcon className="w-4 h-4" />
+                  Re-run
+                </>
+              )}
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (

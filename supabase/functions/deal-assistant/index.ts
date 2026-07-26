@@ -27,7 +27,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
-import { callLLM, resolveConfig } from "../_shared/llm.ts";
+import { callLLM } from "../_shared/llm.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -113,6 +113,31 @@ const STAGE_TIMESTAMPS = [
 const clip = (v: unknown, n = 600) =>
   typeof v === "string" && v.length > n ? `${v.slice(0, n)}…` : v ?? null;
 
+/**
+ * Opening chips, seeded from the deal's real state. Deterministic — computed in
+ * code from the latest underwriting metrics + funder-submission count, never the
+ * model. Specific chips lead; two always-present chips close it out; capped at 5.
+ */
+function buildSuggestions(submissionCount: number, metrics: Row, flags: Row[]): string[] {
+  const out: string[] = [];
+  const active = Array.isArray(metrics.active_positions) ? metrics.active_positions.length : 0;
+  const refiFeasible = (metrics.refi as Row | undefined)?.feasible === true;
+  const cashStress =
+    (metrics.negative_days ?? 0) > 0 ||
+    (metrics.nsf_total ?? 0) > 0 ||
+    (Array.isArray(flags) &&
+      flags.some((f) => /nsf|negative/i.test(`${f?.code ?? ""} ${f?.message ?? ""}`)));
+
+  if (active > 1) out.push(`Can we refinance his ${active} positions?`);
+  if (refiFeasible) out.push("What would an 18-month consolidation look like?");
+  if (cashStress) out.push("How bad is the cash stress and what offsets it?");
+  if (submissionCount > 0) out.push("Where does this deal stand with each funder?");
+  out.push("Which of our funders fit this file best?");
+  out.push("What's the single next action to move this deal?");
+
+  return [...new Set(out)].slice(0, 5);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -137,8 +162,8 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const dealId = (body?.deal_id ?? body?.dealId) as string | undefined;
     const question = String(body?.question ?? "").trim();
+    const wantSuggestions = body?.suggest === true;
     if (!dealId) return json({ error: "deal_id is required" }, 400);
-    if (!question) return json({ error: "question is required" }, 400);
 
     // ---- Authz: a closer may only ask about a deal they own. ---------------
     if (role === "closer") {
@@ -147,6 +172,28 @@ Deno.serve(async (req) => {
         return json({ error: "Forbidden — this deal is not assigned to you." }, 403);
       }
     }
+
+    // ---- Suggested-question chips (no LLM call). ---------------------------
+    // Seeds the chat's opening chips from the deal's ACTUAL state — latest
+    // underwriting metrics + whether it has gone to funders. Cheap: two reads,
+    // no model. Returns 4–5 tappable questions the closer is likely to ask.
+    if (wantSuggestions) {
+      const [{ data: uwRow }, { data: subRows }] = await Promise.all([
+        db.from("deal_underwriting").select("metrics, flags")
+          .eq("deal_id", dealId).order("version", { ascending: false }).limit(1).maybeSingle(),
+        db.from("deal_submissions").select("id").eq("deal_id", dealId),
+      ]);
+      return json({
+        ok: true,
+        suggestions: buildSuggestions(
+          (subRows ?? []).length,
+          (uwRow?.metrics ?? {}) as Row,
+          (uwRow?.flags ?? []) as Row[],
+        ),
+      });
+    }
+
+    if (!question) return json({ error: "question is required" }, 400);
 
     // ---- CONTEXT ASSEMBLY --------------------------------------------------
     // 1) The deal.
@@ -463,7 +510,14 @@ Deno.serve(async (req) => {
       "\nAnswer now — short, direct, grounded in the context above.",
     ].join("\n");
 
-    const { model } = await resolveConfig(db, "deal_assistant");
+    // Model resolution (owner-switchable, no redeploy):
+    //   platform_settings.underwriting_models.assistant_model  →  Opus 5 default.
+    // This is the SAME card the underwriter models live on. A pinned model wins
+    // over llm_settings/resolveConfig; provider is anthropic (all options are Claude).
+    const { data: pmRow } = await db
+      .from("platform_settings").select("value").eq("key", "underwriting_models").maybeSingle();
+    const assistantModel =
+      ((pmRow?.value as { assistant_model?: string } | null)?.assistant_model || "claude-opus-5").trim();
 
     let answer: string;
     try {
@@ -473,6 +527,8 @@ Deno.serve(async (req) => {
         maxTokens: 900,
         temperature: 0.2,
         task: "deal_assistant",
+        provider: "anthropic",
+        model: assistantModel,
       });
     } catch (e) {
       return json({ error: String(e instanceof Error ? e.message : e) }, 502);
@@ -482,7 +538,7 @@ Deno.serve(async (req) => {
     return json({
       ok: true,
       answer: answer.trim(),
-      model,
+      model: assistantModel,
       // Lets the UI show what the assistant could actually see.
       context_summary: {
         deal_number: deal.deal_number,
