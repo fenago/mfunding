@@ -12,6 +12,7 @@ import { type Campaign } from "@/services/campaignService";
 import {
   listCallAuditRuns, getCallAuditRun, getCallAuditCalls, startCallAudit, continueCallAudit,
   CALL_CLASS_LABELS, type CallAuditRun, type CallAuditCall, type CallClass, type SweepProgress,
+  type ReconResult,
 } from "@/services/callAuditService";
 import { dateTimeET } from "@/utils/time";
 
@@ -247,6 +248,9 @@ export default function CallQualityAudit({ campaigns }: { campaigns: Campaign[] 
             </div>
           )}
 
+          {/* Week-over-week trend — did the phone fixes bend the curve? */}
+          <TrendStrip runs={runs} />
+
           {run && t.transcription_available === false && (
             <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-[12px] text-amber-800 dark:text-amber-200">
               <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
@@ -280,6 +284,8 @@ export default function CallQualityAudit({ campaigns }: { campaigns: Campaign[] 
                   <b>Coverage notes:</b> {t.gaps!.join(" · ")}
                 </div>
               )}
+
+              {t.reconciliation && <ReconciliationSection recon={t.reconciliation} />}
 
               <CallsTable calls={calls} loading={loading} />
             </>
@@ -379,5 +385,143 @@ function CallRow({ c }: { c: CallAuditCall }) {
         </tr>
       )}
     </>
+  );
+}
+
+// ── Week-over-week trend — one mini bar series per failure class across runs ──────
+// Answers the owner's question: did the Jul-24 phone fixes bend the curve? Uses the
+// persisted run history (each run's totals), oldest → newest, last 12 runs.
+const TREND_SERIES: { key: string; label: string; color: string; get: (t: CallAuditRun["totals"]) => number }[] = [
+  { key: "atk", label: "Answered-then-kicked", color: "bg-red-500", get: (t) => t.answered_then_kicked ?? 0 },
+  { key: "vm", label: "Missed → voicemail", color: "bg-orange-500", get: (t) => t.missed_transfer_voicemail ?? 0 },
+  { key: "mcd", label: "Mid-call drop", color: "bg-amber-500", get: (t) => t.mid_call_drop ?? 0 },
+  { key: "sid", label: "Suspected instant drop*", color: "bg-amber-400", get: (t) => t.by_class?.suspected_instant_drop ?? 0 },
+];
+
+function TrendStrip({ runs }: { runs: CallAuditRun[] }) {
+  // Completed runs only, chronological, most-recent 12.
+  const series = runs.filter((r) => r.status === "done").slice(0, 12).reverse();
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+        Trend across runs — is the drop problem shrinking?
+      </h4>
+      {series.length < 2 ? (
+        <p className="text-[12px] text-gray-400">
+          Need at least 2 completed runs to show a trend. Run the audit on a few date ranges (or let the weekly
+          cron accumulate them) and the week-over-week bars appear here.
+        </p>
+      ) : (
+        <>
+          <div className="space-y-2.5 mt-2">
+            {TREND_SERIES.map((s) => {
+              const vals = series.map((r) => s.get(r.totals));
+              const max = Math.max(1, ...vals);
+              const latest = vals[vals.length - 1];
+              const prev = vals.length > 1 ? vals[vals.length - 2] : null;
+              const delta = prev == null ? null : latest - prev;
+              return (
+                <div key={s.key} className="flex items-center gap-3">
+                  <div className="w-44 shrink-0 text-[11px] text-gray-600 dark:text-gray-300">{s.label}</div>
+                  <div className="flex-1 flex items-end gap-1 h-10">
+                    {series.map((r, i) => (
+                      <div key={r.id} className="flex-1 flex items-end justify-center" title={`${new Date(r.created_at).toLocaleDateString()}: ${vals[i]}`}>
+                        <div className={`w-full rounded-t ${s.color}`} style={{ height: `${vals[i] === 0 ? 2 : Math.max(6, Math.round((vals[i] / max) * 40))}px`, opacity: vals[i] === 0 ? 0.25 : 1 }} />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="w-24 shrink-0 text-right text-[11px] text-gray-600 dark:text-gray-300">
+                    <span className="font-semibold text-gray-900 dark:text-white">{latest}</span>
+                    {delta != null && delta !== 0 && (
+                      <span className={delta < 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}> {delta < 0 ? "▼" : "▲"}{Math.abs(delta)}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-gray-400 mt-2">
+            Oldest → newest ({series.length} runs). *Suspected instant drop is the metadata stand-in for answered-then-kicked
+            while transcription is off — it's the bar to watch until a Gemini key is added.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Transfer reconciliation — paid Synergy transfers vs the inbound call that landed ─
+const BUCKET_META: Record<string, { label: string; chip: string }> = {
+  no_call: { label: "No call at all", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
+  answered_then_kicked: { label: "Answered then kicked", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
+  voicemail: { label: "Our voicemail", chip: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300" },
+  suspect_drop: { label: "Suspect drop", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+  connected: { label: "Connected", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
+};
+
+function ReconciliationSection({ recon }: { recon: ReconResult }) {
+  const [open, setOpen] = useState(false);
+  const s = recon.summary;
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Transfer reconciliation — did the paid transfers connect?</h4>
+        <p className="text-[11px] text-gray-400">
+          Each Synergy intake email matched to the inbound call that landed (by merchant phone, else timestamp ±10 min).
+          {s.transfers > 0 && <> {s.matched_by_phone} matched by phone, {s.matched_by_time} by time.</>}
+        </p>
+      </div>
+      <div className="p-4 space-y-3">
+        <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          <Kpi label="Paid transfers" value={`${s.transfers}`} sub={`${s.live_transfer} live · ${s.realtime} real-time`} />
+          <Kpi label="No call at all" value={`${s.no_call}`} tone={s.no_call > 0 ? "bad" : "neutral"} sub="never reached a line" />
+          <Kpi label="→ Our voicemail" value={`${s.voicemail}`} tone={s.voicemail > 0 ? "warn" : "neutral"} sub="rang to machine" />
+          <Kpi label="Answered-then-kicked" value={`${s.answered_then_kicked}`} tone={s.answered_then_kicked > 0 ? "bad" : "neutral"} sub="needs transcripts to confirm" />
+          <Kpi label="Suspect drop" value={`${s.suspect_drop}`} tone={s.suspect_drop > 0 ? "warn" : "neutral"} sub="short/instant drop" />
+          <Kpi label="Connected" value={`${s.connected}`} tone={s.connected > 0 ? "good" : "neutral"} sub="a call of some length" />
+        </div>
+
+        <button onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-1.5 text-[12px] text-ocean-blue hover:underline">
+          {open ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
+          {open ? "Hide" : "Show"} per-transfer detail ({recon.rows.length})
+        </button>
+
+        {open && (
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-gray-50 dark:bg-gray-900 text-gray-500 dark:text-gray-400 uppercase text-xs sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Transfer (ET)</th>
+                    <th className="px-3 py-2 font-medium">Merchant</th>
+                    <th className="px-3 py-2 font-medium">Kind</th>
+                    <th className="px-3 py-2 font-medium">Outcome</th>
+                    <th className="px-3 py-2 font-medium">Call class</th>
+                    <th className="px-3 py-2 font-medium">Gap</th>
+                    <th className="px-3 py-2 font-medium">Match</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {recon.rows.map((r, i) => {
+                    const bm = BUCKET_META[r.bucket] ?? { label: r.bucket, chip: "bg-gray-100 text-gray-600" };
+                    return (
+                      <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                        <td className="px-3 py-2 whitespace-nowrap text-gray-700 dark:text-gray-200">{dateTimeET(r.received_at)}</td>
+                        <td className="px-3 py-2 text-gray-700 dark:text-gray-200 max-w-[180px] truncate">{r.merchant}</td>
+                        <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400">{r.kind === "live_transfer" ? "live" : r.kind === "realtime_appt" ? "real-time" : r.kind}</td>
+                        <td className="px-3 py-2"><span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${bm.chip}`}>{bm.label}</span></td>
+                        <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400">{r.call_class ? CALL_CLASS_LABELS[r.call_class] : "—"}</td>
+                        <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400">{r.gap_s == null ? "—" : `${r.gap_s > 0 ? "+" : ""}${r.gap_s}s`}</td>
+                        <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400">{r.call_class == null ? "—" : r.phone_match ? "phone" : "time"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

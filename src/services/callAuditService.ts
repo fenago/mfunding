@@ -54,6 +54,40 @@ export interface CallAuditTotals {
   transcription_failed?: number;
   transcription_available?: boolean; // false = no valid Gemini key; classified from metadata only
   gaps?: string[];
+  reconciliation?: ReconResult;
+  reconciliation_error?: string;
+}
+
+// Transfer reconciliation — Synergy intake emails ↔ inbound calls (see call_audit_reconcile).
+export interface ReconSummary {
+  transfers: number;
+  live_transfer: number;
+  realtime: number;
+  matched_to_call: number;
+  matched_by_phone: number;
+  matched_by_time: number;
+  no_call: number;
+  voicemail: number;
+  answered_then_kicked: number;
+  suspect_drop: number;
+  connected: number;
+}
+export interface ReconRow {
+  received_at: string;
+  merchant: string;
+  phone: string | null;
+  kind: string;
+  bucket: "no_call" | "voicemail" | "answered_then_kicked" | "suspect_drop" | "connected";
+  call_class: CallClass | null;
+  call_date: string | null;
+  duration_s: number | null;
+  phone_match: boolean | null;
+  gap_s: number | null;
+}
+export interface ReconResult {
+  window: { from: string; to: string };
+  summary: ReconSummary;
+  rows: ReconRow[];
 }
 
 export interface CallAuditCall {

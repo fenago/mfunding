@@ -410,8 +410,15 @@ async function createRun(
   return { runId, cursor };
 }
 
-// Compute + persist final rollup totals from the stored rows.
-async function finalizeTotals(db: ReturnType<typeof serviceClient>, runId: string, cursor: RunCursor): Promise<Record<string, unknown>> {
+// Compute + persist final rollup totals from the stored rows, plus the transfer
+// reconciliation (Synergy intake emails ↔ inbound calls) for the window.
+async function finalizeTotals(
+  db: ReturnType<typeof serviceClient>,
+  runId: string,
+  cursor: RunCursor,
+  fromIso: string,
+  toIso: string,
+): Promise<Record<string, unknown>> {
   const { data: rows } = await db.from("call_audit_calls")
     .select("classification, has_recording, direction").eq("run_id", runId);
   const byClass: Record<string, number> = {};
@@ -423,7 +430,7 @@ async function finalizeTotals(db: ReturnType<typeof serviceClient>, runId: strin
     if (r.direction === "inbound") inbound += 1; else if (r.direction === "outbound") outbound += 1;
   }
   const calls = (rows ?? []).length;
-  const totals = {
+  const totals: Record<string, unknown> = {
     calls,
     with_recording: withRecording,
     with_recording_pct: calls ? Math.round((withRecording / calls) * 1000) / 10 : null,
@@ -440,6 +447,19 @@ async function finalizeTotals(db: ReturnType<typeof serviceClient>, runId: strin
     transcription_available: cursor.transcriptionAvailable ?? false,
     gaps: cursor.gaps,
   };
+
+  // Transfer reconciliation — Synergy intake emails ↔ this run's inbound calls.
+  // Best-effort: a failure must not block the run from completing.
+  try {
+    const { data: recon, error: rErr } = await db.rpc("call_audit_reconcile", {
+      p_run_id: runId, p_from: fromIso, p_to: toIso,
+    });
+    if (rErr) totals.reconciliation_error = rErr.message;
+    else if (recon) totals.reconciliation = recon;
+  } catch (e) {
+    totals.reconciliation_error = e instanceof Error ? e.message : String(e);
+  }
+
   return totals;
 }
 
@@ -454,7 +474,7 @@ async function runBatch(
   geminiKey: string | null,
 ): Promise<{ done: boolean; processed: number }> {
   const startedAt = Date.now();
-  const { fromTs, toTs } = windowBounds(dateFrom, dateTo);
+  const { fromTs, toTs, fromIso, toIso } = windowBounds(dateFrom, dateTo);
 
   // ── ENUMERATE: process a bounded chunk of the queue, then return to reinvoke. ──
   if (cursor.phase === "enumerate") {
@@ -493,7 +513,7 @@ async function runBatch(
       .order("call_date", { ascending: true }).limit(TRANSCRIBE_BATCH);
     if (!pending || pending.length === 0) {
       cursor.phase = "done";
-      const totals = await finalizeTotals(db, runId, cursor);
+      const totals = await finalizeTotals(db, runId, cursor, fromIso, toIso);
       await db.from("call_audit_runs").update({ status: "done", totals, cursor, updated_at: new Date().toISOString() }).eq("id", runId);
       return { done: true, processed: 0 };
     }
