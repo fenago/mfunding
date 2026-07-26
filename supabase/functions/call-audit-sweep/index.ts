@@ -38,6 +38,18 @@ function json(body: unknown, status = 200) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Race a promise against a timeout, returning a fallback instead of hanging. ghlFetch
+// has no timeout of its own; a single hung GHL request during enumeration would run
+// the isolate into the platform wall clock and kill it before it can persist/reinvoke
+// (this stalled the location-wide inbound scan). The fallback keeps the batch moving.
+const GHL_FETCH_TIMEOUT_MS = 20_000;
+async function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: T): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const timer = new Promise<T>((res) => { t = setTimeout(() => res(onTimeout), ms); });
+  try { return await Promise.race([p, timer]); } finally { if (t) clearTimeout(t); }
+}
+const FETCH_TIMED_OUT = { ok: false, status: 0, data: null, error: "timeout" } as const;
+
 // ── Tunables ─────────────────────────────────────────────────────────────────
 // Each invocation does ONE bounded unit of work (a chunk of enumeration OR a single
 // concurrent transcription batch) and returns promptly. This guarantees the isolate
@@ -55,7 +67,6 @@ const TRANSCRIBE_BATCH = 3;           // recordings transcribed CONCURRENTLY per
 const RECORDING_TIMEOUT_MS = 30_000;  // per-recording download timeout
 const GEMINI_TIMEOUT_MS = 60_000;     // per-transcription timeout
 const MAX_INBOUND_PAGES = 20;         // hard cap on the location-wide inbound scan (gap-logged)
-const CONVS_PER_INBOUND_ITEM = 60;    // in-range conversations to scan per inbound queue item
 const MAX_INVOCATIONS = 250;          // runaway guard on the self-reinvoke chain
 const MAX_REC_BYTES = 4_500_000;      // recordings above this skip inline transcription (a >~4 min call, never a kick)
 const GEMINI_MODEL = "gemini-2.0-flash";
@@ -194,16 +205,20 @@ async function callsForContact(
   fromTs: number,
   toTs: number,
 ): Promise<GhlMsg[]> {
-  const convRes = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
-    cfg, "GET",
-    `/conversations/search?locationId=${cfg.locationId}&contactId=${encodeURIComponent(contactId)}&limit=20`,
+  const convRes = await withTimeout(
+    ghlFetch<{ conversations?: Array<{ id: string }> }>(
+      cfg, "GET",
+      `/conversations/search?locationId=${cfg.locationId}&contactId=${encodeURIComponent(contactId)}&limit=20`,
+    ),
+    GHL_FETCH_TIMEOUT_MS, FETCH_TIMED_OUT,
   );
   await sleep(GHL_PACE_MS);
   const convIds = (convRes.data?.conversations ?? []).map((c) => c.id).filter(Boolean);
   const out: GhlMsg[] = [];
   for (const convId of convIds) {
-    const msgRes = await ghlFetch<{ messages?: { messages?: GhlMsg[] } }>(
-      cfg, "GET", `/conversations/${convId}/messages?limit=100`,
+    const msgRes = await withTimeout(
+      ghlFetch<{ messages?: { messages?: GhlMsg[] } }>(cfg, "GET", `/conversations/${convId}/messages?limit=100`),
+      GHL_FETCH_TIMEOUT_MS, FETCH_TIMED_OUT,
     );
     await sleep(GHL_PACE_MS);
     if (!msgRes.ok) continue;
@@ -261,39 +276,48 @@ async function processInboundPage(
   fromTs: number,
   toTs: number,
   cursor: RunCursor,
+  startedAt: number,
 ): Promise<QueueInboundPage | null> {
   const params = new URLSearchParams({ locationId: cfg.locationId, limit: "100", sortBy: "last_message_date", sort: "desc" });
   if (item.startAfterDate) params.set("startAfterDate", item.startAfterDate);
   if (item.startAfter) params.set("startAfter", item.startAfter);
-  const res = await ghlFetch<{ conversations?: Array<{ id: string; lastMessageDate?: string; dateUpdated?: string }> }>(
-    cfg, "GET", `/conversations/search?${params.toString()}`,
+  const res = await withTimeout(
+    ghlFetch<{ conversations?: Array<{ id: string; lastMessageDate?: string; dateUpdated?: string }> }>(
+      cfg, "GET", `/conversations/search?${params.toString()}`),
+    GHL_FETCH_TIMEOUT_MS, FETCH_TIMED_OUT,
   );
   await sleep(GHL_PACE_MS);
   const list = res.data?.conversations ?? [];
   if (!res.ok || list.length === 0) return null;
 
-  let scanned = 0;
+  // Non-advancing guard: if GHL ignored the cursor and handed back the same first
+  // conversation we started after, stop rather than loop the same page forever.
+  if (item.startAfter && list[0]?.id === item.startAfter) {
+    cursor.gaps.push(`inbound scan stopped — GHL conversation pagination did not advance past page ${item.page}`);
+    return null;
+  }
+
   let last: { id: string; date: string } | null = null;
   let sawInRange = false;
+  let budgetHit = false;
   for (const c of list) {
     const lmd = c.lastMessageDate ?? c.dateUpdated ?? null;
     const lts = lmd ? Date.parse(lmd) : NaN;
+    // Advance the resume cursor to EVERY conversation we look at (in range or not), so a
+    // continuation never re-scans what this item already passed.
     if (Number.isFinite(lts)) last = { id: c.id, date: lmd as string };
     // Sorted desc by last activity: a conversation whose last activity precedes the
     // window can only have older calls — skip its message fetch.
     if (Number.isFinite(lts) && lts < fromTs) continue;
     sawInRange = true;
-    if (scanned >= CONVS_PER_INBOUND_ITEM) {
-      // Budget for this item spent — leave the rest of the page for a follow-up item.
-      cursor.queue.push({ type: "inbound_page", startAfterDate: item.startAfterDate, startAfter: item.startAfter, page: item.page });
-      cursor.gaps.push(`inbound page ${item.page}: split after ${CONVS_PER_INBOUND_ITEM} conversations`);
-      return null;
-    }
-    const msgRes = await ghlFetch<{ messages?: { messages?: GhlMsg[] } }>(
-      cfg, "GET", `/conversations/${c.id}/messages?limit=100`,
+    // Wall-budget guard: stop the (potentially 100-deep) message-fetch loop before the
+    // isolate is killed, and resume AFTER the last conversation we processed.
+    if (Date.now() - startedAt >= WALL_BUDGET_MS) { budgetHit = true; break; }
+    const msgRes = await withTimeout(
+      ghlFetch<{ messages?: { messages?: GhlMsg[] } }>(cfg, "GET", `/conversations/${c.id}/messages?limit=100`),
+      GHL_FETCH_TIMEOUT_MS, FETCH_TIMED_OUT,
     );
     await sleep(GHL_PACE_MS);
-    scanned++;
     if (!msgRes.ok) continue;
     const inbound: GhlMsg[] = [];
     for (const m of msgRes.data?.messages?.messages ?? []) {
@@ -307,14 +331,19 @@ async function processInboundPage(
     await seedCalls(db, runId, inbound, { campaignId: null, customerId: null, dealId: null, business: null });
   }
 
-  // Stop paging when nothing on this page was in range (we've paged past the window)
-  // or the page cap is hit; otherwise queue the next page.
+  if (!last) return null;
+  // Ran out of budget mid-page → resume at the next page starting AFTER the last conv
+  // we processed (advances, so no re-scan). Same page number (still within this "page").
+  if (budgetHit) {
+    return { type: "inbound_page", startAfterDate: last.date, startAfter: last.id, page: item.page };
+  }
+  // Whole page done. Stop when it fell entirely before the window or the cap is hit;
+  // otherwise page forward from the last conversation.
   if (!sawInRange) return null;
   if (item.page >= MAX_INBOUND_PAGES) {
     cursor.gaps.push(`inbound scan stopped at page cap (${MAX_INBOUND_PAGES}) — older unattached inbound calls not scanned`);
     return null;
   }
-  if (!last) return null;
   return { type: "inbound_page", startAfterDate: last.date, startAfter: last.id, page: item.page + 1 };
 }
 
@@ -443,7 +472,7 @@ async function runBatch(
         }
       } else {
         try {
-          const next = await processInboundPage(db, cfg, runId, item, fromTs, toTs, cursor);
+          const next = await processInboundPage(db, cfg, runId, item, fromTs, toTs, cursor, startedAt);
           if (next) cursor.queue.push(next);
         } catch (e) {
           cursor.gaps.push(`inbound page ${item.page}: ${e instanceof Error ? e.message : String(e)}`);
