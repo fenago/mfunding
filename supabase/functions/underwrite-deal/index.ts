@@ -126,6 +126,7 @@ interface PerStatement {
   min_balance: number | null;
   negative_days: number | null;
   nsf_count: number | null;
+  overdraft_fee_total: number | null;
   // TOTAL count of deposit/credit transactions posted in the month (every credit
   // line). The "true" (non-padding) deposit count shown per-month is derived
   // deterministically in aggregation as deposit_count − padding items.
@@ -137,7 +138,7 @@ interface PerStatement {
   // owner-personal-income patterns) — a distinct bucket from padding. Whether it
   // counts as true revenue is a judgment call resolved by owner_payroll_treatment.
   questionable_deposits: Array<{ date?: string; desc?: string; amount?: number; source?: string; reason?: string }>;
-  mca_debits: Array<{ date?: string; desc?: string; amount?: number; cadence?: string; funder?: string; debit_class?: string }>;
+  mca_debits: Array<{ date?: string; desc?: string; amount?: number; occurrences?: number; cadence?: string; funder?: string; debit_class?: string }>;
   _filename?: string;
   // EVERY source filename represented by this statement — the byte-identical group
   // members PLUS any files period-dedup folded in. Drives the per-document ledger so
@@ -173,8 +174,12 @@ function extractionSystem(enabledCategories: string[]): string {
     "they may be legitimate business commission income OR personal employment pay — do NOT put them in " +
     "padding_deposits and do NOT silently drop them; capture each with the paying source and why it's ambiguous. " +
     "Also list RECURRING FINANCING DEBITS in mca_debits — scheduled fixed withdrawals that repay a financing " +
-    "obligation. For EACH occurrence you see (do NOT pre-aggregate — the underwriter groups them), return the " +
-    "amount, the cadence ('daily' | 'weekly' | 'monthly' | 'unknown'), the creditor as a clean 'funder' name " +
+    "obligation. AGGREGATE them: return ONE entry per distinct (funder + amount + cadence), with 'occurrences' = " +
+    "how many times that exact debit posted THIS month (e.g. a $540 daily remittance that hit 15 times → one entry, " +
+    "occurrences: 15). Do NOT list one line per date. mca_debits is REQUIRED whenever the statement shows recurring " +
+    "fixed daily/weekly remittances — a working-capital merchant's statement will have several; do NOT return an " +
+    "empty mca_debits array when such debits are present. For each entry return the " +
+    "amount, the 'occurrences' (integer, >=1), the cadence ('daily' | 'weekly' | 'monthly' | 'unknown'), the creditor as a clean 'funder' name " +
     "(strip transaction/account ids, e.g. 'Calabria Funding LLC 51647' -> 'Calabria Funding'; 'Dedicated Financ " +
     "D002703625' -> 'Dedicated Financial'), and a 'debit_class' classifying WHAT KIND of obligation it is: " +
     "'mca' = a merchant cash advance / future-receivables purchase remittance (typically daily or weekly, to an " +
@@ -184,6 +189,14 @@ function extractionSystem(enabledCategories: string[]): string {
     "vendor/supplier/bill ACH that is NOT a financing obligation. Put the SAME funder's two distinct recurring " +
     "amounts as SEPARATE lines (they are separate tranches — e.g. Calabria at $352.95/day and $230.77/day). " +
     "Return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
+    "CRITICAL — DEBIT vs CREDIT COLUMNS: total_deposits is the CREDITS/deposits total (money IN); total_withdrawals " +
+    "is the DEBITS total (money OUT). Some statement formats (e.g. Banc of California 'Activity & Balances Summary') " +
+    "print the DEBITS column BEFORE the Credits column, or a Totals row reading 'Debits $X | Credits $Y' — do NOT " +
+    "transpose them. total_deposits must equal the CREDITS figure and must reconcile with the deposit lines you " +
+    "list (their sum should be within a few percent of total_deposits); if your total_deposits is far above the sum " +
+    "of the credits you listed, you have likely grabbed the Debits column — re-read and use the Credits total. " +
+    "overdraft_fee_total = the SUM of overdraft / NSF / returned-item FEE charges debited this month (e.g. 7 x $40 " +
+    "OD fees = 280); 0 if none. " +
     "You MUST fill every field of the report_statement tool for THIS statement — do not omit any. " +
     "Every real bank statement shows an ENDING balance and a statement period, so closing_balance and month are " +
     "ALWAYS present, never null. Provide avg_daily_balance from the statement's average-daily-balance line if " +
@@ -218,6 +231,7 @@ const EXTRACTION_TOOL = {
       min_balance: { type: ["number", "null"] },
       negative_days: { type: "integer", description: "Count of days the balance was negative (0 if none)." },
       nsf_count: { type: ["integer", "null"] },
+      overdraft_fee_total: { type: ["number", "null"], description: "Sum of overdraft/NSF/returned-item FEE charges debited this month (0 if none)." },
       deposit_count: { type: "integer", description: "TOTAL count of deposit/credit transactions this month; never 0 when deposits exist." },
       deposits: {
         type: "array",
@@ -254,7 +268,8 @@ const EXTRACTION_TOOL = {
         items: {
           type: "object",
           properties: {
-            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" },
+            desc: { type: "string" }, amount: { type: "number" },
+            occurrences: { type: "integer", description: "Times this exact debit posted THIS month (>=1). Aggregate; do not list per-date." },
             cadence: { type: "string", description: "'daily' | 'weekly' | 'monthly' | 'unknown'" },
             funder: { type: "string", description: "Clean creditor name with transaction/account ids stripped." },
             debit_class: { type: "string", description: "'mca' | 'sba_loan' | 'equipment_lease' | 'consumer_finance' | 'vendor_other'" },
@@ -546,7 +561,10 @@ Deno.serve(async (req) => {
             // truncate the tool JSON mid-array and fail parsing, so give it room.
             // Forcing report_statement guarantees the required per-statement fields.
             {
-              system: exSystem, maxTokens: 8192, temperature: 0, jsonMode: true,
+              // 16k so a busy month's deposits + AGGREGATED debits never truncate the
+              // tool JSON (per-date debit listing once truncated July's mca_debits to
+              // empty; aggregation + headroom fixes it).
+              system: exSystem, maxTokens: 16384, temperature: 0, jsonMode: true,
               tools: [EXTRACTION_TOOL],
               toolChoice: { type: "tool", name: "report_statement" },
             },
@@ -631,6 +649,57 @@ Deno.serve(async (req) => {
     // Aggregation runs over the UNIQUE set only, so months_covered /
     // statements_analyzed / all revenue math never double-count a duplicate.
     const analyzed = perStatement.filter((s) => !s._error);
+    // money formatter — used across the position/timeline/refi blocks below and the
+    // scenarios/verdict later.
+    const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
+    // ── DEPOSIT-TOTAL INTEGRITY GUARD (deterministic, per statement) ────────────
+    // claude-sonnet-5's monthly total_deposits is unreliable on the Banc of
+    // California "Activity & Balances Summary" — across runs the SAME July statement
+    // came back as $40,293.21 (the DEBIT column, transposed), $6,703.86 (a wrong
+    // subtotal), and the true $31,326.20. The RELIABLE anchor is the sum of the CREDIT
+    // LINE ITEMS the model lists (consistently ~$31,326 every run). Two deterministic
+    // corrections, both keyed off that anchor:
+    //   1) TRANSPOSE — the listed credits reconcile with the WITHDRAWALS figure, not
+    //      the deposits figure ⇒ the columns were swapped; swap them back.
+    //   2) FLOOR — a reported total can never be BELOW the sum of its own listed
+    //      credit lines; when it is (understated / mis-read / truncated), raise it to
+    //      the sum. A legitimately-higher reported total (unlisted small deposits) is
+    //      left untouched.
+    // Both are flagged loudly; a residual large gap is surfaced as a heads-up.
+    const swapNotes: string[] = [];
+    const floorNotes: string[] = [];
+    const reconNotes: string[] = [];
+    for (const s of analyzed) {
+      const wd = num(s.total_withdrawals);
+      const sumLines = round2((s.deposits ?? []).reduce((a, d) => a + Math.abs(numOr0(d.amount)), 0));
+      if (sumLines <= 0) continue; // no listed credits to reconcile against
+      const label = s.month ?? s._filename ?? "a statement";
+      const nLines = (s.deposits ?? []).length;
+      const rel = (a: number, b: number) => Math.abs(a - b) / Math.max(Math.abs(b), 1);
+      // (1) Transpose.
+      const dep = num(s.total_deposits);
+      if (dep != null && wd != null && dep > 0 && wd > 0) {
+        if (rel(sumLines, dep) > 0.10 && rel(sumLines, wd) <= 0.05 && wd < dep) {
+          s.total_deposits = wd;
+          s.total_withdrawals = dep;
+          swapNotes.push(`${label}: debit/credit columns were transposed — corrected deposits to ${money(wd)} (matches the ${nLines} listed credit lines; the ${money(dep)} figure was the Debits column)`);
+        }
+      }
+      // (2) Floor to the sum of listed credit lines (>2% below is impossible-low).
+      const depNow = numOr0(s.total_deposits);
+      if (sumLines > depNow * 1.02) {
+        s.total_deposits = sumLines;
+        floorNotes.push(`${label}: deposit total ${money(depNow)} was below the ${nLines} listed credit lines summing ${money(sumLines)} — corrected up to ${money(sumLines)}`);
+      }
+      // (3) Residual heads-up: many unlisted deposits (reported materially ABOVE the
+      // itemized credits). Informational — the revenue basis is auditable.
+      const depFinal = numOr0(s.total_deposits);
+      if (depFinal > 0 && depFinal > sumLines * 1.15) {
+        reconNotes.push(`${label}: deposit total ${money(depFinal)} exceeds the ${nLines} itemized credit lines (${money(sumLines)}) by ${Math.round(rel(sumLines, depFinal) * 100)}% — includes unlisted deposits`);
+      }
+    }
+
     // DISTINCT calendar months — a two-account merchant's pair of April statements
     // is ONE month of coverage, not two. (statements_analyzed carries the file
     // count.) Fall back to the statement count only when no month labels came back.
@@ -647,6 +716,16 @@ Deno.serve(async (req) => {
       ending_balance: number | null;
       average_daily_balance: number | null;
       negative_days: number;
+      // Cash-stress + revenue-quality + holdback (per-month intelligence). mca_daily_debit
+      // and holdback_pct are filled in the MCA-positions block below (need the positions).
+      nsf_count: number;
+      overdraft_fees: number;
+      revenue_card: number;
+      revenue_cash_check: number;
+      revenue_transfer_other: number;
+      avg_daily_deposits: number;
+      mca_daily_debit: number | null;
+      holdback_pct: number | null;
     }> = [];
     const perMonthReported: number[] = [];
     const perMonthPadding: number[] = [];
@@ -712,6 +791,24 @@ Deno.serve(async (req) => {
       const trueDepositCount = totalDepositCount != null ? Math.max(0, totalDepositCount - paddingItems) : null;
       if (s.closing_balance == null) dataQualityIssues.push(`${label}: no ending balance extracted`);
       if (s.avg_daily_balance == null) dataQualityIssues.push(`${label}: no average daily balance extracted`);
+
+      // Revenue-quality split — card settlements (verifiable; funders trust them) vs
+      // cash/branch/check vs transfers/other. Card is detected on the descriptor
+      // (BNKCD / Merchant Bankcard / card settlement); transfers via classified_type
+      // or descriptor; the remainder is cash/check/other sales. Padding is already out
+      // of `net`, so we split the NON-padding credits proportionally to what we can class.
+      let card = 0, cashCheck = 0, transferOther = 0;
+      for (const dep of (s.deposits ?? [])) {
+        const amt = Math.abs(numOr0(dep.amount));
+        if (amt <= 0) continue;
+        const d = String(dep.desc ?? "").toLowerCase();
+        const ct = String(dep.classified_type ?? "").toLowerCase();
+        if (/bnkcd|bankcd|bankcard|merch.*card|card settle|cardconnect|mer bnkcd|deposit settle/.test(d)) card += amt;
+        else if (ct === "transfer" || /transfer|zelle|xfer|venmo|cashapp/.test(d)) transferOther += amt;
+        else if (/cash|branch|check|mobile dep|atm dep|remote dep/.test(d)) cashCheck += amt;
+        else transferOther += amt; // unlabeled credits: conservative — NOT card
+      }
+
       perMonth.push({
         month: s.month,
         deposit_count: trueDepositCount,
@@ -719,8 +816,17 @@ Deno.serve(async (req) => {
         ending_balance: s.closing_balance != null ? round2(numOr0(s.closing_balance)) : null,
         average_daily_balance: s.avg_daily_balance != null ? round2(numOr0(s.avg_daily_balance)) : null,
         negative_days: monthNegDays,
+        nsf_count: numOr0(s.nsf_count),
+        overdraft_fees: round2(Math.abs(numOr0(s.overdraft_fee_total))),
+        revenue_card: round2(card),
+        revenue_cash_check: round2(cashCheck),
+        revenue_transfer_other: round2(transferOther),
+        avg_daily_deposits: round2(net / BIZ_DAYS_PER_MONTH),
+        mca_daily_debit: null, // filled in the MCA-positions block below
+        holdback_pct: null,
       });
     }
+    const overdraftFeesTotal = round2(perMonth.reduce((a, r) => a + r.overdraft_fees, 0));
 
     // ── MCA POSITIONS — grouped, classified, LATEST-MONTH-anchored ──────────────
     // The core fix for the position-inflation bug. Previously mca_debits were unioned
@@ -747,24 +853,24 @@ Deno.serve(async (req) => {
       cadenceVotes: Record<string, number>; count: number;
     }
     const monthPositions = new Map<number, { label: string; positions: Map<string, PosAgg> }>();
-    // Cross-month funder rollups: class/cadence backfill + ended-position detection.
+    // Cross-month funder rollups: class/cadence backfill, timeline, ended detection.
     const funderClassVotes = new Map<string, Record<string, number>>();
     const funderCadenceVotes = new Map<string, Record<string, number>>();
+    const funderFirstMonthKey = new Map<string, number>();
+    const funderFirstMonthLabel = new Map<string, string>();
     const funderLastMonthKey = new Map<string, number>();
     const funderLastMonthLabel = new Map<string, string>();
     const funderDisplayName = new Map<string, string>();
     // Per-funder occurrence count per month — the deterministic CADENCE signal. A
     // daily remittance hits ~20x in a full month; a weekly one ~4-5x. Occurrence
-    // count beats the model's per-line cadence LABEL, which drifts run-to-run (it
-    // has called the same $500 weekly Dedicated remittance 'daily' on some runs,
-    // swinging the daily-debt figure). funderKey → monthKey → occurrence count.
+    // count beats the model's per-line cadence LABEL, which drifts run-to-run.
     const funderMonthCount = new Map<string, Map<number, number>>();
-    // An exact recurring AMOUNT's class per month — independent of the funder name.
-    // Guards against a latest-month funder RELABEL: e.g. a $1,175.08 weekly debit
-    // booked as "Marlin Leasing"/equipment_lease for 3 months, then relabeled
-    // "Dedicated Financial"/mca once — the amount's history keeps it out of the MCA
-    // stacking count. amount(rounded) → monthKey → class-vote counts.
-    const amountMonthClass = new Map<number, Map<number, Record<string, number>>>();
+    // Per-funder max recurring amount per month — drives change-event detection
+    // (Calabria upsized $272.73→$352.95; Dedicated stepped $500→$1,175.08).
+    const funderMonthMaxAmt = new Map<string, Map<number, number>>();
+    // Total occurrences of an exact (funder, amount) tranche across ALL months —
+    // the payments-to-date proxy for remaining-balance estimation.
+    const posTotalOcc = new Map<string, number>();
 
     for (const s of analyzed) {
       const t = Date.parse(`1 ${String(s.month ?? "").trim()}`);
@@ -783,32 +889,42 @@ Deno.serve(async (req) => {
         const klass = normDebitClass(dbt.debit_class);
         // A position = (funder, recurring amount). Many dated hits of the same daily
         // amount fold into one; a second distinct amount for the same funder is a tranche.
+        // Honor an aggregated 'occurrences' count when present (one entry per
+        // funder+amount with occurrences:N); falls back to 1 when the model lists
+        // one line per date. Either extraction style yields the same monthly count.
+        const occ = Math.max(1, Math.round(numOr0(dbt.occurrences) || 1));
         const posKey = `${funderKey}|${Math.round(amt)}`;
         let pos = bucket.positions.get(posKey);
         if (!pos) {
           pos = { funderKey, funderDisplay: cleanFunderDisplay(rawFunder), amount: amt, cadenceVotes: {}, count: 0 };
           bucket.positions.set(posKey, pos);
         }
-        pos.count += 1;
-        pos.cadenceVotes[cadence] = (pos.cadenceVotes[cadence] ?? 0) + 1;
+        pos.count += occ;
+        pos.cadenceVotes[cadence] = (pos.cadenceVotes[cadence] ?? 0) + occ;
+        posTotalOcc.set(posKey, (posTotalOcc.get(posKey) ?? 0) + occ);
         const fcv = funderClassVotes.get(funderKey) ?? {};
-        fcv[klass] = (fcv[klass] ?? 0) + 1; funderClassVotes.set(funderKey, fcv);
+        fcv[klass] = (fcv[klass] ?? 0) + occ; funderClassVotes.set(funderKey, fcv);
         if (cadence !== "unknown") {
           const fca = funderCadenceVotes.get(funderKey) ?? {};
-          fca[cadence] = (fca[cadence] ?? 0) + 1; funderCadenceVotes.set(funderKey, fca);
+          fca[cadence] = (fca[cadence] ?? 0) + occ; funderCadenceVotes.set(funderKey, fca);
         }
         if (!funderDisplayName.has(funderKey)) funderDisplayName.set(funderKey, cleanFunderDisplay(rawFunder));
+        if ((funderFirstMonthKey.get(funderKey) ?? Infinity) > mKey) {
+          funderFirstMonthKey.set(funderKey, mKey); funderFirstMonthLabel.set(funderKey, label);
+        }
         if ((funderLastMonthKey.get(funderKey) ?? -Infinity) < mKey) {
           funderLastMonthKey.set(funderKey, mKey); funderLastMonthLabel.set(funderKey, label);
         }
         const fmc = funderMonthCount.get(funderKey) ?? new Map<number, number>();
-        fmc.set(mKey, (fmc.get(mKey) ?? 0) + 1); funderMonthCount.set(funderKey, fmc);
-        const amtKey = Math.round(amt);
-        let amc = amountMonthClass.get(amtKey);
-        if (!amc) { amc = new Map(); amountMonthClass.set(amtKey, amc); }
-        const mc = amc.get(mKey) ?? {}; mc[klass] = (mc[klass] ?? 0) + 1; amc.set(mKey, mc);
+        fmc.set(mKey, (fmc.get(mKey) ?? 0) + occ); funderMonthCount.set(funderKey, fmc);
+        const fma = funderMonthMaxAmt.get(funderKey) ?? new Map<number, number>();
+        fma.set(mKey, Math.max(fma.get(mKey) ?? 0, amt)); funderMonthMaxAmt.set(funderKey, fma);
       }
     }
+
+    const latestKey = monthPositions.size ? Math.max(...monthPositions.keys()) : null;
+    const latestBucket = latestKey != null ? monthPositions.get(latestKey)! : null;
+    const latestMonthLabel = latestBucket?.label ?? null;
 
     const majorityVote = (votes: Record<string, number>): string | null => {
       let best: string | null = null; let bestN = -1;
@@ -819,44 +935,21 @@ Deno.serve(async (req) => {
     // month can't split one funder across two classes). Default 'mca' = conservative.
     const funderClass = (fk: string): DebitClass =>
       (majorityVote(funderClassVotes.get(fk) ?? {}) as DebitClass) || "mca";
-    // Cross-month majority CLASS for an exact recurring amount, counted by DISTINCT
-    // months (each month casts one vote — its own majority class for that amount).
-    const amountClassMajority = (amount: number): { klass: DebitClass; months: number } | null => {
-      const amc = amountMonthClass.get(Math.round(amount));
-      if (!amc) return null;
-      const monthsByClass: Record<string, number> = {};
-      for (const mc of amc.values()) {
-        const w = majorityVote(mc);
-        if (w) monthsByClass[w] = (monthsByClass[w] ?? 0) + 1;
-      }
-      const w = majorityVote(monthsByClass);
-      return w ? { klass: w as DebitClass, months: monthsByClass[w] } : null;
-    };
-    const resolveCadence = (pos: PosAgg): string => {
-      // (1) DETERMINISTIC occurrence count wins — it doesn't drift like the label.
-      //     A funder hitting ~daily shows up ~20x in a month; ~10x is already
-      //     unambiguously daily. A count of 2-8 in a FULL (non-latest) month proves
-      //     it is NOT daily (a daily funder would show ~20 there) ⇒ weekly. The
-      //     latest month is excluded from the "weekly" test because it may be partial.
-      const fm = funderMonthCount.get(pos.funderKey);
+    // Cadence per funder, deterministic occurrence-count first (see funderMonthCount).
+    const funderCadence = (fk: string): string => {
+      const fm = funderMonthCount.get(fk);
       if (fm) {
         let maxAll = 0; let maxFull = 0;
         for (const [mk, c] of fm) {
           if (c > maxAll) maxAll = c;
           if (mk !== latestKey && c > maxFull) maxFull = c;
         }
-        if (maxAll >= 10) return "daily";
-        if (maxFull >= 2) return "weekly";
+        if (maxAll >= 10) return "daily";   // ~daily hit rate in some month
+        if (maxFull >= 2) return "weekly";  // multiple hits in a FULL month, never near-daily
+        if (maxAll === 1) return "monthly"; // at most one hit in every month ⇒ monthly
       }
-      // (2) Fall back to the model's cadence LABEL for this position.
-      const known = Object.entries(pos.cadenceVotes).filter(([c]) => c !== "unknown");
-      if (known.length) return majorityVote(Object.fromEntries(known))!;
-      // (3) Then the same funder's label in other months, then a last-ditch heuristic.
-      const fk = majorityVote(funderCadenceVotes.get(pos.funderKey) ?? {});
-      if (fk) return fk;
-      if (pos.count >= 8) return "daily";
-      if (pos.count >= 2) return "weekly";
-      return "unknown";
+      const lbl = majorityVote(funderCadenceVotes.get(fk) ?? {});
+      return lbl ?? "weekly"; // last resort: weekly (mid estimate)
     };
     const dailyRateOf = (amount: number, cadence: string): number =>
       cadence === "daily" ? amount
@@ -864,51 +957,61 @@ Deno.serve(async (req) => {
       : cadence === "monthly" ? amount / BIZ_DAYS_PER_MONTH
       : amount / BIZ_DAYS_PER_WEEK; // unknown ≈ weekly (mid estimate, avoids understating)
 
-    const latestKey = monthPositions.size ? Math.max(...monthPositions.keys()) : null;
-    const latestBucket = latestKey != null ? monthPositions.get(latestKey)! : null;
-    const latestMonthLabel = latestBucket?.label ?? null;
-
-    const activePositions: Array<{ funder: string; cadence: string; amount: number; daily_amount: number; class: DebitClass }> = [];
+    // ── ACTIVE POSITIONS vs ONE-OFF/STEP-UP ANOMALIES (latest month) ──
+    // Within the latest month, group a funder's tranches. A tranche that RECURS
+    // (>=2 hits, or the funder's only amount) is a real position; a SINGLE hit of a
+    // second amount alongside a recurring stream is a one-off charge or a stepped-up/
+    // catch-up payment (Nav Kapital's lone $150 next to its $540/day stream; Dedicated
+    // stepping $500/wk → $1,175.08 on the 21st) — surfaced as an anomaly, NOT counted
+    // as its own daily position (which would double the funder's burden).
+    const activePositions: Array<{ funder: string; cadence: string; amount: number; daily_amount: number; class: DebitClass; occurrences_latest: number }> = [];
     const otherObligations: Array<{ funder: string; class: DebitClass; cadence: string; amount: number; monthly: number }> = [];
+    const positionAnomalies: Array<{ funder: string; class: DebitClass; amount: number; note: string }> = [];
     let mcaDailyLatest = 0;
     let otherObligationsMonthly = 0;
     const latestMcaFunders = new Set<string>();
     if (latestBucket) {
+      const byFunder = new Map<string, PosAgg[]>();
       for (const pos of latestBucket.positions.values()) {
-        let klass = funderClass(pos.funderKey);
-        // Stabilize a latest-month relabel: if this EXACT recurring amount was a
-        // NON-MCA obligation in >=2 earlier months, trust that over a lone 'mca'
-        // relabel (the Marlin-lease-as-Dedicated case). Only ever moves OUT of mca.
-        const amtMaj = amountClassMajority(pos.amount);
-        if (klass === "mca" && amtMaj && amtMaj.klass !== "mca" &&
-            NON_MCA_OBLIGATIONS.includes(amtMaj.klass) && amtMaj.months >= 2) {
-          klass = amtMaj.klass;
+        (byFunder.get(pos.funderKey) ?? byFunder.set(pos.funderKey, []).get(pos.funderKey)!).push(pos);
+      }
+      for (const [fk, poss] of byFunder) {
+        const klass = funderClass(fk);
+        const cadence = funderCadence(fk);
+        const maxCount = Math.max(...poss.map((p) => p.count));
+        for (const pos of poss) {
+          const recurring = pos.count >= 2 || maxCount === 1;
+          if (!recurring) {
+            positionAnomalies.push({
+              funder: pos.funderDisplay, class: klass, amount: round2(pos.amount),
+              note: `single ${money(pos.amount)} debit in ${latestMonthLabel} beside ${pos.funderDisplay}'s recurring ${cadence} stream — a one-off charge or a stepped-up/catch-up payment, not a separate position`,
+            });
+            continue;
+          }
+          const daily = round2(dailyRateOf(pos.amount, cadence));
+          if (klass === "mca") {
+            latestMcaFunders.add(fk);
+            mcaDailyLatest += daily;
+            activePositions.push({ funder: pos.funderDisplay, cadence, amount: round2(pos.amount), daily_amount: daily, class: "mca", occurrences_latest: pos.count });
+          } else if (NON_MCA_OBLIGATIONS.includes(klass)) {
+            const monthly = round2(daily * BIZ_DAYS_PER_MONTH);
+            otherObligationsMonthly += monthly;
+            otherObligations.push({ funder: pos.funderDisplay, class: klass, cadence, amount: round2(pos.amount), monthly });
+          }
+          // vendor_other: dropped — one-off supplier/bill ACHs are not a recurring obligation.
         }
-        const cadence = resolveCadence(pos);
-        const daily = round2(dailyRateOf(pos.amount, cadence));
-        if (klass === "mca") {
-          latestMcaFunders.add(pos.funderKey);
-          mcaDailyLatest += daily;
-          activePositions.push({ funder: pos.funderDisplay, cadence, amount: round2(pos.amount), daily_amount: daily, class: "mca" });
-        } else if (NON_MCA_OBLIGATIONS.includes(klass)) {
-          const monthly = round2(daily * BIZ_DAYS_PER_MONTH);
-          otherObligationsMonthly += monthly;
-          otherObligations.push({ funder: pos.funderDisplay, class: klass, cadence, amount: round2(pos.amount), monthly });
-        }
-        // vendor_other: dropped — one-off supplier/bill ACHs are not a recurring obligation.
       }
     }
     mcaDailyLatest = round2(mcaDailyLatest);
     otherObligationsMonthly = round2(otherObligationsMonthly);
     activePositions.sort((a, b) => b.daily_amount - a.daily_amount);
     otherObligations.sort((a, b) => b.monthly - a.monthly);
+    positionAnomalies.sort((a, b) => b.amount - a.amount);
 
-    // Ended MCA positions — funders that debited as MCA in an EARLIER month but are
-    // GONE from the latest month (paid off / ended). A positive paydown signal.
-    // The model's funder spelling drifts between months ("Unifie Fund" vs "Unified
-    // Funding", "Likety Cap" vs "Liketycap"), so match on a first-token prefix (>=4
-    // chars) to (a) NOT report a still-active funder as ended under a name variant,
-    // and (b) collapse variant duplicates within the ended list itself.
+    // Funder-variant matching — the model's spelling drifts month to month ("Unifie
+    // Fund" vs "Unified Funding", "Likety Cap" vs "Liketycap"); match on a first-token
+    // prefix (>=4 chars) so a still-active funder isn't reported as paid off, and
+    // variant duplicates collapse.
     const firstTok = (k: string) => k.split(" ")[0] ?? k;
     const sameFunder = (a: string, b: string): boolean => {
       const ta = firstTok(a); const tb = firstTok(b);
@@ -917,12 +1020,13 @@ Deno.serve(async (req) => {
       return short.length >= 4 && long.startsWith(short);
     };
     const activeFunderKeys = [...latestMcaFunders];
+
+    // ── ENDED MCA POSITIONS (paid off / gone from the latest month) ──
     const endedByKey = new Map<string, { funderKey: string; funder: string; monthKey: number; last_seen_month: string }>();
     for (const [fk, klassVotes] of funderClassVotes.entries()) {
       if (((majorityVote(klassVotes) as DebitClass) || "mca") !== "mca") continue;
       if (activeFunderKeys.some((af) => sameFunder(af, fk))) continue; // still open under any name variant
       const mKey = funderLastMonthKey.get(fk) ?? 0;
-      // Collapse variant duplicates — keep the most recently-seen spelling.
       const dupeKey = [...endedByKey.keys()].find((k) => sameFunder(k, fk));
       if (dupeKey) {
         const cur = endedByKey.get(dupeKey)!;
@@ -935,6 +1039,104 @@ Deno.serve(async (req) => {
       [...endedByKey.values()]
         .sort((a, b) => b.monthKey - a.monthKey)
         .map((e) => ({ funder: e.funder, last_seen_month: e.last_seen_month, class: "mca" as DebitClass }));
+
+    // ── POSITION TIMELINE — every recurring debitor across ALL months ──
+    // funder, class, cadence, representative amount, first/last seen, status, and any
+    // change event (upsize/step-up). The at-a-glance history the owner wants on screen.
+    const monthLabelOf = (mk: number) =>
+      new Date(Date.UTC(Math.floor(mk / 12), mk % 12, 1)).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+    const positionTimeline = [...funderClassVotes.keys()].map((fk) => {
+      const klass = funderClass(fk);
+      const cadence = funderCadence(fk);
+      const firstK = funderFirstMonthKey.get(fk) ?? 0;
+      const lastK = funderLastMonthKey.get(fk) ?? 0;
+      const active = activeFunderKeys.some((af) => sameFunder(af, fk));
+      // Representative amount: the funder's max amount in its last-seen month.
+      const lastMaxAmt = funderMonthMaxAmt.get(fk)?.get(lastK) ?? 0;
+      const firstMaxAmt = funderMonthMaxAmt.get(fk)?.get(firstK) ?? 0;
+      const changed = firstMaxAmt > 0 && lastMaxAmt > firstMaxAmt * 1.1;
+      return {
+        funder: funderDisplayName.get(fk) ?? fk,
+        class: klass,
+        cadence,
+        amount: round2(lastMaxAmt),
+        first_seen_month: funderFirstMonthLabel.get(fk) ?? monthLabelOf(firstK),
+        last_seen_month: funderLastMonthLabel.get(fk) ?? monthLabelOf(lastK),
+        status: (active ? "active" : "paid_off") as "active" | "paid_off",
+        change_event: changed
+          ? `increased from ${money(firstMaxAmt)} to ${money(lastMaxAmt)} (renewal / step-up)`
+          : null,
+        _firstK: firstK, _lastK: lastK,
+      };
+    }).sort((a, b) =>
+      (a.status === b.status ? b._lastK - a._lastK : a.status === "active" ? -1 : 1),
+    ).map(({ _firstK: _f, _lastK: _l, ...t }) => t);
+
+    // ── ESTIMATED REMAINING BALANCE per active MCA position ──
+    // original ≈ daily_rate × typical term (60 / 80 / 100 business days = low/mid/high),
+    // minus payments-to-date (actual debit occurrences × amount, across all statements).
+    // ESTIMATE ONLY — payoff letters required to confirm. Term-band low→high maps to
+    // shorter→longer assumed term (bigger original ⇒ bigger remaining).
+    const TERM_BANDS = { low: 60, mid: 80, high: 100 };
+    const remainingByPosition = activePositions.map((p) => {
+      const posKey = `${normFunder(p.funder)}|${Math.round(p.amount)}`;
+      const occ = posTotalOcc.get(posKey) ?? 0;
+      const paidToDate = round2(occ * p.amount);
+      const est = (biz: number) => Math.max(0, round2(p.daily_amount * biz - paidToDate));
+      return {
+        funder: p.funder, cadence: p.cadence, daily_amount: p.daily_amount,
+        payments_to_date: paidToDate, occurrences: occ,
+        remaining_low: est(TERM_BANDS.low), remaining_mid: est(TERM_BANDS.mid), remaining_high: est(TERM_BANDS.high),
+      };
+    });
+    const outstandingLow = round2(remainingByPosition.reduce((a, r) => a + r.remaining_low, 0));
+    const outstandingMid = round2(remainingByPosition.reduce((a, r) => a + r.remaining_mid, 0));
+    const outstandingHigh = round2(remainingByPosition.reduce((a, r) => a + r.remaining_high, 0));
+
+    // ── STACKING VELOCITY — positions added vs retired per month ──
+    const velocityByMonth = [...monthPositions.keys()].sort((a, b) => a - b).map((mk) => {
+      let added = 0; let ended = 0;
+      for (const [fk, votes] of funderClassVotes.entries()) {
+        if (((majorityVote(votes) as DebitClass) || "mca") !== "mca") continue;
+        if ((funderFirstMonthKey.get(fk) ?? -1) === mk) added += 1;
+        if ((funderLastMonthKey.get(fk) ?? -1) === mk && !activeFunderKeys.some((af) => sameFunder(af, fk))) ended += 1;
+      }
+      return { month: monthPositions.get(mk)!.label, added, ended };
+    });
+    const addedFunders = [...funderClassVotes.keys()]
+      .filter((fk) => funderClass(fk) === "mca" && (funderFirstMonthKey.get(fk) ?? 0) > (monthPositions.size ? Math.min(...monthPositions.keys()) : 0) && activeFunderKeys.some((af) => sameFunder(af, fk)))
+      .map((fk) => `${funderDisplayName.get(fk) ?? fk} (${funderFirstMonthLabel.get(fk) ?? ""})`);
+    const retiredFunders = endedPositions.map((e) => `${e.funder} (${e.last_seen_month})`);
+    const stackingVelocityNarrative =
+      (addedFunders.length
+        ? `Added ${addedFunders.length} MCA position(s) mid-period: ${addedFunders.join(", ")}. `
+        : "No new MCA positions added within the analyzed window. ") +
+      (retiredFunders.length
+        ? `Retired: ${retiredFunders.join(", ")}. ${addedFunders.length && retiredFunders.length ? "New advances are largely REPLACING retired ones (replacement stacking), not pure accumulation." : ""}`
+        : "");
+
+    // ── HOLDBACK RATIO per month — MCA daily remittance ÷ avg daily deposits ──
+    // >100% means the merchant remits more per day to advances than he deposits.
+    // Attach to the per-month rows (which already carry avg_daily_deposits).
+    for (const [mk, bucket] of monthPositions) {
+      let mcaDaily = 0;
+      const byF = new Map<string, PosAgg[]>();
+      for (const pos of bucket.positions.values()) (byF.get(pos.funderKey) ?? byF.set(pos.funderKey, []).get(pos.funderKey)!).push(pos);
+      for (const [fk, poss] of byF) {
+        if (funderClass(fk) !== "mca") continue;
+        const cad = funderCadence(fk);
+        const maxC = Math.max(...poss.map((p) => p.count));
+        for (const pos of poss) {
+          if (!(pos.count >= 2 || maxC === 1)) continue; // skip one-off/step-up hits
+          mcaDaily += dailyRateOf(pos.amount, cad);
+        }
+      }
+      const row = perMonth.find((r) => r.month && Date.parse(`1 ${r.month}`) === Date.parse(`1 ${bucket.label}`));
+      if (row) {
+        row.mca_daily_debit = round2(mcaDaily);
+        row.holdback_pct = row.avg_daily_deposits > 0 ? round2((mcaDaily / row.avg_daily_deposits) * 100) : null;
+      }
+    }
 
     const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
     const reportedAvgMonthlyRevenue = round2(avg(perMonthReported));
@@ -960,6 +1162,71 @@ Deno.serve(async (req) => {
     const revenueQualityPct = reportedAvgMonthlyRevenue > 0
       ? round2((trueAvgMonthlyRevenue / reportedAvgMonthlyRevenue) * 100)
       : 100;
+
+    // ── NORMAL-SEASON vs PARTIAL/WORST month revenue ──
+    // The latest statement is often the CURRENT (partial) month — including it drags
+    // the average below the merchant's real run-rate. Compute a normal-season average
+    // over the FULL months only when the latest month looks partial (its net is well
+    // below the others), plus the worst-month figure, for the refi feasibility read
+    // and the judge (which weighs a real seasonal dip without fabricating revenue).
+    const netByMonthK = new Map<number, number>();
+    analyzed.forEach((s, i) => {
+      const t = Date.parse(`1 ${String(s.month ?? "").trim()}`);
+      if (Number.isNaN(t)) return;
+      const mk = new Date(t).getUTCFullYear() * 12 + new Date(t).getUTCMonth();
+      netByMonthK.set(mk, (netByMonthK.get(mk) ?? 0) + (effPerMonthNet[i] ?? 0));
+    });
+    const otherMonthsNet = [...netByMonthK.entries()].filter(([mk]) => mk !== latestKey).map(([, v]) => v);
+    const latestMonthNet = latestKey != null ? (netByMonthK.get(latestKey) ?? 0) : 0;
+    const latestIsPartial = otherMonthsNet.length >= 1 && latestMonthNet > 0 &&
+      latestMonthNet < 0.7 * avg(otherMonthsNet);
+    const normalSeasonAvgMonthlyRevenue = latestIsPartial && otherMonthsNet.length >= 1
+      ? round2(avg(otherMonthsNet))
+      : trueAvgMonthlyRevenue;
+    const allMonthsNetVals = [...netByMonthK.values()];
+    const worstMonthRevenue = allMonthsNetVals.length ? round2(Math.min(...allMonthsNetVals)) : trueAvgMonthlyRevenue;
+
+    // ── REFI / CONSOLIDATION FEASIBILITY ──
+    // Roll the estimated outstanding MCA balance (mid-case) into one longer-term
+    // payment: payback = outstanding × factor, spread over 12/18/24 months. Each
+    // monthly payment is measured against BOTH normal-season revenue and the worst
+    // month. A consolidation is a longer-term product than an MCA, so the viability
+    // band is more lenient than the MCA holdback cap: <=15% of revenue = viable,
+    // 15-22% = tight, >22% = not viable. Payoff letters required to confirm balances.
+    const REFI_FACTOR = 1.45;
+    const refiPayback = round2(outstandingMid * REFI_FACTOR);
+    const refiViabilityOf = (pct: number): "viable" | "tight" | "not_viable" =>
+      pct <= 15 ? "viable" : pct <= 22 ? "tight" : "not_viable";
+    const refiTerms = [12, 18, 24].map((months) => {
+      const monthly = round2(refiPayback / months);
+      const pctNormal = normalSeasonAvgMonthlyRevenue > 0 ? round2((monthly / normalSeasonAvgMonthlyRevenue) * 100) : null;
+      const pctWorst = worstMonthRevenue > 0 ? round2((monthly / worstMonthRevenue) * 100) : null;
+      return {
+        months, monthly_payment: monthly,
+        pct_of_normal_revenue: pctNormal, pct_of_worst_month: pctWorst,
+        verdict: pctNormal != null ? refiViabilityOf(pctNormal) : ("tight" as "viable" | "tight" | "not_viable"),
+      };
+    });
+    const bestRefi = refiTerms.find((t) => t.verdict === "viable") ?? refiTerms.find((t) => t.verdict === "tight") ?? null;
+    const refiFeasible = refiTerms.some((t) => t.verdict === "viable");
+    const refiVerdict = outstandingMid <= 0
+      ? "No meaningful MCA balance to consolidate."
+      : bestRefi
+        ? `Consolidating ~${money(outstandingMid)} at ${bestRefi.months}mo ≈ ${money(bestRefi.monthly_payment)}/mo = ${bestRefi.pct_of_normal_revenue}% of normal-season revenue — ${bestRefi.verdict === "viable" ? "VIABLE" : "TIGHT"} pending payoff letters.`
+        : `Even at 24 months, consolidating ~${money(outstandingMid)} lands above ${refiTerms[refiTerms.length - 1].pct_of_normal_revenue}% of normal-season revenue — not viable in-network without more revenue.`;
+    const refi = {
+      est_outstanding_low: outstandingLow,
+      est_outstanding_mid: outstandingMid,
+      est_outstanding_high: outstandingHigh,
+      factor: REFI_FACTOR,
+      payback_mid: refiPayback,
+      normal_season_revenue: normalSeasonAvgMonthlyRevenue,
+      worst_month_revenue: worstMonthRevenue,
+      terms: refiTerms,
+      feasible: refiFeasible,
+      verdict: refiVerdict,
+      caveat: "Balances are ESTIMATES (daily rate × 60/80/100 business-day term − payments observed); payoff letters required to confirm.",
+    };
 
     // Existing daily MCA debit — prefer the deal's known VCF daily debit if set,
     // else the LATEST-MONTH active-MCA daily remittance (NOT a cross-month union of
@@ -1116,9 +1383,6 @@ Deno.serve(async (req) => {
         : null,
     };
 
-    // money formatter — hoisted here (was in the flags block) so the scenario
-    // notes/verdict below can use it too.
-    const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
     // ── FUNDER BOXES (for path box-matching AND the judge minimums) ──
     // Load every active MCA program once, with the lender's onboarding STATUS +
@@ -1303,6 +1567,19 @@ Deno.serve(async (req) => {
       });
     }
 
+    // 2b) REFI / CONSOLIDATION — roll the stack into one longer-term payment. Viable
+    //     when the consolidated payment fits normal-season revenue at some term.
+    if (refi.feasible && bestRefi) {
+      paths.push({
+        rank: 0, key: "refi_consolidation",
+        label: `Consolidate the stack → ~${money(bestRefi.monthly_payment)}/mo at ${bestRefi.months}mo`,
+        action: `Pull payoff letters on the ${activePositions.length} active position(s), then place a consolidation of ~${money(outstandingMid)} at ${bestRefi.months} months — one payment ≈ ${money(bestRefi.monthly_payment)}/mo (${bestRefi.pct_of_normal_revenue}% of normal-season revenue)`,
+        expected_note: `Est. outstanding ~${money(outstandingLow)}–${money(outstandingHigh)} (mid ${money(outstandingMid)}). ${refi.verdict}`,
+        // Consolidation commission is on the consolidated amount.
+        expected_revenue: outstandingMid * POINTS,
+      });
+    }
+
     // 3) MICRO-MCA TIER — real revenue but below mainstream live floors.
     if (trueAvgMonthlyRevenue >= COUNTER_FLOOR && trueAvgMonthlyRevenue < 15000) {
       const microNames = ["Bitty Advance", "Greenbox Capital", "Giggle Finance"];
@@ -1409,6 +1686,22 @@ Deno.serve(async (req) => {
       ended_positions: endedPositions,
       other_obligations: otherObligations,
       other_obligations_monthly: otherObligationsMonthly,
+      // One-off / step-up hits excluded from the daily position count (Nav's lone $150;
+      // Dedicated's $500/wk → $1,175.08 catch-up) — surfaced so they aren't invisible.
+      position_anomalies: positionAnomalies,
+      // Position intelligence blocks (all additive; older runs lack them, UI hides).
+      position_timeline: positionTimeline,
+      remaining_by_position: remainingByPosition,
+      est_outstanding_low: outstandingLow,
+      est_outstanding_mid: outstandingMid,
+      est_outstanding_high: outstandingHigh,
+      refi,
+      stacking_velocity: velocityByMonth,
+      stacking_velocity_narrative: stackingVelocityNarrative,
+      overdraft_fees_total: overdraftFeesTotal,
+      normal_season_avg_monthly_revenue: normalSeasonAvgMonthlyRevenue,
+      worst_month_revenue: worstMonthRevenue,
+      latest_month_is_partial: latestIsPartial,
       safe_daily_debit_capacity: safeDailyDebitCapacity,
       max_affordable_advance: maxAffordableAdvance,
       amount_requested: amountRequested,
@@ -1546,6 +1839,27 @@ Deno.serve(async (req) => {
         message: `Per-month data repaired on ${dataQualityIssues.length} field(s): ${dataQualityIssues.join("; ")}.`,
       });
     }
+    if (swapNotes.length > 0) {
+      flags.push({
+        code: "debit_credit_swap",
+        severity: "critical",
+        message: `Corrected transposed debit/credit totals on ${swapNotes.length} statement(s): ${swapNotes.join("; ")}.`,
+      });
+    }
+    if (floorNotes.length > 0) {
+      flags.push({
+        code: "deposit_total_corrected",
+        severity: "critical",
+        message: `Deposit total was below the itemized credit lines on ${floorNotes.length} statement(s) and was corrected up: ${floorNotes.join("; ")}.`,
+      });
+    }
+    if (reconNotes.length > 0) {
+      flags.push({
+        code: "deposit_reconciliation",
+        severity: "info",
+        message: `Deposit total exceeds itemized credit lines on ${reconNotes.length} statement(s) (unlisted deposits): ${reconNotes.join("; ")}.`,
+      });
+    }
     // docs_not_analyzed SAFETY NET: shout ONLY about docs still typed "other" —
     // after the content-classifier preflight, "other" means genuinely unidentifiable,
     // and an unidentified file could be a statement (the SIS failure). A photo ID or
@@ -1668,6 +1982,18 @@ Deno.serve(async (req) => {
       "finance — that are cash-flow CONTEXT but do NOT count as MCA stacking). Base the stacking read on the ACTIVE " +
       "count and the provided debt_service_pct; NEVER sum positions across months, and NEVER call a paid-off or " +
       "non-MCA debit an open MCA position. " +
+      "The metrics also carry: 'position_timeline' (every debitor with first/last-seen + status + any renewal/step-up " +
+      "change event), 'position_anomalies' (one-off or stepped-up hits excluded from the daily count — mention a " +
+      "material step-up), 'stacking_velocity' + 'stacking_velocity_narrative' (positions added vs retired per month — " +
+      "call out REPLACEMENT stacking if new advances are replacing retired ones), per-month 'holdback_pct' (daily MCA " +
+      "remittance ÷ daily deposits; >100% means he remits more than he deposits — a serious stress signal), " +
+      "'overdraft_fees_total' and per-month NSF/negative-day/overdraft cash-stress, and per-month revenue-quality " +
+      "split (card vs cash/check vs transfer/other — card is verifiable, funders trust it). " +
+      "REFI/CONSOLIDATION: 'refi' holds the estimated outstanding balance (low/mid/high — ESTIMATES, payoff letters " +
+      "required) and a consolidation payment at 12/18/24 months vs normal-season AND worst-month revenue. When " +
+      "refi.feasible is true this is a REAL play — cite refi.verdict and make consolidation a recommended path. " +
+      "When the latest month is partial (latest_month_is_partial), weigh 'normal_season_avg_monthly_revenue' as the " +
+      "run-rate (a genuine seasonal dip), not the blended average, but say so explicitly. " +
       "This is INTERNAL underwriting done BEFORE funder submission from the submitted docs ALONE — you must " +
       "NOT ask the merchant anything. Where a judgment call was made (see ASSUMPTIONS), STATE the key " +
       "assumption(s) in the narrative and give the SENSITIVITY: the base case (assumption holds) vs. the " +
@@ -1857,7 +2183,7 @@ function emptyStatement(filename: string, err: string, filenames?: string[]): Pe
   return {
     month: null, account_last4: null, opening_balance: null, closing_balance: null,
     total_deposits: null, total_withdrawals: null, avg_daily_balance: null,
-    min_balance: null, negative_days: null, nsf_count: null, deposit_count: null,
+    min_balance: null, negative_days: null, nsf_count: null, overdraft_fee_total: null, deposit_count: null,
     deposits: [], padding_deposits: [], questionable_deposits: [], mca_debits: [],
     _filename: filename, _filenames: filenames ?? [filename], _error: err,
   };
@@ -1981,6 +2307,7 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
     min_balance: num(p.min_balance),
     negative_days: num(p.negative_days),
     nsf_count: num(p.nsf_count),
+    overdraft_fee_total: num(p.overdraft_fee_total),
     deposit_count: num(p.deposit_count),
     deposits: arr(p.deposits),
     padding_deposits: arr(p.padding_deposits),

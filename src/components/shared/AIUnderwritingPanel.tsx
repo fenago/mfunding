@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, ReferenceLine,
 } from "recharts";
 import {
   SparklesIcon, ArrowPathIcon, ExclamationTriangleIcon, ChevronDownIcon, CheckCircleIcon,
@@ -11,6 +11,8 @@ import {
   type DealUnderwriting, type UWFlag, type UWMetrics, type UWPerMonth, type UWAffordability,
   type UWScenario, type UWPath, type UWDocumentLedgerRow, type AffordabilityRating, type RiskRating,
   type UWPosition, type UWEndedPosition, type UWOtherObligation,
+  type UWTimelineRow, type UWRemainingPosition, type UWRefi, type UWRefiTerm,
+  type UWVelocityRow, type UWPositionAnomaly,
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -401,6 +403,13 @@ function ResultView({ r }: { r: DealUnderwriting }) {
               <SparklesIcon className="w-3.5 h-3.5" /> Owner context factored in
             </span>
           )}
+          {m.latest_month_is_partial && (
+            <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
+              Latest month partial{m.normal_season_avg_monthly_revenue != null && (
+                <> — normal-season avg {money(m.normal_season_avg_monthly_revenue)}/mo</>
+              )}
+            </span>
+          )}
           <span className="text-xs opacity-80 ml-auto">
             {/* Months = DISTINCT calendar months, computed from the statement labels
                 so runs stored before the months_covered fix also render right. */}
@@ -448,6 +457,17 @@ function ResultView({ r }: { r: DealUnderwriting }) {
         <ScenariosSection scenarios={m.scenarios} verdict={m.scenarios_verdict} />
       ) : null}
 
+      {/* Estimated remaining balance + refi/consolidation feasibility */}
+      {((m.remaining_by_position && m.remaining_by_position.length > 0) || m.refi) && (
+        <RemainingRefiSection
+          positions={m.remaining_by_position}
+          refi={m.refi}
+          outstandingLow={m.est_outstanding_low}
+          outstandingMid={m.est_outstanding_mid}
+          outstandingHigh={m.est_outstanding_high}
+        />
+      )}
+
       {/* Metric cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
         <Metric label="Avg daily balance" value={money(m.avg_daily_balance)} />
@@ -477,8 +497,26 @@ function ResultView({ r }: { r: DealUnderwriting }) {
         />
       )}
 
+      {/* Position timeline — every recurring debitor across all months, with
+          renewals/step-ups flagged and one-off anomalies called out */}
+      {m.position_timeline && m.position_timeline.length > 0 && (
+        <TimelineSection rows={m.position_timeline} anomalies={m.position_anomalies} />
+      )}
+
+      {/* Stacking velocity — positions added vs retired, month over month */}
+      {m.stacking_velocity && m.stacking_velocity.length > 0 && (
+        <StackingVelocitySection rows={m.stacking_velocity} narrative={m.stacking_velocity_narrative} />
+      )}
+
       {/* Explicit per-month metrics table */}
-      {m.per_month && m.per_month.length > 0 && <PerMonthTable rows={m.per_month} />}
+      {m.per_month && m.per_month.length > 0 && (
+        <PerMonthTable rows={m.per_month} overdraftFeesTotal={m.overdraft_fees_total} />
+      )}
+
+      {/* Holdback ratio — MCA remittances vs deposits, month over month */}
+      {m.per_month && m.per_month.some((row) => row.holdback_pct != null) && (
+        <HoldbackRatioChart rows={m.per_month} />
+      )}
 
       {/* Per-document coverage ledger — every uploaded file → its disposition */}
       {m.document_ledger && m.document_ledger.length > 0 && <DocumentLedger rows={m.document_ledger} />}
@@ -927,6 +965,260 @@ function PositionsSection({
   );
 }
 
+// ── Position timeline — every recurring debitor across all months ────────────
+// Renewals/step-ups surface as an amber note under the funder name (change_event);
+// one-off anomalies deliberately excluded from the position count are called out
+// below the table so a closer never wonders "why isn't that debit a position?"
+const TIMELINE_CLASS_LABEL: Record<string, string> = {
+  mca: "MCA",
+  sba_loan: "SBA / term loan",
+  equipment_lease: "Equipment lease",
+  consumer_finance: "Consumer finance",
+  vendor_other: "Vendor / other",
+};
+function TimelineSection({ rows, anomalies }: { rows: UWTimelineRow[]; anomalies?: UWPositionAnomaly[] }) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 overflow-x-auto">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Position timeline</h4>
+        <span className="text-xs text-gray-400">every recurring debitor across all months</span>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
+            <th className="text-left py-2 pr-4 font-medium">Funder</th>
+            <th className="text-left py-2 px-4 font-medium">Class</th>
+            <th className="text-left py-2 px-4 font-medium">Cadence</th>
+            <th className="text-right py-2 px-4 font-medium">Amount</th>
+            <th className="text-left py-2 px-4 font-medium">First seen</th>
+            <th className="text-left py-2 px-4 font-medium">Last seen</th>
+            <th className="text-left py-2 pl-4 font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className="border-b border-gray-100 dark:border-gray-700 last:border-0 align-top">
+              <td className="py-2 pr-4">
+                <div className="font-medium text-gray-900 dark:text-white whitespace-nowrap">{row.funder}</div>
+                {row.change_event && (
+                  <div className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 max-w-[220px] leading-snug">
+                    {row.change_event}
+                  </div>
+                )}
+              </td>
+              <td className="py-2 px-4 text-[10px] font-semibold uppercase tracking-wide text-gray-400 whitespace-nowrap">
+                {TIMELINE_CLASS_LABEL[row.class] ?? row.class.replace(/_/g, " ")}
+              </td>
+              <td className="py-2 px-4 text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                {row.cadence === "unknown" ? "—" : row.cadence}
+              </td>
+              <td className="py-2 px-4 text-right font-medium text-gray-900 dark:text-white whitespace-nowrap">
+                {money(row.amount)}
+              </td>
+              <td className="py-2 px-4 text-gray-600 dark:text-gray-400 whitespace-nowrap">{row.first_seen_month}</td>
+              <td className="py-2 px-4 text-gray-600 dark:text-gray-400 whitespace-nowrap">{row.last_seen_month}</td>
+              <td className="py-2 pl-4 whitespace-nowrap">
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded-full ${
+                    row.status === "active"
+                      ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {row.status === "active" ? "ACTIVE" : "PAID OFF"}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {anomalies && anomalies.length > 0 && (
+        <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 space-y-1.5">
+          <div className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400 mb-1.5">
+            Excluded one-off / step-up debits ({anomalies.length}) — not counted as positions
+          </div>
+          {anomalies.map((a, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-400">
+              <ExclamationTriangleIcon className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+              <span>
+                <span className="font-medium text-gray-900 dark:text-white">{a.funder}</span>
+                {" "}· {money(a.amount)} — {a.note}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Estimated remaining balance + refi/consolidation feasibility ─────────────
+// Ranged remaining-balance estimates per active position (60/80/100 biz-day
+// assumed terms), rolled into a total, plus whether consolidating that total
+// into one payment pencils out against normal-season and worst-month revenue.
+const REFI_VERDICT_BADGE: Record<UWRefiTerm["verdict"], string> = {
+  viable: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
+  tight: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
+  not_viable: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300",
+};
+function RemainingRefiSection({
+  positions, refi, outstandingLow, outstandingMid, outstandingHigh,
+}: {
+  positions?: UWRemainingPosition[];
+  refi?: UWRefi;
+  outstandingLow?: number;
+  outstandingMid?: number;
+  outstandingHigh?: number;
+}) {
+  const hasPositions = !!positions && positions.length > 0;
+  const hasTotal = outstandingLow != null && outstandingHigh != null;
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Estimated remaining balance & refi feasibility</h4>
+        <span className="text-xs text-gray-400">estimates — payoff letters required</span>
+      </div>
+
+      {hasPositions && (
+        <div className="overflow-x-auto mb-4">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
+                <th className="text-left py-2 pr-4 font-medium">Funder</th>
+                <th className="text-right py-2 px-4 font-medium">Daily</th>
+                <th className="text-right py-2 px-4 font-medium">Paid to date</th>
+                <th className="text-right py-2 pl-4 font-medium">Est. remaining</th>
+              </tr>
+            </thead>
+            <tbody>
+              {positions!.map((p, i) => (
+                <tr key={i} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
+                  <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white whitespace-nowrap">{p.funder}</td>
+                  <td className="py-2 px-4 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">{money(p.daily_amount)}/day</td>
+                  <td className="py-2 px-4 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">{money(p.payments_to_date)}</td>
+                  <td className="py-2 pl-4 text-right whitespace-nowrap">
+                    {money(p.remaining_low)}–{money(p.remaining_high)}{" "}
+                    <span className="font-semibold text-gray-900 dark:text-white">({money(p.remaining_mid)} mid)</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {hasTotal && (
+        <div className="text-sm text-gray-700 dark:text-gray-300 mb-4">
+          Est. total outstanding{" "}
+          <span className="font-semibold text-gray-900 dark:text-white">{money(outstandingLow)}–{money(outstandingHigh)}</span>
+          {" "}(mid <span className="font-semibold text-gray-900 dark:text-white">{money(outstandingMid)}</span>)
+        </div>
+      )}
+
+      {refi && (
+        <div className="border-t border-gray-100 dark:border-gray-700 pt-4">
+          <p className="text-sm font-medium text-gray-900 dark:text-white mb-3">{refi.verdict}</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
+                  <th className="text-left py-2 pr-4 font-medium">Term</th>
+                  <th className="text-right py-2 px-4 font-medium">Monthly payment</th>
+                  <th className="text-right py-2 px-4 font-medium">% normal revenue</th>
+                  <th className="text-right py-2 px-4 font-medium">% worst month</th>
+                  <th className="text-left py-2 pl-4 font-medium">Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                {refi.terms.map((t, i) => (
+                  <tr key={i} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
+                    <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white whitespace-nowrap">{t.months} mo</td>
+                    <td className="py-2 px-4 text-right text-gray-900 dark:text-white whitespace-nowrap">{money(t.monthly_payment)}</td>
+                    <td className="py-2 px-4 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">{pct(t.pct_of_normal_revenue)}</td>
+                    <td className="py-2 px-4 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">{pct(t.pct_of_worst_month)}</td>
+                    <td className="py-2 pl-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded-full uppercase ${REFI_VERDICT_BADGE[t.verdict]}`}>
+                        {t.verdict.replace(/_/g, " ")}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {refi.caveat && <p className="mt-3 text-xs text-gray-400 italic">{refi.caveat}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Stacking velocity — positions added vs retired, month over month ─────────
+function StackingVelocitySection({ rows, narrative }: { rows: UWVelocityRow[]; narrative?: string }) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Stacking velocity</h4>
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={rows}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#30363D" opacity={0.3} />
+          <XAxis dataKey="month" tick={{ fontSize: 11 }} stroke="#8B949E" />
+          <YAxis tick={{ fontSize: 11 }} stroke="#8B949E" allowDecimals={false} />
+          <Tooltip
+            contentStyle={TOOLTIP_STYLE}
+            labelStyle={{ color: "#F0F6FC", fontWeight: 600 }}
+            itemStyle={{ color: "#F0F6FC" }}
+            formatter={(value, name) => [Number(value) || 0, name === "added" ? "Added" : "Ended"]}
+          />
+          <Bar dataKey="added" name="added" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="ended" name="ended" fill="#2DD4BF" radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+      {narrative && (
+        <p className="mt-3 text-sm text-gray-700 dark:text-gray-300 leading-relaxed">{narrative}</p>
+      )}
+    </div>
+  );
+}
+
+// ── Holdback ratio — MCA remittances vs deposits, month over month ───────────
+// >=100% means the merchant is remitting more to advances than it's depositing
+// that month — a hard distress signal, flagged with a 100% reference line.
+function HoldbackRatioChart({ rows }: { rows: UWPerMonth[] }) {
+  const data = rows
+    .filter((r) => r.holdback_pct != null)
+    .map((r) => ({ month: r.month ?? "—", holdback_pct: r.holdback_pct as number }));
+  if (data.length === 0) return null;
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <h4 className="font-semibold text-gray-900 dark:text-white mb-1">Holdback ratio — MCA remittances vs deposits</h4>
+      <p className="text-xs text-gray-400 mb-4">
+        Share of each month's deposits going out to MCA remittances —{" "}
+        <span className="font-medium text-gray-500 dark:text-gray-400">100%+ means remitting more than it takes in</span>
+      </p>
+      <ResponsiveContainer width="100%" height={200}>
+        <BarChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#30363D" opacity={0.3} />
+          <XAxis dataKey="month" tick={{ fontSize: 11 }} stroke="#8B949E" />
+          <YAxis tick={{ fontSize: 11 }} stroke="#8B949E" tickFormatter={(v: number) => `${v}%`} />
+          <Tooltip
+            contentStyle={TOOLTIP_STYLE}
+            labelStyle={{ color: "#F0F6FC", fontWeight: 600 }}
+            itemStyle={{ color: "#F0F6FC" }}
+            formatter={(value) => [`${Math.round(Number(value) || 0)}%`, "Holdback"]}
+          />
+          <ReferenceLine y={100} stroke="#EF4444" strokeDasharray="4 4" />
+          <Bar dataKey="holdback_pct" radius={[4, 4, 0, 0]}>
+            {data.map((d, i) => (
+              <Cell key={i} fill={d.holdback_pct >= 100 ? "#EF4444" : d.holdback_pct >= 70 ? "#F59E0B" : "#2DD4BF"} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 // ── Explicit per-month metrics table (chronological) ─────────────────────────
 // One row per CALENDAR month: same-month statements from different bank accounts
 // merge — flows and balances SUM (total deposits, total cash across accounts),
@@ -935,6 +1227,10 @@ function PositionsSection({
 function mergeMonths(rows: UWPerMonth[]): (UWPerMonth & { accounts: number })[] {
   const nsum = (a: number | null | undefined, b: number | null | undefined): number | null =>
     a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+  // Optional (additive) fields are typed `number | undefined`, not `| null` —
+  // a separate summer keeps `undefined` for older runs that lack them entirely.
+  const osum = (a: number | undefined, b: number | undefined): number | undefined =>
+    a == null && b == null ? undefined : (a ?? 0) + (b ?? 0);
   const by = new Map<string, UWPerMonth & { accounts: number }>();
   rows.forEach((r, i) => {
     const key = r.month ?? `Month ${i + 1}`;
@@ -949,6 +1245,11 @@ function mergeMonths(rows: UWPerMonth[]): (UWPerMonth & { accounts: number })[] 
     cur.ending_balance = nsum(cur.ending_balance, r.ending_balance);
     cur.average_daily_balance = nsum(cur.average_daily_balance, r.average_daily_balance);
     cur.negative_days = (cur.negative_days ?? 0) + (r.negative_days ?? 0);
+    cur.nsf_count = osum(cur.nsf_count, r.nsf_count);
+    cur.overdraft_fees = osum(cur.overdraft_fees, r.overdraft_fees);
+    cur.revenue_card = osum(cur.revenue_card, r.revenue_card);
+    cur.revenue_cash_check = osum(cur.revenue_cash_check, r.revenue_cash_check);
+    cur.revenue_transfer_other = osum(cur.revenue_transfer_other, r.revenue_transfer_other);
   });
   return [...by.values()].sort((a, b) => {
     const ta = Date.parse(`1 ${a.month}`);
@@ -957,11 +1258,24 @@ function mergeMonths(rows: UWPerMonth[]): (UWPerMonth & { accounts: number })[] 
   });
 }
 
-function PerMonthTable({ rows: rawRows }: { rows: UWPerMonth[] }) {
+function PerMonthTable({ rows: rawRows, overdraftFeesTotal }: { rows: UWPerMonth[]; overdraftFeesTotal?: number }) {
   const rows = mergeMonths(rawRows);
+  // Revenue-quality columns are additive — only show them if at least one month
+  // actually carries the breakdown (older runs won't).
+  const hasRevenueQuality = rows.some(
+    (r) => r.revenue_card != null || r.revenue_cash_check != null || r.revenue_transfer_other != null,
+  );
+  const hasCashStress = rows.some((r) => r.nsf_count != null || r.overdraft_fees != null);
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 overflow-x-auto">
-      <h4 className="font-semibold text-gray-900 dark:text-white mb-4">Per-month metrics</h4>
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Per-month metrics</h4>
+        {overdraftFeesTotal != null && overdraftFeesTotal > 0 && (
+          <span className="text-sm font-semibold text-red-600 dark:text-red-400">
+            {money(overdraftFeesTotal)} total overdraft fees
+          </span>
+        )}
+      </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
@@ -970,13 +1284,26 @@ function PerMonthTable({ rows: rawRows }: { rows: UWPerMonth[] }) {
             <th className="text-right py-2 px-4 font-medium">True deposits</th>
             <th className="text-right py-2 px-4 font-medium">Ending balance</th>
             <th className="text-right py-2 px-4 font-medium">Avg daily balance</th>
-            <th className="text-right py-2 pl-4 font-medium">Negative days</th>
+            <th className={`text-right py-2 px-4 font-medium ${hasCashStress || hasRevenueQuality ? "" : "pl-4"}`}>Negative days</th>
+            {hasCashStress && (
+              <>
+                <th className="text-right py-2 px-4 font-medium">NSF</th>
+                <th className="text-right py-2 px-4 font-medium">OD fees</th>
+              </>
+            )}
+            {hasRevenueQuality && (
+              <>
+                <th className="text-right py-2 px-4 font-medium">Card revenue</th>
+                <th className="text-right py-2 px-4 font-medium">Cash/check</th>
+                <th className="text-right py-2 pl-4 font-medium">Transfer/other</th>
+              </>
+            )}
           </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => (
             <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
-              <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white">
+              <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white whitespace-nowrap">
                 {r.month ?? `Month ${i + 1}`}
                 {r.accounts > 1 && (
                   <span className="ml-1.5 text-[10px] font-normal text-gray-400 dark:text-gray-500">· {r.accounts} accounts</span>
@@ -988,9 +1315,26 @@ function PerMonthTable({ rows: rawRows }: { rows: UWPerMonth[] }) {
                 {money(r.ending_balance)}
               </td>
               <td className="py-2 px-4 text-right text-gray-900 dark:text-white">{money(r.average_daily_balance)}</td>
-              <td className={`py-2 pl-4 text-right ${r.negative_days > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+              <td className={`py-2 px-4 text-right ${r.negative_days > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
                 {num(r.negative_days)}
               </td>
+              {hasCashStress && (
+                <>
+                  <td className={`py-2 px-4 text-right ${(r.nsf_count ?? 0) > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+                    {num(r.nsf_count)}
+                  </td>
+                  <td className={`py-2 px-4 text-right ${(r.overdraft_fees ?? 0) > 0 ? "text-red-600" : "text-gray-900 dark:text-white"}`}>
+                    {money(r.overdraft_fees)}
+                  </td>
+                </>
+              )}
+              {hasRevenueQuality && (
+                <>
+                  <td className="py-2 px-4 text-right font-semibold text-gray-900 dark:text-white">{money(r.revenue_card)}</td>
+                  <td className="py-2 px-4 text-right text-gray-500 dark:text-gray-400">{money(r.revenue_cash_check)}</td>
+                  <td className="py-2 pl-4 text-right text-gray-500 dark:text-gray-400">{money(r.revenue_transfer_other)}</td>
+                </>
+              )}
             </tr>
           ))}
         </tbody>

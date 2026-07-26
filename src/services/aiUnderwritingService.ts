@@ -27,6 +27,15 @@ export interface UWPerMonth {
   ending_balance: number | null;
   average_daily_balance: number | null;
   negative_days: number;
+  // Cash-stress + revenue-quality + holdback (additive — older runs lack these).
+  nsf_count?: number;
+  overdraft_fees?: number;
+  revenue_card?: number;             // verifiable card-settlement credits
+  revenue_cash_check?: number;       // cash / branch / check deposits
+  revenue_transfer_other?: number;   // transfers + unlabeled credits
+  avg_daily_deposits?: number;
+  mca_daily_debit?: number | null;   // this month's MCA daily remittance
+  holdback_pct?: number | null;      // mca_daily_debit ÷ avg_daily_deposits (>100% = stress)
 }
 
 // First-class affordability block: max sustainable DAILY vs WEEKLY payment, each
@@ -81,8 +90,8 @@ export interface UWScenario {
 // Every run emits at least one; a bare decline is forbidden. Ranked (1 = best).
 export interface UWPath {
   rank: number;
-  key: "counter_as_is" | "counter_full_revenue" | "restructure_vcf" | "micro_mca"
-    | "product_switch" | "nurture_trigger" | string;
+  key: "counter_as_is" | "counter_full_revenue" | "restructure_vcf" | "refi_consolidation"
+    | "micro_mca" | "product_switch" | "nurture_trigger" | string;
   label: string;
   action: string;       // the exact in-app next step
   expected_note: string;
@@ -106,6 +115,72 @@ export interface UWPosition {
   amount: number;         // the recurring remittance amount
   daily_amount: number;   // normalized per-business-day burden
   class: string;          // always 'mca' for active positions
+  occurrences_latest?: number; // times it debited in the latest month
+}
+
+// A one-off / stepped-up debit EXCLUDED from the daily position count (e.g. Nav's
+// lone $150 beside its $540/day stream; Dedicated's $500/wk → $1,175.08 catch-up).
+export interface UWPositionAnomaly {
+  funder: string;
+  class: string;
+  amount: number;
+  note: string;
+}
+
+// One row of the position timeline — every recurring debitor across all months.
+export interface UWTimelineRow {
+  funder: string;
+  class: string;          // mca | sba_loan | equipment_lease | consumer_finance | vendor_other
+  cadence: string;
+  amount: number;         // representative (last-month max) amount
+  first_seen_month: string;
+  last_seen_month: string;
+  status: "active" | "paid_off";
+  change_event: string | null; // e.g. "increased from $273 to $353 (renewal / step-up)"
+}
+
+// Estimated remaining balance for one active MCA position (ranged; payoff letters
+// required to confirm).
+export interface UWRemainingPosition {
+  funder: string;
+  cadence: string;
+  daily_amount: number;
+  payments_to_date: number;
+  occurrences: number;
+  remaining_low: number;   // shortest assumed term (60 biz days)
+  remaining_mid: number;   // 80 biz days
+  remaining_high: number;  // 100 biz days
+}
+
+// One consolidation term option in the refi feasibility block.
+export interface UWRefiTerm {
+  months: number;
+  monthly_payment: number;
+  pct_of_normal_revenue: number | null;
+  pct_of_worst_month: number | null;
+  verdict: "viable" | "tight" | "not_viable";
+}
+
+// Refi / consolidation feasibility: roll the estimated outstanding into one payment.
+export interface UWRefi {
+  est_outstanding_low: number;
+  est_outstanding_mid: number;
+  est_outstanding_high: number;
+  factor: number;
+  payback_mid: number;
+  normal_season_revenue: number;
+  worst_month_revenue: number;
+  terms: UWRefiTerm[];
+  feasible: boolean;
+  verdict: string;
+  caveat: string;
+}
+
+// One month of stacking velocity — MCA positions added vs retired.
+export interface UWVelocityRow {
+  month: string;
+  added: number;
+  ended: number;
 }
 // An MCA position that was being repaid in an earlier month but is gone from the
 // latest (paid off / ended — a positive paydown signal).
@@ -152,6 +227,20 @@ export interface UWMetrics {
   ended_positions?: UWEndedPosition[];
   other_obligations?: UWOtherObligation[];
   other_obligations_monthly?: number;
+  // Position intelligence (all additive — older runs lack these, render conditionally).
+  position_anomalies?: UWPositionAnomaly[];
+  position_timeline?: UWTimelineRow[];
+  remaining_by_position?: UWRemainingPosition[];
+  est_outstanding_low?: number;
+  est_outstanding_mid?: number;
+  est_outstanding_high?: number;
+  refi?: UWRefi;
+  stacking_velocity?: UWVelocityRow[];
+  stacking_velocity_narrative?: string;
+  overdraft_fees_total?: number;
+  normal_season_avg_monthly_revenue?: number;
+  worst_month_revenue?: number;
+  latest_month_is_partial?: boolean;
   max_affordable_advance: number;
   amount_requested: number;
   revenue_trend: "up" | "flat" | "down";
