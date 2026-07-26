@@ -2399,11 +2399,12 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
         click a stage above to jump the lead there.
       </p>
 
-      {/* Business research (Firecrawl) — read-only surface here: findings + verdict,
-          no "Use" buttons. Applying values to the record happens inside the
-          application form, where the closer can see the side-by-side. */}
+      {/* Business research (Firecrawl). VERIFY & SAVE enabled here: the closer can
+          confirm a found value onto the merchant record (customers + GHL contact)
+          right from the playbook — per-field "✓ Use this" or "Confirm all". The
+          application modal keeps its own side-by-side draft-fill flow. */}
       <div className="mt-3">
-        <EnrichmentCard dealId={deal.id} customerId={deal.customer_id} />
+        <EnrichmentCard dealId={deal.id} customerId={deal.customer_id} enableConfirm />
       </div>
     </div>
   );

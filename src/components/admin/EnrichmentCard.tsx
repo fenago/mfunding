@@ -58,7 +58,29 @@ interface EnrichmentRow {
   credits_estimate: number | null;
   created_at: string;
   completed_at: string | null;
+  // Verify & save (confirm-enrichment). Null on every fresh run → unverified again.
+  verified_at: string | null;
+  verified_by: string | null;
+  verified_fields: string[] | null;
 }
+
+/** What confirm-enrichment returns, so the card can report exactly what landed. */
+interface ConfirmResponse {
+  ok?: boolean;
+  error?: string;
+  verified_by_name?: string | null;
+  verified_fields?: string[];
+  applied?: Array<{ field: string; label: string; value: string; where: string; from: string | null }>;
+  skipped?: Array<{ field: string; label: string; reason: string }>;
+  ghl_synced?: boolean;
+  ghl_fields?: string[];
+  ghl_error?: string | null;
+}
+
+/** Fields the confirm flow can write to the merchant record / GHL contact. entity
+ *  type and year-started have no customers column (and are risky on a legal doc),
+ *  so they surface as read-only findings, never a save. */
+const CONFIRMABLE = new Set<EnrichmentUseField>(["street", "city", "state", "zip", "phone", "website", "ein"]);
 
 const STALE_DAYS = 30;
 
@@ -78,11 +100,19 @@ export default function EnrichmentCard({
   dealId,
   customerId,
   onUse,
+  enableConfirm = false,
 }: {
   dealId: string;
   customerId: string;
-  /** The HOST decides what a used value does (prefill a draft field, etc.). This card never writes. */
+  /** The HOST decides what a used value does (prefill a draft field, etc.). In this
+   *  mode the card never writes anything itself. */
   onUse?: (field: EnrichmentUseField, value: string) => void;
+  /** Opt in to the VERIFY & SAVE flow: per-field "✓ Use this" + "Confirm all" that
+   *  write the found values onto the merchant record (customers) + GHL contact and
+   *  stamp the run verified. Playbook card only — the application modal stays
+   *  compare/draft-fill so research never mutates a doc already on paper. Ignored
+   *  when onUse is provided (draft-fill takes precedence). */
+  enableConfirm?: boolean;
 }) {
   const [row, setRow] = useState<EnrichmentRow | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -93,6 +123,26 @@ export default function EnrichmentCard({
   const [showSeed, setShowSeed] = useState(false);
   const [showCandidates, setShowCandidates] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Verify & save (confirm-to-record) — only when NOT in draft-fill mode.
+  // With onUse the card prefills an application draft (host owns the write); without
+  // it (the playbook card) the card confirms findings onto the merchant record. ──
+  const confirmMode = enableConfirm && !onUse;
+  const [confirming, setConfirming] = useState<string | null>(null); // "all" | field key
+  const [confirmNote, setConfirmNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [verifierName, setVerifierName] = useState<string | null>(null);
+  // Two-step arm/fire for "Confirm all" — NO browser popups (owner rule).
+  const [armed, setArmed] = useState<string | null>(null);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(null), 5000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  const armOrFire = (key: string): boolean => {
+    if (armed === key) { setArmed(null); return true; }
+    setArmed(key);
+    return false;
+  };
 
   const load = useCallback(async () => {
     const { data } = await supabase
@@ -146,6 +196,60 @@ export default function EnrichmentCard({
       setNote(e instanceof Error ? e.message : "Research failed.");
     } finally {
       setRunning(false);
+      void load();
+    }
+  };
+
+  // Resolve who confirmed (for the "✓ Confirmed by [name]" badge on reload).
+  useEffect(() => {
+    const by = row?.verified_by;
+    if (!by) { setVerifierName(null); return; }
+    let cancelled = false;
+    void supabase
+      .from("profiles").select("display_name, first_name, last_name, email").eq("id", by).maybeSingle()
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        setVerifierName(
+          data.display_name ||
+          [data.first_name, data.last_name].filter(Boolean).join(" ") ||
+          data.email || "staff",
+        );
+      });
+    return () => { cancelled = true; };
+  }, [row?.verified_by]);
+
+  const edgeMsg = async (error: unknown, fallback: string): Promise<string> => {
+    const ctx = (error as { context?: Response }).context;
+    if (ctx) {
+      try { const b = await ctx.clone().json(); return (b as { error?: string })?.error ?? fallback; } catch { /* fall through */ }
+    }
+    return (error as Error)?.message ?? fallback;
+  };
+
+  // Confirm one field or all confirmable fields → writes to customers + GHL,
+  // stamps the research row verified. Surfaces a GHL failure LOUDLY (no silent ok).
+  const confirm = async (fields: EnrichmentUseField[]) => {
+    if (!row || fields.length === 0) return;
+    setConfirming(fields.length === 1 ? fields[0] : "all");
+    setConfirmNote(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("confirm-enrichment", {
+        body: { enrichmentId: row.id, fields },
+      });
+      if (error) { setConfirmNote({ ok: false, text: await edgeMsg(error, "Confirm failed.") }); return; }
+      const d = data as ConfirmResponse;
+      if (d?.error) { setConfirmNote({ ok: false, text: d.error }); return; }
+      if (d?.verified_by_name) setVerifierName(d.verified_by_name);
+      const appliedTxt = (d.applied ?? []).map((a) => a.label).join(", ") || "nothing new";
+      let text = `✓ Saved to the record: ${appliedTxt}.`;
+      if (d.ghl_error) text += ` ⚠ ${d.ghl_error}`;
+      else if ((d.ghl_fields?.length ?? 0) > 0) text += " Pushed to GHL.";
+      if ((d.skipped?.length ?? 0) > 0) text += ` Skipped: ${d.skipped!.map((s) => `${s.label} (${s.reason})`).join(", ")}.`;
+      setConfirmNote({ ok: !d.ghl_error, text });
+    } catch (e) {
+      setConfirmNote({ ok: false, text: e instanceof Error ? e.message : "Confirm failed." });
+    } finally {
+      setConfirming(null);
       void load();
     }
   };
@@ -205,6 +309,11 @@ export default function EnrichmentCard({
   const loadRows = LOAD_FIELDS.map((f) => ({ ...f, value: f.pick(row) })).filter((f) => f.value);
   const sourceHost = row.chosen_url ? safeHost(row.chosen_url) : null;
 
+  // Confirm-to-record state (playbook card only).
+  const appliedSet = new Set(row.verified_fields ?? []);
+  const verified = confirmMode && !!row.verified_at;
+  const unconfirmed = loadRows.filter((f) => CONFIRMABLE.has(f.key) && !appliedSet.has(f.key));
+
   const verdictChip = verdict === "confident" ? (
     <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
       <CheckCircleIcon className="w-3 h-3" /> Confident match {row.match_score}
@@ -230,7 +339,15 @@ export default function EnrichmentCard({
           <a href={row.chosen_url ?? "#"} target="_blank" rel="noreferrer"
             className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline">{sourceHost}</a>
         )}
-        <span className="text-[10px] text-gray-400">found online — confirm with merchant</span>
+        {verified ? (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800"
+            title={`Confirmed fields: ${(row.verified_fields ?? []).join(", ")}`}>
+            <CheckCircleIcon className="w-3 h-3" /> Confirmed by {verifierName ?? "staff"}
+            {row.verified_at ? ` · ${new Date(row.verified_at).toLocaleDateString()}` : ""}
+          </span>
+        ) : (
+          <span className="text-[10px] text-gray-400">found online — confirm with merchant</span>
+        )}
         <span className="ml-auto text-[10px] text-gray-400">
           {stale ? `Researched ${ageDays}d ago` : row.completed_at ? new Date(row.completed_at).toLocaleDateString() : ""}
         </span>
@@ -266,28 +383,61 @@ export default function EnrichmentCard({
       {!noMatch && loadRows.length > 0 && (
         <div className="mt-2">
           <div className="flex items-center justify-between">
-            <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">Found online (unverified)</p>
-            {onUse && (
+            <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
+              {confirmMode
+                ? (verified ? "Findings (confirm applies to the merchant record)" : "Found online (unverified)")
+                : "Found online (unverified)"}
+            </p>
+            {onUse ? (
               <button type="button"
                 onClick={() => loadRows.forEach((f) => onUse(f.key, f.value as string))}
                 className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">
                 Use all
               </button>
-            )}
+            ) : confirmMode && unconfirmed.length > 0 ? (
+              // Two-step arm/fire — this WRITES to the merchant record + GHL.
+              <button type="button"
+                disabled={!!confirming}
+                onClick={() => { if (armOrFire("confirm-all")) void confirm(unconfirmed.map((f) => f.key)); }}
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg ${armed === "confirm-all"
+                  ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300 dark:border-amber-800"
+                  : "bg-emerald-600 text-white hover:bg-emerald-700"} disabled:opacity-50`}
+                title="Confirm every found field onto this merchant's record and GHL contact">
+                {confirming === "all" ? "Saving…" : armed === "confirm-all" ? "⚠️ Tap again to save all →" : "✅ Confirm all"}
+              </button>
+            ) : null}
           </div>
           <div className="mt-1 divide-y divide-gray-100 dark:divide-gray-700">
-            {loadRows.map((f) => (
-              <div key={f.key} className="flex items-center gap-2 py-1">
-                <span className="w-28 shrink-0 text-[11px] text-gray-500 dark:text-gray-400">{f.label}</span>
-                <span className="flex-1 text-[11px] text-gray-800 dark:text-gray-100 break-all">{f.value}</span>
-                {onUse && (
-                  <button type="button" onClick={() => onUse(f.key, f.value as string)}
-                    className="text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30">
-                    Use
-                  </button>
-                )}
-              </div>
-            ))}
+            {loadRows.map((f) => {
+              const isConfirmable = CONFIRMABLE.has(f.key);
+              const isApplied = appliedSet.has(f.key);
+              return (
+                <div key={f.key} className="flex items-center gap-2 py-1">
+                  <span className="w-28 shrink-0 text-[11px] text-gray-500 dark:text-gray-400">{f.label}</span>
+                  <span className="flex-1 text-[11px] text-gray-800 dark:text-gray-100 break-all">{f.value}</span>
+                  {onUse ? (
+                    <button type="button" onClick={() => onUse(f.key, f.value as string)}
+                      className="text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30">
+                      Use
+                    </button>
+                  ) : confirmMode && isApplied ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                      <CheckCircleIcon className="w-3.5 h-3.5" /> {f.key === "website" ? "in GHL" : "saved"}
+                    </span>
+                  ) : confirmMode && isConfirmable ? (
+                    <button type="button"
+                      disabled={!!confirming}
+                      onClick={() => void confirm([f.key])}
+                      className="text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 disabled:opacity-50"
+                      title="Save this value onto the merchant's record + GHL contact">
+                      {confirming === f.key ? "Saving…" : "✓ Use this"}
+                    </button>
+                  ) : confirmMode ? (
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500 shrink-0" title="No field on the merchant record for this">not saved</span>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -360,6 +510,14 @@ export default function EnrichmentCard({
         </p>
       )}
       {note && !capReached && <p className="mt-1.5 text-[11px] text-gray-600 dark:text-gray-300">{note}</p>}
+
+      {confirmNote && (
+        <p className={`mt-1.5 text-[11px] ${confirmNote.ok
+          ? "text-emerald-700 dark:text-emerald-300"
+          : "text-amber-700 dark:text-amber-300"}`}>
+          {confirmNote.text}
+        </p>
+      )}
     </div>
   );
 }

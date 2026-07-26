@@ -242,6 +242,12 @@ verify_jwt = true
 [functions.enrich-business]
 verify_jwt = true
 
+# Human CONFIRM of business-research findings → writes the found values onto the
+# merchant record (customers) + GHL contact and stamps the research row verified.
+# Staff-only enforced in code; a CLOSER may only confirm research on deals they own.
+[functions.confirm-enrichment]
+verify_jwt = true
+
 # GHL → Supabase document bridge. Merchants upload their statements/ID through the
 # GHL secure-upload link, so the files live on the GHL contact and never reached our
 # storage — which is why the AI underwriter 422'd on every real deal. Pulls them into
