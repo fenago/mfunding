@@ -255,6 +255,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // Box-fit reasons per lender (from funderAvailability) — surfaced as a
   // non-blocking 🟡 "out of box" tag so the owner can submit knowingly anyway.
   const [boxReasons, setBoxReasons] = useState<Record<string, string[]>>({});
+  // Per-funder stip overrides — the owner knowingly submits a doc-blocked funder
+  // with the missing stip "to follow". stipOverrides[lenderId] = the doc slugs
+  // being waived for THIS funder only; armedOverride is the two-step arm (house
+  // rule: no browser popups). The server skips the gate for exactly these slugs
+  // and appends a "to follow" line to that funder's email.
+  const [stipOverrides, setStipOverrides] = useState<Record<string, string[]>>({});
+  const [armedOverride, setArmedOverride] = useState<string | null>(null);
 
   // Rehydrate persisted AI analysis (saved on the deal by recommend-lenders)
   // so a page reload never throws away paid tokens.
@@ -368,6 +375,13 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     return () => { cancelled = true; };
   }, [deal.id, deal.customer_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-disarm a pending override after 5s (matches the modal send's arm timeout).
+  useEffect(() => {
+    if (!armedOverride) return;
+    const t = setTimeout(() => setArmedOverride(null), 5000);
+    return () => clearTimeout(t);
+  }, [armedOverride]);
+
   // Union of both rails — this is what the stips guard reads (unchanged behavior).
   const docsPresent = useMemo(() => new Set<string>([...appDocs, ...ghlDocs]), [appDocs, ghlDocs]);
   const signedAppInApp = appDocs.has("application");
@@ -414,6 +428,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     // so it can't gate Submit even if a recipe lists it as required.
     (profiles[lenderId]?.required_stips ?? [])
       .filter((s) => s !== "voided_check" && !docsPresent.has(s));
+  // Slugs the owner has knowingly waived for this funder, and what's STILL missing
+  // after the waiver (the effective gate the checkbox/selectability reads).
+  const overriddenStipsOf = (lenderId: string): string[] => stipOverrides[lenderId] ?? [];
+  const effectiveMissingStipsOf = (lenderId: string): string[] =>
+    missingStipsOf(lenderId).filter((s) => !overriddenStipsOf(lenderId).includes(s));
 
   // An existing active (non-failed) submission means "already went out".
   const isAlreadyOut = (lenderId: string) => {
@@ -446,6 +465,36 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     });
   };
 
+  // Arm-then-fire (no browser popups): first click arms, second click within 5s
+  // commits the override — waiving THIS funder's still-missing required stips for
+  // this submission only, then auto-selecting the now-unblocked row.
+  function overrideStips(lenderId: string, slugs: string[]) {
+    if (slugs.length === 0) return;
+    if (armedOverride === lenderId) {
+      setStipOverrides((prev) => ({ ...prev, [lenderId]: Array.from(new Set([...(prev[lenderId] ?? []), ...slugs])) }));
+      setArmedOverride(null);
+      setSelected((prev) => new Set(prev).add(lenderId));
+    } else {
+      setArmedOverride(lenderId);
+    }
+  }
+  // Undo an override — the row re-blocks, so drop it from the selection too.
+  function clearOverride(lenderId: string) {
+    setStipOverrides((prev) => { const n = { ...prev }; delete n[lenderId]; return n; });
+    setSelected((prev) => { const n = new Set(prev); n.delete(lenderId); return n; });
+    setArmedOverride((cur) => (cur === lenderId ? null : cur));
+  }
+  // The doc-slug overrides for exactly the funders being sent to (empty dropped) —
+  // mirrors the server's stipOverrides shape.
+  function buildStipOverrides(ids: string[]): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    for (const id of ids) {
+      const ov = stipOverrides[id];
+      if (ov && ov.length) out[id] = ov;
+    }
+    return out;
+  }
+
   async function submit(ids: string[], resubmit = false, overridesArg?: Record<string, { subject?: string; body?: string }>) {
     if (ids.length === 0) return;
     setSubmitting(true);
@@ -459,6 +508,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
         body: {
           dealId: deal.id, lenderIds: ids, resubmit, documentIds: [...selectedDocIds],
           ...(overridesArg && Object.keys(overridesArg).length ? { overrides: overridesArg } : {}),
+          ...(Object.keys(buildStipOverrides(ids)).length ? { stipOverrides: buildStipOverrides(ids) } : {}),
         },
       });
       if (fnErr) throw fnErr;
@@ -508,7 +558,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
     setArmedSend(false);
     try {
       const { data, error: fnErr } = await supabase.functions.invoke("submit-to-funders", {
-        body: { dealId: deal.id, lenderIds: ids, action: "preview", documentIds: [...selectedDocIds] },
+        body: { dealId: deal.id, lenderIds: ids, action: "preview", documentIds: [...selectedDocIds], ...(Object.keys(buildStipOverrides(ids)).length ? { stipOverrides: buildStipOverrides(ids) } : {}) },
       });
       if (fnErr) throw fnErr;
       const rows = (data?.previews ?? []) as PreviewFunder[];
@@ -574,7 +624,7 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   // has a destination, isn't missing stips, and hasn't already gone out.
   function isSelectable(lenderId: string): boolean {
     if (!matches.some((m) => m.id === lenderId)) return false;
-    return methodOf(lenderId) !== "none" && missingStipsOf(lenderId).length === 0 && !isAlreadyOut(lenderId);
+    return methodOf(lenderId) !== "none" && effectiveMissingStipsOf(lenderId).length === 0 && !isAlreadyOut(lenderId);
   }
 
   async function recommend() {
@@ -746,9 +796,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const renderRow = (m: Match) => {
     const method = methodOf(m.id);
     const missing = missingStipsOf(m.id);
+    const overridden = overriddenStipsOf(m.id);
+    const effectiveMissing = missing.filter((s) => !overridden.includes(s));
     const alreadyOut = isAlreadyOut(m.id);
     const noDest = method === "none";
-    const disabled = noDest || missing.length > 0 || alreadyOut;
+    const disabled = noDest || effectiveMissing.length > 0 || alreadyOut;
     const badge = methodBadge(method);
     const checked = selected.has(m.id);
     const e = existing[m.id];
@@ -809,6 +861,34 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
           {missing.length > 0 && (
             <span className="block text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
               ⚠ needs: {missing.map(docLabel).join(", ")}
+            </span>
+          )}
+          {overridden.length > 0 && (
+            <span className="block text-[11px] text-orange-600 dark:text-orange-400 mt-0.5 font-medium">
+              ⚠ overriding: {overridden.map(docLabel).join(", ")} — submitting without ("to follow")
+              <button
+                type="button"
+                onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); clearOverride(m.id); }}
+                className="ml-1.5 font-normal text-gray-400 hover:text-gray-600 underline"
+              >
+                undo
+              </button>
+            </span>
+          )}
+          {/* Owner override — knowingly submit past a doc-blocked funder, with the
+              missing stip "to follow" (armed two-step, no browser popups). */}
+          {effectiveMissing.length > 0 && !noDest && !alreadyOut && (
+            <span className="block mt-1">
+              <button
+                type="button"
+                onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); overrideStips(m.id, effectiveMissing); }}
+                title="Knowingly submit this funder now with the missing stip to follow — the funder email will say it's coming under separate cover."
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded border inline-flex items-center gap-1 ${armedOverride === m.id ? "border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" : "border-orange-300 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-900/20"}`}
+              >
+                {armedOverride === m.id
+                  ? `⚠️ Tap again — submit without ${effectiveMissing.map(docLabel).join(", ")}`
+                  : `Override — submit without ${effectiveMissing.map(docLabel).join(", ")}`}
+              </button>
             </span>
           )}
           {noDest && <span className="block text-[11px] text-gray-400 mt-0.5">no submission email or portal on file</span>}

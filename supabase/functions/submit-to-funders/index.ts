@@ -193,6 +193,11 @@ Deno.serve(async (req) => {
      * Applied AFTER template render, recorded verbatim in sent_payload. Only
      * ever an override for THIS send — recipes/templates are never touched. */
     overrides?: Record<string, { subject?: string; body?: string }>;
+    /** Per-funder stip waivers, keyed by lenderId → doc slugs. The stips gate
+     * skips ONLY these slugs for ONLY these lenders; every other required stip
+     * still blocks. Recorded verbatim in sent_payload for audit, and the funder
+     * email gains an honest "to follow" line naming the waived docs. */
+    stipOverrides?: Record<string, string[]>;
   };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const lenderIds = (payload.lenderIds ?? []).filter(Boolean);
@@ -204,6 +209,7 @@ Deno.serve(async (req) => {
   const withdrawMode = payload.action === "withdraw";
   const previewMode = payload.action === "preview";
   const overrides = payload.overrides ?? {};
+  const stipOverrides = payload.stipOverrides ?? {};
   if (!courtesyMode && !messageFunderMode && !withdrawMode && lenderIds.length === 0) return json({ error: "lenderIds are required" }, 400);
   if (!testMode && !payload.dealId) return json({ error: "dealId is required" }, 400);
 
@@ -662,9 +668,16 @@ Deno.serve(async (req) => {
     // Effective CC the funder actually gets — recipe CC plus the always-on owner.
     const cc = Array.from(new Set([...(recipe?.cc_emails ?? []), ...ALWAYS_CC]));
 
-    // --- Stips guard: every required stip must be on file before we send. ---
-    const requiredStips = recipe?.required_stips ?? [];
-    const missing = requiredStips.filter((slug) => !(docsByType.get(slug)?.length) && !ghlPresentTypes.has(slug));
+    // --- Stips guard: every required stip must be on file before we send.
+    // voided_check NEVER blocks (a bank-portal screenshot satisfies it) — mirrors
+    // the FunderPicker's client-side rule. Owner overrides (stipOverrides[lenderId])
+    // waive specific slugs for THIS funder only — those skip the gate and get named
+    // in an honest "to follow" line below; everything else still hard-blocks. ---
+    const requiredStips = (recipe?.required_stips ?? []).filter((s) => s !== "voided_check");
+    const waived = new Set(stipOverrides[lenderId] ?? []);
+    const allMissing = requiredStips.filter((slug) => !(docsByType.get(slug)?.length) && !ghlPresentTypes.has(slug));
+    const waivedMissing = allMissing.filter((slug) => waived.has(slug));
+    const missing = allMissing.filter((slug) => !waived.has(slug));
     if (missing.length > 0) {
       return {
         lenderId, name, method, recipe, isPortalOnly, to, cc,
@@ -764,6 +777,11 @@ Deno.serve(async (req) => {
     let bodyText = render(recipe?.body_template || GENERIC_BODY, tokens);
     if (recipe?.special_instructions) bodyText += `\n\n${recipe.special_instructions}`;
     if (notes) bodyText += `\n\nNotes: ${notes}`;
+    // Honest "to follow" note for any owner-waived required stip (compliance-safe).
+    const toFollowLine = waivedMissing.length
+      ? `Note: ${waivedMissing.map(docLabel).join(", ")} to follow shortly under separate cover.`
+      : "";
+    if (toFollowLine) bodyText += `\n\n${toFollowLine}`;
     // Funder-facing deal overview (the AI's clean merchant summary) at the bottom.
     const bizSummary = ((deal as Record<string, unknown>).ai_business_summary as string | null)?.trim() || "";
     if (bizSummary) bodyText += `\n\n— Deal Overview —\n${bizSummary}`;
@@ -774,6 +792,7 @@ Deno.serve(async (req) => {
       (wantAttach && attachedNames.length ? `<p style="margin:8px 0;color:#334155">📎 Attached: ${attachedNames.map(esc).join(", ")}</p>` : "") +
       (recipe?.special_instructions ? `<p style="margin:8px 0;color:#334155">${esc(recipe.special_instructions)}</p>` : "") +
       (notes ? `<p style="margin:8px 0"><strong>Notes:</strong> ${esc(notes)}</p>` : "") +
+      (toFollowLine ? `<p style="margin:8px 0;color:#334155">${esc(toFollowLine)}</p>` : "") +
       (bizSummary ? `<div style="margin-top:12px;padding-top:8px;border-top:1px solid #e2e8f0"><strong style="color:#334155">Deal Overview</strong><p style="margin:4px 0;color:#334155;white-space:pre-wrap">${esc(bizSummary)}</p></div>` : "") +
       `</div>`;
 
@@ -782,6 +801,7 @@ Deno.serve(async (req) => {
       docLinks: docLinkLines, attachSlugs, attachment_mode: mode,
       attachedFiles: attachedNames, attachedCount: attachmentUrls.length,
       docsWarning, usedRecipe: !!recipe, renderedAt: nowIso,
+      ...(waivedMissing.length ? { stipOverridden: waivedMissing } : {}),
     };
 
     return {
