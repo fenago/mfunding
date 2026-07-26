@@ -29,6 +29,7 @@ import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
 import { getMatchingLenders } from "../../services/lenderMatchingService";
+import { getFunderAvailability } from "../../services/funderAvailability";
 import { updateSubmission } from "../../services/dealService";
 import { uploadSignedApplication } from "../../services/signedApplication";
 import type { DealWithCustomer } from "../../types/deals";
@@ -251,6 +252,9 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiRan, setAiRan] = useState(false);
+  // Box-fit reasons per lender (from funderAvailability) — surfaced as a
+  // non-blocking 🟡 "out of box" tag so the owner can submit knowingly anyway.
+  const [boxReasons, setBoxReasons] = useState<Record<string, string[]>>({});
 
   // Rehydrate persisted AI analysis (saved on the deal by recommend-lenders)
   // so a page reload never throws away paid tokens.
@@ -345,6 +349,21 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
       } finally {
         if (!cancelled) setLoading(false);
       }
+    })();
+    return () => { cancelled = true; };
+  }, [deal.id, deal.customer_id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load box-fit reasons once per deal (advisory only — never gates Submit).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { rows } = await getFunderAvailability(deal);
+        if (cancelled) return;
+        const map: Record<string, string[]> = {};
+        for (const r of rows) if (r.tier === "out_of_box" && r.boxReasons.length) map[r.lenderId] = r.boxReasons;
+        setBoxReasons(map);
+      } catch { /* advisory; ignore */ }
     })();
     return () => { cancelled = true; };
   }, [deal.id, deal.customer_id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -793,6 +812,11 @@ export default function FunderPicker({ deal }: { deal: DealWithCustomer }) {
             </span>
           )}
           {noDest && <span className="block text-[11px] text-gray-400 mt-0.5">no submission email or portal on file</span>}
+          {boxReasons[m.id]?.length > 0 && (
+            <span className="block text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+              🟡 out of box: {boxReasons[m.id].join("; ")}
+            </span>
+          )}
         </span>
       </label>
 
