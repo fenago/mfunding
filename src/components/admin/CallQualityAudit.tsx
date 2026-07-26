@@ -116,7 +116,7 @@ export default function CallQualityAudit({ campaigns }: { campaigns: Campaign[] 
       if (first.error) { setRunMsg(`Error: ${first.error}`); setRunning(false); return; }
       const runId = first.runId!;
       setActiveRunId(runId);
-      if (first.gemini === false) setRunMsg("Note: no transcription key configured — classifying from call metadata only.");
+      if (first.gemini === false) setRunMsg("Transcription is OFF — no valid Gemini key. Add a valid key as TRANSCRIPTION_API_KEY (Edge secret) to transcribe; for now, classifying from call metadata only.");
       let last: SweepProgress = first;
       for (let i = 0; i < 200 && !last.done && !cancelRef.current; i++) {
         setRunMsg(`Auditing… phase ${last.phase ?? "…"}, ${last.enum_remaining ?? 0} contacts to scan, ${last.pending ?? 0} calls to transcribe`);
@@ -244,6 +244,18 @@ export default function CallQualityAudit({ campaigns }: { campaigns: Campaign[] 
           {error && (
             <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-300">
               <ExclamationTriangleIcon className="w-5 h-5 shrink-0" /> {error}
+            </div>
+          )}
+
+          {run && t.transcription_available === false && (
+            <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-[12px] text-amber-800 dark:text-amber-200">
+              <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                <b>Transcription was OFF for this run</b> — no valid Gemini key in the project. Calls are classified from
+                metadata only (duration/status), so <b>answered-then-kicked</b> and <b>missed-to-voicemail</b> can't be
+                confirmed from audio; short completed calls show as “suspected instant drop.” Add a valid Gemini key as the
+                Edge secret <code className="font-mono">TRANSCRIPTION_API_KEY</code> and re-run to get full transcripts + drop detection.
+              </span>
             </div>
           )}
 

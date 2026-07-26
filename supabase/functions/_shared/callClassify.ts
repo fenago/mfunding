@@ -156,5 +156,5 @@ export const CALL_CLASS_LABELS: Record<CallClass, string> = {
   no_recording: "No recording",
   transcription_failed: "Transcription failed",
   suspected_instant_drop: "Suspected instant drop",
-  short_call_unverified: "Short call (unverified)",
+  short_call_unverified: "Unverified (no transcript)",
 };

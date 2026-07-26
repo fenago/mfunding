@@ -95,6 +95,9 @@ interface RunCursor {
   queue: QueueItem[];
   invocations: number;
   gaps: string[];
+  // Whether a VALID transcription key was found when the run started. When false the
+  // run classifies from call metadata only (honest fallback) and says so in the UI.
+  transcriptionAvailable?: boolean;
 }
 
 // ── Window helpers — interpret the given dates in ET (owner thinks in ET) ──────
@@ -318,7 +321,7 @@ async function processInboundPage(
 // Build the run + its enumeration queue. campaignId null = all attributed deals.
 async function createRun(
   db: ReturnType<typeof serviceClient>,
-  input: { campaignId: string | null; dateFrom: string; dateTo: string; allInbound: boolean; source: string; createdBy: string | null },
+  input: { campaignId: string | null; dateFrom: string; dateTo: string; allInbound: boolean; source: string; createdBy: string | null; transcriptionAvailable: boolean },
 ): Promise<{ runId: string; cursor: RunCursor }> {
   const { data: run, error } = await db.from("call_audit_runs").insert({
     campaign_id: input.campaignId,
@@ -369,7 +372,11 @@ async function createRun(
     queue.push({ type: "inbound_page", startAfterDate: null, startAfter: null, page: 1 });
   }
 
-  const cursor: RunCursor = { phase: "enumerate", queue, invocations: 0, gaps: [] };
+  const gaps: string[] = [];
+  if (!input.transcriptionAvailable) {
+    gaps.push("transcription off — no valid Gemini key (set TRANSCRIPTION_API_KEY); calls classified from metadata only");
+  }
+  const cursor: RunCursor = { phase: "enumerate", queue, invocations: 0, gaps, transcriptionAvailable: input.transcriptionAvailable };
   await db.from("call_audit_runs").update({ cursor, updated_at: new Date().toISOString() }).eq("id", runId);
   return { runId, cursor };
 }
@@ -401,6 +408,7 @@ async function finalizeTotals(db: ReturnType<typeof serviceClient>, runId: strin
     clean: byClass["clean"] ?? 0,
     no_recording: byClass["no_recording"] ?? 0,
     transcription_failed: byClass["transcription_failed"] ?? 0,
+    transcription_available: cursor.transcriptionAvailable ?? false,
     gaps: cursor.gaps,
   };
   return totals;
@@ -491,6 +499,27 @@ async function transcribeAndClassify(
   let transcript: string | null = null;
   let transcriptionFailed = false;
 
+  // No valid transcription key → metadata-only. Skip the download entirely (these GHL
+  // WAVs run up to ~24 MB; fetching them just to set a flag is pure waste when we can't
+  // transcribe). Classify from duration: a very short completed call is a "picked up and
+  // gone" suspect (this is where an answered-then-kicked would land); anything longer is
+  // simply unverified without audio.
+  if (!geminiKey) {
+    const dur = row.duration_s ?? 0;
+    const classification = dur > 0 && dur < 15 ? "suspected_instant_drop" : "short_call_unverified";
+    meta.transcription = "off — no valid key; metadata only (recording not fetched)";
+    const { error } = await db.from("call_audit_calls").update({
+      has_recording: false,
+      transcript: null,
+      classification,
+      matched_quote: null,
+      kick_offset_hint: dur ? `call ${dur}s` : null,
+      meta,
+    }).eq("id", row.id);
+    if (error) console.error("[call-audit] row update failed:", row.id, error.message);
+    return;
+  }
+
   try {
     const rec = await downloadRecording(cfg, row.ghl_message_id);
     if (rec.ok && rec.bytes && rec.bytes.length > 100) {
@@ -502,7 +531,7 @@ async function transcribeAndClassify(
         meta.transcription = `skipped — recording ${rec.bytes.length} bytes exceeds inline cap ${MAX_REC_BYTES}`;
       } else if (!geminiKey) {
         transcriptionFailed = true;
-        meta.transcription = "skipped — no GEMINI_API_KEY configured";
+        meta.transcription = "skipped — no valid transcription key (set TRANSCRIPTION_API_KEY)";
       } else {
         const tr = await transcribeAudio(geminiKey, rec.bytes, rec.mime);
         if (tr.text != null) {
@@ -531,6 +560,32 @@ async function transcribeAndClassify(
     meta,
   }).eq("id", row.id);
   if (error) console.error("[call-audit] row update failed:", row.id, error.message);
+}
+
+// Resolve the Gemini API key from the edge env. Several env names exist across the
+// project; the diag branch established which authenticates, and that one is preferred
+// here. Returns null when none is configured (the pipeline then ships metadata-only).
+function resolveGeminiKey(): string | null {
+  // Prefer the dedicated slot the owner can set for this feature; fall back to the
+  // project's other Gemini keys. (As of build, all of GEMINI_API_KEY /
+  // GOOGLE_GEMINI_API_KEY / VITE_GEMINI_API_KEY return HTTP 400 — set a valid key as
+  // TRANSCRIPTION_API_KEY to turn transcription on.)
+  return Deno.env.get("TRANSCRIPTION_API_KEY")
+    ?? Deno.env.get("GEMINI_API_KEY")
+    ?? Deno.env.get("GOOGLE_GEMINI_API_KEY")
+    ?? Deno.env.get("VITE_GEMINI_API_KEY")
+    ?? null;
+}
+
+// Validate a Gemini key cheaply (a models GET). Done ONCE per run so the UI can say
+// "transcription off — add a valid key" instead of silently metadata-classifying.
+async function geminiKeyValid(key: string | null): Promise<boolean> {
+  if (!key) return false;
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+    await r.body?.cancel();
+    return r.ok;
+  } catch { return false; }
 }
 
 // Fire a self-reinvocation (cron path only) so a long run finishes without a client.
@@ -577,7 +632,24 @@ Deno.serve(async (req) => {
       createdBy = caller.id;
     }
 
-    const geminiKey = Deno.env.get("GEMINI_API_KEY") ?? Deno.env.get("GOOGLE_GEMINI_API_KEY") ?? null;
+    // Diagnostic: which configured Gemini env key actually authenticates? (never
+    // returns key values — only the name → HTTP status). Behind the same auth.
+    if ((body as { diag?: boolean }).diag) {
+      const names = ["GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY", "VITE_GEMINI_API_KEY"];
+      const out: Record<string, number | string> = {};
+      for (const n of names) {
+        const k = Deno.env.get(n);
+        if (!k) { out[n] = "unset"; continue; }
+        try {
+          const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`);
+          out[n] = r.status;
+          await r.body?.cancel();
+        } catch (e) { out[n] = e instanceof Error ? e.message : "err"; }
+      }
+      return json({ ok: true, gemini_key_check: out });
+    }
+
+    const geminiKey = resolveGeminiKey();
     const cfg = await getGhlConfig(db);
 
     // ── Resolve the run: continue an existing one, or create a new one ──────────
@@ -604,6 +676,7 @@ Deno.serve(async (req) => {
         allInbound: !!body.allInbound,
         source: viaSecret ? "cron" : "manual",
         createdBy,
+        transcriptionAvailable: await geminiKeyValid(geminiKey), // validate ONCE at run start
       });
       runId = created.runId;
       cursor = created.cursor;
@@ -618,7 +691,10 @@ Deno.serve(async (req) => {
       return json({ error: "invocation cap exceeded", runId }, 500);
     }
 
-    const { done, processed } = await runBatch(db, cfg, runId, cursor, dateFrom, dateTo, geminiKey);
+    // Only feed the transcriber a key that validated at run start; otherwise the run
+    // classifies from metadata only (and the gaps note already says so).
+    const effectiveKey = cursor.transcriptionAvailable ? geminiKey : null;
+    const { done, processed } = await runBatch(db, cfg, runId, cursor, dateFrom, dateTo, effectiveKey);
 
     // Count remaining work so the caller can loop / show progress.
     const { count: pending } = await db.from("call_audit_calls")
@@ -630,7 +706,7 @@ Deno.serve(async (req) => {
     return json({
       ok: true, runId, done, processed,
       phase: cursor.phase, enum_remaining: enumRemaining, pending: pending ?? 0,
-      gemini: !!geminiKey,
+      gemini: cursor.transcriptionAvailable ?? false,
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);

@@ -52,6 +52,7 @@ export interface CallAuditTotals {
   clean?: number;
   no_recording?: number;
   transcription_failed?: number;
+  transcription_available?: boolean; // false = no valid Gemini key; classified from metadata only
   gaps?: string[];
 }
 
@@ -100,7 +101,7 @@ export const CALL_CLASS_LABELS: Record<CallClass, string> = {
   no_recording: "No recording",
   transcription_failed: "Transcription failed",
   suspected_instant_drop: "Suspected instant drop",
-  short_call_unverified: "Short call (unverified)",
+  short_call_unverified: "Unverified (no transcript)",
   pending: "Pending…",
 };
 
