@@ -27,6 +27,7 @@ import {
 // The GHL→Supabase document bridge now lives in _shared (the AI underwriter and the
 // ingest-ghl-documents function use the exact same code path).
 import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
+import { resolveReplyTarget, type SubCandidate } from "../_shared/funder-reply-match.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -630,24 +631,56 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
     return { outcome: "ignored", detail: "inbound message not from a funder contact", result: { handled: false } };
   }
 
-  // Most recent submission to this funder that is out and not yet answered. The
-  // reply doesn't say which deal, so stamp the latest open one. Because we only
-  // stamp when response_at IS NULL, a webhook retry (or a second reply) is a
-  // no-op — no duplicate alerts.
-  const { data: sub } = await db.from("deal_submissions")
-    .select("id, deal_id")
+  // Identify WHICH merchant this reply is about before stamping — a funder thread
+  // interleaves replies about many merchants, so stamping the funder's newest open
+  // submission cross-wires a reply about merchant A onto merchant B's deal. We
+  // build the funder's OPEN submissions with their merchant identity and match the
+  // reply by deal number / business name (poll-funder-replies uses the same rule).
+  const { data: openSubs } = await db.from("deal_submissions")
+    .select("id, deal_id, status, response_at, deal:deals!deal_id ( deal_number, customer:customers!customer_id ( business_name ) )")
     .eq("lender_id", lender.id)
     .not("submitted_at", "is", null)
     .is("response_at", null)
-    .order("submitted_at", { ascending: false })
-    .limit(1).maybeSingle();
-  if (!sub) {
+    .order("submitted_at", { ascending: false });
+  if (!openSubs?.length) {
     return {
       outcome: "processed",
       detail: `${lender.company_name} replied but no open submission to stamp`,
       result: { handled: true, lender: lender.company_name, stamped: false },
     };
   }
+  const subCands: SubCandidate[] = (openSubs).map((s) => ({
+    submissionId: s.id as string, dealId: s.deal_id as string,
+    dealNumber: ((s.deal as { deal_number?: string } | null)?.deal_number) ?? null,
+    businessName: (((s.deal as { customer?: { business_name?: string } } | null)?.customer)?.business_name) ?? null,
+  }));
+  const subject = String(
+    evt.subject ?? cd.subject ?? (evt.email as Record<string, unknown> | undefined)?.subject ?? "",
+  );
+  const resolution = resolveReplyTarget({ subject, body, subs: subCands, lenderName: lender.company_name });
+  if (resolution.kind !== "match") {
+    // Never force it onto a deal. Park it on the sync-log for a human to place
+    // (never silently attached, never silently dropped).
+    const reason = resolution.kind === "wrong_merchant" ? `names a different merchant: ${resolution.merchant}`
+      : resolution.kind === "wrong_deal_number" ? `names deal ${resolution.dealNumber} (not open with this funder)`
+      : resolution.kind === "general" ? "marketing / general (not about a specific file)"
+      : resolution.kind === "ambiguous" ? "could not tell which open deal it is about"
+      : "no open submission to this funder";
+    await db.from("ghl_webhook_events").insert({
+      event_type: resolution.kind === "general" ? "FunderReplyGeneral" : "FunderReplyUnmatched",
+      ghl_contact_id: contactId,
+      outcome: resolution.kind === "general" ? "ignored" : "error",
+      detail: `${lender.company_name}: inbound reply — ${reason}. Subject: "${subject.slice(0, 120)}" · "${body.replace(/\s+/g, " ").slice(0, 160)}"`,
+      payload: { source: "ghl-webhook", lender: lender.company_name, conversationId, contactId, subject, reason },
+    });
+    return {
+      outcome: "ignored",
+      detail: `${lender.company_name} replied but could not tie to a deal — ${reason}; parked for review`,
+      result: { handled: false, lender: lender.company_name, stamped: false, parked: true, reason },
+    };
+  }
+  const matchedSub = subCands.find((s) => s.submissionId === resolution.sub.submissionId)!;
+  const sub = { id: matchedSub.submissionId, deal_id: matchedSub.dealId };
 
   // Echo guard: a connected inbox can loop our own CC copy back as "inbound".
   // If the body starts with our sent payload, it's us — not the funder.
