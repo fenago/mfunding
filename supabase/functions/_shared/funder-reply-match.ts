@@ -22,15 +22,31 @@ export interface SubCandidate {
   dealId: string;
   dealNumber: string | null;
   businessName: string | null;
+  submittedAt: string | null; // gate: a reply can never predate our submission
 }
 
 export type Resolution =
   | { kind: "match"; sub: SubCandidate; via: "deal_number" | "business_name" | "sole_pending" }
   | { kind: "wrong_deal_number"; dealNumber: string } // names a deal # not in this funder's open set
   | { kind: "wrong_merchant"; merchant: string }      // names a different business than ours
+  | { kind: "stale"; reason: string }                 // names our deal/merchant but predates the submission
   | { kind: "ambiguous" }                             // >1 open sub, nothing to distinguish
-  | { kind: "general" }                               // marketing/nudge — about no file
+  | { kind: "general" }                               // marketing / onboarding / nudge — about no file
   | { kind: "none" };                                 // funder has no open submission
+
+// Clock-skew grace: an inbound email dated up to this far BEFORE submitted_at may
+// still be a genuine reply (server clocks, GHL re-stamping). Anything older cannot.
+const SUBMIT_GRACE_MS = 60 * 60 * 1000; // 1 hour
+
+// Is the email plausibly AFTER we submitted? A reply to our submission cannot
+// predate it. Unknown dates are permissive so we never over-park genuine replies.
+function afterSubmit(emailDate: string | null | undefined, submittedAt: string | null): boolean {
+  if (!submittedAt) return true;
+  if (!emailDate) return true;
+  const ed = Date.parse(emailDate), sa = Date.parse(submittedAt);
+  if (Number.isNaN(ed) || Number.isNaN(sa)) return true;
+  return ed >= sa - SUBMIT_GRACE_MS;
+}
 
 // Legal suffixes / filler dropped when comparing business names.
 const LEGAL_SUFFIX =
@@ -88,6 +104,10 @@ const GENERIC_MARKERS = [
   "lets get started", "check out our", "new program", "new promo",
   "webinar", "unsubscribe", "view this email in your browser",
   "no longer wish to receive", "touching base here",
+  // ISO onboarding / welcome chatter — about the relationship, not a merchant file.
+  "welcome to", "welcome aboard", "great talking to you", "great speaking with you",
+  "underwriting guidelines", "flexible funders", "please submit deals to",
+  "feel free to call", "our iso portal", "get you set up", "onboarding",
 ];
 
 export function looksGeneric(text: string): boolean {
@@ -119,21 +139,31 @@ export function resolveReplyTarget(opts: {
   body?: string | null;
   subs: SubCandidate[];
   lenderName?: string | null;
+  emailDate?: string | null; // the record's own date — gates against pre-submit chatter
 }): Resolution {
   const raw = `${opts.subject ?? ""}\n${opts.body ?? ""}`;
   const norm = normalizeName(raw);
 
-  // 1) Deal number — the strongest, exact key.
+  // 1) Deal number — the strongest, exact key. Still gated: a reply can't predate
+  //    the submission (a pre-submit email carrying the deal number is prior-cycle).
   const dealNums = extractDealNumbers(raw);
   for (const dn of dealNums) {
     const hit = opts.subs.find((s) => (s.dealNumber ?? "").toUpperCase() === dn);
-    if (hit) return { kind: "match", sub: hit, via: "deal_number" };
+    if (hit) {
+      return afterSubmit(opts.emailDate, hit.submittedAt)
+        ? { kind: "match", sub: hit, via: "deal_number" }
+        : { kind: "stale", reason: `names deal ${dn} but predates its submission` };
+    }
   }
   if (dealNums.length) return { kind: "wrong_deal_number", dealNumber: dealNums[0] };
 
-  // 2) Business name of one of the funder's OPEN submissions.
+  // 2) Business name of one of the funder's OPEN submissions (time-gated too).
   const named = opts.subs.filter((s) => s.businessName && mentionsBusiness(norm, s.businessName));
-  if (named.length === 1) return { kind: "match", sub: named[0], via: "business_name" };
+  if (named.length === 1) {
+    return afterSubmit(opts.emailDate, named[0].submittedAt)
+      ? { kind: "match", sub: named[0], via: "business_name" }
+      : { kind: "stale", reason: `names ${named[0].businessName} but predates its submission` };
+  }
   if (named.length > 1) return { kind: "ambiguous" };
 
   // 3) A DIFFERENT business named → never attach to one of ours.
@@ -141,8 +171,17 @@ export function resolveReplyTarget(opts: {
   if (foreign) return { kind: "wrong_merchant", merchant: foreign };
 
   // 4) No merchant / deal signal at all.
+  //    Marketing / onboarding / welcome chatter is general regardless of count.
   if (looksGeneric(raw)) return { kind: "general" };
-  if (opts.subs.length === 1) return { kind: "match", sub: opts.subs[0], via: "sole_pending" };
   if (opts.subs.length === 0) return { kind: "none" };
+  if (opts.subs.length === 1) {
+    // Sole open submission is only an UNAMBIGUOUS attach when the email is dated
+    // AFTER we submitted — otherwise it's pre-submit funder chatter (ISO welcome,
+    // guidelines) that just happens to sit in the only open thread. Keep it OFF the
+    // card as general.
+    return afterSubmit(opts.emailDate, opts.subs[0].submittedAt)
+      ? { kind: "match", sub: opts.subs[0], via: "sole_pending" }
+      : { kind: "general" };
+  }
   return { kind: "ambiguous" }; // several open subs, terse reply — a human must place it
 }

@@ -964,6 +964,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
               : s.responseSummary;
             // Message-the-merchant CTA belongs on replied / stip-request / declined cards.
             const showMsgButton = st.key === "replied" || s.responseType === "stip_request" || isFunderDeclined;
+            // The newest funder reply on this card that carries a GHL email id — lets
+            // the prominent reply box open the actual email (not just the trail line).
+            const latestFunderReply = sentLog
+              .filter((m) => m.re === s.lenderName && m.kind === "funder_reply" && (m.emailMessageId || m.convMessageId))
+              .slice().sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
             return (
               <div key={s.id} className={`rounded-md border p-2.5 text-[11px] space-y-2 ${isBest ? "border-emerald-400 bg-emerald-50/70 dark:bg-emerald-900/15" : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"} ${st.key === "merchant_declined" || st.key === "withdrawn" ? "opacity-60" : ""}`}>
                 {/* Header: funder + state badge */}
@@ -1003,6 +1008,15 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                       </div>
                     )}
                     {boxSummary && <p className="text-gray-600 dark:text-gray-300 italic">{boxSummary}</p>}
+                    {latestFunderReply && (
+                      <button
+                        type="button"
+                        onClick={() => void openEmailView(latestFunderReply)}
+                        className="inline-flex items-center gap-0.5 rounded border border-ocean-blue/40 text-ocean-blue hover:bg-ocean-blue/5 px-1.5 py-px text-[9px] font-semibold"
+                      >
+                        <EnvelopeIcon className="w-2.5 h-2.5" /> view email
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -1122,7 +1136,11 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                       : st.key === "accepted" ? "msgmerchant" // coordinate signing / next steps
                       : "msgfunder";                          // awaiting/funder_declined/merchant_declined/withdrawn → nudge/clarify
                     const primary = items.find((i) => i.key === primaryKey) ?? items[0];
-                    const overflow = items.filter((i) => i !== primary);
+                    // "Message funder" is the reply path — keep it a VISIBLE button on
+                    // every card (not hidden in ⋯), unless it's already the primary.
+                    const msgFunder = items.find((i) => i.key === "msgfunder");
+                    const showMsgFunderSecondary = !!msgFunder && primary.key !== "msgfunder";
+                    const overflow = items.filter((i) => i !== primary && !(showMsgFunderSecondary && i.key === "msgfunder"));
                     const PrimaryIcon = primary.Icon;
                     const primaryCls =
                       primary.key === "accept" ? "bg-emerald-600 text-white hover:opacity-90"
@@ -1139,6 +1157,16 @@ export default function FunderResponsesBoard({ deal, mode = "board" }: { deal: D
                         >
                           {busy ? <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" /> : <PrimaryIcon className="w-3.5 h-3.5" />} {primary.label}
                         </button>
+                        {showMsgFunderSecondary && msgFunder && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={msgFunder.onClick}
+                            className="text-[10px] font-semibold px-2.5 py-1 rounded inline-flex items-center gap-1 disabled:opacity-50 border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                          >
+                            <BuildingOffice2Icon className="w-3.5 h-3.5" /> Message funder
+                          </button>
+                        )}
                         {isFunderDeclined && s.courtesySentAt && (
                           <span className="inline-flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
                             <CheckCircleIcon className="w-3.5 h-3.5" /> Thank-you sent

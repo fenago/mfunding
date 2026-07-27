@@ -637,7 +637,7 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
   // build the funder's OPEN submissions with their merchant identity and match the
   // reply by deal number / business name (poll-funder-replies uses the same rule).
   const { data: openSubs } = await db.from("deal_submissions")
-    .select("id, deal_id, status, response_at, deal:deals!deal_id ( deal_number, customer:customers!customer_id ( business_name ) )")
+    .select("id, deal_id, status, response_at, submitted_at, deal:deals!deal_id ( deal_number, customer:customers!customer_id ( business_name ) )")
     .eq("lender_id", lender.id)
     .not("submitted_at", "is", null)
     .is("response_at", null)
@@ -653,17 +653,25 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
     submissionId: s.id as string, dealId: s.deal_id as string,
     dealNumber: ((s.deal as { deal_number?: string } | null)?.deal_number) ?? null,
     businessName: (((s.deal as { customer?: { business_name?: string } } | null)?.customer)?.business_name) ?? null,
+    submittedAt: (s.submitted_at as string | null) ?? null,
   }));
   const subject = String(
     evt.subject ?? cd.subject ?? (evt.email as Record<string, unknown> | undefined)?.subject ?? "",
   );
-  const resolution = resolveReplyTarget({ subject, body, subs: subCands, lenderName: lender.company_name });
+  // This inbound event just arrived (push) — its date is now, unless GHL provided
+  // one. That keeps a genuine live reply past the submit-time gate while a replay
+  // of an old email still gets gated by its real date.
+  const emailDate = String(
+    evt.dateAdded ?? cd.dateAdded ?? (evt.email as Record<string, unknown> | undefined)?.dateAdded ?? new Date().toISOString(),
+  );
+  const resolution = resolveReplyTarget({ subject, body, subs: subCands, lenderName: lender.company_name, emailDate });
   if (resolution.kind !== "match") {
     // Never force it onto a deal. Park it on the sync-log for a human to place
     // (never silently attached, never silently dropped).
     const reason = resolution.kind === "wrong_merchant" ? `names a different merchant: ${resolution.merchant}`
       : resolution.kind === "wrong_deal_number" ? `names deal ${resolution.dealNumber} (not open with this funder)`
-      : resolution.kind === "general" ? "marketing / general (not about a specific file)"
+      : resolution.kind === "stale" ? resolution.reason
+      : resolution.kind === "general" ? "marketing / onboarding / general (not about a specific file)"
       : resolution.kind === "ambiguous" ? "could not tell which open deal it is about"
       : "no open submission to this funder";
     await db.from("ghl_webhook_events").insert({
@@ -711,8 +719,22 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
   }
 
   const snippet = body ? body.replace(/\s+/g, " ").slice(0, 300) : "";
-  await log(db, "deal", sub.deal_id, "ghl:funder-reply", {
-    lender: lender.company_name, submissionId: sub.id, conversationId, snippet,
+  // Log in the SAME format the poller uses so FunderResponsesBoard can render the
+  // "✉ view email" chip: an email-record id → [emsg:<id>], else the conversation
+  // message id → [msg:<id>] (get-funder-email resolves either). Without a marker
+  // the reply line had no id and showed no chip.
+  const emailRecordId = String(
+    evt.emailMessageId ?? cd.emailMessageId ?? cd.email_message_id ??
+    (evt.email as Record<string, unknown> | undefined)?.messageId ??
+    ((evt.meta as { email?: { messageIds?: unknown[] } } | undefined)?.email?.messageIds?.[0]) ?? "",
+  );
+  const convMsgId = String(evt.messageId ?? cd.messageId ?? evt.message_id ?? cd.message_id ?? "");
+  const idMarker = emailRecordId ? ` [emsg:${emailRecordId}]` : convMsgId ? ` [msg:${convMsgId}]` : "";
+  const fromLabel = String((evt.contact as Record<string, unknown> | undefined)?.email ?? cd.from ?? evt.from ?? contactId);
+  await db.from("activity_log").insert({
+    entity_type: "deal", entity_id: sub.deal_id, interaction_type: "email",
+    subject: `ghl:funder-reply — ${lender.company_name}`,
+    content: `reply: "${snippet.slice(0, 180)}" (${fromLabel})${idMarker}`,
   });
 
   // Internal alert — owner ONLY, never the funder or merchant.

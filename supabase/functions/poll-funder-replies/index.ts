@@ -234,7 +234,7 @@ async function captureOutboundFunderEmails(
       if (/new submission from|merchant information sheet|referral guidelines|submitted the package/i.test(text)) continue;
       // Resolve WHICH deal this outbound reply is about — a funder thread mixes
       // several merchants, so never force it onto the newest. Skip if unresolved.
-      const res = resolveReplyTarget({ subject, body: text, subs: subCands, lenderName });
+      const res = resolveReplyTarget({ subject, body: text, subs: subCands, lenderName, emailDate: String(e.dateAdded ?? e.date ?? "") || null });
       if (res.kind !== "match") continue;
       const dealId = res.sub.dealId;
       // Already in that deal's thread (logged by submit-to-funders or a prior run)?
@@ -701,6 +701,7 @@ Deno.serve(async (req) => {
       submissionId: p.id, dealId: p.deal_id,
       dealNumber: dealMeta.get(p.deal_id)?.dealNumber ?? null,
       businessName: dealMeta.get(p.deal_id)?.businessName ?? null,
+      submittedAt: (p.submitted_at as string | null) ?? null,
     }));
 
     // Conversations across ALL of this funder's contacts (linked + same email
@@ -785,7 +786,7 @@ Deno.serve(async (req) => {
       const fromRaw = String(e.from ?? "");
       const reply = { text, from: fromRaw, at, eid: ref.eid };
 
-      const res = resolveReplyTarget({ subject, body: text, subs: subCands, lenderName: lender.company_name });
+      const res = resolveReplyTarget({ subject, body: text, subs: subCands, lenderName: lender.company_name, emailDate: at });
       markedEids.add(ref.eid); // don't reconsider this record again this run
 
       if (res.kind === "match") {
@@ -805,12 +806,13 @@ Deno.serve(async (req) => {
           parked.push(`${lender.company_name}: unmatched (deal ${res.dealNumber})`);
         }
       } else if (res.kind === "general") {
-        // Marketing / nudge — about no file. Keep it OFF deal cards; record it in
-        // the general bucket so it never re-processes and stays auditable.
-        await parkFunderEmail(db, { eventType: "FunderReplyGeneral", lenderName: lender.company_name, from: fromRaw, subject, snippet: text, eid: ref.eid, reason: "marketing / general (not about a specific file)" });
+        // Marketing / onboarding / welcome chatter — about no file. Keep it OFF deal
+        // cards; record it in the general bucket so it never re-processes.
+        await parkFunderEmail(db, { eventType: "FunderReplyGeneral", lenderName: lender.company_name, from: fromRaw, subject, snippet: text, eid: ref.eid, reason: "funder general / onboarding (not about a specific file)" });
       } else {
-        // wrong_merchant | ambiguous | none — never attach; park for a human.
+        // wrong_merchant | stale | ambiguous | none — never attach; park for a human.
         const reason = res.kind === "wrong_merchant" ? `names a different merchant: ${res.merchant}`
+          : res.kind === "stale" ? res.reason
           : res.kind === "ambiguous" ? "could not tell which open deal it is about"
           : "no open submission to this funder";
         await parkFunderEmail(db, { eventType: "FunderReplyUnmatched", lenderName: lender.company_name, from: fromRaw, subject, snippet: text, eid: ref.eid, reason });
