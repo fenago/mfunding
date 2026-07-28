@@ -238,6 +238,63 @@ export async function notifyMerchantDocUploaded(documentId: string): Promise<voi
   }
 }
 
+// ── Plaid bank connection (plaid_items) ──────────────────────────────────────
+// A merchant connects their bank (verify business revenue) in ~60s via Plaid.
+// The merchant SELECTs their OWN plaid_items via RLS; the row is written
+// server-side by the plaid-exchange edge function (no access token ever touches
+// the client). We surface the connection STATUS so the portal can say "Bank
+// connected — <institution>" instead of nagging for statements.
+
+export type PlaidItemStatus = "active" | "error" | "revoked" | "pending";
+
+export interface PlaidAccount {
+  name?: string | null;
+  mask?: string | null;
+  subtype?: string | null;
+  type?: string | null;
+}
+
+export interface PlaidItem {
+  id: string;
+  customer_id: string | null;
+  deal_id: string | null;
+  item_id: string;
+  institution_name: string | null;
+  environment: string | null;
+  status: PlaidItemStatus;
+  error_code: string | null;
+  error_message: string | null;
+  accounts: PlaidAccount[] | null;
+  last_pull_at: string | null;
+  transactions_count: number | null;
+  statements_count: number | null;
+  created_at: string;
+}
+
+const PLAID_ITEM_COLUMNS =
+  "id, customer_id, deal_id, item_id, institution_name, environment, status, " +
+  "error_code, error_message, accounts, last_pull_at, transactions_count, " +
+  "statements_count, created_at";
+
+/** The merchant's most relevant bank connection: an ACTIVE one wins (that's the
+ *  "you're connected" state); otherwise the newest row (so an errored/revoked
+ *  link can prompt a reconnect). Returns null when nothing is connected, or
+ *  cleanly if the table isn't deployed yet (backend in parallel). */
+export async function getMyPlaidItem(customerId: string): Promise<PlaidItem | null> {
+  const { data, error } = await supabase
+    .from("plaid_items")
+    .select(PLAID_ITEM_COLUMNS)
+    .eq("customer_id", customerId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    if (isTableMissing(error)) return null;
+    throw new Error(error.message || "Failed to load your bank connection.");
+  }
+  const rows = (data ?? []) as unknown as PlaidItem[];
+  return rows.find((r) => r.status === "active") ?? rows[0] ?? null;
+}
+
 // ── Anonymized funder submissions (get_my_deal_submissions) ───────────────────
 // Merchant-safe view of where their file stands with funding partners. Partner
 // identities are anonymized server-side ("Funding Partner A"...). Offer fields

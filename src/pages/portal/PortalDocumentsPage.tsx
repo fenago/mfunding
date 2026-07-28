@@ -23,6 +23,7 @@ import { unifyDocs, openGhlDoc } from "../../utils/signing";
 import DocChecklist from "../../components/portal/DocChecklist";
 import DocumentsToSign from "../../components/portal/DocumentsToSign";
 import SignDocumentModal from "../../components/portal/SignDocumentModal";
+import ConnectBankCard from "../../components/portal/ConnectBankCard";
 
 interface CustomerDocument {
   id: string;
@@ -168,9 +169,12 @@ export default function PortalDocumentsPage() {
             )}
           </section>
 
-          {/* ── SECTION 2: To upload (shared checklist + ad-hoc) ────────────── */}
+          {/* ── SECTION 2: To upload (bank connect → shared checklist + ad-hoc) ─ */}
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-gray-900 dark:text-white">To upload</h2>
+            {/* The fastest path to satisfy bank statements: connect the bank
+                instead of chasing PDFs. Shows the connected state once linked. */}
+            <ConnectBankCard customerId={customerId} onConnected={fetchAll} />
             <DocChecklist customerId={customerId} includeAdHoc onChanged={fetchAll} />
           </section>
 

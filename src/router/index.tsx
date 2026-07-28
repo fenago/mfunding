@@ -41,6 +41,7 @@ import AboutPage from "../pages/AboutPage.tsx";
 import ContactPage from "../pages/ContactPage.tsx";
 import OptinPage from "../pages/OptinPage.tsx";
 import ApplyPage from "../pages/ApplyPage.tsx";
+import ConnectBankPage from "../pages/ConnectBankPage.tsx";
 import VCFReliefPage from "../pages/VCFReliefPage.tsx";
 import VCFSavingsCalculatorPage from "../pages/calculators/VCFSavingsCalculatorPage.tsx";
 import MCAFundingCalculatorPage from "../pages/calculators/MCAFundingCalculatorPage.tsx";
@@ -228,6 +229,12 @@ export const routes: RouteObject[] = [
       {
         path: "/debt-relief",
         element: <VCFReliefPage />,
+      },
+      {
+        // Public, tokenized bank-connect page (logged out) — a closer texts this
+        // link; the merchant connects their bank via Plaid to verify revenue.
+        path: "/connect-bank/:token",
+        element: <ConnectBankPage />,
       },
       {
         path: "/calculators/mca-debt-relief",

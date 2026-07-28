@@ -32,6 +32,7 @@ import {
 } from "../_shared/ghl.ts";
 import { getInstantlyKey } from "../_shared/instantly.ts";
 import { callLLM, resolveConfig } from "../_shared/llm.ts";
+import { getPlaidConfig, plaidFetch, resolveEnv } from "../_shared/plaid.ts";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
 const FROM_EMAIL = "sales@send.mfunding.net"; // company dedicated sending domain
@@ -159,6 +160,32 @@ async function checkLlm(db: SupabaseClient): Promise<CheckResult> {
   }
 }
 
+/** Plaid: an authenticated read against the ACTIVE environment (Limited Production
+ * uses production keys). /institutions/get with our client_id+secret proves the keys
+ * work — a 400 INVALID_API_KEYS / 401 is a real DOWN, not a TCP-up false positive. */
+async function checkPlaid(db: SupabaseClient): Promise<CheckResult> {
+  const svc = "plaid";
+  const t0 = Date.now();
+  try {
+    const env = await resolveEnv(db);
+    const cfg = await getPlaidConfig(db, env);
+    const res = await plaidFetch(cfg, "/institutions/get", { count: 1, offset: 0, country_codes: ["US"] });
+    const latency = Date.now() - t0;
+    if (res.ok) {
+      return { service: svc, status: "up", http_status: res.status, latency_ms: latency, detail: `Plaid ${env} responding.` };
+    }
+    if (res.status === 400 || res.status === 401) {
+      return { service: svc, status: "down", http_status: res.status, latency_ms: latency, detail: `auth rejected (${res.errorCode ?? res.status}) — check PLAID_CLIENT_ID / PLAID_SECRET_${env.toUpperCase()} in the vault.` };
+    }
+    if (res.status >= 500) {
+      return { service: svc, status: "degraded", http_status: res.status, latency_ms: latency, detail: `Plaid provider error (${res.status}).` };
+    }
+    return { service: svc, status: "degraded", http_status: res.status, latency_ms: latency, detail: `HTTP ${res.status}: ${String(res.error ?? "").slice(0, 160)}` };
+  } catch (e) {
+    return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `not configured / unreachable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 /** A public site should answer 200. A non-2xx = degraded (reachable, wrong);
  * a network throw/timeout = down (unreachable). */
 async function checkSite(service: string, url: string): Promise<CheckResult> {
@@ -226,6 +253,7 @@ const LABELS: Record<string, string> = {
   instantly: "Instantly (email verify / warmup)",
   ghl: "GoHighLevel / VibeReach",
   llm: "AI provider (underwriting / recommendations)",
+  plaid: "Plaid (bank connection)",
   "site:mfunding.net": "Website (mfunding.net)",
   "site:my.mfunding.net": "Merchant portal (my.mfunding.net)",
   "edge-runtime": "Supabase edge runtime",
@@ -334,15 +362,16 @@ Deno.serve(async (req) => {
 
   // ── Run every probe (in parallel where independent) ──
   const results: CheckResult[] = [];
-  const [instantly, ghl, llm, site1, site2, cron] = await Promise.all([
+  const [instantly, ghl, llm, plaid, site1, site2, cron] = await Promise.all([
     checkInstantly(db),
     checkGhl(cfg, cfgErr),
     checkLlm(db),
+    checkPlaid(db),
     checkSite("site:mfunding.net", "https://mfunding.net"),
     checkSite("site:my.mfunding.net", "https://my.mfunding.net"),
     checkCron(db),
   ]);
-  results.push(instantly, ghl, llm, site1, site2, cron);
+  results.push(instantly, ghl, llm, plaid, site1, site2, cron);
   // Edge-runtime self-check: if this line runs, the function + its scheduler are alive.
   results.push({ service: "edge-runtime", status: "up", http_status: null, latency_ms: null, detail: `edge function executed at ${new Date().toISOString()}.` });
 

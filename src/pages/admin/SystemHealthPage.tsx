@@ -56,6 +56,10 @@ const SERVICE_META: Record<string, { label: string; hint: string }> = {
     label: "AI provider (underwriting / recommendations)",
     hint: "Check the AI provider's credits/billing in Admin → Integrations → AI Provider.",
   },
+  plaid: {
+    label: "Plaid (bank connection)",
+    hint: "Check PLAID_CLIENT_ID / PLAID_SECRET_* in the vault and the environment toggle in platform_settings.plaid.",
+  },
   "site:mfunding.net": {
     label: "Website (mfunding.net)",
     hint: "Check the Netlify deploy + DNS.",
@@ -80,9 +84,8 @@ function metaFor(service: string) {
 
 // Integrations we know about but do NOT actively test. Rendered as neutral grey
 // chips — never a green check for something we don't probe (honesty rule).
-const NOT_INSTRUMENTED: { name: string; note: string }[] = [
-  { name: "Plaid", note: "Not connected — no live bank-verification integration yet." },
-];
+// Plaid graduated to a real UP/DOWN probe (checkPlaid in system-health-check).
+const NOT_INSTRUMENTED: { name: string; note: string }[] = [];
 
 function normStatus(s: string | null): Status | null {
   if (s === "up" || s === "degraded" || s === "down") return s;
@@ -528,29 +531,31 @@ export default function SystemHealthPage() {
       </div>
 
       {/* ── Not instrumented ─────────────────────────────────────────────────── */}
-      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
-        <div className="flex items-center gap-2 mb-2">
-          <SignalSlashIcon className="w-5 h-5 text-gray-400" />
-          <h2 className="font-bold text-gray-900 dark:text-white">Not instrumented</h2>
+      {NOT_INSTRUMENTED.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <SignalSlashIcon className="w-5 h-5 text-gray-400" />
+            <h2 className="font-bold text-gray-900 dark:text-white">Not instrumented</h2>
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            Integrations we know about but do <span className="font-semibold">not</span> actively test yet. We never show a
+            green check for something we don't probe.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {NOT_INSTRUMENTED.map((n) => (
+              <span
+                key={n.name}
+                title={n.note}
+                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+              >
+                <span className="w-2 h-2 rounded-full bg-gray-400" />
+                <span className="font-semibold">{n.name}</span>
+                <span className="text-gray-400 dark:text-gray-400">· {n.note}</span>
+              </span>
+            ))}
+          </div>
         </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          Integrations we know about but do <span className="font-semibold">not</span> actively test yet. We never show a
-          green check for something we don't probe.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {NOT_INSTRUMENTED.map((n) => (
-            <span
-              key={n.name}
-              title={n.note}
-              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-            >
-              <span className="w-2 h-2 rounded-full bg-gray-400" />
-              <span className="font-semibold">{n.name}</span>
-              <span className="text-gray-400 dark:text-gray-400">· {n.note}</span>
-            </span>
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

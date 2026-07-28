@@ -37,6 +37,7 @@ import OfferComparison from "../../../components/shared/OfferComparison";
 import PipelineFlow from "../../../components/shared/PipelineFlow";
 import QualificationPanel from "../../../components/admin/QualificationPanel";
 import DealDocRequests from "../../../components/admin/DealDocRequests";
+import DealBankPanel from "../../../components/admin/DealBankPanel";
 import SendForSignature from "../../../components/admin/SendForSignature";
 import RenewalProjectionEditor from "../../../components/admin/RenewalProjectionEditor";
 import DealAssistant from "../../../components/admin/DealAssistant";
@@ -985,6 +986,9 @@ export default function DealDetailPage() {
       {/* Tab: Documents (Stips Checklist) */}
       {activeTab === "documents" && (
         <div className="space-y-6">
+          {/* Bank connection (Plaid) — the 60-second path to verified revenue */}
+          <DealBankPanel dealId={deal.id} customerId={deal.customer_id} />
+
           {/* Request documents from the merchant (also how funder stips reach them) */}
           <DealDocRequests dealId={deal.id} customerId={deal.customer_id} />
 

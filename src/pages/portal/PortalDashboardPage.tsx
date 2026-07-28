@@ -18,6 +18,7 @@ import {
   type GhlDocument,
 } from "../../services/portalService";
 import ActionBlock from "../../components/portal/ActionBlock";
+import ConnectBankCard from "../../components/portal/ConnectBankCard";
 import WelcomeOverlay from "../../components/portal/WelcomeOverlay";
 import DealCard from "../../components/portal/DealCard";
 import SignDocumentModal from "../../components/portal/SignDocumentModal";
@@ -241,6 +242,12 @@ export default function PortalDashboardPage() {
         onSignNative={setSigningDoc}
         onUpload={handleUpload}
       />
+
+      {/* Connect-bank action — the 60-second path to verify revenue instead of
+          uploading statements. Self-manages: shows the connected state once linked. */}
+      {customerId && (
+        <ConnectBankCard customerId={customerId} compact onConnected={fetchData} />
+      )}
 
       {/* The journey, one card per funding request */}
       <div ref={journeyRef} className="scroll-mt-6">

@@ -193,6 +193,30 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
     }
   };
 
+  // Connect-Bank link — mints a tokenized public /connect-bank/<token> URL and
+  // copies it. Nothing is sent to the merchant here (like the upload link, it's a
+  // copy-and-text affordance), so no armed two-step — a copy is safe.
+  const copyConnectBankLink = async () => {
+    setBusy("connect-bank");
+    try {
+      const { data, error } = await supabase.functions.invoke("plaid-mint-link", {
+        body: { dealId },
+      });
+      if (error) throw error;
+      const d = data as { ok?: boolean; url?: string; error?: string } | null;
+      if (d?.error) throw new Error(d.error);
+      if (!d?.url) throw new Error("No Connect-Bank link was returned.");
+      await navigator.clipboard.writeText(d.url);
+      finish({
+        ok: true,
+        text: "🔗 Connect-Bank link copied — text it; they verify revenue in ~60s (no statements to chase).",
+      });
+    } catch (e) {
+      const { message } = await errorInfo(e, "Could not create a Connect-Bank link.");
+      finish({ ok: false, text: message });
+    }
+  };
+
   const itemCls =
     "w-full text-left px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -286,6 +310,22 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
               </button>
             </>
           )}
+
+          {/* Bank connection — mint + copy a 60-second Connect-Bank link. The
+              merchant links their bank via Plaid to verify revenue (statements
+              stop being a chase). Copy affordance, same as the upload link. */}
+          <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100 dark:border-gray-700">
+            Bank connection
+          </p>
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => void copyConnectBankLink()}
+            className={itemCls}
+            title="Mints a secure /connect-bank link and copies it — text it to the merchant so they can connect their bank in ~60 seconds"
+          >
+            {busy === "connect-bank" ? "Creating link…" : "🔗 Copy their Connect-Bank link (verify revenue in 60s)"}
+          </button>
 
           {/* THIS merchant's signing links — every document already sent to them,
               one copy-click from a text message. Bearer links: whoever holds one

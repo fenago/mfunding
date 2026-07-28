@@ -122,4 +122,5 @@ both via MCP **and** as committed files (as done this session).
 20260728        rnd_items
 20260728        rnd_items_enrich
 20260728        rnd_items_roles
+20260728        plaid_integration
 ```
