@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MFA Implementation Evidence — Agentic Voice, Inc.</title>
+<style>
+  @page { size: Letter; margin: 0.9in 0.85in; }
+  body { font-family: "Helvetica Neue", Arial, sans-serif; color: #1a2332; font-size: 11pt; line-height: 1.5; margin: 0; }
+  .cover { border-bottom: 3px solid #1b4d3e; padding-bottom: 12px; margin-bottom: 18px; }
+  .eyebrow { color: #1b4d3e; font-size: 9pt; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; margin: 0 0 6px; }
+  h1 { font-size: 18pt; margin: 0 0 4px; color: #0f2942; }
+  .sub { color: #55637a; font-size: 10pt; margin: 0; }
+  h2 { font-size: 12pt; color: #1b4d3e; margin: 18px 0 6px; }
+  p { margin: 6px 0; }
+  img.shot { width: 100%; border: 1px solid #d6dbe4; margin: 8px 0; }
+  .caption { font-size: 9pt; color: #55637a; margin-top: 2px; }
+  footer { margin-top: 22px; border-top: 1px solid #d6dbe4; padding-top: 8px; color: #8892a6; font-size: 8pt; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <p class="eyebrow">Security Diligence — Supporting Evidence</p>
+  <h1>Multi-Factor Authentication Implementation</h1>
+  <p class="sub">Agentic Voice, Inc. — d/b/a MFunding.net | Momentum Funding · Prepared July 28, 2026 · Owner: Ernesto Lee, CEO &amp; Security Officer</p>
+</div>
+
+<p>Per Section 5 of our Information Security Policy (v1.0) and Section 4 of our
+Access Control Policy (v1.0), multi-factor authentication is required for
+administrative access to the critical systems that store or process consumer
+financial data. The evidence below documents the enrolled authenticator-app
+(TOTP) factor on our primary production data platform.</p>
+
+<h2>Supabase — production database, storage &amp; secrets vault (primary system holding Plaid-derived data)</h2>
+<p>MFA is enabled on the administrative account via an authenticator app
+(TOTP). Screenshot of the account security settings showing the configured
+factor:</p>
+<img class="shot" src="assets/supabase-mfa-enabled.png" alt="Supabase account Security settings showing Multi-factor authentication: 1 APP CONFIGURED, authenticator app named MFunding.net added 28 Jul 2026">
+<p class="caption">Supabase → Account → Security: “Multi-factor authentication (MFA) — 1 APP CONFIGURED”, authenticator app “MFunding.net”, added 28 Jul 2026 18:15 (UTC-4).</p>
+
+<p>Administrative access to the supporting platforms in scope (GitHub —
+source control; Google Workspace — email/identity) is protected by
+authenticator-app two-step verification under the same policy requirement.</p>
+
+<footer>Agentic Voice, Inc. — MFA Implementation Evidence — Confidential. Companion to Information Security Policy v1.0 and Access Control Policy v1.0.</footer>
+
+</body>
+</html>
