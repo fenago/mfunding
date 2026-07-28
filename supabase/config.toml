@@ -264,3 +264,28 @@ verify_jwt = true
 # gateway) OR staff "Sync now" (user JWT + role check in code).
 [functions.vendor-conversation-sweep]
 verify_jwt = true
+
+# ---- Plaid bank connection --------------------------------------------------
+# plaid-create-link-token / plaid-exchange run verify_jwt = false because they serve
+# BOTH the authenticated portal (merchant/staff JWT) AND a public tokenized "connect
+# your bank" link a closer texts (body.link_ref). Auth is enforced in-code via
+# resolvePlaidCaller (JWT owner/staff OR a valid, non-expired link token).
+[functions.plaid-create-link-token]
+verify_jwt = false
+
+[functions.plaid-exchange]
+verify_jwt = false
+
+# plaid-webhook: Plaid can't send a Supabase JWT — fail-closed shared-secret gate
+# (?secret=<GHL webhook secret>) in-code, like ghl-webhook / live-transfer-intake.
+[functions.plaid-webhook]
+verify_jwt = false
+
+# plaid-pull: internal callers (exchange/webhook/cron) use ?secret=; the admin
+# "pull now" button uses a staff JWT. Both checked in-code.
+[functions.plaid-pull]
+verify_jwt = false
+
+# plaid-mint-link: staff-only textable connect link. verify_jwt = true + in-code role check.
+[functions.plaid-mint-link]
+verify_jwt = true

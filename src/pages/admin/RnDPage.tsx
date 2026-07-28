@@ -10,6 +10,11 @@ import {
   StarIcon,
   CalendarDaysIcon,
   PencilSquareIcon,
+  PhoneIcon,
+  EnvelopeIcon,
+  GlobeAltIcon,
+  ExclamationTriangleIcon,
+  BuildingLibraryIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -39,6 +44,10 @@ interface Content {
   unverified?: boolean;
   url?: string;
   purpose?: string;
+  phone?: string; // digits for tel:  e.g. +18664280172
+  phoneDisplay?: string; // human-readable  e.g. (866) 428-0172
+  email?: string; // for mailto:
+  note?: string; // caveat / honesty note
   gain?: string;
   odds?: string;
   recommended?: boolean;
@@ -105,9 +114,14 @@ function CostChip({ cost }: { cost: string }) {
   );
 }
 
-function ResourceLinks({ c }: { c: Content }) {
+/* Tappable resource + contact chips: external link, in-app link, tel:, mailto:.
+   Phones use content.phone (digits) for the tel: target and phoneDisplay for
+   the label. Renders nothing for fields that aren't present. */
+function ContactChips({ c }: { c: Content }) {
+  const hasAny = c.link || c.appLink || c.url || c.phone || c.email;
+  if (!hasAny) return null;
   return (
-    <>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       {c.link && (
         <a
           href={c.link}
@@ -118,6 +132,32 @@ function ResourceLinks({ c }: { c: Content }) {
           {c.linkLabel ?? c.link} <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
         </a>
       )}
+      {c.url && !c.link && (
+        <a
+          href={c.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline"
+        >
+          <GlobeAltIcon className="w-3.5 h-3.5" /> Website
+        </a>
+      )}
+      {c.phone && (
+        <a
+          href={`tel:${c.phone}`}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline"
+        >
+          <PhoneIcon className="w-3.5 h-3.5" /> {c.phoneDisplay ?? c.phone}
+        </a>
+      )}
+      {c.email && (
+        <a
+          href={`mailto:${c.email}`}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline"
+        >
+          <EnvelopeIcon className="w-3.5 h-3.5" /> {c.email}
+        </a>
+      )}
       {c.appLink && (
         <Link
           to={c.appLink}
@@ -126,7 +166,7 @@ function ResourceLinks({ c }: { c: Content }) {
           {c.appLinkLabel ?? c.appLink} <ArrowRightIcon className="w-3.5 h-3.5" />
         </Link>
       )}
-    </>
+    </div>
   );
 }
 
@@ -270,12 +310,159 @@ function TaskRow({
             {c.detail}
           </p>
         )}
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
-          <ResourceLinks c={c} />
+        <div className="mt-1.5">
+          <ContactChips c={c} />
         </div>
+        {c.note && (
+          <p className="mt-1 text-[11px] italic text-gray-400 dark:text-gray-500 leading-relaxed">
+            {c.note}
+          </p>
+        )}
         <InlineNote value={item.notes} onSave={(v) => onNote(item, v)} />
       </div>
     </div>
+  );
+}
+
+/* Derive a tel: href from a human-formatted phone string. Returns null when
+   there isn't a clean 10/11-digit number (some records hold notes, not numbers). */
+function telHref(raw?: string | null): string | null {
+  if (!raw) return null;
+  const m = raw.match(/(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
+  if (!m) return null;
+  const d = m[0].replace(/\D/g, "");
+  if (d.length < 10) return null;
+  return `+${d.length === 10 ? "1" + d : d}`;
+}
+const isEmail = (s?: string | null) => !!s && /.+@.+\..+/.test(s);
+
+interface FunderRow {
+  company_name: string;
+  submission_email: string | null;
+  primary_contact_name: string | null;
+  primary_contact_email: string | null;
+  primary_contact_phone: string | null;
+}
+
+// The two funders the plan names first — pinned to the top of the outreach list.
+const PINNED_FUNDERS = ["True Advance Funding", "Green Note Capital"];
+
+/* Live funder-outreach list. Pulls active funders straight from the network so
+   it never goes stale — the Funder Directory stays the system of record. Powers
+   the "Email the funders" task with tappable submission emails + rep contacts. */
+function FunderOutreach() {
+  const [rows, setRows] = useState<FunderRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase
+        .from("lenders")
+        .select(
+          "company_name, submission_email, primary_contact_name, primary_contact_email, primary_contact_phone, funder_submission_profiles!inner(active)",
+        )
+        .eq("funder_submission_profiles.active", true)
+        .order("company_name", { ascending: true });
+      if (error) setErr(error.message);
+      else setRows((data as unknown as FunderRow[]) ?? []);
+      setLoading(false);
+    })();
+  }, []);
+
+  const sorted = useMemo(() => {
+    const rank = (n: string) => {
+      const i = PINNED_FUNDERS.indexOf(n);
+      return i === -1 ? 99 : i;
+    };
+    return [...rows].sort(
+      (a, b) => rank(a.company_name) - rank(b.company_name) || a.company_name.localeCompare(b.company_name),
+    );
+  }, [rows]);
+
+  return (
+    <Section
+      title="Funder Outreach — active funders"
+      subtitle={
+        loading
+          ? "Loading the network…"
+          : `Every active funder on file, tappable. Pick your core to email first — True Advance and Green Note are pinned. (${rows.length})`
+      }
+      icon={BuildingLibraryIcon}
+    >
+      {err && (
+        <p className="text-xs text-rose-600 dark:text-rose-400">Could not load funders: {err}</p>
+      )}
+      {!err && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {sorted.map((f) => {
+            const pinned = PINNED_FUNDERS.includes(f.company_name);
+            const repTel = telHref(f.primary_contact_phone);
+            return (
+              <div
+                key={f.company_name}
+                className={`rounded-xl border p-3 ${
+                  pinned
+                    ? "border-mint-green/50 bg-mint-green/5 dark:bg-mint-green/10"
+                    : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"
+                }`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-bold text-gray-900 dark:text-white">
+                    {f.company_name}
+                  </span>
+                  {pinned && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-mint-green/15 text-mint-green px-2 py-0.5 text-[10px] font-bold">
+                      <StarIcon className="w-3 h-3" /> named in plan
+                    </span>
+                  )}
+                </div>
+                {isEmail(f.submission_email) && (
+                  <a
+                    href={`mailto:${f.submission_email}`}
+                    className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline"
+                  >
+                    <EnvelopeIcon className="w-3.5 h-3.5" /> Submit: {f.submission_email}
+                  </a>
+                )}
+                {(f.primary_contact_name || f.primary_contact_email || f.primary_contact_phone) && (
+                  <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                    {f.primary_contact_name && (
+                      <span className="font-medium text-gray-700 dark:text-gray-300">
+                        {f.primary_contact_name}
+                      </span>
+                    )}
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      {repTel && (
+                        <a
+                          href={repTel}
+                          className="inline-flex items-center gap-1 font-semibold text-ocean-blue hover:underline"
+                        >
+                          <PhoneIcon className="w-3.5 h-3.5" /> {f.primary_contact_phone?.trim()}
+                        </a>
+                      )}
+                      {!repTel && f.primary_contact_phone?.trim() && (
+                        <span className="inline-flex items-center gap-1">
+                          <PhoneIcon className="w-3.5 h-3.5" /> {f.primary_contact_phone.trim()}
+                        </span>
+                      )}
+                      {isEmail(f.primary_contact_email) && (
+                        <a
+                          href={`mailto:${f.primary_contact_email}`}
+                          className="inline-flex items-center gap-1 font-semibold text-ocean-blue hover:underline"
+                        >
+                          <EnvelopeIcon className="w-3.5 h-3.5" /> {f.primary_contact_email}
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -511,7 +698,7 @@ export default function RnDPage() {
                           {c.numbers}
                         </span>
                       )}
-                      <ResourceLinks c={c} />
+                      <ContactChips c={c} />
                     </div>
                     <InlineNote value={it.notes} onSave={(v) => saveNote(it, v)} />
                   </div>
@@ -741,7 +928,7 @@ export default function RnDPage() {
                       </p>
                     )}
                     <div className="mt-1.5">
-                      <ResourceLinks c={it.content} />
+                      <ContactChips c={it.content} />
                     </div>
                     <InlineNote value={it.notes} onSave={(v) => saveNote(it, v)} />
                   </div>
@@ -754,26 +941,45 @@ export default function RnDPage() {
         {/* VENDOR / LINK DIRECTORY */}
         <Section
           title="Vendor & Link Directory"
-          subtitle="Everyone the plan sends you to. Click through."
+          subtitle="Everyone the plan sends you to — real URLs, tappable phones and emails. Unverified items are flagged, never linked with a guess."
           icon={ArrowTopRightOnSquareIcon}
         >
           <div className="grid gap-3 sm:grid-cols-2">
             {vendors.map((it) => {
               const c = it.content;
-              const inner = (
-                <div className="h-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 hover:border-ocean-blue/50 transition">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-gray-900 dark:text-white">
-                      {it.label}
-                    </span>
-                    {c.appLink ? (
-                      <ArrowRightIcon className="w-3.5 h-3.5 text-mint-green" />
+              return (
+                <div
+                  key={it.id}
+                  className="h-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Title links to the site (external) or the in-app page; plain text when unverified/no link */}
+                    {c.url ? (
+                      <a
+                        href={c.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-sm font-bold text-gray-900 dark:text-white hover:text-ocean-blue"
+                      >
+                        {it.label}
+                        <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5 text-ocean-blue" />
+                      </a>
+                    ) : c.appLink ? (
+                      <Link
+                        to={c.appLink}
+                        className="inline-flex items-center gap-1 text-sm font-bold text-gray-900 dark:text-white hover:text-mint-green"
+                      >
+                        {it.label}
+                        <ArrowRightIcon className="w-3.5 h-3.5 text-mint-green" />
+                      </Link>
                     ) : (
-                      <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5 text-ocean-blue" />
+                      <span className="text-sm font-bold text-gray-900 dark:text-white">
+                        {it.label}
+                      </span>
                     )}
                     {c.unverified && (
-                      <span className="rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 text-[10px] font-semibold">
-                        verify URL
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 text-[10px] font-semibold">
+                        <ExclamationTriangleIcon className="w-3 h-3" /> unverified
                       </span>
                     )}
                   </div>
@@ -782,26 +988,48 @@ export default function RnDPage() {
                       {c.purpose}
                     </p>
                   )}
+                  {/* tappable phone / email / in-app chips (title already carries the website) */}
+                  {(c.phone || c.email || (c.appLink && c.url)) && (
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      {c.phone && (
+                        <a
+                          href={`tel:${c.phone}`}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline"
+                        >
+                          <PhoneIcon className="w-3.5 h-3.5" /> {c.phoneDisplay ?? c.phone}
+                        </a>
+                      )}
+                      {c.email && (
+                        <a
+                          href={`mailto:${c.email}`}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline"
+                        >
+                          <EnvelopeIcon className="w-3.5 h-3.5" /> {c.email}
+                        </a>
+                      )}
+                      {c.appLink && c.url && (
+                        <Link
+                          to={c.appLink}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-mint-green hover:underline"
+                        >
+                          {c.appLinkLabel ?? "In-app"} <ArrowRightIcon className="w-3.5 h-3.5" />
+                        </Link>
+                      )}
+                    </div>
+                  )}
+                  {c.note && (
+                    <p className="mt-1.5 text-[11px] italic text-gray-400 dark:text-gray-500 leading-relaxed">
+                      {c.note}
+                    </p>
+                  )}
                 </div>
-              );
-              return c.appLink ? (
-                <Link key={it.id} to={c.appLink} className="block">
-                  {inner}
-                </Link>
-              ) : (
-                <a
-                  key={it.id}
-                  href={c.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block"
-                >
-                  {inner}
-                </a>
               );
             })}
           </div>
         </Section>
+
+        {/* FUNDER OUTREACH — live from the funder network (always fresh) */}
+        <FunderOutreach />
       </div>
 
       {/* Compliance footer — internal, but honest */}
