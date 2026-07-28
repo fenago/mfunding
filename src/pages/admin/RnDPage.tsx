@@ -15,6 +15,8 @@ import {
   GlobeAltIcon,
   ExclamationTriangleIcon,
   BuildingLibraryIcon,
+  UserGroupIcon,
+  CheckBadgeIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -51,6 +53,25 @@ interface Content {
   gain?: string;
   odds?: string;
   recommended?: boolean;
+  // roles & hiring
+  role?: string;
+  aka?: string;
+  definition?: string;
+  responsibilities?: string[];
+  comp?: string;
+  compLabel?: string;
+  compRule?: string;
+  sources?: {
+    label: string;
+    url?: string;
+    appLink?: string;
+    appLinkLabel?: string;
+    unverified?: boolean;
+  }[];
+  builtBadge?: string;
+  builtDetail?: string;
+  rule?: string;
+  ruleRef?: string;
   // economics table columns
   months?: string;
   team?: string;
@@ -320,6 +341,137 @@ function TaskRow({
         )}
         <InlineNote value={item.notes} onSave={(v) => onNote(item, v)} />
       </div>
+    </div>
+  );
+}
+
+/* A "built" badge for role cards: green when fully built, blue when partial. */
+function BuiltBadge({ label }: { label: string }) {
+  const partial = /partial/i.test(label);
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+        partial
+          ? "bg-ocean-blue/15 text-ocean-blue"
+          : "bg-mint-green/15 text-mint-green"
+      }`}
+    >
+      <CheckBadgeIcon className="w-3.5 h-3.5" /> {label} ✓
+    </span>
+  );
+}
+
+/* One role card: definition, responsibilities, comp norms (labelled estimate),
+   where to hire (verified links; unverified sources flagged, not linked), and
+   the plan rule that binds the role — cross-referenced to Rules That Keep It Alive. */
+function RoleCard({ c }: { c: Content }) {
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <UserGroupIcon className="w-5 h-5 text-ocean-blue" />
+        <span className="text-base font-bold text-gray-900 dark:text-white">{c.role}</span>
+        {c.aka && (
+          <span className="text-xs text-gray-400 dark:text-gray-500">({c.aka})</span>
+        )}
+        {c.builtBadge && <BuiltBadge label={c.builtBadge} />}
+      </div>
+
+      {c.definition && (
+        <p className="mt-2 text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+          {c.definition}
+        </p>
+      )}
+
+      {c.responsibilities && c.responsibilities.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1">
+            What they do
+          </p>
+          <ul className="space-y-1">
+            {c.responsibilities.map((r, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300">
+                <CheckCircleIcon className="w-3.5 h-3.5 shrink-0 mt-0.5 text-mint-green" />
+                <span>{r}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {c.comp && (
+        <div className="mt-3 rounded-lg bg-gray-50 dark:bg-gray-900/40 border border-gray-100 dark:border-gray-700 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+              Comp
+            </p>
+            {c.compLabel && (
+              <span className="rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 text-[10px] font-semibold">
+                {c.compLabel}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-sm text-gray-800 dark:text-gray-100">{c.comp}</p>
+          {c.compRule && (
+            <p className="mt-1 text-[11px] font-semibold text-ocean-blue">{c.compRule}</p>
+          )}
+        </div>
+      )}
+
+      {c.builtDetail && (
+        <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+          {c.builtDetail}
+        </p>
+      )}
+
+      {c.sources && c.sources.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">
+            Where to find them
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {c.sources.map((s, i) =>
+              s.url ? (
+                <a
+                  key={i}
+                  href={s.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-full border border-ocean-blue/30 text-ocean-blue px-2.5 py-1 text-xs font-semibold hover:bg-ocean-blue/5"
+                >
+                  {s.label} <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+                </a>
+              ) : s.appLink ? (
+                <Link
+                  key={i}
+                  to={s.appLink}
+                  className="inline-flex items-center gap-1 rounded-full border border-mint-green/40 text-mint-green px-2.5 py-1 text-xs font-semibold hover:bg-mint-green/5"
+                >
+                  {s.appLinkLabel ?? s.label} <ArrowRightIcon className="w-3 h-3" />
+                </Link>
+              ) : (
+                <span
+                  key={i}
+                  className="inline-flex items-center gap-1 rounded-full border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 px-2.5 py-1 text-xs font-semibold"
+                >
+                  {s.label} <ExclamationTriangleIcon className="w-3 h-3" /> unverified
+                </span>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+
+      {c.rule && (
+        <div className="mt-3 flex items-start gap-2 rounded-lg bg-rose-50/60 dark:bg-rose-900/10 border border-rose-100 dark:border-rose-900/40 px-3 py-2">
+          <ShieldExclamationIcon className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+          <p className="text-xs text-gray-700 dark:text-gray-200 leading-relaxed">
+            <span className="font-semibold">Plan rule:</span> {c.rule}
+            {c.ruleRef && (
+              <span className="text-gray-400 dark:text-gray-500"> — see {c.ruleRef}.</span>
+            )}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -714,6 +866,19 @@ export default function RnDPage() {
                 {opNote.content.body}
               </div>
             )}
+          </div>
+        </Section>
+
+        {/* ROLES & HIRING — who runs the machine and where to find them */}
+        <Section
+          title="Roles & Hiring"
+          subtitle="Who runs each part of the machine — what they do, what they cost, and where to hire them."
+          icon={UserGroupIcon}
+        >
+          <div className="space-y-4">
+            {(bySection["roles"] ?? []).map((it) => (
+              <RoleCard key={it.id} c={it.content} />
+            ))}
           </div>
         </Section>
 
