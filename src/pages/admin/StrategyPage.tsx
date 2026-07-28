@@ -42,9 +42,9 @@ const DOCTRINE: Doctrine[] = [
     say: (
       <>
         “So we’re on the same page — funders typically approve{" "}
-        <strong className="font-semibold text-white">70–100% of one month’s revenue</strong> on a
+        <strong className="font-semibold text-emerald-800 dark:text-emerald-300">70–100% of one month’s revenue</strong> on a
         first position. On your numbers that’s a starting <em>advance</em> in the{" "}
-        <strong className="font-semibold text-white">$12–15K</strong> range, not the $100K. Here’s
+        <strong className="font-semibold text-emerald-800 dark:text-emerald-300">$12–15K</strong> range, not the $100K. Here’s
         how we get you to the bigger number.”
       </>
     ),
@@ -74,9 +74,9 @@ const DOCTRINE: Doctrine[] = [
     say: (
       <>
         “We can’t get you $100K today — here’s the path.{" "}
-        <strong className="font-semibold text-white">$12–15K now</strong>, you build a clean payment
-        history, renew at <strong className="font-semibold text-white">50% paydown in 60–90 days for
-        ~$25K</strong>, then <strong className="font-semibold text-white">$40K+</strong> after that.
+        <strong className="font-semibold text-emerald-800 dark:text-emerald-300">$12–15K now</strong>, you build a clean payment
+        history, renew at <strong className="font-semibold text-emerald-800 dark:text-emerald-300">50% paydown in 60–90 days for
+        ~$25K</strong>, then <strong className="font-semibold text-emerald-800 dark:text-emerald-300">$40K+</strong> after that.
         Funders reward the history. Start the ladder and the big number comes to you.”
       </>
     ),
@@ -105,7 +105,7 @@ const DOCTRINE: Doctrine[] = [
     say: (
       <>
         “I want to get you the most you actually qualify for, so before I quote anything I need to see
-        the real deposits. <strong className="font-semibold text-white">Send me the last 3 months of
+        the real deposits. <strong className="font-semibold text-emerald-800 dark:text-emerald-300">Send me the last 3 months of
         bank statements</strong> or connect the account through the secure link — takes 60 seconds.
         Once I see the numbers I’ll tell you exactly what the funders will do.”
       </>
@@ -134,7 +134,7 @@ const DOCTRINE: Doctrine[] = [
     say: (
       <>
         (Internal — to yourself and to ops.) “The verified number is{" "}
-        <strong className="font-semibold text-white">$16K/mo</strong>, so that’s what the package
+        <strong className="font-semibold text-emerald-800 dark:text-emerald-300">$16K/mo</strong>, so that’s what the package
         says. If the merchant wants more, that’s the renewal ladder — not a padded submission.”
       </>
     ),
