@@ -164,6 +164,50 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
   return (data || []) as unknown as QueueDeal[];
 }
 
+/**
+ * Which of these deals a closer/ops has flagged "⚡ disconnected at handoff".
+ * RLS on the call ledger is ops-only, so this reads through a SECURITY DEFINER RPC
+ * that gates on the same permission as the flag write (ops anywhere / closer owns
+ * the deal). Returns a Set of deal ids so the board can tag them at a glance.
+ * Best-effort: a failure returns an empty set rather than blanking the queue.
+ */
+export async function fetchHandoffDropFlags(dealIds: string[]): Promise<Set<string>> {
+  if (dealIds.length === 0) return new Set();
+  const { data, error } = await supabase.rpc("deals_handoff_drop_flags", { p_deal_ids: dealIds });
+  if (error) {
+    console.error("Error fetching handoff-drop flags:", error);
+    return new Set();
+  }
+  return new Set(((data as string[] | null) ?? []));
+}
+
+/**
+ * Flag (or clear) a dropped warm handoff straight from a My Day card — no navigation.
+ * On flag we first mirror the contact's inbound calls into the ledger (record-only,
+ * the exact path CallHistoryPanel runs on load) so the RPC can grade the REAL inbound
+ * transfer call when one exists — that's what makes the audit override + reconciliation
+ * bucket + replacement-eligible list light up identically to the panel chip. If the
+ * deal has no inbound call in GHL, the RPC records a deal-level fallback flag instead.
+ * Throws on an authorization or write failure so the card can revert its optimistic tag.
+ */
+export async function setHandoffDropFlag(
+  dealId: string,
+  ghlContactId: string | null,
+  flag: boolean,
+): Promise<void> {
+  if (flag && ghlContactId) {
+    try {
+      await supabase.functions.invoke("ghl-call-history", {
+        body: { ghl_contact_id: ghlContactId, deal_id: dealId },
+      });
+    } catch {
+      // Mirror is best-effort — the RPC still records a deal-level fallback flag.
+    }
+  }
+  const { error } = await supabase.rpc("flag_deal_handoff_drop", { p_deal_id: dealId, p_flag: flag });
+  if (error) throw error;
+}
+
 /** The slim slice of a deal the Calendar page renders — one row per deal that
  * carries at least one dated commitment (callback, stips promise, or a future
  * speed-to-lead deadline). */
