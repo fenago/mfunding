@@ -120,6 +120,7 @@ const SequencesPage = lazyWithReload(() => import("../pages/admin/SequencesPage.
 const ResourcesAdminPage = lazyWithReload(() => import("../pages/admin/ResourcesAdminPage.tsx"));
 const FunderGuidePage = lazyWithReload(() => import("../pages/admin/FunderGuidePage.tsx"));
 const StrategyPage = lazyWithReload(() => import("../pages/admin/StrategyPage.tsx"));
+const RnDPage = lazyWithReload(() => import("../pages/admin/RnDPage.tsx"));
 const CommsPage = lazyWithReload(() => import("../pages/admin/CommsPage.tsx"));
 const CalendarPage = lazyWithReload(() => import("../pages/admin/CalendarPage.tsx"));
 const DealListPage = lazyWithReload(() => import("../pages/admin/deals/DealListPage.tsx"));
@@ -430,6 +431,13 @@ export const routes: RouteObject[] = [
               {
                 path: "strategy",
                 element: <StrategyPage />,
+              },
+              // R&D — the owner's strategic build-out. Admin + super_admin only
+              // (not closers), so it carries an AdminOnlyProtectedRoute guard.
+              {
+                path: "rnd",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <RnDPage /> }],
               },
               // Sub-ISOs (super_admin only)
               {

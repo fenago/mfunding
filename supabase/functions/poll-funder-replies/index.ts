@@ -96,6 +96,31 @@ async function classifyReply(db: SupabaseClient, replyText: string): Promise<Rep
   }
 }
 
+// Deterministic fallback for when classifyReply() returns null (an LLM hiccup /
+// provider outage). WHY THIS EXISTS: a real Green Note DECLINE was captured to the
+// deal thread but the card was left on the prior "acknowledgment" because the LLM
+// returned null and applyFunderReply only patches the card when a classification
+// exists — so response_at silently advanced, the record got deduped, and the stale
+// card was never revisited. This recovers the unambiguous DECLINE case from plain
+// funder language so the card still flips to declined. Intentionally decline-only:
+// offer/stip parsing needs structure we won't guess. Returns null when unsure.
+function heuristicClassify(replyText: string): ReplyClassification | null {
+  const t = replyText.toLowerCase();
+  const declines =
+    /\bdeclin(e|ed|ing)\b|unable to (move forward|proceed|approve|fund|offer)|not able to (move forward|approve|fund)|we (?:will|are going to|have to) pass\b|cannot (?:approve|fund|move forward)|not a (?:fit|good fit)(?: for us)?(?: at this time)?/;
+  if (!declines.test(t)) return null;
+  // Pull a stated reason after "decline reason:" / "reason:" if present.
+  const m = replyText.match(/(?:decline reason|reason)\s*[:\-]\s*([^\n\r]{3,160})/i);
+  const reason = m ? m[1].trim().replace(/\s+/g, " ") : "";
+  return {
+    type: "decline",
+    decline_reason_category: "other",
+    requested_items: [],
+    offer_terms: null,
+    summary: reason ? `Declined — ${reason}` : "Funder declined the submission.",
+  };
+}
+
 // ── Merchant reply detection ────────────────────────────────────────────────
 // Deals we never chase for a merchant reply (mirrors the My Day queue's closed set).
 const MERCHANT_CLOSED_STATUSES = [
@@ -551,6 +576,9 @@ async function applyFunderReply(
   let applied = "";
   try {
     classification = await classifyReply(db, replyText);
+    // LLM returned nothing — recover an unambiguous decline deterministically so
+    // the card doesn't stay on a stale earlier classification (see heuristicClassify).
+    if (!classification) classification = heuristicClassify(replyText);
     if (classification) {
       const patch: Record<string, unknown> = {
         response_type: classification.type,

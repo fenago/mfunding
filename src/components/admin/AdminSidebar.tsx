@@ -43,6 +43,7 @@ import {
   LightBulbIcon,
   RectangleStackIcon,
   HeartIcon,
+  BeakerIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -133,6 +134,9 @@ const navGroups: NavGroup[] = [
       { name: "Documentation", path: "/admin/docs", icon: AcademicCapIcon, roles: OPS },
       // Strategy — sales doctrine. Closers NEED it, so OPS + in the closer lens.
       { name: "Strategy", path: "/admin/strategy", icon: LightBulbIcon, roles: OPS },
+      // R&D — the owner's strategic build-out game plan. Managers only (ADMIN),
+      // not the closer lens: it's operation-building, not floor work.
+      { name: "R&D", path: "/admin/rnd", icon: BeakerIcon, roles: ADMIN },
     ],
   },
   {
