@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Access Control Policy — Agentic Voice, Inc.</title>
+<style>
+  @page { size: Letter; margin: 0.9in 0.85in; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #1a2332; font-size: 10.5pt; line-height: 1.5; margin: 0;
+  }
+  .cover { border-bottom: 3px solid #1b4d3e; padding-bottom: 14px; margin-bottom: 22px; }
+  .eyebrow { color: #1b4d3e; font-size: 8.5pt; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; margin: 0 0 6px; }
+  h1 { font-size: 20pt; margin: 0 0 4px; color: #0f2942; }
+  .sub { color: #55637a; font-size: 10pt; margin: 0; }
+  .meta { margin: 16px 0 0; width: 100%; border-collapse: collapse; font-size: 9pt; }
+  .meta td { border: 1px solid #d6dbe4; padding: 5px 9px; }
+  .meta td:first-child { background: #f2f5f8; font-weight: 700; width: 130px; color: #33415c; }
+  h2 { font-size: 12pt; color: #1b4d3e; margin: 20px 0 5px; border-bottom: 1px solid #d6dbe4; padding-bottom: 3px; }
+  h3 { font-size: 10.5pt; color: #0f2942; margin: 12px 0 3px; }
+  p { margin: 5px 0; }
+  ul { margin: 5px 0 5px 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  table.grid { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; }
+  table.grid th { background: #1b4d3e; color: #fff; text-align: left; padding: 6px 8px; font-size: 8.5pt; }
+  table.grid td { border: 1px solid #d6dbe4; padding: 6px 8px; vertical-align: top; }
+  table.grid tr:nth-child(even) td { background: #f7f9fb; }
+  .note { background: #f2f5f8; border-left: 3px solid #1b4d3e; padding: 8px 12px; margin: 10px 0; font-size: 9.5pt; }
+  .sig { margin-top: 26px; border-top: 1px solid #d6dbe4; padding-top: 14px; }
+  .sig-line { margin-top: 22px; border-top: 1px solid #33415c; width: 260px; padding-top: 3px; font-size: 9pt; color: #55637a; }
+  footer { margin-top: 24px; border-top: 1px solid #d6dbe4; padding-top: 8px; color: #8892a6; font-size: 8pt; }
+  strong { color: #0f2942; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <p class="eyebrow">Identity &amp; Access Management</p>
+  <h1>Access Control Policy</h1>
+  <p class="sub">Agentic Voice, Inc. — d/b/a MFunding.net | Momentum Funding</p>
+  <table class="meta">
+    <tr><td>Document</td><td>Access Control Policy (ACP)</td></tr>
+    <tr><td>Version</td><td>1.0</td></tr>
+    <tr><td>Effective Date</td><td>July 28, 2026</td></tr>
+    <tr><td>Next Review</td><td>July 28, 2027 (annual) — access reviews quarterly</td></tr>
+    <tr><td>Owner / Approver</td><td>Ernesto Lee, Chief Executive Officer &amp; Security Officer</td></tr>
+    <tr><td>Parent Document</td><td>Information Security Policy v1.0, §4–§5</td></tr>
+    <tr><td>Applies To</td><td>All personnel, contractors, service integrations, and systems of Agentic Voice, Inc.</td></tr>
+  </table>
+</div>
+
+<h2>1. Purpose &amp; Scope</h2>
+<p>This Access Control Policy defines how Agentic Voice, Inc. ("the Company")
+limits access to production assets and sensitive data — in particular the
+consumer and business financial data (bank transactions, statements, account
+identifiers, and Plaid access tokens) processed as part of the Company's
+business-financing operations. It applies to every human account (employees,
+officers, independent contractors) and every non-human integration (service
+accounts, API credentials, automation) across the Company's production
+systems: the application database and storage (Supabase), source control
+(GitHub), hosting (Netlify), email and productivity (Google Workspace), the
+CRM (GoHighLevel), and the Plaid dashboard.</p>
+
+<h2>2. Principles</h2>
+<ul>
+  <li><strong>Least privilege.</strong> Every account — human or service — receives the minimum access its function requires, and no more.</li>
+  <li><strong>Deny by default.</strong> Database access is denied unless a row-level security policy explicitly grants it; new tables are created with row-level security enabled.</li>
+  <li><strong>Individual accountability.</strong> Personnel authenticate with individual credentials. Shared logins are prohibited; where a legacy shared credential is discovered it is rotated and converted to individual access.</li>
+  <li><strong>Separation of tiers.</strong> Merchant-facing users can never reach staff functions; staff roles are tiered so operational users cannot reach administrative configuration.</li>
+</ul>
+
+<h2>3. Role-Based Access Control (RBAC)</h2>
+<p>Application access is governed by a defined role model enforced in the
+production database. Every table has row-level security (RLS) enabled, and
+policies evaluate the caller's role on every query.</p>
+<table class="grid">
+  <tr><th>Role</th><th>Population</th><th>Access granted</th></tr>
+  <tr><td><strong>user</strong> (merchant)</td><td>Financing applicants</td><td>Own records only — own application, documents, deal status, and messages. Enforced row-by-row via RLS.</td></tr>
+  <tr><td><strong>closer</strong></td><td>1099 sales contractors</td><td>Deals assigned to them; deal-scoped actions (e.g., call grading) verified server-side by ownership checks.</td></tr>
+  <tr><td><strong>employee</strong></td><td>Operations staff</td><td>Operational records needed for processing; no administrative configuration.</td></tr>
+  <tr><td><strong>admin</strong></td><td>Managers</td><td>Full pipeline, customer, and reporting access; no platform-level settings.</td></tr>
+  <tr><td><strong>super_admin</strong></td><td>Security Officer / CEO</td><td>Platform configuration, integrations, lender network, compliance settings.</td></tr>
+</table>
+<p>Sensitive server-side operations (document access, disposition changes,
+underwriting runs) are additionally gated by security-definer functions that
+re-verify the caller's role or record ownership at execution time.</p>
+
+<h2>4. Centralized Identity &amp; Authentication</h2>
+<ul>
+  <li>Application authentication is centralized through <strong>Supabase Auth</strong>; accounts are provisioned and disabled in one place.</li>
+  <li>Administrative access to the supporting platforms (Supabase, GitHub, Google Workspace, Netlify, GoHighLevel, Plaid) is controlled through each provider's identity management under accounts owned by the Company.</li>
+  <li><strong>Multi-factor authentication is required</strong> for administrative accounts on the critical systems that store or process consumer financial data (Supabase, GitHub, Google Workspace).</li>
+  <li>Credentials and authentication secrets are never stored in source code or shared in plaintext.</li>
+</ul>
+
+<h2>5. Non-Human (Service) Authentication</h2>
+<ul>
+  <li>Server-side integrations authenticate with <strong>bearer tokens (service-role JWTs) over TLS 1.2+</strong>.</li>
+  <li>Third-party credentials — including Plaid client secrets and per-item Plaid access tokens — are held in an <strong>encrypted secrets vault</strong> and as protected edge-function secrets, referenced by identifier rather than value.</li>
+  <li>All third-party API calls are made from server-side edge functions; credentials and tokens are never delivered to the browser or mobile clients.</li>
+  <li>Inbound automation endpoints are gated by shared-secret verification and fail closed on an invalid secret.</li>
+</ul>
+
+<h2>6. Provisioning &amp; Deprovisioning</h2>
+<ul>
+  <li><strong>Onboarding:</strong> access is granted only to the systems and role level a person's duties require, approved by the Security Officer before provisioning.</li>
+  <li><strong>Role change:</strong> privileges are adjusted to the new function; prior excess access is removed.</li>
+  <li><strong>Offboarding:</strong> upon termination, access is revoked <strong>immediately</strong> — the application role is disabled, and provider accounts (GitHub, Google Workspace, Supabase, GoHighLevel, Netlify, Plaid) are removed or disabled the same day. Any shared or potentially known credentials are rotated.</li>
+</ul>
+
+<h2>7. Periodic Access Reviews</h2>
+<p>The Security Officer reviews all human and service accounts and their
+privilege levels <strong>quarterly</strong>, confirming least privilege, removing stale
+access, and rotating aged credentials. The review is scheduled as a recurring
+operational task in the Company's work-management system so that execution
+does not depend on memory; results and any corrective actions are recorded.</p>
+
+<h2>8. Physical Access</h2>
+<p>The Company operates no physical production infrastructure. Production
+systems are fully managed cloud services (Supabase — SOC 2 Type II; Netlify;
+Google), and physical security of those data centers is inherited from those
+providers. Company endpoints are password-protected, encrypted devices under
+the control of authorized personnel.</p>
+
+<h2>9. Enforcement &amp; Exceptions</h2>
+<p>Violations of this Policy may result in access revocation, contract
+termination, or further action as appropriate. Exceptions require the written
+approval of the Security Officer, must be time-bound, and are reviewed at the
+next quarterly access review.</p>
+
+<div class="sig">
+  <p>Approved and adopted:</p>
+  <div class="sig-line">Ernesto Lee — Chief Executive Officer &amp; Security Officer, Agentic Voice, Inc.</div>
+  <div class="sig-line">Date: July 28, 2026</div>
+</div>
+
+<footer>Agentic Voice, Inc. — Access Control Policy v1.0 — Confidential. Parent: Information Security Policy v1.0.</footer>
+
+</body>
+</html>
