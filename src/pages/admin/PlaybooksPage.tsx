@@ -56,7 +56,7 @@ import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, type CloserOption } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffDropFlags, setHandoffDropFlag, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -2014,6 +2014,74 @@ function ProductsChips({ deal, onRefresh }: { deal: DealWithCustomer; onRefresh:
   );
 }
 
+// ── One-tap "⚡ Dropped at handoff" for the sticky deal bar ──
+// The same fast path as the My Day card, at the top of the open deal: flag a dropped
+// warm handoff without leaving the playbook. Self-contained — fetches its own flagged
+// state (ghl_call_log RLS is ops-only, so it reads through the closer-safe RPC), then
+// toggles via the shared setHandoffDropFlag helper (mirror inbound calls → grade the
+// real transfer call, or a deal-level fallback). Optimistic red pill + "✓" flash,
+// tap-to-undo, no popups. Rendered only for live transfers (caller-gated). Same
+// disposition as the card + CallHistoryPanel, so the audit integration is unchanged.
+function HandoffDropBarChip({ deal }: { deal: DealWithCustomer }) {
+  const [flagged, setFlagged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchHandoffDropFlags([deal.id]).then((s) => { if (!cancelled) setFlagged(s.has(deal.id)); });
+    return () => { cancelled = true; };
+  }, [deal.id]);
+
+  const toggle = async () => {
+    if (busy) return;
+    const next = !flagged;
+    setErr(false);
+    setBusy(true);
+    setFlagged(next); // optimistic
+    try {
+      await setHandoffDropFlag(deal.id, deal.ghl_contact_id ?? null, next);
+      if (next) { setFlash(true); setTimeout(() => setFlash(false), 1500); }
+    } catch {
+      setFlagged(!next); // revert on failure
+      setErr(true);
+      setTimeout(() => setErr(false), 2500);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (flagged) {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        disabled={busy}
+        title="Closer-flagged: the line dropped at the warm handoff. Tap to undo."
+        className="inline-flex items-center gap-1 text-[12px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white hover:bg-red-700 disabled:opacity-60"
+      >
+        ⚡ Dropped at handoff{flash ? " ✓" : ""}
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={busy}
+      title="Flag this warm handoff as dropped — one tap, no navigation. Grades the inbound transfer call disconnected-at-handoff for the audit."
+      className={`inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-60 ${
+        err
+          ? "border-red-400 text-red-600 dark:text-red-400"
+          : "border-red-200 text-red-500 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
+      }`}
+    >
+      {err ? "⚡ couldn't flag — retry" : busy ? "⚡ …" : "⚡ Dropped at handoff"}
+    </button>
+  );
+}
+
 function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
@@ -2103,6 +2171,9 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                 }
                 return null;
               })()}
+              {/* One-tap dropped-handoff flag — the fast path at the top of the deal,
+                  next to the spoke verdict. Live transfers only. */}
+              {deal.lead_source === "live_transfer" && <HandoffDropBarChip deal={deal} />}
               <button
                 onClick={openEditLead}
                 title="Fix or add the lead's info — name, business name, email, phone"
