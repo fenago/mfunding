@@ -36,6 +36,9 @@ export interface UWPerMonth {
   avg_daily_deposits?: number;
   mca_daily_debit?: number | null;   // this month's MCA daily remittance
   holdback_pct?: number | null;      // mca_daily_debit ÷ avg_daily_deposits (>100% = stress)
+  // Evidence source for this month — 📄 uploaded statement PDF vs 🏦 connected bank
+  // feed (Plaid, higher trust). Additive; older runs lack it (render as statement).
+  source?: "statement_pdf" | "plaid";
 }
 
 // First-class affordability block: max sustainable DAILY vs WEEKLY payment, each
@@ -102,10 +105,32 @@ export interface UWPath {
 // is recorded explicitly, never silently dropped.
 export interface UWDocumentLedgerRow {
   filename: string;
-  status: "analyzed" | "duplicate" | "error";
+  status: "analyzed" | "duplicate" | "error" | "cross_check";
   month: string | null;
   account_last4: string | null;
   detail: string;
+  // Provenance — 📄 statement PDF vs 🏦 bank feed (Plaid). Additive (older rows lack it).
+  source?: "statement_pdf" | "plaid";
+}
+
+// One PDF-vs-bank-feed deposit reconciliation for an overlapping month. `fraud` is
+// true when the uploaded statement reports materially MORE deposits than the
+// unfalsifiable bank feed — a possible doctored statement.
+export interface UWCrossCheck {
+  month: string;
+  pdf_deposits: number;
+  plaid_deposits: number;
+  pct_diff: number;
+  fraud: boolean;
+}
+
+// Data provenance for a run: which months are bank-feed-verified vs PDF-extracted,
+// and the cross-check results. Additive — older runs lack it entirely.
+export interface UWProvenance {
+  institution: string | null;
+  bank_feed_months: string[];
+  statement_pdf_months: string[];
+  cross_checks: UWCrossCheck[];
 }
 
 // A currently-open MCA position, anchored to the latest statement month.
@@ -260,6 +285,9 @@ export interface UWMetrics {
   document_ledger?: UWDocumentLedgerRow[];
   // Whether owner-supplied context was factored into this run (drives the chip).
   owner_context_used?: boolean;
+  // Data provenance — bank-feed (Plaid) vs statement-PDF months + cross-checks.
+  // Additive; older runs lack it and the provenance UI hides.
+  provenance?: UWProvenance;
 }
 
 export interface UWPerStatement {

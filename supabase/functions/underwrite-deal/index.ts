@@ -31,6 +31,7 @@ import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 import { reconcileDocumentType } from "../_shared/docClassify.ts";
 import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
+import { getPlaidSettings } from "../_shared/plaid.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -149,6 +150,11 @@ interface PerStatement {
   // Provenance for post-extraction period dedup (not sent to Claude / persisted for
   // debugging only): how many source files collapsed into this unique period.
   _dupe_count?: number;
+  // EVIDENCE SOURCE. 'statement_pdf' = Claude read an uploaded bank-statement PDF
+  // (a merchant could in principle alter it). 'plaid' = a month synthesized from the
+  // merchant's CONNECTED bank feed — unfalsifiable, the highest-trust source. Default
+  // 'statement_pdf'; set explicitly by the Plaid builder.
+  source?: "statement_pdf" | "plaid";
 }
 
 function extractionSystem(enabledCategories: string[]): string {
@@ -316,7 +322,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let body: { dealId?: string; mode?: string };
+  let body: { dealId?: string; mode?: string; plaidEnv?: string };
   try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const dealId = body.dealId;
   const mode = body.mode === "auto" ? "auto" : "manual";
@@ -467,11 +473,53 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (bankDocs.length === 0) {
+    // ── PLAID BANK FEED (env-scoped, first-class evidence) ─────────────────────
+    // The merchant's CONNECTED bank is analyzed alongside (or instead of) uploaded
+    // PDFs. We synthesize per-month statement entries from plaid_transactions in the
+    // SAME shape the PDF extraction produces, so ONE aggregation consumes both.
+    // ENV-SCOPED: we only read the active-environment item — a production underwrite
+    // never mixes in sandbox transactions, and vice versa. `plaidEnv` in the body
+    // overrides which environment we read for DIAGNOSTICS/TESTING only (it changes
+    // nothing global). The merge (overlap cross-check vs. plaid-only months) happens
+    // after extraction + dedup below.
+    let plaidInstitution: string | null = null;
+    let allPlaidStatements: PerStatement[] = [];
+    try {
+      const plaidSettings = await getPlaidSettings(db);
+      const plaidEnv = (body.plaidEnv === "sandbox" || body.plaidEnv === "production")
+        ? body.plaidEnv : plaidSettings.environment;
+      const { data: pItem } = await db
+        .from("plaid_items")
+        .select("id, institution_name, environment, status, last_pull_at")
+        .eq("customer_id", deal.customer_id)
+        .eq("status", "active")
+        .eq("environment", plaidEnv)
+        .order("last_pull_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle();
+      if (pItem) {
+        plaidInstitution = (pItem.institution_name as string | null) ?? null;
+        const { data: txns } = await db
+          .from("plaid_transactions")
+          .select("date, amount, name, merchant_name, account_id")
+          .eq("plaid_item_pk", pItem.id)
+          .order("date", { ascending: true });
+        if (txns && txns.length) {
+          allPlaidStatements = buildPlaidStatements(txns as PlaidTxRow[], plaidInstitution);
+          console.log(
+            `[underwrite-deal] plaid feed (${plaidEnv}) for deal ${deal.deal_number}: ${txns.length} txn(s) → ${allPlaidStatements.length} bank-feed month(s)`,
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("[underwrite-deal] plaid feed load failed:", e instanceof Error ? e.message : e);
+    }
+
+    if (bankDocs.length === 0 && allPlaidStatements.length === 0) {
       return json({
         error: ghlContactId
-          ? "No bank statements on file for this deal yet — nothing found in our storage or on the merchant's GoHighLevel contact."
-          : "No bank statements on file for this deal yet.",
+          ? "No bank statements on file for this deal yet — nothing found in our storage, on the merchant's GoHighLevel contact, or from a connected bank feed."
+          : "No bank statements on file for this deal yet, and no connected bank feed.",
         dealId,
       }, 422);
     }
@@ -601,6 +649,27 @@ Deno.serve(async (req) => {
     // Net effect: the same statement uploaded twice produces the same result as once.
     perStatement = dedupByPeriod(perStatement);
 
+    // ── MERGE THE PLAID BANK FEED (honest data) ────────────────────────────────
+    // Partition the synthesized bank-feed months against the PDF-covered months:
+    //   · a month with NO uploaded PDF  → JOINS the analyzed series as bank-feed
+    //     evidence (higher trust — unfalsifiable), tagged source:'plaid';
+    //   · a month WITH an uploaded PDF  → held aside for the fraud CROSS-CHECK below;
+    //     the PDF stays primary and the feed becomes a verification signal (if the
+    //     PDF claims materially MORE deposits than the feed, that's a doctored-doc flag).
+    const pdfMonthKeys = new Set(
+      perStatement.filter((s) => !s._error && s.month)
+        .map((s) => monthKey(s.month)).filter((k): k is number => k != null),
+    );
+    const plaidOnly: PerStatement[] = [];
+    const plaidOverlap: PerStatement[] = [];
+    for (const ps of allPlaidStatements) {
+      const mk = monthKey(ps.month);
+      if (mk != null && pdfMonthKeys.has(mk)) plaidOverlap.push(ps);
+      else plaidOnly.push(ps);
+    }
+    perStatement = [...perStatement, ...plaidOnly];
+    const bankFeedMonths = plaidOnly.map((s) => s.month).filter((m): m is string => !!m);
+
     // ---- PER-DOCUMENT EXTRACTION LEDGER ----
     // One row per SOURCE bank-statement file → its final disposition (analyzed with
     // the month extracted, a duplicate folded into another file, or an error). This
@@ -610,17 +679,20 @@ Deno.serve(async (req) => {
     // UI against the file list the merchant/closer uploaded.
     type LedgerRow = {
       filename: string;
-      status: "analyzed" | "duplicate" | "error";
+      status: "analyzed" | "duplicate" | "error" | "cross_check";
       month: string | null;
       account_last4: string | null;
       detail: string;
+      // Provenance so the coverage table can badge 🏦 bank feed vs 📄 statement.
+      source?: "statement_pdf" | "plaid";
     };
     const documentLedger: LedgerRow[] = [];
     for (const s of perStatement) {
       const names = (s._filenames && s._filenames.length ? s._filenames : [s._filename ?? "statement.pdf"]);
+      const src = s.source ?? "statement_pdf";
       if (s._error) {
         for (const fn of names) {
-          documentLedger.push({ filename: fn, status: "error", month: null, account_last4: null, detail: s._error });
+          documentLedger.push({ filename: fn, status: "error", month: null, account_last4: null, detail: s._error, source: src });
         }
         continue;
       }
@@ -629,7 +701,10 @@ Deno.serve(async (req) => {
         status: "analyzed",
         month: s.month,
         account_last4: s.account_last4,
-        detail: `${s.deposits?.length ?? 0} deposit line(s), ${s.mca_debits?.length ?? 0} debit line(s)`,
+        detail: src === "plaid"
+          ? `bank feed (Plaid) — ${s.deposit_count ?? s.deposits?.length ?? 0} deposit(s), $${Math.round(numOr0(s.total_deposits)).toLocaleString("en-US")} in; unfalsifiable`
+          : `${s.deposits?.length ?? 0} deposit line(s), ${s.mca_debits?.length ?? 0} debit line(s)`,
+        source: src,
       });
       // Extra source files folded into this one statement (byte-identical re-uploads
       // OR the same account+period from a different file) — expected + harmless, but
@@ -641,6 +716,7 @@ Deno.serve(async (req) => {
           month: s.month,
           account_last4: s.account_last4,
           detail: `same statement as "${names[0]}" — deduplicated, not double-counted`,
+          source: src,
         });
       }
     }
@@ -700,6 +776,36 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── PLAID CROSS-CHECK (fraud defense) ──────────────────────────────────────
+    // For every month covered by BOTH an uploaded PDF and the connected bank feed,
+    // compare the PDF's (integrity-corrected) deposit total against the feed's. A
+    // >5% gap is surfaced; when the PDF claims materially MORE than the unfalsifiable
+    // feed shows (>10% higher), that is a DOCTORED-STATEMENT signal (critical). Each
+    // cross-check lands in the ledger, the metrics.provenance block, and (for gaps)
+    // a loud flag below. The feed is never silently swapped in — the PDF stays primary.
+    const bankFeedCrossChecks: Array<{ month: string; pdf_deposits: number; plaid_deposits: number; pct_diff: number; fraud: boolean }> = [];
+    for (const ps of plaidOverlap) {
+      const mk = monthKey(ps.month);
+      const pdf = analyzed.find((s) => s.source !== "plaid" && monthKey(s.month) === mk);
+      if (!pdf) continue;
+      const pdfDep = round2(numOr0(pdf.total_deposits));
+      const plaidDep = round2(numOr0(ps.total_deposits));
+      const pctDiff = round2(((pdfDep - plaidDep) / Math.max(plaidDep, 1)) * 100);
+      const material = Math.abs(pctDiff) > 5;
+      const fraud = pdfDep > plaidDep && pctDiff > 10;
+      if (material) bankFeedCrossChecks.push({ month: ps.month ?? "", pdf_deposits: pdfDep, plaid_deposits: plaidDep, pct_diff: pctDiff, fraud });
+      documentLedger.push({
+        filename: ps._filenames?.[0] ?? `Bank feed — ${ps.month}`,
+        status: "cross_check",
+        month: ps.month,
+        account_last4: null,
+        source: "plaid",
+        detail: material
+          ? `bank feed shows ${money(plaidDep)} deposits vs the statement's ${money(pdfDep)} — ${pctDiff > 0 ? "+" : ""}${pctDiff}% ${fraud ? "(statement HIGHER than the feed — possible doctored doc)" : "variance"}`
+          : `bank feed ${money(plaidDep)} reconciles with the statement's ${money(pdfDep)} (${pctDiff > 0 ? "+" : ""}${pctDiff}%)`,
+      });
+    }
+
     // DISTINCT calendar months — a two-account merchant's pair of April statements
     // is ONE month of coverage, not two. (statements_analyzed carries the file
     // count.) Fall back to the statement count only when no month labels came back.
@@ -726,6 +832,8 @@ Deno.serve(async (req) => {
       avg_daily_deposits: number;
       mca_daily_debit: number | null;
       holdback_pct: number | null;
+      // Per-month provenance: 📄 statement PDF vs 🏦 bank feed (Plaid). Additive.
+      source: "statement_pdf" | "plaid";
     }> = [];
     const perMonthReported: number[] = [];
     const perMonthPadding: number[] = [];
@@ -789,8 +897,13 @@ Deno.serve(async (req) => {
       }
       // TRUE (revenue) deposit count = total credits − padding transactions.
       const trueDepositCount = totalDepositCount != null ? Math.max(0, totalDepositCount - paddingItems) : null;
-      if (s.closing_balance == null) dataQualityIssues.push(`${label}: no ending balance extracted`);
-      if (s.avg_daily_balance == null) dataQualityIssues.push(`${label}: no average daily balance extracted`);
+      // Bank-feed months legitimately carry no ledger balances (a transaction feed has
+      // no running balance) — that is expected, not a data-quality defect, so only the
+      // PDF path raises these.
+      if (s.source !== "plaid") {
+        if (s.closing_balance == null) dataQualityIssues.push(`${label}: no ending balance extracted`);
+        if (s.avg_daily_balance == null) dataQualityIssues.push(`${label}: no average daily balance extracted`);
+      }
 
       // Revenue-quality split — card settlements (verifiable; funders trust them) vs
       // cash/branch/check vs transfers/other. Card is detected on the descriptor
@@ -824,6 +937,7 @@ Deno.serve(async (req) => {
         avg_daily_deposits: round2(net / BIZ_DAYS_PER_MONTH),
         mca_daily_debit: null, // filled in the MCA-positions block below
         holdback_pct: null,
+        source: s.source ?? "statement_pdf",
       });
     }
     const overdraftFeesTotal = round2(perMonth.reduce((a, r) => a + r.overdraft_fees, 0));
@@ -1716,6 +1830,17 @@ Deno.serve(async (req) => {
       // Whether owner-supplied context was factored into the judge read (drives the
       // "Context factored in" chip). Additive; old rows are undefined → chip hidden.
       owner_context_used: ownerContext.length > 0,
+      // ── DATA PROVENANCE (additive) — which months are bank-feed-verified (Plaid,
+      // highest trust) vs PDF-extracted, plus every PDF-vs-feed cross-check result.
+      // Drives the per-month 🏦/📄 badges and the fraud-mismatch callout in the panel.
+      provenance: {
+        institution: plaidInstitution,
+        bank_feed_months: bankFeedMonths,
+        statement_pdf_months: analyzed
+          .filter((s) => s.source !== "plaid" && s.month)
+          .map((s) => s.month as string),
+        cross_checks: bankFeedCrossChecks,
+      },
       affordability,
       // What-if scenarios (additive; older stored runs lack them and the UI hides
       // the section). Four deterministic reads on the two levers a closer asks about.
@@ -1729,6 +1854,21 @@ Deno.serve(async (req) => {
 
     // ---- Flags from the admin-tunable thresholds ----
     const flags: Array<{ code: string; severity: "info" | "warn" | "critical"; message: string }> = [];
+
+    // ── PLAID CROSS-CHECK FLAGS (fraud defense, computed above) ──
+    for (const cc of bankFeedCrossChecks) {
+      flags.push(cc.fraud
+        ? {
+            code: "bank_feed_fraud_mismatch",
+            severity: "critical",
+            message: `Possible doctored statement — ${cc.month}: the uploaded statement reports ${money(cc.pdf_deposits)} in deposits but the connected bank feed (Plaid, unfalsifiable) shows only ${money(cc.plaid_deposits)} — the statement is ${cc.pct_diff}% higher. Verify against the bank feed before submitting.`,
+          }
+        : {
+            code: "bank_feed_variance",
+            severity: "warn",
+            message: `${cc.month}: uploaded-statement deposits ${money(cc.pdf_deposits)} differ ${cc.pct_diff}% from the bank feed's ${money(cc.plaid_deposits)} (Plaid) — likely pending/timing items, but confirm.`,
+          });
+    }
 
     // ── Statement coverage vs the CALENDAR: are we current, and are we continuous? ──
     // Funders want the newest complete month and an unbroken run. A closer staring
@@ -1994,6 +2134,13 @@ Deno.serve(async (req) => {
       "refi.feasible is true this is a REAL play — cite refi.verdict and make consolidation a recommended path. " +
       "When the latest month is partial (latest_month_is_partial), weigh 'normal_season_avg_monthly_revenue' as the " +
       "run-rate (a genuine seasonal dip), not the blended average, but say so explicitly. " +
+      "DATA PROVENANCE: months are one of two kinds. BANK-FEED VERIFIED months come straight from the merchant's " +
+      "CONNECTED bank via Plaid — the merchant cannot alter them, so they are the HIGHEST-trust evidence. PDF-EXTRACTED " +
+      "months are read from an uploaded statement, which a merchant could in principle doctor. The metrics.provenance " +
+      "block lists which months are bank-feed vs PDF and any cross-checks. Weight bank-feed months as hard evidence. " +
+      "If a cross-check shows an uploaded statement reporting materially MORE deposits than the bank feed for the same " +
+      "month (a bank_feed_fraud_mismatch flag), treat it as a POSSIBLE DOCTORED STATEMENT: say so plainly, lean on the " +
+      "bank-feed number, and make verification the next step — do not size to the inflated PDF figure. " +
       "This is INTERNAL underwriting done BEFORE funder submission from the submitted docs ALONE — you must " +
       "NOT ask the merchant anything. Where a judgment call was made (see ASSUMPTIONS), STATE the key " +
       "assumption(s) in the narrative and give the SENSITIVITY: the base case (assumption holds) vs. the " +
@@ -2072,6 +2219,14 @@ Deno.serve(async (req) => {
       "\n\nFUNDER NETWORK MONTHLY-REVENUE FLOORS (distinct, USD): " +
       (revenueFloors.length ? revenueFloors.map((f) => `$${f.toLocaleString("en-US")}`).join(", ") : "none on file") +
       ` (${funderMinimums.length} active MCA programs).` +
+      ((bankFeedMonths.length || bankFeedCrossChecks.length)
+        ? "\n\nDATA PROVENANCE — BANK-FEED-VERIFIED months (Plaid, unfalsifiable, highest trust): " +
+          (bankFeedMonths.length ? bankFeedMonths.join(", ") : "none") + ". " +
+          (bankFeedCrossChecks.length
+            ? "PDF-vs-bank-feed cross-checks: " +
+              bankFeedCrossChecks.map((c) => `${c.month} — statement ${money(c.pdf_deposits)} vs feed ${money(c.plaid_deposits)} (${c.pct_diff}%${c.fraud ? ", POSSIBLE DOCTORED STATEMENT" : ""})`).join("; ") + "."
+            : "Overlapping months reconcile with the bank feed.")
+        : "") +
       "\n\nReturn the JSON now.";
 
     let riskRating: "low" | "medium" | "high" = "medium";
@@ -2186,6 +2341,7 @@ function emptyStatement(filename: string, err: string, filenames?: string[]): Pe
     min_balance: null, negative_days: null, nsf_count: null, overdraft_fee_total: null, deposit_count: null,
     deposits: [], padding_deposits: [], questionable_deposits: [], mca_debits: [],
     _filename: filename, _filenames: filenames ?? [filename], _error: err,
+    source: "statement_pdf",
   };
 }
 
@@ -2314,6 +2470,7 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
     questionable_deposits: arr(p.questionable_deposits),
     mca_debits: arr(p.mca_debits),
     _filename: filename,
+    source: "statement_pdf",
   };
 }
 
@@ -2391,4 +2548,175 @@ function base64FromBytes(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+// ── PLAID BANK-FEED → per-month statement synthesis ──────────────────────────
+// SIGN CONVENTION (verified against the 20260728_plaid_integration migration and
+// plaid-pull's /transactions/sync store): plaid_transactions.amount is POSITIVE for
+// money OUT of the account (a debit/withdrawal) and NEGATIVE for money IN (a credit/
+// deposit). We invert to the underwriter's convention — deposits and withdrawals are
+// stored as POSITIVE magnitudes — and emit PerStatement entries in the SAME shape the
+// PDF extraction produces, tagged source:'plaid'. A transaction feed carries no
+// running ledger balance, so per-month balances are legitimately null.
+interface PlaidTxRow {
+  date: string | null;
+  amount: number | null;
+  name: string | null;
+  merchant_name: string | null;
+  account_id: string | null;
+}
+
+// Names that read like a financing remittance (MCA / loan / lease / etc.). Only a
+// debit whose counterparty matches this — OR which hits at a near-daily cadence — is
+// treated as a financing debit, so a monthly retail/vendor payment never becomes a
+// phantom MCA position. Mirrors the intent of the position-intelligence classifier.
+const FINANCING_NAME_RE =
+  /\b(fund|funding|capital|advance|mca|remit|holdback|financ|lending|kapital|receivabl|ondeck|kabbage|bluevine|credibly|libertas|forward\s*financ|rapid\s*financ|fox\s*capital|kalamata|cfg\s*merchant|square\s*capital|paypal\s*working|working\s*capital|sba|eidl|term\s*loan|\bloan\b|lease|leasing|marlin|lendmark|installment)\b/i;
+
+// NSF / overdraft / returned-item fee descriptors.
+const NSF_NAME_RE =
+  /\b(nsf|overdraft|insufficient|returned\s*item|od\s*fee|nsf\s*fee|uncollected\s*funds|return(ed)?\s*fee)\b/i;
+
+const plaidTxName = (t: PlaidTxRow): string => (t.merchant_name || t.name || "").toString().trim();
+
+// ISO date → stable "Month YYYY" label (UTC), consistent with the PDF path's labels.
+function monthLabelFromDate(iso: string): string | null {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+// "March 2026" → year*12 + month (0-based), for month-set comparisons and the
+// PDF-vs-feed overlap partition. Mirrors the anchoring used in the positions block.
+function monthKey(label: string | null): number | null {
+  const t = Date.parse(`1 ${String(label ?? "").trim()}`);
+  if (Number.isNaN(t)) return null;
+  const d = new Date(t);
+  return d.getUTCFullYear() * 12 + d.getUTCMonth();
+}
+
+// Classify a financing debit from its name alone (a raw bank feed has no model-
+// assigned debit_class). Mirrors normDebitClass's buckets; a recurring fixed
+// remittance whose name matches nothing specific defaults to 'mca' — the conservative
+// house default (an unclassified financing debit counts toward stacking).
+function classifyPlaidDebit(name: string): "mca" | "sba_loan" | "equipment_lease" | "consumer_finance" | "vendor_other" {
+  const s = name.toLowerCase();
+  if (/\bsba\b|eidl|term\s*loan|\bloan\b/.test(s)) return "sba_loan";
+  if (/lease|leasing|equipment|marlin/.test(s)) return "equipment_lease";
+  if (/lendmark|installment|consumer|onemain|oportun/.test(s)) return "consumer_finance";
+  return "mca";
+}
+
+// Build per-month PerStatement entries from a customer's Plaid transactions.
+function buildPlaidStatements(txns: PlaidTxRow[], institution: string | null): PerStatement[] {
+  const rows = txns.filter((t) => t.date && Number.isFinite(Number(t.amount)));
+  if (!rows.length) return [];
+
+  // ── Recurring financing-debit detection across the WHOLE window, keyed by
+  //    (normalized counterparty, rounded amount) — the SAME grouping the positions
+  //    block uses. A group qualifies as a financing remittance when it hits at a
+  //    near-daily cadence in some month (>=8 hits) OR its name reads like financing
+  //    and it recurs (>=2 total). Everything else (retail, one-off vendor ACH) is
+  //    left OUT of mca_debits so it never becomes a phantom position.
+  interface Grp { name: string; amount: number; total: number; perMonth: Map<string, number> }
+  const groups = new Map<string, Grp>();
+  for (const t of rows) {
+    const amt = Number(t.amount);
+    if (!(amt > 0)) continue; // debits only (positive = money OUT)
+    const name = plaidTxName(t) || "Unknown";
+    const key = `${normFunder(name) || "UNKNOWN"}|${Math.round(Math.abs(amt))}`;
+    const label = monthLabelFromDate(t.date!) ?? "?";
+    let g = groups.get(key);
+    if (!g) { g = { name, amount: Math.abs(amt), total: 0, perMonth: new Map() }; groups.set(key, g); }
+    g.total += 1;
+    g.perMonth.set(label, (g.perMonth.get(label) ?? 0) + 1);
+  }
+  const financing = new Map<string, ReturnType<typeof classifyPlaidDebit>>();
+  for (const [key, g] of groups) {
+    const maxMonth = Math.max(0, ...g.perMonth.values());
+    const isDaily = maxMonth >= 8;
+    const looksFinancing = FINANCING_NAME_RE.test(g.name);
+    if (!(isDaily || (looksFinancing && g.total >= 2))) continue;
+    const klass = classifyPlaidDebit(g.name);
+    // A non-daily payment that reads like neither financing nor a specific debt type
+    // stays out (don't invent an MCA from a plain monthly recurring purchase).
+    if (klass === "mca" && !isDaily && !looksFinancing) continue;
+    financing.set(key, klass);
+  }
+
+  // ── Group transactions by calendar month ──
+  const byMonth = new Map<string, PlaidTxRow[]>();
+  for (const t of rows) {
+    const label = monthLabelFromDate(t.date!);
+    if (!label) continue;
+    (byMonth.get(label) ?? byMonth.set(label, []).get(label)!).push(t);
+  }
+
+  const out: PerStatement[] = [];
+  for (const [label, monthRows] of byMonth) {
+    const credits = monthRows.filter((t) => Number(t.amount) < 0);
+    const debits = monthRows.filter((t) => Number(t.amount) > 0);
+    const totalDeposits = round2(credits.reduce((a, t) => a + Math.abs(Number(t.amount)), 0));
+    const totalWithdrawals = round2(debits.reduce((a, t) => a + Math.abs(Number(t.amount)), 0));
+
+    const deposits = credits.map((t) => {
+      const nm = plaidTxName(t) || "Deposit";
+      const isTransfer = /transfer|zelle|venmo|cashapp|xfer|wire|p2p/i.test(nm);
+      return { date: t.date ?? undefined, desc: nm, amount: round2(Math.abs(Number(t.amount))), classified_type: isTransfer ? "transfer" : "sales_revenue" };
+    });
+
+    // NSF / overdraft fees by descriptor.
+    let nsf = 0; let odFees = 0;
+    for (const t of debits) {
+      if (NSF_NAME_RE.test(plaidTxName(t))) { nsf += 1; odFees += Math.abs(Number(t.amount)); }
+    }
+
+    // Financing debits → one aggregated entry per (funder, amount) this month.
+    const mcaAgg = new Map<string, { name: string; amount: number; occ: number; klass: string }>();
+    for (const t of debits) {
+      const amt = Math.abs(Number(t.amount));
+      const name = plaidTxName(t) || "Unknown";
+      const key = `${normFunder(name) || "UNKNOWN"}|${Math.round(amt)}`;
+      const klass = financing.get(key);
+      if (!klass) continue;
+      let e = mcaAgg.get(key);
+      if (!e) { e = { name, amount: amt, occ: 0, klass }; mcaAgg.set(key, e); }
+      e.occ += 1;
+    }
+    const mca_debits = [...mcaAgg.values()].map((e) => ({
+      desc: e.name, amount: round2(e.amount), occurrences: e.occ,
+      cadence: e.occ >= 8 ? "daily" : e.occ >= 2 ? "weekly" : "monthly",
+      funder: cleanFunderDisplay(e.name), debit_class: e.klass,
+    }));
+
+    out.push({
+      month: label,
+      account_last4: null,
+      opening_balance: null,
+      closing_balance: null,
+      total_deposits: totalDeposits,
+      total_withdrawals: totalWithdrawals,
+      // No running ledger balance in a transaction feed — legitimately null.
+      avg_daily_balance: null,
+      min_balance: null,
+      negative_days: 0,
+      nsf_count: nsf,
+      overdraft_fee_total: round2(odFees),
+      deposit_count: credits.length,
+      deposits,
+      padding_deposits: [],
+      questionable_deposits: [],
+      mca_debits,
+      source: "plaid",
+      _filename: `Bank feed — ${institution ?? "Plaid"} (${label})`,
+      _filenames: [`Bank feed (Plaid) — ${label}`],
+    });
+  }
+
+  // Drop months with NO observed deposits — a Plaid pull's first/last months are
+  // partial boundary slices; a $0-deposit boundary month would distort the revenue
+  // average and fabricate a catastrophic month that isn't real.
+  const kept = out.filter((s) => (s.deposit_count ?? 0) > 0 || numOr0(s.total_deposits) > 0);
+  kept.sort((a, b) => (monthKey(a.month) ?? 0) - (monthKey(b.month) ?? 0));
+  return kept;
 }

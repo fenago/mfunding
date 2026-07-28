@@ -12,7 +12,7 @@ import {
   type UWScenario, type UWPath, type UWDocumentLedgerRow, type AffordabilityRating, type RiskRating,
   type UWPosition, type UWEndedPosition, type UWOtherObligation,
   type UWTimelineRow, type UWRemainingPosition, type UWRefi, type UWRefiTerm,
-  type UWVelocityRow, type UWPositionAnomaly,
+  type UWVelocityRow, type UWPositionAnomaly, type UWProvenance,
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -410,6 +410,12 @@ function ResultView({ r }: { r: DealUnderwriting }) {
               <SparklesIcon className="w-3.5 h-3.5" /> Owner context factored in
             </span>
           )}
+          {m.provenance && m.provenance.bank_feed_months.length > 0 && (
+            <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1">
+              🏦 {m.provenance.bank_feed_months.length} bank-feed month{m.provenance.bank_feed_months.length === 1 ? "" : "s"} verified
+              {m.provenance.institution ? ` · ${m.provenance.institution}` : ""}
+            </span>
+          )}
           {m.latest_month_is_partial && (
             <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
               Latest month partial{m.normal_season_avg_monthly_revenue != null && (
@@ -577,6 +583,10 @@ function ResultView({ r }: { r: DealUnderwriting }) {
           </div>
         </div>
       )}
+
+      {/* Bank-feed fraud cross-check — the doctored-statement callout, rendered
+          prominently (a merchant can't fake the connected bank feed). */}
+      {m.provenance && <CrossCheckBanner provenance={m.provenance} />}
 
       {/* Flags */}
       {flags.length > 0 && (
@@ -1311,6 +1321,9 @@ function PerMonthTable({ rows: rawRows, overdraftFeesTotal }: { rows: UWPerMonth
           {rows.map((r, i) => (
             <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
               <td className="py-2 pr-4 font-medium text-gray-900 dark:text-white whitespace-nowrap">
+                <span className="mr-1" title={r.source === "plaid" ? "Bank feed (Plaid, verified)" : "Uploaded statement"}>
+                  {r.source === "plaid" ? "🏦" : "📄"}
+                </span>
                 {r.month ?? `Month ${i + 1}`}
                 {r.accounts > 1 && (
                   <span className="ml-1.5 text-[10px] font-normal text-gray-400 dark:text-gray-500">· {r.accounts} accounts</span>
@@ -1350,6 +1363,53 @@ function PerMonthTable({ rows: rawRows, overdraftFeesTotal }: { rows: UWPerMonth
   );
 }
 
+// ── Bank-feed cross-check — doctored-statement defense ───────────────────────
+// When an uploaded PDF and the connected bank feed both cover a month, we compare
+// deposits. A fraud mismatch (statement claims materially MORE than the unfalsifiable
+// feed) is rendered as a loud red banner; benign variances get a quiet line.
+function CrossCheckBanner({ provenance }: { provenance: UWProvenance }) {
+  const checks = provenance.cross_checks ?? [];
+  if (checks.length === 0) return null;
+  const frauds = checks.filter((c) => c.fraud);
+  const variances = checks.filter((c) => !c.fraud);
+  return (
+    <div className="space-y-2">
+      {frauds.length > 0 && (
+        <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/25 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <ExclamationTriangleIcon className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0" />
+            <h4 className="font-bold text-red-800 dark:text-red-200">
+              Possible doctored statement — bank feed doesn't match
+            </h4>
+          </div>
+          <p className="text-sm text-red-700 dark:text-red-300 mb-2">
+            The connected bank feed (Plaid) can't be altered by the merchant. Where an uploaded
+            statement claims more deposits than the feed shows, verify before submitting to any funder.
+          </p>
+          <div className="space-y-1.5">
+            {frauds.map((c, i) => (
+              <div key={i} className="flex items-center justify-between text-sm bg-white/60 dark:bg-black/20 rounded-lg px-3 py-1.5">
+                <span className="font-semibold text-red-800 dark:text-red-200">{c.month}</span>
+                <span className="text-red-700 dark:text-red-300">
+                  statement <span className="font-semibold">{money(c.pdf_deposits)}</span> vs feed{" "}
+                  <span className="font-semibold">{money(c.plaid_deposits)}</span>{" "}
+                  <span className="font-bold">(+{Math.round(c.pct_diff)}%)</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {variances.length > 0 && (
+        <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+          Bank-feed reconciliation variance (likely pending/timing):{" "}
+          {variances.map((c) => `${c.month} ${money(c.pdf_deposits)} vs ${money(c.plaid_deposits)} (${c.pct_diff > 0 ? "+" : ""}${Math.round(c.pct_diff)}%)`).join("; ")}.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Per-document coverage ledger ─────────────────────────────────────────────
 // One row per SOURCE file → analyzed (with the month extracted), a deduplicated
 // duplicate, or an error. Errors are shown loudly (their month is NOT in coverage);
@@ -1358,23 +1418,30 @@ const LEDGER_BADGE: Record<UWDocumentLedgerRow["status"], string> = {
   analyzed: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
   duplicate: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
   error: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300",
+  cross_check: "bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300",
 };
+const LEDGER_STATUS_LABEL: Record<UWDocumentLedgerRow["status"], string> = {
+  analyzed: "analyzed", duplicate: "duplicate", error: "error", cross_check: "cross-check",
+};
+// 🏦 bank feed (Plaid, unfalsifiable) vs 📄 uploaded statement PDF.
+const sourceBadge = (s?: "statement_pdf" | "plaid") => (s === "plaid" ? "🏦" : "📄");
 function DocumentLedger({ rows }: { rows: UWDocumentLedgerRow[] }) {
   const analyzed = rows.filter((r) => r.status === "analyzed").length;
   const dup = rows.filter((r) => r.status === "duplicate").length;
   const errored = rows.filter((r) => r.status === "error").length;
+  const feed = rows.filter((r) => r.status === "cross_check").length;
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700 overflow-x-auto">
       <div className="flex items-center justify-between mb-4">
         <h4 className="font-semibold text-gray-900 dark:text-white">Statement coverage</h4>
         <span className="text-xs text-gray-400">
-          {analyzed} analyzed{dup ? ` · ${dup} duplicate` : ""}{errored ? ` · ${errored} error` : ""}
+          {analyzed} analyzed{dup ? ` · ${dup} duplicate` : ""}{errored ? ` · ${errored} error` : ""}{feed ? ` · ${feed} bank-feed cross-check` : ""}
         </span>
       </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-200 dark:border-gray-700 text-gray-500">
-            <th className="text-left py-2 pr-4 font-medium">File</th>
+            <th className="text-left py-2 pr-4 font-medium">File / source</th>
             <th className="text-left py-2 px-4 font-medium">Status</th>
             <th className="text-left py-2 px-4 font-medium">Month</th>
             <th className="text-left py-2 pl-4 font-medium">Detail</th>
@@ -1384,11 +1451,14 @@ function DocumentLedger({ rows }: { rows: UWDocumentLedgerRow[] }) {
           {rows.map((r, i) => (
             <tr key={i} className="border-b border-gray-100 dark:border-gray-700 last:border-0 align-top">
               <td className="py-2 pr-4 text-gray-900 dark:text-white">
-                <span className="block truncate max-w-[220px]" title={r.filename}>{r.filename}</span>
+                <span className="flex items-center gap-1.5">
+                  <span title={r.source === "plaid" ? "Bank feed (Plaid)" : "Uploaded statement"}>{sourceBadge(r.source)}</span>
+                  <span className="block truncate max-w-[200px]" title={r.filename}>{r.filename}</span>
+                </span>
               </td>
               <td className="py-2 px-4">
-                <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full capitalize ${LEDGER_BADGE[r.status]}`}>
-                  {r.status}
+                <span className={`inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full ${LEDGER_BADGE[r.status]}`}>
+                  {LEDGER_STATUS_LABEL[r.status]}
                 </span>
               </td>
               <td className="py-2 px-4 text-gray-700 dark:text-gray-300 whitespace-nowrap">{r.month ?? "—"}</td>
