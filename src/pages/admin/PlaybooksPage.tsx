@@ -50,6 +50,7 @@ import PortalInviteButton from "../../components/admin/PortalInviteButton";
 import { DealDocumentsButton } from "../../components/admin/DealDocumentsModal";
 import CompanyVoiceChip from "../../components/admin/CompanyVoiceChip";
 import AdHocSendMenu from "../../components/admin/AdHocSendMenu";
+import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import { dateTimeET } from "../../utils/time";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
@@ -2082,6 +2083,58 @@ function HandoffDropBarChip({ deal }: { deal: DealWithCustomer }) {
   );
 }
 
+// ── One-tap "🏦 Connect bank" for the sticky deal bar ──
+// The Connect-Bank link used to hide inside the Send-docs dropdown; the owner
+// couldn't find it. This surfaces it as a first-class chip: one tap mints the
+// tokenized /connect-bank link (shared helper, same path the menu uses) and
+// copies it, with an inline "link copied ✓" flash. Non-destructive copy → no
+// armed two-step, no popups. Text it to the merchant; they verify revenue in ~60s.
+function ConnectBankBarChip({ dealId }: { dealId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const [err, setErr] = useState(false);
+
+  const copy = async () => {
+    if (busy) return;
+    setErr(false);
+    setBusy(true);
+    try {
+      await mintAndCopyConnectBankLink(dealId);
+      setFlash(true);
+      setTimeout(() => setFlash(false), 2000);
+    } catch {
+      setErr(true);
+      setTimeout(() => setErr(false), 2500);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      disabled={busy}
+      title="Mint a secure Connect-Bank link and copy it — text it to the merchant so they connect their bank and verify revenue in ~60 seconds (no statements to chase)."
+      className={`inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-60 ${
+        err
+          ? "border-red-400 text-red-600 dark:text-red-400"
+          : flash
+          ? "border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:bg-emerald-900/20"
+          : "border-emerald-200 text-emerald-600 hover:bg-emerald-50 dark:border-emerald-900/50 dark:text-emerald-400 dark:hover:bg-emerald-900/20"
+      }`}
+    >
+      {err
+        ? "🏦 couldn't mint — retry"
+        : busy
+        ? "🏦 …"
+        : flash
+        ? "🏦 link copied ✓"
+        : "🏦 Connect bank"}
+    </button>
+  );
+}
+
 function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
@@ -2293,6 +2346,10 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {/* Send any document RIGHT NOW, at any stage — the application paths
                   plus the registered agreements (broker/TCPA consent). */}
               <AdHocSendMenu dealId={deal.id} merchantEmail={deal.customer?.email} ghlContactId={deal.ghl_contact_id} />
+              {/* Connect-Bank link as a FIRST-CLASS chip (it also lives in Send
+                  docs, but was too buried to find) — one tap mints + copies the
+                  link to text; verifies revenue in ~60s. */}
+              <ConnectBankBarChip dealId={deal.id} />
               {/* Signature status at a glance — did they sign the disclosure + the
                   application? Fed by the bar's single ghl-docs-status fetch above. */}
               {deal.ghl_contact_id && <DocsBackChips groups={docGroups} />}

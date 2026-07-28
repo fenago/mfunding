@@ -6,6 +6,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { parseEdgeError } from "../../lib/edgeError";
+import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import type { PlaidItem, PlaidItemStatus } from "../../services/portalService";
 
 interface Props {
@@ -44,6 +45,24 @@ export default function DealBankPanel({ dealId, customerId }: Props) {
   const [loading, setLoading] = useState(true);
   const [pulling, setPulling] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
+  const [minting, setMinting] = useState(false);
+
+  // Mint + copy the Connect-Bank link right in the empty state — the admin is
+  // looking at "no bank connected" here, so the fix shouldn't be a pointer to
+  // another menu. Shared helper, same path as the deal bar chip and Send docs.
+  const copyConnectLink = async () => {
+    if (minting) return;
+    setMinting(true);
+    setNote(null);
+    try {
+      await mintAndCopyConnectBankLink(dealId);
+      setNote({ ok: true, text: "🔗 Connect-Bank link copied — text it; they verify revenue in ~60s." });
+    } catch (e) {
+      setNote({ ok: false, text: e instanceof Error ? e.message : "Could not create a Connect-Bank link." });
+    } finally {
+      setMinting(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,13 +147,36 @@ export default function DealBankPanel({ dealId, customerId }: Props) {
           Checking…
         </div>
       ) : !item ? (
-        <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-4 text-sm text-gray-500 dark:text-gray-400 flex items-start gap-3">
-          <BuildingLibraryIcon className="w-6 h-6 text-gray-400 flex-shrink-0" />
-          <span>
-            <span className="font-medium text-gray-700 dark:text-gray-300">No bank connected yet.</span>{" "}
-            Use <span className="font-medium">📨 Send docs → 🔗 Copy their Connect-Bank link</span> to text
-            the merchant a 60-second link that verifies their revenue.
-          </span>
+        <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-4 text-sm text-gray-500 dark:text-gray-400 space-y-3">
+          <div className="flex items-start gap-3">
+            <BuildingLibraryIcon className="w-6 h-6 text-gray-400 flex-shrink-0" />
+            <span>
+              <span className="font-medium text-gray-700 dark:text-gray-300">No bank connected yet.</span>{" "}
+              Copy the Connect-Bank link and text it to the merchant — a 60-second link that verifies
+              their revenue (no statements to chase).
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={copyConnectLink}
+            disabled={minting}
+            className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Mint a secure Connect-Bank link and copy it — text it to the merchant so they connect their bank in ~60 seconds"
+          >
+            <BanknotesIcon className="w-4 h-4" />
+            {minting ? "Creating link…" : "🔗 Copy connect link"}
+          </button>
+          {note && (
+            <p
+              className={`text-xs rounded-md px-2 py-1.5 border ${
+                note.ok
+                  ? "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800"
+                  : "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800"
+              }`}
+            >
+              {note.text}
+            </p>
+          )}
         </div>
       ) : (
         <div className="space-y-3 text-sm">

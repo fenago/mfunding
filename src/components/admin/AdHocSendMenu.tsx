@@ -12,6 +12,7 @@ import { PaperAirplaneIcon, ChevronDownIcon } from "@heroicons/react/24/outline"
 import supabase from "../../supabase";
 import { getSetting } from "../../services/platformService";
 import { parseEdgeError } from "../../lib/edgeError";
+import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 
 interface AdhocDocDef {
   key: string;
@@ -195,25 +196,19 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
 
   // Connect-Bank link — mints a tokenized public /connect-bank/<token> URL and
   // copies it. Nothing is sent to the merchant here (like the upload link, it's a
-  // copy-and-text affordance), so no armed two-step — a copy is safe.
+  // copy-and-text affordance), so no armed two-step — a copy is safe. The
+  // mint+copy itself lives in the shared helper so the deal bar and Bank panel
+  // fire the exact same path.
   const copyConnectBankLink = async () => {
     setBusy("connect-bank");
     try {
-      const { data, error } = await supabase.functions.invoke("plaid-mint-link", {
-        body: { dealId },
-      });
-      if (error) throw error;
-      const d = data as { ok?: boolean; url?: string; error?: string } | null;
-      if (d?.error) throw new Error(d.error);
-      if (!d?.url) throw new Error("No Connect-Bank link was returned.");
-      await navigator.clipboard.writeText(d.url);
+      await mintAndCopyConnectBankLink(dealId);
       finish({
         ok: true,
         text: "🔗 Connect-Bank link copied — text it; they verify revenue in ~60s (no statements to chase).",
       });
     } catch (e) {
-      const { message } = await errorInfo(e, "Could not create a Connect-Bank link.");
-      finish({ ok: false, text: message });
+      finish({ ok: false, text: e instanceof Error ? e.message : "Could not create a Connect-Bank link." });
     }
   };
 
