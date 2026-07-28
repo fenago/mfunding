@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Information Security Policy — Agentic Voice, Inc.</title>
+<style>
+  @page { size: Letter; margin: 0.9in 0.85in; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #1a2332; font-size: 10.5pt; line-height: 1.5; margin: 0;
+  }
+  .cover { border-bottom: 3px solid #1b4d3e; padding-bottom: 14px; margin-bottom: 22px; }
+  .eyebrow { color: #1b4d3e; font-size: 8.5pt; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; margin: 0 0 6px; }
+  h1 { font-size: 20pt; margin: 0 0 4px; color: #0f2942; }
+  .sub { color: #55637a; font-size: 10pt; margin: 0; }
+  .meta { margin: 16px 0 0; width: 100%; border-collapse: collapse; font-size: 9pt; }
+  .meta td { border: 1px solid #d6dbe4; padding: 5px 9px; }
+  .meta td:first-child { background: #f2f5f8; font-weight: 700; width: 130px; color: #33415c; }
+  h2 { font-size: 12pt; color: #1b4d3e; margin: 20px 0 5px; border-bottom: 1px solid #d6dbe4; padding-bottom: 3px; }
+  h3 { font-size: 10.5pt; color: #0f2942; margin: 12px 0 3px; }
+  p { margin: 5px 0; }
+  ul { margin: 5px 0 5px 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  table.grid { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; }
+  table.grid th { background: #1b4d3e; color: #fff; text-align: left; padding: 6px 8px; font-size: 8.5pt; }
+  table.grid td { border: 1px solid #d6dbe4; padding: 6px 8px; vertical-align: top; }
+  table.grid tr:nth-child(even) td { background: #f7f9fb; }
+  .note { background: #f2f5f8; border-left: 3px solid #1b4d3e; padding: 8px 12px; margin: 10px 0; font-size: 9.5pt; }
+  .sig { margin-top: 26px; border-top: 1px solid #d6dbe4; padding-top: 14px; }
+  .sig-line { margin-top: 22px; border-top: 1px solid #33415c; width: 260px; padding-top: 3px; font-size: 9pt; color: #55637a; }
+  footer { margin-top: 24px; border-top: 1px solid #d6dbe4; padding-top: 8px; color: #8892a6; font-size: 8pt; }
+  strong { color: #0f2942; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <p class="eyebrow">Corporate Information Security</p>
+  <h1>Information Security Policy</h1>
+  <p class="sub">Agentic Voice, Inc. &mdash; d/b/a MFunding.net | Momentum Funding</p>
+  <table class="meta">
+    <tr><td>Document</td><td>Information Security Policy (ISP)</td></tr>
+    <tr><td>Version</td><td>1.0</td></tr>
+    <tr><td>Effective Date</td><td>July 28, 2026</td></tr>
+    <tr><td>Next Review</td><td>July 28, 2027 (annual)</td></tr>
+    <tr><td>Owner / Approver</td><td>Ernesto Lee, Chief Executive Officer &amp; Security Officer</td></tr>
+    <tr><td>Applies To</td><td>All personnel, contractors, systems, and data of Agentic Voice, Inc.</td></tr>
+  </table>
+</div>
+
+<h2>1. Purpose &amp; Scope</h2>
+<p>
+  This Information Security Policy ("Policy") defines how Agentic Voice, Inc. ("the Company," "we") protects
+  the confidentiality, integrity, and availability of the information it collects, processes, and stores —
+  with particular emphasis on the consumer and business financial data handled as part of our business-financing
+  brokerage operations. The Policy applies to all Company systems, applications, cloud services, employees,
+  officers, and independent contractors who access Company data or systems.
+</p>
+<p>
+  The Company operates a web application (mfunding.net and the merchant portal at my.mfunding.net) that helps
+  small businesses apply for working capital and other financing products. As part of application intake, the
+  Company may — with the applicant's explicit consent — connect the applicant's business bank account through
+  Plaid Inc. to evaluate banking activity. Protecting this data is the central objective of this Policy.
+</p>
+
+<h2>2. Roles &amp; Responsibilities</h2>
+<table class="grid">
+  <tr><th>Role</th><th>Responsibility</th></tr>
+  <tr><td><strong>Security Officer</strong> (Ernesto Lee, CEO)</td><td>Owns this Policy; approves exceptions; ensures MFA, access reviews, monitoring, and incident response are performed; approves vendors that process regulated data.</td></tr>
+  <tr><td><strong>Administrators</strong> (<code>super_admin</code> / <code>admin</code>)</td><td>Configure systems securely, manage user access on a least-privilege basis, respond to monitoring alerts and incidents.</td></tr>
+  <tr><td><strong>Staff &amp; Contractors</strong> (<code>employee</code>, <code>closer</code>)</td><td>Follow this Policy and the Acceptable Use section; use only the access granted to them; report suspected security events immediately.</td></tr>
+  <tr><td><strong>Application users</strong> (<code>user</code> / merchants)</td><td>Access is scoped to their own records only, enforced by database row-level security.</td></tr>
+</table>
+
+<h2>3. Data Classification</h2>
+<p>The Company classifies data into three tiers; controls scale with sensitivity.</p>
+<table class="grid">
+  <tr><th>Classification</th><th>Examples</th><th>Handling</th></tr>
+  <tr><td><strong>Restricted</strong></td><td>Consumer/business bank data obtained via Plaid (transactions, statements, balances, account &amp; routing numbers), Plaid access tokens, applicant PII (name, contact, EIN), funding-application financials.</td><td>Encrypted in transit and at rest; access strictly least-privilege; secrets stored in an encrypted vault; never exposed to the browser; never sold.</td></tr>
+  <tr><td><strong>Internal</strong></td><td>Deal pipeline records, funder/lender records, internal messages, operational dashboards.</td><td>Access limited to authenticated staff by role; row-level security enforced.</td></tr>
+  <tr><td><strong>Public</strong></td><td>Marketing website content, published policies.</td><td>No access restriction; integrity controlled through change management.</td></tr>
+</table>
+
+<h2>4. Access Control</h2>
+<p>The Company enforces a documented access-control standard built on least privilege and role-based access.</p>
+<ul>
+  <li><strong>Role-based access control (RBAC).</strong> Application access is governed by a defined set of roles
+      (<code>user</code>, <code>closer</code>, <code>employee</code>, <code>admin</code>, <code>super_admin</code>) enforced in the
+      database. Every table in the production database has row-level security (RLS) enabled, so each account can
+      reach only the records its role permits; merchant users can reach only their own records.</li>
+  <li><strong>Centralized identity.</strong> Application authentication is centralized through Supabase Auth. Administrative
+      access to the underlying platforms (Supabase, GitHub, Google Workspace, Netlify, GHL, Plaid) is controlled through
+      each provider's own account and identity management.</li>
+  <li><strong>Least privilege.</strong> Users and non-human integrations receive the minimum access required for their function.
+      Non-human/service authentication uses bearer tokens (service-role JWTs) and TLS, and the credentials are held in an
+      encrypted secrets vault rather than in code.</li>
+  <li><strong>Onboarding.</strong> New personnel are granted access only to the systems and role level their duties require,
+      approved by the Security Officer.</li>
+  <li><strong>Offboarding / deprovisioning.</strong> Upon termination or role change, the individual's access is revoked
+      <strong>immediately</strong> — application role downgraded/disabled, and provider accounts (GitHub, Google Workspace,
+      Supabase, GHL, Netlify, Plaid) removed or disabled the same day.</li>
+  <li><strong>Periodic access reviews.</strong> The Security Officer reviews all accounts and their privilege levels
+      <strong>quarterly</strong> to confirm least privilege and remove stale access. This review is scheduled as a recurring
+      operational task so it is not dependent on memory.</li>
+</ul>
+
+<h2>5. Authentication &amp; Multi-Factor Authentication</h2>
+<ul>
+  <li><strong>Critical administrative systems require multi-factor authentication (MFA).</strong> MFA is required for all
+      administrative accounts on Supabase, GitHub, Google Workspace, GHL, and Netlify.</li>
+  <li>Application users authenticate through Supabase Auth using email and password / email verification.</li>
+  <li>Passwords and authentication secrets are never stored in source code or shared in plaintext; provider-managed
+      credential storage is used throughout.</li>
+</ul>
+
+<h2>6. Encryption</h2>
+<ul>
+  <li><strong>In transit:</strong> All traffic to the website, portal, API, and edge functions is served over HTTPS with
+      <strong>TLS 1.2 or higher</strong>, enforced by our hosting (Netlify) and backend (Supabase) providers. HTTP is
+      redirected to HTTPS and security response headers (X-Frame-Options, X-Content-Type-Options, Referrer-Policy) are applied.</li>
+  <li><strong>At rest:</strong> The production database and file storage are encrypted at rest using <strong>AES-256</strong>
+      by the managed Supabase platform.</li>
+  <li><strong>Secrets:</strong> API keys and third-party credentials (including Plaid client secrets and Plaid access tokens)
+      are stored in an <strong>encrypted secrets vault</strong> and as protected edge-function secrets. Plaid access tokens are
+      exchanged and used only server-side, stored encrypted (referenced by a vault identifier, never in plaintext columns),
+      and are never returned to the browser.</li>
+  <li><strong>Server-side integrations:</strong> All third-party API calls (Plaid, GHL, and others) are made from server-side
+      edge functions, never from the client, so credentials are never exposed to end users.</li>
+</ul>
+
+<h2>7. Vendor &amp; Third-Party Management</h2>
+<p>The Company relies on established, independently audited service providers and reviews their security posture before use.</p>
+<table class="grid">
+  <tr><th>Vendor</th><th>Function</th><th>Assurance</th></tr>
+  <tr><td>Plaid Inc.</td><td>Bank account connection &amp; transaction data</td><td>SOC 2; handles bank credentials directly (we never see them)</td></tr>
+  <tr><td>Supabase</td><td>Database, auth, storage, edge functions, secrets vault</td><td>SOC 2 Type II; encryption at rest &amp; in transit</td></tr>
+  <tr><td>Netlify</td><td>Web application hosting / CDN / TLS</td><td>SOC 2; managed TLS &amp; platform patching</td></tr>
+  <tr><td>GoHighLevel (GHL)</td><td>CRM, messaging</td><td>SOC 2; vendor-managed platform</td></tr>
+</table>
+<p>Vendors that process Restricted data must maintain industry-standard security certification (e.g., SOC 2). Data shared
+   with funding partners is limited to the application details the applicant submits for the purpose of obtaining financing they requested.</p>
+
+<h2>8. Monitoring, Logging &amp; Incident Response</h2>
+<ul>
+  <li><strong>Automated monitoring.</strong> An automated system-health check runs <strong>every 10 minutes</strong>, probing
+      critical services and dependencies. On any state transition (a service going down or recovering) it opens/closes an
+      incident record and <strong>emails the Security Officer</strong>, with a task-board fallback so alerts are never lost.</li>
+  <li><strong>Audit trail.</strong> Security-relevant application actions (including bank-connection events) are recorded to an
+      activity/audit log; database and platform logs are retained by the managed providers.</li>
+  <li><strong>Incident response.</strong> On a suspected security incident the Security Officer will: (1) contain — revoke
+      affected credentials/tokens and disable affected access; (2) assess scope and root cause using logs and the audit trail;
+      (3) remediate and restore service; (4) document the incident and corrective actions.</li>
+  <li><strong>Breach notification.</strong> If an incident involves unauthorized access to consumer financial or personal data,
+      the Company will notify affected individuals and applicable parties (including Plaid and regulators) as required by
+      applicable law and contractual obligations, without undue delay.</li>
+</ul>
+
+<h2>9. Change Management</h2>
+<ul>
+  <li>All application code is version-controlled in Git with a full, attributable change history.</li>
+  <li>Changes pass an automated <strong>TypeScript type-check gate</strong> as part of the build before deployment, and are
+      reviewed before release to production.</li>
+  <li><strong>Dependency vulnerability scanning</strong> is enabled on the source repository (GitHub Dependabot alerts plus
+      automated security-update pull requests). Platform and OS-level patching for hosting and database infrastructure is
+      managed by Netlify and Supabase; company endpoints receive operating-system security updates automatically.</li>
+</ul>
+
+<h2>10. Acceptable Use</h2>
+<ul>
+  <li>Company systems and data are used only for authorized business purposes.</li>
+  <li>Credentials are never shared; each user uses their own account.</li>
+  <li>Restricted data is never copied to unmanaged devices, personal email, or unauthorized third-party tools.</li>
+  <li>Devices used to access Company systems must have current operating-system security updates and screen-lock enabled.</li>
+  <li>Suspected security events must be reported to the Security Officer immediately.</li>
+</ul>
+
+<h2>11. Policy Governance &amp; Review</h2>
+<p>
+  This Policy is reviewed and updated at least <strong>annually</strong>, and after any material change to the Company's
+  systems, data handling, or a significant security incident. The Security Officer approves all revisions and increments
+  the version number. Exceptions require written approval from the Security Officer.
+</p>
+
+<div class="sig">
+  <p>Approved and adopted on behalf of Agentic Voice, Inc.:</p>
+  <div class="sig-line">Ernesto Lee &mdash; Chief Executive Officer &amp; Security Officer</div>
+  <div class="sig-line">Date</div>
+</div>
+
+<footer>
+  Agentic Voice, Inc. d/b/a MFunding.net | Momentum Funding &mdash; Information Security Policy v1.0 &mdash; Confidential.
+  This document describes controls in effect as of the effective date and is maintained under version control.
+</footer>
+
+</body>
+</html>

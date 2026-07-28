@@ -66,15 +66,60 @@ export default function PrivacyPolicyPage() {
           </LegalP>
         </LegalSection>
 
+        <LegalSection heading="Bank Account Connection (Plaid)">
+          <LegalP>
+            To evaluate your funding request, we offer the option to securely connect your business
+            bank account through <strong>Plaid Inc.</strong> ("Plaid"), a third-party service that links
+            financial institutions to applications like ours. Connecting your bank is optional and is
+            done only with your explicit consent at the time of connection.
+          </LegalP>
+          <LegalP>When you connect an account through Plaid, we may receive:</LegalP>
+          <LegalList>
+            <li>Bank account and routing details and account ownership information</li>
+            <li>Account balances</li>
+            <li>Bank transaction history and statement data (typically 3–6 months)</li>
+          </LegalList>
+          <LegalP>
+            We use this information solely to verify your business banking activity and evaluate your
+            request for business financing. We do not use it for any unrelated purpose, and we do not
+            sell it. Your Plaid access credentials are stored encrypted and are never exposed to your
+            browser or to any unauthorized party.
+          </LegalP>
+          <LegalP>
+            Plaid handles the bank-login process and your credentials directly; we never see or store
+            your online banking username or password. Plaid's own handling of your information is
+            governed by the <strong>Plaid End User Privacy Policy</strong>, available at{' '}
+            <a href="https://plaid.com/legal" target="_blank" rel="noopener noreferrer">plaid.com/legal</a>.
+            You may disconnect a linked account or request deletion of the data obtained through Plaid at
+            any time using the contact details below; on disconnection we revoke the Plaid connection and
+            delete the associated stored data.
+          </LegalP>
+        </LegalSection>
+
         <LegalSection heading="Information Security">
           <LegalP>
-            We implement industry-standard security measures to protect your personal and business information. All data is encrypted in transit and at rest. We never sell your information to third parties.
+            We implement industry-standard security measures to protect your personal and business
+            information. All data is encrypted in transit (TLS 1.2 or higher) and at rest (AES-256), access
+            is restricted on a least-privilege, role-based basis, and sensitive credentials are held in an
+            encrypted secrets vault. We never sell your information to third parties.
+          </LegalP>
+        </LegalSection>
+
+        <LegalSection heading="Data Retention &amp; Your Choices">
+          <LegalP>
+            We retain your information only as long as needed to provide our services and to meet legal,
+            tax, and financial-recordkeeping obligations, after which it is deleted or de-identified. You
+            may request access to, correction of, or deletion of your personal information — including data
+            obtained through Plaid — at any time.
           </LegalP>
         </LegalSection>
 
         <LegalSection heading="Contact Us">
           <LegalP>
-            If you have questions about this Privacy Policy, please contact us through our application form or reach out to our support team.
+            If you have questions about this Privacy Policy, wish to disconnect a linked bank account, or
+            want to request deletion of your data, please contact us through our{' '}
+            <a href="/contact">contact form</a> or by email at{' '}
+            <a href="mailto:sales@send.mfunding.net">sales@send.mfunding.net</a>.
           </LegalP>
         </LegalSection>
       </OSLegalShell>

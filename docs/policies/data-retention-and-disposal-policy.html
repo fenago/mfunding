@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Data Retention and Disposal Policy — Agentic Voice, Inc.</title>
+<style>
+  @page { size: Letter; margin: 0.9in 0.85in; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Helvetica Neue", Arial, sans-serif; color: #1a2332; font-size: 10.5pt; line-height: 1.5; margin: 0; }
+  .cover { border-bottom: 3px solid #1b4d3e; padding-bottom: 14px; margin-bottom: 22px; }
+  .eyebrow { color: #1b4d3e; font-size: 8.5pt; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; margin: 0 0 6px; }
+  h1 { font-size: 20pt; margin: 0 0 4px; color: #0f2942; }
+  .sub { color: #55637a; font-size: 10pt; margin: 0; }
+  .meta { margin: 16px 0 0; width: 100%; border-collapse: collapse; font-size: 9pt; }
+  .meta td { border: 1px solid #d6dbe4; padding: 5px 9px; }
+  .meta td:first-child { background: #f2f5f8; font-weight: 700; width: 130px; color: #33415c; }
+  h2 { font-size: 12pt; color: #1b4d3e; margin: 20px 0 5px; border-bottom: 1px solid #d6dbe4; padding-bottom: 3px; }
+  p { margin: 5px 0; }
+  ul { margin: 5px 0 5px 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  table.grid { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; }
+  table.grid th { background: #1b4d3e; color: #fff; text-align: left; padding: 6px 8px; font-size: 8.5pt; }
+  table.grid td { border: 1px solid #d6dbe4; padding: 6px 8px; vertical-align: top; }
+  table.grid tr:nth-child(even) td { background: #f7f9fb; }
+  .note { background: #f2f5f8; border-left: 3px solid #1b4d3e; padding: 8px 12px; margin: 10px 0; font-size: 9.5pt; }
+  .sig { margin-top: 26px; border-top: 1px solid #d6dbe4; padding-top: 14px; }
+  .sig-line { margin-top: 22px; border-top: 1px solid #33415c; width: 260px; padding-top: 3px; font-size: 9pt; color: #55637a; }
+  footer { margin-top: 24px; border-top: 1px solid #d6dbe4; padding-top: 8px; color: #8892a6; font-size: 8pt; }
+  strong { color: #0f2942; }
+  code { background: #f2f5f8; padding: 0 3px; border-radius: 3px; font-size: 9pt; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <p class="eyebrow">Data Governance</p>
+  <h1>Data Retention &amp; Disposal Policy</h1>
+  <p class="sub">Agentic Voice, Inc. &mdash; d/b/a MFunding.net | Momentum Funding</p>
+  <table class="meta">
+    <tr><td>Document</td><td>Data Retention and Disposal Policy</td></tr>
+    <tr><td>Version</td><td>1.0</td></tr>
+    <tr><td>Effective Date</td><td>July 28, 2026</td></tr>
+    <tr><td>Next Review</td><td>July 28, 2027 (annual)</td></tr>
+    <tr><td>Owner / Approver</td><td>Ernesto Lee, Chief Executive Officer &amp; Security Officer</td></tr>
+    <tr><td>Companion To</td><td>Information Security Policy v1.0</td></tr>
+  </table>
+</div>
+
+<h2>1. Purpose &amp; Scope</h2>
+<p>
+  This policy governs how long Agentic Voice, Inc. ("the Company") retains the data it collects and how that data is
+  securely disposed of when it is no longer needed. It covers all consumer and business data processed by the Company,
+  with particular attention to consumer financial data obtained through <strong>Plaid Inc.</strong> Our principle is data
+  minimization: we keep personal and financial data only as long as there is a legitimate business or legal reason to do so,
+  and then we delete or de-identify it.
+</p>
+
+<h2>2. Retention Schedule</h2>
+<table class="grid">
+  <tr><th>Data Category</th><th>Retention Period</th><th>Basis</th></tr>
+  <tr>
+    <td><strong>Bank data obtained via Plaid</strong> (transactions, statements, balances, account/routing details) — <em>funded deals</em></td>
+    <td>Duration of the funding relationship + up to <strong>7 years</strong>, then deleted</td>
+    <td>Financial-recordkeeping, tax, and dispute/audit obligations</td>
+  </tr>
+  <tr>
+    <td><strong>Bank data obtained via Plaid</strong> — <em>declined, withdrawn, or inactive applications</em></td>
+    <td>Deleted within <strong>90 days</strong> of decline/withdrawal, or on request</td>
+    <td>No ongoing need; data minimization</td>
+  </tr>
+  <tr>
+    <td><strong>Plaid access tokens / connection credentials</strong></td>
+    <td>Revoked and deleted immediately on account disconnection or when data pulls are complete and no longer needed</td>
+    <td>Least-privilege; minimize credential exposure</td>
+  </tr>
+  <tr>
+    <td><strong>Funding application &amp; applicant PII</strong> (name, contact, EIN, business financials) — funded</td>
+    <td>Up to <strong>7 years</strong> after the relationship ends</td>
+    <td>Legal, tax, and commission-recordkeeping</td>
+  </tr>
+  <tr>
+    <td><strong>Applications / leads</strong> — declined or inactive</td>
+    <td>Up to <strong>24 months</strong> of inactivity, then deleted or de-identified</td>
+    <td>Follow-up window; then minimization</td>
+  </tr>
+  <tr>
+    <td><strong>Call recordings &amp; call metadata</strong></td>
+    <td>Up to <strong>24 months</strong></td>
+    <td>Quality assurance &amp; dispute resolution</td>
+  </tr>
+  <tr>
+    <td><strong>Marketing / outreach contact data</strong></td>
+    <td>Until opt-out or <strong>36 months</strong> of inactivity</td>
+    <td>Consent-based; honor opt-outs promptly</td>
+  </tr>
+  <tr>
+    <td><strong>Application &amp; security audit logs</strong></td>
+    <td>Retained per managed-provider defaults (up to ~24 months)</td>
+    <td>Security monitoring &amp; incident investigation</td>
+  </tr>
+  <tr>
+    <td><strong>Automated backups</strong></td>
+    <td>Cycled out on the managed provider's backup rotation</td>
+    <td>Disaster recovery; deleted data ages out of backups on rotation</td>
+  </tr>
+</table>
+<div class="note">
+  Where a longer retention period is required by a specific law, regulation, funder contract, or an active legal hold, that
+  requirement governs and supersedes the periods above for the affected records.
+</div>
+
+<h2>3. Deletion &amp; Disposal Procedures</h2>
+<p>When data reaches the end of its retention period, or when a valid deletion request is received, the Company disposes of it as follows:</p>
+<ul>
+  <li><strong>Plaid connections.</strong> The Plaid Item is removed via Plaid's <code>/item/remove</code> API, which revokes
+      the access token and terminates further access. The associated stored access token (held in the encrypted vault) is deleted.</li>
+  <li><strong>Database records.</strong> Records are deleted from the Supabase (PostgreSQL) database. Because the platform
+      encrypts data at rest, deletion combined with provider key management renders data unrecoverable (crypto-erasure);
+      deleted records age out of automated backups on the provider's rotation.</li>
+  <li><strong>Stored files.</strong> Documents in storage (bank statements, IDs, and other uploads) are deleted from their
+      storage buckets, including the underlying storage objects.</li>
+  <li><strong>CRM records.</strong> Contact and conversation records held in GoHighLevel (GHL) are deleted upon a valid
+      deletion request or at end of retention.</li>
+  <li><strong>Disposal method.</strong> Disposal is performed by secure deletion through provider APIs and crypto-erasure of
+      managed encrypted storage. Any physical media, if ever used, is wiped or destroyed before disposal.</li>
+</ul>
+
+<h2>4. Consumer Data Access &amp; Deletion Requests</h2>
+<p>
+  Individuals may request access to, correction of, or deletion of their personal information — including data obtained
+  through Plaid — and may disconnect a linked bank account at any time. Requests are submitted through either channel below
+  and are actioned by the Security Officer:
+</p>
+<ul>
+  <li>Email: <strong>sales@send.mfunding.net</strong></li>
+  <li>Web: the contact form at <strong>mfunding.net/contact</strong></li>
+</ul>
+<p>
+  The Company verifies the requester's identity, then completes verified deletion requests within a reasonable period and
+  consistent with applicable law, except where data must be retained to meet a legal, tax, or contractual obligation
+  (in which case only the minimum required data is retained and the requester is informed).
+</p>
+
+<h2>5. Responsibilities &amp; Review</h2>
+<ul>
+  <li>The <strong>Security Officer</strong> (Ernesto Lee, CEO) owns this policy, actions deletion requests, and confirms
+      that data past its retention period is removed.</li>
+  <li>Retention and disposal practices are reviewed <strong>annually</strong>, alongside the quarterly access review, to
+      confirm they remain accurate and compliant.</li>
+  <li>This policy is a companion to the Company's Information Security Policy and is maintained under version control.</li>
+</ul>
+
+<div class="sig">
+  <p>Approved and adopted on behalf of Agentic Voice, Inc.:</p>
+  <div class="sig-line">Ernesto Lee &mdash; Chief Executive Officer &amp; Security Officer</div>
+  <div class="sig-line">Date</div>
+</div>
+
+<footer>
+  Agentic Voice, Inc. d/b/a MFunding.net | Momentum Funding &mdash; Data Retention &amp; Disposal Policy v1.0 &mdash; Confidential.
+</footer>
+
+</body>
+</html>
