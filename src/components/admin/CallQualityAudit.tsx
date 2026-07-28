@@ -14,7 +14,7 @@ import { type Campaign } from "@/services/campaignService";
 import {
   listCallAuditRuns, getCallAuditRun, getCallAuditCalls, startCallAudit, continueCallAudit,
   CALL_CLASS_LABELS, type CallAuditRun, type CallAuditCall, type CallClass, type SweepProgress,
-  type ReconResult, type EligibleRow,
+  type ReconResult, type EligibleRow, type ReconSummary,
 } from "@/services/callAuditService";
 import { dateTimeET } from "@/utils/time";
 
@@ -269,20 +269,16 @@ export default function CallQualityAudit({ campaigns }: { campaigns: Campaign[] 
 
           {run && (
             <>
-              {/* KPIs */}
-              <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
-                <Kpi label="Calls audited" value={`${t.calls ?? 0}`} sub={`${t.inbound ?? 0} in · ${t.outbound ?? 0} out`} />
-                <Kpi label="With recording" value={t.with_recording_pct != null ? `${t.with_recording_pct}%` : "—"} sub={`${t.with_recording ?? 0} of ${t.calls ?? 0}`} />
-                <Kpi label="⚡ Disconnected at handoff" value={`${t.disconnected_at_handoff ?? 0}`} tone={(t.disconnected_at_handoff ?? 0) > 0 ? "bad" : "neutral"} sub="closer-flagged (human truth)" />
-                <Kpi label="Answered then kicked" value={`${t.answered_then_kicked ?? 0}`} tone={(t.answered_then_kicked ?? 0) > 0 ? "bad" : "neutral"} sub="headline failure" />
-                <Kpi label="Missed → voicemail" value={`${t.missed_transfer_voicemail ?? 0}`} tone={(t.missed_transfer_voicemail ?? 0) > 0 ? "warn" : "neutral"} sub="rang to our machine" />
-                <Kpi label="Mid-call drops" value={`${t.mid_call_drop ?? 0}`} tone={(t.mid_call_drop ?? 0) > 0 ? "warn" : "neutral"} sub="dropped after 90s" />
-                <Kpi label="Teardown (cosmetic)" value={`${t.end_teardown_cosmetic ?? 0}`} sub="normal hang-up" />
-                <Kpi label="Clean" value={`${t.clean ?? 0}`} tone={(t.clean ?? 0) > 0 ? "good" : "neutral"} sub="no drop language" />
-                <Kpi label="No recording" value={`${t.no_recording ?? 0}`} sub="nothing to hear" />
-                <Kpi label="Transcription failed" value={`${t.transcription_failed ?? 0}`} sub="recording, no text" />
-                {run.status !== "done" && <Kpi label="Status" value={run.status} tone="warn" sub="run in progress" />}
-              </div>
+              {/* HEADLINE — transfer-centric, what we can measure right now. Leads with the
+                  number the owner reads off the board (missed handoff), not a wall of
+                  transcript-dependent zeros. */}
+              {t.reconciliation?.summary
+                ? <TransferHeadline s={t.reconciliation.summary} transcriptionAvailable={t.transcription_available !== false} inProgress={run.status !== "done"} />
+                : (
+                  <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 p-4 text-[12px] text-gray-500">
+                    This run's window has no Synergy transfers to reconcile{run.status !== "done" ? " yet (run still in progress)" : ""} — see the call-level breakdown below.
+                  </div>
+                )}
 
               {(t.gaps?.length ?? 0) > 0 && (
                 <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-2.5 text-[12px] text-amber-800 dark:text-amber-200">
@@ -291,6 +287,8 @@ export default function CallQualityAudit({ campaigns }: { campaigns: Campaign[] 
               )}
 
               {t.reconciliation && <ReconciliationSection recon={t.reconciliation} />}
+
+              <CallBreakdown t={t} />
 
               <CallsTable calls={calls} loading={loading} />
             </>
@@ -317,6 +315,77 @@ function Kpi({ label, value, sub, tone = "neutral" }: { label: string; value: st
       <div className="text-[11px] text-gray-500 dark:text-gray-400 leading-tight">{label}</div>
       <div className={`text-lg font-bold mt-0.5 ${cls}`}>{value}</div>
       {sub && <div className="text-[10px] text-gray-400 mt-0.5 leading-tight">{sub}</div>}
+    </div>
+  );
+}
+
+// The top-line the owner reads: live-transfer handoff outcomes, led by MISSED HANDOFF
+// (the same definition the My Day board uses, so board + audit agree). Transcript-only
+// classes render "needs key" rather than a misleading 0 while transcription is off.
+function TransferHeadline({ s, transcriptionAvailable, inProgress }: { s: ReconSummary; transcriptionAvailable: boolean; inProgress: boolean }) {
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="flex items-center justify-between mb-0.5">
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white">Live-transfer handoff — the numbers that matter</h3>
+        {inProgress && <span className="text-[10px] text-amber-600 dark:text-amber-400">run in progress — numbers still filling in</span>}
+      </div>
+      <p className="text-[11px] text-gray-400 mb-3">
+        {s.live_transfer} live transfers this window (+ {s.realtime} real-time email leads, which are called back — no inbound
+        expected). <b>Missed handoff</b> uses the same rule as the My Day board: a live transfer where no closer opened it and
+        no conversation was captured within 15 minutes.
+      </p>
+      <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+        <Kpi label="Transfers received" value={`${s.transfers}`} sub={`${s.live_transfer} live · ${s.realtime} real-time`} />
+        <Kpi label="Handoff captured" value={`${s.handoff_captured}`} tone={s.handoff_captured > 0 ? "good" : "neutral"} sub={`of ${s.live_transfer} live — closer connected`} />
+        <Kpi label="⚠ Missed handoff" value={`${s.missed_handoff}`} tone={s.missed_handoff > 0 ? "bad" : "neutral"} sub={`board definition · ${s.missed_no_call} had no call at all`} />
+        <Kpi label="⚡ Dropped at handoff" value={`${s.disconnected_at_handoff}`} tone={s.disconnected_at_handoff > 0 ? "bad" : "neutral"} sub="closer-flagged (human truth)" />
+        <Kpi label="Suspect short drops" value={`${s.suspect_drop}`} tone={s.suspect_drop > 0 ? "warn" : "neutral"} sub="metadata proxy · review + flag" />
+        <Kpi label="Replacement-eligible" value={`${s.replacement_eligible}`} tone={s.replacement_eligible > 0 ? "bad" : "neutral"} sub="defensible → demand replacement" />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-gray-400">Audio-confirmed (needs transcription):</span>
+        <NeedsKeyTile label="Answered-then-kicked" value={s.answered_then_kicked} available={transcriptionAvailable} />
+        <NeedsKeyTile label="Missed → voicemail" value={s.voicemail} available={transcriptionAvailable} />
+      </div>
+    </div>
+  );
+}
+
+// A transcript-dependent metric: shows the real count when transcription is on, else an
+// honest "needs key" chip instead of a 0 that reads as "we checked and found none".
+function NeedsKeyTile({ label, value, available }: { label: string; value: number; available: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1">
+      <span className="text-[11px] text-gray-500 dark:text-gray-400">{label}</span>
+      {available
+        ? <span className={`text-sm font-bold ${value > 0 ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-white"}`}>{value}</span>
+        : <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">— needs transcription key</span>}
+    </span>
+  );
+}
+
+// The old call-level grid, demoted to a collapsible secondary breakdown. Transcript-only
+// tiles use the "needs key" treatment so they never read as a misleading 0.
+function CallBreakdown({ t }: { t: CallAuditRun["totals"] }) {
+  const [open, setOpen] = useState(false);
+  const available = t.transcription_available !== false;
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
+      <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center gap-2 px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40">
+        {open ? <ChevronDownIcon className="w-4 h-4 text-gray-400" /> : <ChevronRightIcon className="w-4 h-4 text-gray-400" />}
+        <span className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">Call-level breakdown</span>
+        <span className="text-[11px] text-gray-400">{t.calls ?? 0} calls audited · {t.inbound ?? 0} in / {t.outbound ?? 0} out{t.closer_flagged_applied ? ` · ${t.closer_flagged_applied} closer overrides applied` : ""}</span>
+      </button>
+      {open && (
+        <div className="border-t border-gray-100 dark:border-gray-700 p-4 grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          <Kpi label="Calls audited" value={`${t.calls ?? 0}`} sub={`${t.inbound ?? 0} in · ${t.outbound ?? 0} out`} />
+          <Kpi label="With recording" value={t.with_recording_pct != null ? `${t.with_recording_pct}%` : "—"} sub={`${t.with_recording ?? 0} of ${t.calls ?? 0}`} />
+          <Kpi label="Mid-call drops" value={available ? `${t.mid_call_drop ?? 0}` : "—"} tone={(t.mid_call_drop ?? 0) > 0 ? "warn" : "neutral"} sub={available ? "dropped after 90s" : "needs transcription key"} />
+          <Kpi label="Teardown (cosmetic)" value={available ? `${t.end_teardown_cosmetic ?? 0}` : "—"} sub={available ? "normal hang-up" : "needs transcription key"} />
+          <Kpi label="Clean" value={available ? `${t.clean ?? 0}` : "—"} tone={(t.clean ?? 0) > 0 ? "good" : "neutral"} sub={available ? "no drop language" : "needs transcription key"} />
+          <Kpi label="No recording" value={`${t.no_recording ?? 0}`} sub="nothing to hear" />
+        </div>
+      )}
     </div>
   );
 }
@@ -484,15 +553,12 @@ function ReconciliationSection({ recon }: { recon: ReconResult }) {
         </p>
       </div>
       <div className="p-4 space-y-3">
-        <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
-          <Kpi label="Paid transfers" value={`${s.transfers}`} sub={`${s.live_transfer} live · ${s.realtime} real-time`} />
-          <Kpi label="⚡ Disconnected at handoff" value={`${s.disconnected_at_handoff ?? 0}`} tone={(s.disconnected_at_handoff ?? 0) > 0 ? "bad" : "neutral"} sub="closer-flagged" />
-          <Kpi label="No call at all" value={`${s.no_call}`} tone={s.no_call > 0 ? "bad" : "neutral"} sub="never reached a line" />
-          <Kpi label="→ Our voicemail" value={`${s.voicemail}`} tone={s.voicemail > 0 ? "warn" : "neutral"} sub="rang to machine" />
-          <Kpi label="Answered-then-kicked" value={`${s.answered_then_kicked}`} tone={s.answered_then_kicked > 0 ? "bad" : "neutral"} sub="needs transcripts to confirm" />
-          <Kpi label="Suspect drop" value={`${s.suspect_drop}`} tone={s.suspect_drop > 0 ? "warn" : "neutral"} sub="short/instant drop" />
-          <Kpi label="Connected" value={`${s.connected}`} tone={s.connected > 0 ? "good" : "neutral"} sub="a call of some length" />
-        </div>
+        {/* Match provenance — of the missed handoffs, how many had no inbound call vs a call
+            that never became a conversation. The headline tiles above carry the counts. */}
+        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+          Of {s.missed_handoff} missed handoffs, <b>{s.missed_no_call}</b> had no inbound call at all and the rest had a call
+          that never became a captured conversation. {s.disconnected_at_handoff} were closer-flagged as dropped at handoff.
+        </p>
 
         {/* Replacement-eligible — the list the owner sends Synergy to demand replacements. */}
         <ReplacementEligible eligible={recon.eligible ?? []} suspects={recon.suspects?.length ?? 0} win={recon.window} />

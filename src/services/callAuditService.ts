@@ -69,6 +69,10 @@ export interface ReconSummary {
   matched_to_call: number;
   matched_by_phone: number;
   matched_by_time: number;
+  // Board handoff truth (live transfers) — the headline the owner reads on My Day.
+  missed_handoff: number;      // live transfer, no closer-start + no convo within 15 min of creation
+  handoff_captured: number;    // complement: closer had them on the line
+  missed_no_call: number;      // of the missed, how many had NO inbound call at all (provenance)
   no_call: number;
   voicemail: number;
   answered_then_kicked: number;
