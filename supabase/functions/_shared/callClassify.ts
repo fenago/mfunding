@@ -17,6 +17,10 @@
 //   transcription_failed      — a recording existed but could not be transcribed.
 //   suspected_instant_drop    — metadata-only fallback: completed call < 15s.
 //   short_call_unverified     — metadata-only fallback: 15-90s, no transcript.
+//   disconnected_at_handoff   — HUMAN ground truth: the closer flagged this call as
+//        dropped at the conference handoff (a ghl_call_log disposition). classifyCall
+//        never PRODUCES this — it's applied over the machine class by the sweep
+//        (call_audit_apply_dispositions) because human truth outranks the audio guess.
 
 export type CallClass =
   | "missed_transfer_voicemail"
@@ -27,7 +31,8 @@ export type CallClass =
   | "no_recording"
   | "transcription_failed"
   | "suspected_instant_drop"
-  | "short_call_unverified";
+  | "short_call_unverified"
+  | "disconnected_at_handoff";
 
 export interface ClassifyInput {
   hasRecording: boolean;
@@ -157,4 +162,5 @@ export const CALL_CLASS_LABELS: Record<CallClass, string> = {
   transcription_failed: "Transcription failed",
   suspected_instant_drop: "Suspected instant drop",
   short_call_unverified: "Unverified (no transcript)",
+  disconnected_at_handoff: "Disconnected at handoff",
 };

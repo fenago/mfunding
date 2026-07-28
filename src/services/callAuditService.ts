@@ -22,6 +22,7 @@ export type CallClass =
   | "transcription_failed"
   | "suspected_instant_drop"
   | "short_call_unverified"
+  | "disconnected_at_handoff" // human ground truth — closer flagged the handoff drop
   | "pending";
 
 export interface CallAuditRun {
@@ -48,10 +49,12 @@ export interface CallAuditTotals {
   answered_then_kicked?: number;
   missed_transfer_voicemail?: number;
   mid_call_drop?: number;
+  disconnected_at_handoff?: number; // closer-flagged (human truth), overrides machine class
   end_teardown_cosmetic?: number;
   clean?: number;
   no_recording?: number;
   transcription_failed?: number;
+  closer_flagged_applied?: number; // rows this run overrode from a disposition
   transcription_available?: boolean; // false = no valid Gemini key; classified from metadata only
   gaps?: string[];
   reconciliation?: ReconResult;
@@ -69,25 +72,51 @@ export interface ReconSummary {
   no_call: number;
   voicemail: number;
   answered_then_kicked: number;
+  disconnected_at_handoff: number;
   suspect_drop: number;
   connected: number;
+  replacement_eligible: number; // defensible failures the owner can demand replacements for
 }
 export interface ReconRow {
   received_at: string;
   merchant: string;
   phone: string | null;
   kind: string;
-  bucket: "no_call" | "voicemail" | "answered_then_kicked" | "suspect_drop" | "connected";
+  bucket: "no_call" | "voicemail" | "answered_then_kicked" | "disconnected_at_handoff" | "suspect_drop" | "connected";
   call_class: CallClass | null;
   call_date: string | null;
   duration_s: number | null;
   phone_match: boolean | null;
   gap_s: number | null;
 }
+// A replacement-request row — defensible hard evidence only (human flag / absence /
+// confirmed). `evidence` is the paste-able reason string for the vendor email.
+export interface EligibleRow {
+  received_at: string;
+  merchant: string;
+  phone: string | null;
+  kind: string;
+  bucket: "disconnected_at_handoff" | "no_call" | "answered_then_kicked" | "voicemail";
+  evidence: string;
+  call_date: string | null;
+  gap_s: number | null;
+}
+// A suspect to REVIEW (metadata proxy) — not sent as-is; Carlos flags if confirmed.
+export interface SuspectRow {
+  received_at: string;
+  merchant: string;
+  phone: string | null;
+  kind: string;
+  call_date: string | null;
+  duration_s: number | null;
+  gap_s: number | null;
+}
 export interface ReconResult {
   window: { from: string; to: string };
   summary: ReconSummary;
   rows: ReconRow[];
+  eligible?: EligibleRow[];
+  suspects?: SuspectRow[];
 }
 
 export interface CallAuditCall {
@@ -110,7 +139,11 @@ export interface CallAuditCall {
   classification: CallClass;
   matched_quote: string | null;
   kick_offset_hint: string | null;
-  meta: { business?: string; transcription?: string; model?: string; rec_bytes?: number } | null;
+  meta: {
+    business?: string; transcription?: string; model?: string; rec_bytes?: number;
+    // Provenance stamped when a closer's disposition overrode the machine class.
+    closer_flagged?: boolean; disposition?: string; disposition_at?: string;
+  } | null;
 }
 
 export interface SweepProgress {
@@ -127,6 +160,7 @@ export interface SweepProgress {
 
 // Human labels for the taxonomy — one home, shared by the KPIs and the table chips.
 export const CALL_CLASS_LABELS: Record<CallClass, string> = {
+  disconnected_at_handoff: "Disconnected at handoff",
   answered_then_kicked: "Answered then kicked",
   missed_transfer_voicemail: "Missed → our voicemail",
   mid_call_drop: "Mid-call drop",
@@ -162,7 +196,7 @@ export async function getCallAuditRun(runId: string): Promise<CallAuditRun | nul
 
 // The calls for a run, worst-first (headline failures float up), then most recent.
 const CLASS_ORDER: CallClass[] = [
-  "answered_then_kicked", "missed_transfer_voicemail", "mid_call_drop",
+  "disconnected_at_handoff", "answered_then_kicked", "missed_transfer_voicemail", "mid_call_drop",
   "suspected_instant_drop", "short_call_unverified", "transcription_failed",
   "no_recording", "end_teardown_cosmetic", "clean", "pending",
 ];

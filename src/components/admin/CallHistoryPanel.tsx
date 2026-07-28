@@ -76,24 +76,33 @@ const TONE_CLASS: Record<"good" | "warn" | "bad", string> = {
 };
 
 // ── Dispositions ──────────────────────────────────────────────────────────────
-// The one-tap grades. `chip` colors the collapsed label after a tap. The primary
-// six sit on the strip; gatekeeper lives behind the "more" overflow to keep the
-// row from crowding. Keys must match the CHECK constraint + set_call_disposition.
+// The one-tap grades. `chip` colors the collapsed label after a tap. Keys must
+// match the CHECK constraint + set_call_disposition. The strip is DIRECTION-AWARE:
+//   · OUTBOUND dials use the dial grades (spoke/voicemail/no-answer/…); gatekeeper
+//     lives behind the "more" overflow to keep the row from crowding.
+//   · INBOUND calls are the live transfers ringing our line, so their lead grade is
+//     "⚡ Disconnected at handoff" — the closer's human counterpart to the audit's
+//     machine "missed handoff" guess. That flag becomes the Call/Transfer Quality
+//     audit's ground truth (overrides the audio class).
 interface Dispo { key: string; emoji: string; label: string; chip: string; }
-const DISPOSITIONS: Dispo[] = [
-  { key: "spoke",           emoji: "👤", label: "Spoke",           chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
-  { key: "voicemail",       emoji: "📼", label: "Voicemail",       chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
-  { key: "no_answer",       emoji: "📵", label: "No answer",       chip: "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300" },
-  { key: "wrong_number",    emoji: "❌", label: "Wrong #",         chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
-  { key: "never_requested", emoji: "🚫", label: "Never requested", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
-  { key: "callback_set",    emoji: "🕐", label: "Callback set",    chip: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" },
-];
-const MORE_DISPOSITIONS: Dispo[] = [
-  { key: "gatekeeper",      emoji: "🚪", label: "Gatekeeper",      chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" },
-];
-const DISPO_BY_KEY: Record<string, Dispo> = Object.fromEntries(
-  [...DISPOSITIONS, ...MORE_DISPOSITIONS].map((d) => [d.key, d]),
-);
+const D = {
+  disconnected_at_handoff: { key: "disconnected_at_handoff", emoji: "⚡", label: "Disconnected at handoff", chip: "bg-red-600 text-white dark:bg-red-600 dark:text-white" },
+  spoke:           { key: "spoke",           emoji: "👤", label: "Spoke",           chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  voicemail:       { key: "voicemail",       emoji: "📼", label: "Voicemail",       chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+  no_answer:       { key: "no_answer",       emoji: "📵", label: "No answer",       chip: "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300" },
+  wrong_number:    { key: "wrong_number",    emoji: "❌", label: "Wrong #",         chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
+  never_requested: { key: "never_requested", emoji: "🚫", label: "Never requested", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
+  callback_set:    { key: "callback_set",    emoji: "🕐", label: "Callback set",    chip: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" },
+  gatekeeper:      { key: "gatekeeper",      emoji: "🚪", label: "Gatekeeper",      chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" },
+} satisfies Record<string, Dispo>;
+
+const OUTBOUND_DISPOSITIONS: Dispo[] = [D.spoke, D.voicemail, D.no_answer, D.wrong_number, D.never_requested, D.callback_set];
+const OUTBOUND_MORE: Dispo[] = [D.gatekeeper];
+// Inbound = a live transfer that landed on our line: handoff-drop first, then the
+// grades that make sense for a transfer that DID connect. No overflow needed.
+const INBOUND_DISPOSITIONS: Dispo[] = [D.disconnected_at_handoff, D.spoke, D.voicemail, D.wrong_number];
+const INBOUND_MORE: Dispo[] = [];
+const DISPO_BY_KEY: Record<string, Dispo> = Object.fromEntries(Object.values(D).map((d) => [d.key, d]));
 
 // One outbound call's grade control: a chip strip until graded, then a small
 // colored label (who/when on hover). Tap collapses; tap the label to re-grade.
@@ -107,6 +116,10 @@ function DispositionControl({
   const [showMore, setShowMore] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const inbound = call.direction === "inbound";
+  const primary = inbound ? INBOUND_DISPOSITIONS : OUTBOUND_DISPOSITIONS;
+  const more = inbound ? INBOUND_MORE : OUTBOUND_MORE;
 
   const current = call.disposition ? DISPO_BY_KEY[call.disposition] : null;
   const showChips = editing || !current;
@@ -146,7 +159,7 @@ function DispositionControl({
     );
   }
 
-  const dispos = showMore ? [...DISPOSITIONS, ...MORE_DISPOSITIONS] : DISPOSITIONS;
+  const dispos = showMore ? [...primary, ...more] : primary;
   return (
     <div className="flex flex-wrap items-center gap-1">
       {dispos.map((d) => {
@@ -167,7 +180,7 @@ function DispositionControl({
           </button>
         );
       })}
-      {!showMore && (
+      {!showMore && more.length > 0 && (
         <button
           type="button"
           onClick={() => setShowMore(true)}
@@ -252,13 +265,14 @@ export default function CallHistoryPanel({ ghlContactId, dealId }: { ghlContactI
                     {c.userName ? `${c.userName} · ` : ""}{fmtWhenEt(c.calledAt)}
                   </span>
                 </div>
-                {/* Human ground truth — outbound only (inbound calls aren't in the ledger). */}
-                {c.direction === "outbound" && (
-                  <div className="pl-6 flex items-center gap-2">
-                    <span className="text-[10px] uppercase tracking-wide text-gray-400 shrink-0">Outcome</span>
-                    <DispositionControl call={c} onSaved={applyDisposition} />
-                  </div>
-                )}
+                {/* Human ground truth — outbound dials AND inbound transfers. Inbound
+                    is where the closer flags "disconnected at handoff". */}
+                <div className="pl-6 flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-wide text-gray-400 shrink-0">
+                    {c.direction === "inbound" ? "Transfer" : "Outcome"}
+                  </span>
+                  <DispositionControl call={c} onSaved={applyDisposition} />
+                </div>
               </div>
             );
           })}

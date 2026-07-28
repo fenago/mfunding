@@ -7,12 +7,14 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   PlayIcon,
+  ClipboardDocumentIcon,
+  CheckIcon,
 } from "@heroicons/react/24/outline";
 import { type Campaign } from "@/services/campaignService";
 import {
   listCallAuditRuns, getCallAuditRun, getCallAuditCalls, startCallAudit, continueCallAudit,
   CALL_CLASS_LABELS, type CallAuditRun, type CallAuditCall, type CallClass, type SweepProgress,
-  type ReconResult,
+  type ReconResult, type EligibleRow,
 } from "@/services/callAuditService";
 import { dateTimeET } from "@/utils/time";
 
@@ -28,6 +30,8 @@ import { dateTimeET } from "@/utils/time";
 // Failure classes float to the top; benign/no-signal sink. Colors: red = the owner's
 // headline failure, orange/amber = other failures, sky = cosmetic, emerald = clean.
 const CLASS_CHIP: Record<CallClass, string> = {
+  // Closer-flagged human truth — the most prominent chip (solid red + ring).
+  disconnected_at_handoff: "bg-red-600 text-white dark:bg-red-600 dark:text-white ring-1 ring-red-300 dark:ring-red-400",
   answered_then_kicked: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
   missed_transfer_voicemail: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
   mid_call_drop: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
@@ -269,6 +273,7 @@ export default function CallQualityAudit({ campaigns }: { campaigns: Campaign[] 
               <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
                 <Kpi label="Calls audited" value={`${t.calls ?? 0}`} sub={`${t.inbound ?? 0} in · ${t.outbound ?? 0} out`} />
                 <Kpi label="With recording" value={t.with_recording_pct != null ? `${t.with_recording_pct}%` : "—"} sub={`${t.with_recording ?? 0} of ${t.calls ?? 0}`} />
+                <Kpi label="⚡ Disconnected at handoff" value={`${t.disconnected_at_handoff ?? 0}`} tone={(t.disconnected_at_handoff ?? 0) > 0 ? "bad" : "neutral"} sub="closer-flagged (human truth)" />
                 <Kpi label="Answered then kicked" value={`${t.answered_then_kicked ?? 0}`} tone={(t.answered_then_kicked ?? 0) > 0 ? "bad" : "neutral"} sub="headline failure" />
                 <Kpi label="Missed → voicemail" value={`${t.missed_transfer_voicemail ?? 0}`} tone={(t.missed_transfer_voicemail ?? 0) > 0 ? "warn" : "neutral"} sub="rang to our machine" />
                 <Kpi label="Mid-call drops" value={`${t.mid_call_drop ?? 0}`} tone={(t.mid_call_drop ?? 0) > 0 ? "warn" : "neutral"} sub="dropped after 90s" />
@@ -356,6 +361,11 @@ function CallRow({ c }: { c: CallAuditCall }) {
           <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${CLASS_CHIP[c.classification]}`}>
             {CALL_CLASS_LABELS[c.classification]}
           </span>
+          {c.meta?.closer_flagged && (
+            <span className="ml-1 text-[10px] font-semibold text-red-600 dark:text-red-400" title="A closer flagged this call — human ground truth, overrides the audio guess">
+              closer-flagged
+            </span>
+          )}
           {c.kick_offset_hint && <span className="ml-1 text-[10px] text-gray-400">{c.kick_offset_hint}</span>}
         </td>
         <td className="px-3 py-2 text-[12px] text-gray-500 dark:text-gray-400 max-w-[280px] truncate">
@@ -392,6 +402,7 @@ function CallRow({ c }: { c: CallAuditCall }) {
 // Answers the owner's question: did the Jul-24 phone fixes bend the curve? Uses the
 // persisted run history (each run's totals), oldest → newest, last 12 runs.
 const TREND_SERIES: { key: string; label: string; color: string; get: (t: CallAuditRun["totals"]) => number }[] = [
+  { key: "dah", label: "Disconnected at handoff", color: "bg-red-600", get: (t) => t.disconnected_at_handoff ?? t.by_class?.disconnected_at_handoff ?? 0 },
   { key: "atk", label: "Answered-then-kicked", color: "bg-red-500", get: (t) => t.answered_then_kicked ?? 0 },
   { key: "vm", label: "Missed → voicemail", color: "bg-orange-500", get: (t) => t.missed_transfer_voicemail ?? 0 },
   { key: "mcd", label: "Mid-call drop", color: "bg-amber-500", get: (t) => t.mid_call_drop ?? 0 },
@@ -452,6 +463,7 @@ function TrendStrip({ runs }: { runs: CallAuditRun[] }) {
 
 // ── Transfer reconciliation — paid Synergy transfers vs the inbound call that landed ─
 const BUCKET_META: Record<string, { label: string; chip: string }> = {
+  disconnected_at_handoff: { label: "Disconnected at handoff", chip: "bg-red-600 text-white dark:bg-red-600 dark:text-white ring-1 ring-red-300 dark:ring-red-400" },
   no_call: { label: "No call at all", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
   answered_then_kicked: { label: "Answered then kicked", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" },
   voicemail: { label: "Our voicemail", chip: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300" },
@@ -472,14 +484,18 @@ function ReconciliationSection({ recon }: { recon: ReconResult }) {
         </p>
       </div>
       <div className="p-4 space-y-3">
-        <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
           <Kpi label="Paid transfers" value={`${s.transfers}`} sub={`${s.live_transfer} live · ${s.realtime} real-time`} />
+          <Kpi label="⚡ Disconnected at handoff" value={`${s.disconnected_at_handoff ?? 0}`} tone={(s.disconnected_at_handoff ?? 0) > 0 ? "bad" : "neutral"} sub="closer-flagged" />
           <Kpi label="No call at all" value={`${s.no_call}`} tone={s.no_call > 0 ? "bad" : "neutral"} sub="never reached a line" />
           <Kpi label="→ Our voicemail" value={`${s.voicemail}`} tone={s.voicemail > 0 ? "warn" : "neutral"} sub="rang to machine" />
           <Kpi label="Answered-then-kicked" value={`${s.answered_then_kicked}`} tone={s.answered_then_kicked > 0 ? "bad" : "neutral"} sub="needs transcripts to confirm" />
           <Kpi label="Suspect drop" value={`${s.suspect_drop}`} tone={s.suspect_drop > 0 ? "warn" : "neutral"} sub="short/instant drop" />
           <Kpi label="Connected" value={`${s.connected}`} tone={s.connected > 0 ? "good" : "neutral"} sub="a call of some length" />
         </div>
+
+        {/* Replacement-eligible — the list the owner sends Synergy to demand replacements. */}
+        <ReplacementEligible eligible={recon.eligible ?? []} suspects={recon.suspects?.length ?? 0} win={recon.window} />
 
         <button onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-1.5 text-[12px] text-ocean-blue hover:underline">
           {open ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
@@ -522,6 +538,106 @@ function ReconciliationSection({ recon }: { recon: ReconResult }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Replacement-eligible transfers — what the owner sends Synergy ────────────────
+// Defensible failures only (closer-flagged handoff drop, no call received, answered-
+// then-kicked, voicemail). Metadata-only suspects are held back (Carlos flags them
+// on the call to promote). "Copy for vendor email" yields a clean paste-able list.
+const EVIDENCE_LABEL: Record<EligibleRow["bucket"], string> = {
+  disconnected_at_handoff: "closer-flagged: disconnected at handoff",
+  no_call: "no call received (missed handoff)",
+  answered_then_kicked: "answered then kicked from conference",
+  voicemail: "rang to our voicemail",
+};
+
+// Compact ET date-time for the paste-able list (no "ET" suffix — the header says it).
+function dateTimeETPlain(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString("en-US", {
+      timeZone: "America/New_York", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit",
+    });
+  } catch { return iso; }
+}
+
+function buildVendorEmailText(eligible: EligibleRow[], win: { from: string; to: string }): string {
+  const header =
+    `Replacement requests — ${eligible.length} live transfer${eligible.length === 1 ? "" : "s"} that failed at handoff ` +
+    `(${win.from} to ${win.to}, times ET). Requesting replacement transfers, not refunds:`;
+  const lines = eligible.map((r) =>
+    `${dateTimeETPlain(r.received_at)} · ${r.merchant} · ${r.phone ?? "no phone"} · ${r.evidence ?? EVIDENCE_LABEL[r.bucket]}`
+  );
+  return [header, "", ...lines].join("\n");
+}
+
+function ReplacementEligible({ eligible, suspects, win }: { eligible: EligibleRow[]; suspects: number; win: { from: string; to: string } }) {
+  const [copied, setCopied] = useState(false);
+  const [copyErr, setCopyErr] = useState<string | null>(null);
+
+  async function copyForVendor() {
+    setCopyErr(null);
+    try {
+      await navigator.clipboard.writeText(buildVendorEmailText(eligible, win));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      setCopyErr(e instanceof Error ? e.message : "Clipboard copy failed");
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-900/15 p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h5 className="font-semibold text-red-800 dark:text-red-300">
+            Replacement-eligible ({eligible.length})
+          </h5>
+          <p className="text-[11px] text-red-700/80 dark:text-red-300/70">
+            Defensible failures — closer-flagged handoff drops, no-call misses, answered-then-kicked, voicemail.
+            Send these to the vendor to demand <b>replacement transfers</b> (not refunds).
+            {suspects > 0 && <> {suspects} metadata suspect{suspects === 1 ? "" : "s"} are held back below — have Carlos flag any real ones on the call.</>}
+          </p>
+        </div>
+        <button
+          onClick={copyForVendor}
+          disabled={eligible.length === 0}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-[12px] font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-40"
+        >
+          {copied ? <><CheckIcon className="w-4 h-4 text-emerald-500" /> Copied ✓</> : <><ClipboardDocumentIcon className="w-4 h-4" /> Copy for vendor email</>}
+        </button>
+      </div>
+      {copyErr && <p className="text-[11px] text-red-600 dark:text-red-400">{copyErr}</p>}
+      {eligible.length === 0 ? (
+        <p className="text-[12px] text-gray-500 dark:text-gray-400">No replacement-eligible transfers in this window — every paid transfer connected or is only a metadata suspect.</p>
+      ) : (
+        <div className="rounded-lg border border-red-200 dark:border-red-800 overflow-hidden bg-white dark:bg-gray-800">
+          <div className="overflow-x-auto max-h-72 overflow-y-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-red-50 dark:bg-red-900/25 text-red-700/80 dark:text-red-300/80 uppercase text-xs sticky top-0">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Transfer (ET)</th>
+                  <th className="px-3 py-2 font-medium">Merchant</th>
+                  <th className="px-3 py-2 font-medium">Phone</th>
+                  <th className="px-3 py-2 font-medium">Evidence</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-red-100 dark:divide-red-900/40">
+                {eligible.map((r, i) => (
+                  <tr key={i} className="hover:bg-red-50/50 dark:hover:bg-red-900/20">
+                    <td className="px-3 py-2 whitespace-nowrap text-gray-700 dark:text-gray-200">{dateTimeET(r.received_at)}</td>
+                    <td className="px-3 py-2 text-gray-700 dark:text-gray-200 max-w-[180px] truncate">{r.merchant}</td>
+                    <td className="px-3 py-2 text-gray-600 dark:text-gray-300 whitespace-nowrap">{r.phone ?? "—"}</td>
+                    <td className="px-3 py-2 text-[11px] font-medium text-red-700 dark:text-red-300">{r.evidence ?? EVIDENCE_LABEL[r.bucket]}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

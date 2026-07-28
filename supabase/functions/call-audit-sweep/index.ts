@@ -419,6 +419,19 @@ async function finalizeTotals(
   fromIso: string,
   toIso: string,
 ): Promise<Record<string, unknown>> {
+  // Human truth beats the machine class: before rolling up, force every row whose
+  // call carries the closer's `disconnected_at_handoff` disposition to that class
+  // (joined by the shared GHL message id). Idempotent + reversible — a re-run
+  // re-classifies from audio/metadata first, so a later-cleared flag reverts. This
+  // runs for BOTH new runs and re-runs of a window, so newly-set flags show up.
+  let closerFlagged = 0;
+  try {
+    const { data: applied } = await db.rpc("call_audit_apply_dispositions", { p_run_id: runId });
+    closerFlagged = typeof applied === "number" ? applied : 0;
+  } catch (e) {
+    cursor.gaps.push(`disposition override failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   const { data: rows } = await db.from("call_audit_calls")
     .select("classification, has_recording, direction").eq("run_id", runId);
   const byClass: Record<string, number> = {};
@@ -440,10 +453,12 @@ async function finalizeTotals(
     answered_then_kicked: byClass["answered_then_kicked"] ?? 0,
     missed_transfer_voicemail: byClass["missed_transfer_voicemail"] ?? 0,
     mid_call_drop: byClass["mid_call_drop"] ?? 0,
+    disconnected_at_handoff: byClass["disconnected_at_handoff"] ?? 0, // closer-flagged (human truth)
     end_teardown_cosmetic: byClass["end_teardown_cosmetic"] ?? 0,
     clean: byClass["clean"] ?? 0,
     no_recording: byClass["no_recording"] ?? 0,
     transcription_failed: byClass["transcription_failed"] ?? 0,
+    closer_flagged_applied: closerFlagged, // rows overridden by a disposition this run
     transcription_available: cursor.transcriptionAvailable ?? false,
     gaps: cursor.gaps,
   };

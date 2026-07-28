@@ -160,6 +160,8 @@ function outcomeLabel(c: CallRecord): string {
  * activity_log row per new call, atomic telemetry stamp. Idempotent (ledger PK =
  * GHL message id). Used by BOTH the panel poll and the cron sweep — one code
  * path, so "logged when viewed" and "logged automatically" can never diverge.
+ * INBOUND calls are also mirrored into the ledger (record-only — no telemetry, no
+ * timeline note) so a live transfer can be graded "disconnected at handoff".
  */
 async function syncCallsForDeal(
   db: ReturnType<typeof serviceClient>,
@@ -252,6 +254,30 @@ async function syncCallsForDeal(
       if (rpcErr) syncError = `telemetry stamp failed: ${rpcErr.message}`;
       synced = fresh.length;
     }
+
+    // INBOUND calls, record-only. Live transfers ring our line (inbound), and the
+    // closer needs to grade one as "disconnected at handoff" — but set_call_disposition
+    // requires the call to exist in this ledger. So mirror inbound TYPE_CALL rows here
+    // (dedup by GHL message id), WITHOUT touching telemetry or activity_log: an inbound
+    // ring is not an outbound dial attempt and isn't a contact until graded. The grade
+    // (via the RPC) writes its own timeline note.
+    const inbound = calls.filter((c) => c.direction === "inbound");
+    if (inbound.length > 0) {
+      const rows = inbound.map((c) => ({
+        ghl_message_id: c.id,
+        deal_id: dealId,
+        ghl_contact_id: contactId,
+        direction: c.direction,
+        call_status: c.status,
+        duration_seconds: c.durationSeconds,
+        ghl_user_id: c.userId,
+        ghl_user_name: c.userName,
+        from_number: c.from,
+        to_number: c.to,
+        called_at: c.calledAt,
+      }));
+      await db.from("ghl_call_log").upsert(rows, { onConflict: "ghl_message_id", ignoreDuplicates: true });
+    }
   } catch (e) {
     syncError = e instanceof Error ? e.message : String(e);
   }
@@ -261,8 +287,9 @@ async function syncCallsForDeal(
 /**
  * Layer the human disposition (and grader name) onto each returned call, read
  * from the ledger by GHL message id. Best-effort: a read error leaves the calls
- * ungraded rather than blanking the panel. Only outbound calls are ever in the
- * ledger, so inbound rows always come back ungraded (there's nothing to grade).
+ * ungraded rather than blanking the panel. Both outbound dials and inbound calls
+ * are in the ledger now (inbound recorded record-only so a live transfer can be
+ * graded "disconnected at handoff"), so any call may come back graded.
  */
 async function attachDispositions(
   db: ReturnType<typeof serviceClient>,
