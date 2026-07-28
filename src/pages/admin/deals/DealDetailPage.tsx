@@ -82,6 +82,15 @@ export default function DealDetailPage() {
     if (id) fetchDeal();
   }, [id]);
 
+  // Deep-link support: /admin/deals/:id#documents lands straight on that tab.
+  // The Playbooks bank line/chip links here for the full Plaid panel.
+  useEffect(() => {
+    const h = window.location.hash.replace("#", "");
+    if (["overview", "underwriting", "submissions", "documents", "activity", "notes"].includes(h)) {
+      setActiveTab(h as typeof activeTab);
+    }
+  }, []);
+
   useEffect(() => {
     listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
   }, []);

@@ -59,6 +59,7 @@ import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffDropFlags, setHandoffDropFlag, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
+import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useSession } from "../../context/SessionContext";
@@ -1340,7 +1341,7 @@ function DocsBackChips({ groups }: { groups: DocGroup[] | null }) {
   );
 }
 
-function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; customerId: string }) {
+function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; ghlContactId: string; customerId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<GhlDoc[]>([]);
@@ -1354,6 +1355,10 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
   // showed GHL e-sign docs — one question ("what came back?") must have ONE
   // answer, so everything on file renders here too.
   const [appDocs, setAppDocs] = useState<Array<{ id: string; filename: string; document_type: string; status: string; storage_path: string; created_at: string }>>([]);
+  // Bank connection (Plaid) — Playbooks is the owner's cockpit, so "did the bank
+  // connect?" has to be answerable HERE, not only on the deal-detail Documents
+  // tab. Shared query; a line renders when there's a connection.
+  const { item: bank } = useDealPlaidItem(dealId, customerId);
 
   async function load() {
     setLoading(true);
@@ -1404,6 +1409,26 @@ function DocsBackPanel({ ghlContactId, customerId }: { ghlContactId: string; cus
         </span>
         <button type="button" onClick={load} className="text-[11px] text-ocean-blue hover:underline">↻ Refresh</button>
       </div>
+      {/* Bank connection — an active Plaid link means statements stop being a
+          chase; the full panel (Pull now, per-account detail) lives on the deal
+          Documents tab, one click away. */}
+      {bank && bank.status === "active" && (
+        <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-900/20 px-2.5 py-1.5">
+          <span className="text-[11px] text-emerald-800 dark:text-emerald-200 min-w-0">
+            🏦 <span className="font-semibold">Bank connected</span>
+            {bank.institution_name ? ` — ${bank.institution_name}` : ""} ·{" "}
+            <span className="font-semibold">{(bank.transactions_count ?? 0).toLocaleString()}</span> transactions
+            {bank.last_pull_at ? ` · last pull ${dateTimeET(bank.last_pull_at)}` : ""}
+          </span>
+          <Link
+            to={`/admin/deals/${dealId}#documents`}
+            className="text-[11px] text-ocean-blue hover:underline shrink-0"
+            title="Open the deal's Documents tab for the full bank panel (Pull now, per-account detail)"
+          >
+            full panel →
+          </Link>
+        </div>
+      )}
       {loading ? (
         <p className="text-xs text-gray-400">Checking GHL…</p>
       ) : error ? (
@@ -2083,16 +2108,32 @@ function HandoffDropBarChip({ deal }: { deal: DealWithCustomer }) {
   );
 }
 
-// ── One-tap "🏦 Connect bank" for the sticky deal bar ──
-// The Connect-Bank link used to hide inside the Send-docs dropdown; the owner
-// couldn't find it. This surfaces it as a first-class chip: one tap mints the
-// tokenized /connect-bank link (shared helper, same path the menu uses) and
-// copies it, with an inline "link copied ✓" flash. Non-destructive copy → no
-// armed two-step, no popups. Text it to the merchant; they verify revenue in ~60s.
-function ConnectBankBarChip({ dealId }: { dealId: string }) {
+// ── "🏦 Connect bank" / "🏦 {bank} ✓" for the sticky deal bar ──
+// Two states in one chip. NOT connected: the Connect-Bank link used to hide
+// inside the Send-docs dropdown; the owner couldn't find it, so this surfaces it
+// as a first-class action — one tap mints the tokenized /connect-bank link
+// (shared helper, same path the menu uses) and copies it, with an inline "link
+// copied ✓" flash (non-destructive copy → no armed two-step, no popups).
+// CONNECTED: a compact green chip naming the institution, linking to the deal's
+// Documents tab for the full Plaid panel — so the owner sees the bank right on
+// his cockpit, not only on deal detail.
+function ConnectBankBarChip({ dealId, customerId }: { dealId: string; customerId: string | null }) {
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState(false);
   const [err, setErr] = useState(false);
+  const { item: bank } = useDealPlaidItem(dealId, customerId);
+
+  if (bank && bank.status === "active") {
+    return (
+      <Link
+        to={`/admin/deals/${dealId}#documents`}
+        title={`Bank connected via Plaid${bank.institution_name ? ` — ${bank.institution_name}` : ""} · ${(bank.transactions_count ?? 0).toLocaleString()} transactions. Opens the full bank panel.`}
+        className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-300 dark:bg-emerald-900/20 dark:hover:bg-emerald-900/40"
+      >
+        🏦 {bank.institution_name || "Bank"} ✓
+      </Link>
+    );
+  }
 
   const copy = async () => {
     if (busy) return;
@@ -2349,7 +2390,7 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {/* Connect-Bank link as a FIRST-CLASS chip (it also lives in Send
                   docs, but was too buried to find) — one tap mints + copies the
                   link to text; verifies revenue in ~60s. */}
-              <ConnectBankBarChip dealId={deal.id} />
+              <ConnectBankBarChip dealId={deal.id} customerId={deal.customer_id} />
               {/* Signature status at a glance — did they sign the disclosure + the
                   application? Fed by the bar's single ghl-docs-status fetch above. */}
               {deal.ghl_contact_id && <DocsBackChips groups={docGroups} />}
@@ -3462,7 +3503,7 @@ function StepCard({
 
         {/* Live doc status — what's signed + what they uploaded, straight from GHL */}
         {(step.stageKey === "application_sent" || step.stageKey === "bank_statements") && interactive && deal?.ghl_contact_id && (
-          <DocsBackPanel ghlContactId={deal.ghl_contact_id} customerId={deal.customer_id} />
+          <DocsBackPanel dealId={deal.id} ghlContactId={deal.ghl_contact_id} customerId={deal.customer_id} />
         )}
 
         {/* Real dials through GHL/VibeReach — audited call history. Shown on the

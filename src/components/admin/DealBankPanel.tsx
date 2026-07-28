@@ -7,17 +7,13 @@ import {
 import supabase from "../../supabase";
 import { parseEdgeError } from "../../lib/edgeError";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
+import { getDealPlaidItem } from "../../services/portalService";
 import type { PlaidItem, PlaidItemStatus } from "../../services/portalService";
 
 interface Props {
   dealId: string;
   customerId: string | null;
 }
-
-const PLAID_ITEM_COLUMNS =
-  "id, customer_id, deal_id, item_id, institution_name, environment, status, " +
-  "error_code, error_message, accounts, last_pull_at, transactions_count, " +
-  "statements_count, created_at";
 
 const STATUS_CHIP: Record<PlaidItemStatus, { label: string; cls: string }> = {
   active: { label: "active", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
@@ -67,24 +63,9 @@ export default function DealBankPanel({ dealId, customerId }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     // Prefer a connection attached to this deal; fall back to one on the customer
-    // (a merchant may have linked before the deal was created). Active wins, else newest.
-    let rows: PlaidItem[] = [];
-    const byDeal = await supabase
-      .from("plaid_items")
-      .select(PLAID_ITEM_COLUMNS)
-      .eq("deal_id", dealId)
-      .order("created_at", { ascending: false });
-    if (!byDeal.error && byDeal.data) rows = byDeal.data as unknown as PlaidItem[];
-
-    if (rows.length === 0 && customerId) {
-      const byCust = await supabase
-        .from("plaid_items")
-        .select(PLAID_ITEM_COLUMNS)
-        .eq("customer_id", customerId)
-        .order("created_at", { ascending: false });
-      if (!byCust.error && byCust.data) rows = byCust.data as unknown as PlaidItem[];
-    }
-    setItem(rows.find((r) => r.status === "active") ?? rows[0] ?? null);
+    // (a merchant may have linked before the deal was created). Shared query so
+    // this panel and the Playbooks bank affordances never disagree.
+    setItem(await getDealPlaidItem(dealId, customerId));
     setLoading(false);
   }, [dealId, customerId]);
 

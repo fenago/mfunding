@@ -18,6 +18,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
+import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
 import type { DealWithCustomer } from "../../types/deals";
 
 // customer_document_type slugs shown as checklist rows, with friendly labels.
@@ -50,6 +51,12 @@ export default function DocumentChecklist({
   // slug → human hints of what detection found on record ("signed in GHL", etc.).
   const [hints, setHints] = useState<Record<string, string[]>>({});
   const seededRef = useRef(false);
+  // A live Plaid connection means the merchant's transactions are on file — a
+  // HINT on the Bank statements row (never an auto-tick: statement PDFs are a
+  // distinct artifact until the Statements product is enabled, and the closer
+  // still owns the checkbox that flips funder availability).
+  const { item: bank } = useDealPlaidItem(deal.id, deal.customer_id);
+  const plaidConnected = bank?.status === "active";
 
   // Keep local state in sync if the deal is swapped underneath us.
   useEffect(() => {
@@ -201,6 +208,11 @@ export default function DocumentChecklist({
                     {rowHints.length > 0 && (
                       <span className="text-[11px] text-gray-400 truncate">
                         · detected: {rowHints.join("; ")}
+                      </span>
+                    )}
+                    {row.slug === "bank_statement" && plaidConnected && (
+                      <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 truncate">
+                        · 🏦 bank connected via Plaid — transactions on file
                       </span>
                     )}
                   </label>

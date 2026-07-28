@@ -295,6 +295,38 @@ export async function getMyPlaidItem(customerId: string): Promise<PlaidItem | nu
   return rows.find((r) => r.status === "active") ?? rows[0] ?? null;
 }
 
+/** Staff view of a DEAL's bank connection. Prefer a link attached to THIS deal;
+ *  fall back to one on the customer (a merchant may have linked before the deal
+ *  existed). Active wins, else newest. This is the single source every admin
+ *  bank affordance reads — DealBankPanel, the Playbooks context-bar chip, the
+ *  Docs-back line — so they can never disagree about "is the bank connected?". */
+export async function getDealPlaidItem(
+  dealId: string,
+  customerId: string | null,
+): Promise<PlaidItem | null> {
+  let rows: PlaidItem[] = [];
+  const byDeal = await supabase
+    .from("plaid_items")
+    .select(PLAID_ITEM_COLUMNS)
+    .eq("deal_id", dealId)
+    .order("created_at", { ascending: false });
+  if (byDeal.error) {
+    if (isTableMissing(byDeal.error)) return null;
+  } else if (byDeal.data) {
+    rows = byDeal.data as unknown as PlaidItem[];
+  }
+
+  if (rows.length === 0 && customerId) {
+    const byCust = await supabase
+      .from("plaid_items")
+      .select(PLAID_ITEM_COLUMNS)
+      .eq("customer_id", customerId)
+      .order("created_at", { ascending: false });
+    if (!byCust.error && byCust.data) rows = byCust.data as unknown as PlaidItem[];
+  }
+  return rows.find((r) => r.status === "active") ?? rows[0] ?? null;
+}
+
 // ── Anonymized funder submissions (get_my_deal_submissions) ───────────────────
 // Merchant-safe view of where their file stands with funding partners. Partner
 // identities are anonymized server-side ("Funding Partner A"...). Offer fields
