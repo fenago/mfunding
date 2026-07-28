@@ -596,7 +596,8 @@ function ReplacementEligible({ eligible, suspects, win }: { eligible: EligibleRo
             Replacement-eligible ({eligible.length})
           </h5>
           <p className="text-[11px] text-red-700/80 dark:text-red-300/70">
-            Defensible failures — closer-flagged handoff drops, no-call misses, answered-then-kicked, voicemail.
+            <b>Live transfers only</b> — closer-flagged handoff drops, no-call misses, answered-then-kicked, voicemail.
+            (Real-time appointments are a callback model — no inbound call is expected — so they're never counted here.)
             Send these to the vendor to demand <b>replacement transfers</b> (not refunds).
             {suspects > 0 && <> {suspects} metadata suspect{suspects === 1 ? "" : "s"} are held back below — have Carlos flag any real ones on the call.</>}
           </p>

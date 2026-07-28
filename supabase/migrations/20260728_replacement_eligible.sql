@@ -11,6 +11,12 @@
 -- "review → flag if confirmed" so Carlos can one-tap-promote a real one via the
 -- disposition chip. The eligible + suspects arrays are returned in the reconcile
 -- jsonb, so they persist in call_audit_runs.totals.reconciliation for every run.
+--
+-- SCOPE — LIVE TRANSFERS ONLY. Eligibility is restricted to kind='live_transfer'.
+-- Real-time appointments (realtime_appt) are a CALLBACK model — no inbound call is
+-- expected, so their `no_call` is normal, not a failure — and Synergy only owes
+-- replacements on live transfers that failed at handoff. Counting realtime no-calls
+-- inflated the list (a week showed 35 when only 1 was a real live-transfer miss).
 create or replace function public.call_audit_reconcile(
   p_run_id uuid,
   p_from   timestamptz,
@@ -77,7 +83,9 @@ as $$
         when 'voicemail'               then 'voicemail'
         else null
       end as evidence,
-      (bucket in ('disconnected_at_handoff','no_call','answered_then_kicked','voicemail')) as eligible
+      -- Live transfers only — realtime_appt is a callback model (no inbound expected).
+      (kind = 'live_transfer'
+       and bucket in ('disconnected_at_handoff','no_call','answered_then_kicked','voicemail')) as eligible
     from matched
   )
   select jsonb_build_object(
