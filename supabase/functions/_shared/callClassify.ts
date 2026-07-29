@@ -32,7 +32,8 @@ export type CallClass =
   | "transcription_failed"
   | "suspected_instant_drop"
   | "short_call_unverified"
-  | "disconnected_at_handoff";
+  | "disconnected_at_handoff"
+  | "internal_test";
 
 export interface ClassifyInput {
   hasRecording: boolean;
@@ -163,4 +164,5 @@ export const CALL_CLASS_LABELS: Record<CallClass, string> = {
   suspected_instant_drop: "Suspected instant drop",
   short_call_unverified: "Unverified (no transcript)",
   disconnected_at_handoff: "Disconnected at handoff",
+  internal_test: "Internal (team phone)",
 };

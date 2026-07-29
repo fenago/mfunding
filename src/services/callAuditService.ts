@@ -23,6 +23,7 @@ export type CallClass =
   | "suspected_instant_drop"
   | "short_call_unverified"
   | "disconnected_at_handoff" // human ground truth — closer flagged the handoff drop
+  | "internal_test" // call to/from a team phone — excluded from the drop picture
   | "pending";
 
 export interface CallAuditRun {
@@ -55,6 +56,7 @@ export interface CallAuditTotals {
   no_recording?: number;
   transcription_failed?: number;
   closer_flagged_applied?: number; // rows this run overrode from a disposition
+  internal_test?: number; // calls to/from a team phone — excluded from the drop picture
   transcription_available?: boolean; // false = no valid Gemini key; classified from metadata only
   gaps?: string[];
   reconciliation?: ReconResult;
@@ -174,6 +176,7 @@ export const CALL_CLASS_LABELS: Record<CallClass, string> = {
   transcription_failed: "Transcription failed",
   suspected_instant_drop: "Suspected instant drop",
   short_call_unverified: "Unverified (no transcript)",
+  internal_test: "Internal (team phone)",
   pending: "Pending…",
 };
 

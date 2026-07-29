@@ -41,6 +41,8 @@ const CLASS_CHIP: Record<CallClass, string> = {
   no_recording: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400",
   end_teardown_cosmetic: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
   clean: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+  // Team-phone calls — muted, explicitly "not a merchant drop".
+  internal_test: "bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500 line-through",
   pending: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400",
 };
 
@@ -383,7 +385,7 @@ function CallBreakdown({ t }: { t: CallAuditRun["totals"] }) {
           <Kpi label="Mid-call drops" value={available ? `${t.mid_call_drop ?? 0}` : "—"} tone={(t.mid_call_drop ?? 0) > 0 ? "warn" : "neutral"} sub={available ? "dropped after 90s" : "needs transcription key"} />
           <Kpi label="Teardown (cosmetic)" value={available ? `${t.end_teardown_cosmetic ?? 0}` : "—"} sub={available ? "normal hang-up" : "needs transcription key"} />
           <Kpi label="Clean" value={available ? `${t.clean ?? 0}` : "—"} tone={(t.clean ?? 0) > 0 ? "good" : "neutral"} sub={available ? "no drop language" : "needs transcription key"} />
-          <Kpi label="No recording" value={`${t.no_recording ?? 0}`} sub="nothing to hear" />
+          <Kpi label="Internal (team) tests" value={`${t.internal_test ?? 0}`} sub="our own phones — excluded from drops" />
         </div>
       )}
     </div>

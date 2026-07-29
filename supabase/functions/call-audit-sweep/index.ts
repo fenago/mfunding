@@ -432,6 +432,17 @@ async function finalizeTotals(
     cursor.gaps.push(`disposition override failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // Internal team phones are not merchant drops: reclassify calls whose counterparty is
+  // one of our own numbers (team cells + corp line) to 'internal_test', so they never
+  // count as suspected drops, KPI failures, trend spikes, or transfer matches.
+  let internalCalls = 0;
+  try {
+    const { data: intl } = await db.rpc("call_audit_apply_internal", { p_run_id: runId });
+    internalCalls = typeof intl === "number" ? intl : 0;
+  } catch (e) {
+    cursor.gaps.push(`internal-number exclusion failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   const { data: rows } = await db.from("call_audit_calls")
     .select("classification, has_recording, direction").eq("run_id", runId);
   const byClass: Record<string, number> = {};
@@ -459,6 +470,7 @@ async function finalizeTotals(
     no_recording: byClass["no_recording"] ?? 0,
     transcription_failed: byClass["transcription_failed"] ?? 0,
     closer_flagged_applied: closerFlagged, // rows overridden by a disposition this run
+    internal_test: byClass["internal_test"] ?? internalCalls, // team-phone calls excluded from the drop picture
     transcription_available: cursor.transcriptionAvailable ?? false,
     gaps: cursor.gaps,
   };
