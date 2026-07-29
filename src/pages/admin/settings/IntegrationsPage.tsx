@@ -8,6 +8,7 @@ import {
 } from "../../../services/integrationService";
 import { useUserProfile } from "../../../context/UserProfileContext";
 import AIProviderPanel from "./AIProviderPanel";
+import PlaidStatusPanel from "./PlaidStatusPanel";
 
 const WEBHOOK_URL = "https://ehibjeonqpqskhcvizow.supabase.co/functions/v1/ghl-webhook";
 const GHL_LOCATION = "t7NmVR4WCy927j4Zon4b (MFunding.net)";
@@ -66,6 +67,9 @@ export default function IntegrationsPage() {
 
       {/* AI provider (super_admin only) */}
       {isSuperAdmin && <AIProviderPanel />}
+
+      {/* Plaid integration status (super_admin only) */}
+      {isSuperAdmin && <PlaidStatusPanel />}
 
       {/* GHL connection */}
       <Card title="GoHighLevel Connection"

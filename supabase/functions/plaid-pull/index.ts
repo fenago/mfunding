@@ -19,7 +19,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
+import { corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact } from "../_shared/ghl.ts";
 import { getPlaidConfig, getPlaidSettings, plaidFetch, type PlaidConfig, type PlaidEnv } from "../_shared/plaid.ts";
 
 const DOC_BUCKET = "customer-documents";
@@ -130,6 +130,15 @@ Deno.serve(async (req) => {
     statementsCount = st.saved;
     bankStatementDocMade = st.saved > 0;
     notes.push(st.note);
+
+    // AUTO-DETECT: /statements/list SUCCEEDING means Plaid has enabled the Statements
+    // product on our access (it returns INVALID_PRODUCT until then). We piggyback on
+    // the call the pull already makes — NO extra API calls, NO cost (Statements bills
+    // on link-token creation, which we never do here). The first success flips the
+    // recorded status and alerts the owner.
+    if (statementsAvailable) {
+      await recordStatementsEnabled(db, notes, customerId);
+    }
   }
 
   // ── 4) Update the item row ──
@@ -275,6 +284,62 @@ async function downloadStatement(cfg: PlaidConfig, accessToken: string, statemen
     const buf = new Uint8Array(await res.arrayBuffer());
     return buf.length ? buf : null;
   } catch { return null; }
+}
+
+const OWNER_EMAIL = "socrates73@gmail.com";
+const FROM_EMAIL = "sales@send.mfunding.net"; // company dedicated sending domain
+
+/** First-success handler for the Statements product. Idempotent: if plaid_status
+ * already records statements=enabled, does nothing. On the transition it stamps the
+ * status ledger, writes an audit note, and best-effort emails the owner. NEVER throws
+ * — a failure here must not fail the pull. */
+async function recordStatementsEnabled(db: SupabaseClient, notes: string[], customerId: string): Promise<void> {
+  try {
+    const { data: row } = await db.from("platform_settings").select("value").eq("key", "plaid_status").maybeSingle();
+    const value = (row?.value ?? {}) as {
+      products?: Record<string, { status?: string; date?: string | null }>;
+      [k: string]: unknown;
+    };
+    const products = value.products ?? {};
+    if (products.statements?.status === "enabled") return; // already recorded — nothing to do
+
+    const today = new Date().toISOString().slice(0, 10);
+    const nextValue = {
+      ...value,
+      products: { ...products, statements: { status: "enabled", date: today } },
+    };
+    const { error: upErr } = await db.from("platform_settings")
+      .upsert({ key: "plaid_status", value: nextValue, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    if (upErr) { notes.push(`statements enablement detected but status write failed: ${upErr.message}`); return; }
+    notes.push("STATEMENTS PRODUCT NOW ENABLED — recorded in plaid_status");
+
+    // Audit note (activity_log requires interaction_type 'note'; 'system' is invalid).
+    await db.from("activity_log").insert({
+      entity_type: "customer",
+      entity_id: customerId,
+      interaction_type: "note",
+      subject: "plaid:statements-enabled",
+      content: `Plaid enabled the Statements product on our access (auto-detected via /statements/list on ${today}). Statement PDFs will now be filed as bank_statement docs automatically.`,
+    }).then(() => {}, () => {});
+
+    await emailOwnerStatementsEnabled(db).catch(() => {});
+  } catch (e) {
+    notes.push(`statements auto-detect error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Best-effort owner email via GHL (same path system-health-check uses). Never throws. */
+async function emailOwnerStatementsEnabled(db: SupabaseClient): Promise<void> {
+  const cfg = await getGhlConfig(db);
+  const up = await upsertContact(cfg, { email: OWNER_EMAIL, firstName: "MFunding", lastName: "Owner" });
+  const contactId = up.data?.contact?.id;
+  if (!contactId) return;
+  const html =
+    "<p>Plaid has <strong>enabled the Statements product</strong> on our production access.</p>" +
+    "<p>plaid-pull auto-detected this on its most recent sync (a <code>/statements/list</code> call succeeded for the first time). " +
+    "Statement PDFs are now filed automatically as bank statements and fed to the underwriter — no action needed.</p>" +
+    "<p>Recorded on the Integrations page: /admin/settings/integrations.</p>";
+  await sendEmailToContact(cfg, contactId, "Plaid Statements product is now enabled", html, { emailFrom: FROM_EMAIL });
 }
 
 /** Re-run the AI underwriter for the item's deal (or the customer's latest). Mirrors
