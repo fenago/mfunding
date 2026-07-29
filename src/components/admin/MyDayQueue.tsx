@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { getOpenDealsForQueue, updateDealStatus, fetchHandoffDropFlags, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal } from "../../services/dealService";
+import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import { dateKeyET, timeET } from "../../utils/time";
@@ -603,18 +603,23 @@ function handoffState(d: QueueDeal, now: number): "captured" | "missed" | null {
   return "missed";
 }
 
-// ── One-tap "⚡ Dropped at handoff", straight from the card ──
+// ── One-tap dropped-handoff flag, straight from the card ──
 // The fast path to the same ground truth the CallHistoryPanel chip writes
 // (disposition `disconnected_at_handoff` on the inbound transfer call), with zero
-// navigation. Optimistic: the tag flips instantly, the flag round-trips in the
-// background, and a failure silently reverts. Undo = tap the red tag again. When
-// flagged, this REPLACES the machine captured/missed chip — the human flag is the
-// truth of record, exactly as it overrides the audio guess in the audit.
+// navigation. Two visually UNMISTAKABLE states so nobody reads the action as a claim:
+//   · UNFLAGGED = a ghost/outline QUESTION, "⚡ Flag drop" (tight), asking the closer
+//     to grade — never a status. De-emphasized to a muted ghost when a real inbound
+//     call already ran ≥90s (a conversation happened; a 6-min call rarely dropped).
+//   · FLAGGED  = a solid-red STATUS tag "⚡ Dropped at handoff", tap to undo.
+// Optimistic: the tag flips instantly, the flag round-trips in the background, a
+// failure silently reverts. When flagged it REPLACES the machine captured/missed chip.
 function HandoffDropControl({
-  deal, flagged, onFlag,
+  deal, flagged, deEmphasize, onFlag,
 }: {
   deal: QueueDeal;
   flagged: boolean;
+  /** A real inbound call already ran ≥90s — demote the unflagged action. */
+  deEmphasize: boolean;
   onFlag: (dealId: string, val: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -657,14 +662,16 @@ function HandoffDropControl({
       type="button"
       onClick={(e) => { e.stopPropagation(); void toggle(); }}
       disabled={busy}
-      title="Flag this warm handoff as dropped — one tap, no navigation. Grades the inbound transfer call disconnected-at-handoff for the audit."
-      className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 border transition-colors disabled:opacity-60 ${
+      title="Did the line drop at the warm handoff? Tap to flag it — grades the inbound transfer call disconnected-at-handoff for the audit."
+      className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 border border-dashed transition-colors disabled:opacity-50 ${
         err
-          ? "border-red-400 text-red-600 dark:text-red-400"
-          : "border-red-200 text-red-500 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
+          ? "border-red-400 text-red-600 dark:text-red-400 font-medium"
+          : deEmphasize
+            ? "border-gray-200 text-gray-400 hover:border-red-200 hover:text-red-500 dark:border-gray-700 dark:text-gray-500"
+            : "border-red-200 text-red-500 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
       }`}
     >
-      {err ? "⚡ couldn't flag — retry" : busy ? "⚡ …" : "⚡ Dropped at handoff"}
+      {err ? "⚡ couldn't flag — retry" : busy ? "⚡ …" : "⚡ Flag drop"}
     </button>
   );
 }
@@ -674,13 +681,14 @@ type QueueItem = { deal: QueueDeal; u: Urgency };
 /** One work card. Unchanged from the single-list version — same tones, same SLA
  * countdown, same overdue flag, same onPick. Lifted out so both lanes render it. */
 function QueueCard({
-  deal, u, now, onPick, onTouched, flagged, onFlag,
+  deal, u, now, onPick, onTouched, flagged, longInbound, onFlag,
 }: QueueItem & {
   now: number;
   onPick: (d: QueueDeal) => void;
   onTouched: () => void;
-  /** Closer-flagged "dropped at handoff" — from the board's flag Set. */
+  /** Closer-flagged "dropped at handoff" + whether a real inbound call ran ≥90s. */
   flagged: boolean;
+  longInbound: boolean;
   onFlag: (dealId: string, val: boolean) => void;
 }) {
   const src = sourceStyle(deal);
@@ -912,7 +920,7 @@ function QueueCard({
             // Human flag is the truth of record — when set it REPLACES the machine
             // captured/missed chip (and is tappable to undo).
             if (isLive && flagged) {
-              return <HandoffDropControl deal={deal} flagged onFlag={onFlag} />;
+              return <HandoffDropControl deal={deal} flagged deEmphasize={longInbound} onFlag={onFlag} />;
             }
             const h = handoffState(deal, now);
             return (
@@ -934,7 +942,7 @@ function QueueCard({
                   </span>
                 )}
                 {/* The one-tap flag — the fast path, next to the transfer status. */}
-                {isLive && <HandoffDropControl deal={deal} flagged={false} onFlag={onFlag} />}
+                {isLive && <HandoffDropControl deal={deal} flagged={false} deEmphasize={longInbound} onFlag={onFlag} />}
               </>
             );
           })()}
@@ -950,7 +958,7 @@ function QueueCard({
 /** One lane: a labelled header with a count badge, then the lane's cards in rank
  * order (or its own empty state). */
 function LaneSection({
-  title, hint, icon, countTone, items, empty, now, onPick, onTouched, flaggedIds, onFlag,
+  title, hint, icon, countTone, items, empty, now, onPick, onTouched, handoff, onFlag,
 }: {
   title: string;
   hint: string;
@@ -962,8 +970,8 @@ function LaneSection({
   onPick: (d: QueueDeal) => void;
   /** Refetch after a closer logs a first touch, so the card leaves the lane at once. */
   onTouched: () => void;
-  /** Deal ids flagged "dropped at handoff", + the optimistic setter. */
-  flaggedIds: Set<string>;
+  /** Per-deal handoff state (flagged + long-inbound), + the optimistic setter. */
+  handoff: Map<string, HandoffState>;
   onFlag: (dealId: string, val: boolean) => void;
 }) {
   return (
@@ -978,18 +986,22 @@ function LaneSection({
         <p className="text-xs text-gray-400 dark:text-gray-500 italic pb-1">{empty}</p>
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
-          {items.map((it) => (
-            <QueueCard
-              key={it.deal.id}
-              deal={it.deal}
-              u={it.u}
-              now={now}
-              onPick={onPick}
-              onTouched={onTouched}
-              flagged={flaggedIds.has(it.deal.id)}
-              onFlag={onFlag}
-            />
-          ))}
+          {items.map((it) => {
+            const h = handoff.get(it.deal.id);
+            return (
+              <QueueCard
+                key={it.deal.id}
+                deal={it.deal}
+                u={it.u}
+                now={now}
+                onPick={onPick}
+                onTouched={onTouched}
+                flagged={h?.flagged ?? false}
+                longInbound={h?.longInbound ?? false}
+                onFlag={onFlag}
+              />
+            );
+          })}
         </div>
       )}
     </section>
@@ -1015,10 +1027,10 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   const [now, setNow] = useState(() => Date.now());
   // My Day is an accordion but DEFAULT EXPANDED.
   const [collapsed, setCollapsed] = useState(false);
-  // Deal ids flagged "⚡ dropped at handoff" (ground truth from the call ledger,
-  // read through a closer-safe RPC). Optimistic taps mutate this locally; each
+  // Per-deal handoff state (flagged + a real inbound call ≥90s), ground truth from
+  // the call ledger via a closer-safe RPC. Optimistic taps mutate this locally; each
   // load() reconciles it against the server.
-  const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set());
+  const [handoff, setHandoff] = useState<Map<string, HandoffState>>(new Map());
 
   const load = useCallback(() => {
     getOpenDealsForQueue()
@@ -1026,9 +1038,9 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         setDeals(d);
         // Only live transfers can carry a handoff flag — keep the read cheap.
         const ltIds = d.filter((x) => x.lead_source === "live_transfer").map((x) => x.id);
-        return fetchHandoffDropFlags(ltIds);
+        return fetchHandoffStates(ltIds);
       })
-      .then((flags) => setFlaggedIds(flags))
+      .then((states) => setHandoff(states))
       .catch(() => setDeals([]))
       .finally(() => {
         setLoading(false);
@@ -1037,11 +1049,12 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   }, []);
 
   // Optimistic flip of a single card's flag, so the tag reacts instantly; the next
-  // load() reconciles with the ledger.
+  // load() reconciles with the ledger. Preserves the deal's longInbound reading.
   const setFlagLocal = useCallback((dealId: string, val: boolean) => {
-    setFlaggedIds((prev) => {
-      const next = new Set(prev);
-      if (val) next.add(dealId); else next.delete(dealId);
+    setHandoff((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(dealId);
+      next.set(dealId, { flagged: val, longInbound: cur?.longInbound ?? false });
       return next;
     });
   }, []);
@@ -1139,11 +1152,11 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
       // "Missed handoff" catches BOTH the machine-guessed miss and a closer-flagged
       // "⚡ dropped at handoff" — one filter for every handoff that went wrong, rather
       // than a second near-identical chip.
-      if (needFilter === "missed_handoff" && handoffState(d, now) !== "missed" && !flaggedIds.has(d.id)) return false;
+      if (needFilter === "missed_handoff" && handoffState(d, now) !== "missed" && !handoff.get(d.id)?.flagged) return false;
       if (needFilter === "callback" && !d.callback_at) return false;
       return true;
     });
-  }, [baseItems, filtersActive, kindFilter, ageFilter, needFilter, now, flaggedIds]);
+  }, [baseItems, filtersActive, kindFilter, ageFilter, needFilter, now, handoff]);
 
   // Two lanes off the ONE classification. Rank ordering is preserved inside each
   // lane (items is already sorted; filter keeps that order).
@@ -1294,7 +1307,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 now={now}
                 onPick={onPick}
                 onTouched={load}
-                flaggedIds={flaggedIds}
+                handoff={handoff}
                 onFlag={setFlagLocal}
               />
             ) : (
@@ -1309,7 +1322,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 now={now}
                 onPick={onPick}
                 onTouched={load}
-                flaggedIds={flaggedIds}
+                handoff={handoff}
                 onFlag={setFlagLocal}
               />
             )

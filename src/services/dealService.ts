@@ -165,20 +165,26 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
 }
 
 /**
- * Which of these deals a closer/ops has flagged "⚡ disconnected at handoff".
- * RLS on the call ledger is ops-only, so this reads through a SECURITY DEFINER RPC
- * that gates on the same permission as the flag write (ops anywhere / closer owns
- * the deal). Returns a Set of deal ids so the board can tag them at a glance.
- * Best-effort: a failure returns an empty set rather than blanking the queue.
+ * Per-deal state for the "⚡ dropped at handoff" affordance: whether it's flagged,
+ * and whether a REAL inbound transfer call already ran ≥90s (a conversation, so the
+ * "call dropped?" action is de-emphasized). RLS on the call ledger is ops-only, so
+ * this reads through a SECURITY DEFINER RPC gated the same as the flag write (ops
+ * anywhere / closer owns the deal). Deals with no inbound row are simply absent from
+ * the map (→ not flagged, not long). Best-effort: a failure returns an empty map.
  */
-export async function fetchHandoffDropFlags(dealIds: string[]): Promise<Set<string>> {
-  if (dealIds.length === 0) return new Set();
-  const { data, error } = await supabase.rpc("deals_handoff_drop_flags", { p_deal_ids: dealIds });
+export interface HandoffState { flagged: boolean; longInbound: boolean }
+export async function fetchHandoffStates(dealIds: string[]): Promise<Map<string, HandoffState>> {
+  const out = new Map<string, HandoffState>();
+  if (dealIds.length === 0) return out;
+  const { data, error } = await supabase.rpc("deals_handoff_states", { p_deal_ids: dealIds });
   if (error) {
-    console.error("Error fetching handoff-drop flags:", error);
-    return new Set();
+    console.error("Error fetching handoff states:", error);
+    return out;
   }
-  return new Set(((data as string[] | null) ?? []));
+  for (const r of (data as { deal_id: string; flagged: boolean; long_inbound: boolean }[] | null) ?? []) {
+    out.set(r.deal_id, { flagged: !!r.flagged, longInbound: !!r.long_inbound });
+  }
+  return out;
 }
 
 /**

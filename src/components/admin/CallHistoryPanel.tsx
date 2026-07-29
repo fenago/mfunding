@@ -84,9 +84,12 @@ const TONE_CLASS: Record<"good" | "warn" | "bad", string> = {
 //     "⚡ Disconnected at handoff" — the closer's human counterpart to the audit's
 //     machine "missed handoff" guess. That flag becomes the Call/Transfer Quality
 //     audit's ground truth (overrides the audio class).
-interface Dispo { key: string; emoji: string; label: string; chip: string; }
+// `label` names the STATUS once graded (the collapsed red tag reads "dropped at
+// handoff"); `actionLabel`, when set, is what the ungraded ACTION chip says instead —
+// interrogative, so it can't be misread as the system asserting the call dropped.
+interface Dispo { key: string; emoji: string; label: string; chip: string; actionLabel?: string; }
 const D = {
-  disconnected_at_handoff: { key: "disconnected_at_handoff", emoji: "⚡", label: "Disconnected at handoff", chip: "bg-red-600 text-white dark:bg-red-600 dark:text-white" },
+  disconnected_at_handoff: { key: "disconnected_at_handoff", emoji: "⚡", label: "Dropped at handoff", actionLabel: "Call dropped?", chip: "bg-red-600 text-white dark:bg-red-600 dark:text-white" },
   spoke:           { key: "spoke",           emoji: "👤", label: "Spoke",           chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
   voicemail:       { key: "voicemail",       emoji: "📼", label: "Voicemail",       chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
   no_answer:       { key: "no_answer",       emoji: "📵", label: "No answer",       chip: "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300" },
@@ -118,8 +121,15 @@ function DispositionControl({
   const [error, setError] = useState<string | null>(null);
 
   const inbound = call.direction === "inbound";
-  const primary = inbound ? INBOUND_DISPOSITIONS : OUTBOUND_DISPOSITIONS;
-  const more = inbound ? INBOUND_MORE : OUTBOUND_MORE;
+  let primary = inbound ? INBOUND_DISPOSITIONS : OUTBOUND_DISPOSITIONS;
+  let more = inbound ? INBOUND_MORE : OUTBOUND_MORE;
+  // Smart de-emphasis: an ungraded inbound transfer that already ran ≥90s is a
+  // conversation, not a drop — push "call dropped?" behind the overflow so it's
+  // reachable for re-grading without shouting on a 6-minute call.
+  if (inbound && !call.disposition && (call.durationSeconds ?? 0) >= 90) {
+    primary = INBOUND_DISPOSITIONS.filter((d) => d.key !== "disconnected_at_handoff");
+    more = [D.disconnected_at_handoff, ...INBOUND_MORE];
+  }
 
   const current = call.disposition ? DISPO_BY_KEY[call.disposition] : null;
   const showChips = editing || !current;
@@ -176,7 +186,7 @@ function DispositionControl({
                 : "border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
             } ${saving === d.key ? "opacity-60" : ""}`}
           >
-            <span>{d.emoji}</span>{d.label}
+            <span>{d.emoji}</span>{d.actionLabel ?? d.label}
           </button>
         );
       })}

@@ -57,7 +57,7 @@ import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffDropFlags, setHandoffDropFlag, type CloserOption } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
 import supabase from "../../supabase";
@@ -2040,23 +2040,33 @@ function ProductsChips({ deal, onRefresh }: { deal: DealWithCustomer; onRefresh:
   );
 }
 
-// ── One-tap "⚡ Dropped at handoff" for the sticky deal bar ──
-// The same fast path as the My Day card, at the top of the open deal: flag a dropped
-// warm handoff without leaving the playbook. Self-contained — fetches its own flagged
-// state (ghl_call_log RLS is ops-only, so it reads through the closer-safe RPC), then
-// toggles via the shared setHandoffDropFlag helper (mirror inbound calls → grade the
-// real transfer call, or a deal-level fallback). Optimistic red pill + "✓" flash,
-// tap-to-undo, no popups. Rendered only for live transfers (caller-gated). Same
-// disposition as the card + CallHistoryPanel, so the audit integration is unchanged.
+// ── One-tap dropped-handoff flag for the sticky deal bar ──
+// The same fast path as the My Day card, at the top of the open deal. Two visually
+// UNMISTAKABLE states so the action never reads as a status claim:
+//   · UNFLAGGED = a dashed-outline QUESTION, "⚡ Call dropped? Tap to flag", asking
+//     the closer to grade. Muted to a ghost when a real inbound call already ran
+//     ≥90s (a conversation happened; a 6-min call rarely dropped) — reachable, quiet.
+//   · FLAGGED  = a solid-red STATUS pill "⚡ Dropped at handoff", tap to undo.
+// Self-contained: reads its own state (flagged + long-inbound) through the closer-safe
+// RPC (ghl_call_log RLS is ops-only), toggles via the shared setHandoffDropFlag helper
+// (mirror inbound calls → grade the real transfer call, or a deal-level fallback).
+// Optimistic + "✓" flash, no popups. Same disposition as the card + CallHistoryPanel,
+// so the audit integration is unchanged.
 function HandoffDropBarChip({ deal }: { deal: DealWithCustomer }) {
   const [flagged, setFlagged] = useState(false);
+  const [longInbound, setLongInbound] = useState(false);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState(false);
   const [err, setErr] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetchHandoffDropFlags([deal.id]).then((s) => { if (!cancelled) setFlagged(s.has(deal.id)); });
+    fetchHandoffStates([deal.id]).then((m) => {
+      if (cancelled) return;
+      const st = m.get(deal.id);
+      setFlagged(st?.flagged ?? false);
+      setLongInbound(st?.longInbound ?? false);
+    });
     return () => { cancelled = true; };
   }, [deal.id]);
 
@@ -2096,14 +2106,16 @@ function HandoffDropBarChip({ deal }: { deal: DealWithCustomer }) {
       type="button"
       onClick={toggle}
       disabled={busy}
-      title="Flag this warm handoff as dropped — one tap, no navigation. Grades the inbound transfer call disconnected-at-handoff for the audit."
-      className={`inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-60 ${
+      title="Did the line drop at the warm handoff? Tap to flag it — grades the inbound transfer call disconnected-at-handoff for the audit."
+      className={`inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-full border border-dashed transition-colors disabled:opacity-50 ${
         err
-          ? "border-red-400 text-red-600 dark:text-red-400"
-          : "border-red-200 text-red-500 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
+          ? "border-red-400 text-red-600 dark:text-red-400 font-medium"
+          : longInbound
+            ? "border-gray-200 text-gray-400 hover:border-red-200 hover:text-red-500 dark:border-gray-700 dark:text-gray-500"
+            : "border-red-200 text-red-500 hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-900/20"
       }`}
     >
-      {err ? "⚡ couldn't flag — retry" : busy ? "⚡ …" : "⚡ Dropped at handoff"}
+      {err ? "⚡ couldn't flag — retry" : busy ? "⚡ …" : "⚡ Call dropped? Tap to flag"}
     </button>
   );
 }
