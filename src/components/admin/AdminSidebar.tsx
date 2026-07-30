@@ -102,6 +102,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/funder-matrix",
   "/admin/funder-contacts",
   "/admin/lender-catalog", // ADMIN-roled below, so pure closers still never see it
+  "/admin/rnd", // R&D game plan (roles: ADMIN) — Carlos manages the build-out too; pure closers excluded via roles
 ]);
 
 const navGroups: NavGroup[] = [
