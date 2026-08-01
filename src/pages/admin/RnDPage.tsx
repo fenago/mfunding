@@ -17,6 +17,11 @@ import {
   BuildingLibraryIcon,
   UserGroupIcon,
   CheckBadgeIcon,
+  RocketLaunchIcon,
+  ChatBubbleLeftRightIcon,
+  ChartBarIcon,
+  QueueListIcon,
+  ArrowRightCircleIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -34,7 +39,7 @@ type Status = "todo" | "doing" | "done" | "n_a";
 interface Content {
   who?: string;
   numbers?: string;
-  step?: number;
+  step?: number | string;
   cost?: string;
   detail?: string;
   body?: string;
@@ -78,6 +83,24 @@ interface Content {
   deals?: string;
   gross?: string;
   ownerHrs?: string;
+  // ── Setter Operation build plan (section prefix plan_) ──
+  phase?: string; // groups plan_phases tasks
+  stageNum?: number; // plan_pipeline stage order
+  stageName?: string;
+  color?: string; // plan_pipeline stage color key
+  handoff?: boolean; // marks the Bank Connected handoff point
+  trigger?: string; // plan_automations
+  action?: string; // plan_automations
+  amount?: string; // plan_econ cost table
+  total?: boolean; // marks a total / summary row
+  caveat?: boolean; // honesty caveat note
+  target?: string; // plan_kpis
+  tier?: string; // plan_kpis grouping
+  count?: string; // plan_funnel
+  script?: string; // plan_scripts verbatim line
+  draft?: boolean; // script/objection set pending owner-approved verbatim
+  ladder?: { label: string; text: string }[]; // plan_scripts resistance/fallback ladders
+  objections?: { q: string; a: string }[]; // plan_scripts objection bank
 }
 
 interface RndItem {
@@ -115,6 +138,31 @@ const STATUS_CHIP: Record<Status, { label: string; cls: string }> = {
     label: "N/A",
     cls: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700 line-through",
   },
+};
+
+/* Setter-pipeline stage colors — each of the 9 stages gets a distinct hue so the
+   pipeline reads at a glance (card tint + status dot). Keyed by content.color. */
+const STAGE_CARD: Record<string, string> = {
+  gray: "border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/60",
+  blue: "border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20",
+  teal: "border-teal-300 dark:border-teal-800 bg-teal-50 dark:bg-teal-900/20",
+  purple: "border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20",
+  orange: "border-orange-300 dark:border-orange-800 bg-orange-50 dark:bg-orange-900/20",
+  green: "border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20",
+  yellow: "border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20",
+  red: "border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20",
+  brown: "border-amber-700/50 dark:border-amber-900 bg-amber-100/50 dark:bg-amber-950/30",
+};
+const STAGE_DOT: Record<string, string> = {
+  gray: "bg-gray-400",
+  blue: "bg-blue-500",
+  teal: "bg-teal-500",
+  purple: "bg-purple-500",
+  orange: "bg-orange-500",
+  green: "bg-emerald-500",
+  yellow: "bg-amber-500",
+  red: "bg-rose-500",
+  brown: "bg-amber-700",
 };
 
 /* ---------------------------- shared bits --------------------------- */
@@ -618,6 +666,471 @@ function FunderOutreach() {
   );
 }
 
+/* One checkable step in the Setter build plan — step number badge, who-chip,
+   cost chip, detail, resource links, inline note. Reuses the shared status +
+   note controls so it behaves exactly like every other task on the page. */
+function PlanStepRow({
+  item,
+  onCycle,
+  onNote,
+}: {
+  item: RndItem;
+  onCycle: (i: RndItem) => void;
+  onNote: (i: RndItem, v: string) => void;
+}) {
+  const c = item.content;
+  const done = item.status === "done" || item.status === "n_a";
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-gray-100 dark:border-gray-700 p-3">
+      <span className="flex h-7 min-w-[2.25rem] shrink-0 items-center justify-center rounded-lg bg-ocean-blue/10 text-ocean-blue text-xs font-bold px-1">
+        {c.step}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`text-sm font-semibold ${
+              done ? "text-gray-400 dark:text-gray-500" : "text-gray-900 dark:text-white"
+            }`}
+          >
+            {item.label}
+          </span>
+          {c.who && (
+            <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-0.5 text-[11px] font-medium">
+              {c.who}
+            </span>
+          )}
+          {c.cost && <CostChip cost={c.cost} />}
+        </div>
+        {c.detail && (
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+            {c.detail}
+          </p>
+        )}
+        <div className="mt-1.5">
+          <ContactChips c={c} />
+        </div>
+        <InlineNote value={item.notes} onSave={(v) => onNote(item, v)} />
+      </div>
+      <StatusButton status={item.status} onCycle={() => onCycle(item)} />
+    </div>
+  );
+}
+
+/* The whole Setter Operation build plan — a NEW, parallel line. Rendered as a
+   prominent cluster right after This Week: a lead banner + guardrails, then the
+   phases (checkable), the 9-stage pipeline, and the automations / economics /
+   KPI / funnel tables. Reads plan_* sections; writes go through the same
+   optimistic cycle + note handlers as the rest of the page. */
+function SetterPlan({
+  bySection,
+  progressOf,
+  cycleStatus,
+  saveNote,
+}: {
+  bySection: Record<string, RndItem[]>;
+  progressOf: (section: string) => { done: number; total: number };
+  cycleStatus: (i: RndItem) => void;
+  saveNote: (i: RndItem, v: string) => void;
+}) {
+  const intro = (bySection["plan_intro"] ?? [])[0];
+  const guardrails = bySection["plan_guardrails"] ?? [];
+  const phases = bySection["plan_phases"] ?? [];
+  const pipeline = bySection["plan_pipeline"] ?? [];
+  const automations = bySection["plan_automations"] ?? [];
+  const scripts = bySection["plan_scripts"] ?? [];
+  const econRows = (bySection["plan_econ"] ?? []).filter((i) => i.kind === "metric");
+  const econNotes = (bySection["plan_econ"] ?? []).filter((i) => i.kind === "note");
+  const kpis = bySection["plan_kpis"] ?? [];
+  const funnel = bySection["plan_funnel"] ?? [];
+
+  if (!intro && phases.length === 0) return null; // section not seeded yet
+
+  // Group phase tasks by their content.phase, preserving sort order.
+  const phaseGroups: { name: string; items: RndItem[] }[] = [];
+  for (const it of phases) {
+    const name = it.content.phase ?? "Other";
+    let g = phaseGroups.find((x) => x.name === name);
+    if (!g) {
+      g = { name, items: [] };
+      phaseGroups.push(g);
+    }
+    g.items.push(it);
+  }
+
+  return (
+    <div className="rounded-2xl border-2 border-ocean-blue/40 dark:border-ocean-blue/50 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-4 space-y-4">
+      {/* Lead banner — always visible so the new line reads at a glance */}
+      <div className="flex items-start gap-3">
+        <RocketLaunchIcon className="w-7 h-7 shrink-0 text-ocean-blue" />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white">
+              Setter Operation — Build Plan
+            </h2>
+            <span className="inline-flex items-center gap-1 rounded-full bg-ocean-blue text-white px-2 py-0.5 text-[11px] font-bold">
+              NEW parallel line
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[11px] font-semibold">
+              <ExclamationTriangleIcon className="w-3 h-3" /> plan only — nothing built yet
+            </span>
+          </div>
+          {intro?.content.body && (
+            <p className="mt-1.5 text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+              {intro.content.body}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Parallel-build guardrails — hard rules */}
+      {guardrails.length > 0 && (
+        <div className="rounded-xl border border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-900/10 p-3">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-300 mb-2">
+            Parallel-build guardrails — do not break these
+          </p>
+          <ul className="space-y-1.5">
+            {guardrails.map((it, idx) => (
+              <li key={it.id} className="flex items-start gap-2">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-rose-600/15 text-rose-700 dark:text-rose-300 text-[11px] font-bold">
+                  {idx + 1}
+                </span>
+                <span className="text-xs text-gray-800 dark:text-gray-100 leading-relaxed">
+                  {it.label}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* PHASES 0–5 — checkable */}
+      <Section
+        title="Build Phases · 0 → 5"
+        subtitle="Decisions & purchases → GHL infra → app build → hiring → scripts → launch/scale. Tap a chip to move a step."
+        icon={BoltIcon}
+        progress={progressOf("plan_phases")}
+      >
+        <div className="space-y-4">
+          {phaseGroups.map((g) => (
+            <div key={g.name}>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-ocean-blue mb-2">
+                {g.name}
+              </p>
+              <div className="space-y-2">
+                {g.items.map((it) => (
+                  <PlanStepRow key={it.id} item={it} onCycle={cycleStatus} onNote={saveNote} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* THE SETTER PIPELINE — 9 colored stages */}
+      <Section
+        title="The SETTER Pipeline — 9 stages"
+        subtitle="An all-new GHL pipeline. Each stage a distinct color. Bank Connected = complete file → the only handoff into the existing business."
+        icon={QueueListIcon}
+      >
+        <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          {pipeline.map((it) => {
+            const c = it.content;
+            const key = c.color ?? "gray";
+            return (
+              <div
+                key={it.id}
+                className={`rounded-xl border p-3 ${STAGE_CARD[key] ?? STAGE_CARD.gray}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white text-[11px] font-bold ${
+                      STAGE_DOT[key] ?? STAGE_DOT.gray
+                    }`}
+                  >
+                    {c.stageNum}
+                  </span>
+                  <span className="text-sm font-bold text-gray-900 dark:text-white">
+                    {c.stageName}
+                  </span>
+                  {c.handoff && (
+                    <ArrowRightCircleIcon
+                      className="w-4 h-4 text-emerald-600 dark:text-emerald-400"
+                      title="Handoff point"
+                    />
+                  )}
+                </div>
+                <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+                  {c.definition}
+                </p>
+                {c.handoff && (
+                  <p className="mt-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    Handoff → main business pipeline
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      {/* PER-STAGE AUTOMATIONS — table */}
+      <Section
+        title="Per-Stage Automations"
+        subtitle="What fires at each stage. House rule: stage moves NEVER auto-send docs — the packet workflow is enrollment-only."
+        icon={BoltIcon}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                <th className="py-2 pr-3 font-semibold">Stage</th>
+                <th className="py-2 pr-3 font-semibold">Trigger</th>
+                <th className="py-2 font-semibold">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {automations.map((it) => (
+                <tr
+                  key={it.id}
+                  className={`border-t border-gray-100 dark:border-gray-700 align-top ${
+                    it.content.handoff ? "bg-emerald-50/50 dark:bg-emerald-900/10" : ""
+                  }`}
+                >
+                  <td className="py-2.5 pr-3 font-bold text-gray-900 dark:text-white whitespace-nowrap">
+                    {it.label}
+                  </td>
+                  <td className="py-2.5 pr-3 text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                    {it.content.trigger}
+                  </td>
+                  <td className="py-2.5 text-gray-700 dark:text-gray-300 leading-relaxed">
+                    {it.content.action}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      {/* SETTER SCRIPTS */}
+      <Section
+        title="Setter Scripts"
+        subtitle="Say-this lines + resistance/fallback ladders + the objection bank. Compliance: advance / working capital / funding — never “loan”."
+        icon={ChatBubbleLeftRightIcon}
+      >
+        <div className="space-y-3">
+          {scripts.map((it) => {
+            const c = it.content;
+            return (
+              <div
+                key={it.id}
+                className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-bold text-gray-900 dark:text-white">{it.label}</p>
+                  {c.draft && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[10px] font-semibold">
+                      <ExclamationTriangleIcon className="w-3 h-3" /> draft — owner to confirm verbatim
+                    </span>
+                  )}
+                </div>
+                {c.script && (
+                  <p className="mt-1.5 text-sm italic text-gray-700 dark:text-gray-300 leading-relaxed">
+                    “{c.script}”
+                  </p>
+                )}
+                {c.ladder && c.ladder.length > 0 && (
+                  <div className="mt-2 space-y-1.5">
+                    {c.ladder.map((rung, i) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <span className="mt-0.5 shrink-0 rounded-full bg-ocean-blue/10 text-ocean-blue px-2 py-0.5 text-[10px] font-bold">
+                          {rung.label}
+                        </span>
+                        <span className="text-xs italic text-gray-700 dark:text-gray-300 leading-relaxed">
+                          “{rung.text}”
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {c.objections && c.objections.length > 0 && (
+                  <div className="mt-2 space-y-2">
+                    {c.objections.map((o, i) => (
+                      <div
+                        key={i}
+                        className="rounded-md border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-2"
+                      >
+                        <p className="text-xs font-semibold text-gray-900 dark:text-white">
+                          “{o.q}”
+                        </p>
+                        <p className="mt-0.5 text-xs italic text-gray-600 dark:text-gray-400 leading-relaxed">
+                          → {o.a}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      {/* UNIT ECONOMICS — cost table + notes */}
+      <Section
+        title="Unit Economics"
+        subtitle="Monthly cost stack, the revenue math, and the honest caveat on the model's assumptions."
+        icon={ChartBarIcon}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                <th className="py-2 pr-3 font-semibold">Monthly cost</th>
+                <th className="py-2 font-semibold">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {econRows.map((it) => (
+                <tr
+                  key={it.id}
+                  className={`border-t border-gray-100 dark:border-gray-700 ${
+                    it.content.total ? "font-bold" : ""
+                  }`}
+                >
+                  <td
+                    className={`py-2.5 pr-3 ${
+                      it.content.total
+                        ? "text-gray-900 dark:text-white"
+                        : "text-gray-700 dark:text-gray-300"
+                    }`}
+                  >
+                    {it.label}
+                  </td>
+                  <td
+                    className={`py-2.5 whitespace-nowrap ${
+                      it.content.total
+                        ? "text-mint-green"
+                        : "text-gray-700 dark:text-gray-300"
+                    }`}
+                  >
+                    {it.content.amount}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-3 space-y-2">
+          {econNotes.map((it) => (
+            <div
+              key={it.id}
+              className={`rounded-lg border px-3 py-2 ${
+                it.content.caveat
+                  ? "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20"
+                  : "border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40"
+              }`}
+            >
+              <p
+                className={`text-xs leading-relaxed ${
+                  it.content.caveat
+                    ? "text-amber-800 dark:text-amber-200"
+                    : "text-gray-600 dark:text-gray-400"
+                }`}
+              >
+                <span className="font-semibold">{it.label}:</span> {it.content.body}
+              </p>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* KPIs & TARGETS — table */}
+      <Section
+        title="KPIs & Targets"
+        subtitle="Per-setter daily + weekly, and funnel-level conversion + cost targets."
+        icon={StarIcon}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                <th className="py-2 pr-3 font-semibold">KPI</th>
+                <th className="py-2 pr-3 font-semibold">Target</th>
+                <th className="py-2 font-semibold">Tier</th>
+              </tr>
+            </thead>
+            <tbody>
+              {kpis.map((it) => (
+                <tr key={it.id} className="border-t border-gray-100 dark:border-gray-700 align-top">
+                  <td className="py-2.5 pr-3 font-semibold text-gray-900 dark:text-white">
+                    {it.label}
+                  </td>
+                  <td className="py-2.5 pr-3 text-mint-green font-semibold whitespace-nowrap">
+                    {it.content.target}
+                  </td>
+                  <td className="py-2.5 text-gray-500 dark:text-gray-400 whitespace-nowrap text-xs">
+                    {it.content.tier}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      {/* FUNNEL WITH TARGETS — table */}
+      <Section
+        title="Funnel with Targets — monthly @ 2 setters"
+        subtitle="Dials down to funded, with the model's assumed rates. These are targets, not forecasts."
+        icon={ArrowRightIcon}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                <th className="py-2 pr-3 font-semibold">Stage</th>
+                <th className="py-2 pr-3 font-semibold">Count / mo</th>
+                <th className="py-2 font-semibold">Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {funnel.map((it) => (
+                <tr
+                  key={it.id}
+                  className={`border-t border-gray-100 dark:border-gray-700 align-top ${
+                    it.content.total ? "font-bold" : ""
+                  }`}
+                >
+                  <td
+                    className={`py-2.5 pr-3 whitespace-nowrap ${
+                      it.content.total
+                        ? "text-gray-900 dark:text-white"
+                        : "font-semibold text-gray-900 dark:text-white"
+                    }`}
+                  >
+                    {it.label}
+                  </td>
+                  <td
+                    className={`py-2.5 pr-3 whitespace-nowrap ${
+                      it.content.total ? "text-mint-green" : "text-gray-700 dark:text-gray-300"
+                    }`}
+                  >
+                    {it.content.count}
+                  </td>
+                  <td className="py-2.5 text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
+                    {it.content.note}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
 /* ------------------------------ page ------------------------------- */
 
 export default function RnDPage() {
@@ -808,6 +1321,14 @@ export default function RnDPage() {
             ))}
           </div>
         </Section>
+
+        {/* SETTER OPERATION — the new parallel build plan, placed prominently */}
+        <SetterPlan
+          bySection={bySection}
+          progressOf={progressOf}
+          cycleStatus={cycleStatus}
+          saveNote={saveNote}
+        />
 
         {/* THE 8-STEP OPERATION */}
         <Section
