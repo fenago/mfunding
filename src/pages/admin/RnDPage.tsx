@@ -101,6 +101,16 @@ interface Content {
   draft?: boolean; // script/objection set pending owner-approved verbatim
   ladder?: { label: string; text: string }[]; // plan_scripts resistance/fallback ladders
   objections?: { q: string; a: string }[]; // plan_scripts objection bank
+  // ── UCC bulk-data table (section ucc_states) ──
+  header?: boolean; // the methodology read-me item, rendered above the tiers
+  bulk_available?: string; // is bulk data buy-able, and how
+  price?: string; // price AS PUBLISHED (bold dollar figures on render)
+  free_option?: string; // free data / free search, if any
+  search_url?: string; // official search/data URL (clickable)
+  scrapable?: string; // page TYPE only — NOT a robots/ToS legal review
+  source?: string; // official citation (URL, statute, or contact)
+  // content.notes holds the per-jurisdiction caveat (distinct from the row's editable notes)
+  notes?: string;
 }
 
 interface RndItem {
@@ -1131,6 +1141,263 @@ function SetterPlan({
   );
 }
 
+/* ---------------------- UCC bulk-data table ------------------------ */
+
+/* The five buy-ability tiers, most-usable first. Each drives a colored banner
+   + the filter chips. Counts are computed from the seeded rows, not hard-coded. */
+const UCC_TIERS: { key: string; label: string; blurb: string; banner: string; dot: string }[] = [
+  {
+    key: "1",
+    label: "Tier 1 — Free",
+    blurb: "Full data at $0",
+    banner: "border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20",
+    dot: "bg-emerald-500",
+  },
+  {
+    key: "2",
+    label: "Tier 2 — Cheap bulk",
+    blurb: "Low one-time / per-record",
+    banner: "border-teal-300 dark:border-teal-800 bg-teal-50 dark:bg-teal-900/20",
+    dot: "bg-teal-500",
+  },
+  {
+    key: "3",
+    label: "Tier 3 — Moderate",
+    blurb: "Hundreds to low thousands / period",
+    banner: "border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20",
+    dot: "bg-amber-500",
+  },
+  {
+    key: "4",
+    label: "Tier 4 — Expensive",
+    blurb: "Avoid unless needed",
+    banner: "border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20",
+    dot: "bg-rose-500",
+  },
+  {
+    key: "5",
+    label: "Tier 5 — Contact / none",
+    blurb: "Unpublished, contact-only, or no bulk",
+    banner: "border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/60",
+    dot: "bg-gray-400",
+  },
+];
+
+const isHttp = (s?: string) => !!s && /^https?:\/\//i.test(s);
+
+/* Bold every dollar figure in a price string (house pattern). Splits on $-runs
+   and wraps them; everything else stays plain. */
+function Price({ text }: { text: string }) {
+  const parts = text.split(/(\$[\d.,]+(?:\/[A-Za-z0-9-]+)?|\$0\b)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        /^\$/.test(p) ? (
+          <span key={i} className="font-bold text-gray-900 dark:text-white">
+            {p}
+          </span>
+        ) : (
+          <span key={i}>{p}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+/* One jurisdiction card — name + verdict badges + bold price + free/scrapable
+   chips + clickable search & source links + the caveat note. */
+function UccCard({ item }: { item: RndItem }) {
+  const c = item.content;
+  const hasFree = c.free_option && c.free_option !== "—";
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-bold text-gray-900 dark:text-white">{item.label}</span>
+        {hasFree && (
+          <span className="inline-flex items-center rounded-full bg-mint-green/15 text-mint-green px-2 py-0.5 text-[10px] font-bold">
+            free option
+          </span>
+        )}
+        {c.unverified && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[10px] font-semibold">
+            <ExclamationTriangleIcon className="w-3 h-3" /> verify — 2017 figure
+          </span>
+        )}
+      </div>
+
+      {c.bulk_available && (
+        <p className="mt-1 text-xs text-gray-700 dark:text-gray-300 leading-relaxed">
+          {c.bulk_available}
+        </p>
+      )}
+
+      {c.price && c.price !== "—" && (
+        <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            Price:{" "}
+          </span>
+          <Price text={c.price} />
+        </p>
+      )}
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {hasFree && (
+          <span className="inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 text-[10px] font-medium">
+            {c.free_option}
+          </span>
+        )}
+        {c.scrapable && (
+          <span className="inline-flex items-center rounded-full bg-ocean-blue/10 text-ocean-blue px-2 py-0.5 text-[10px] font-medium">
+            scrapable: {c.scrapable}
+          </span>
+        )}
+      </div>
+
+      {c.notes && c.notes !== "—" && (
+        <p className="mt-1.5 text-[11px] italic text-gray-500 dark:text-gray-400 leading-relaxed">
+          {c.notes}
+        </p>
+      )}
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+        {isHttp(c.search_url) && (
+          <a
+            href={c.search_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-ocean-blue hover:underline"
+          >
+            Search / data <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
+          </a>
+        )}
+        {c.source &&
+          (isHttp(c.source) ? (
+            <a
+              href={c.source}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-ocean-blue hover:underline"
+            >
+              Source <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+            </a>
+          ) : (
+            <span className="text-[11px] text-gray-400 dark:text-gray-500">Source: {c.source}</span>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+/* The 52-jurisdiction UCC bulk-data table. Tier-grouped, scannable, with a
+   filter strip so it reads like a sortable table without the weight of one.
+   Methodology header on top; Guam/USVI territories as a footnote. Closed by
+   default — reference/browse content. */
+function UccStates({ items }: { items: RndItem[] }) {
+  const [tier, setTier] = useState<string>("all");
+  if (items.length === 0) return null;
+
+  const header = items.find((i) => i.content.header);
+  const rows = items.filter((i) => !i.content.header && i.content.tier !== "footnote");
+  const territories = items.filter((i) => i.content.tier === "footnote");
+
+  const countByTier = (k: string) => rows.filter((r) => r.content.tier === k).length;
+  const total = rows.length;
+
+  const shownTiers = tier === "all" ? UCC_TIERS : UCC_TIERS.filter((t) => t.key === tier);
+
+  return (
+    <Section
+      title="UCC Bulk-Data — 52 jurisdictions"
+      subtitle={`Where UCC filings can be bought in bulk, tiered by buy-ability. ${total} jurisdictions + 2 territories. Prices as published; sources linked.`}
+      icon={QueueListIcon}
+    >
+      {/* Methodology read-me */}
+      {header?.content.body && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5">
+          <ShieldExclamationIcon className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+          <p className="text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
+            {header.content.body}
+          </p>
+        </div>
+      )}
+
+      {/* Filter strip — reads like sort-by-tier */}
+      <div className="mb-4 flex flex-wrap gap-2">
+        <button
+          onClick={() => setTier("all")}
+          className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+            tier === "all"
+              ? "border-ocean-blue bg-ocean-blue text-white"
+              : "border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue"
+          }`}
+        >
+          All {total}
+        </button>
+        {UCC_TIERS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTier(t.key)}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+              tier === t.key
+                ? "border-ocean-blue bg-ocean-blue text-white"
+                : "border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue"
+            }`}
+          >
+            <span className={`h-2 w-2 rounded-full ${t.dot}`} /> {t.label} ({countByTier(t.key)})
+          </button>
+        ))}
+      </div>
+
+      {/* Tier groups */}
+      <div className="space-y-5">
+        {shownTiers.map((t) => {
+          const group = rows.filter((r) => r.content.tier === t.key);
+          if (group.length === 0) return null;
+          return (
+            <div key={t.key}>
+              <div
+                className={`mb-2.5 flex items-center gap-2 rounded-lg border px-3 py-1.5 ${t.banner}`}
+              >
+                <span className={`h-2.5 w-2.5 rounded-full ${t.dot}`} />
+                <span className="text-sm font-bold text-gray-900 dark:text-white">{t.label}</span>
+                <span className="text-[11px] text-gray-500 dark:text-gray-400">— {t.blurb}</span>
+                <span className="ml-auto text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+                  {group.length}
+                </span>
+              </div>
+              <div className="grid gap-2.5 lg:grid-cols-2">
+                {group.map((it) => (
+                  <UccCard key={it.id} item={it} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Territories footnote */}
+      {territories.length > 0 && (
+        <div className="mt-5 rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 px-3 py-2.5">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">
+            Territories
+          </p>
+          <ul className="space-y-1">
+            {territories.map((it) => (
+              <li key={it.id} className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+                <span className="font-semibold text-gray-700 dark:text-gray-300">{it.label}:</span>{" "}
+                {it.content.bulk_available}
+                {it.content.source && (
+                  <span className="text-gray-400 dark:text-gray-500"> — {it.content.source}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 /* ------------------------------ page ------------------------------- */
 
 export default function RnDPage() {
@@ -1329,6 +1596,9 @@ export default function RnDPage() {
           cycleStatus={cycleStatus}
           saveNote={saveNote}
         />
+
+        {/* UCC BULK-DATA — the 52-jurisdiction sourcing table (feeds Phase U) */}
+        <UccStates items={bySection["ucc_states"] ?? []} />
 
         {/* THE 8-STEP OPERATION */}
         <Section
