@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PH Setter Operation — Human Buildout Runbook</title>
+<style>
+  @page { size: Letter; margin: 0.9in 0.85in; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #1a2332; font-size: 10.5pt; line-height: 1.5; margin: 0;
+  }
+  .cover { border-bottom: 3px solid #1b4d3e; padding-bottom: 14px; margin-bottom: 22px; }
+  .eyebrow { color: #1b4d3e; font-size: 8.5pt; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 700; margin: 0 0 6px; }
+  h1 { font-size: 20pt; margin: 0 0 4px; color: #0f2942; }
+  .sub { color: #55637a; font-size: 10pt; margin: 0; }
+  .meta { margin: 16px 0 0; width: 100%; border-collapse: collapse; font-size: 9pt; }
+  .meta td { border: 1px solid #d6dbe4; padding: 5px 9px; }
+  .meta td:first-child { background: #f2f5f8; font-weight: 700; width: 150px; color: #33415c; }
+  h2 { font-size: 12.5pt; color: #1b4d3e; margin: 22px 0 5px; border-bottom: 1px solid #d6dbe4; padding-bottom: 3px; page-break-after: avoid; }
+  h3 { font-size: 10.5pt; color: #0f2942; margin: 12px 0 3px; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  ul { margin: 5px 0 5px 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  .who { font-size: 9pt; color: #55637a; margin: 3px 0 8px; }
+  .who strong { color: #1b4d3e; }
+  table.grid { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; }
+  table.grid th { background: #1b4d3e; color: #fff; text-align: left; padding: 6px 8px; font-size: 8.5pt; }
+  table.grid td { border: 1px solid #d6dbe4; padding: 6px 8px; vertical-align: top; }
+  table.grid tr:nth-child(even) td { background: #f7f9fb; }
+  code { background: #eef2f6; border: 1px solid #dde3ea; border-radius: 3px; padding: 0 3px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.8pt; color: #0f2942; }
+  pre { background: #0f2942; color: #e6edf5; padding: 12px 14px; border-radius: 5px; overflow-x: auto; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.6pt; line-height: 1.45; }
+  pre code { background: none; border: none; color: inherit; padding: 0; }
+  .note { background: #f2f5f8; border-left: 3px solid #1b4d3e; padding: 8px 12px; margin: 10px 0; font-size: 9.5pt; }
+  .warn { background: #fff6ef; border-left: 3px solid #F97316; padding: 8px 12px; margin: 10px 0; font-size: 9.5pt; }
+  .kill { background: #fdeeee; border-left: 3px solid #DC2626; padding: 10px 12px; margin: 12px 0; font-size: 9.8pt; }
+  .verify { background: #eefaf3; border-left: 3px solid #16A34A; padding: 6px 12px; margin: 8px 0; font-size: 9.3pt; }
+  .unblocks { font-size: 9.3pt; color: #33415c; margin: 6px 0 4px; }
+  .unblocks strong { color: #1b4d3e; }
+  .quote { border-left: 3px solid #c3ccd6; padding: 4px 14px; margin: 8px 0; color: #33415c; font-size: 9.6pt; }
+  .step { page-break-inside: avoid; }
+  .chk li { list-style: none; margin-left: -12px; }
+  .chk li::before { content: "\2610  "; color: #1b4d3e; font-weight: 700; }
+  footer { margin-top: 24px; border-top: 1px solid #d6dbe4; padding-top: 8px; color: #8892a6; font-size: 8pt; }
+  strong { color: #0f2942; }
+  .btn { display: inline-block; background: #1b4d3e; color: #fff !important; padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 9pt; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <p class="eyebrow">Operations Runbook &middot; Human Steps Only</p>
+  <h1>PH Setter Operation — Buildout Runbook</h1>
+  <p class="sub">Agentic Voice, Inc. — d/b/a MFunding.net | Momentum Funding</p>
+  <table class="meta">
+    <tr><td>Document</td><td>PH Setter Operation — Human Buildout Runbook</td></tr>
+    <tr><td>Audience</td><td>Owner (Ernesto) + Developer (Khalil)</td></tr>
+    <tr><td>Scope</td><td>Only the steps machines cannot do — everything automatable is being built by the team</td></tr>
+    <tr><td>Naming law</td><td>Every new asset is prefixed <strong>PH</strong>. Existing MCA/VCF assets are read-only.</td></tr>
+    <tr><td>Last updated</td><td>July 31, 2026</td></tr>
+  </table>
+</div>
+
+<h2>What this document is</h2>
+<p>The PH Setter Operation is a <strong>new, parallel outbound line</strong>: two
+Philippine-based setters dial UCC lists all day, drive every live call to a
+<strong>complete file</strong> (e-signed application + Plaid bank connect), and hand the
+record off to the existing business <strong>only</strong> at the "Bank Connected" stage.</p>
+<p>Everything a machine <em>can</em> do is being built for you right now by automated
+teammates — the pipeline, the per-stage automations, the packet edge function, the
+Revenue Playbook, the setter scorecard, and the campaign wiring. <strong>This runbook
+covers only the steps a machine cannot do</strong>: buying things, clicking inside GHL's
+API-blocked screens, judging vendor demos, buying data, and hiring/managing people.</p>
+<p>Do the steps in order. Each step says <strong>who</strong> does it, <strong>how long</strong>,
+the <strong>exact clicks</strong>, how to <strong>verify</strong> it worked, and <strong>what it unblocks</strong>.</p>
+
+<h3>NAMING LAW (non-negotiable)</h3>
+<p>Every new asset you create is prefixed <strong>PH</strong>. Never touch, rename, or edit
+the existing MCA or VCF pipelines, playbooks, workflows, or document templates — they are
+<strong>read-only</strong> to this project. The PH line gets its own pipeline, workflows, doc
+template, phone numbers, and campaign codes so the existing business keeps running untouched
+and the audit stays clean.</p>
+<div class="note"><strong>Naming note for the R&amp;D plan page.</strong> The plan surface at
+<code>/admin/rnd</code> still shows these assets under the older draft label <strong>"SETTER —"</strong>.
+The assets actually built in GHL use the final <strong>"PH —"</strong> prefix (e.g. the live pipeline
+is <strong>"PH — Outbound Setters"</strong>). When the plan says "SETTER 01 — Packet Send," the real
+workflow you create is <strong>"PH 01 — Packet Send."</strong> Same thing; final name wins.</div>
+
+<h3>The verified facts this runbook is built on</h3>
+<table class="grid">
+  <tr><th>Fact</th><th>Value</th></tr>
+  <tr><td>GHL location (MFunding.net)</td><td><code>t7NmVR4WCy927j4Zon4b</code></td></tr>
+  <tr><td>PH pipeline (already created)</td><td><strong>PH — Outbound Setters</strong> · <code>ZTSCCAEt9wFI6rfdPsLD</code></td></tr>
+  <tr><td>Handoff pipeline (do not modify)</td><td><strong>MFunding MCA Pipeline</strong> · <code>bG9ZEh4eP9x60E1CyaMx</code></td></tr>
+  <tr><td>Connect-bank custom field</td><td><strong>PH Connect Bank URL</strong> · <code>{{contact.ph_connect_bank_url}}</code> · id <code>OUlkd6rcVZ4ZrYTuPob4</code></td></tr>
+  <tr><td>Sending email address</td><td><code>sales@send.mfunding.net</code></td></tr>
+  <tr><td>Doc template to duplicate</td><td><strong>04C MCA PARTIAL</strong> · <code>6a5594fa268297575c2770d5</code></td></tr>
+  <tr><td>Disclosure to append</td><td><strong>Broker Compensation Disclosure</strong> · <code>6a40dda27ded2344b54ecbce</code></td></tr>
+</table>
+<div class="warn"><strong>Why some steps are human-only.</strong> We confirmed empirically that
+GHL's API blocks the creation of <strong>workflows, document/contract templates, and phone-number
+purchases</strong> — those must be done by hand in the GHL web UI. That is why Steps 1–3 and 7 are
+click-by-click.</div>
+<div class="warn"><strong>Compliance guardrail (every word you type).</strong> In PH copy, scripts,
+emails, and the doc template, an MCA is <strong>never</strong> a "loan." Use <strong>funding</strong>,
+<strong>capital</strong>, <strong>working capital</strong>, or <strong>advance</strong>. Scrub cell
+numbers for TCPA before dialing and honor DNC globally.</div>
+
+<div class="step">
+<h2>Step 1 — Buy 2 phone numbers</h2>
+<p class="who"><strong>Who:</strong> Owner &middot; <strong>Time:</strong> ~5 min &middot; <strong>Cost:</strong> ~$1.15–3/mo each + usage</p>
+<p><strong>Exact clicks:</strong></p>
+<ol>
+  <li>In the MFunding.net sub-account: <strong>Settings → Phone Numbers → Add Number</strong>.</li>
+  <li>Search area code <strong>954</strong> (Broward). If nothing clean, fall back to <strong>754</strong>.</li>
+  <li>Buy <strong>two</strong> numbers.</li>
+  <li>Rename them <strong>PH Setter 1</strong> and <strong>PH Setter 2</strong>.</li>
+  <li><strong>Do NOT</strong> add either to any ring group — dedicated outbound lines, off the corporate rotation.</li>
+</ol>
+<p class="verify"><strong>Verify:</strong> Both numbers appear in Settings → Phone Numbers, labeled
+<code>PH Setter 1</code> / <code>PH Setter 2</code>, neither in a ring group.</p>
+<p class="unblocks"><strong>Then hand to Claude:</strong> give Claude the two numbers to record in
+<code>platform_settings.ph_settings.setter_numbers</code> (SQL in Appendix A).</p>
+<p class="unblocks"><strong>Unblocks:</strong> setters get working lines (Step 7); scorecard attributes dials to the right setter.</p>
+</div>
+
+<div class="step">
+<h2>Step 2 — Create the two PH workflows</h2>
+<p class="who"><strong>Who:</strong> Owner or Khalil &middot; <strong>Time:</strong> ~10 min each</p>
+<p>Workflows cannot be created via API — build them in the GHL UI. Both are
+<strong>enrollment-only</strong> with <strong>NO trigger</strong>. House rule (July 13):
+<strong>a stage move must never auto-send documents</strong>. The setter (or the packet edge
+function) enrolls a contact deliberately.</p>
+<div class="note">Build the <strong>doc template in Step 3 first</strong>, then attach it here — or
+create these shells now and attach the template once it exists.</div>
+
+<h3>2a. Workflow <code>PH 01 — Packet Send</code></h3>
+<ol>
+  <li><strong>Automation → Create Workflow → Start from scratch (blank).</strong></li>
+  <li>Name it <strong>PH 01 — Packet Send</strong>.</li>
+  <li>Leave the trigger <strong>empty</strong> (enrollment-only).</li>
+  <li><strong>Action 1 — Send Documents &amp; Contracts</strong> → template
+      <strong>PH — Application + Disclosure (Combined)</strong> (from Step 3).</li>
+  <li><strong>Action 2 — Send Email</strong> → from <code>sales@send.mfunding.net</code>, paste the
+      Appendix B copy <strong>verbatim</strong>. The <span class="btn">CONNECT YOUR BANK</span> button
+      URL must be exactly <code>{{contact.ph_connect_bank_url}}</code>.</li>
+  <li><strong>Publish.</strong></li>
+  <li>Copy the <strong>workflow ID</strong> from the browser URL (after <code>/workflow/</code>). Give it to
+      Claude for <code>ph_settings.packet_workflow_id</code>.</li>
+</ol>
+<p class="verify"><strong>Verify:</strong> Published, no trigger, both actions present. Send a test
+enrollment and confirm the email arrives with a working CONNECT YOUR BANK button.</p>
+
+<h3>2b. Workflow <code>PH 02 — File Complete Notify</code></h3>
+<ol>
+  <li><strong>Automation → Create Workflow → blank</strong>, name it <strong>PH 02 — File Complete Notify</strong>.</li>
+  <li>Trigger <strong>empty</strong> (enrollment-only).</li>
+  <li><strong>Action — Internal Notification</strong> to owner + closer: "PH file complete —
+      [contact] signed + bank connected. Ready for MCA pipeline handoff."</li>
+  <li><strong>Publish</strong>, copy the workflow ID, give it to Claude for <code>ph_settings.notify_workflow_id</code>.</li>
+</ol>
+<p class="verify"><strong>Verify:</strong> Published, no trigger, internal notification action present.</p>
+<p class="unblocks"><strong>Unblocks:</strong> the packet edge function enrolls contacts into <code>PH 01</code>
+to send app + bank link; "Bank Connected" enrolls into <code>PH 02</code> so you're notified the instant a
+file is complete. Until the IDs are in <code>ph_settings</code>, the automated enrollment has nothing to call.</p>
+</div>
+
+<div class="step">
+<h2>Step 3 — Build the combined document template</h2>
+<p class="who"><strong>Who:</strong> Owner &middot; <strong>Time:</strong> ~20–30 min</p>
+<p>You need <strong>one</strong> e-sign document containing the application <strong>and</strong> the
+broker compensation disclosure, ending in a <strong>single</strong> signature block.</p>
+<ol>
+  <li>Go to the GHL document/contract templates.</li>
+  <li><strong>Duplicate</strong> <strong>04C MCA PARTIAL</strong> (<code>6a5594fa268297575c2770d5</code>). Never edit the original.</li>
+  <li>Rename the copy <strong>PH — Application + Disclosure (Combined)</strong>.</li>
+  <li>Open <strong>Broker Compensation Disclosure</strong> (<code>6a40dda27ded2344b54ecbce</code>) and
+      <strong>append its content as a new section</strong> at the end of your combined doc.</li>
+  <li>Ensure exactly <strong>ONE signature block</strong>, at the very end (covers both app and disclosure).</li>
+  <li><strong>Save</strong>, then <strong>reload the page</strong> and re-open the template to confirm it saved.</li>
+</ol>
+<div class="warn"><strong>Doc-editor gotchas (these have bitten us before):</strong>
+<ul>
+  <li><strong>Fillable fields never pre-fill</strong> — they are write-back only.</li>
+  <li><strong>Type every merge tag manually</strong> — autolink corrupts tags like
+      <code>contact.business</code>, <code>contact.date</code>, <code>user.name</code>. Don't click the suggestion.</li>
+  <li><strong>A broken variable silently blocks the save</strong> — that's why you <strong>reload after Save</strong>.
+      If edits are gone, a merge tag is malformed; fix and re-save.</li>
+  <li>Keep wording <strong>advance/funding</strong>, never "loan."</li>
+</ul></div>
+<p class="verify"><strong>Verify:</strong> After a reload, the template shows both sections, one signature
+block, and is selectable in the <code>PH 01</code> workflow's Send Documents action.</p>
+<p class="unblocks"><strong>Unblocks:</strong> <code>PH 01 — Packet Send</code> has a template to send; setters close the application live.</p>
+</div>
+
+<div class="step">
+<h2>Step 4 — Pick and buy the power dialer</h2>
+<p class="who"><strong>Who:</strong> Owner &middot; <strong>Time:</strong> 2 demos (book both this week)</p>
+<table class="grid">
+  <tr><th>Dialer</th><th>Pricing</th><th>Parallel</th><th>Notes</th></tr>
+  <tr><td><strong>Hot Prospector</strong></td><td>$137–497/mo flat</td><td>3-line</td><td>Built for GHL, bring-your-own-Twilio</td></tr>
+  <tr><td><strong>PowerDialer.ai</strong></td><td>~$45–199/user/mo</td><td>up to 5-line</td><td>Native GHL sync, PH-carrier-optimized</td></tr>
+</table>
+<p><strong>Demo checklist — verify on every demo:</strong></p>
+<ul class="chk">
+  <li><strong>Two-way GHL disposition sync?</strong> Does a dialer outcome write back to the GHL
+      contact/opportunity, and vice versa? (This feeds the scorecard.)</li>
+  <li><strong>PH-agent call quality</strong> — test with an <strong>actual PH-based tester</strong> on the call.
+      Listen for latency/dropouts.</li>
+  <li><strong>Parallel dialing</strong> — confirm 3-line works cleanly; note the path to 5-line.</li>
+  <li><strong>True cost</strong> — per-seat <strong>plus</strong> Twilio usage; get the all-in monthly for 2 seats.</li>
+</ul>
+<p><strong>Decision gate:</strong> Pick one. Start with <strong>power dialing + 3-line parallel</strong>.
+Do <strong>not</strong> go predictive until 10+ agents.</p>
+<p class="unblocks"><strong>Then hand to Claude:</strong> tell Claude which dialer you chose and whether it
+syncs dispositions, so the dialer→scorecard sync is built to match.</p>
+<p class="unblocks"><strong>Unblocks:</strong> setters have a dialer; the scorecard wires to the real disposition feed.</p>
+</div>
+
+<div class="step">
+<h2>Step 5 — Buy the list data</h2>
+<p class="who"><strong>Who:</strong> Owner &middot; <strong>Time:</strong> ~30 min &middot; <strong>Cost:</strong> ~$500–850/mo</p>
+<ol>
+  <li>Order <strong>UCC list data from Klover Data</strong>. Apply the <strong>$100K+ originals</strong> filter —
+      it roughly doubles average deal size at no extra cost.</li>
+  <li>(Optional) Layer <strong>aged Synergy data</strong> as extra dialing ammo.</li>
+  <li>Run the file through a <strong>TCPA cell-scrub service</strong> before anything is dialed. DNC honored globally.</li>
+</ol>
+<p class="unblocks"><strong>Then hand to Claude:</strong> give Claude the scrubbed file; Claude imports it into the
+<strong>PH-UCC-2026-001</strong> campaign (own code for clean audit separation).</p>
+<p class="verify"><strong>Verify:</strong> import lands in <code>PH-UCC-2026-001</code> and records appear at the
+<strong>New List Lead</strong> stage of PH — Outbound Setters.</p>
+<p class="unblocks"><strong>Unblocks:</strong> there is something to dial — the whole operation.</p>
+</div>
+
+<div class="step">
+<h2>Step 6 — Hire the 2 PH setters</h2>
+<p class="who"><strong>Who:</strong> Owner (Khalil for the tooling walkthrough) &middot; <strong>Time:</strong> ~2 weeks elapsed (parallel to Steps 1–5)</p>
+<h3>6a. Post the job</h3>
+<p>Post on <strong>OnlineJobs.ph</strong>, <strong>The Calling Agency</strong>, and <strong>Techmart</strong>.
+Ready-to-paste JD in Appendix C.</p>
+<h3>6b. Screen and secure</h3>
+<p>Funnel: <strong>voice sample → live roleplay on the objection scripts → paid 3-day trial on aged data → hire.</strong>
+Use the objection bank (in the Revenue Playbook) for the roleplay.</p>
+<p><strong>Security rules (per the Access Control Policy):</strong> setters <strong>never</strong> touch bank
+credentials (Plaid is read-only, merchant-driven); <strong>individual logins only</strong>; <strong>MFA required</strong>;
+<strong>offboarding = same-day revocation</strong>.</p>
+<h3>6c. Comp plan (never pay per appointment booked)</h3>
+<table class="grid">
+  <tr><th>Component</th><th>Amount</th></tr>
+  <tr><td>Base</td><td><strong>$550/mo</strong></td></tr>
+  <tr><td>Per signed agreement</td><td><strong>$45</strong></td></tr>
+  <tr><td>Per Plaid bank connected</td><td><strong>$75</strong></td></tr>
+  <tr><td>Per fallback appointment <strong>shown</strong></td><td><strong>$8</strong></td></tr>
+  <tr><td>Per funded deal (override)</td><td><strong>$120</strong></td></tr>
+</table>
+<p>Strong performer ≈ <strong>$3,000–4,500/mo</strong>. All-in for two ≈ <strong>$3,200–3,400/mo</strong>
+(~$10/hr equivalent). <strong>Never pay per appointment <em>booked</em></strong> — it rewards junk. Pay on
+signed, connected, shown, and funded.</p>
+<h3>6d. Training week</h3>
+<p>Scripts + objection drills + tool walkthrough (dialer, GHL, packet send, Plaid explainer) + listen to the best real calls.</p>
+<p class="unblocks"><strong>Unblocks:</strong> you have humans to run Step 7 and launch.</p>
+</div>
+
+<div class="step">
+<h2>Step 7 — Provision each setter in GHL + assign numbers/seats</h2>
+<p class="who"><strong>Who:</strong> Owner or Khalil &middot; <strong>Time:</strong> ~10 min per setter</p>
+<ol>
+  <li><strong>Settings → My Staff → Add Employee</strong> for each setter.</li>
+  <li>Give each a <strong>limited role</strong> — pipeline + conversations + dialer only; <strong>no</strong>
+      settings, billing, or other pipelines. Individual login, <strong>MFA on</strong>.</li>
+  <li>Assign <strong>PH Setter 1</strong> number + a dialer seat to setter #1; <strong>PH Setter 2</strong>
+      number + a seat to setter #2.</li>
+  <li>In the dialer, set the <strong>call timeout to ~20 seconds</strong> (lesson learned: longer timeouts
+      waste dial capacity on no-answers).</li>
+</ol>
+<p class="verify"><strong>Verify:</strong> each setter logs in, sees only the <strong>PH — Outbound Setters</strong>
+pipeline and their own number, and cannot reach settings or the MCA/VCF pipelines.</p>
+<p class="unblocks"><strong>Unblocks:</strong> setters can dial. Launch.</p>
+</div>
+
+<div class="step">
+<h2>Step 8 — Launch checklist and gates</h2>
+<p class="who"><strong>Who:</strong> Owner &middot; <strong>Time:</strong> Weeks 1–2 ramp, then ongoing</p>
+<p><strong>Launch checklist:</strong></p>
+<ul class="chk">
+  <li>Scripts drilled — opener, application close, Plaid pivot, resistance ladder, fallback ladder, objection bank.</li>
+  <li>Daily scorecards posted in the group chat.</li>
+  <li><strong>Announce every Signed and every Plaid connected</strong> in the group chat the moment it happens.</li>
+  <li>Heavy call review during weeks 1–2.</li>
+</ul>
+<p><strong>Daily per-setter targets:</strong></p>
+<table class="grid">
+  <tr><th>Metric</th><th>Target</th></tr>
+  <tr><td>Dials</td><td>≥ 320 (320–350)</td></tr>
+  <tr><td>Live conversations</td><td>≥ 38 (12% contact)</td></tr>
+  <tr><td>Application attempts</td><td>≥ 22</td></tr>
+  <tr><td>Signed</td><td>≥ 2</td></tr>
+  <tr><td>Plaid connected</td><td>≥ 1.5</td></tr>
+  <tr><td>Fallback appointments</td><td>4–6</td></tr>
+</table>
+<p><strong>Weekly review ritual:</strong> per-setter Signed (10–14) and Plaid connected (8–11); funnel health
+(Signed→Plaid ≥ 70%, Plaid→submitted ≥ 90%); cost per signed (≤ $150) and cost per funded (≤ $600) by list source via Campaign Audit.</p>
+<div class="kill"><strong>🛑 KILL CRITERION:</strong> If you reach <strong>20+ clean submissions with ZERO fundings → STOP</strong>
+and diagnose the list/funder mix before spending more. You will have learned that for ~$2,500 instead of ~$25,000.</div>
+<p><strong>Scale gate:</strong> Add <strong>setter #3 only after 45–60 days</strong> of consistent per-setter targets
+<strong>AND</strong> first funded deals.</p>
+<p><strong>October milestone:</strong> <strong>3–4 funded/mo</strong> — the exact bar Zach @ Greenbox set, and the
+Bitty reapplication window. When you hit it: <strong>reapply to Bitty via Rosmery</strong> and <strong>call Zach @ Greenbox</strong>.</p>
+</div>
+
+<div class="step">
+<h2>Appendix A — the <code>ph_settings</code> SQL</h2>
+<p><code>platform_settings.ph_settings</code> does <strong>not exist yet</strong>. After Steps 1 and 2, hand Claude
+the two workflow IDs and the two setter numbers; Claude runs this (or run it in the Supabase SQL editor):</p>
+<pre><code>insert into platform_settings (key, value, updated_at)
+values (
+  'ph_settings',
+  jsonb_build_object(
+    'packet_workflow_id', 'PASTE_PH_01_WORKFLOW_ID',
+    'notify_workflow_id', 'PASTE_PH_02_WORKFLOW_ID',
+    'setter_numbers',     jsonb_build_array('PH_SETTER_1_NUMBER', 'PH_SETTER_2_NUMBER')
+  ),
+  now()
+)
+on conflict (key) do update
+  set value = platform_settings.value || excluded.value,
+      updated_at = now();</code></pre>
+<p>The <code>||</code> merge lets you re-run it later to add or overwrite individual keys without wiping the others.</p>
+</div>
+
+<div class="step">
+<h2>Appendix B — <code>PH 01</code> packet email copy</h2>
+<p>Paste <strong>verbatim</strong> into the Send Email action. From: <code>sales@send.mfunding.net</code>.</p>
+<p><strong>Subject:</strong> Two quick steps to finish your funding request</p>
+<div class="quote">
+  <p>Hi {{contact.first_name}},</p>
+  <p>Great talking with you. Two quick steps and we can pull your numbers and show you exact funding options:</p>
+  <p><strong>1. Review + sign</strong> — the short agreement we just sent takes about 30 seconds.</p>
+  <p><strong>2. Connect your bank</strong> — takes about 60 seconds. It's read-only through Plaid;
+     <strong>we never see your login or password.</strong></p>
+  <p><span class="btn">CONNECT YOUR BANK →</span> &nbsp; ← button URL: <code>{{contact.ph_connect_bank_url}}</code></p>
+  <p>Do both while we're on the phone and we'll keep everything moving today.</p>
+  <p>— The Momentum Funding team</p>
+</div>
+<div class="warn">Keep the language <strong>funding/capital/advance</strong> — never "loan." The button URL must be
+exactly <code>{{contact.ph_connect_bank_url}}</code> (type it, don't autolink).</div>
+</div>
+
+<div class="step">
+<h2>Appendix C — Job description draft</h2>
+<div class="quote">
+  <p><strong>Title:</strong> MCA Appointment-to-Application Setter (US Business Hours, Full-Time)</p>
+  <p><strong>About the role:</strong> We're a US business-funding company (Momentum Funding). You'll call US
+  small-business owners from a pre-scrubbed list, qualify them for working capital, and walk them through a short
+  e-sign application and a 60-second read-only bank connection — live on the call. Results-driven outbound role with
+  base + performance pay.</p>
+  <p><strong>You must have:</strong> Fluent, clear spoken English · Prior US outbound sales / appointment-setting
+  experience · Quiet home workspace · Stable internet (25 Mbps+) · Reliability during US business hours.</p>
+  <p><strong>Nice to have:</strong> Power-dialer and CRM experience (GoHighLevel a plus); MCA or business-funding background.</p>
+  <p><strong>Comp:</strong> Monthly base + per-signed-agreement + per-bank-connected + per-appointment-shown +
+  per-funded override. Strong performers earn $3,000–4,500/mo equivalent.</p>
+  <p><strong>How to apply:</strong> Send a 60-second voice sample introducing yourself and describing a US outbound
+  sales role you've held.</p>
+</div>
+</div>
+
+<div class="step">
+<h2>Handoff map — who does what</h2>
+<table class="grid">
+  <tr><th>The machines are building (do not do by hand)</th><th>You do (this runbook)</th></tr>
+  <tr><td>PH — Outbound Setters pipeline + 9 stages</td><td>Buy 2 phone numbers (Step 1)</td></tr>
+  <tr><td>Per-stage automations (enrollment-only)</td><td>Create PH 01 / PH 02 workflows (Step 2)</td></tr>
+  <tr><td><code>send-setter-packet</code> edge function (mints Plaid link → writes <code>ph_connect_bank_url</code> → enrolls in PH 01)</td><td>Build combined doc template (Step 3)</td></tr>
+  <tr><td>"Setter Operation" Revenue Playbook</td><td>Choose + buy dialer (Step 4)</td></tr>
+  <tr><td>Setter scorecard / daily dashboards</td><td>Buy + scrub list data (Step 5)</td></tr>
+  <tr><td>Campaign-audit KPIs + <code>PH-UCC-2026-001</code> code</td><td>Hire + train setters (Step 6)</td></tr>
+  <tr><td><code>ph_settings</code> row write (once you hand over IDs)</td><td>Provision setters in GHL (Step 7)</td></tr>
+  <tr><td>—</td><td>Launch, run the gates (Step 8)</td></tr>
+</table>
+<p class="note">The single handoff point to the existing business is the <strong>Bank Connected</strong> stage —
+and only there. Everything upstream is the PH line's own, never entangled with the running MCA/VCF flow.</p>
+</div>
+
+<footer>
+Agentic Voice, Inc. — d/b/a MFunding.net | Momentum Funding &middot; PH Setter Operation — Human Buildout Runbook &middot; Internal document, July 31, 2026.
+</footer>
+
+</body>
+</html>
