@@ -289,3 +289,9 @@ verify_jwt = false
 # plaid-mint-link: staff-only textable connect link. verify_jwt = true + in-code role check.
 [functions.plaid-mint-link]
 verify_jwt = true
+
+# ph-send-packet: PH setter "send the packet" — mints the connect-bank link, writes it
+# onto the GHL contact's ph_connect_bank_url field, enrolls the PH packet workflow.
+# verify_jwt = true; three in-code auth paths (?secret cron / service bearer / staff JWT).
+[functions.ph-send-packet]
+verify_jwt = true
