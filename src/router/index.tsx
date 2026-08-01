@@ -94,6 +94,7 @@ const BusinessModelCanvasPage = lazyWithReload(() => import("../pages/admin/Busi
 const CloserCompPage = lazyWithReload(() => import("../pages/admin/CloserCompPage.tsx"));
 const PipelinePlaybookPage = lazyWithReload(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
 const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.tsx"));
+const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSetterPlaybookPage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
@@ -645,6 +646,15 @@ export const routes: RouteObject[] = [
               {
                 path: "playbooks",
                 element: <PlaybooksPage />,
+              },
+              // PH Setter Playbook — the outbound-setter console (a NEW playbook,
+              // separate from the MCA/VCF flows). Admin + super_admin only, so it
+              // carries the same AdminOnlyProtectedRoute guard as R&D; admins with
+              // a closer row still reach it via the closer lens.
+              {
+                path: "ph-setters",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <PhSetterPlaybookPage /> }],
               },
               // Lead Tools management (operational — all staff)
               {

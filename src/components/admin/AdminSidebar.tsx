@@ -103,6 +103,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/funder-contacts",
   "/admin/lender-catalog", // ADMIN-roled below, so pure closers still never see it
   "/admin/rnd", // R&D game plan (roles: ADMIN) — Carlos manages the build-out too; pure closers excluded via roles
+  "/admin/ph-setters", // PH Setter Playbook (roles: ADMIN) — same lens treatment as R&D; pure closers excluded via roles
 ]);
 
 const navGroups: NavGroup[] = [
@@ -117,6 +118,9 @@ const navGroups: NavGroup[] = [
     title: "Daily",
     items: [
       { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
+      // PH Setter Playbook — the outbound-setter console. Admin + super_admin
+      // (matches R&D); admins with a closer row see it through the lens.
+      { name: "PH Setters", path: "/admin/ph-setters", icon: PhoneArrowUpRightIcon, roles: ADMIN },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
