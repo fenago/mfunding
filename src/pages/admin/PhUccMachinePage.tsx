@@ -13,9 +13,13 @@ import {
   ArrowDownTrayIcon,
   TrashIcon,
   BanknotesIcon,
+  Cog6ToothIcon,
+  ChevronDownIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
+import { getSetting, saveSetting } from "@/services/platformService";
+import { useUserProfile } from "@/context/UserProfileContext";
 
 /* ------------------------------------------------------------------ */
 /* PH — UCC Machine                                                    */
@@ -243,6 +247,7 @@ function freshnessChip(days: number | null): string {
 }
 
 export default function PhUccMachinePage() {
+  const { isSuperAdmin } = useUserProfile();
   const [loading, setLoading] = useState(true);
   const [backendMissing, setBackendMissing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -293,6 +298,18 @@ export default function PhUccMachinePage() {
   // Two-step inline confirm for the destructive alias delete (owner rule: no
   // browser popups). First tap arms the row, second fires; disarms after 5s.
   const [aliasArmed, setAliasArmed] = useState<string | null>(null);
+
+  // ── PH UCC pipeline settings (super_admin only; platform_settings 'ph_settings') ──
+  // Held as the FULL stored object so unknown keys (pipeline_id, setter_numbers,
+  // workflow ids, …) are preserved on every save.
+  const [phSettings, setPhSettings] = useState<Record<string, unknown> | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsArmed, setSettingsArmed] = useState<string | null>(null); // field key armed for write
+  const [settingsSaving, setSettingsSaving] = useState<string | null>(null);
+  const [settingsErr, setSettingsErr] = useState<string | null>(null);
+  const [settingsFlash, setSettingsFlash] = useState<string | null>(null);
+  const [batchCapInput, setBatchCapInput] = useState(""); // local edit: max_skiptrace_batch
+  const [dncInput, setDncInput] = useState(""); // local edit: skiptrace_dnc_policy
 
   /* Funnel counts: filings + per-status lead counts via head/count queries. */
   const loadFunnel = useCallback(async () => {
@@ -393,6 +410,14 @@ export default function PhUccMachinePage() {
     if (isMissingRelation(res.error)) return;
     setBatchEligible(res.error ? null : res.count ?? 0);
   }, [batchFreshOnly, batchMinScore]);
+
+  // Load the full 'ph_settings' object; seed the local number/text edit fields.
+  const loadPhSettings = useCallback(async () => {
+    const v = await getSetting<Record<string, unknown>>("ph_settings", {});
+    setPhSettings(v);
+    setBatchCapInput(String((v.max_skiptrace_batch as number | undefined) ?? 300));
+    setDncInput(String((v.skiptrace_dnc_policy as string | undefined) ?? ""));
+  }, []);
 
   /* ── Load the top-of-page data (sources, aliases, settings, funnel counts) ── */
   const loadOverview = useCallback(async () => {
@@ -558,6 +583,16 @@ export default function PhUccMachinePage() {
     const t = setTimeout(() => setBatchArmed(false), 5000);
     return () => clearTimeout(t);
   }, [batchArmed]);
+  // Load pipeline settings for super_admins once the backend is present.
+  useEffect(() => {
+    if (isSuperAdmin && !backendMissing) loadPhSettings();
+  }, [isSuperAdmin, backendMissing, loadPhSettings]);
+  // Auto-disarm a primed settings write after 5s.
+  useEffect(() => {
+    if (!settingsArmed) return;
+    const t = setTimeout(() => setSettingsArmed(null), 5000);
+    return () => clearTimeout(t);
+  }, [settingsArmed]);
 
   /* ── Actions ── */
   const pullNow = useCallback(
@@ -641,6 +676,29 @@ export default function PhUccMachinePage() {
     const aliasRes = await supabase.from("ph_ucc_funder_aliases").select("*").order("alias", { ascending: true });
     if (!aliasRes.error) setAliases((aliasRes.data as UccAlias[]) ?? []);
   }, []);
+
+  // Persist ONE field, merged into the full object so peer keys survive.
+  const savePhSetting = useCallback(
+    async (key: string, value: unknown, label: string) => {
+      if (!phSettings) return;
+      setSettingsSaving(key);
+      setSettingsErr(null);
+      setSettingsFlash(null);
+      try {
+        const next = { ...phSettings, [key]: value };
+        await saveSetting("ph_settings", next); // upserts whole value via mustWrite
+        setPhSettings(next);
+        setSettingsFlash(`${label} saved ✓`);
+        setTimeout(() => setSettingsFlash(null), 4000);
+      } catch (e) {
+        setSettingsErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSettingsSaving(null);
+        setSettingsArmed(null);
+      }
+    },
+    [phSettings],
+  );
 
   const addAlias = useCallback(async () => {
     const alias = newAlias.trim();
@@ -740,6 +798,19 @@ export default function PhUccMachinePage() {
   // enable/disable toggle is gated off (the backend is adding it — see the
   // note to ph-ucc-machine) so we never fire an update against a missing column.
   const aliasHasActiveColumn = useMemo(() => aliases.some((a) => "active" in a), [aliases]);
+
+  /** Two-step confirm for a settings write: arm on first call, fire on second. */
+  const settingsArmOrFire = (key: string): boolean => {
+    if (settingsArmed === key) {
+      setSettingsArmed(null);
+      return true;
+    }
+    setSettingsArmed(key);
+    return false;
+  };
+  const sBool = (k: string) => phSettings?.[k] === true;
+  const batchCapDirty = phSettings != null && batchCapInput !== String(phSettings.max_skiptrace_batch ?? 300);
+  const dncDirty = phSettings != null && dncInput !== String(phSettings.skiptrace_dnc_policy ?? "");
 
   // Budget: show the operator the realistic estimate (limit × $0.07) but block on
   // the conservative guard (limit × $0.10) so we never overrun the wallet.
@@ -1464,6 +1535,150 @@ export default function PhUccMachinePage() {
               )}
             </div>
           </section>
+
+          {/* ── 6. Pipeline settings (super_admin only; collapsed) ── */}
+          {isSuperAdmin && (
+            <section>
+              <button
+                onClick={() => setSettingsOpen((o) => !o)}
+                className="w-full flex items-center justify-between text-sm font-semibold uppercase tracking-wide text-gray-400 py-2"
+              >
+                <span className="flex items-center gap-2">
+                  <Cog6ToothIcon className="w-4 h-4" /> Settings
+                </span>
+                <ChevronDownIcon className={`w-4 h-4 transition-transform ${settingsOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {settingsOpen &&
+                (phSettings == null ? (
+                  <p className="text-sm text-gray-400">Loading settings…</p>
+                ) : (
+                  <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-4">
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Pipeline configuration (<code>platform_settings.ph_settings</code>). Changes take effect on the next
+                      run — each write is two-step confirmed.
+                    </p>
+
+                    {/* Boolean toggles */}
+                    {[
+                      {
+                        key: "skiptrace_enabled",
+                        label: "Skip-trace enabled",
+                        desc: "Master switch for the BatchData skip-trace stage.",
+                        danger: false,
+                      },
+                      {
+                        key: "instantly_verify_emails",
+                        label: "Verify emails (Instantly)",
+                        desc: "Grade each traced email's deliverability before cold outreach.",
+                        danger: false,
+                      },
+                      {
+                        key: "apollo_enrich_enabled",
+                        label: "Apollo enrichment",
+                        desc: "Apollo has a low hit rate on these merchants — BatchData is primary.",
+                        danger: true,
+                      },
+                    ].map(({ key, label, desc, danger }) => {
+                      const cur = sBool(key);
+                      const armed = settingsArmed === key;
+                      const saving = settingsSaving === key;
+                      return (
+                        <div key={key} className="flex items-start justify-between gap-4 border-t border-gray-100 dark:border-gray-700/60 pt-3 first:border-t-0 first:pt-0">
+                          <div>
+                            <div className="text-sm font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                              {label}
+                              {danger && (
+                                <span className="text-xs px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+                                  spends credits
+                                </span>
+                              )}
+                            </div>
+                            <p className={`text-xs ${danger ? "text-rose-600 dark:text-rose-400" : "text-gray-500 dark:text-gray-400"}`}>
+                              {desc}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => {
+                              if (settingsArmOrFire(key)) savePhSetting(key, !cur, label);
+                            }}
+                            disabled={saving}
+                            className={`shrink-0 text-xs px-3 py-1.5 rounded-lg border ${
+                              armed
+                                ? "border-amber-400 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-semibold"
+                                : cur
+                                  ? "border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300"
+                                  : "border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400"
+                            }`}
+                          >
+                            {saving ? "Saving…" : armed ? `Tap to confirm — turn ${cur ? "OFF" : "ON"}` : cur ? "ON" : "OFF"}
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                    {/* max_skiptrace_batch */}
+                    <div className="border-t border-gray-100 dark:border-gray-700/60 pt-3 flex flex-wrap items-end gap-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-900 dark:text-white mb-1">Max skip-trace batch</label>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Upper bound on a single run's lead count.</p>
+                        <input
+                          type="number"
+                          min={1}
+                          className={`${input} w-32`}
+                          value={batchCapInput}
+                          onChange={(e) => setBatchCapInput(e.target.value)}
+                        />
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (settingsArmOrFire("max_skiptrace_batch"))
+                            savePhSetting("max_skiptrace_batch", Math.max(1, Math.floor(Number(batchCapInput) || 0)), "Max batch");
+                        }}
+                        disabled={!batchCapDirty || settingsSaving === "max_skiptrace_batch"}
+                        className={`text-sm inline-flex items-center gap-1.5 ${settingsArmed === "max_skiptrace_batch" ? "btn-warning" : "btn-primary"}`}
+                      >
+                        {settingsSaving === "max_skiptrace_batch"
+                          ? "Saving…"
+                          : settingsArmed === "max_skiptrace_batch"
+                            ? "Confirm save"
+                            : "Save"}
+                      </button>
+                    </div>
+
+                    {/* skiptrace_dnc_policy */}
+                    <div className="border-t border-gray-100 dark:border-gray-700/60 pt-3">
+                      <label className="block text-sm font-medium text-gray-900 dark:text-white mb-1">DNC policy note</label>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                        Documents how DNC numbers are handled. Reference text — does not itself gate dialing.
+                      </p>
+                      <textarea
+                        rows={4}
+                        className={`${input} w-full`}
+                        value={dncInput}
+                        onChange={(e) => setDncInput(e.target.value)}
+                      />
+                      <button
+                        onClick={() => {
+                          if (settingsArmOrFire("skiptrace_dnc_policy")) savePhSetting("skiptrace_dnc_policy", dncInput, "DNC policy");
+                        }}
+                        disabled={!dncDirty || settingsSaving === "skiptrace_dnc_policy"}
+                        className={`mt-2 text-sm inline-flex items-center gap-1.5 ${settingsArmed === "skiptrace_dnc_policy" ? "btn-warning" : "btn-primary"}`}
+                      >
+                        {settingsSaving === "skiptrace_dnc_policy"
+                          ? "Saving…"
+                          : settingsArmed === "skiptrace_dnc_policy"
+                            ? "Confirm save"
+                            : "Save"}
+                      </button>
+                    </div>
+
+                    {settingsErr && <p className="text-xs text-rose-600 dark:text-rose-400">save failed: {settingsErr}</p>}
+                    {settingsFlash && <p className="text-xs text-emerald-600 dark:text-emerald-400">{settingsFlash}</p>}
+                  </div>
+                ))}
+            </section>
+          )}
         </>
       )}
     </div>
