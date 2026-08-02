@@ -224,12 +224,28 @@ Deno.serve(async (req) => {
   }
 
   const started = Date.now();
-  const rawLimit = num(payload.limit ?? url.searchParams.get("limit")) ?? DEFAULT_LIMIT;
-  const limit = Math.max(1, Math.min(HARD_MAX_LIMIT, Math.floor(rawLimit)));
-  const minScore = num(payload.min_score ?? url.searchParams.get("min_score"));
-  const maxFreshnessDays = num(payload.max_freshness_days ?? url.searchParams.get("max_freshness_days")) ?? DEFAULT_MAX_FRESHNESS_DAYS;
   const force = payload.force === true || url.searchParams.get("force") === "true";
   const debug = payload.debug === true || url.searchParams.get("debug") === "true";
+
+  // Owner-controlled gate flags, live-read from ph_settings every call (no redeploy
+  // needed when the owner flips a toggle in the settings panel). skiptrace_enabled
+  // is the master on/off for this stage; max_skiptrace_batch lets the owner lower
+  // the per-call cap below our HARD_MAX_LIMIT ceiling.
+  const { data: phSettings } = await db.from("platform_settings").select("value").eq("key", "ph_settings").maybeSingle();
+  const settingsVal = (phSettings?.value ?? {}) as Record<string, unknown>;
+  const skiptraceEnabled = settingsVal.skiptrace_enabled;   // undefined = treat as on (default true)
+  const maxBatch = num(settingsVal.max_skiptrace_batch) ?? 300;
+
+  // Enable-gate — a false flag pauses the stage (force:true is the manual override).
+  if (skiptraceEnabled === false && !force) {
+    return json({ ok: true, skipped: true, reason: "ph_settings.skiptrace_enabled is false — stage paused by owner. Pass force:true to override." });
+  }
+
+  const rawLimit = num(payload.limit ?? url.searchParams.get("limit")) ?? DEFAULT_LIMIT;
+  // Effective per-call cap = min(requested, hard ceiling, owner's batch cap).
+  const limit = Math.max(1, Math.min(HARD_MAX_LIMIT, Math.floor(maxBatch), Math.floor(rawLimit)));
+  const minScore = num(payload.min_score ?? url.searchParams.get("min_score"));
+  const maxFreshnessDays = num(payload.max_freshness_days ?? url.searchParams.get("max_freshness_days")) ?? DEFAULT_MAX_FRESHNESS_DAYS;
 
   try {
     // 1) Wallet gate — abort loudly if we can't afford to spend.
