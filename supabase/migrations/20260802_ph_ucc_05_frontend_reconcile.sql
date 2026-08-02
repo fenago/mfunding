@@ -50,14 +50,32 @@ update public.platform_settings
 set value = value - 'ucc_load_enabled' - 'skiptrace_provider' - 'tcpa_scrub_provider'
 where key = 'ph_settings';
 
--- ── 3. Staff write RLS ─────────────────────────────────────────────────────────
--- Write policies are owned by the dedicated migration
--- 20260802_ph_ucc_admin_write_policies.sql (ph-backend): ph_ucc_funder_aliases
--- INSERT/UPDATE/DELETE + ph_ucc_leads UPDATE for is_admin_or_super. An earlier
--- version of this file added an overlapping FOR ALL policy on aliases; it was a
--- redundant duplicate and has been dropped. The defensive drop below keeps a fresh
--- apply from leaving that stray policy behind, then defers to the dedicated file.
+-- ── 3. Staff write RLS (the UI writes directly via mustWrite) ───────────────────
+-- This file is the CANONICAL owner of the write policies: ph_ucc_funder_aliases
+-- gets ONE FOR ALL admin policy (covers the dashboard's add / active-toggle /
+-- delete); ph_ucc_leads gets an UPDATE policy (suppress / restore). is_admin_or_super
+-- only; service-role bypasses RLS. Each is drop-then-create in the same migration
+-- txn, so it is idempotent with NO window where the policy is missing.
+--
+-- CONVERGENCE (do not "clean this up" by dropping _admin_write): ph-backend's
+-- 20260802_ph_ucc_drop_redundant_alias_write_policies.sql drops the earlier granular
+-- INSERT/UPDATE/DELETE aliases policies and idempotently re-creates this SAME
+-- _admin_write with an identical definition. The two files converge to exactly one
+-- write policy in ANY apply order. A previous edit here DROPPED _admin_write while
+-- ph-backend dropped the granular set at the same time — that mutual drop briefly
+-- left the table with no write policy (alias writes 403). Keep the name+definition
+-- identical across both files and never leave this as a bare drop.
 drop policy if exists ph_ucc_funder_aliases_admin_write on public.ph_ucc_funder_aliases;
+create policy ph_ucc_funder_aliases_admin_write on public.ph_ucc_funder_aliases
+  for all to authenticated
+  using (is_admin_or_super(auth.uid()))
+  with check (is_admin_or_super(auth.uid()));
+
+drop policy if exists ph_ucc_leads_admin_update on public.ph_ucc_leads;
+create policy ph_ucc_leads_admin_update on public.ph_ucc_leads
+  for update to authenticated
+  using (is_admin_or_super(auth.uid()))
+  with check (is_admin_or_super(auth.uid()));
 
 -- ── 4. Data quality: deactivate non-MCA-position lender aliases ─────────────────
 -- These are equipment-lease / freight-factoring lenders. Their UCC filings are
