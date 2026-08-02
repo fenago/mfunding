@@ -124,10 +124,14 @@ const SOURCE_STATUS_META: Record<SourceStatus, { label: string; chip: string; do
 
 const PAGE_SIZE = 25;
 
-/* Approx BatchData per-trace cost, used only for the client-side budget guard
-   (the real spend comes back from the edge fn). */
-const TRACE_UNIT_COST = 0.15;
+/* BatchData per-trace cost. The DISPLAY figure is the observed all-in average
+   ($0.07) so the operator's estimate isn't inflated; the GUARD figure ($0.07 +
+   margin) is what the hard budget block uses. Real spend always comes back from
+   the edge fn (run_spend_usd). */
+const TRACE_COST_DISPLAY = 0.07;
+const TRACE_COST_GUARD = 0.1;
 const FRESH_ONLY_DAYS = 90; // the highest-value scope for a skip-trace run
+const DEFAULT_MAX_FRESHNESS_DAYS = 120; // the edge fn's default when fresh-only is off
 
 /* Stable CSV column order for the lead export. phone/email stay in the shape
    even though they're null until skip-trace is live — keeps the file layout
@@ -171,6 +175,21 @@ function downloadCsv(filename: string, csv: string): void {
 }
 function todayStamp(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+/* supabase-js returns a FunctionsHttpError on non-2xx, with the response body in
+   error.context (a Response). Pull the {error} message out of it when present. */
+async function fnErrorMessage(error: unknown): Promise<string> {
+  const ctx = (error as { context?: { json?: () => Promise<unknown> } })?.context;
+  if (ctx && typeof ctx.json === "function") {
+    try {
+      const body = (await ctx.json()) as { error?: string } | null;
+      if (body?.error) return body.error;
+    } catch {
+      /* body already consumed or not JSON — fall through to the generic message */
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 /* A PostgREST "table/relation not found" error → backend not deployed. */
@@ -343,11 +362,17 @@ export default function PhUccMachinePage() {
      batch filters (min_score / fresh≤90d). Shrinks as backend runs drain the
      backlog — the trace is idempotent so this is the honest "what a run touches". */
   const loadEligible = useCallback(async () => {
+    // Mirror the edge fn's eligibility exactly: needs_skiptrace, not yet traced,
+    // has a street address (can't trace without one), within the freshness window,
+    // and above min_score when set.
+    const maxFresh = batchFreshOnly ? FRESH_ONLY_DAYS : DEFAULT_MAX_FRESHNESS_DAYS;
     let q = supabase
       .from("ph_ucc_leads")
       .select("id", { count: "exact", head: true })
-      .eq("status", "needs_skiptrace");
-    if (batchFreshOnly) q = q.lte("freshness_days", FRESH_ONLY_DAYS);
+      .eq("status", "needs_skiptrace")
+      .is("traced_at", null)
+      .not("debtor_address", "is", null)
+      .lte("freshness_days", maxFresh);
     const min = Number(batchMinScore);
     if (batchMinScore && !isNaN(min)) q = q.gte("score", min);
     const res = await q;
@@ -554,28 +579,42 @@ export default function PhUccMachinePage() {
     setBatchResult(null);
     const limit = Math.max(1, Math.floor(Number(batchLimit) || 0));
     try {
-      const body: Record<string, unknown> = { limit };
+      // Send max_freshness_days explicitly (90 fresh-only, else the fn's 120
+      // default) so what runs matches the eligible count we showed.
+      const body: Record<string, unknown> = {
+        limit,
+        max_freshness_days: batchFreshOnly ? FRESH_ONLY_DAYS : DEFAULT_MAX_FRESHNESS_DAYS,
+      };
       const min = Number(batchMinScore);
       if (batchMinScore && !isNaN(min)) body.min_score = min;
-      if (batchFreshOnly) body.max_freshness_days = FRESH_ONLY_DAYS;
 
       const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", { body });
-      if (error) throw error;
+      // Budget-abort (402) / wallet-lookup (502) come back as an invoke error with
+      // the {ok:false,error} body in error.context — surface that, not "traced".
+      if (error) {
+        const msg = await fnErrorMessage(error);
+        throw new Error(msg);
+      }
       const res = (data as Record<string, unknown>) ?? {};
-      const traced = Number(res.traced ?? res.rows_traced ?? res.count ?? 0) || 0;
-      const spent = Number(res.spent ?? res.cost ?? res.amount_spent ?? 0) || 0;
+      if (res.ok === false) throw new Error(String(res.error || "skip-trace failed"));
 
-      // Authoritative post-run wallet balance (the tile + the result line agree).
-      const w = await supabase.functions.invoke("ph-ucc-skiptrace", { body: { action: "wallet" } });
-      const wres = w.data as { ok?: boolean; balance?: number; currency?: string } | null;
-      let nowStr = "";
-      if (wres?.ok && typeof wres.balance === "number") {
-        setWallet({ balance: wres.balance, currency: wres.currency || "USD" });
-        nowStr = ` · wallet now $${wres.balance.toFixed(2)}`;
+      // Nothing-eligible branch: {ok:true, traced:0, message, balance_before} —
+      // no balance_after/run_spend_usd; show the message, leave the wallet as-is.
+      if (res.balance_after == null && typeof res.message === "string") {
+        setBatchResult(res.message);
+      } else {
+        const traced = Number(res.traced ?? 0) || 0;
+        const spent = Number(res.run_spend_usd ?? 0) || 0;
+        let nowStr = "";
+        if (typeof res.balance_after === "number") {
+          // balance_after is a genuine post-run wallet read — authoritative.
+          setWallet((w) => ({ balance: res.balance_after as number, currency: w?.currency || "USD" }));
+          nowStr = ` · wallet now $${(res.balance_after as number).toFixed(2)}`;
+        }
+        setBatchResult(`traced ${traced.toLocaleString()} · $${spent.toFixed(2)} spent${nowStr}`);
       }
       // Refresh the funnel / eligible / lead table to reflect the traced rows.
       await Promise.all([loadFunnel(), loadEligible(), loadLeads()]);
-      setBatchResult(`traced ${traced.toLocaleString()} · $${spent.toFixed(2)} spent${nowStr}`);
     } catch (e) {
       setBatchErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -688,12 +727,12 @@ export default function PhUccMachinePage() {
   // note to ph-ucc-machine) so we never fire an update against a missing column.
   const aliasHasActiveColumn = useMemo(() => aliases.some((a) => "active" in a), [aliases]);
 
-  // Budget guard: a run touches at most min(limit, eligible) leads; project cost
-  // off the limit (the owner's specified guard) and block launch if it exceeds
-  // the wallet balance.
+  // Budget: show the operator the realistic estimate (limit × $0.07) but block on
+  // the conservative guard (limit × $0.10) so we never overrun the wallet.
   const parsedLimit = Math.max(0, Math.floor(Number(batchLimit) || 0));
-  const projectedCost = parsedLimit * TRACE_UNIT_COST;
-  const overBudget = wallet != null && projectedCost > wallet.balance;
+  const projectedCost = parsedLimit * TRACE_COST_DISPLAY;
+  const guardCost = parsedLimit * TRACE_COST_GUARD;
+  const overBudget = wallet != null && guardCost > wallet.balance;
   const canRunBatch =
     settings.skiptrace_provider_configured &&
     parsedLimit > 0 &&
@@ -1028,8 +1067,8 @@ export default function PhUccMachinePage() {
                     eligible untraced
                   </span>
                   <span className="text-gray-500 dark:text-gray-400">
-                    projected <strong className="text-gray-900 dark:text-white">${projectedCost.toFixed(2)}</strong>
-                    <span className="text-gray-400"> ({parsedLimit.toLocaleString()} × ${TRACE_UNIT_COST.toFixed(2)})</span>
+                    est. <strong className="text-gray-900 dark:text-white">~${projectedCost.toFixed(2)}</strong>
+                    <span className="text-gray-400"> ({parsedLimit.toLocaleString()} × ${TRACE_COST_DISPLAY.toFixed(2)})</span>
                   </span>
                   <span className="text-gray-500 dark:text-gray-400">
                     wallet{" "}
@@ -1042,8 +1081,8 @@ export default function PhUccMachinePage() {
                 {overBudget && (
                   <p className="text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1">
                     <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
-                    Projected ${projectedCost.toFixed(2)} would exceed the ${wallet?.balance.toFixed(2)} wallet — lower the
-                    limit or top up.
+                    At the ${TRACE_COST_GUARD.toFixed(2)} guard rate this run could reach ${guardCost.toFixed(2)}, above
+                    the ${wallet?.balance.toFixed(2)} wallet — lower the limit or top up.
                   </p>
                 )}
                 {batchEligible === 0 && (
