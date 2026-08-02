@@ -50,20 +50,14 @@ update public.platform_settings
 set value = value - 'ucc_load_enabled' - 'skiptrace_provider' - 'tcpa_scrub_provider'
 where key = 'ph_settings';
 
--- ── 3. Staff write RLS (the UI writes directly via mustWrite) ───────────────────
--- Aliases: admins add (curated), toggle active, delete. Leads: admins suppress.
--- INSERT into leads stays service-only (matcher writes them).
+-- ── 3. Staff write RLS ─────────────────────────────────────────────────────────
+-- Write policies are owned by the dedicated migration
+-- 20260802_ph_ucc_admin_write_policies.sql (ph-backend): ph_ucc_funder_aliases
+-- INSERT/UPDATE/DELETE + ph_ucc_leads UPDATE for is_admin_or_super. An earlier
+-- version of this file added an overlapping FOR ALL policy on aliases; it was a
+-- redundant duplicate and has been dropped. The defensive drop below keeps a fresh
+-- apply from leaving that stray policy behind, then defers to the dedicated file.
 drop policy if exists ph_ucc_funder_aliases_admin_write on public.ph_ucc_funder_aliases;
-create policy ph_ucc_funder_aliases_admin_write on public.ph_ucc_funder_aliases
-  for all to authenticated
-  using (is_admin_or_super(auth.uid()))
-  with check (is_admin_or_super(auth.uid()));
-
-drop policy if exists ph_ucc_leads_admin_update on public.ph_ucc_leads;
-create policy ph_ucc_leads_admin_update on public.ph_ucc_leads
-  for update to authenticated
-  using (is_admin_or_super(auth.uid()))
-  with check (is_admin_or_super(auth.uid()));
 
 -- ── 4. Data quality: deactivate non-MCA-position lender aliases ─────────────────
 -- These are equipment-lease / freight-factoring lenders. Their UCC filings are
