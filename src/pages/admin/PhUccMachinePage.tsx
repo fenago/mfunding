@@ -10,6 +10,7 @@ import {
   NoSymbolIcon,
   ClockIcon,
   MapIcon,
+  ArrowDownTrayIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -60,6 +61,8 @@ interface UccLead {
   freshness_days: number | null;
   score: number | null;
   status: LeadStatus;
+  phone: string | null; // null until skip-trace is live
+  email: string | null; // null until skip-trace is live
 }
 
 interface UccAlias {
@@ -109,6 +112,50 @@ const SOURCE_STATUS_META: Record<SourceStatus, { label: string; chip: string; do
 };
 
 const PAGE_SIZE = 25;
+
+/* Stable CSV column order for the lead export. phone/email stay in the shape
+   even though they're null until skip-trace is live — keeps the file layout
+   constant across exports. */
+const LEAD_CSV_COLUMNS = [
+  "debtor_name",
+  "state",
+  "matched_funders",
+  "stack_depth",
+  "latest_filing_date",
+  "freshness_days",
+  "score",
+  "status",
+  "phone",
+  "email",
+] as const;
+
+/* RFC-4180-ish escaping: wrap in quotes when the value contains a comma, quote,
+   or newline; double any embedded quotes. */
+function csvCell(v: unknown): string {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function buildCsv(headers: readonly string[], rows: (unknown[])[]): string {
+  const lines = [headers.map(csvCell).join(",")];
+  for (const r of rows) lines.push(r.map(csvCell).join(","));
+  return lines.join("\r\n");
+}
+function downloadCsv(filename: string, csv: string): void {
+  // Prepend a UTF-8 BOM so Excel reads accented funder names correctly.
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+function todayStamp(): string {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+}
 
 /* A PostgREST "table/relation not found" error → backend not deployed. */
 function isMissingRelation(err: { code?: string; message?: string } | null): boolean {
@@ -165,6 +212,14 @@ export default function PhUccMachinePage() {
   const [fState, setFState] = useState("");
   const [fStatus, setFStatus] = useState("");
   const [fMinStack, setFMinStack] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportFlash, setExportFlash] = useState<string | null>(null);
+  // Raw filings export (nice-to-have): selected state + date range.
+  const [filState, setFilState] = useState("");
+  const [filFrom, setFilFrom] = useState("");
+  const [filTo, setFilTo] = useState("");
+  const [filExporting, setFilExporting] = useState(false);
+  const [filFlash, setFilFlash] = useState<string | null>(null);
 
   // Pull-now progress, keyed by source id.
   const [pulling, setPulling] = useState<Record<string, string>>({});
@@ -283,6 +338,82 @@ export default function PhUccMachinePage() {
       setLeadsLoading(false);
     }
   }, [page, fState, fStatus, fMinStack]);
+
+  /* Export the CURRENT filtered view (full result set, not just the visible
+     page) as CSV. Client-side is fine at current volumes; if row counts ever
+     make that impractical, move to a `ph-ucc-ingest`-style edge endpoint. */
+  const exportLeadsCsv = useCallback(async () => {
+    setExporting(true);
+    setExportFlash(null);
+    try {
+      let q = supabase
+        .from("ph_ucc_leads")
+        .select(
+          "debtor_name, state, matched_funders, stack_depth, latest_filing_date, freshness_days, score, status, phone, email",
+        )
+        .order("score", { ascending: false, nullsFirst: false });
+      if (fState) q = q.eq("state", fState);
+      if (fStatus) q = q.eq("status", fStatus);
+      else q = q.neq("status", "suppressed");
+      if (fMinStack) q = q.gte("stack_depth", Number(fMinStack) || 0);
+
+      const res = await q;
+      if (res.error) throw res.error;
+      const data = (res.data as UccLead[]) ?? [];
+      const rows = data.map((l) => [
+        l.debtor_name,
+        l.state,
+        (l.matched_funders ?? []).join("|"), // pipe-joined so commas don't split columns
+        l.stack_depth,
+        l.latest_filing_date,
+        l.freshness_days,
+        l.score,
+        l.status,
+        l.phone,
+        l.email,
+      ]);
+      downloadCsv(`ph-ucc-leads-${todayStamp()}.csv`, buildCsv(LEAD_CSV_COLUMNS, rows));
+      setExportFlash(`exported ${rows.length} row${rows.length === 1 ? "" : "s"} ✓`);
+      setTimeout(() => setExportFlash(null), 5000);
+    } catch (e) {
+      setExportFlash(`export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  }, [fState, fStatus, fMinStack]);
+
+  /* Raw filings dump for a state + date range. Schema-agnostic: columns are
+     derived from the returned rows, so it survives whatever ph_ucc_filings
+     ends up holding. */
+  const exportFilingsCsv = useCallback(async () => {
+    setFilExporting(true);
+    setFilFlash(null);
+    try {
+      let q = supabase.from("ph_ucc_filings").select("*").order("filing_date", { ascending: false }).limit(50000);
+      if (filState) q = q.eq("state", filState);
+      if (filFrom) q = q.gte("filing_date", filFrom);
+      if (filTo) q = q.lte("filing_date", filTo);
+
+      const res = await q;
+      if (res.error) throw res.error;
+      const data = (res.data as Record<string, unknown>[]) ?? [];
+      if (data.length === 0) {
+        setFilFlash("no filings match ✓");
+        setTimeout(() => setFilFlash(null), 5000);
+        return;
+      }
+      const headers = Object.keys(data[0]);
+      const rows = data.map((r) => headers.map((h) => r[h]));
+      const scope = [filState || "all", filFrom || "start", filTo || "today"].join("_");
+      downloadCsv(`ph-ucc-filings-${scope}-${todayStamp()}.csv`, buildCsv(headers, rows));
+      setFilFlash(`exported ${rows.length} row${rows.length === 1 ? "" : "s"} ✓`);
+      setTimeout(() => setFilFlash(null), 5000);
+    } catch (e) {
+      setFilFlash(`export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setFilExporting(false);
+    }
+  }, [filState, filFrom, filTo]);
 
   useEffect(() => {
     loadOverview();
@@ -418,7 +549,50 @@ export default function PhUccMachinePage() {
         <>
           {/* ── 1. Source status cards ── */}
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Sources</h2>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Sources</h2>
+              {/* Raw filings export — state + date range dump. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <select className={input} value={filState} onChange={(e) => setFilState(e.target.value)}>
+                  <option value="">All states</option>
+                  {usStates.map((st) => (
+                    <option key={st} value={st}>
+                      {st}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="date"
+                  className={input}
+                  value={filFrom}
+                  onChange={(e) => setFilFrom(e.target.value)}
+                  title="Filing date from"
+                />
+                <input
+                  type="date"
+                  className={input}
+                  value={filTo}
+                  onChange={(e) => setFilTo(e.target.value)}
+                  title="Filing date to"
+                />
+                <button
+                  onClick={exportFilingsCsv}
+                  disabled={filExporting}
+                  className="btn-ghost inline-flex items-center gap-1.5 text-sm"
+                  title="Export raw filings for this state + date range"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4" />
+                  {filExporting ? "Exporting…" : "Export filings"}
+                </button>
+                {filFlash && (
+                  <span
+                    className={`text-xs ${filFlash.startsWith("export failed") ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}
+                  >
+                    {filFlash}
+                  </span>
+                )}
+              </div>
+            </div>
             {sources.length === 0 ? (
               <p className="text-sm text-gray-400">No sources configured yet.</p>
             ) : (
@@ -591,6 +765,22 @@ export default function PhUccMachinePage() {
                   value={fMinStack}
                   onChange={(e) => setFMinStack(e.target.value)}
                 />
+                <button
+                  onClick={exportLeadsCsv}
+                  disabled={exporting}
+                  className="btn-ghost inline-flex items-center gap-1.5 text-sm"
+                  title="Export the current filtered view to CSV"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4" />
+                  {exporting ? "Exporting…" : "Export CSV"}
+                </button>
+                {exportFlash && (
+                  <span
+                    className={`text-xs ${exportFlash.startsWith("export failed") ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}
+                  >
+                    {exportFlash}
+                  </span>
+                )}
               </div>
             </div>
 
