@@ -150,6 +150,7 @@ const TRACE_COST_DISPLAY = 0.07;
 const TRACE_COST_GUARD = 0.1;
 const FRESH_ONLY_DAYS = 90; // the highest-value scope for a skip-trace run
 const DEFAULT_MAX_FRESHNESS_DAYS = 120; // the edge fn's default when fresh-only is off
+const HARD_CALL_CAP = 100; // the edge fn traces at most 100 leads per call, regardless of limit
 
 /* Stable CSV column order for the lead export. phone/email stay in the shape
    even though they're null until skip-trace is live — keeps the file layout
@@ -647,9 +648,12 @@ export default function PhUccMachinePage() {
       const res = (data as Record<string, unknown>) ?? {};
       if (res.ok === false) throw new Error(String(res.error || "skip-trace failed"));
 
-      // Nothing-eligible branch: {ok:true, traced:0, message, balance_before} —
-      // no balance_after/run_spend_usd; show the message, leave the wallet as-is.
-      if (res.balance_after == null && typeof res.message === "string") {
+      // Stage paused: skiptrace_enabled=false (no force) → skipped:true, not traced:0.
+      if (res.skipped === true) {
+        setBatchResult("stage paused by owner — skip-trace is disabled in Settings");
+      } else if (res.balance_after == null && typeof res.message === "string") {
+        // Nothing-eligible branch: {ok:true, traced:0, message, balance_before} —
+        // no balance_after/run_spend_usd; show the message, leave the wallet as-is.
         setBatchResult(res.message);
       } else {
         const traced = Number(res.traced ?? 0) || 0;
@@ -812,11 +816,13 @@ export default function PhUccMachinePage() {
   const batchCapDirty = phSettings != null && batchCapInput !== String(phSettings.max_skiptrace_batch ?? 300);
   const dncDirty = phSettings != null && dncInput !== String(phSettings.skiptrace_dnc_policy ?? "");
 
-  // Budget: show the operator the realistic estimate (limit × $0.07) but block on
-  // the conservative guard (limit × $0.10) so we never overrun the wallet.
+  // A single call traces at most min(limit, 100, eligible) leads. Base both the
+  // shown estimate (× $0.07) and the hard budget guard (× $0.10) on that true
+  // per-call size so we neither overstate cost nor overrun the wallet.
   const parsedLimit = Math.max(0, Math.floor(Number(batchLimit) || 0));
-  const projectedCost = parsedLimit * TRACE_COST_DISPLAY;
-  const guardCost = parsedLimit * TRACE_COST_GUARD;
+  const effectiveRun = Math.min(parsedLimit, HARD_CALL_CAP, batchEligible ?? Infinity);
+  const projectedCost = effectiveRun * TRACE_COST_DISPLAY;
+  const guardCost = effectiveRun * TRACE_COST_GUARD;
   const overBudget = wallet != null && guardCost > wallet.balance;
   const canRunBatch =
     settings.skiptrace_provider_configured &&
@@ -1153,7 +1159,7 @@ export default function PhUccMachinePage() {
                   </span>
                   <span className="text-gray-500 dark:text-gray-400">
                     est. <strong className="text-gray-900 dark:text-white">~${projectedCost.toFixed(2)}</strong>
-                    <span className="text-gray-400"> ({parsedLimit.toLocaleString()} × ${TRACE_COST_DISPLAY.toFixed(2)})</span>
+                    <span className="text-gray-400"> ({effectiveRun === Infinity ? parsedLimit.toLocaleString() : effectiveRun.toLocaleString()} × ${TRACE_COST_DISPLAY.toFixed(2)})</span>
                   </span>
                   <span className="text-gray-500 dark:text-gray-400">
                     wallet{" "}
@@ -1193,7 +1199,7 @@ export default function PhUccMachinePage() {
                     {batchRunning
                       ? "Tracing…"
                       : batchArmed
-                        ? `Confirm — trace up to ${Math.min(parsedLimit, batchEligible ?? parsedLimit).toLocaleString()}`
+                        ? `Confirm — trace up to ${(effectiveRun === Infinity ? parsedLimit : effectiveRun).toLocaleString()}`
                         : "Run skip-trace batch"}
                   </button>
                   {batchArmed && !batchRunning && (
@@ -1206,7 +1212,7 @@ export default function PhUccMachinePage() {
                 </div>
                 <p className="text-xs text-gray-400">
                   Traces only <code>needs_skiptrace</code> leads and is idempotent — already-traced leads are never
-                  re-charged. A manual run does one batch; the weekly cron drains the rest.
+                  re-charged. Each call traces at most 100 (min with Max skip-trace batch); the weekly cron drains the rest.
                 </p>
               </div>
             </section>
@@ -1564,9 +1570,9 @@ export default function PhUccMachinePage() {
                       {
                         key: "skiptrace_enabled",
                         label: "Skip-trace enabled",
-                        desc: "Master switch for the BatchData skip-trace stage.",
+                        desc: "Master switch for the BatchData skip-trace stage — off pauses all tracing.",
                         danger: false,
-                        advisory: "Not yet enforced — the skip-trace fn doesn't read this gate yet, so tracing runs regardless.",
+                        advisory: null,
                       },
                       {
                         key: "instantly_verify_emails",
@@ -1629,10 +1635,9 @@ export default function PhUccMachinePage() {
                     <div className="border-t border-gray-100 dark:border-gray-700/60 pt-3 flex flex-wrap items-end gap-3">
                       <div>
                         <label className="block text-sm font-medium text-gray-900 dark:text-white mb-1">Max skip-trace batch</label>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Upper bound on a single run's lead count.</p>
-                        <p className="text-xs text-amber-600 dark:text-amber-400 mb-1 flex items-center gap-1">
-                          <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> Not yet enforced — the fn currently
-                          caps each run at 100 regardless.
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                          Effective per-call cap is min(100, this). Above 100 still chunks at 100/call; below 100 lowers
+                          the per-call cap.
                         </p>
                         <input
                           type="number"
