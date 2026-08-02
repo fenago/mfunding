@@ -43,6 +43,11 @@ const PAGE = 1000;                 // Socrata max page
 const CO_MAX_PER_TERM = 4000;      // cap a single funder's secured-party pull
 const CO_MAX_FILES_PER_RUN = 6000; // cap fileids collected per run so hydration fits the wall
 const CHUNK = 150;                 // fileid IN-list chunk size
+// CO carries filings back to the 1960s. The product edge is FRESH positions and a
+// TERMINATED lien is a closed (paid-off) position — not an MCA to poach. So we keep
+// only non-terminated filings inside a rolling window. 540d (~18mo) keeps enough
+// history for a meaningful stack-depth signal without dialing ancient dead liens.
+const CO_WINDOW_DAYS = 540;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -159,7 +164,30 @@ async function ingestOR(db: SupabaseClient, sourceId: string | null) {
     }
   }
   const upserted = await upsertFilings(db, out);
-  return { fetched, files: byFile.size, filing_rows: out.length, upserted };
+  return { fetched, files: byFile.size, filing_rows: out.length, upserted, newest: maxFiled(out) };
+}
+
+// Newest filed_date across a batch of rows (ISO date string) or null.
+function maxFiled(rows: FilingRow[]): string | null {
+  let m: string | null = null;
+  for (const r of rows) if (r.filed_date && (!m || r.filed_date > m)) m = r.filed_date;
+  return m;
+}
+
+// Accurate newest filed_date for a state from the DB (survives CO's chunk chain).
+async function newestFor(db: SupabaseClient, state: string): Promise<string | null> {
+  const { data } = await db.from("ph_ucc_filings")
+    .select("filed_date").eq("state", state)
+    .order("filed_date", { ascending: false, nullsFirst: false }).limit(1).maybeSingle();
+  return (data?.filed_date as string | null) ?? null;
+}
+
+// Total filings HELD for a state (the meaningful "rows ingested" for the source
+// card — a per-invocation count would show only CO's last chunk).
+async function filingsHeld(db: SupabaseClient, state: string): Promise<number> {
+  const { count } = await db.from("ph_ucc_filings")
+    .select("id", { count: "exact", head: true }).eq("state", state);
+  return count ?? 0;
 }
 
 // ── COLORADO: targeted secured-party ingest, resumable by alias cursor ──────
@@ -206,7 +234,10 @@ async function ingestCO(
   }
 
   const fileIds = Array.from(spByFile.keys());
+  const cutoff = new Date(Date.now() - CO_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
   // 2) Hydrate filings (dates/status) + debtors for those fileids, chunked.
+  //    Filings query drops terminated + out-of-window at the source; a fileid with
+  //    no surviving filing is dropped in the emit step below.
   const filingMeta = new Map<string, any>();
   const debtorByFile = new Map<string, any>();
   for (let i = 0; i < fileIds.length; i += CHUNK) {
@@ -215,7 +246,9 @@ async function ingestCO(
     const [fils, debs] = await Promise.all([
       soda(CO_FILING, CO_BASE, {
         $select: "fileid,filingdate,lapsedate,filingtype,transactiontype,terminationflag",
-        $where: `fileid in (${inList})`, $limit: String(CHUNK * 4),
+        $where: `fileid in (${inList}) AND filingdate >= '${cutoff}T00:00:00'`
+              + ` AND (terminationflag IS NULL OR terminationflag = false)`,
+        $limit: String(CHUNK * 4),
       }),
       soda(CO_DEBTOR, CO_BASE, {
         $select: "fileid,organizationname,lastname,firstname,address1,city,state,zipcode,recordstatus",
@@ -236,6 +269,7 @@ async function ingestCO(
   const out: FilingRow[] = [];
   for (const [fid, sps] of spByFile) {
     const f = filingMeta.get(fid);
+    if (!f) continue; // terminated or outside the freshness window → not a live position
     const d = debtorByFile.get(fid);
     const debtorName = d
       ? (clean(d.organizationname) ??
@@ -263,7 +297,8 @@ async function ingestCO(
   const nextCursor = budgetHit ? cursor : null; // null = finished all terms
   return {
     terms_total: terms.length, terms_run: termsRun, next_cursor: nextCursor,
-    matched_files: fileIds.length, filing_rows: out.length, upserted,
+    matched_files: fileIds.length, kept_after_window: out.length ? new Set(out.map((r) => r.filing_no)).size : 0,
+    filing_rows: out.length, upserted, window_days: CO_WINDOW_DAYS, newest: maxFiled(out),
   };
 }
 
@@ -312,8 +347,9 @@ Deno.serve(async (req) => {
       const r = await ingestOR(db, s?.id ?? null);
       results.OR = r;
       if (s) await db.from("ph_ucc_sources").update({
-        last_pull_at: new Date().toISOString(), last_rows: r.upserted, status: "active",
-        notes: `Last run ${new Date().toISOString()}: ${r.upserted} filing-rows from ${r.files} files.`,
+        last_pull_at: new Date().toISOString(), last_rows: await filingsHeld(db, "OR"), status: "active",
+        newest_filing_date: await newestFor(db, "OR"),
+        notes: `Last run ${new Date().toISOString()}: +${r.upserted} filing-rows from ${r.files} files.`,
       }).eq("id", s.id);
     }
 
@@ -322,9 +358,10 @@ Deno.serve(async (req) => {
       const r = await ingestCO(db, s?.id ?? null, coCursor, started);
       results.CO = r;
       if (s) await db.from("ph_ucc_sources").update({
-        last_pull_at: new Date().toISOString(), last_rows: r.upserted,
+        last_pull_at: new Date().toISOString(), last_rows: await filingsHeld(db, "CO"),
         last_cursor: r.next_cursor === null ? null : String(r.next_cursor), status: "active",
-        notes: `Last run ${new Date().toISOString()}: ${r.upserted} filing-rows; terms ${r.terms_run}/${r.terms_total}${r.next_cursor !== null ? ` (RESUME at co_cursor=${r.next_cursor})` : " (complete)"}.`,
+        newest_filing_date: await newestFor(db, "CO"),
+        notes: `Last run ${new Date().toISOString()}: +${r.upserted} filing-rows; terms ${r.terms_run}/${r.terms_total}${r.next_cursor !== null ? ` (RESUME at co_cursor=${r.next_cursor})` : " (complete, ≤" + CO_WINDOW_DAYS + "d window)"}.`,
       }).eq("id", s.id);
     }
 
@@ -355,7 +392,12 @@ Deno.serve(async (req) => {
       results.self_reinvoked_co_cursor = coNext;
     }
 
-    return json({ ok: true, state: stateParam, elapsed_ms: Date.now() - started, ...results });
+    // Top-level rows_ingested for the dashboard's "+N rows" toast (sums states run).
+    const rowsIngested =
+      ((results.OR as { upserted?: number } | undefined)?.upserted ?? 0) +
+      ((results.CO as { upserted?: number } | undefined)?.upserted ?? 0);
+
+    return json({ ok: true, state: stateParam, rows_ingested: rowsIngested, elapsed_ms: Date.now() - started, ...results });
   } catch (e) {
     console.error("[ph-ucc-ingest] FAILED", e instanceof Error ? e.message : String(e));
     return json({ ok: false, error: e instanceof Error ? e.message : String(e), partial: results }, 500);
