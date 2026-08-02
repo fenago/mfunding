@@ -11,6 +11,7 @@ import {
   ClockIcon,
   MapIcon,
   ArrowDownTrayIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -70,6 +71,7 @@ interface UccAlias {
   alias: string;
   canonical_name: string | null;
   source: string | null; // "lenders" | "curated"
+  active?: boolean; // present once ph_ucc_funder_aliases has the column; undefined = treat as active
   created_at?: string | null;
 }
 
@@ -228,6 +230,9 @@ export default function PhUccMachinePage() {
   const [newCanonical, setNewCanonical] = useState("");
   const [aliasSaving, setAliasSaving] = useState(false);
   const [aliasErr, setAliasErr] = useState<string | null>(null);
+  // Two-step inline confirm for the destructive alias delete (owner rule: no
+  // browser popups). First tap arms the row, second fires; disarms after 5s.
+  const [aliasArmed, setAliasArmed] = useState<string | null>(null);
 
   /* Funnel counts: filings + per-status lead counts via head/count queries. */
   const loadFunnel = useCallback(async () => {
@@ -425,6 +430,12 @@ export default function PhUccMachinePage() {
   useEffect(() => {
     setPage(0);
   }, [fState, fStatus, fMinStack]);
+  // Auto-disarm a primed alias delete after 5s.
+  useEffect(() => {
+    if (!aliasArmed) return;
+    const t = setTimeout(() => setAliasArmed(null), 5000);
+    return () => clearTimeout(t);
+  }, [aliasArmed]);
 
   /* ── Actions ── */
   const pullNow = useCallback(
@@ -451,6 +462,11 @@ export default function PhUccMachinePage() {
     [loadOverview],
   );
 
+  const reloadAliases = useCallback(async () => {
+    const aliasRes = await supabase.from("ph_ucc_funder_aliases").select("*").order("alias", { ascending: true });
+    if (!aliasRes.error) setAliases((aliasRes.data as UccAlias[]) ?? []);
+  }, []);
+
   const addAlias = useCallback(async () => {
     const alias = newAlias.trim();
     if (!alias) return;
@@ -467,14 +483,53 @@ export default function PhUccMachinePage() {
       );
       setNewAlias("");
       setNewCanonical("");
-      const aliasRes = await supabase.from("ph_ucc_funder_aliases").select("*").order("alias", { ascending: true });
-      if (!aliasRes.error) setAliases((aliasRes.data as UccAlias[]) ?? []);
+      await reloadAliases();
     } catch (e) {
       setAliasErr(e instanceof Error ? e.message : String(e));
     } finally {
       setAliasSaving(false);
     }
-  }, [newAlias, newCanonical]);
+  }, [newAlias, newCanonical, reloadAliases]);
+
+  /* Curated aliases can be deleted outright. Lenders-seeded aliases must NOT be
+     deleted (the re-seed would resurrect them) — they get an `active` toggle so
+     the matcher ignores them while the row survives re-seeding. */
+  const removeAlias = useCallback(
+    async (a: UccAlias) => {
+      setAliasErr(null);
+      const prev = aliases;
+      setAliases((as) => as.filter((x) => x.id !== a.id)); // optimistic
+      try {
+        await mustWrite(
+          "delete UCC funder alias",
+          supabase.from("ph_ucc_funder_aliases").delete().eq("id", a.id),
+        );
+      } catch (e) {
+        setAliases(prev); // revert
+        setAliasErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [aliases],
+  );
+
+  const toggleAliasActive = useCallback(
+    async (a: UccAlias) => {
+      setAliasErr(null);
+      const currentlyActive = a.active !== false;
+      const next = !currentlyActive;
+      setAliases((as) => as.map((x) => (x.id === a.id ? { ...x, active: next } : x))); // optimistic
+      try {
+        await mustWrite(
+          "toggle UCC funder alias",
+          supabase.from("ph_ucc_funder_aliases").update({ active: next }).eq("id", a.id),
+        );
+      } catch (e) {
+        setAliasErr(e instanceof Error ? e.message : String(e));
+        reloadAliases(); // revert to server truth (e.g. `active` column not present yet)
+      }
+    },
+    [reloadAliases],
+  );
 
   const toggleSuppress = useCallback(
     async (lead: UccLead) => {
@@ -505,6 +560,11 @@ export default function PhUccMachinePage() {
   }, [sources, leads]);
 
   const totalPages = Math.max(1, Math.ceil(leadCount / PAGE_SIZE));
+
+  // Whether ph_ucc_funder_aliases carries the `active` column yet. If not, the
+  // enable/disable toggle is gated off (the backend is adding it — see the
+  // note to ph-ucc-machine) so we never fire an update against a missing column.
+  const aliasHasActiveColumn = useMemo(() => aliases.some((a) => "active" in a), [aliases]);
 
   /* ── Render ── */
   return (
@@ -905,10 +965,12 @@ export default function PhUccMachinePage() {
           <section className="space-y-3">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400 flex items-center gap-2">
               <MapIcon className="w-4 h-4" /> Funder alias dictionary
+              <span className="normal-case font-normal text-gray-400">· {aliases.length} total</span>
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 -mt-1">
               Teach the matcher new names funders file UCCs under. Aliases from the lenders table are auto-loaded; add
-              curated ones here.
+              curated ones here. Curated aliases can be removed; auto-seeded lenders aliases are disabled (not deleted)
+              so a re-seed doesn't bring them back.
             </p>
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
               <div className="flex flex-wrap items-end gap-2">
@@ -950,26 +1012,78 @@ export default function PhUccMachinePage() {
                         <th className="py-2 px-3">Alias</th>
                         <th className="py-2 px-3">Maps to</th>
                         <th className="py-2 px-3">Source</th>
+                        <th className="py-2 px-3 text-right"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {aliases.map((a) => (
-                        <tr key={a.id} className="border-b border-gray-50 dark:border-gray-700/50">
-                          <td className="py-2 px-3 text-gray-900 dark:text-gray-100">{a.alias}</td>
-                          <td className="py-2 px-3 text-gray-500 dark:text-gray-400">{a.canonical_name || "—"}</td>
-                          <td className="py-2 px-3">
-                            <span
-                              className={`text-xs px-2 py-0.5 rounded-full ${
-                                a.source === "curated"
-                                  ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
-                                  : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-                              }`}
-                            >
-                              {a.source || "lenders"}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      {aliases.map((a) => {
+                        const isCurated = a.source === "curated";
+                        const disabled = a.active === false;
+                        return (
+                          <tr
+                            key={a.id}
+                            className={`border-b border-gray-50 dark:border-gray-700/50 ${disabled ? "opacity-50" : ""}`}
+                          >
+                            <td className="py-2 px-3 text-gray-900 dark:text-gray-100">{a.alias}</td>
+                            <td className="py-2 px-3 text-gray-500 dark:text-gray-400">{a.canonical_name || "—"}</td>
+                            <td className="py-2 px-3">
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded-full ${
+                                  isCurated
+                                    ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
+                                    : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                                }`}
+                              >
+                                {a.source || "lenders"}
+                              </span>
+                              {disabled && (
+                                <span className="ml-1 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                                  disabled
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-right">
+                              {isCurated ? (
+                                // Curated → true delete, two-step arm/fire (destructive).
+                                <button
+                                  onClick={() => {
+                                    if (aliasArmed === a.id) {
+                                      setAliasArmed(null);
+                                      removeAlias(a);
+                                    } else {
+                                      setAliasArmed(a.id);
+                                    }
+                                  }}
+                                  className={`text-xs inline-flex items-center gap-1 ${
+                                    aliasArmed === a.id
+                                      ? "text-rose-700 dark:text-rose-300 font-semibold"
+                                      : "text-gray-400 hover:text-rose-600 dark:hover:text-rose-400"
+                                  }`}
+                                  title="Delete this curated alias"
+                                >
+                                  <TrashIcon className="w-4 h-4" />
+                                  {aliasArmed === a.id ? "Tap to confirm" : "Remove"}
+                                </button>
+                              ) : aliasHasActiveColumn ? (
+                                // Lenders-seeded → disable/enable toggle (never delete;
+                                // the re-seed would resurrect a deleted row).
+                                <button
+                                  onClick={() => toggleAliasActive(a)}
+                                  className="text-xs inline-flex items-center gap-1 text-gray-400 hover:text-amber-600 dark:hover:text-amber-400"
+                                  title={disabled ? "Re-enable for the matcher" : "Disable — matcher ignores it, survives re-seed"}
+                                >
+                                  <NoSymbolIcon className="w-4 h-4" />
+                                  {disabled ? "Enable" : "Disable"}
+                                </button>
+                              ) : (
+                                <span className="text-xs text-gray-300 dark:text-gray-600" title="Needs the `active` column on ph_ucc_funder_aliases">
+                                  —
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
