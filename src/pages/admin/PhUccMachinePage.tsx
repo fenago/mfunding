@@ -1566,20 +1566,23 @@ export default function PhUccMachinePage() {
                         label: "Skip-trace enabled",
                         desc: "Master switch for the BatchData skip-trace stage.",
                         danger: false,
+                        advisory: "Not yet enforced — the skip-trace fn doesn't read this gate yet, so tracing runs regardless.",
                       },
                       {
                         key: "instantly_verify_emails",
                         label: "Verify emails (Instantly)",
                         desc: "Grade each traced email's deliverability before cold outreach.",
                         danger: false,
+                        advisory: null,
                       },
                       {
                         key: "apollo_enrich_enabled",
                         label: "Apollo enrichment",
                         desc: "Apollo has a low hit rate on these merchants — BatchData is primary.",
                         danger: true,
+                        advisory: null,
                       },
-                    ].map(({ key, label, desc, danger }) => {
+                    ].map(({ key, label, desc, danger, advisory }) => {
                       const cur = sBool(key);
                       const armed = settingsArmed === key;
                       const saving = settingsSaving === key;
@@ -1597,6 +1600,11 @@ export default function PhUccMachinePage() {
                             <p className={`text-xs ${danger ? "text-rose-600 dark:text-rose-400" : "text-gray-500 dark:text-gray-400"}`}>
                               {desc}
                             </p>
+                            {advisory && (
+                              <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 flex items-center gap-1">
+                                <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> {advisory}
+                              </p>
+                            )}
                           </div>
                           <button
                             onClick={() => {
@@ -1622,6 +1630,10 @@ export default function PhUccMachinePage() {
                       <div>
                         <label className="block text-sm font-medium text-gray-900 dark:text-white mb-1">Max skip-trace batch</label>
                         <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Upper bound on a single run's lead count.</p>
+                        <p className="text-xs text-amber-600 dark:text-amber-400 mb-1 flex items-center gap-1">
+                          <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> Not yet enforced — the fn currently
+                          caps each run at 100 regardless.
+                        </p>
                         <input
                           type="number"
                           min={1}
