@@ -50,32 +50,18 @@ update public.platform_settings
 set value = value - 'ucc_load_enabled' - 'skiptrace_provider' - 'tcpa_scrub_provider'
 where key = 'ph_settings';
 
--- ── 3. Staff write RLS (the UI writes directly via mustWrite) ───────────────────
--- This file is the CANONICAL owner of the write policies: ph_ucc_funder_aliases
--- gets ONE FOR ALL admin policy (covers the dashboard's add / active-toggle /
--- delete); ph_ucc_leads gets an UPDATE policy (suppress / restore). is_admin_or_super
--- only; service-role bypasses RLS. Each is drop-then-create in the same migration
--- txn, so it is idempotent with NO window where the policy is missing.
---
--- CONVERGENCE (do not "clean this up" by dropping _admin_write): ph-backend's
--- 20260802_ph_ucc_drop_redundant_alias_write_policies.sql drops the earlier granular
--- INSERT/UPDATE/DELETE aliases policies and idempotently re-creates this SAME
--- _admin_write with an identical definition. The two files converge to exactly one
--- write policy in ANY apply order. A previous edit here DROPPED _admin_write while
--- ph-backend dropped the granular set at the same time — that mutual drop briefly
--- left the table with no write policy (alias writes 403). Keep the name+definition
--- identical across both files and never leave this as a bare drop.
+-- ── 3. Staff write RLS — SINGLE OWNER is ph-backend's convergence migration ──────
+-- The staff write policies for BOTH ph_ucc tables are owned SOLELY by
+-- 20260802_ph_ucc_drop_redundant_alias_write_policies.sql:
+--   • ph_ucc_funder_aliases: one FOR ALL policy `ph_ucc_funder_aliases_admin_write`
+--   • ph_ucc_leads:          `ph_ucc_leads_admin_update`
+-- (both is_admin_or_super, with check). That file sorts AFTER this one, so on a full
+-- replay it creates the canonical policies last. This file only DEFENSIVELY drops the
+-- stray overlapping alias policy in case a prior partial apply left one behind; it
+-- does NOT create write policies. (An earlier version created them here, which raced
+-- with the convergence file and briefly left the table with no write policy. We agreed
+-- on a single owner — do not add creates back here; ping ph-backend for RLS changes.)
 drop policy if exists ph_ucc_funder_aliases_admin_write on public.ph_ucc_funder_aliases;
-create policy ph_ucc_funder_aliases_admin_write on public.ph_ucc_funder_aliases
-  for all to authenticated
-  using (is_admin_or_super(auth.uid()))
-  with check (is_admin_or_super(auth.uid()));
-
-drop policy if exists ph_ucc_leads_admin_update on public.ph_ucc_leads;
-create policy ph_ucc_leads_admin_update on public.ph_ucc_leads
-  for update to authenticated
-  using (is_admin_or_super(auth.uid()))
-  with check (is_admin_or_super(auth.uid()));
 
 -- ── 4. Data quality: deactivate non-MCA-position lender aliases ─────────────────
 -- These are equipment-lease / freight-factoring lenders. Their UCC filings are
