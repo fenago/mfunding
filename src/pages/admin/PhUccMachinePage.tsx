@@ -124,6 +124,11 @@ const SOURCE_STATUS_META: Record<SourceStatus, { label: string; chip: string; do
 
 const PAGE_SIZE = 25;
 
+/* Approx BatchData per-trace cost, used only for the client-side budget guard
+   (the real spend comes back from the edge fn). */
+const TRACE_UNIT_COST = 0.15;
+const FRESH_ONLY_DAYS = 90; // the highest-value scope for a skip-trace run
+
 /* Stable CSV column order for the lead export. phone/email stay in the shape
    even though they're null until skip-trace is live — keeps the file layout
    constant across exports. */
@@ -218,6 +223,15 @@ export default function PhUccMachinePage() {
   const [wallet, setWallet] = useState<{ balance: number; currency: string } | null>(null);
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletErr, setWalletErr] = useState<string | null>(null);
+  // Skip-trace batch runner (spends the wallet — budget-guarded).
+  const [batchLimit, setBatchLimit] = useState("100");
+  const [batchMinScore, setBatchMinScore] = useState("");
+  const [batchFreshOnly, setBatchFreshOnly] = useState(true); // ≤90d = highest-value scope, default on
+  const [batchEligible, setBatchEligible] = useState<number | null>(null);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchArmed, setBatchArmed] = useState(false);
+  const [batchResult, setBatchResult] = useState<string | null>(null);
+  const [batchErr, setBatchErr] = useState<string | null>(null);
 
   // Lead browser state.
   const [leads, setLeads] = useState<UccLead[]>([]);
@@ -325,6 +339,22 @@ export default function PhUccMachinePage() {
     }
   }, []);
 
+  /* How many needs_skiptrace leads a run would actually hit, given the current
+     batch filters (min_score / fresh≤90d). Shrinks as backend runs drain the
+     backlog — the trace is idempotent so this is the honest "what a run touches". */
+  const loadEligible = useCallback(async () => {
+    let q = supabase
+      .from("ph_ucc_leads")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "needs_skiptrace");
+    if (batchFreshOnly) q = q.lte("freshness_days", FRESH_ONLY_DAYS);
+    const min = Number(batchMinScore);
+    if (batchMinScore && !isNaN(min)) q = q.gte("score", min);
+    const res = await q;
+    if (isMissingRelation(res.error)) return;
+    setBatchEligible(res.error ? null : res.count ?? 0);
+  }, [batchFreshOnly, batchMinScore]);
+
   /* ── Load the top-of-page data (sources, aliases, settings, funnel counts) ── */
   const loadOverview = useCallback(async () => {
     setLoading(true);
@@ -347,13 +377,13 @@ export default function PhUccMachinePage() {
       if (!isMissingRelation(aliasRes.error)) setAliases((aliasRes.data as UccAlias[]) ?? []);
       setSettings({ ...DEFAULT_SETTINGS, ...((setRes.data?.value as Partial<PhUccSettings>) ?? {}) });
 
-      await Promise.all([loadFunnel(), loadFreshness(), loadWallet()]);
+      await Promise.all([loadFunnel(), loadFreshness(), loadWallet(), loadEligible()]);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [loadFunnel, loadFreshness, loadWallet]);
+  }, [loadFunnel, loadFreshness, loadWallet, loadEligible]);
 
   /* ── Lead browser (paginated, filtered, ranked by score) ── */
   const loadLeads = useCallback(async () => {
@@ -478,6 +508,17 @@ export default function PhUccMachinePage() {
     const t = setTimeout(() => setAliasArmed(null), 5000);
     return () => clearTimeout(t);
   }, [aliasArmed]);
+  // Recompute eligible-untraced count when the batch filters change; disarm on change.
+  useEffect(() => {
+    if (!backendMissing) loadEligible();
+    setBatchArmed(false);
+  }, [loadEligible, backendMissing]);
+  // Auto-disarm a primed batch run after 5s.
+  useEffect(() => {
+    if (!batchArmed) return;
+    const t = setTimeout(() => setBatchArmed(false), 5000);
+    return () => clearTimeout(t);
+  }, [batchArmed]);
 
   /* ── Actions ── */
   const pullNow = useCallback(
@@ -503,6 +544,45 @@ export default function PhUccMachinePage() {
     },
     [loadOverview],
   );
+
+  /* Run a skip-trace batch. Spends the wallet, so it's budget-guarded (blocked
+     above when projected > balance) AND two-step armed at the call site. After
+     the run we re-fetch the authoritative wallet balance for "wallet now $Y". */
+  const runBatch = useCallback(async () => {
+    setBatchRunning(true);
+    setBatchErr(null);
+    setBatchResult(null);
+    const limit = Math.max(1, Math.floor(Number(batchLimit) || 0));
+    try {
+      const body: Record<string, unknown> = { limit };
+      const min = Number(batchMinScore);
+      if (batchMinScore && !isNaN(min)) body.min_score = min;
+      if (batchFreshOnly) body.max_freshness_days = FRESH_ONLY_DAYS;
+
+      const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", { body });
+      if (error) throw error;
+      const res = (data as Record<string, unknown>) ?? {};
+      const traced = Number(res.traced ?? res.rows_traced ?? res.count ?? 0) || 0;
+      const spent = Number(res.spent ?? res.cost ?? res.amount_spent ?? 0) || 0;
+
+      // Authoritative post-run wallet balance (the tile + the result line agree).
+      const w = await supabase.functions.invoke("ph-ucc-skiptrace", { body: { action: "wallet" } });
+      const wres = w.data as { ok?: boolean; balance?: number; currency?: string } | null;
+      let nowStr = "";
+      if (wres?.ok && typeof wres.balance === "number") {
+        setWallet({ balance: wres.balance, currency: wres.currency || "USD" });
+        nowStr = ` · wallet now $${wres.balance.toFixed(2)}`;
+      }
+      // Refresh the funnel / eligible / lead table to reflect the traced rows.
+      await Promise.all([loadFunnel(), loadEligible(), loadLeads()]);
+      setBatchResult(`traced ${traced.toLocaleString()} · $${spent.toFixed(2)} spent${nowStr}`);
+    } catch (e) {
+      setBatchErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBatchRunning(false);
+      setBatchArmed(false);
+    }
+  }, [batchLimit, batchMinScore, batchFreshOnly, loadFunnel, loadEligible, loadLeads]);
 
   const reloadAliases = useCallback(async () => {
     const aliasRes = await supabase.from("ph_ucc_funder_aliases").select("*").order("alias", { ascending: true });
@@ -607,6 +687,20 @@ export default function PhUccMachinePage() {
   // enable/disable toggle is gated off (the backend is adding it — see the
   // note to ph-ucc-machine) so we never fire an update against a missing column.
   const aliasHasActiveColumn = useMemo(() => aliases.some((a) => "active" in a), [aliases]);
+
+  // Budget guard: a run touches at most min(limit, eligible) leads; project cost
+  // off the limit (the owner's specified guard) and block launch if it exceeds
+  // the wallet balance.
+  const parsedLimit = Math.max(0, Math.floor(Number(batchLimit) || 0));
+  const projectedCost = parsedLimit * TRACE_UNIT_COST;
+  const overBudget = wallet != null && projectedCost > wallet.balance;
+  const canRunBatch =
+    settings.skiptrace_provider_configured &&
+    parsedLimit > 0 &&
+    (batchEligible == null || batchEligible > 0) &&
+    wallet != null && // never run blind — a hard budget guard needs a known balance
+    !overBudget &&
+    !batchRunning;
 
   /* ── Render ── */
   return (
@@ -882,6 +976,117 @@ export default function PhUccMachinePage() {
               <p className="text-xs text-gray-500 dark:text-gray-400">no match (no phone/email) — off-ramp</p>
             </div>
           </section>
+
+          {/* ── Skip-trace runner (spends the wallet — budget-guarded) ── */}
+          {settings.skiptrace_provider_configured && (
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400 flex items-center gap-2">
+                <BoltIcon className="w-4 h-4" /> Run skip-trace
+              </h2>
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Limit</label>
+                    <input
+                      type="number"
+                      min={1}
+                      className={`${input} w-24`}
+                      value={batchLimit}
+                      onChange={(e) => {
+                        setBatchLimit(e.target.value);
+                        setBatchArmed(false);
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Min score (optional)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="any"
+                      className={`${input} w-28`}
+                      value={batchMinScore}
+                      onChange={(e) => setBatchMinScore(e.target.value)}
+                    />
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200 pb-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-sm"
+                      checked={batchFreshOnly}
+                      onChange={(e) => setBatchFreshOnly(e.target.checked)}
+                    />
+                    fresh ≤90d only
+                  </label>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-4 text-sm">
+                  <span className="text-gray-500 dark:text-gray-400">
+                    <strong className="text-gray-900 dark:text-white">
+                      {batchEligible == null ? "—" : batchEligible.toLocaleString()}
+                    </strong>{" "}
+                    eligible untraced
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">
+                    projected <strong className="text-gray-900 dark:text-white">${projectedCost.toFixed(2)}</strong>
+                    <span className="text-gray-400"> ({parsedLimit.toLocaleString()} × ${TRACE_UNIT_COST.toFixed(2)})</span>
+                  </span>
+                  <span className="text-gray-500 dark:text-gray-400">
+                    wallet{" "}
+                    <strong className={overBudget ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}>
+                      {wallet ? `$${wallet.balance.toFixed(2)}` : "—"}
+                    </strong>
+                  </span>
+                </div>
+
+                {overBudget && (
+                  <p className="text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1">
+                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
+                    Projected ${projectedCost.toFixed(2)} would exceed the ${wallet?.balance.toFixed(2)} wallet — lower the
+                    limit or top up.
+                  </p>
+                )}
+                {batchEligible === 0 && (
+                  <p className="text-xs text-gray-400">No eligible untraced leads for these filters right now.</p>
+                )}
+                {wallet == null && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
+                    Wallet balance unavailable — runs are blocked until it can be read (refresh the wallet tile).
+                  </p>
+                )}
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => {
+                      if (batchArmed) runBatch();
+                      else setBatchArmed(true);
+                    }}
+                    disabled={!canRunBatch}
+                    className={`inline-flex items-center gap-1.5 ${batchArmed ? "btn-warning" : "btn-primary"}`}
+                  >
+                    <BoltIcon className="w-4 h-4" />
+                    {batchRunning
+                      ? "Tracing…"
+                      : batchArmed
+                        ? `Confirm — trace up to ${Math.min(parsedLimit, batchEligible ?? parsedLimit).toLocaleString()}`
+                        : "Run skip-trace batch"}
+                  </button>
+                  {batchArmed && !batchRunning && (
+                    <button onClick={() => setBatchArmed(false)} className="btn-ghost text-sm">
+                      Cancel
+                    </button>
+                  )}
+                  {batchResult && <span className="text-sm text-emerald-600 dark:text-emerald-400">{batchResult}</span>}
+                  {batchErr && <span className="text-sm text-rose-600 dark:text-rose-400">run failed: {batchErr}</span>}
+                </div>
+                <p className="text-xs text-gray-400">
+                  Traces only <code>needs_skiptrace</code> leads and is idempotent — already-traced leads are never
+                  re-charged. A manual run does one batch; the weekly cron drains the rest.
+                </p>
+              </div>
+            </section>
+          )}
 
           {/* ── 3. Lead browser ── */}
           <section className="space-y-3">
