@@ -104,6 +104,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/lender-catalog", // ADMIN-roled below, so pure closers still never see it
   "/admin/rnd", // R&D game plan (roles: ADMIN) — Carlos manages the build-out too; pure closers excluded via roles
   "/admin/ph-setters", // PH Setter Playbook (roles: ADMIN) — same lens treatment as R&D; pure closers excluded via roles
+  "/admin/ph-ucc", // PH UCC Machine (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
 ]);
 
 const navGroups: NavGroup[] = [
@@ -121,6 +122,9 @@ const navGroups: NavGroup[] = [
       // PH Setter Playbook — the outbound-setter console. Admin + super_admin
       // (matches R&D); admins with a closer row see it through the lens.
       { name: "PH Setters", path: "/admin/ph-setters", icon: PhoneArrowUpRightIcon, roles: ADMIN },
+      // UCC Machine — outbound UCC lead engine dashboard. Directly after PH
+      // Setters (owner-specified order); same ADMIN gating + closer lens.
+      { name: "UCC Machine", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },

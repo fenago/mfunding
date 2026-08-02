@@ -95,6 +95,7 @@ const CloserCompPage = lazyWithReload(() => import("../pages/admin/CloserCompPag
 const PipelinePlaybookPage = lazyWithReload(() => import("../pages/admin/PipelinePlaybookPage.tsx"));
 const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.tsx"));
 const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSetterPlaybookPage.tsx"));
+const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
@@ -655,6 +656,13 @@ export const routes: RouteObject[] = [
                 path: "ph-setters",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <PhSetterPlaybookPage /> }],
+              },
+              // PH — UCC Machine — the outbound UCC lead engine dashboard. Same
+              // admin-only guard + closer-lens treatment as PH Setters.
+              {
+                path: "ph-ucc",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <PhUccMachinePage /> }],
               },
               // Lead Tools management (operational — all staff)
               {
