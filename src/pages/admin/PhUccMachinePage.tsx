@@ -33,7 +33,7 @@ import { mustWrite } from "@/supabase/writes";
 /* ------------------------------------------------------------------ */
 
 /* ── Backend contract (mirror of ph-ucc-machine's schema) ── */
-type SourceStatus = "active" | "awaiting_purchase" | "error";
+type SourceStatus = "active" | "awaiting_purchase" | "error" | "unusable";
 interface UccSource {
   id: string;
   state: string; // 2-letter
@@ -111,6 +111,9 @@ const SOURCE_STATUS_META: Record<SourceStatus, { label: string; chip: string; do
   active: { label: "active", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300", dot: "bg-emerald-500" },
   awaiting_purchase: { label: "awaiting purchase", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", dot: "bg-amber-500" },
   error: { label: "error", chip: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300", dot: "bg-rose-500" },
+  // Source exists but its data can't be used (e.g. VA's format) — distinct from a
+  // transient error; the "why" lives in error_note. No "Pull now" (not active).
+  unusable: { label: "unusable", chip: "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300", dot: "bg-slate-400" },
 };
 
 const PAGE_SIZE = 25;
@@ -697,8 +700,12 @@ export default function PhUccMachinePage() {
                           </dd>
                         </div>
                       </dl>
-                      {s.status === "error" && s.error_note && (
-                        <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{s.error_note}</p>
+                      {(s.status === "error" || s.status === "unusable") && s.error_note && (
+                        <p
+                          className={`mt-2 text-xs ${s.status === "error" ? "text-rose-600 dark:text-rose-400" : "text-slate-500 dark:text-slate-400"}`}
+                        >
+                          {s.error_note}
+                        </p>
                       )}
                       {s.status === "active" && (
                         <button
