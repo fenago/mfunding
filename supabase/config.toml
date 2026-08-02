@@ -295,3 +295,14 @@ verify_jwt = true
 # verify_jwt = true; three in-code auth paths (?secret cron / service bearer / staff JWT).
 [functions.ph-send-packet]
 verify_jwt = true
+
+# ph-ucc-verify-emails: PH UCC email-VERIFICATION pass — runs traced leads' BatchData
+# consumer emails through Instantly before the cold-email channel may use them. Gated by
+# ph_settings.instantly_verify_emails. verify_jwt = true; cron (?secret + anon Bearer) or staff JWT.
+[functions.ph-ucc-verify-emails]
+verify_jwt = true
+
+# ph-ucc-apollo-enrich: OPTIONAL, OFF-by-default secondary business-email enrichment via
+# Apollo. Gated by ph_settings.apollo_enrich_enabled. verify_jwt = true; cron or staff JWT.
+[functions.ph-ucc-apollo-enrich]
+verify_jwt = true
