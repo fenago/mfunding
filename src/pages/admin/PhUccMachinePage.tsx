@@ -12,6 +12,7 @@ import {
   MapIcon,
   ArrowDownTrayIcon,
   TrashIcon,
+  BanknotesIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -51,7 +52,9 @@ type LeadStatus =
   | "needs_scrub"
   | "ready"
   | "loaded"
-  | "suppressed";
+  | "suppressed"
+  | "email_only" // traced: only DNC phones, but has an email — terminal off-ramp
+  | "no_match"; // traced: no usable phone, no email — terminal off-ramp
 interface UccLead {
   id: string;
   debtor_name: string | null;
@@ -62,8 +65,9 @@ interface UccLead {
   freshness_days: number | null;
   score: number | null;
   status: LeadStatus;
-  phone: string | null; // null until skip-trace is live
-  email: string | null; // null until skip-trace is live
+  person_name: string | null; // traced owner name (skip-trace)
+  phone: string | null; // dialable NON-DNC number only, or null (DNC-safe by contract)
+  email: string | null; // populated once skip-trace runs
 }
 
 interface UccAlias {
@@ -105,6 +109,8 @@ const LEAD_STATUS_META: Record<LeadStatus, { label: string; chip: string }> = {
   ready: { label: "ready", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
   loaded: { label: "loaded", chip: "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300" },
   suppressed: { label: "suppressed", chip: "bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400" },
+  email_only: { label: "email only", chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" },
+  no_match: { label: "no match", chip: "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300" },
 };
 
 const SOURCE_STATUS_META: Record<SourceStatus, { label: string; chip: string; dot: string }> = {
@@ -208,6 +214,10 @@ export default function PhUccMachinePage() {
   const [settings, setSettings] = useState<PhUccSettings>(DEFAULT_SETTINGS);
   const [funnel, setFunnel] = useState<Record<string, number>>({});
   const [medianIngestDays, setMedianIngestDays] = useState<number | null>(null);
+  // Skip-trace provider wallet (BatchData) — remaining spend.
+  const [wallet, setWallet] = useState<{ balance: number; currency: string } | null>(null);
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletErr, setWalletErr] = useState<string | null>(null);
 
   // Lead browser state.
   const [leads, setLeads] = useState<UccLead[]>([]);
@@ -249,7 +259,17 @@ export default function PhUccMachinePage() {
       .not("debtor_name", "is", null);
     if (!isMissingRelation(debtorRes.error)) counts.debtors = debtorRes.count ?? 0;
 
-    const statuses: LeadStatus[] = ["matched", "needs_skiptrace", "needs_scrub", "ready", "loaded"];
+    // Funnel stages + the two terminal off-ramps (rendered as separate tiles,
+    // not in the funnel strip).
+    const statuses: LeadStatus[] = [
+      "matched",
+      "needs_skiptrace",
+      "needs_scrub",
+      "ready",
+      "loaded",
+      "email_only",
+      "no_match",
+    ];
     const statusCounts = await Promise.all(
       statuses.map((s) =>
         supabase.from("ph_ucc_leads").select("id", { count: "exact", head: true }).eq("status", s),
@@ -286,6 +306,25 @@ export default function PhUccMachinePage() {
     setMedianIngestDays(lags.length % 2 ? lags[mid] : Math.round((lags[mid - 1] + lags[mid]) / 2));
   }, []);
 
+  /* Skip-trace provider wallet balance (BatchData). Best-effort — a failure
+     just leaves the tile in an error state, never blocks the page. */
+  const loadWallet = useCallback(async () => {
+    setWalletLoading(true);
+    setWalletErr(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", { body: { action: "wallet" } });
+      if (error) throw error;
+      const res = data as { ok?: boolean; balance?: number; currency?: string } | null;
+      if (!res?.ok || typeof res.balance !== "number") throw new Error("wallet unavailable");
+      setWallet({ balance: res.balance, currency: res.currency || "USD" });
+    } catch (e) {
+      setWalletErr(e instanceof Error ? e.message : String(e));
+      setWallet(null);
+    } finally {
+      setWalletLoading(false);
+    }
+  }, []);
+
   /* ── Load the top-of-page data (sources, aliases, settings, funnel counts) ── */
   const loadOverview = useCallback(async () => {
     setLoading(true);
@@ -308,13 +347,13 @@ export default function PhUccMachinePage() {
       if (!isMissingRelation(aliasRes.error)) setAliases((aliasRes.data as UccAlias[]) ?? []);
       setSettings({ ...DEFAULT_SETTINGS, ...((setRes.data?.value as Partial<PhUccSettings>) ?? {}) });
 
-      await Promise.all([loadFunnel(), loadFreshness()]);
+      await Promise.all([loadFunnel(), loadFreshness(), loadWallet()]);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [loadFunnel, loadFreshness]);
+  }, [loadFunnel, loadFreshness, loadWallet]);
 
   /* ── Lead browser (paginated, filtered, ranked by score) ── */
   const loadLeads = useCallback(async () => {
@@ -782,24 +821,65 @@ export default function PhUccMachinePage() {
             )}
           </section>
 
-          {/* ── 5. Freshness SLA tile (placed near the funnel for context) ── */}
-          <section>
-            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 flex items-center gap-4 max-w-md">
+          {/* ── 5. Metric tiles: freshness SLA · skip-trace wallet · off-ramps ── */}
+          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Freshness SLA */}
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 flex items-center gap-3">
               <ClockIcon className="w-8 h-8 text-ocean-blue shrink-0" />
               <div>
                 <div className="text-2xl font-bold text-gray-900 dark:text-white">
                   {medianIngestDays == null ? "—" : `${medianIngestDays}d`}
-                  <span className="text-sm font-normal text-gray-400 ml-2">median days filing → ingest</span>
                 </div>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                  Target <strong>≤ 7 days</strong>.{" "}
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  median filing → ingest · target <strong>≤ 7d</strong>
                   {medianIngestDays != null && (
-                    <span className={medianIngestDays <= 7 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>
-                      {medianIngestDays <= 7 ? "On target." : "Behind target."}
+                    <span className={`ml-1 ${medianIngestDays <= 7 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                      {medianIngestDays <= 7 ? "on target" : "behind"}
                     </span>
                   )}
                 </p>
               </div>
+            </div>
+
+            {/* Skip-trace wallet */}
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 flex items-center gap-3">
+              <BanknotesIcon className="w-8 h-8 text-emerald-500 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  {walletLoading ? "…" : wallet ? `$${wallet.balance.toFixed(2)}` : "—"}
+                  <button
+                    onClick={loadWallet}
+                    disabled={walletLoading}
+                    className="text-gray-300 hover:text-gray-500 dark:hover:text-gray-300"
+                    title="Refresh wallet balance"
+                  >
+                    <ArrowPathIcon className={`w-3.5 h-3.5 ${walletLoading ? "animate-spin" : ""}`} />
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                  {walletErr ? (
+                    <span className="text-rose-600 dark:text-rose-400">wallet unavailable</span>
+                  ) : (
+                    "skip-trace wallet (BatchData)"
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* Off-ramp: email only */}
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+              <div className="text-2xl font-bold text-violet-600 dark:text-violet-400">
+                {(funnel.email_only ?? 0).toLocaleString()}
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">email only (DNC phones) — off-ramp</p>
+            </div>
+
+            {/* Off-ramp: no match */}
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+              <div className="text-2xl font-bold text-slate-500 dark:text-slate-400">
+                {(funnel.no_match ?? 0).toLocaleString()}
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">no match (no phone/email) — off-ramp</p>
             </div>
           </section>
 
@@ -858,6 +938,7 @@ export default function PhUccMachinePage() {
                     <th className="py-3 px-4">Score</th>
                     <th className="py-3 px-4">Debtor</th>
                     <th className="py-3 px-4">State</th>
+                    <th className="py-3 px-4">Contact</th>
                     <th className="py-3 px-4">Matched funders</th>
                     <th className="py-3 px-4">Stack</th>
                     <th className="py-3 px-4">Latest filing</th>
@@ -869,13 +950,13 @@ export default function PhUccMachinePage() {
                 <tbody>
                   {leadsLoading ? (
                     <tr>
-                      <td colSpan={9} className="py-8 text-center text-gray-400">
+                      <td colSpan={10} className="py-8 text-center text-gray-400">
                         Loading…
                       </td>
                     </tr>
                   ) : leads.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-8 text-center text-gray-400">
+                      <td colSpan={10} className="py-8 text-center text-gray-400">
                         <MagnifyingGlassIcon className="w-6 h-6 mx-auto mb-1 text-gray-300 dark:text-gray-600" />
                         No leads match these filters yet.
                       </td>
@@ -894,6 +975,24 @@ export default function PhUccMachinePage() {
                           </td>
                           <td className="py-3 px-4 text-gray-900 dark:text-gray-100">{l.debtor_name || "—"}</td>
                           <td className="py-3 px-4 text-gray-500 dark:text-gray-400">{l.state || "—"}</td>
+                          {/* Contact — post-skip-trace. l.phone is a dialable NON-DNC number by
+                              contract (DNC-suppressed numbers are never surfaced here). */}
+                          <td className="py-3 px-4">
+                            {l.phone || l.person_name || l.email ? (
+                              <div className="leading-tight">
+                                {l.person_name && (
+                                  <div className="text-gray-700 dark:text-gray-200">{l.person_name}</div>
+                                )}
+                                {l.phone ? (
+                                  <div className="text-gray-900 dark:text-gray-100">{l.phone}</div>
+                                ) : l.email ? (
+                                  <div className="text-xs text-violet-600 dark:text-violet-400">email only</div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <span className="text-gray-300 dark:text-gray-600">not traced</span>
+                            )}
+                          </td>
                           <td className="py-3 px-4">
                             <div className="flex flex-wrap gap-1">
                               {funders.length === 0 ? (
