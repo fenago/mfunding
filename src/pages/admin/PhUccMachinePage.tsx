@@ -68,7 +68,21 @@ interface UccLead {
   person_name: string | null; // traced owner name (skip-trace)
   phone: string | null; // dialable NON-DNC number only, or null (DNC-safe by contract)
   email: string | null; // populated once skip-trace runs
+  email_verify_status: EmailVerifyStatus | null; // Instantly verdict; only 'verified' is sendable
+  apollo_business_email?: string | null; // optional Apollo enrichment (owner opt-in)
+  apollo_owner_title?: string | null;
 }
+
+type EmailVerifyStatus = "verified" | "catch_all" | "risky" | "invalid" | "bounced" | "unknown";
+/* Only 'verified' is sendable for cold email; the rest are graded warnings. */
+const EMAIL_VERIFY_META: Record<EmailVerifyStatus, { label: string; chip: string }> = {
+  verified: { label: "✓ verified", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  catch_all: { label: "catch-all", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+  risky: { label: "risky", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" },
+  invalid: { label: "invalid", chip: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" },
+  bounced: { label: "bounced", chip: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" },
+  unknown: { label: "unknown", chip: "bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400" },
+};
 
 interface UccAlias {
   id: string;
@@ -1223,7 +1237,7 @@ export default function PhUccMachinePage() {
                               contract (DNC-suppressed numbers are never surfaced here). */}
                           <td className="py-3 px-4">
                             {l.phone || l.person_name || l.email ? (
-                              <div className="leading-tight">
+                              <div className="leading-tight space-y-0.5">
                                 {l.person_name && (
                                   <div className="text-gray-700 dark:text-gray-200">{l.person_name}</div>
                                 )}
@@ -1232,6 +1246,16 @@ export default function PhUccMachinePage() {
                                 ) : l.email ? (
                                   <div className="text-xs text-violet-600 dark:text-violet-400">email only</div>
                                 ) : null}
+                                {/* Email deliverability verdict (Instantly) — shown whenever an
+                                    email exists, since it drives cold-email eligibility. */}
+                                {l.email && l.email_verify_status && EMAIL_VERIFY_META[l.email_verify_status] && (
+                                  <span
+                                    className={`inline-block text-xs px-1.5 py-0.5 rounded ${EMAIL_VERIFY_META[l.email_verify_status].chip}`}
+                                    title={`email: ${l.email}`}
+                                  >
+                                    {EMAIL_VERIFY_META[l.email_verify_status].label}
+                                  </span>
+                                )}
                               </div>
                             ) : (
                               <span className="text-gray-300 dark:text-gray-600">not traced</span>
