@@ -93,7 +93,12 @@ async function getBalance(apiKey: string): Promise<{ balance: number | null; raw
 }
 
 // ── Skip-trace response normalization ─────────────────────────────────────────
-type Phone = { number: string; type: string | null; dnc: boolean; score: number | null; suppressed_dnc: boolean };
+type Phone = {
+  number: string; type: string | null; dnc: boolean; score: number | null;
+  suppressed_dnc: boolean;
+  tcpa_litigator: boolean;   // the owning person is a known TCPA litigator (person-level flag)
+  suppressed_tcpa: boolean;  // person is a litigator OR person-level dnc.tcpa=true → never dialable
+};
 type Person = { person_name: string | null; phones: Phone[]; emails: string[]; raw: unknown };
 
 function personsFrom(b: Record<string, unknown>): any[] {
@@ -117,8 +122,19 @@ function nameFrom(p: any): string | null {
   return clean([p?.firstName, p?.lastName].filter(Boolean).join(" "));
 }
 
+// TCPA is a PERSON-level signal on BatchData's skip-trace response (verified against our
+// stored raw): `litigator` (bool) + `dnc: {tcpa: bool}` — NOT on the phone object. We fold
+// both into one per-person suppression flag and stamp it onto every number the person owns,
+// so a litigator's numbers can never surface as a dialable best_phone.
+function personTcpa(p: any): { litigator: boolean; suppressed: boolean } {
+  const litigator = p?.litigator === true || p?.litigator === "true";
+  const dncTcpa = p?.dnc?.tcpa === true || p?.dnc?.tcpa === "true";
+  return { litigator, suppressed: litigator || dncTcpa };
+}
+
 function phonesFrom(p: any): Phone[] {
   const arr: any[] = p?.phoneNumbers ?? p?.phones ?? [];
+  const { litigator, suppressed } = personTcpa(p);
   const out: Phone[] = [];
   for (const ph of arr) {
     const number = clean(ph?.number ?? ph?.phoneNumber ?? ph);
@@ -130,6 +146,8 @@ function phonesFrom(p: any): Phone[] {
       dnc,
       score: num(ph?.score ?? ph?.reachability ?? ph?.confidence),
       suppressed_dnc: dnc,
+      tcpa_litigator: litigator,
+      suppressed_tcpa: suppressed,
     });
   }
   return out;
@@ -145,13 +163,44 @@ function emailsFrom(p: any): string[] {
   return out;
 }
 
+function personViewFromRaw(p: any): Person {
+  return { person_name: nameFrom(p), phones: phonesFrom(p), emails: emailsFrom(p), raw: p };
+}
+
 function normalizePersons(b: Record<string, unknown>): Person[] {
-  return personsFrom(b).map((p) => ({
-    person_name: nameFrom(p),
-    phones: phonesFrom(p),
-    emails: emailsFrom(p),
-    raw: p,
-  }));
+  return personsFrom(b).map(personViewFromRaw);
+}
+
+// Aggregate a lead's persons into the lead-level summary. SHARED by the live trace and the
+// no-spend reparse, so forward and retroactive logic can never diverge. A number is DIALABLE
+// only when it is neither DNC nor TCPA-suppressed (litigator / person-level dnc.tcpa).
+function aggregate(persons: Person[]) {
+  const anyPerson = persons.some((p) => p.person_name || p.phones.length || p.emails.length);
+  const allPhones = persons.flatMap((p) => p.phones);
+  const allEmails = Array.from(new Set(persons.flatMap((p) => p.emails)));
+  const usablePhones = allPhones.filter((p) => !p.dnc && !p.suppressed_tcpa);
+  const dncPhones = allPhones.filter((p) => p.dnc);
+  const tcpaPhones = allPhones.filter((p) => p.suppressed_tcpa);
+
+  // best dialable = highest score among neither-DNC-nor-TCPA numbers (nulls last)
+  const bestPhone = usablePhones.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0]?.number ?? null;
+  const bestEmail = allEmails[0] ?? null;
+  const primaryName = persons.find((p) => p.person_name)?.person_name ?? null;
+
+  const status: "needs_scrub" | "email_only" | "no_match" =
+    usablePhones.length > 0 ? "needs_scrub" : allEmails.length > 0 ? "email_only" : "no_match";
+
+  const tcpaNote = tcpaPhones.length ? ` ${tcpaPhones.length} suppressed as TCPA-litigator.` : "";
+  const statusReason =
+    status === "needs_scrub"
+      ? `${usablePhones.length} dialable number(s) found; ${dncPhones.length} DNC-suppressed.${tcpaNote} Awaiting TCPA cell-scrub.`
+    : status === "email_only"
+      ? `${allEmails.length} email(s) found; ${dncPhones.length} DNC + ${tcpaPhones.length} TCPA-litigator number(s) suppressed. Routed to cold-email.`
+    : anyPerson
+      ? `Person matched but no dialable number and no email (${dncPhones.length} DNC, ${tcpaPhones.length} TCPA-litigator).`
+      : "No skip-trace match for this address.";
+
+  return { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones, bestPhone, bestEmail, primaryName, status, statusReason };
 }
 
 // ── Lead selection: fresh-first, high-score-first, spend-capped ────────────────
@@ -227,6 +276,68 @@ Deno.serve(async (req) => {
   const force = payload.force === true || url.searchParams.get("force") === "true";
   const debug = payload.debug === true || url.searchParams.get("debug") === "true";
 
+  // ── Reparse mode: recompute phones[]/best_phone/status from STORED ph_ucc_contacts.raw,
+  // with NO BatchData call and NO spend. Backfills TCPA-litigator suppression across leads
+  // that were traced before that flag was parsed. Reuses the SAME phonesFrom/aggregate path
+  // as a live trace, so a reparse and a re-trace yield identical results. Not gated by
+  // skiptrace_enabled (it doesn't spend) and doesn't touch the wallet.
+  if (action === "reparse") {
+    const rpLimit = Math.max(1, Math.min(2000, Math.floor(num(payload.limit ?? url.searchParams.get("limit")) ?? 500)));
+    const maxFresh = num(payload.max_freshness_days ?? url.searchParams.get("max_freshness_days"));
+    let lq = db.from("ph_ucc_leads").select("id,debtor_name,status,phone")
+      .not("traced_at", "is", null)
+      .order("freshness_days", { ascending: true, nullsFirst: false })
+      .limit(rpLimit);
+    if (maxFresh != null) lq = lq.lte("freshness_days", maxFresh);
+    const { data: rpLeads, error: rpErr } = await lq;
+    if (rpErr) return json({ ok: false, error: `reparse select failed: ${rpErr.message}` }, 500);
+
+    let scanned = 0, changed = 0, phoneCleared = 0, statusChanged = 0, litigatorLeads = 0, errored = 0;
+    const details: Record<string, unknown>[] = [];
+    for (const lead of (rpLeads ?? []) as Array<{ id: string; debtor_name: string | null; status: string; phone: string | null }>) {
+      if (Date.now() - started > BUDGET_MS) break;
+      const { data: crows } = await db.from("ph_ucc_contacts").select("id,raw").eq("lead_id", lead.id);
+      const rows = (crows ?? []) as Array<{ id: string; raw: any }>;
+      if (rows.length === 0) continue;
+      scanned++;
+
+      const persons: Person[] = rows.map((cr) => personViewFromRaw(cr.raw));
+      const agg = aggregate(persons);
+      if (agg.tcpaPhones.length > 0) litigatorLeads++;
+
+      // Rewrite each contact row's phones with the recomputed (TCPA-stamped) array.
+      for (let i = 0; i < rows.length; i++) {
+        const { error: cuErr } = await db.from("ph_ucc_contacts").update({ phones: persons[i].phones }).eq("id", rows[i].id);
+        if (cuErr) { errored++; details.push({ lead_id: lead.id, error: `contact update: ${cuErr.message}` }); }
+      }
+
+      const clearsPhone = lead.phone != null && agg.bestPhone == null;
+      const movesStatus = agg.status !== lead.status;
+      if (clearsPhone) phoneCleared++;
+      if (movesStatus) statusChanged++;
+
+      const { error: luErr } = await db.from("ph_ucc_leads").update({
+        phone: agg.bestPhone, email: agg.bestEmail, person_name: agg.primaryName,
+        status: agg.status, status_reason: agg.statusReason,
+      }).eq("id", lead.id);
+      if (luErr) { errored++; details.push({ lead_id: lead.id, error: `lead update: ${luErr.message}` }); continue; }
+
+      if (clearsPhone || movesStatus || agg.tcpaPhones.length > 0) {
+        changed++;
+        details.push({
+          lead_id: lead.id, debtor: lead.debtor_name,
+          tcpa_suppressed: agg.tcpaPhones.length, dnc_suppressed: agg.dncPhones.length,
+          phone_cleared: clearsPhone, status: movesStatus ? `${lead.status} -> ${agg.status}` : agg.status,
+        });
+      }
+    }
+    return json({
+      ok: true, action: "reparse", scanned, changed,
+      phone_cleared: phoneCleared, status_changed: statusChanged, litigator_leads: litigatorLeads, errored,
+      elapsed_ms: Date.now() - started, details,
+    });
+  }
+
   // Owner-controlled gate flags, live-read from ph_settings every call (no redeploy
   // needed when the owner flips a toggle in the settings panel). skiptrace_enabled
   // is the master on/off for this stage; max_skiptrace_batch lets the owner lower
@@ -284,29 +395,14 @@ Deno.serve(async (req) => {
       }
 
       const persons = normalizePersons(r.body);
-      const anyPerson = persons.some((p) => p.person_name || p.phones.length || p.emails.length);
-
-      // Aggregate across persons; the DNC rule decides what becomes dialable.
-      const allPhones = persons.flatMap((p) => p.phones);
-      const allEmails = Array.from(new Set(persons.flatMap((p) => p.emails)));
-      const usablePhones = allPhones.filter((p) => !p.dnc);
-      const dncPhones = allPhones.filter((p) => p.dnc);
-
-      // best dialable number = highest score among non-DNC (nulls last)
-      const bestPhone = usablePhones.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0]?.number ?? null;
-      const bestEmail = allEmails[0] ?? null;
-      const primaryName = persons.find((p) => p.person_name)?.person_name ?? null;
-
-      let status: "needs_scrub" | "email_only" | "no_match";
-      if (usablePhones.length > 0) { status = "needs_scrub"; needsScrub++; }
-      else if (allEmails.length > 0) { status = "email_only"; emailOnly++; }
-      else { status = "no_match"; noMatch++; }
+      // Shared aggregation: DNC + TCPA-litigator both suppress a number from becoming dialable.
+      const { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones,
+              bestPhone, bestEmail, primaryName, status, statusReason } = aggregate(persons);
+      if (status === "needs_scrub") needsScrub++;
+      else if (status === "email_only") emailOnly++;
+      else noMatch++;
 
       const nowIso = new Date().toISOString();
-      const statusReason =
-        status === "needs_scrub" ? `${usablePhones.length} dialable number(s) found; ${dncPhones.length} suppressed as DNC. Awaiting TCPA cell-scrub.`
-        : status === "email_only" ? `${allEmails.length} email(s) found; all ${dncPhones.length} number(s) are DNC-suppressed. Routed to cold-email.`
-        : anyPerson ? `Person matched but no dialable number and no email (${dncPhones.length} DNC-only).` : "No skip-trace match for this address.";
 
       // Replace any prior contact rows for this lead (idempotent re-trace on force).
       await db.from("ph_ucc_contacts").delete().eq("lead_id", lead.id);
@@ -341,7 +437,8 @@ Deno.serve(async (req) => {
       perLead.push({
         lead_id: lead.id, debtor: lead.debtor_name, state: lead.state,
         person: primaryName, persons: persons.length,
-        phones_total: allPhones.length, dialable: usablePhones.length, dnc_suppressed: dncPhones.length,
+        phones_total: allPhones.length, dialable: usablePhones.length,
+        dnc_suppressed: dncPhones.length, tcpa_suppressed: tcpaPhones.length,
         emails: allEmails.length, status,
       });
     }
