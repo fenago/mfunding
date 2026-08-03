@@ -1,0 +1,43 @@
+name: PH UCC — Florida auto-fetch
+
+# Downloads Florida's FREE full UCC bulk file (floridaucc.com, via the public
+# no-auth publicsearchapi endpoint), uploads the unzipped CSVs to the
+# ph-ucc-uploads bucket, and triggers ph-ucc-file-ingest — so FL self-updates like
+# the API states (CO/OR), no agent needed. Runs on a GitHub runner because the
+# uncompressed files are 600MB+ (too big for an edge function to unzip/hold); the
+# ingest itself is the same validated matched-set-first streaming pipeline.
+#
+# The FULL snapshot is used (not the daily REGULAR delta): re-ingest is
+# self-correcting and idempotent via dedupe_hash. Weekly cadence keeps the FL
+# leads fresh without re-pulling ~1.3GB of zips daily.
+#
+# REQUIRED repo secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_ANON_KEY          (already set for the heartbeat)
+#   SUPABASE_SERVICE_ROLE_KEY  (NEW — needed to upload to the private bucket and
+#                               resolve the ingest webhook secret)
+# Until SUPABASE_SERVICE_ROLE_KEY is added, this workflow no-ops with a clear
+# error and FL stays on the manual UI-upload path (fully functional).
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"   # ~06:23 UTC Mondays (off-peak, off-round-minute)
+  workflow_dispatch: {}     # manual run from the Actions tab
+
+# Avoid overlapping runs (a run can take several minutes on the big files).
+concurrency:
+  group: ph-ucc-fl-fetch
+  cancel-in-progress: false
+
+jobs:
+  fetch-and-ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Fetch + ingest Florida UCC
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL || 'https://ehibjeonqpqskhcvizow.supabase.co' }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: bash scripts/ph_ucc_fl_fetch.sh
