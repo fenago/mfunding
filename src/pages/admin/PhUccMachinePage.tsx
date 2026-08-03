@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RectangleStackIcon,
   ArrowPathIcon,
@@ -15,6 +15,7 @@ import {
   BanknotesIcon,
   Cog6ToothIcon,
   ChevronDownIcon,
+  ArrowUpTrayIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -39,15 +40,33 @@ import { useUserProfile } from "@/context/UserProfileContext";
 
 /* ── Backend contract (mirror of ph-ucc-machine's schema) ── */
 type SourceStatus = "active" | "awaiting_purchase" | "error" | "unusable";
+type FetchMode = "api_cron" | "file_upload" | "file_autofetch" | null;
 interface UccSource {
   id: string;
   state: string; // 2-letter
   status: SourceStatus;
+  kind?: string | null; // 'api' | 'file'
+  fetch_mode?: FetchMode; // how this source is refreshed
   last_pull_at: string | null;
   rows_ingested: number | null;
   cadence: string | null; // human label e.g. "weekly"
   newest_filing_date: string | null; // for freshness
   error_note?: string | null;
+}
+
+/* ph_ucc_ingest_jobs — the row the upload progress UI polls. */
+type IngestJobStatus = "queued" | "processing" | "complete" | "error" | "canceled";
+interface IngestJob {
+  id: string;
+  status: IngestJobStatus;
+  phase: string | null;
+  phase_index: number | null;
+  byte_offset: number | null;
+  bytes_total: number | null;
+  filings_upserted: number | null;
+  leads_upserted: number | null;
+  message: string | null;
+  error: string | null;
 }
 
 type LeadStatus =
@@ -246,6 +265,200 @@ function freshnessChip(days: number | null): string {
   if (days <= 7) return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300";
   if (days <= 14) return "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
   return "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300";
+}
+
+/* ── Bulk-file UCC ingest control (file_upload / file_autofetch sources) ──
+   Uploads each CSV to the private ph-ucc-uploads bucket (original filenames
+   kept — the ingest maps files to roles by "secured"/"filing"/"debtor"
+   substrings), invokes ph-ucc-file-ingest, then polls ph_ucc_ingest_jobs.
+   Standard storage upload for now; resumable/TUS is a hardening follow-up for
+   the largest (100–300MB) files on flaky connections. */
+type UploadPhase = "idle" | "uploading" | "ingesting" | "done" | "error";
+function FileUploadControl({ source, onIngested }: { source: UccSource; onIngested: () => void }) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [phase, setPhase] = useState<UploadPhase>("idle");
+  const [uploadMsg, setUploadMsg] = useState("");
+  const [job, setJob] = useState<IngestJob | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    },
+    [],
+  );
+
+  const names = files.map((f) => f.name.toLowerCase());
+  const hasSecured = names.some((n) => n.includes("secured")); // REQUIRED
+  const hasFiling = names.some((n) => n.includes("filing"));
+  const hasDebtor = names.some((n) => n.includes("debtor"));
+
+  const roleOf = (name: string) => {
+    const n = name.toLowerCase();
+    if (n.includes("secured")) return "secured";
+    if (n.includes("filing")) return "filing";
+    if (n.includes("debtor")) return "debtor";
+    return "?";
+  };
+
+  const pollJob = (jobId: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    const tick = async () => {
+      const { data, error } = await supabase
+        .from("ph_ucc_ingest_jobs")
+        .select("id,status,phase,phase_index,byte_offset,bytes_total,filings_upserted,leads_upserted,message,error")
+        .eq("id", jobId)
+        .maybeSingle();
+      if (error || !data) return;
+      const j = data as IngestJob;
+      setJob(j);
+      if (j.status === "complete" || j.status === "error" || j.status === "canceled") {
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = null;
+        if (j.status === "complete") {
+          setPhase("done");
+          onIngested(); // refresh source cards / funnel / leads
+        } else {
+          setPhase("error");
+          setErr(j.error || `ingest ${j.status}`);
+        }
+      }
+    };
+    tick();
+    pollRef.current = setInterval(tick, 2000);
+  };
+
+  const start = async () => {
+    if (files.length === 0 || !hasSecured) return;
+    setErr(null);
+    setJob(null);
+    try {
+      setPhase("uploading");
+      const paths: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        setUploadMsg(`Uploading ${i + 1} of ${files.length}: ${f.name}`);
+        const path = `${source.state}/${crypto.randomUUID()}/${f.name}`; // keep original filename
+        const { error } = await supabase.storage
+          .from("ph-ucc-uploads")
+          .upload(path, f, { contentType: "text/csv", upsert: false });
+        if (error) throw new Error(`upload failed (${f.name}): ${error.message}`);
+        paths.push(path);
+      }
+      setPhase("ingesting");
+      setUploadMsg("Starting ingest…");
+      const { data, error } = await supabase.functions.invoke("ph-ucc-file-ingest", {
+        body: { action: "start", state: source.state, storage_paths: paths },
+      });
+      if (error) throw new Error(await fnErrorMessage(error));
+      const res = data as { ok?: boolean; job_id?: string; error?: string } | null;
+      if (!res?.ok || !res.job_id) throw new Error(res?.error || "ingest did not start");
+      pollJob(res.job_id);
+    } catch (e) {
+      setPhase("error");
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const reset = () => {
+    setFiles([]);
+    setPhase("idle");
+    setJob(null);
+    setErr(null);
+    setUploadMsg("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const pct =
+    job?.bytes_total && job.bytes_total > 0
+      ? Math.min(100, Math.round(((job.byte_offset ?? 0) / job.bytes_total) * 100))
+      : null;
+
+  return (
+    <div className="mt-3 border-t border-gray-100 dark:border-gray-700/60 pt-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1.5">Manual upload</p>
+
+      {phase === "idle" || phase === "error" ? (
+        <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".csv,text/csv"
+            onChange={(e) => {
+              setFiles(Array.from(e.target.files ?? []));
+              setPhase("idle");
+              setErr(null);
+            }}
+            className="block w-full text-xs text-gray-600 dark:text-gray-300 file:mr-2 file:rounded-md file:border-0 file:bg-ocean-blue/10 file:px-2 file:py-1 file:text-xs file:font-semibold file:text-ocean-blue"
+          />
+          {files.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {files.map((f, i) => (
+                <li key={i} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate text-gray-700 dark:text-gray-200">{f.name}</span>
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                      roleOf(f.name) === "?"
+                        ? "bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
+                        : "bg-ocean-blue/10 text-ocean-blue"
+                    }`}
+                  >
+                    {roleOf(f.name)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {files.length > 0 && !hasSecured && (
+            <p className="mt-2 flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400">
+              <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> A file whose name contains "secured" is
+              required.
+            </p>
+          )}
+          {files.length > 0 && hasSecured && (!hasFiling || !hasDebtor) && (
+            <p className="mt-2 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+              <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> No{" "}
+              {[!hasFiling && '"filing"', !hasDebtor && '"debtor"'].filter(Boolean).join(" / ")} file — you can still
+              ingest, but coverage may be partial.
+            </p>
+          )}
+          {err && <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+          <button
+            onClick={start}
+            disabled={files.length === 0 || !hasSecured}
+            className="btn-primary btn-sm w-full mt-2 inline-flex items-center justify-center gap-1.5"
+          >
+            <ArrowUpTrayIcon className="w-4 h-4" /> Upload & ingest
+          </button>
+        </>
+      ) : phase === "uploading" ? (
+        <p className="text-xs text-gray-600 dark:text-gray-300">{uploadMsg}</p>
+      ) : phase === "ingesting" ? (
+        <div className="space-y-1.5">
+          {pct != null && (
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+              <div className="h-full rounded-full bg-ocean-blue transition-all" style={{ width: `${pct}%` }} />
+            </div>
+          )}
+          <p className="text-xs text-gray-600 dark:text-gray-300">
+            {job?.message || "Ingesting…"}
+          </p>
+        </div>
+      ) : phase === "done" ? (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+            {(job?.filings_upserted ?? 0).toLocaleString()} filings · {(job?.leads_upserted ?? 0).toLocaleString()} leads
+          </p>
+          <button onClick={reset} className="text-xs text-ocean-blue hover:underline">
+            Upload another
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export default function PhUccMachinePage() {
@@ -971,18 +1184,32 @@ export default function PhUccMachinePage() {
                           {s.error_note}
                         </p>
                       )}
-                      {s.status === "active" && (
-                        <button
-                          onClick={() => pullNow(s)}
-                          disabled={!!prog && prog === "Pulling…"}
-                          className="btn-primary btn-sm w-full mt-3 inline-flex items-center justify-center gap-1.5"
-                        >
-                          <BoltIcon className="w-4 h-4" />
-                          {prog || "Pull now"}
-                        </button>
+                      {/* Action varies by fetch_mode: API sources pull; file sources upload. */}
+                      {s.fetch_mode === "api_cron" && s.status === "active" && (
+                        <>
+                          <button
+                            onClick={() => pullNow(s)}
+                            disabled={!!prog && prog === "Pulling…"}
+                            className="btn-primary btn-sm w-full mt-3 inline-flex items-center justify-center gap-1.5"
+                          >
+                            <BoltIcon className="w-4 h-4" />
+                            {prog || "Pull now"}
+                          </button>
+                          {prog && prog !== "Pulling…" && (
+                            <p className="mt-1 text-xs text-center text-gray-500 dark:text-gray-400">{prog}</p>
+                          )}
+                        </>
                       )}
-                      {s.status === "active" && prog && prog !== "Pulling…" && (
-                        <p className="mt-1 text-xs text-center text-gray-500 dark:text-gray-400">{prog}</p>
+
+                      {s.fetch_mode === "file_autofetch" && (
+                        <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                          Auto-fetch <strong className="text-gray-700 dark:text-gray-200">{s.cadence || "scheduled"}</strong>.
+                          Or upload manually below.
+                        </p>
+                      )}
+
+                      {(s.fetch_mode === "file_upload" || s.fetch_mode === "file_autofetch") && (
+                        <FileUploadControl source={s} onIngested={loadOverview} />
                       )}
                     </div>
                   );
