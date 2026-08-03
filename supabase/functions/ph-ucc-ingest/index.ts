@@ -12,7 +12,9 @@
 //       joined on fileid. TARGETED: query secured parties matching our funder
 //       aliases, then hydrate their filings + debtors. Resumable by alias cursor.
 //   OR  Socrata — snfi-f79b "UCC List of Filings Entered Last Month",
-//       denormalized (party_type DB/SP). FULL ingest each run (~5.7k rows).
+//       denormalized (party_type DB/SP). FULL ingest each run (~5.7k rows), then
+//       PRE-FILTERED to MCA-funder matches before insert (like CT / the file
+//       loaders) — the raw dump is ~99% bank/equipment/tax/ag liens.
 //   CT  Socrata — xfev-8smz "UCC Lien Filings (4.0 Revised)", one row per
 //       filing×party already carrying BOTH debtor and secured-party name+address.
 //       We take ORIG FIN STMT + Active + non-lapsed inside the 540d window (dt_accept
@@ -132,6 +134,36 @@ async function upsertFilings(db: SupabaseClient, rows: FilingRow[]): Promise<num
   return n;
 }
 
+// ── PRE-FILTER: keep ONLY MCA-funder-matched filings ─────────────────────────
+// Discards the ~99% bank/equipment/auto/tax/ag firehose BEFORE it lands in
+// ph_ucc_filings (like the CA/FL file loaders), so we neither store nor re-read
+// (weekly egress) rows we never turn into leads. The match is delegated to the
+// public.ph_ucc_match_secured_parties() rpc, which runs the EXACT predicate of
+// ph_ucc_rebuild_leads (active alias, alias_norm>=3, trgm+token-boundary LIKE,
+// AND NOT ph_ucc_is_depository). Delegating (vs. re-implementing the norm+guard
+// in TS) guarantees the ingest's notion of "matched" can never diverge from the
+// rebuild's, so we never drop a filing the rebuild would have kept.
+//
+// SAFE FOR API/Socrata STATES ONLY (CT, OR): non-matches are discarded, so if the
+// alias dictionary changes later we could no longer re-match rows we never kept —
+// acceptable because the free data.ct.gov / data.oregon.gov endpoints are always
+// re-pullable. NOT applied to paid FILE states (CA/FL) whose master unloads can't
+// be cheaply re-fetched — those loaders keep their own local pre-filter.
+async function keepFunderMatches(db: SupabaseClient, rows: FilingRow[]): Promise<FilingRow[]> {
+  if (!rows.length) return rows;
+  const distinctSp = Array.from(
+    new Set(rows.map((r) => r.secured_party_raw).filter((s): s is string => !!s)),
+  );
+  const keep = new Set<string>();
+  for (let i = 0; i < distinctSp.length; i += 2000) { // chunk the array arg
+    const slice = distinctSp.slice(i, i + 2000);
+    const { data, error } = await db.rpc("ph_ucc_match_secured_parties", { p_parties: slice });
+    if (error) throw new Error(`ph_ucc_match_secured_parties failed: ${error.message}`);
+    for (const row of (data ?? []) as string[]) keep.add(row);
+  }
+  return rows.filter((r) => r.secured_party_raw && keep.has(r.secured_party_raw));
+}
+
 // ── OREGON: full ingest of the "last month" denormalized dataset ─────────────
 async function ingestOR(db: SupabaseClient, sourceId: string | null) {
   const byFile = new Map<string, { db: any[]; sp: any[] }>();
@@ -175,8 +207,15 @@ async function ingestOR(db: SupabaseClient, sourceId: string | null) {
       });
     }
   }
-  const upserted = await upsertFilings(db, out);
-  return { fetched, files: byFile.size, filing_rows: out.length, upserted, newest: maxFiled(out) };
+  // Pre-filter to MCA-funder matches only (OR's "last month" dump is ~99% bank/
+  // equipment/tax/ag liens — SNAP-ON, KUBOTA, IRS, DEERE, etc. — never leads).
+  const candidates = out.length;
+  const matched = await keepFunderMatches(db, out);
+  const upserted = await upsertFilings(db, matched);
+  return {
+    fetched, files: byFile.size, candidates, filing_rows: matched.length,
+    discarded: candidates - matched.length, upserted, newest: maxFiled(matched),
+  };
 }
 
 // Newest filed_date across a batch of rows (ISO date string) or null.
@@ -382,33 +421,10 @@ async function ingestCT(
     if (rows.length < PAGE) break;
   }
 
-  // ── PRE-FILTER: keep ONLY MCA-funder-matched filings (like the CA/FL file
-  // loaders), discarding the ~99.5% bank/equipment/auto/ag firehose instead of
-  // storing it. This trims DB bloat + the weekly egress of re-reading junk.
-  // The match is delegated to public.ph_ucc_match_secured_parties() so it reuses
-  // the EXACT rebuild predicate (active alias, alias_norm >= 3, token-boundary,
-  // NOT ph_ucc_is_depository) — the ingest's notion of "matched" therefore can
-  // never diverge from ph_ucc_rebuild_leads()'s, so we never drop a filing the
-  // rebuild would have kept.
-  // Safe for CT (and any Socrata/api state) because non-matches are discarded and
-  // the free data.ct.gov endpoint can always be re-pulled in full if the alias
-  // dictionary changes later — unlike a paid FILE state whose master unload can't
-  // be cheaply re-fetched (those loaders keep their own local pre-filter).
+  // Pre-filter to MCA-funder matches only (see keepFunderMatches) — CT's Socrata
+  // firehose is ~99.5% bank/equipment/auto/ag liens we never turn into leads.
   const candidates = out.length;
-  let matched = out;
-  if (out.length) {
-    const distinctSp = Array.from(new Set(out.map((r) => r.secured_party_raw).filter((s): s is string => !!s)));
-    const keep = new Set<string>();
-    // Chunk the array arg to keep each RPC payload sane.
-    for (let i = 0; i < distinctSp.length; i += 2000) {
-      const slice = distinctSp.slice(i, i + 2000);
-      const { data, error } = await db.rpc("ph_ucc_match_secured_parties", { p_parties: slice });
-      if (error) throw new Error(`ph_ucc_match_secured_parties failed: ${error.message}`);
-      for (const row of (data ?? []) as string[]) keep.add(row);
-    }
-    matched = out.filter((r) => r.secured_party_raw && keep.has(r.secured_party_raw));
-  }
-
+  const matched = await keepFunderMatches(db, out);
   const upserted = await upsertFilings(db, matched);
   const nextOffset = budgetHit ? offset : null; // null = window exhausted
   return {
