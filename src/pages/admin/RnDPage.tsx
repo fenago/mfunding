@@ -4,6 +4,8 @@ import {
   BeakerIcon,
   ArrowTopRightOnSquareIcon,
   ArrowRightIcon,
+  BookOpenIcon,
+  ChevronDownIcon,
   CheckCircleIcon,
   BoltIcon,
   ShieldExclamationIcon,
@@ -43,6 +45,13 @@ interface Content {
   cost?: string;
   detail?: string;
   body?: string;
+  // ── how-to runbook note (content.guide === true) ──
+  guide?: boolean; // render as a distinct "how-to" callout card
+  title?: string; // runbook title
+  why?: string; // one-line rationale
+  steps?: string[]; // numbered steps
+  do_not?: string; // the red "don't do this" warning
+  support?: string; // support email/contact
   link?: string;
   linkLabel?: string;
   appLink?: string;
@@ -1292,12 +1301,76 @@ function UccCard({ item }: { item: RndItem }) {
    filter strip so it reads like a sortable table without the weight of one.
    Methodology header on top; Guam/USVI territories as a footnote. Closed by
    default — reference/browse content. */
+/* A guide-type note (content.guide === true) — a saved how-to runbook rendered
+   as a distinct, collapsible callout pinned atop the UCC section. */
+function UccGuideCard({ item }: { item: RndItem }) {
+  const [open, setOpen] = useState(false);
+  const c = item.content;
+  return (
+    <div className="mb-4 overflow-hidden rounded-xl border-2 border-ocean-blue/40 dark:border-ocean-blue/50 bg-ocean-blue/5 dark:bg-ocean-blue/10">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-start gap-3 px-4 py-3 text-left">
+        <BookOpenIcon className="mt-0.5 w-5 h-5 shrink-0 text-ocean-blue" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-ocean-blue">How-to runbook</span>
+            {c.cost && <CostChip cost={c.cost} />}
+          </div>
+          <h4 className="mt-0.5 text-sm font-bold text-gray-900 dark:text-white">{c.title ?? item.label}</h4>
+          {c.why && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">{c.why}</p>}
+        </div>
+        <ChevronDownIcon
+          className={`mt-1 w-4 h-4 shrink-0 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="space-y-3 px-4 pb-4 pt-1">
+          {/* Steps already carry their own "1." … "9." numbering in the data. */}
+          {c.steps && c.steps.length > 0 && (
+            <ul className="space-y-1.5">
+              {c.steps.map((s, i) => (
+                <li key={i} className="text-xs leading-relaxed text-gray-700 dark:text-gray-200">
+                  {s}
+                </li>
+              ))}
+            </ul>
+          )}
+          {c.do_not && (
+            <div className="flex items-start gap-2 rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-3 py-2">
+              <ExclamationTriangleIcon className="mt-0.5 w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+              <p className="text-xs font-semibold text-rose-700 dark:text-rose-300 leading-relaxed">{c.do_not}</p>
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+            {c.support && (
+              <a
+                href={`mailto:${c.support}`}
+                className="inline-flex items-center gap-1 font-semibold text-ocean-blue hover:underline"
+              >
+                <EnvelopeIcon className="w-3.5 h-3.5" /> {c.support}
+              </a>
+            )}
+            {c.cost && (
+              <span className="text-gray-500 dark:text-gray-400">
+                Cost: <strong className="text-gray-900 dark:text-white">{c.cost}</strong>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UccStates({ items }: { items: RndItem[] }) {
   const [tier, setTier] = useState<string>("all");
   if (items.length === 0) return null;
 
   const header = items.find((i) => i.content.header);
-  const rows = items.filter((i) => !i.content.header && i.content.tier !== "footnote");
+  const guides = items.filter((i) => i.content.guide);
+  // Guides and the methodology header are pulled out; everything else is a jurisdiction row.
+  const rows = items.filter(
+    (i) => !i.content.header && !i.content.guide && i.content.tier !== "footnote",
+  );
   const territories = items.filter((i) => i.content.tier === "footnote");
 
   const countByTier = (k: string) => rows.filter((r) => r.content.tier === k).length;
@@ -1311,6 +1384,11 @@ function UccStates({ items }: { items: RndItem[] }) {
       subtitle={`Where UCC filings can be bought in bulk, tiered by buy-ability. ${total} jurisdictions + 2 territories. Prices as published; sources linked.`}
       icon={QueueListIcon}
     >
+      {/* How-to runbooks pinned at the very top — saved "remember how to do this" guides */}
+      {guides.map((g) => (
+        <UccGuideCard key={g.id} item={g} />
+      ))}
+
       {/* Methodology read-me */}
       {header?.content.body && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5">
