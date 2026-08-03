@@ -340,6 +340,23 @@ function freshnessChip(days: number | null): string {
   return "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300";
 }
 
+/* Debounce a fast-changing value (text inputs) so we don't fire a Supabase query
+   on every keystroke. */
+function useDebounced<T>(value: T, ms = 350): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return v;
+}
+
+/* Lead-book contact/skip-trace status filter — resolved entirely from the lead
+   row (traced_at / phone / email), no join to ph_ucc_contacts needed. */
+type ContactFilter = "" | "traced" | "not_traced" | "dialable" | "email_only";
+/* Stack posture filter. */
+type StackFilter = "all" | "stacked" | "single";
+
 /* ── Bulk-file UCC ingest control (file_upload / file_autofetch sources) ──
    Uploads each CSV to the private ph-ucc-uploads bucket via resumable TUS
    (files run 600MB–3GB — see uploadResumable), keeping original filenames so
@@ -795,12 +812,26 @@ export default function PhUccMachinePage() {
   // Lead browser state.
   const [leads, setLeads] = useState<UccLead[]>([]);
   const [leadCount, setLeadCount] = useState(0);
+  const [totalLeads, setTotalLeads] = useState<number | null>(null); // baseline (excl. suppressed) for "showing X of Y"
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [page, setPage] = useState(0);
+  // ── Lead-book filters ──
   const [fState, setFState] = useState("");
   const [fStatus, setFStatus] = useState("");
   const [fMinStack, setFMinStack] = useState("");
   const [selectedLead, setSelectedLead] = useState<UccLead | null>(null); // debtor drawer
+  const [fFunder, setFFunder] = useState(""); // text/combobox over distinct canonical funders
+  const [fDebtor, setFDebtor] = useState(""); // debtor / merchant name (ilike)
+  const [fCity, setFCity] = useState(""); // debtor city (ilike)
+  const [fFreshness, setFFreshness] = useState(""); // "" | "90" | "180" | "540" (max freshness_days)
+  const [fStacked, setFStacked] = useState<StackFilter>("all");
+  const [fMinScore, setFMinScore] = useState("");
+  const [fContact, setFContact] = useState<ContactFilter>("");
+  const [distinctFunders, setDistinctFunders] = useState<string[]>([]); // canonical funders for the combobox
+  // Debounced text filters — keep keystrokes from hammering PostgREST.
+  const dFunder = useDebounced(fFunder);
+  const dDebtor = useDebounced(fDebtor);
+  const dCity = useDebounced(fCity);
   const [exporting, setExporting] = useState(false);
   const [exportFlash, setExportFlash] = useState<string | null>(null);
   // Raw filings export (nice-to-have): selected state + date range.
@@ -933,6 +964,31 @@ export default function PhUccMachinePage() {
     setBatchEligible(res.error ? null : res.count ?? 0);
   }, [batchFreshOnly, batchMinScore]);
 
+  /* Lead-book filter metadata: the distinct canonical funders (for the funder
+     combobox) and the baseline lead total (excl. suppressed) for "showing X of
+     Y". Best-effort — failures just leave the combobox/total empty. */
+  const loadLeadMeta = useCallback(async () => {
+    const totalRes = await supabase
+      .from("ph_ucc_leads")
+      .select("id", { count: "exact", head: true })
+      .neq("status", "suppressed");
+    if (!isMissingRelation(totalRes.error)) setTotalLeads(totalRes.count ?? 0);
+
+    // Union of matched_funders across leads → distinct canonical funder names.
+    const funderRes = await supabase
+      .from("ph_ucc_leads")
+      .select("matched_funders")
+      .not("matched_funders", "is", null)
+      .limit(20000);
+    if (!funderRes.error && funderRes.data) {
+      const set = new Set<string>();
+      for (const row of funderRes.data as { matched_funders: string[] | null }[]) {
+        (row.matched_funders ?? []).forEach((f) => f && set.add(f));
+      }
+      setDistinctFunders(Array.from(set).sort((a, b) => a.localeCompare(b)));
+    }
+  }, []);
+
   // Load the full 'ph_settings' object; seed the local number/text edit fields.
   const loadPhSettings = useCallback(async () => {
     const v = await getSetting<Record<string, unknown>>("ph_settings", {});
@@ -963,36 +1019,106 @@ export default function PhUccMachinePage() {
       if (!isMissingRelation(aliasRes.error)) setAliases((aliasRes.data as UccAlias[]) ?? []);
       setSettings({ ...DEFAULT_SETTINGS, ...((setRes.data?.value as Partial<PhUccSettings>) ?? {}) });
 
-      await Promise.all([loadFunnel(), loadFreshness(), loadWallet(), loadEligible()]);
+      await Promise.all([loadFunnel(), loadFreshness(), loadWallet(), loadEligible(), loadLeadMeta()]);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [loadFunnel, loadFreshness, loadWallet, loadEligible]);
+  }, [loadFunnel, loadFreshness, loadWallet, loadEligible, loadLeadMeta]);
+
+  /* Resolve the funder text/combobox filter to the set of canonical funders it
+     matches (matched_funders is an array of canonical names — aliases already
+     collapsed). Empty text → null (no funder filter). Non-empty text that
+     matches no known funder → [] (force an empty result, honestly). */
+  const funderMatchList = useMemo<string[] | null>(() => {
+    const t = dFunder.trim().toLowerCase();
+    if (!t) return null;
+    return distinctFunders.filter((f) => f.toLowerCase().includes(t));
+  }, [dFunder, distinctFunders]);
+  const funderForcesEmpty = funderMatchList != null && funderMatchList.length === 0;
+
+  /* Count of active (non-default) filters — drives the "N filters" badge and
+     whether "Clear filters" shows. */
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (fState) n++;
+    if (fStatus) n++;
+    if (fMinStack) n++;
+    if (fFunder.trim()) n++;
+    if (fDebtor.trim()) n++;
+    if (fCity.trim()) n++;
+    if (fFreshness) n++;
+    if (fStacked !== "all") n++;
+    if (fMinScore) n++;
+    if (fContact) n++;
+    return n;
+  }, [fState, fStatus, fMinStack, fFunder, fDebtor, fCity, fFreshness, fStacked, fMinScore, fContact]);
+
+  const clearLeadFilters = useCallback(() => {
+    setFState("");
+    setFStatus("");
+    setFMinStack("");
+    setFFunder("");
+    setFDebtor("");
+    setFCity("");
+    setFFreshness("");
+    setFStacked("all");
+    setFMinScore("");
+    setFContact("");
+  }, []);
+
+  /* Single source of truth for the filtered ph_ucc_leads query. Both the lead
+     table and the CSV export build from this so the export always matches what's
+     on screen. Callers add `.range()` for pagination. The funder-forces-empty
+     case (text typed, no funder matches) is short-circuited by callers. */
+  const buildFilteredLeadQuery = useCallback(
+    (select: string, opts: { count?: "exact"; head?: boolean } = {}) => {
+      let q = supabase
+        .from("ph_ucc_leads")
+        .select(select, opts)
+        .order("score", { ascending: false, nullsFirst: false });
+      if (fState) q = q.eq("state", fState);
+      if (fStatus) q = q.eq("status", fStatus);
+      else q = q.neq("status", "suppressed"); // hide junk by default
+      if (funderMatchList && funderMatchList.length > 0) q = q.overlaps("matched_funders", funderMatchList);
+      if (dDebtor.trim()) q = q.ilike("debtor_name", `%${dDebtor.trim()}%`);
+      if (dCity.trim()) q = q.ilike("debtor_city", `%${dCity.trim()}%`);
+      if (fFreshness) q = q.lte("freshness_days", Number(fFreshness));
+      if (fStacked === "stacked") q = q.gte("stack_depth", 2);
+      else if (fStacked === "single") q = q.lte("stack_depth", 1);
+      if (fMinStack) q = q.gte("stack_depth", Number(fMinStack) || 0);
+      if (fMinScore) q = q.gte("score", Number(fMinScore) || 0);
+      if (fContact === "traced") q = q.not("traced_at", "is", null);
+      else if (fContact === "not_traced") q = q.is("traced_at", null);
+      else if (fContact === "dialable") q = q.not("phone", "is", null);
+      else if (fContact === "email_only") q = q.not("email", "is", null).is("phone", null);
+      return q;
+    },
+    [fState, fStatus, funderMatchList, dDebtor, dCity, fFreshness, fStacked, fMinStack, fMinScore, fContact],
+  );
 
   /* ── Lead browser (paginated, filtered, ranked by score) ── */
   const loadLeads = useCallback(async () => {
     setLeadsLoading(true);
     try {
-      let q = supabase
-        .from("ph_ucc_leads")
-        .select("*", { count: "exact" })
-        .order("score", { ascending: false, nullsFirst: false })
-        .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-      if (fState) q = q.eq("state", fState);
-      if (fStatus) q = q.eq("status", fStatus);
-      else q = q.neq("status", "suppressed"); // hide junk by default
-      if (fMinStack) q = q.gte("stack_depth", Number(fMinStack) || 0);
-
-      const res = await q;
+      // Funder text matched nothing → honest empty set, skip the round-trip.
+      if (funderForcesEmpty) {
+        setLeads([]);
+        setLeadCount(0);
+        return;
+      }
+      const res = await buildFilteredLeadQuery("*", { count: "exact" }).range(
+        page * PAGE_SIZE,
+        page * PAGE_SIZE + PAGE_SIZE - 1,
+      );
       if (isMissingRelation(res.error)) {
         setLeads([]);
         setLeadCount(0);
         return;
       }
       if (res.error) throw res.error;
-      setLeads((res.data as UccLead[]) ?? []);
+      setLeads((res.data as unknown as UccLead[]) ?? []);
       setLeadCount(res.count ?? 0);
     } catch {
       setLeads([]);
@@ -1000,7 +1126,7 @@ export default function PhUccMachinePage() {
     } finally {
       setLeadsLoading(false);
     }
-  }, [page, fState, fStatus, fMinStack]);
+  }, [page, funderForcesEmpty, buildFilteredLeadQuery]);
 
   /* Export the CURRENT filtered view (full result set, not just the visible
      page) as CSV. Client-side is fine at current volumes; if row counts ever
@@ -1009,20 +1135,18 @@ export default function PhUccMachinePage() {
     setExporting(true);
     setExportFlash(null);
     try {
-      let q = supabase
-        .from("ph_ucc_leads")
-        .select(
-          "debtor_name, state, matched_funders, stack_depth, latest_filing_date, freshness_days, score, status, phone, email",
-        )
-        .order("score", { ascending: false, nullsFirst: false });
-      if (fState) q = q.eq("state", fState);
-      if (fStatus) q = q.eq("status", fStatus);
-      else q = q.neq("status", "suppressed");
-      if (fMinStack) q = q.gte("stack_depth", Number(fMinStack) || 0);
-
-      const res = await q;
+      // Funder text matched nothing → export an empty (header-only) file, honestly.
+      if (funderForcesEmpty) {
+        downloadCsv(`ph-ucc-leads-${todayStamp()}.csv`, buildCsv(LEAD_CSV_COLUMNS, []));
+        setExportFlash("exported 0 rows ✓");
+        setTimeout(() => setExportFlash(null), 5000);
+        return;
+      }
+      const res = await buildFilteredLeadQuery(
+        "debtor_name, state, matched_funders, stack_depth, latest_filing_date, freshness_days, score, status, phone, email",
+      );
       if (res.error) throw res.error;
-      const data = (res.data as UccLead[]) ?? [];
+      const data = (res.data as unknown as UccLead[]) ?? [];
       const rows = data.map((l) => [
         l.debtor_name,
         l.state,
@@ -1043,7 +1167,7 @@ export default function PhUccMachinePage() {
     } finally {
       setExporting(false);
     }
-  }, [fState, fStatus, fMinStack]);
+  }, [funderForcesEmpty, buildFilteredLeadQuery]);
 
   /* Raw filings dump for a state + date range. Schema-agnostic: columns are
      derived from the returned rows, so it survives whatever ph_ucc_filings
@@ -1084,10 +1208,10 @@ export default function PhUccMachinePage() {
   useEffect(() => {
     if (!backendMissing) loadLeads();
   }, [loadLeads, backendMissing]);
-  // Reset to first page whenever a filter changes.
+  // Reset to first page whenever any filter changes (debounced values for text).
   useEffect(() => {
     setPage(0);
-  }, [fState, fStatus, fMinStack]);
+  }, [fState, fStatus, fMinStack, dFunder, dDebtor, dCity, fFreshness, fStacked, fMinScore, fContact]);
   // Auto-disarm a primed alias delete after 5s.
   useEffect(() => {
     if (!aliasArmed) return;
@@ -1756,32 +1880,28 @@ export default function PhUccMachinePage() {
           {/* ── 3. Lead browser ── */}
           <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Lead book</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400 flex items-center gap-2">
+                Lead book
+                <span className="normal-case font-normal text-gray-400">
+                  · showing <strong className="text-gray-700 dark:text-gray-200">{leadCount.toLocaleString()}</strong>
+                  {totalLeads != null && <> of {totalLeads.toLocaleString()}</>}
+                </span>
+                {activeFilterCount > 0 && (
+                  <span className="normal-case text-xs px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue font-semibold">
+                    {activeFilterCount} filter{activeFilterCount === 1 ? "" : "s"}
+                  </span>
+                )}
+              </h2>
               <div className="flex flex-wrap items-center gap-2">
-                <select className={input} value={fState} onChange={(e) => setFState(e.target.value)}>
-                  <option value="">All states</option>
-                  {usStates.map((st) => (
-                    <option key={st} value={st}>
-                      {st}
-                    </option>
-                  ))}
-                </select>
-                <select className={input} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-                  <option value="">All (excl. suppressed)</option>
-                  {(Object.keys(LEAD_STATUS_META) as LeadStatus[]).map((s) => (
-                    <option key={s} value={s}>
-                      {LEAD_STATUS_META[s].label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="number"
-                  min={0}
-                  placeholder="Min stack"
-                  className={`${input} w-28`}
-                  value={fMinStack}
-                  onChange={(e) => setFMinStack(e.target.value)}
-                />
+                {activeFilterCount > 0 && (
+                  <button
+                    onClick={clearLeadFilters}
+                    className="btn-ghost inline-flex items-center gap-1.5 text-sm"
+                    title="Reset all lead filters"
+                  >
+                    <TrashIcon className="w-4 h-4" /> Clear filters
+                  </button>
+                )}
                 <button
                   onClick={exportLeadsCsv}
                   disabled={exporting}
@@ -1799,6 +1919,113 @@ export default function PhUccMachinePage() {
                   </span>
                 )}
               </div>
+            </div>
+
+            {/* Filter bar — every control maps to a real ph_ucc_leads column and
+                filters the query server-side; the CSV export honors it too. */}
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 flex flex-wrap items-center gap-2">
+              {/* Funder — text search + datalist of distinct canonical funders. */}
+              <input
+                list="ph-ucc-funder-options"
+                placeholder="Funder"
+                className={`${input} w-44`}
+                value={fFunder}
+                onChange={(e) => setFFunder(e.target.value)}
+                title="Filter by matched funder (aliases collapse to a canonical name)"
+              />
+              <datalist id="ph-ucc-funder-options">
+                {distinctFunders.map((f) => (
+                  <option key={f} value={f} />
+                ))}
+              </datalist>
+              {/* Debtor / merchant name. */}
+              <input
+                placeholder="Debtor / merchant"
+                className={`${input} w-44`}
+                value={fDebtor}
+                onChange={(e) => setFDebtor(e.target.value)}
+              />
+              {/* State. */}
+              <select className={input} value={fState} onChange={(e) => setFState(e.target.value)}>
+                <option value="">All states</option>
+                {usStates.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+              {/* City. */}
+              <input
+                placeholder="City"
+                className={`${input} w-32`}
+                value={fCity}
+                onChange={(e) => setFCity(e.target.value)}
+              />
+              {/* Freshness bucket (max freshness_days). */}
+              <select
+                className={input}
+                value={fFreshness}
+                onChange={(e) => setFFreshness(e.target.value)}
+                title="Max age of the latest filing"
+              >
+                <option value="">Any freshness</option>
+                <option value="90">≤ 90d</option>
+                <option value="180">≤ 180d</option>
+                <option value="540">≤ 540d</option>
+              </select>
+              {/* Stack posture. */}
+              <select
+                className={input}
+                value={fStacked}
+                onChange={(e) => setFStacked(e.target.value as StackFilter)}
+                title="Number of open advance positions"
+              >
+                <option value="all">All positions</option>
+                <option value="stacked">Stacked (2+)</option>
+                <option value="single">Single position</option>
+              </select>
+              {/* Min positions. */}
+              <input
+                type="number"
+                min={0}
+                placeholder="Min positions"
+                className={`${input} w-32`}
+                value={fMinStack}
+                onChange={(e) => setFMinStack(e.target.value)}
+                title="Minimum open positions"
+              />
+              {/* Min score. */}
+              <input
+                type="number"
+                min={0}
+                placeholder="Min score"
+                className={`${input} w-28`}
+                value={fMinScore}
+                onChange={(e) => setFMinScore(e.target.value)}
+                title="Minimum lead score"
+              />
+              {/* Lead status. */}
+              <select className={input} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+                <option value="">All (excl. suppressed)</option>
+                {(Object.keys(LEAD_STATUS_META) as LeadStatus[]).map((s) => (
+                  <option key={s} value={s}>
+                    {LEAD_STATUS_META[s].label}
+                  </option>
+                ))}
+              </select>
+              {/* Contact / skip-trace status — derived from the lead row. */}
+              <select
+                className={input}
+                value={fContact}
+                onChange={(e) => setFContact(e.target.value as ContactFilter)}
+                title="Skip-trace / contactability status"
+              >
+                <option value="">Any contact</option>
+                <option value="traced">Traced</option>
+                <option value="not_traced">Not traced</option>
+                <option value="dialable">Has phone (dialable)</option>
+                <option value="email_only">Email only</option>
+              </select>
             </div>
 
             <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
