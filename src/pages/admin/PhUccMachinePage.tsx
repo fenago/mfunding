@@ -69,6 +69,7 @@ interface UccLead {
   freshness_days: number | null;
   score: number | null;
   status: LeadStatus;
+  status_reason: string | null; // human explanation of the status (e.g. TCPA-litigator counts)
   person_name: string | null; // traced owner name (skip-trace)
   phone: string | null; // dialable NON-DNC number only, or null (DNC-safe by contract)
   email: string | null; // populated once skip-trace runs
@@ -1333,6 +1334,16 @@ export default function PhUccMachinePage() {
                                     {EMAIL_VERIFY_META[l.email_verify_status].label}
                                   </span>
                                 )}
+                                {/* Lead-level do-not-call flag: the fn keeps litigator numbers out of
+                                    l.phone, but surface the reason so an operator sees WHY there's no phone. */}
+                                {l.status_reason && /litigator/i.test(l.status_reason) && (
+                                  <span
+                                    className="inline-block text-xs px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+                                    title={l.status_reason}
+                                  >
+                                    TCPA litigator — do not call
+                                  </span>
+                                )}
                               </div>
                             ) : (
                               <span className="text-gray-300 dark:text-gray-600">not traced</span>
@@ -1367,7 +1378,12 @@ export default function PhUccMachinePage() {
                             </span>
                           </td>
                           <td className="py-3 px-4">
-                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${sm.chip}`}>{sm.label}</span>
+                            <span
+                              className={`text-xs font-medium px-2 py-0.5 rounded-full ${sm.chip}`}
+                              title={l.status_reason || undefined}
+                            >
+                              {sm.label}
+                            </span>
                           </td>
                           <td className="py-3 px-4 text-right">
                             <button
