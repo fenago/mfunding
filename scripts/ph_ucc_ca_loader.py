@@ -62,7 +62,10 @@ def mgmt_sql(ref, token, query):
     req = urllib.request.Request(
         f"https://api.supabase.com/v1/projects/{ref}/database/query",
         data=body, method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+        # The api.supabase.com WAF 403s the default python-urllib User-Agent, so
+        # a real UA is required for headless runs.
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                 "User-Agent": "mfunding-ph-ucc-loader"})
     with urllib.request.urlopen(req) as r:
         return json.loads(r.read())
 
