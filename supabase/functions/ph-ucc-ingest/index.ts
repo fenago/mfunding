@@ -17,7 +17,9 @@
 //       filing×party already carrying BOTH debtor and secured-party name+address.
 //       We take ORIG FIN STMT + Active + non-lapsed inside the 540d window (dt_accept
 //       is the true origination date; amendments would make an old lien look fresh).
-//       ~77k rows in-window → resumable by row offset (ct_cursor), like CO.
+//       ~62k rows in-window → resumable by row offset (ct_cursor), like CO. Rows are
+//       PRE-FILTERED to MCA-funder matches (like the CA/FL file loaders) before
+//       insert — only ~0.5% match, so we never store the bank/equipment firehose.
 //   VA  CKAN — UNUSABLE: the portal's UCC datasets carry filing metadata only,
 //       no debtor/secured-party names. Returns a loud skip; ingests nothing.
 //   CA  bizfile master unload — awaiting the owner's $100 purchase; loader TODO.
@@ -379,11 +381,39 @@ async function ingestCT(
     offset += rows.length;
     if (rows.length < PAGE) break;
   }
-  const upserted = await upsertFilings(db, out);
+
+  // ── PRE-FILTER: keep ONLY MCA-funder-matched filings (like the CA/FL file
+  // loaders), discarding the ~99.5% bank/equipment/auto/ag firehose instead of
+  // storing it. This trims DB bloat + the weekly egress of re-reading junk.
+  // The match is delegated to public.ph_ucc_match_secured_parties() so it reuses
+  // the EXACT rebuild predicate (active alias, alias_norm >= 3, token-boundary,
+  // NOT ph_ucc_is_depository) — the ingest's notion of "matched" therefore can
+  // never diverge from ph_ucc_rebuild_leads()'s, so we never drop a filing the
+  // rebuild would have kept.
+  // Safe for CT (and any Socrata/api state) because non-matches are discarded and
+  // the free data.ct.gov endpoint can always be re-pulled in full if the alias
+  // dictionary changes later — unlike a paid FILE state whose master unload can't
+  // be cheaply re-fetched (those loaders keep their own local pre-filter).
+  const candidates = out.length;
+  let matched = out;
+  if (out.length) {
+    const distinctSp = Array.from(new Set(out.map((r) => r.secured_party_raw).filter((s): s is string => !!s)));
+    const keep = new Set<string>();
+    // Chunk the array arg to keep each RPC payload sane.
+    for (let i = 0; i < distinctSp.length; i += 2000) {
+      const slice = distinctSp.slice(i, i + 2000);
+      const { data, error } = await db.rpc("ph_ucc_match_secured_parties", { p_parties: slice });
+      if (error) throw new Error(`ph_ucc_match_secured_parties failed: ${error.message}`);
+      for (const row of (data ?? []) as string[]) keep.add(row);
+    }
+    matched = out.filter((r) => r.secured_party_raw && keep.has(r.secured_party_raw));
+  }
+
+  const upserted = await upsertFilings(db, matched);
   const nextOffset = budgetHit ? offset : null; // null = window exhausted
   return {
-    fetched, filing_rows: out.length, upserted, next_cursor: nextOffset,
-    window_days: CT_WINDOW_DAYS, newest: maxFiled(out),
+    fetched, candidates, filing_rows: matched.length, discarded: candidates - matched.length,
+    upserted, next_cursor: nextOffset, window_days: CT_WINDOW_DAYS, newest: maxFiled(matched),
   };
 }
 
