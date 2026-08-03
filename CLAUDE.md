@@ -319,7 +319,7 @@ New Lead → Contacted → Qualifying → Application Sent → Docs Collected �
 
 ## DATABASE (Supabase)
 
-**Project name:** `CAI3303Demo` (Supabase project ref `ehibjeonqpqskhcvizow`, region us-east-2 / East US Ohio, compute NANO).
+**Project name:** `MFunding` (renamed from `CAI3303Demo`; Supabase project ref `ehibjeonqpqskhcvizow`, region us-east-2 / East US Ohio, compute NANO).
 **URL:** `https://ehibjeonqpqskhcvizow.supabase.co`
 
 > ⚠️ **Free tier auto-pause:** This is a FREE Supabase project, so it pauses itself after ~7 days of inactivity. When paused, all SQL/REST queries time out (`Connection terminated due to connection timeout`) even though the dashboard URL still resolves — resume it from the dashboard and wait a few minutes for it to come up. A scheduled heartbeat keeps it awake: `.github/workflows/supabase-heartbeat.yml` pings the REST API twice a day (and can be triggered manually). The same ping is in `scripts/heartbeat.sh` for local/manual use.
