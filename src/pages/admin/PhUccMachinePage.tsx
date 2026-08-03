@@ -17,7 +17,9 @@ import {
   ChevronDownIcon,
   ArrowUpTrayIcon,
 } from "@heroicons/react/24/outline";
+import * as tus from "tus-js-client";
 import supabase from "@/supabase";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "@/config";
 import { mustWrite } from "@/supabase/writes";
 import { getSetting, saveSetting } from "@/services/platformService";
 import { useUserProfile } from "@/context/UserProfileContext";
@@ -216,6 +218,42 @@ function todayStamp(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
+/* Resumable (TUS) upload to the private ph-ucc-uploads bucket. The UCC master
+   files are 600MB–3GB, so a single-POST upload is fragile (memory + no resume);
+   TUS chunks at 6MB and survives dropped connections. objectName is the path
+   WITHOUT the bucket prefix; auth is the signed-in user's token (RLS-gated). */
+async function uploadResumable(
+  file: File,
+  path: string,
+  accessToken: string,
+  onProgress: (sent: number, total: number) => void,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const upload = new tus.Upload(file, {
+      endpoint: `${SUPABASE_URL}/storage/v1/upload/resumable`,
+      retryDelays: [0, 3000, 5000, 10000, 20000],
+      headers: { authorization: `Bearer ${accessToken}`, apikey: SUPABASE_ANON_KEY, "x-upsert": "false" },
+      uploadDataDuringCreation: true,
+      removeFingerprintOnSuccess: true,
+      chunkSize: 6 * 1024 * 1024, // Supabase requires exactly 6MB chunks
+      metadata: {
+        bucketName: "ph-ucc-uploads",
+        objectName: path,
+        contentType: "text/csv",
+        cacheControl: "3600",
+      },
+      onError: reject,
+      onProgress,
+      onSuccess: () => resolve(),
+    });
+    // Resume a matching interrupted upload if one exists for this file.
+    upload.findPreviousUploads().then((prev) => {
+      if (prev.length > 0) upload.resumeFromPreviousUpload(prev[0]);
+      upload.start();
+    });
+  });
+}
+
 /* supabase-js returns a FunctionsHttpError on non-2xx, with the response body in
    error.context (a Response). Pull the {error} message out of it when present. */
 async function fnErrorMessage(error: unknown): Promise<string> {
@@ -268,11 +306,10 @@ function freshnessChip(days: number | null): string {
 }
 
 /* ── Bulk-file UCC ingest control (file_upload / file_autofetch sources) ──
-   Uploads each CSV to the private ph-ucc-uploads bucket (original filenames
-   kept — the ingest maps files to roles by "secured"/"filing"/"debtor"
-   substrings), invokes ph-ucc-file-ingest, then polls ph_ucc_ingest_jobs.
-   Standard storage upload for now; resumable/TUS is a hardening follow-up for
-   the largest (100–300MB) files on flaky connections. */
+   Uploads each CSV to the private ph-ucc-uploads bucket via resumable TUS
+   (files run 600MB–3GB — see uploadResumable), keeping original filenames so
+   the ingest maps files to roles by "secured"/"filing"/"debtor" substrings,
+   invokes ph-ucc-file-ingest, then polls ph_ucc_ingest_jobs. */
 type UploadPhase = "idle" | "uploading" | "ingesting" | "done" | "error";
 function FileUploadControl({ source, onIngested }: { source: UccSource; onIngested: () => void }) {
   const [files, setFiles] = useState<File[]>([]);
@@ -336,15 +373,17 @@ function FileUploadControl({ source, onIngested }: { source: UccSource; onIngest
     setJob(null);
     try {
       setPhase("uploading");
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
+      if (!token) throw new Error("not signed in — refresh and try again");
       const paths: string[] = [];
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
-        setUploadMsg(`Uploading ${i + 1} of ${files.length}: ${f.name}`);
         const path = `${source.state}/${crypto.randomUUID()}/${f.name}`; // keep original filename
-        const { error } = await supabase.storage
-          .from("ph-ucc-uploads")
-          .upload(path, f, { contentType: "text/csv", upsert: false });
-        if (error) throw new Error(`upload failed (${f.name}): ${error.message}`);
+        await uploadResumable(f, path, token, (sent, total) => {
+          const p = total > 0 ? Math.round((sent / total) * 100) : 0;
+          setUploadMsg(`Uploading ${i + 1} of ${files.length}: ${f.name} (${p}%)`);
+        });
         paths.push(path);
       }
       setPhase("ingesting");
