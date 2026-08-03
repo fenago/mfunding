@@ -76,6 +76,10 @@ const SERVICE_META: Record<string, { label: string; hint: string }> = {
     label: "Scheduled jobs (pg_cron)",
     hint: "A cron job failed or stalled — see the detail line; check pg_cron / pg_net.",
   },
+  "supabase-egress": {
+    label: "Supabase egress / usage cap",
+    hint: "Egress or disk is near/over the Pro quota, or the project is 402-restricted. Check Supabase dashboard → Billing / Usage; raise or lift the spend cap before it restricts REST + edge functions.",
+  },
 };
 
 function metaFor(service: string) {

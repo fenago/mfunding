@@ -38,6 +38,14 @@ const OWNER_EMAIL = "socrates73@gmail.com";
 const FROM_EMAIL = "sales@send.mfunding.net"; // company dedicated sending domain
 const INSTANTLY_API_BASE = "https://api.instantly.ai/api/v2";
 
+// Supabase Management API + this project. Used by the egress/usage probe.
+const SB_MGMT_BASE = "https://api.supabase.com";
+const SB_PROJECT_REF = "ehibjeonqpqskhcvizow";
+// Pro plan included allowances (the quota the probe measures against). Overage is
+// billed above these; disk is a HARD gate that can restrict the project.
+const PRO_EGRESS_GB = 250; // cached egress + DB egress included per billing month
+const PRO_DISK_GB = 8;     // included disk before overage
+
 type Status = "up" | "degraded" | "down";
 
 interface CheckResult {
@@ -248,8 +256,128 @@ async function checkCron(db: SupabaseClient): Promise<CheckResult> {
   return { service: svc, status: "up", http_status: null, latency_ms: null, detail: `${rows.length} scheduled job(s) healthy.` };
 }
 
+/** Pull a single Prometheus gauge value by metric name + a label substring match. */
+function promValue(text: string, metric: string, labelMatch?: string): number | null {
+  for (const line of text.split("\n")) {
+    if (!line.startsWith(metric)) continue;
+    if (line.startsWith("# ")) continue;
+    if (labelMatch && !line.includes(labelMatch)) continue;
+    const val = line.trim().split(/\s+/).pop();
+    const n = val ? Number(val) : NaN;
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/**
+ * Supabase egress / usage probe — the reason this whole file exists a second time.
+ *
+ * On 2026-08-02 the project blew its free-tier egress cap and every REST call + edge
+ * function got HTTP 402 "exceed_egress_quota"; the live app was dark until the owner
+ * upgraded. We must be warned BEFORE the cap, and catch the restriction the instant
+ * it fires. Two signals, in order of reliability:
+ *
+ *   1. RESTRICTION DETECTOR (always works): a lightweight self-REST call. A 402 means
+ *      the project is currently restricted — that IS the outage → down, no ambiguity.
+ *   2. USAGE TELEMETRY (best-effort): the Management API's Prometheus metrics expose
+ *      real pg_database_size_bytes → we measure DB size vs the Pro 8 GB included disk
+ *      and apply the 70/90% thresholds. HONESTY NOTE: the Management API exposes NO
+ *      billing-period egress figure (verified live — /usage and /billing/usage 404,
+ *      and the openapi spec has no egress endpoint). So egress GB is reported as
+ *      "unknown" — never a fake green — while signal #1 still catches the actual 402.
+ */
+async function checkSupabaseEgress(db: SupabaseClient): Promise<CheckResult> {
+  const svc = "supabase-egress";
+  const t0 = Date.now();
+
+  // ── Signal 1: is the project restricted RIGHT NOW? A 402 on our own REST API is
+  // the exact failure mode we're guarding against. Reachable + not-402 = not capped.
+  const supaUrl = Deno.env.get("SUPABASE_URL") ?? `https://${SB_PROJECT_REF}.supabase.co`;
+  const anon = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  let restricted = false;
+  let selfHttp: number | null = null;
+  try {
+    const r = await fetch(`${supaUrl}/rest/v1/profiles?select=id&limit=1`, {
+      headers: { apikey: anon, Authorization: `Bearer ${anon}` },
+      signal: AbortSignal.timeout(12000),
+    });
+    selfHttp = r.status;
+    await r.body?.cancel();
+    if (r.status === 402) restricted = true;
+  } catch {
+    /* network error here is inconclusive for egress — other probes cover reachability */
+  }
+  if (restricted) {
+    return {
+      service: svc, status: "down", http_status: 402, latency_ms: Date.now() - t0,
+      detail: "🔴 Egress/usage cap hit — project RESTRICTED (HTTP 402). REST + edge functions are blocked. Upgrade the plan or lift the spend cap in the Supabase dashboard → Billing.",
+    };
+  }
+
+  // ── Signal 2: real usage telemetry from the Management API (best-effort). ──
+  let token = "";
+  try {
+    const { data } = await db.rpc("get_supabase_mgmt_token");
+    if (typeof data === "string") token = data;
+  } catch { /* fall through to honest-unknown below */ }
+
+  // Days left in the billing period. The API doesn't expose the billing anchor, so we
+  // approximate with the calendar month (Supabase bills monthly) and label it as such.
+  const now = new Date();
+  const endOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+  const daysLeft = Math.max(0, Math.ceil((endOfMonth.getTime() - now.getTime()) / 86_400_000));
+
+  if (!token) {
+    // Not-restricted is a REAL up signal; we just can't show a usage bar. Say so.
+    return {
+      service: svc, status: "up", http_status: selfHttp, latency_ms: Date.now() - t0,
+      detail: `Not restricted (self-REST ${selfHttp ?? "n/a"}). Usage telemetry unavailable — SUPABASE_MGMT_TOKEN missing from vault, so DB size / egress % is unknown. Egress cap detection still active.`,
+    };
+  }
+
+  try {
+    const res = await fetch(
+      `${SB_MGMT_BASE}/v1/projects/${SB_PROJECT_REF}/analytics/endpoints/metrics`,
+      { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) },
+    );
+    const latency = Date.now() - t0;
+    if (res.status === 401 || res.status === 403) {
+      await res.body?.cancel();
+      return { service: svc, status: "degraded", http_status: res.status, latency_ms: latency, detail: `Not restricted, but Management API auth failed (${res.status}) — rotate/refresh SUPABASE_MGMT_TOKEN in the vault. DB size / egress % unknown.` };
+    }
+    if (!res.ok) {
+      await res.body?.cancel();
+      return { service: svc, status: "up", http_status: selfHttp, latency_ms: latency, detail: `Not restricted (self-REST ${selfHttp ?? "n/a"}). Usage telemetry unavailable — Management API returned ${res.status}. Egress cap detection still active.` };
+    }
+    const text = await res.text();
+    const dbBytes = promValue(text, "pg_database_size_bytes", 'datname="postgres"');
+    const dbGb = dbBytes != null ? dbBytes / 1_073_741_824 : null;
+    const dbPct = dbGb != null ? (dbGb / PRO_DISK_GB) * 100 : null;
+
+    // Egress GB is genuinely NOT exposed by the Management API — never fake it.
+    const egressLine = `egress usage not exposed by Management API (cap-detection covers 402); ~${daysLeft}d left this billing month`;
+
+    if (dbPct == null) {
+      return { service: svc, status: "up", http_status: selfHttp, latency_ms: latency, detail: `Not restricted. DB size unreadable from metrics; ${egressLine}.` };
+    }
+
+    const dbStr = `DB ${dbGb!.toFixed(2)} GB / ${PRO_DISK_GB} GB (${dbPct.toFixed(1)}%)`;
+    let status: Status = "up";
+    let head = "🟢";
+    if (dbPct > 90) { status = "down"; head = "🔴 DB disk over 90% —"; }
+    else if (dbPct >= 70) { status = "degraded"; head = "🟡 DB disk at"; }
+    return {
+      service: svc, status, http_status: selfHttp, latency_ms: latency,
+      detail: `${head} ${dbStr}. Not egress-restricted; ${egressLine}.`,
+    };
+  } catch (e) {
+    return { service: svc, status: "up", http_status: selfHttp, latency_ms: Date.now() - t0, detail: `Not restricted (self-REST ${selfHttp ?? "n/a"}). Usage telemetry unreachable: ${e instanceof Error ? e.message : String(e)}. Egress cap detection still active.` };
+  }
+}
+
 // ── Friendly labels + "what to do" hints for the alert body ───────────────────
 const LABELS: Record<string, string> = {
+  "supabase-egress": "Supabase egress / usage cap",
   instantly: "Instantly (email verify / warmup)",
   ghl: "GoHighLevel / VibeReach",
   llm: "AI provider (underwriting / recommendations)",
@@ -362,7 +490,7 @@ Deno.serve(async (req) => {
 
   // ── Run every probe (in parallel where independent) ──
   const results: CheckResult[] = [];
-  const [instantly, ghl, llm, plaid, site1, site2, cron] = await Promise.all([
+  const [instantly, ghl, llm, plaid, site1, site2, cron, egress] = await Promise.all([
     checkInstantly(db),
     checkGhl(cfg, cfgErr),
     checkLlm(db),
@@ -370,8 +498,9 @@ Deno.serve(async (req) => {
     checkSite("site:mfunding.net", "https://mfunding.net"),
     checkSite("site:my.mfunding.net", "https://my.mfunding.net"),
     checkCron(db),
+    checkSupabaseEgress(db),
   ]);
-  results.push(instantly, ghl, llm, plaid, site1, site2, cron);
+  results.push(instantly, ghl, llm, plaid, site1, site2, cron, egress);
   // Edge-runtime self-check: if this line runs, the function + its scheduler are alive.
   results.push({ service: "edge-runtime", status: "up", http_status: null, latency_ms: null, detail: `edge function executed at ${new Date().toISOString()}.` });
 
