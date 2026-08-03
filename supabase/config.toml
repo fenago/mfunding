@@ -306,3 +306,10 @@ verify_jwt = true
 # Apollo. Gated by ph_settings.apollo_enrich_enabled. verify_jwt = true; cron or staff JWT.
 [functions.ph-ucc-apollo-enrich]
 verify_jwt = true
+
+# ph-ucc-file-ingest: bulk-FILE UCC ingest (CA/FL/future file states). Streams uploaded
+# CSVs from the ph-ucc-uploads bucket, stages only funder-matched filings, upserts to
+# ph_ucc_filings, rebuilds leads. verify_jwt = true; staff JWT starts a job, self-reinvoke
+# continuations use the cron path (?secret + anon Bearer). Ingest only — no dialing/skiptrace.
+[functions.ph-ucc-file-ingest]
+verify_jwt = true
