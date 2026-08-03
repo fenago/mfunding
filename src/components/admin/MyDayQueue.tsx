@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { BoltIcon, ArrowPathIcon, ChevronDownIcon, PhoneIcon, MagnifyingGlassIcon, XMarkIcon, StarIcon as StarOutline } from "@heroicons/react/24/outline";
+import { StarIcon as StarSolid } from "@heroicons/react/24/solid";
 import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
+import { useDealPins } from "../../hooks/useDealPins";
+import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import supabase from "../../supabase";
 import { dateKeyET, timeET } from "../../utils/time";
 import LeadGradeChip from "./LeadGradeChip";
@@ -676,12 +679,77 @@ function HandoffDropControl({
   );
 }
 
+// ── STAR / BOOKMARK ──────────────────────────────────────────────────────────
+// One tap pins a merchant to the ⭐ Starred group at the very top of My Day, so a
+// deal the closer goes back and forth with never gets buried under hundreds of
+// leads. Outline star = unpinned, solid gold = pinned. Optimistic (the hook flips
+// the set instantly); a write failure reverts there AND flashes red here — loud,
+// never silent, never a browser popup. stopPropagation so starring never also
+// opens the card.
+function StarButton({
+  dealId, pinned, onToggle,
+}: {
+  dealId: string;
+  pinned: boolean;
+  onToggle: (dealId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(false);
+  const click = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (busy) return;
+    setErr(false);
+    setBusy(true);
+    try {
+      await onToggle(dealId);
+    } catch {
+      setErr(true);
+      setTimeout(() => setErr(false), 2500);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={click}
+      disabled={busy}
+      aria-pressed={pinned}
+      title={err ? "Couldn't save the star — tap to retry" : pinned ? "Starred — pinned to the top. Tap to un-star." : "Star this merchant — pins them to the top of My Day"}
+      className={`shrink-0 -m-1 p-1 rounded transition-colors disabled:opacity-50 ${
+        err
+          ? "text-red-500"
+          : pinned
+            ? "text-amber-500 hover:text-amber-600"
+            : "text-gray-300 hover:text-amber-500 dark:text-gray-600 dark:hover:text-amber-400"
+      }`}
+    >
+      {pinned ? <StarSolid className="w-4 h-4" /> : <StarOutline className="w-4 h-4" />}
+    </button>
+  );
+}
+
+// A pinned deal that has left the live queue (funded, parked, declined…) classifies
+// to no urgency — but the bookmark must never silently vanish. Give it a neutral
+// card that states its REAL status so the star still surfaces it, honestly.
+function statusFallbackUrgency(d: QueueDeal): Urgency {
+  const label = DEAL_STATUS_CONFIG[d.status as keyof typeof DEAL_STATUS_CONFIG]?.label ?? d.status;
+  return {
+    rank: 99,
+    badge: `⭐ ${label}`,
+    why: "Starred — nothing is due on this deal right now.",
+    since: d.updated_at ?? d.created_at,
+    tone: "gray",
+    lane: "followup",
+  };
+}
+
 type QueueItem = { deal: QueueDeal; u: Urgency };
 
 /** One work card. Unchanged from the single-list version — same tones, same SLA
  * countdown, same overdue flag, same onPick. Lifted out so both lanes render it. */
 function QueueCard({
-  deal, u, now, onPick, onTouched, flagged, longInbound, onFlag,
+  deal, u, now, onPick, onTouched, flagged, longInbound, onFlag, pinned, onTogglePin,
 }: QueueItem & {
   now: number;
   onPick: (d: QueueDeal) => void;
@@ -690,6 +758,9 @@ function QueueCard({
   flagged: boolean;
   longInbound: boolean;
   onFlag: (dealId: string, val: boolean) => void;
+  /** Per-user star: is this deal bookmarked, and the optimistic toggle. */
+  pinned: boolean;
+  onTogglePin: (dealId: string) => Promise<void>;
 }) {
   const src = sourceStyle(deal);
   const amount = amountOf(deal);
@@ -747,7 +818,10 @@ function QueueCard({
       className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3 cursor-pointer`}
     >
       <div className="flex items-center justify-between gap-2 mb-1.5">
-        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]}`}>{u.badge}</span>
+        <span className="flex items-center gap-1.5 min-w-0">
+          <StarButton dealId={deal.id} pinned={pinned} onToggle={onTogglePin} />
+          <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${toneChip[u.tone]} truncate`}>{u.badge}</span>
+        </span>
         {u.countdownDue ? (
           (Date.parse(u.countdownDue) - now) > 0 ? (
             <span className="text-[11px] font-bold text-red-600 dark:text-red-400 shrink-0 tabular-nums">
@@ -958,7 +1032,7 @@ function QueueCard({
 /** One lane: a labelled header with a count badge, then the lane's cards in rank
  * order (or its own empty state). */
 function LaneSection({
-  title, hint, icon, countTone, items, empty, now, onPick, onTouched, handoff, onFlag,
+  title, hint, icon, countTone, items, empty, now, onPick, onTouched, handoff, onFlag, pinnedIds, onTogglePin,
 }: {
   title: string;
   hint: string;
@@ -973,6 +1047,9 @@ function LaneSection({
   /** Per-deal handoff state (flagged + long-inbound), + the optimistic setter. */
   handoff: Map<string, HandoffState>;
   onFlag: (dealId: string, val: boolean) => void;
+  /** Per-user stars: which deals are pinned + the optimistic toggle. */
+  pinnedIds: Set<string>;
+  onTogglePin: (dealId: string) => Promise<void>;
 }) {
   return (
     <section>
@@ -999,6 +1076,8 @@ function LaneSection({
                 flagged={h?.flagged ?? false}
                 longInbound={h?.longInbound ?? false}
                 onFlag={onFlag}
+                pinned={pinnedIds.has(it.deal.id)}
+                onTogglePin={onTogglePin}
               />
             );
           })}
@@ -1016,6 +1095,9 @@ function LaneSection({
  */
 export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void }) {
   const { effectiveUserId, isAdmin, isSuperAdmin } = useUserProfile();
+  // Per-user stars — pinned merchants surface in a dedicated ⭐ group at the very
+  // top, immune to the age/kind/need filters below.
+  const { pinnedIds, pinnedAt, pinnedDeals, togglePin, error: pinError } = useDealPins();
   // Admins/super-admins can flip Mine/All; a pure closer (no admin role) is
   // always scoped to their own book + unassigned. Default All for super_admin,
   // Mine for everyone else.
@@ -1158,10 +1240,31 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
     });
   }, [baseItems, filtersActive, kindFilter, ageFilter, needFilter, now, handoff]);
 
+  // ⭐ STARRED — the user's bookmarks, lifted to the top and OUT of their normal
+  // lanes (deduped below). Built from pinnedDeals (the authoritative full rows for
+  // every pin) so it survives a deal leaving the queue: a pinned-but-parked deal
+  // classifies to no urgency and gets an honest status card instead of vanishing.
+  // Immune to the age/kind/need chip filters (requirement: a star is always
+  // visible); still respects the search box (so mid-call search narrows the board)
+  // and the Mine/All scope for admins. Most-recently-pinned first.
+  const starredItems = useMemo(() => {
+    if (pinnedDeals.length === 0) return [];
+    return pinnedDeals
+      .filter((d) => {
+        if (canToggle && scope === "mine" && !mineScope(d)) return false;
+        if (!canToggle && !mineScope(d)) return false;
+        return matchesQuery(d, query);
+      })
+      .map((d) => ({ deal: d, u: classify(d, now) ?? statusFallbackUrgency(d) }))
+      .sort((a, b) => (pinnedAt.get(b.deal.id) ?? 0) - (pinnedAt.get(a.deal.id) ?? 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedDeals, pinnedAt, scope, canToggle, effectiveUserId, now, query]);
+
   // Two lanes off the ONE classification. Rank ordering is preserved inside each
-  // lane (items is already sorted; filter keeps that order).
-  const followUps = useMemo(() => items.filter((i) => laneOf(i.u) === "followup"), [items]);
-  const newWork = useMemo(() => items.filter((i) => laneOf(i.u) === "new"), [items]);
+  // lane (items is already sorted; filter keeps that order). A pinned deal lives in
+  // the Starred group ONLY — never duplicated down in its normal lane.
+  const followUps = useMemo(() => items.filter((i) => laneOf(i.u) === "followup" && !pinnedIds.has(i.deal.id)), [items, pinnedIds]);
+  const newWork = useMemo(() => items.filter((i) => laneOf(i.u) === "new" && !pinnedIds.has(i.deal.id)), [items, pinnedIds]);
 
   // FIXED ORDER, ALWAYS: New Work on top, Follow-up below. This used to swap the
   // lanes whenever a rank-0 card existed, so the whole board reshuffled every time a
@@ -1277,12 +1380,12 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
 
       {!collapsed && (loading ? (
         <p className="text-sm text-gray-400 py-2">Loading your queue…</p>
-      ) : items.length === 0 && filtersActive ? (
+      ) : items.length === 0 && starredItems.length === 0 && filtersActive ? (
         <p className="text-sm text-gray-500 dark:text-gray-400 py-2">
           Nothing matches these filters ({baseItems.length} card{baseItems.length === 1 ? "" : "s"} hidden) —{" "}
           <button type="button" onClick={clearFilters} className="text-ocean-blue hover:underline">clear filters</button>.
         </p>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && starredItems.length === 0 ? (
         query.trim() ? (
           <p className="text-sm text-gray-500 dark:text-gray-400 py-2">
             No open deal matches <b>“{query}”</b>
@@ -1294,6 +1397,32 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         )
       ) : (
         <div className="space-y-4">
+          {/* Loud, non-popup surfacing of a failed star write (owner rule). */}
+          {pinError && (
+            <p className="text-[11px] font-medium text-red-600 dark:text-red-400">
+              ⚠ Couldn't save your star — {pinError} It's been reverted; try again.
+            </p>
+          )}
+          {/* ⭐ STARRED — pinned merchants, at the very top, above all lanes. Only
+              rendered when the user actually has pins (honest empty state). */}
+          {starredItems.length > 0 && (
+            <LaneSection
+              key="starred"
+              icon="⭐"
+              title="Starred"
+              hint="your bookmarks — always here, whatever the filters"
+              countTone="bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+              items={starredItems}
+              empty="No starred deals."
+              now={now}
+              onPick={onPick}
+              onTouched={load}
+              handoff={handoff}
+              onFlag={setFlagLocal}
+              pinnedIds={pinnedIds}
+              onTogglePin={togglePin}
+            />
+          )}
           {laneOrder.map((lane) =>
             lane === "followup" ? (
               <LaneSection
@@ -1309,6 +1438,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 onTouched={load}
                 handoff={handoff}
                 onFlag={setFlagLocal}
+                pinnedIds={pinnedIds}
+                onTogglePin={togglePin}
               />
             ) : (
               <LaneSection
@@ -1324,6 +1455,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 onTouched={load}
                 handoff={handoff}
                 onFlag={setFlagLocal}
+                pinnedIds={pinnedIds}
+                onTogglePin={togglePin}
               />
             )
           )}
