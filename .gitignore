@@ -34,3 +34,7 @@ deno.lock
 
 # Generated build id for the stale-bundle detector
 public/version.json
+
+# Python bytecode cache
+__pycache__/
+*.pyc
