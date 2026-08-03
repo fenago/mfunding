@@ -35,11 +35,15 @@ comment on column public.ph_ucc_sources.fetch_mode is
 -- Whether it auto-fetches or stays manual depends on floridaucc.com exposing a
 -- stable no-auth download URL; ph-ucc-file-ingest sets fetch_mode accordingly and
 -- (if open) a cron is wired. Seed as file_upload; the fetch wiring can promote it.
-insert into public.ph_ucc_sources (state, name, kind, endpoint, cadence, status, fetch_mode, notes) values
-  ('FL','Florida SOS — floridaucc.com bulk download','file',
-   'https://www.floridaucc.com/', 'daily','active','file_upload',
-   'Free full UCC download (events / debtors / secureds / filings), regenerated every business day. Loaded via UI upload; promoted to file_autofetch once a stable no-auth daily URL is confirmed.')
-on conflict (state, name) do nothing;
+-- Idempotent: give any existing FL file source a fetch_mode, and only create one
+-- if none exists (the fl-ucc-loader may already have inserted the FL source row).
+update public.ph_ucc_sources set fetch_mode = 'file_upload'
+  where state = 'FL' and kind = 'file' and fetch_mode is null;
+insert into public.ph_ucc_sources (state, name, kind, endpoint, cadence, status, fetch_mode, notes)
+select 'FL','Florida SOS — floridaucc.com bulk download','file',
+       'https://www.floridaucc.com/', 'daily','active','file_upload',
+       'Free full UCC download (events / debtors / secureds / filings), regenerated every business day. Loaded via UI upload; promoted to file_autofetch once a stable no-auth daily URL is confirmed.'
+where not exists (select 1 from public.ph_ucc_sources where state = 'FL' and kind = 'file');
 
 -- ── 3. Storage bucket for uploaded bulk files (private, admin-only) ─────────────
 -- 2GB file-size limit so a large unzipped CA/FL CSV (100s of MB each) can be
