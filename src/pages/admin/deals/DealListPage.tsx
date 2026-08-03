@@ -25,6 +25,15 @@ import LeadGradeChip from "../../../components/admin/LeadGradeChip";
 // unassigned-only view needs its own value (a real profile id can never collide).
 const UNASSIGNED = "__unassigned__";
 
+// Quick-view chips make parked/closed deals — and their "Reopen" button — easy to
+// find. Applied client-side over the already-fetched rows so they compose with the
+// dropdown filters without a second round-trip. "nurture" + "closed" are exactly
+// the reopenable set (see the Reopen button gate below).
+type DealView = "all" | "active" | "nurture" | "closed";
+const CLOSED_STATUSES: DealStatus[] = ["declined", "dead"];
+// Off-pipeline (parked) or terminal — everything a deal in the "Active" view is NOT.
+const INACTIVE_STATUSES: DealStatus[] = ["nurture", "declined", "dead", "funded", "renewal_eligible"];
+
 export default function DealListPage() {
   const [deals, setDeals] = useState<DealWithCustomer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -37,6 +46,8 @@ export default function DealListPage() {
   // "Best first (EV)" — sort by expected value (est.) instead of newest-first.
   // Client-side on the already-fetched rows; unscored deals sink to the bottom.
   const [sortBestFirst, setSortBestFirst] = useState(false);
+  // Quick-view chip (client-side). "nurture"/"closed" surface parked deals + Reopen.
+  const [view, setView] = useState<DealView>("all");
 
   useEffect(() => {
     fetchDeals();
@@ -116,6 +127,20 @@ export default function DealListPage() {
       </div>
     );
   }
+
+  // Apply sort, then the client-side quick-view chip. Kept out of the JSX so the
+  // empty state can key off what's actually visible (not the raw fetched count).
+  const sortedDeals = sortBestFirst
+    ? [...deals].sort((a, b) => (b.expected_value ?? -1) - (a.expected_value ?? -1))
+    : deals;
+  const visibleDeals =
+    view === "all"
+      ? sortedDeals
+      : view === "nurture"
+      ? sortedDeals.filter((d) => d.status === "nurture")
+      : view === "closed"
+      ? sortedDeals.filter((d) => CLOSED_STATUSES.includes(d.status))
+      : sortedDeals.filter((d) => !INACTIVE_STATUSES.includes(d.status));
 
   return (
     <div className="p-6">
@@ -211,6 +236,38 @@ export default function DealListPage() {
         </div>
       )}
 
+      {/* Quick views — make parked/closed deals (and the Reopen button) easy to find.
+          Picking a chip clears the status dropdown so the two don't fight. */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <span className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mr-1">Show</span>
+        {([
+          { key: "all", label: "All deals" },
+          { key: "active", label: "Active" },
+          { key: "nurture", label: "Nurture / Parked" },
+          { key: "closed", label: "Closed (declined / dead)" },
+        ] as const).map((v) => (
+          <button
+            key={v.key}
+            onClick={() => {
+              setView(v.key);
+              setFilters((f) => ({ ...f, status: undefined }));
+            }}
+            className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+              view === v.key
+                ? "bg-ocean-blue text-white border-ocean-blue"
+                : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700"
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+        {(view === "nurture" || view === "closed") && (
+          <span className="text-xs text-gray-400 dark:text-gray-500">
+            Hit <span className="font-semibold text-ocean-blue">Reopen</span> to put a deal back into the active pipeline.
+          </span>
+        )}
+      </div>
+
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-6">
         <div className="relative flex-1 max-w-xs">
@@ -225,7 +282,10 @@ export default function DealListPage() {
         </div>
         <select
           value={filters.status || ""}
-          onChange={(e) => setFilters((f) => ({ ...f, status: (e.target.value || undefined) as DealStatus | undefined }))}
+          onChange={(e) => {
+            setView("all");
+            setFilters((f) => ({ ...f, status: (e.target.value || undefined) as DealStatus | undefined }));
+          }}
           className="input-field w-40"
         >
           <option value="">All Status</option>
@@ -301,18 +361,24 @@ export default function DealListPage() {
       </div>
 
       {/* Deals Table */}
-      {deals.length === 0 ? (
+      {visibleDeals.length === 0 ? (
         <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
           <DocumentTextIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
             No deals found
           </h3>
           <p className="text-gray-500 dark:text-gray-400 mb-4">
-            {Object.values(filters).some(Boolean)
+            {view === "nurture"
+              ? "No parked (nurture) deals right now."
+              : view === "closed"
+              ? "No closed (declined / dead) deals right now."
+              : view === "active"
+              ? "No active deals right now."
+              : Object.values(filters).some(Boolean)
               ? "Try adjusting your filters"
               : "Get started by creating your first deal"}
           </p>
-          {!Object.values(filters).some(Boolean) && (
+          {view === "all" && !Object.values(filters).some(Boolean) && (
             <button
               onClick={() => setIsCreateModalOpen(true)}
               className="btn-primary inline-flex items-center gap-2"
@@ -358,10 +424,7 @@ export default function DealListPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {(sortBestFirst
-                  ? [...deals].sort((a, b) => (b.expected_value ?? -1) - (a.expected_value ?? -1))
-                  : deals
-                ).map((deal) => {
+                {visibleDeals.map((deal) => {
                   const statusConfig = DEAL_STATUS_CONFIG[deal.status];
                   const typeConfig = DEAL_TYPE_CONFIG[deal.deal_type];
                   const marketConfig = deal.market ? MARKET_CONFIG[deal.market] : null;
@@ -409,10 +472,10 @@ export default function DealListPage() {
                               onClick={() => handleReactivate(deal.id)}
                               disabled={reactivatingId === deal.id}
                               title="Reopen / re-engage — put this deal back into the active pipeline at the stage it left"
-                              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-ocean-blue border border-ocean-blue/40 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50"
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-semibold text-white bg-ocean-blue rounded hover:bg-ocean-blue/90 disabled:opacity-50"
                             >
                               <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
-                              {reactivatingId === deal.id ? "Bringing back…" : "Bring back"}
+                              {reactivatingId === deal.id ? "Reopening…" : "Reopen"}
                             </button>
                           )}
                         </div>

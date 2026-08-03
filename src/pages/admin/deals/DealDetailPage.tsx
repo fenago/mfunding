@@ -358,11 +358,11 @@ export default function DealDetailPage() {
             {isParked && (
               <button
                 onClick={handleReactivate}
-                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-ocean-blue rounded-lg hover:bg-ocean-blue/90"
+                className="inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold text-white bg-ocean-blue rounded-lg hover:bg-ocean-blue/90 ring-2 ring-ocean-blue/20"
                 title="Reopen / re-engage — put this deal back into the active pipeline at the stage it left"
               >
                 <ArrowUturnLeftIcon className="w-4 h-4" />
-                Bring back
+                Reopen deal
               </button>
             )}
             <DealAssistant
