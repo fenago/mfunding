@@ -16,6 +16,7 @@ import {
   Cog6ToothIcon,
   ChevronDownIcon,
   ArrowUpTrayIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import * as tus from "tus-js-client";
 import supabase from "@/supabase";
@@ -56,6 +57,36 @@ interface UccSource {
   error_note?: string | null;
 }
 
+/* A single UCC filing (position) for the debtor drawer, via the
+   ph_ucc_lead_filings RPC (normalized debtor-key join). */
+interface UccFiling {
+  id: string;
+  state: string | null;
+  filing_no: string | null;
+  filed_date: string | null;
+  lapse_date: string | null;
+  status: string | null;
+  secured_party_raw: string | null;
+  debtor_name: string | null;
+}
+
+/* ph_ucc_contacts — skip-trace persons for the debtor drawer (by lead_id). */
+interface ContactPhone {
+  number?: string;
+  type?: string;
+  dnc?: boolean;
+  suppressed_dnc?: boolean;
+  tcpa_litigator?: boolean;
+}
+interface UccContact {
+  id: string;
+  person_name: string | null;
+  is_primary: boolean | null;
+  phones: ContactPhone[] | null;
+  emails: unknown[] | null;
+  traced_at: string | null;
+}
+
 /* ph_ucc_ingest_jobs — the row the upload progress UI polls. */
 type IngestJobStatus = "queued" | "processing" | "complete" | "error" | "canceled";
 interface IngestJob {
@@ -84,6 +115,10 @@ interface UccLead {
   id: string;
   debtor_name: string | null;
   state: string | null;
+  debtor_address: string | null;
+  debtor_city: string | null;
+  debtor_state: string | null;
+  debtor_zip: string | null;
   matched_funders: string[] | null; // text[] of funder display names
   stack_depth: number | null;
   latest_filing_date: string | null;
@@ -500,6 +535,238 @@ function FileUploadControl({ source, onIngested }: { source: UccSource; onIngest
   );
 }
 
+/* Debtor drill-down — an in-app right-side drawer (owner rule: no browser
+   popups) showing the full UCC stack history + any skip-trace contacts for one
+   debtor. Read-only; triggers NO skip-trace. */
+function emailStr(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") {
+    const o = e as Record<string, unknown>;
+    return String(o.email ?? o.address ?? o.value ?? JSON.stringify(o));
+  }
+  return String(e ?? "");
+}
+
+function LeadDetailDrawer({ lead, onClose }: { lead: UccLead; onClose: () => void }) {
+  const [filings, setFilings] = useState<UccFiling[]>([]);
+  const [contacts, setContacts] = useState<UccContact[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        const [fRes, cRes] = await Promise.all([
+          supabase.rpc("ph_ucc_lead_filings", { p_lead_id: lead.id }),
+          supabase
+            .from("ph_ucc_contacts")
+            .select("id,person_name,is_primary,phones,emails,traced_at")
+            .eq("lead_id", lead.id)
+            .order("is_primary", { ascending: false }),
+        ]);
+        if (!alive) return;
+        if (fRes.error) throw fRes.error;
+        setFilings((fRes.data as UccFiling[]) ?? []);
+        if (!cRes.error) setContacts((cRes.data as UccContact[]) ?? []);
+      } catch (e) {
+        if (alive) setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lead.id]);
+
+  const funders = lead.matched_funders ?? [];
+  const addr = [lead.debtor_address, lead.debtor_city, lead.debtor_state, lead.debtor_zip].filter(Boolean).join(", ");
+
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      {/* Backdrop — click to close. */}
+      <button className="flex-1 bg-black/40" onClick={onClose} aria-label="Close" />
+      {/* Panel. */}
+      <div className="h-full w-full max-w-xl overflow-y-auto bg-white dark:bg-gray-900 shadow-xl">
+        <div className="sticky top-0 flex items-start justify-between gap-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-5 py-4">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white">{lead.debtor_name || "—"}</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400">{addr || "—"}</p>
+          </div>
+          <button onClick={onClose} className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-6 px-5 py-4">
+          {/* Lead summary. */}
+          <section>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <div>
+                <div className="text-xs text-gray-400">Score</div>
+                <div className="font-semibold text-gray-900 dark:text-white">
+                  {lead.score == null ? "—" : Math.round(lead.score)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400">Positions (stack)</div>
+                <div className="font-semibold text-gray-900 dark:text-white">{lead.stack_depth ?? "—"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400">Freshness</div>
+                <div>
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${freshnessChip(lead.freshness_days)}`}>
+                    {lead.freshness_days == null ? "—" : `${lead.freshness_days}d`}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400">Status</div>
+                <div>
+                  <span
+                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${(LEAD_STATUS_META[lead.status] ?? LEAD_STATUS_META.matched).chip}`}
+                  >
+                    {(LEAD_STATUS_META[lead.status] ?? LEAD_STATUS_META.matched).label}
+                  </span>
+                </div>
+              </div>
+            </div>
+            {funders.length > 0 && (
+              <div className="mt-3">
+                <div className="text-xs text-gray-400 mb-1">Matched funders</div>
+                <div className="flex flex-wrap gap-1">
+                  {funders.map((f, i) => (
+                    <span
+                      key={i}
+                      className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+                    >
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {err && <p className="text-sm text-rose-600 dark:text-rose-400">Failed to load detail: {err}</p>}
+
+          {/* Stack history — all filings, chronological. */}
+          <section>
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">
+              Stack history{loading ? "" : ` · ${filings.length} position${filings.length === 1 ? "" : "s"}`}
+            </h3>
+            {loading ? (
+              <p className="text-sm text-gray-400">Loading…</p>
+            ) : filings.length === 0 ? (
+              <p className="text-sm text-gray-400">No filings found for this debtor.</p>
+            ) : (
+              <ol className="relative space-y-3 border-l border-gray-200 dark:border-gray-700 pl-4">
+                {filings.map((f) => (
+                  <li key={f.id} className="relative">
+                    <span className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full bg-ocean-blue" />
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                        {f.secured_party_raw || "—"}
+                      </span>
+                      <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">{fmtDate(f.filed_date)}</span>
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      {f.status && <span>{f.status}</span>}
+                      {f.filing_no && <span>#{f.filing_no}</span>}
+                      {f.state && <span>{f.state}</span>}
+                      {f.lapse_date && <span>lapses {fmtDate(f.lapse_date)}</span>}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          {/* Skip-trace contacts — only if present; honest empty state otherwise. */}
+          <section>
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Contacts</h3>
+            {loading ? (
+              <p className="text-sm text-gray-400">Loading…</p>
+            ) : contacts.length === 0 ? (
+              <p className="text-sm text-gray-400">Not skip-traced yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {contacts.map((c) => (
+                  <div key={c.id} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                        {c.person_name || "—"}
+                      </span>
+                      {c.is_primary && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue font-semibold">
+                          primary
+                        </span>
+                      )}
+                    </div>
+                    {(c.phones ?? []).length > 0 && (
+                      <ul className="mt-1.5 space-y-1">
+                        {(c.phones ?? []).map((p, i) => {
+                          const blocked = p.suppressed_dnc || p.tcpa_litigator || p.dnc;
+                          return (
+                            <li key={i} className="flex flex-wrap items-center gap-1.5 text-sm">
+                              <span className={blocked ? "text-gray-400 line-through" : "text-gray-900 dark:text-gray-100"}>
+                                {p.number || "—"}
+                              </span>
+                              {p.type && <span className="text-xs text-gray-400">{p.type}</span>}
+                              {p.tcpa_litigator && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 font-semibold">
+                                  TCPA litigator — do not call
+                                </span>
+                              )}
+                              {p.suppressed_dnc && !p.tcpa_litigator && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 font-semibold">
+                                  DNC
+                                </span>
+                              )}
+                              {p.dnc && !p.suppressed_dnc && !p.tcpa_litigator && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 font-semibold">
+                                  dnc
+                                </span>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    {(c.emails ?? []).length > 0 && (
+                      <ul className="mt-1.5 space-y-0.5">
+                        {(c.emails ?? []).map((e, i) => (
+                          <li key={i} className="text-sm text-gray-700 dark:text-gray-200">
+                            {emailStr(e)}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+                <p className="text-[11px] text-gray-400">
+                  Numbers flagged DNC or TCPA-litigator are never dialable and are shown struck-through for reference only.
+                </p>
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PhUccMachinePage() {
   const { isSuperAdmin } = useUserProfile();
   const [loading, setLoading] = useState(true);
@@ -533,6 +800,7 @@ export default function PhUccMachinePage() {
   const [fState, setFState] = useState("");
   const [fStatus, setFStatus] = useState("");
   const [fMinStack, setFMinStack] = useState("");
+  const [selectedLead, setSelectedLead] = useState<UccLead | null>(null); // debtor drawer
   const [exporting, setExporting] = useState(false);
   const [exportFlash, setExportFlash] = useState<string | null>(null);
   // Raw filings export (nice-to-have): selected state + date range.
@@ -1575,7 +1843,15 @@ export default function PhUccMachinePage() {
                           <td className="py-3 px-4 font-semibold text-gray-900 dark:text-white">
                             {l.score == null ? "—" : Math.round(l.score)}
                           </td>
-                          <td className="py-3 px-4 text-gray-900 dark:text-gray-100">{l.debtor_name || "—"}</td>
+                          <td className="py-3 px-4">
+                            <button
+                              onClick={() => setSelectedLead(l)}
+                              className="text-left font-medium text-ocean-blue hover:underline"
+                              title="View full stack history + contacts"
+                            >
+                              {l.debtor_name || "—"}
+                            </button>
+                          </td>
                           <td className="py-3 px-4 text-gray-500 dark:text-gray-400">{l.state || "—"}</td>
                           {/* Contact — post-skip-trace. l.phone is a dialable NON-DNC number by
                               contract (DNC-suppressed numbers are never surfaced here). */}
@@ -1980,6 +2256,9 @@ export default function PhUccMachinePage() {
           )}
         </>
       )}
+
+      {/* Debtor drill-down drawer (in-app; no popup). */}
+      {selectedLead && <LeadDetailDrawer lead={selectedLead} onClose={() => setSelectedLead(null)} />}
     </div>
   );
 }
