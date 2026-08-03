@@ -13,6 +13,11 @@
 //       aliases, then hydrate their filings + debtors. Resumable by alias cursor.
 //   OR  Socrata — snfi-f79b "UCC List of Filings Entered Last Month",
 //       denormalized (party_type DB/SP). FULL ingest each run (~5.7k rows).
+//   CT  Socrata — xfev-8smz "UCC Lien Filings (4.0 Revised)", one row per
+//       filing×party already carrying BOTH debtor and secured-party name+address.
+//       We take ORIG FIN STMT + Active + non-lapsed inside the 540d window (dt_accept
+//       is the true origination date; amendments would make an old lien look fresh).
+//       ~77k rows in-window → resumable by row offset (ct_cursor), like CO.
 //   VA  CKAN — UNUSABLE: the portal's UCC datasets carry filing metadata only,
 //       no debtor/secured-party names. Returns a loud skip; ingests nothing.
 //   CA  bizfile master unload — awaiting the owner's $100 purchase; loader TODO.
@@ -34,6 +39,7 @@ const CO_FILING = "wffy-3uut";
 const CO_DEBTOR = "8upq-58vz";
 const CO_SECURED = "ap62-sav4";
 const OR_URL = "https://data.oregon.gov/resource/snfi-f79b.json";
+const CT_URL = "https://data.ct.gov/resource/xfev-8smz.json";
 
 // Wall-clock budget: stop starting new per-alias work past this so the function
 // returns before the platform kills it. CO is resumable (alias cursor), so a
@@ -48,6 +54,10 @@ const CHUNK = 150;                 // fileid IN-list chunk size
 // only non-terminated filings inside a rolling window. 540d (~18mo) keeps enough
 // history for a meaningful stack-depth signal without dialing ancient dead liens.
 const CO_WINDOW_DAYS = 540;
+// CT: same freshness policy as CO. dt_accept (origination date) inside a rolling
+// 540d window, Active + non-lapsed only. Resumable by row offset per invocation.
+const CT_WINDOW_DAYS = 540;
+const CT_MAX_ROWS_PER_RUN = 60_000; // safety cap on rows collected per invocation
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -56,17 +66,17 @@ function json(body: unknown, status = 200) {
   });
 }
 
-// Fire a self-reinvocation (cron/secret path only) so CO's multi-invocation chain
-// finishes from a single cron fire — one instance can't process all 152 alias
-// terms + hydration inside the wall clock, so it hands the next co_cursor to a
-// child. Terminates naturally when next_cursor becomes null.
-function selfReinvokeCO(secret: string, nextCursor: number): void {
+// Fire a self-reinvocation (cron/secret path only) so a multi-invocation chain
+// finishes from a single cron fire — one instance can't process every CO alias
+// term (or every CT page) inside the wall clock, so it hands the next cursor to a
+// child. Terminates naturally when the state stops returning a next_cursor.
+function selfReinvoke(secret: string, body: Record<string, unknown>): void {
   const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/ph-ucc-ingest?secret=${encodeURIComponent(secret)}`;
   const anon = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const p = fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${anon}` },
-    body: JSON.stringify({ state: "CO", co_cursor: nextCursor }),
+    body: JSON.stringify(body),
   }).then(() => {}).catch((e) => console.error("[ph-ucc-ingest] self-reinvoke failed:", e));
   try { (globalThis as { EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil(p); } catch { /* dev */ }
 }
@@ -302,6 +312,81 @@ async function ingestCO(
   };
 }
 
+// ── CONNECTICUT: full-window ingest of the revised UCC dataset, resumable ────
+// One row per filing×party already carries debtor + secured party, so there is
+// no join (unlike CO) and no last-month scoping (unlike OR) — just page the
+// ORIG-FIN-STMT / Active / non-lapsed slice inside the 540d window, newest first.
+async function ingestCT(
+  db: SupabaseClient, sourceId: string | null, startOffset: number, started: number,
+) {
+  const cutoff = new Date(Date.now() - CT_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  // Freshness/quality gate at the source: originating statements only (dt_accept =
+  // true origination date), still Active, not yet lapsed.
+  const where =
+    `lien_status='Active' AND cd_flng_type='ORIG FIN STMT'`
+    + ` AND dt_accept > '${cutoff}T00:00:00'`
+    + ` AND (dt_lapse IS NULL OR dt_lapse >= '${today}T00:00:00')`;
+
+  let offset = startOffset;
+  let fetched = 0;
+  let budgetHit = false;
+  const out: FilingRow[] = [];
+  // A lien with co-debtors emits several rows sharing (state|filing_no|secured_party),
+  // which collide on the generated dedupe_hash and blow up a single upsert batch
+  // ("ON CONFLICT ... cannot affect row a second time"). Collapse to the first row
+  // per key (mirrors dedupe_hash = lower(state|filing_no|coalesce(secured_party,''))).
+  const seen = new Set<string>();
+  for (;;) {
+    if (Date.now() - started > BUDGET_MS) { budgetHit = true; break; }
+    if (out.length >= CT_MAX_ROWS_PER_RUN) { budgetHit = true; break; }
+    const rows = await sodaUrl(CT_URL, {
+      $select: "id_lien_flng_nbr,id_ucc_flng_nbr,lien_status,cd_flng_type,"
+        + "debtor_nm_bus,debtor_nm_last,debtor_nm_first,debtor_ad_str1,debtor_ad_city,debtor_ad_state,debtor_ad_zip,"
+        + "sec_party_nm_bus,sec_party_nm_last,sec_party_nm_first,dt_accept,dt_lapse",
+      $where: where,
+      $order: "dt_accept DESC, id_ucc_flng_nbr", // stable tiebreaker for offset paging
+      $limit: String(PAGE), $offset: String(offset),
+    });
+    if (!rows.length) break;
+    fetched += rows.length;
+    for (const r of rows) {
+      const debtor = clean(r.debtor_nm_bus)
+        ?? ([clean(r.debtor_nm_last), clean(r.debtor_nm_first)].filter(Boolean).join(", ") || null);
+      const sp = clean(r.sec_party_nm_bus)
+        ?? ([clean(r.sec_party_nm_last), clean(r.sec_party_nm_first)].filter(Boolean).join(", ") || null);
+      const filingNo = clean(r.id_lien_flng_nbr) ?? clean(r.id_ucc_flng_nbr); // lien no collapses amendments
+      if (!sp || !filingNo) continue; // no secured party or no key → nothing to match
+      const key = `ct|${filingNo}|${sp}`.toLowerCase();
+      if (seen.has(key)) continue; // co-debtor dup on same lien+party
+      seen.add(key);
+      out.push({
+        state: "CT",
+        filing_no: filingNo,
+        filed_date: toDate(r.dt_accept),
+        lapse_date: toDate(r.dt_lapse),
+        status: clean(r.lien_status),
+        debtor_name: debtor,
+        debtor_address: clean(r.debtor_ad_str1),
+        debtor_city: clean(r.debtor_ad_city),
+        debtor_state: clean(r.debtor_ad_state),
+        debtor_zip: clean(r.debtor_ad_zip),
+        secured_party_raw: sp,
+        raw: { source: "CT/xfev-8smz", row: r },
+        source_id: sourceId,
+      });
+    }
+    offset += rows.length;
+    if (rows.length < PAGE) break;
+  }
+  const upserted = await upsertFilings(db, out);
+  const nextOffset = budgetHit ? offset : null; // null = window exhausted
+  return {
+    fetched, filing_rows: out.length, upserted, next_cursor: nextOffset,
+    window_days: CT_WINDOW_DAYS, newest: maxFiled(out),
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST" && req.method !== "GET") return json({ error: "Method not allowed" }, 405);
@@ -332,6 +417,7 @@ Deno.serve(async (req) => {
   try { payload = (await req.json()) as Record<string, unknown>; } catch { /* GET/cron */ }
   const stateParam = String(payload.state ?? url.searchParams.get("state") ?? "ALL").toUpperCase();
   const coCursor = Number(payload.co_cursor ?? url.searchParams.get("co_cursor") ?? 0) || 0;
+  const ctCursor = Number(payload.ct_cursor ?? url.searchParams.get("ct_cursor") ?? 0) || 0;
   const started = Date.now();
 
   // Resolve source rows once.
@@ -365,6 +451,18 @@ Deno.serve(async (req) => {
       }).eq("id", s.id);
     }
 
+    if (want("CT")) {
+      const s = srcOf("CT");
+      const r = await ingestCT(db, s?.id ?? null, ctCursor, started);
+      results.CT = r;
+      if (s) await db.from("ph_ucc_sources").update({
+        last_pull_at: new Date().toISOString(), last_rows: await filingsHeld(db, "CT"),
+        last_cursor: r.next_cursor === null ? null : String(r.next_cursor), status: "active",
+        newest_filing_date: await newestFor(db, "CT"),
+        notes: `Last run ${new Date().toISOString()}: +${r.upserted} filing-rows (${r.fetched} fetched)${r.next_cursor !== null ? ` (RESUME at ct_cursor=${r.next_cursor})` : ` (complete, ≤${CT_WINDOW_DAYS}d window)`}.`,
+      }).eq("id", s.id);
+    }
+
     if (want("VA")) {
       // LOUD, honest skip — the source genuinely lacks party names.
       results.VA = {
@@ -388,14 +486,22 @@ Deno.serve(async (req) => {
     // Continue CO's chain automatically on the cron/secret path.
     const coNext = (results.CO as { next_cursor?: number | null } | undefined)?.next_cursor;
     if (providedSecret && want("CO") && coNext !== null && coNext !== undefined) {
-      selfReinvokeCO(providedSecret, coNext);
+      selfReinvoke(providedSecret, { state: "CO", co_cursor: coNext });
       results.self_reinvoked_co_cursor = coNext;
+    }
+
+    // Continue CT's page chain automatically on the cron/secret path.
+    const ctNext = (results.CT as { next_cursor?: number | null } | undefined)?.next_cursor;
+    if (providedSecret && want("CT") && ctNext !== null && ctNext !== undefined) {
+      selfReinvoke(providedSecret, { state: "CT", ct_cursor: ctNext });
+      results.self_reinvoked_ct_cursor = ctNext;
     }
 
     // Top-level rows_ingested for the dashboard's "+N rows" toast (sums states run).
     const rowsIngested =
       ((results.OR as { upserted?: number } | undefined)?.upserted ?? 0) +
-      ((results.CO as { upserted?: number } | undefined)?.upserted ?? 0);
+      ((results.CO as { upserted?: number } | undefined)?.upserted ?? 0) +
+      ((results.CT as { upserted?: number } | undefined)?.upserted ?? 0);
 
     return json({ ok: true, state: stateParam, rows_ingested: rowsIngested, elapsed_ms: Date.now() - started, ...results });
   } catch (e) {
