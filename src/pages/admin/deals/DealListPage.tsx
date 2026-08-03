@@ -408,7 +408,7 @@ export default function DealListPage() {
                             <button
                               onClick={() => handleReactivate(deal.id)}
                               disabled={reactivatingId === deal.id}
-                              title="Bring this deal back into the active pipeline"
+                              title="Reopen / re-engage — put this deal back into the active pipeline at the stage it left"
                               className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-ocean-blue border border-ocean-blue/40 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50"
                             >
                               <ArrowUturnLeftIcon className="w-3.5 h-3.5" />

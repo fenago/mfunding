@@ -359,7 +359,7 @@ export default function DealDetailPage() {
               <button
                 onClick={handleReactivate}
                 className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-ocean-blue rounded-lg hover:bg-ocean-blue/90"
-                title="Bring this deal back into the active pipeline"
+                title="Reopen / re-engage — put this deal back into the active pipeline at the stage it left"
               >
                 <ArrowUturnLeftIcon className="w-4 h-4" />
                 Bring back

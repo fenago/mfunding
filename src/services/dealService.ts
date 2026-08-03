@@ -612,13 +612,18 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
   }
 
   // Reactivating a parked deal → clear the nurture timestamp so it doesn't read
-  // as still-on-the-bench once it's back in the pipeline.
+  // as still-on-the-bench once it's back in the pipeline, and wipe the close
+  // reason/note captured when it was shelved — a reopened deal is no longer
+  // "closed for <reason>", and stale closed_reason values otherwise keep
+  // showing up in the campaign audit's close-reason tallies.
   if (
     curStatus &&
     PARKED_STATUSES.includes(curStatus) &&
     !PARKED_STATUSES.includes(newStatus)
   ) {
     updateData.nurture_at = null;
+    updateData.closed_reason = null;
+    updateData.closed_note = null;
   }
 
   // ── A stage move settles the callback. ──
@@ -747,7 +752,30 @@ export async function reactivateDeal(id: string): Promise<Deal> {
     else target = "qualifying";
   }
 
-  return await updateDealStatus(id, target);
+  const fromStatus = deal.status as DealStatus;
+  const updated = await updateDealStatus(id, target);
+
+  // Log the re-engagement so the deal history shows it was pulled back off the
+  // bench and by whom. Best-effort (tryWrite is loud but never blocks the
+  // revive); interaction_type must be 'note' — the activity_log check
+  // constraint rejects other values silently (same reason as the backward-move
+  // log above).
+  const { data: auth } = await supabase.auth.getUser();
+  await tryWrite(
+    "log deal reopen",
+    supabase.from("activity_log").insert({
+      entity_type: "deal",
+      entity_id: id,
+      interaction_type: "note",
+      subject: "Reopened to pipeline — re-engaging",
+      content: `reopened to pipeline: ${fromStatus} → ${target}`,
+      old_status: fromStatus,
+      new_status: target,
+      logged_by: auth?.user?.id ?? null,
+    }),
+  );
+
+  return updated;
 }
 
 // ───────────────────────── Deal → closer attribution ─────────────────────────
