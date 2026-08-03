@@ -286,6 +286,9 @@ Deno.serve(async (req) => {
     const maxFresh = num(payload.max_freshness_days ?? url.searchParams.get("max_freshness_days"));
     let lq = db.from("ph_ucc_leads").select("id,debtor_name,status,phone")
       .not("traced_at", "is", null)
+      // Never downgrade a human/terminal decision: leave loaded/ready/suppressed leads
+      // untouched even though they're traced. reparse only re-derives parked contact data.
+      .not("status", "in", "(loaded,ready,suppressed)")
       .order("freshness_days", { ascending: true, nullsFirst: false })
       .limit(rpLimit);
     if (maxFresh != null) lq = lq.lte("freshness_days", maxFresh);

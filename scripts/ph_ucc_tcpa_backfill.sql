@@ -42,7 +42,10 @@ with a as (
     (select count(*) from public.ph_ucc_contacts c, jsonb_array_elements(c.phones) ph
        where c.lead_id=l.id and coalesce((ph->>'dnc')::boolean,false)=false
          and coalesce((ph->>'suppressed_tcpa')::boolean,false)=false) as dialable_cnt
-  from public.ph_ucc_leads l where l.traced_at is not null
+  from public.ph_ucc_leads l
+  where l.traced_at is not null
+    -- never downgrade a human/terminal decision
+    and l.status not in ('loaded','ready','suppressed')
 ),
 b as (
   select a.*, (case when a.has_dialable then 'needs_scrub' when a.has_email then 'email_only' else 'no_match' end)::ph_ucc_lead_status as new_status
