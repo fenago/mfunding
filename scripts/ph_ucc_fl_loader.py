@@ -76,6 +76,15 @@ def norm(s: str) -> str:
     s = _NONALNUM.sub(" ", _SUFFIX.sub(" ", (s or "").upper()))
     return s.strip()
 
+# ── ph_ucc_norm_full port (KEEP IN SYNC with public.ph_ucc_norm_full) ─────────
+# Descriptor-preserving: strip corporate-FORM suffixes only, KEEP FUNDING/CAPITAL/
+# GROUP/… Used for EXACT-mode aliases (full-name equality), so a funder whose
+# distinctive words all collapse under norm() (e.g. Specialty Capital -> SPECIALTY)
+# matches ONLY its full name, never the bare over-matching token.
+_SUFFIX_FORM = re.compile(r'\b(LLC|L L C|INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LP|LLP|LTD|THE|AS REPRESENTATIVE|AS COLLATERAL AGENT|AS AGENT)\b')
+def norm_full(s: str) -> str:
+    return _NONALNUM.sub(" ", _SUFFIX_FORM.sub(" ", (s or "").upper())).strip()
+
 def parse_date(s):
     s = (s or "").strip()
     if not s:
@@ -105,10 +114,16 @@ def mgmt_sql(ref, token, query):
         return json.loads(r.read())
 
 def fetch_aliases(ref, token):
+    # token-mode: distinctive core token (alias_norm), matched by token boundary.
+    # exact-mode: full descriptor-preserving name (alias_full_norm), matched by
+    # equality — for funders whose distinctive words all collapse under norm().
     rows = mgmt_sql(ref, token,
-        "select distinct alias_norm from public.ph_ucc_funder_aliases "
-        "where active and length(alias_norm) >= 3")
-    return [r["alias_norm"] for r in rows]
+        "select match_mode, alias_norm, alias_full_norm from public.ph_ucc_funder_aliases "
+        "where active and ((match_mode='token' and length(alias_norm) >= 3) "
+        "               or (match_mode='exact' and coalesce(alias_full_norm,'') <> ''))")
+    token_aliases = sorted({r["alias_norm"] for r in rows if r["match_mode"] == "token"})
+    exact_aliases = sorted({r["alias_full_norm"] for r in rows if r["match_mode"] == "exact"})
+    return {"token": token_aliases, "exact": exact_aliases}
 
 def main():
     ap = argparse.ArgumentParser()
@@ -123,11 +138,17 @@ def main():
         sys.exit("SUPABASE_ACCESS_TOKEN not set (needed for the load; use --dry-run to skip)")
     today = date.today()
 
-    aliases = fetch_aliases(ref, token) if token else json.load(open(os.path.join(
-        os.path.dirname(__file__), "..", "scratch_aliases.json")))
-    aliases = [a for a in aliases if a not in BLOCKLIST]
-    padded = [" " + a + " " for a in aliases]
-    print(f"[aliases] {len(aliases)} active after FL blocklist ({len(BLOCKLIST)} blocked)")
+    if token:
+        alias_sets = fetch_aliases(ref, token)
+    else:
+        # offline fallback: legacy flat token list in scratch_aliases.json
+        alias_sets = {"token": json.load(open(os.path.join(
+            os.path.dirname(__file__), "..", "scratch_aliases.json"))), "exact": []}
+    token_aliases = [a for a in alias_sets["token"] if a not in BLOCKLIST]
+    exact_aliases = set(alias_sets["exact"])            # full-name equality, no blocklist needed
+    padded = [" " + a + " " for a in token_aliases]
+    print(f"[aliases] {len(token_aliases)} token active after FL blocklist "
+          f"({len(BLOCKLIST)} blocked) + {len(exact_aliases)} exact-name")
 
     # Pass 1: fresh 'Filed' filings within window
     fresh = {}
@@ -153,12 +174,17 @@ def main():
         fn = row[ci["Ucc1FilingNumber"]]
         if fn not in fresh:
             continue
-        spn = norm(row[ci["SecName"]])
-        if not spn:
-            continue
-        p = " " + spn + " "
-        if any(pa in p for pa in padded):
-            raw = row[ci["SecName"]]
+        raw = row[ci["SecName"]]
+        spn = norm(raw)
+        # token-boundary contains against token aliases, OR full-name equality
+        # against exact aliases (mirrors public.ph_ucc_match_secured_parties).
+        hit = False
+        if spn:
+            p = " " + spn + " "
+            hit = any(pa in p for pa in padded)
+        if not hit and exact_aliases:
+            hit = norm_full(raw) in exact_aliases
+        if hit:
             matches.setdefault(fn, [])
             if raw not in matches[fn]:
                 matches[fn].append(raw)

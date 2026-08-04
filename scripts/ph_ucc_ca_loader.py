@@ -84,8 +84,9 @@ def load_dotenv_token():
 
 def fetch_aliases(ref, token):
     return mgmt_sql(ref, token,
-        "select alias, canonical_name, source from public.ph_ucc_funder_aliases "
-        "where active and length(alias_norm) >= 3")
+        "select alias, canonical_name, source, match_mode from public.ph_ucc_funder_aliases "
+        "where active and ((match_mode='token' and length(alias_norm) >= 3) "
+        "               or (match_mode='exact' and coalesce(alias_full_norm,'') <> ''))")
 
 
 # ── DuckDB filter: descriptor-preserving token-boundary match + freshness ──────
@@ -101,7 +102,9 @@ CREATE MACRO norm2(s) AS trim(regexp_replace(
   '[^A-Z0-9]+', ' ', 'g'));
 
 CREATE TABLE aliases AS
-  SELECT alias, canonical_name, source, norm2(alias) AS an
+  SELECT alias, canonical_name, source,
+         coalesce(nullif(trim(match_mode),''),'token') AS match_mode,
+         norm2(alias) AS an
   FROM read_csv('{tmp}/aliases.psv', delim='|', quote='"', header=true, all_varchar=true)
   WHERE length(regexp_replace(norm2(alias), '[^A-Z0-9]', '', 'g')) >= {alias_min};
 
@@ -125,11 +128,18 @@ CREATE TABLE debtor_pick AS
             CASE WHEN nullif(trim(ORG_NAME),'') IS NOT NULL THEN 0 ELSE 1 END) AS deb
   FROM debtors GROUP BY UCC1_NUM;
 
+-- token aliases: descriptor-preserving token-boundary phrase-contains.
+-- exact aliases: full-name EQUALITY (a funder whose distinctive words all collapse
+-- under ph_ucc_norm, e.g. Specialty Capital -> "SPECIALTY", matches ONLY its full
+-- name — never "PINNACLE SPECIALTY CAPITAL" etc). Mirrors ph_ucc_match_secured_parties.
 CREATE TABLE sp_matched AS
   SELECT n.ORG_NAME, a.canonical_name, a.source
   FROM (SELECT DISTINCT ORG_NAME, norm2(ORG_NAME) AS spn FROM secured
         WHERE nullif(trim(ORG_NAME),'') IS NOT NULL) n
-  JOIN aliases a ON (' ' || n.spn || ' ') LIKE ('%' || ' ' || a.an || ' ' || '%');
+  JOIN aliases a ON (
+    (a.match_mode = 'token' AND (' ' || n.spn || ' ') LIKE ('%' || ' ' || a.an || ' ' || '%'))
+    OR (a.match_mode = 'exact' AND n.spn = a.an)
+  );
 CREATE TABLE sp AS
   SELECT DISTINCT s.UCC1_NUM, s.ORG_NAME AS secured_party_raw, m.canonical_name, m.source
   FROM secured s JOIN sp_matched m ON m.ORG_NAME = s.ORG_NAME;
@@ -159,9 +169,9 @@ COPY (
 def run_duckdb(data_dir, tmp, aliases):
     os.makedirs(os.path.join(tmp, "duck_tmp"), exist_ok=True)
     with open(os.path.join(tmp, "aliases.psv"), "w") as f:
-        f.write("alias|canonical_name|source\n")
+        f.write("alias|canonical_name|source|match_mode\n")
         for a in aliases:
-            f.write(f"{a['alias']}|{a['canonical_name']}|{a['source']}\n")
+            f.write(f"{a['alias']}|{a['canonical_name']}|{a['source']}|{a.get('match_mode') or 'token'}\n")
     sql = DUCK_SQL.format(tmp=tmp, data=data_dir, threads=6,
                           alias_min=ALIAS_MIN_ALNUM, window=WINDOW_DAYS)
     sqlpath = os.path.join(tmp, "filter.sql")
