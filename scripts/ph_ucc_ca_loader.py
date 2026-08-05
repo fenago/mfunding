@@ -57,6 +57,16 @@ WINDOW_DAYS = 540
 ALIAS_MIN_ALNUM = 5   # descriptor-preserving alias must have >= this many alnum chars
 RADAR_TOP_N = 500     # top unmatched secured parties to emit to the missing-funder radar
 RADAR_MIN_COUNT = 5   # ignore long-tail one-offs (matches ph_ucc_upsert_unmatched floor)
+MIN_STACK = 2         # conservative agent-masked promotion threshold (mirror rebuild default)
+
+
+def fetch_agents(ref, token):
+    """Active representation-agent patterns (UPPER substring) → canonical name."""
+    if not token:
+        return []
+    rows = mgmt_sql(ref, token,
+        "select pattern, canonical_agent from public.ph_ucc_agents where active")
+    return [(r["pattern"].upper(), r["canonical_agent"]) for r in rows]
 
 
 def mgmt_sql(ref, token, query):
@@ -102,6 +112,24 @@ CREATE MACRO norm2(s) AS trim(regexp_replace(
   regexp_replace(upper(coalesce(s,'')),
     '\b(LLC|L L C|INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LP|LLP|LTD|THE)\b', ' ', 'g'),
   '[^A-Z0-9]+', ' ', 'g'));
+
+-- Descriptor-STRIPPING norm (port of public.ph_ucc_norm) — used for the agent-masked
+-- debtor dedupe/stacking so it matches ph_ucc_rebuild_masked_leads' grouping exactly.
+CREATE MACRO norm_strip(s) AS trim(regexp_replace(
+  regexp_replace(upper(coalesce(s,'')),
+    '\b(LLC|L L C|INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LP|LLP|LTD|THE|AS REPRESENTATIVE|AS COLLATERAL AGENT|AS AGENT|FUNDING|FUND|CAPITAL|FINANCIAL|FINANCE|GROUP|SERVICING)\b', ' ', 'g'),
+  '[^A-Z0-9]+', ' ', 'g'));
+
+-- is_agent_noise port (KEEP IN SYNC with public.ph_ucc_is_agent_noise + edge fn).
+CREATE MACRO is_agent_noise(name) AS (
+  regexp_matches(upper(coalesce(name,'')),
+    '(REAL ESTATE|REALTY|PROPERT(Y|IES)|LEASING|(^| )HOLDINGS?( |$)|(^| )HOLDING (CO|COMPANY|LLC)|APARTMENT|CONDOMINIUM|(^| )RENTALS?( |$)|DEVELOPMENT|(^| )INVESTMENTS?( |$)|(^| )VENTURES?( |$)|LAND (COMPANY|HOLDING|TRUST)|(^| )REIT( |$)|SOLAR|WIND FARM)')
+  OR regexp_matches(upper(coalesce(name,'')),
+    '((^| )(CITY|COUNTY|TOWN|VILLAGE|BOROUGH) OF |UNIVERSITY|(^| )AUTHORITY( |$)|MUNICIPAL|BOARD OF EDUCATION|HOUSING AUTHORITY|SCHOOL DISTRICT)'));
+
+CREATE TABLE agents AS
+  SELECT upper(pattern) AS pattern, canonical_agent
+  FROM read_csv('{tmp}/agents.psv', delim='|', quote='"', header=true, all_varchar=true);
 
 CREATE TABLE aliases AS
   SELECT alias, canonical_name, source,
@@ -184,22 +212,65 @@ COPY (
   ORDER BY c.cnt DESC
   LIMIT {radar_top}
 ) TO '{tmp}/ca_unmatched.json' (FORMAT JSON, ARRAY true);
+
+-- ── AGENT-MASKED harvest: filings whose secured party is a representation agent.
+--    Keep fresh (window) + non-terminated + non-lapsed + business debtor + non-noise,
+--    then promote only debtors that STACK (>= {min_stack} distinct UCC1 under the
+--    descriptor-stripping norm — same grouping as ph_ucc_rebuild_masked_leads).
+--    Named-overlap is excluded downstream by the rebuild. ─────────────────────────
+CREATE TABLE agent_sp AS
+  SELECT DISTINCT s.UCC1_NUM, any_value(ag.canonical_agent) AS agent
+  FROM secured s JOIN agents ag ON upper(s.ORG_NAME) LIKE ('%' || ag.pattern || '%')
+  GROUP BY s.UCC1_NUM;
+CREATE TABLE agent_fil AS
+  SELECT
+    sp.UCC1_NUM AS filing_no, sp.agent,
+    o.filed_date::VARCHAR AS filed_date, l.lapse_date::VARCHAR AS lapse_date,
+    nullif(trim(d.deb.name),'') AS debtor_name, nullif(trim(d.deb.addr),'') AS debtor_address,
+    nullif(trim(d.deb.city),'') AS debtor_city, nullif(trim(d.deb.st),'') AS debtor_state,
+    nullif(trim(d.deb.zip),'') AS debtor_zip
+  FROM agent_sp sp
+  JOIN orig o ON o.UCC1_NUM = sp.UCC1_NUM
+  LEFT JOIN lapse l ON l.UCC1_NUM = sp.UCC1_NUM
+  LEFT JOIN debtor_pick d ON d.UCC1_NUM = sp.UCC1_NUM
+  WHERE o.filed_date >= (today() - INTERVAL {window} DAY)
+    AND sp.UCC1_NUM NOT IN (SELECT UCC1_NUM FROM term)
+    AND (l.lapse_date IS NULL OR l.lapse_date >= today())
+    AND nullif(trim(d.deb.name),'') IS NOT NULL   -- business debtor only
+    AND NOT is_agent_noise(d.deb.name);
+CREATE TABLE agent_stack AS
+  SELECT norm_strip(debtor_name) AS dk, count(DISTINCT filing_no) AS depth
+  FROM agent_fil GROUP BY norm_strip(debtor_name);
+COPY (
+  SELECT 'CA' AS state, f.filing_no, f.filed_date, f.lapse_date, 'Active' AS status,
+         f.debtor_name, f.debtor_address, f.debtor_city, f.debtor_state, f.debtor_zip,
+         f.agent AS secured_party_raw, 'agent_masked' AS filing_class, f.agent AS agent_canonical
+  FROM agent_fil f
+  JOIN agent_stack s ON s.dk = norm_strip(f.debtor_name)
+  WHERE s.depth >= {min_stack}
+) TO '{tmp}/ca_agent_load.json' (FORMAT JSON, ARRAY true);
 """
 
 
-def run_duckdb(data_dir, tmp, aliases):
+def run_duckdb(data_dir, tmp, aliases, agents):
     os.makedirs(os.path.join(tmp, "duck_tmp"), exist_ok=True)
     with open(os.path.join(tmp, "aliases.psv"), "w") as f:
         f.write("alias|canonical_name|source|match_mode\n")
         for a in aliases:
             f.write(f"{a['alias']}|{a['canonical_name']}|{a['source']}|{a.get('match_mode') or 'token'}\n")
+    with open(os.path.join(tmp, "agents.psv"), "w") as f:
+        f.write("pattern|canonical_agent\n")
+        for pat, canon in agents:
+            f.write(f"{pat}|{canon}\n")
     sql = DUCK_SQL.format(tmp=tmp, data=data_dir, threads=6,
                           alias_min=ALIAS_MIN_ALNUM, window=WINDOW_DAYS,
-                          radar_min=RADAR_MIN_COUNT, radar_top=RADAR_TOP_N)
+                          radar_min=RADAR_MIN_COUNT, radar_top=RADAR_TOP_N, min_stack=MIN_STACK)
     sqlpath = os.path.join(tmp, "filter.sql")
     open(sqlpath, "w").write(sql)
     subprocess.run(["duckdb", ":memory:"], stdin=open(sqlpath), check=True)
-    return json.load(open(os.path.join(tmp, "ca_load.json")))
+    recs = json.load(open(os.path.join(tmp, "ca_load.json")))
+    agent_recs = json.load(open(os.path.join(tmp, "ca_agent_load.json")))
+    return recs, agent_recs
 
 
 def main():
@@ -230,13 +301,17 @@ def main():
     aliases = fetch_aliases(ref, token) if token else json.load(
         open(os.path.join(os.path.dirname(__file__), "..", "scratch_aliases.json")))
     print(f"[aliases] {len(aliases)} active")
+    agents = fetch_agents(ref, token)
+    print(f"[agents] {len(agents)} active representation-agent patterns")
 
-    recs = run_duckdb(data_dir, tmp, aliases)
+    recs, agent_recs = run_duckdb(data_dir, tmp, aliases, agents)
     print(f"[emit] filing rows: {len(recs)} "
           f"({len({r['filing_no'] for r in recs})} UCC1, "
           f"{len({r['debtor_name'] for r in recs})} debtors)")
+    print(f"[agent] survivor filing rows: {len(agent_recs)} "
+          f"({len({r['debtor_name'] for r in agent_recs})} stacked non-noise debtors)")
     if args.dry_run:
-        print(f"[dry-run] not writing. JSON at {tmp}/ca_load.json"); return
+        print(f"[dry-run] not writing. JSON at {tmp}/ca_load.json + ca_agent_load.json"); return
 
     src = mgmt_sql(ref, token,
         "select id from public.ph_ucc_sources where state='CA' limit 1")[0]["id"]
@@ -261,6 +336,26 @@ def main():
         "last_cursor='masterfile' where state='CA'")
     res = mgmt_sql(ref, token, "select * from public.ph_ucc_rebuild_leads()")[0]
     print(f"[rebuild] {res}")
+
+    # ── AGENT-MASKED: insert survivor filings + rebuild the agent_masked lead class.
+    #    Idempotent (dedupe_hash); named leads untouched. raw carries agent_canonical. ─
+    if agent_recs:
+        for r in agent_recs:
+            r["raw"] = {"source": "CA bizfile master-unload", "agent_canonical": r.pop("agent_canonical")}
+        acols = ("state text, filing_no text, filed_date text, lapse_date text, status text, "
+                 "debtor_name text, debtor_address text, debtor_city text, debtor_state text, "
+                 "debtor_zip text, secured_party_raw text, filing_class text, raw jsonb")
+        for i in range(0, len(agent_recs), args.batch):
+            lit = json.dumps(agent_recs[i:i + args.batch]).replace("'", "''")
+            mgmt_sql(ref, token,
+                "insert into public.ph_ucc_filings (state,filing_no,filed_date,lapse_date,status,"
+                "debtor_name,debtor_address,debtor_city,debtor_state,debtor_zip,secured_party_raw,filing_class,raw,source_id) "
+                "select x.state,x.filing_no,x.filed_date::date,x.lapse_date::date,x.status,x.debtor_name,"
+                "x.debtor_address,x.debtor_city,x.debtor_state,x.debtor_zip,x.secured_party_raw,x.filing_class,x.raw,"
+                f"'{src}'::uuid from jsonb_to_recordset('{lit}'::jsonb) as x({acols}) "
+                "on conflict (dedupe_hash) do nothing")
+        mres = mgmt_sql(ref, token, "select * from public.ph_ucc_rebuild_masked_leads()")[0]
+        print(f"[agent-rebuild] {mres}")
 
     # Feed the missing-funder radar (name+count snapshot only; the RPC applies the
     # depository + dictionary-match guards and never resurrects added/dismissed rows).

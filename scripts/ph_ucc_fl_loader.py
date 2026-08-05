@@ -89,6 +89,23 @@ _SUFFIX_FORM = re.compile(r'\b(LLC|L L C|INC|INCORPORATED|CORP|CORPORATION|CO|CO
 def norm_full(s: str) -> str:
     return _NONALNUM.sub(" ", _SUFFIX_FORM.sub(" ", (s or "").upper())).strip()
 
+# ── AGENT-MASKED support (KEEP IN SYNC with public.ph_ucc_is_agent_noise + the
+#    ph-ucc-ingest-masked edge fn AGENT_NOISE). Representation-agent filings hide the
+#    true funder; we harvest the merchant and promote only stacked, non-RE/leasing,
+#    non-already-named debtors. Agent patterns come from public.ph_ucc_agents. ──────
+_AGENT_NOISE_A = re.compile(
+    r'(REAL ESTATE|REALTY|PROPERT(Y|IES)|LEASING|(^| )HOLDINGS?( |$)|(^| )HOLDING (CO|COMPANY|LLC)|'
+    r'APARTMENT|CONDOMINIUM|(^| )RENTALS?( |$)|DEVELOPMENT|(^| )INVESTMENTS?( |$)|(^| )VENTURES?( |$)|'
+    r'LAND (COMPANY|HOLDING|TRUST)|(^| )REIT( |$)|SOLAR|WIND FARM)')
+_AGENT_NOISE_B = re.compile(
+    r'((^| )(CITY|COUNTY|TOWN|VILLAGE|BOROUGH) OF |UNIVERSITY|(^| )AUTHORITY( |$)|MUNICIPAL|'
+    r'BOARD OF EDUCATION|HOUSING AUTHORITY|SCHOOL DISTRICT)')
+def is_agent_noise(name: str) -> bool:
+    u = (name or "").upper()
+    return bool(_AGENT_NOISE_A.search(u) or _AGENT_NOISE_B.search(u))
+
+MIN_STACK = 2  # conservative agent-masked promotion threshold (mirror rebuild default)
+
 def parse_date(s):
     s = (s or "").strip()
     if not s:
@@ -129,6 +146,19 @@ def fetch_aliases(ref, token):
     exact_aliases = sorted({r["alias_full_norm"] for r in rows if r["match_mode"] == "exact"})
     return {"token": token_aliases, "exact": exact_aliases}
 
+def fetch_agents(ref, token):
+    """Active representation-agent patterns (UPPER substring) → canonical name."""
+    rows = mgmt_sql(ref, token,
+        "select pattern, canonical_agent from public.ph_ucc_agents where active")
+    return [(r["pattern"].upper(), r["canonical_agent"]) for r in rows]
+
+def match_agent(raw, agents):
+    u = (raw or "").upper()
+    for pat, canon in agents:
+        if pat in u:
+            return canon
+    return None
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--downloads", default=os.path.expanduser("~/Downloads"))
@@ -142,7 +172,9 @@ def main():
         sys.exit("SUPABASE_ACCESS_TOKEN not set (needed for the load; use --dry-run to skip)")
     today = date.today()
 
+    agents = fetch_agents(ref, token) if token else []
     if token:
+        print(f"[agents] {len(agents)} active representation-agent patterns")
         alias_sets = fetch_aliases(ref, token)
     else:
         # offline fallback: legacy flat token list in scratch_aliases.json
@@ -177,6 +209,7 @@ def main():
     # guards authoritatively).
     sp_counter: Counter = Counter()
     matched_raw: set = set()
+    agent_matches = {}   # fn -> canonical agent (agent-masked filings)
     r = csv_reader(f"{dl}/secureds_full.zip", "secureds_full"); h = next(r)
     ci = {c: i for i, c in enumerate(h)}
     for row in r:
@@ -189,6 +222,11 @@ def main():
         spn = norm(raw)
         if raw and raw.strip():
             sp_counter[raw.strip()] += 1
+        # Agent-masked detection runs alongside funder matching (a filing is one or
+        # the other — agent patterns are disjoint from funder aliases).
+        canon = match_agent(raw, agents)
+        if canon and fn not in agent_matches:
+            agent_matches[fn] = canon
         # token-boundary contains against token aliases, OR full-name equality
         # against exact aliases (mirrors public.ph_ucc_match_secured_parties).
         hit = False
@@ -219,7 +257,7 @@ def main():
         if len(row) <= ci["DebFilingStatus"]:
             continue
         fn = row[ci["Ucc1FilingNumber"]]
-        if fn not in matches:
+        if fn not in matches and fn not in agent_matches:
             continue
         name = (row[ci["DebName"]] or "").strip()
         if len(name) < 2:
@@ -249,6 +287,28 @@ def main():
                          "raw": {"source": "floridaucc.com full-download",
                                  "sec_matched": True, "deb_name_format": d["fmt"]}})
     print(f"[emit] filing rows: {len(recs)}")
+
+    # ── AGENT-MASKED: build survivor filings (stack>=2, non-noise). Named-overlap is
+    #    excluded downstream by ph_ucc_rebuild_masked_leads. Store ALL agent liens of
+    #    each surviving debtor so the rebuild recomputes stack correctly. ────────────
+    agent_liens = []  # (debtor_key, rec)
+    for fn, canon in agent_matches.items():
+        d = best.get(fn)
+        if d is None or is_agent_noise(d["name"]):
+            continue
+        fd, exp = fresh[fn]
+        agent_liens.append((norm(d["name"]), {
+            "state": "FL", "filing_no": fn, "filed_date": fd, "lapse_date": exp, "status": "Filed",
+            "debtor_name": d["name"], "debtor_address": d["addr"], "debtor_city": d["city"],
+            "debtor_state": d["state"], "debtor_zip": d["zip"], "secured_party_raw": canon,
+            "filing_class": "agent_masked",
+            "raw": {"source": "floridaucc.com full-download", "agent_canonical": canon}}))
+    stack = Counter(k for k, _ in agent_liens)
+    agent_recs = [rec for k, rec in agent_liens if stack[k] >= MIN_STACK]
+    n_debtors = sum(1 for k, c in stack.items() if c >= MIN_STACK)
+    print(f"[agent] {len(agent_matches)} agent-masked fresh filings; "
+          f"{n_debtors} debtors stack>={MIN_STACK} -> {len(agent_recs)} survivor filing rows")
+
     if args.dry_run:
         print("[dry-run] not writing to DB"); return
 
@@ -280,6 +340,24 @@ def main():
         "last_cursor='fullfile' where state='FL' and name='Florida SOS — floridaucc.com full download'")
     res = mgmt_sql(ref, token, "select * from public.ph_ucc_rebuild_leads()")[0]
     print(f"[rebuild] {res}")
+
+    # ── AGENT-MASKED: insert survivor filings (filing_class='agent_masked') + rebuild
+    #    the agent_masked lead class. Idempotent (dedupe_hash); named leads untouched. ─
+    if agent_recs:
+        acols = ("state text, filing_no text, filed_date text, lapse_date text, status text, "
+                 "debtor_name text, debtor_address text, debtor_city text, debtor_state text, "
+                 "debtor_zip text, secured_party_raw text, filing_class text, raw jsonb")
+        for i in range(0, len(agent_recs), args.batch):
+            lit = json.dumps(agent_recs[i:i + args.batch]).replace("'", "''")
+            mgmt_sql(ref, token,
+                "insert into public.ph_ucc_filings (state,filing_no,filed_date,lapse_date,status,"
+                "debtor_name,debtor_address,debtor_city,debtor_state,debtor_zip,secured_party_raw,filing_class,raw,source_id) "
+                "select x.state,x.filing_no,x.filed_date::date,x.lapse_date::date,x.status,x.debtor_name,"
+                "x.debtor_address,x.debtor_city,x.debtor_state,x.debtor_zip,x.secured_party_raw,x.filing_class,x.raw,"
+                f"'{src}'::uuid from jsonb_to_recordset('{lit}'::jsonb) as x({acols}) "
+                "on conflict (dedupe_hash) do nothing")
+        mres = mgmt_sql(ref, token, "select * from public.ph_ucc_rebuild_masked_leads()")[0]
+        print(f"[agent-rebuild] {mres}")
 
     # Feed the missing-funder radar (name+count snapshot only; RPC applies the
     # depository + dictionary-match guards and never resurrects added/dismissed rows).
