@@ -1,0 +1,20 @@
+-- ph_ucc_25: add a 'held' status to ph_ucc_lead_status.
+-- =============================================================================
+-- Owner decision (2026-08-05): HOLD the 6,142 low-confidence (single-lien) agent-
+-- masked leads — keep them VISIBLE + filterable in the lead book, but OUT of the
+-- active skip-trace set (conservative: stacked-only). 'held' is the dedicated,
+-- reversible status for that.
+--
+-- STRUCTURAL exclusion (not gate-reliant): ph-ucc-skiptrace's live trace selects
+-- ONLY status='needs_skiptrace' (pickLeads), and its no-spend reparse selects only
+-- traced_at IS NOT NULL — held leads are never-traced, so they are excluded from
+-- BOTH paths by the status value alone. No edge-function change needed.
+--
+-- NOT 'suppressed': suppressed = contamination quarantine (the lead book hides it).
+-- 'held' is visible-but-parked. The lead-book UI (confidence-ui) adds its chip to
+-- LEAD_STATUS_META.
+--
+-- ADD VALUE must be COMMITTED before it can be used, so it lives in this standalone
+-- migration; the flag + rebuild rewrite that USE it are in ph_ucc_26.
+-- =============================================================================
+alter type public.ph_ucc_lead_status add value if not exists 'held';
