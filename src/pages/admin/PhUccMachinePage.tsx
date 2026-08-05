@@ -124,6 +124,18 @@ interface UccLead {
   latest_filing_date: string | null;
   freshness_days: number | null;
   score: number | null;
+  // ── Lead confidence (two lead classes) ──
+  // 'named_funder' = we matched the actual funder (gold standard).
+  // 'agent_masked' = funder hidden behind a filing agent (CSC/CT Corp); we know
+  // the business is financed, not by whom.
+  lead_class?: "named_funder" | "agent_masked" | null;
+  // 'confidence' is authored by the backend once its migration lands. Until then
+  // leadConfidence() derives the tier from lead_class + stack_depth (same contract:
+  // confirmed = named, high = 3+ stacked liens, medium = 2, low = single).
+  confidence?: ConfidenceTier | null;
+  agent_name?: string | null; // filing agent for agent_masked (e.g. "Corporation Service Company")
+  mca_score?: number | string | null; // numeric MCA score (PostgREST returns numeric as string)
+  score_reasons?: unknown; // jsonb: { reasons: string[], agents, ... } — plain-English "why"
   status: LeadStatus;
   status_reason: string | null; // human explanation of the status (e.g. TCPA-litigator counts)
   person_name: string | null; // traced owner name (skip-trace)
@@ -202,6 +214,82 @@ const LEAD_STATUS_META: Record<LeadStatus, { label: string; chip: string }> = {
   no_match: { label: "no match", chip: "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300" },
 };
 
+/* ── Lead confidence ──
+   How sure are we about a lead? 'confirmed' = we know the actual funder (named_funder,
+   gold standard). agent_masked leads are tiered by stack depth: 'high' (3+ stacked
+   liens), 'medium' (2), 'low' (single). See leadConfidence(). */
+type ConfidenceTier = "confirmed" | "high" | "medium" | "low";
+
+/* The sentinel matched_funders value the backend writes for agent-filed leads.
+   We render it as an honest "funder unknown" note, never as a real funder. */
+const AGENT_FILED_SENTINEL = "— agent-filed (funder unknown) —";
+
+/* Resolve a lead's confidence tier. Prefers the backend-authored `confidence`
+   column when present; otherwise derives it from lead_class + stack_depth (the
+   documented contract), so this works before that migration lands and stays
+   correct after it. Anything that isn't agent_masked is treated as confirmed. */
+function leadConfidence(l: UccLead): ConfidenceTier {
+  const c = l.confidence;
+  if (c === "confirmed" || c === "high" || c === "medium" || c === "low") return c;
+  if (l.lead_class === "agent_masked") {
+    const d = l.stack_depth ?? 0;
+    if (d >= 3) return "high";
+    if (d === 2) return "medium";
+    return "low";
+  }
+  return "confirmed";
+}
+
+/* Distinct visual weight per agent-masked tier so the eye sorts High > Medium >
+   Low at a glance: High = solid orange, Medium = filled amber, Low = faint outline. */
+const CONFIDENCE_TIER_META: Record<Exclude<ConfidenceTier, "confirmed">, { label: string; chip: string }> = {
+  high: { label: "High", chip: "bg-orange-500 text-white dark:bg-orange-600 dark:text-white" },
+  medium: { label: "Medium", chip: "bg-amber-200 text-amber-900 dark:bg-amber-700/50 dark:text-amber-100" },
+  low: {
+    label: "Low",
+    chip: "bg-amber-50 text-amber-700 border border-amber-300 dark:bg-amber-900/20 dark:text-amber-300/90 dark:border-amber-800",
+  },
+};
+
+/* Pull the plain-English "why" out of score_reasons (jsonb). Handles the real
+   shape ({ reasons: string[], … }), a bare string, or a bare array. */
+function reasonsFrom(sr: unknown): string[] {
+  if (!sr) return [];
+  if (typeof sr === "string") return [sr];
+  if (Array.isArray(sr)) return sr.map((x) => String(x));
+  if (typeof sr === "object") {
+    const r = (sr as { reasons?: unknown }).reasons;
+    if (Array.isArray(r)) return r.map((x) => String(x));
+  }
+  return [];
+}
+
+/* The confidence badge shown on every lead row and in the drawer. Confirmed =
+   green "✓ Confirmed funder"; agent-masked = amber "⚠ Agent-filed · funder
+   unknown" plus a weighted tier chip. */
+function ConfidenceBadge({ lead, title }: { lead: UccLead; title?: string }) {
+  const tier = leadConfidence(lead);
+  if (tier === "confirmed") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 whitespace-nowrap"
+        title={title}
+      >
+        ✓ Confirmed funder
+      </span>
+    );
+  }
+  const tm = CONFIDENCE_TIER_META[tier];
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap" title={title}>
+      <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+        ⚠ Agent-filed · funder unknown
+      </span>
+      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${tm.chip}`}>{tm.label}</span>
+    </span>
+  );
+}
+
 const SOURCE_STATUS_META: Record<SourceStatus, { label: string; chip: string; dot: string }> = {
   active: { label: "active", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300", dot: "bg-emerald-500" },
   awaiting_purchase: { label: "awaiting purchase", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", dot: "bg-amber-500" },
@@ -229,6 +317,9 @@ const HARD_CALL_CAP = 100; // the edge fn traces at most 100 leads per call, reg
 const LEAD_CSV_COLUMNS = [
   "debtor_name",
   "state",
+  "lead_class",
+  "confidence",
+  "agent_name",
   "matched_funders",
   "stack_depth",
   "latest_filing_date",
@@ -623,6 +714,9 @@ function LeadDetailDrawer({ lead, onClose }: { lead: UccLead; onClose: () => voi
 
   const funders = lead.matched_funders ?? [];
   const addr = [lead.debtor_address, lead.debtor_city, lead.debtor_state, lead.debtor_zip].filter(Boolean).join(", ");
+  const isAgentMasked = lead.lead_class === "agent_masked";
+  const whyReasons = reasonsFrom(lead.score_reasons);
+  const mcaScoreNum = lead.mca_score == null ? null : Number(lead.mca_score);
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -673,9 +767,28 @@ function LeadDetailDrawer({ lead, onClose }: { lead: UccLead; onClose: () => voi
                 </div>
               </div>
             </div>
-            {funders.length > 0 && (
-              <div className="mt-3">
-                <div className="text-xs text-gray-400 mb-1">Matched funders</div>
+            {/* Confidence — how sure we are about this lead. */}
+            <div className="mt-3">
+              <div className="text-xs text-gray-400 mb-1">Confidence</div>
+              <ConfidenceBadge lead={lead} />
+            </div>
+
+            {/* Funder — honest for both classes: real names for named_funder, an
+                explicit "unknown (agent-filed via …)" note for agent_masked. */}
+            <div className="mt-3">
+              <div className="text-xs text-gray-400 mb-1">Funder</div>
+              {isAgentMasked ? (
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Unknown — <strong>agent-filed</strong>
+                  {lead.agent_name ? (
+                    <>
+                      {" "}
+                      via <strong>{lead.agent_name}</strong>
+                    </>
+                  ) : null}
+                  . The business is financed; the funder's identity is masked behind the filing agent.
+                </p>
+              ) : funders.length > 0 ? (
                 <div className="flex flex-wrap gap-1">
                   {funders.map((f, i) => (
                     <span
@@ -686,6 +799,31 @@ function LeadDetailDrawer({ lead, onClose }: { lead: UccLead; onClose: () => voi
                     </span>
                   ))}
                 </div>
+              ) : (
+                <p className="text-sm text-gray-400">—</p>
+              )}
+            </div>
+
+            {/* Why this lead — plain-English scoring rationale from score_reasons. */}
+            {(whyReasons.length > 0 || mcaScoreNum != null) && (
+              <div className="mt-3">
+                <div className="text-xs text-gray-400 mb-1">
+                  Why this lead
+                  {mcaScoreNum != null && (
+                    <span className="ml-1 font-semibold text-gray-600 dark:text-gray-300">
+                      · MCA score {mcaScoreNum.toFixed(2)}
+                    </span>
+                  )}
+                </div>
+                {whyReasons.length > 0 ? (
+                  <ul className="list-disc pl-5 space-y-0.5 text-sm text-gray-700 dark:text-gray-200">
+                    {whyReasons.map((r, i) => (
+                      <li key={i}>{r}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-gray-400">No scoring notes recorded.</p>
+                )}
               </div>
             )}
           </section>
@@ -1002,6 +1140,8 @@ export default function PhUccMachinePage() {
   const [fStacked, setFStacked] = useState<StackFilter>("all");
   const [fMinScore, setFMinScore] = useState("");
   const [fContact, setFContact] = useState<ContactFilter>("");
+  const [fLeadClass, setFLeadClass] = useState<"" | "named_funder" | "agent_masked">("");
+  const [fConfidence, setFConfidence] = useState<"" | ConfidenceTier>("");
   const [distinctFunders, setDistinctFunders] = useState<string[]>([]); // canonical funders for the combobox
   // Debounced text filters — keep keystrokes from hammering PostgREST.
   const dFunder = useDebounced(fFunder);
@@ -1277,8 +1417,10 @@ export default function PhUccMachinePage() {
     if (fStacked !== "all") n++;
     if (fMinScore) n++;
     if (fContact) n++;
+    if (fLeadClass) n++;
+    if (fConfidence) n++;
     return n;
-  }, [fState, fStatus, fMinStack, fFunder, fDebtor, fCity, fFreshness, fStacked, fMinScore, fContact]);
+  }, [fState, fStatus, fMinStack, fFunder, fDebtor, fCity, fFreshness, fStacked, fMinScore, fContact, fLeadClass, fConfidence]);
 
   const clearLeadFilters = useCallback(() => {
     setFState("");
@@ -1291,6 +1433,8 @@ export default function PhUccMachinePage() {
     setFStacked("all");
     setFMinScore("");
     setFContact("");
+    setFLeadClass("");
+    setFConfidence("");
   }, []);
 
   /* Single source of truth for the filtered ph_ucc_leads query. Both the lead
@@ -1318,9 +1462,17 @@ export default function PhUccMachinePage() {
       else if (fContact === "not_traced") q = q.is("traced_at", null);
       else if (fContact === "dialable") q = q.not("phone", "is", null);
       else if (fContact === "email_only") q = q.not("email", "is", null).is("phone", null);
+      if (fLeadClass) q = q.eq("lead_class", fLeadClass);
+      // Confidence is derived from lead_class + stack_depth (the documented tier
+      // contract) so it filters correctly whether or not the `confidence` column
+      // is live yet, and the CSV export honors it via this same query.
+      if (fConfidence === "confirmed") q = q.eq("lead_class", "named_funder");
+      else if (fConfidence === "high") q = q.eq("lead_class", "agent_masked").gte("stack_depth", 3);
+      else if (fConfidence === "medium") q = q.eq("lead_class", "agent_masked").eq("stack_depth", 2);
+      else if (fConfidence === "low") q = q.eq("lead_class", "agent_masked").lte("stack_depth", 1);
       return q;
     },
-    [fState, fStatus, funderMatchList, dDebtor, dCity, fFreshness, fStacked, fMinStack, fMinScore, fContact],
+    [fState, fStatus, funderMatchList, dDebtor, dCity, fFreshness, fStacked, fMinStack, fMinScore, fContact, fLeadClass, fConfidence],
   );
 
   /* ── Lead browser (paginated, filtered, ranked by score) ── */
@@ -1368,13 +1520,16 @@ export default function PhUccMachinePage() {
         return;
       }
       const res = await buildFilteredLeadQuery(
-        "debtor_name, state, matched_funders, stack_depth, latest_filing_date, freshness_days, score, status, phone, email",
+        "debtor_name, state, lead_class, agent_name, matched_funders, stack_depth, latest_filing_date, freshness_days, score, status, phone, email",
       );
       if (res.error) throw res.error;
       const data = (res.data as unknown as UccLead[]) ?? [];
       const rows = data.map((l) => [
         l.debtor_name,
         l.state,
+        l.lead_class ?? "",
+        leadConfidence(l), // derived client-side (column may not be live yet)
+        l.agent_name ?? "",
         (l.matched_funders ?? []).join("|"), // pipe-joined so commas don't split columns
         l.stack_depth,
         l.latest_filing_date,
@@ -1436,7 +1591,7 @@ export default function PhUccMachinePage() {
   // Reset to first page whenever any filter changes (debounced values for text).
   useEffect(() => {
     setPage(0);
-  }, [fState, fStatus, fMinStack, dFunder, dDebtor, dCity, fFreshness, fStacked, fMinScore, fContact]);
+  }, [fState, fStatus, fMinStack, dFunder, dDebtor, dCity, fFreshness, fStacked, fMinScore, fContact, fLeadClass, fConfidence]);
   // Auto-disarm a primed alias delete after 5s.
   useEffect(() => {
     if (!aliasArmed) return;
@@ -2302,6 +2457,30 @@ export default function PhUccMachinePage() {
                 <option value="dialable">Has phone (dialable)</option>
                 <option value="email_only">Email only</option>
               </select>
+              {/* Lead class — named funder vs agent-masked. */}
+              <select
+                className={input}
+                value={fLeadClass}
+                onChange={(e) => setFLeadClass(e.target.value as "" | "named_funder" | "agent_masked")}
+                title="Do we know the funder, or is it masked behind a filing agent?"
+              >
+                <option value="">All lead classes</option>
+                <option value="named_funder">Named funder</option>
+                <option value="agent_masked">Agent-masked</option>
+              </select>
+              {/* Confidence — derived from lead class + stack depth. */}
+              <select
+                className={input}
+                value={fConfidence}
+                onChange={(e) => setFConfidence(e.target.value as "" | ConfidenceTier)}
+                title="How confident we are in this lead"
+              >
+                <option value="">Any confidence</option>
+                <option value="confirmed">Confirmed funder</option>
+                <option value="high">Agent-masked · High</option>
+                <option value="medium">Agent-masked · Medium</option>
+                <option value="low">Agent-masked · Low</option>
+              </select>
             </div>
 
             <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
@@ -2312,6 +2491,7 @@ export default function PhUccMachinePage() {
                     <th className="py-3 px-4">Debtor</th>
                     <th className="py-3 px-4">State</th>
                     <th className="py-3 px-4">Contact</th>
+                    <th className="py-3 px-4">Confidence</th>
                     <th className="py-3 px-4">Matched funders</th>
                     <th className="py-3 px-4">Stack</th>
                     <th className="py-3 px-4">Latest filing</th>
@@ -2323,13 +2503,13 @@ export default function PhUccMachinePage() {
                 <tbody>
                   {leadsLoading ? (
                     <tr>
-                      <td colSpan={10} className="py-8 text-center text-gray-400">
+                      <td colSpan={11} className="py-8 text-center text-gray-400">
                         Loading…
                       </td>
                     </tr>
                   ) : leads.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="py-8 text-center text-gray-400">
+                      <td colSpan={11} className="py-8 text-center text-gray-400">
                         <MagnifyingGlassIcon className="w-6 h-6 mx-auto mb-1 text-gray-300 dark:text-gray-600" />
                         No leads match these filters yet.
                       </td>
@@ -2338,6 +2518,18 @@ export default function PhUccMachinePage() {
                     leads.map((l) => {
                       const sm = LEAD_STATUS_META[l.status] ?? LEAD_STATUS_META.matched;
                       const funders = l.matched_funders ?? [];
+                      const isMasked = l.lead_class === "agent_masked";
+                      // Row tooltip for masked leads: agent + score + why.
+                      const whyReasons = reasonsFrom(l.score_reasons);
+                      const whyTitle = isMasked
+                        ? [
+                            l.agent_name ? `Filed via ${l.agent_name}` : null,
+                            l.mca_score != null ? `MCA score ${Number(l.mca_score).toFixed(2)}` : null,
+                            ...whyReasons,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")
+                        : undefined;
                       return (
                         <tr
                           key={l.id}
@@ -2394,24 +2586,39 @@ export default function PhUccMachinePage() {
                               <span className="text-gray-300 dark:text-gray-600">not traced</span>
                             )}
                           </td>
+                          {/* Confidence — green "confirmed" for named funders, amber
+                              "agent-filed" + tier for masked. Tooltip carries the why. */}
                           <td className="py-3 px-4">
-                            <div className="flex flex-wrap gap-1">
-                              {funders.length === 0 ? (
-                                <span className="text-gray-400">—</span>
-                              ) : (
-                                funders.slice(0, 4).map((f, i) => (
-                                  <span
-                                    key={i}
-                                    className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
-                                  >
-                                    {f}
-                                  </span>
-                                ))
-                              )}
-                              {funders.length > 4 && (
-                                <span className="text-xs text-gray-400">+{funders.length - 4}</span>
-                              )}
-                            </div>
+                            <ConfidenceBadge lead={l} title={whyTitle} />
+                          </td>
+                          <td className="py-3 px-4">
+                            {isMasked ? (
+                              /* Never blank, never a fake funder — an honest muted note. */
+                              <span
+                                className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-900/20 dark:text-amber-300/90 dark:border-amber-800 italic whitespace-nowrap"
+                                title={l.agent_name ? `Agent-filed via ${l.agent_name}` : whyTitle}
+                              >
+                                {AGENT_FILED_SENTINEL}
+                              </span>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {funders.length === 0 ? (
+                                  <span className="text-gray-400">—</span>
+                                ) : (
+                                  funders.slice(0, 4).map((f, i) => (
+                                    <span
+                                      key={i}
+                                      className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+                                    >
+                                      {f}
+                                    </span>
+                                  ))
+                                )}
+                                {funders.length > 4 && (
+                                  <span className="text-xs text-gray-400">+{funders.length - 4}</span>
+                                )}
+                              </div>
+                            )}
                           </td>
                           <td className="py-3 px-4 text-gray-700 dark:text-gray-200">{l.stack_depth ?? "—"}</td>
                           <td className="py-3 px-4 text-gray-500 dark:text-gray-400">{fmtDate(l.latest_filing_date)}</td>
