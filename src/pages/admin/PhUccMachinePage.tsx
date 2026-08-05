@@ -109,6 +109,7 @@ type LeadStatus =
   | "ready"
   | "loaded"
   | "suppressed"
+  | "held" // low-confidence agent-masked lead the owner chose to hold — visible, not skip-trace-eligible
   | "email_only" // traced: only DNC phones, but has an email — terminal off-ramp
   | "no_match"; // traced: no usable phone, no email — terminal off-ramp
 interface UccLead {
@@ -210,6 +211,7 @@ const LEAD_STATUS_META: Record<LeadStatus, { label: string; chip: string }> = {
   ready: { label: "ready", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
   loaded: { label: "loaded", chip: "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300" },
   suppressed: { label: "suppressed", chip: "bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400" },
+  held: { label: "on hold", chip: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 border border-slate-300 dark:border-slate-600" },
   email_only: { label: "email only", chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" },
   no_match: { label: "no match", chip: "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300" },
 };
