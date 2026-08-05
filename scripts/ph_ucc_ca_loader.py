@@ -55,6 +55,8 @@ from datetime import date
 PROJECT_REF = "ehibjeonqpqskhcvizow"
 WINDOW_DAYS = 540
 ALIAS_MIN_ALNUM = 5   # descriptor-preserving alias must have >= this many alnum chars
+RADAR_TOP_N = 500     # top unmatched secured parties to emit to the missing-funder radar
+RADAR_MIN_COUNT = 5   # ignore long-tail one-offs (matches ph_ucc_upsert_unmatched floor)
 
 
 def mgmt_sql(ref, token, query):
@@ -163,6 +165,25 @@ COPY (
     AND length(trim(coalesce(nullif(trim(d.deb.name),''),
         nullif(trim(concat_ws(', ', nullif(trim(d.deb.last),''), nullif(trim(d.deb.first),''))),''))) ) > 1
 ) TO '{tmp}/ca_load.json' (FORMAT JSON, ARRAY true);
+
+-- Radar: top UNMATCHED secured parties by frequency (# distinct UCC1 they secure),
+-- for the "MCA funders we're missing" panel. Only names our alias dictionary did
+-- NOT match here are emitted; the DB's ph_ucc_upsert_unmatched re-applies the
+-- depository + dictionary-match guards, so a bank slipping past this subtract is
+-- still dropped server-side. Only the small top-N set crosses the wire.
+CREATE TABLE sp_counts AS
+  SELECT ORG_NAME, count(DISTINCT UCC1_NUM) AS cnt
+  FROM secured
+  WHERE nullif(trim(ORG_NAME),'') IS NOT NULL
+  GROUP BY ORG_NAME;
+COPY (
+  SELECT c.ORG_NAME AS name, c.cnt AS cnt
+  FROM sp_counts c
+  WHERE c.ORG_NAME NOT IN (SELECT ORG_NAME FROM sp_matched)
+    AND c.cnt >= {radar_min}
+  ORDER BY c.cnt DESC
+  LIMIT {radar_top}
+) TO '{tmp}/ca_unmatched.json' (FORMAT JSON, ARRAY true);
 """
 
 
@@ -173,7 +194,8 @@ def run_duckdb(data_dir, tmp, aliases):
         for a in aliases:
             f.write(f"{a['alias']}|{a['canonical_name']}|{a['source']}|{a.get('match_mode') or 'token'}\n")
     sql = DUCK_SQL.format(tmp=tmp, data=data_dir, threads=6,
-                          alias_min=ALIAS_MIN_ALNUM, window=WINDOW_DAYS)
+                          alias_min=ALIAS_MIN_ALNUM, window=WINDOW_DAYS,
+                          radar_min=RADAR_MIN_COUNT, radar_top=RADAR_TOP_N)
     sqlpath = os.path.join(tmp, "filter.sql")
     open(sqlpath, "w").write(sql)
     subprocess.run(["duckdb", ":memory:"], stdin=open(sqlpath), check=True)
@@ -239,6 +261,18 @@ def main():
         "last_cursor='masterfile' where state='CA'")
     res = mgmt_sql(ref, token, "select * from public.ph_ucc_rebuild_leads()")[0]
     print(f"[rebuild] {res}")
+
+    # Feed the missing-funder radar (name+count snapshot only; the RPC applies the
+    # depository + dictionary-match guards and never resurrects added/dismissed rows).
+    ca_unmatched_path = os.path.join(tmp, "ca_unmatched.json")
+    if os.path.exists(ca_unmatched_path):
+        radar_rows = json.load(open(ca_unmatched_path))
+        if radar_rows:
+            lit = json.dumps(radar_rows).replace("'", "''")
+            n = mgmt_sql(ref, token,
+                f"select public.ph_ucc_upsert_unmatched('CA', '{lit}'::jsonb, {RADAR_MIN_COUNT}) as n")[0]["n"]
+            print(f"[radar] {len(radar_rows)} CA candidates -> {n} upserted to ph_ucc_unmatched_parties")
+
     ca = mgmt_sql(ref, token,
         "select count(*) n, count(*) filter (where stack_depth>=2) stacked, "
         "count(*) filter (where freshness_days<=90) fresh90 "

@@ -154,6 +154,20 @@ interface UccAlias {
   created_at?: string | null;
 }
 
+/* ph_ucc_unmatched_parties — a radar candidate: a high-frequency, non-depository
+   secured-party name our dictionary does NOT match (probable overlooked funder). */
+interface UccUnmatched {
+  id: string;
+  state: string | null;
+  secured_party_raw: string;
+  sp_norm: string;
+  filing_count: number;
+  first_seen: string | null;
+  last_refreshed: string | null;
+  status: "new" | "added" | "dismissed";
+  note: string | null;
+}
+
 /* Gating flags live in platform_settings under key "ph_ucc". */
 interface PhUccSettings {
   ucc_load_enabled: boolean;
@@ -784,6 +798,167 @@ function LeadDetailDrawer({ lead, onClose }: { lead: UccLead; onClose: () => voi
   );
 }
 
+/* One radar candidate row (owner rule: no browser popups — everything is inline).
+   "Add as funder" arms an inline mini-form (confirm/edit the canonical name +
+   token/exact toggle) before promoting; "Dismiss" is a two-step inline confirm.
+   Add defaults to EXACT mode for names whose normalized form collapses to a single
+   token — those over-match in token mode, so exact (full-name equality) is safer. */
+function RadarCandidateRow({
+  row,
+  onPromote,
+  onDismiss,
+}: {
+  row: UccUnmatched;
+  onPromote: (row: UccUnmatched, canonical: string, mode: "token" | "exact") => Promise<void>;
+  onDismiss: (row: UccUnmatched) => Promise<void>;
+}) {
+  const collapsesToOneToken = !row.sp_norm.trim().includes(" ");
+  const [adding, setAdding] = useState(false); // inline add form open
+  const [canonical, setCanonical] = useState(row.secured_party_raw);
+  const [mode, setMode] = useState<"token" | "exact">(collapsesToOneToken ? "exact" : "token");
+  const [dismissArmed, setDismissArmed] = useState(false);
+  const [busy, setBusy] = useState<null | "promote" | "dismiss">(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Auto-disarm the primed dismiss after 5s (matches the alias-delete pattern).
+  useEffect(() => {
+    if (!dismissArmed) return;
+    const t = setTimeout(() => setDismissArmed(false), 5000);
+    return () => clearTimeout(t);
+  }, [dismissArmed]);
+
+  const doPromote = async () => {
+    setBusy("promote");
+    setErr(null);
+    try {
+      await onPromote(row, canonical.trim() || row.secured_party_raw, mode);
+      // row disappears from the "new" list on success; no local reset needed
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  };
+  const doDismiss = async () => {
+    setBusy("dismiss");
+    setErr(null);
+    try {
+      await onDismiss(row);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+      setDismissArmed(false);
+    }
+  };
+
+  return (
+    <tr className="border-b border-gray-50 dark:border-gray-700/50 align-top">
+      <td className="py-2.5 px-3">
+        <div className="font-medium text-gray-900 dark:text-gray-100">{row.secured_party_raw}</div>
+        {err && <div className="mt-1 text-xs text-rose-600 dark:text-rose-400">{err}</div>}
+        {adding && (
+          <div className="mt-2 space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-2.5">
+            <div>
+              <label className="block text-[11px] text-gray-400 mb-1">Maps to funder (canonical name)</label>
+              <input
+                className="w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100"
+                value={canonical}
+                onChange={(e) => setCanonical(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-gray-400">Match mode</span>
+              <div className="inline-flex rounded-md border border-gray-300 dark:border-gray-600 overflow-hidden">
+                {(["token", "exact"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`px-2.5 py-1 text-xs ${
+                      mode === m
+                        ? "bg-ocean-blue text-white"
+                        : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              {collapsesToOneToken && (
+                <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                  generic name — exact recommended
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-gray-400">
+              <strong>token</strong>: matches the distinctive core anywhere in a filed name.{" "}
+              <strong>exact</strong>: full-name equality only (safest for generic / one-word names).
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={doPromote}
+                disabled={busy === "promote"}
+                className="btn-primary btn-sm inline-flex items-center gap-1.5"
+              >
+                <CheckCircleIcon className="w-4 h-4" />
+                {busy === "promote" ? "Adding…" : `Confirm add (${mode})`}
+              </button>
+              <button
+                onClick={() => {
+                  setAdding(false);
+                  setErr(null);
+                }}
+                disabled={busy === "promote"}
+                className="btn-ghost btn-sm"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </td>
+      <td className="py-2.5 px-3">
+        {row.state && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+            {row.state}
+          </span>
+        )}
+      </td>
+      <td className="py-2.5 px-3 text-right font-semibold text-gray-900 dark:text-white tabular-nums">
+        {row.filing_count.toLocaleString()}
+      </td>
+      <td className="py-2.5 px-3 text-right whitespace-nowrap">
+        {!adding && (
+          <div className="inline-flex items-center gap-3">
+            <button
+              onClick={() => setAdding(true)}
+              disabled={!!busy}
+              className="text-xs inline-flex items-center gap-1 text-ocean-blue hover:underline"
+              title="Add this name to the funder dictionary"
+            >
+              <PlusIcon className="w-4 h-4" /> Add as funder
+            </button>
+            <button
+              onClick={() => {
+                if (dismissArmed) doDismiss();
+                else setDismissArmed(true);
+              }}
+              disabled={!!busy}
+              className={`text-xs inline-flex items-center gap-1 ${
+                dismissArmed
+                  ? "text-rose-700 dark:text-rose-300 font-semibold"
+                  : "text-gray-400 hover:text-rose-600 dark:hover:text-rose-400"
+              }`}
+              title="Not an MCA funder — dismiss (won't resurface)"
+            >
+              <NoSymbolIcon className="w-4 h-4" />
+              {busy === "dismiss" ? "Dismissing…" : dismissArmed ? "Tap to confirm" : "Dismiss"}
+            </button>
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+}
+
 export default function PhUccMachinePage() {
   const { isSuperAdmin } = useUserProfile();
   const [loading, setLoading] = useState(true);
@@ -851,6 +1026,14 @@ export default function PhUccMachinePage() {
   // Two-step inline confirm for the destructive alias delete (owner rule: no
   // browser popups). First tap arms the row, second fires; disarms after 5s.
   const [aliasArmed, setAliasArmed] = useState<string | null>(null);
+
+  // ── "Funders we may be missing" radar (super_admin only) ──
+  const [radar, setRadar] = useState<UccUnmatched[]>([]);
+  const [radarTotal, setRadarTotal] = useState<number | null>(null);
+  const [radarLoading, setRadarLoading] = useState(false);
+  const [radarErr, setRadarErr] = useState<string | null>(null);
+  const [radarFlash, setRadarFlash] = useState<string | null>(null);
+  const [radarRefreshed, setRadarRefreshed] = useState<string | null>(null); // max last_refreshed
 
   // ── PH UCC pipeline settings (super_admin only; platform_settings 'ph_settings') ──
   // Held as the FULL stored object so unknown keys (pipeline_id, setter_numbers,
@@ -995,6 +1178,48 @@ export default function PhUccMachinePage() {
     setPhSettings(v);
     setBatchCapInput(String((v.max_skiptrace_batch as number | undefined) ?? 300));
     setDncInput(String((v.skiptrace_dnc_policy as string | undefined) ?? ""));
+  }, []);
+
+  /* Radar candidates: the top status='new' unmatched high-frequency funders, plus
+     the total new count and the freshest last_refreshed for the "runs weekly"
+     freshness line. Super_admin-gated by RLS — a non-super admin gets nothing. */
+  const loadRadar = useCallback(async () => {
+    setRadarLoading(true);
+    setRadarErr(null);
+    try {
+      const [rowsRes, countRes] = await Promise.all([
+        supabase
+          .from("ph_ucc_unmatched_parties")
+          .select("*")
+          .eq("status", "new")
+          .order("filing_count", { ascending: false })
+          .limit(60),
+        supabase
+          .from("ph_ucc_unmatched_parties")
+          .select("id", { count: "exact", head: true })
+          .eq("status", "new"),
+      ]);
+      if (isMissingRelation(rowsRes.error)) {
+        setRadar([]);
+        setRadarTotal(null);
+        return;
+      }
+      if (rowsRes.error) throw rowsRes.error;
+      const rows = (rowsRes.data as UccUnmatched[]) ?? [];
+      setRadar(rows);
+      if (!isMissingRelation(countRes.error)) setRadarTotal(countRes.count ?? rows.length);
+      // Freshest refresh stamp across the shown page (good enough for the SLA line).
+      const newest = rows.reduce<string | null>(
+        (m, r) => (r.last_refreshed && (!m || r.last_refreshed > m) ? r.last_refreshed : m),
+        null,
+      );
+      setRadarRefreshed(newest);
+    } catch (e) {
+      setRadarErr(e instanceof Error ? e.message : String(e));
+      setRadar([]);
+    } finally {
+      setRadarLoading(false);
+    }
   }, []);
 
   /* ── Load the top-of-page data (sources, aliases, settings, funnel counts) ── */
@@ -1233,6 +1458,10 @@ export default function PhUccMachinePage() {
   useEffect(() => {
     if (isSuperAdmin && !backendMissing) loadPhSettings();
   }, [isSuperAdmin, backendMissing, loadPhSettings]);
+  // Load the radar for super_admins once the backend is present.
+  useEffect(() => {
+    if (isSuperAdmin && !backendMissing) loadRadar();
+  }, [isSuperAdmin, backendMissing, loadRadar]);
   // Auto-disarm a primed settings write after 5s.
   useEffect(() => {
     if (!settingsArmed) return;
@@ -1372,6 +1601,53 @@ export default function PhUccMachinePage() {
       setAliasSaving(false);
     }
   }, [newAlias, newCanonical, reloadAliases]);
+
+  /* Promote a radar candidate to a funder alias, then rebuild leads so the new
+     alias takes effect on filings we ALREADY hold. Re-ingesting that state (to
+     FETCH the funder's other filings) is a separate, larger step surfaced as a
+     hint — a token/exact alias only matches filings currently in ph_ucc_filings. */
+  const promoteRadar = useCallback(
+    async (row: UccUnmatched, canonical: string, mode: "token" | "exact") => {
+      setRadarErr(null);
+      setRadarFlash(null);
+      const { data, error } = await supabase.rpc("ph_ucc_promote_unmatched", {
+        p_id: row.id,
+        p_canonical: canonical,
+        p_match_mode: mode,
+      });
+      if (error) throw error; // surfaced inline on the row
+      void data;
+      // New alias only matches filings already held until a re-ingest — rebuild now.
+      const { error: rbErr } = await supabase.rpc("ph_ucc_rebuild_leads");
+      setRadarFlash(
+        `Added "${canonical}" (${mode}).` +
+          (rbErr ? ` Rebuild failed: ${rbErr.message}` : "") +
+          (row.state ? ` Re-ingest ${row.state} to pull this funder's other filings.` : ""),
+      );
+      setTimeout(() => setRadarFlash(null), 9000);
+      // Refresh the radar (row drops off), the alias dictionary, and the funnel/leads.
+      await Promise.all([loadRadar(), reloadAliases(), loadFunnel(), loadLeadMeta(), loadLeads()]);
+    },
+    [loadRadar, reloadAliases, loadFunnel, loadLeadMeta, loadLeads],
+  );
+
+  /* Dismiss a radar candidate (not an MCA funder). Sticky — the weekly scan's
+     upsert never resurrects a dismissed row back to 'new'. Optimistic removal. */
+  const dismissRadar = useCallback(
+    async (row: UccUnmatched) => {
+      setRadarErr(null);
+      const prev = radar;
+      setRadar((rs) => rs.filter((r) => r.id !== row.id)); // optimistic
+      setRadarTotal((t) => (t == null ? t : Math.max(0, t - 1)));
+      const { error } = await supabase.rpc("ph_ucc_dismiss_unmatched", { p_id: row.id });
+      if (error) {
+        setRadar(prev); // revert
+        setRadarTotal((t) => (t == null ? t : t + 1));
+        throw error; // surfaced inline on the row
+      }
+    },
+    [radar],
+  );
 
   /* Curated aliases can be deleted outright. Lenders-seeded aliases must NOT be
      deleted (the re-seed would resurrect them) — they get an `active` toggle so
@@ -2196,6 +2472,91 @@ export default function PhUccMachinePage() {
               </div>
             )}
           </section>
+
+          {/* ── Radar: funders we may be missing (super_admin only) ── */}
+          {isSuperAdmin && (
+            <section className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400 flex items-center gap-2">
+                  <ExclamationTriangleIcon className="w-4 h-4 text-amber-500" /> Funders we may be missing (radar)
+                  {radarTotal != null && radarTotal > 0 && (
+                    <span className="normal-case font-normal text-gray-400">
+                      · <strong className="text-gray-700 dark:text-gray-200">{radarTotal.toLocaleString()}</strong> new
+                    </span>
+                  )}
+                </h2>
+                <div className="flex items-center gap-3 text-xs text-gray-400">
+                  {radarRefreshed && <span>refreshed {fmtRelative(radarRefreshed)}</span>}
+                  <button
+                    onClick={loadRadar}
+                    disabled={radarLoading}
+                    className="btn-ghost inline-flex items-center gap-1.5 text-sm"
+                  >
+                    <ArrowPathIcon className={`w-4 h-4 ${radarLoading ? "animate-spin" : ""}`} /> Refresh
+                  </button>
+                </div>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 -mt-1">
+                High-frequency secured-party names in the raw state UCC data that our dictionary does <strong>not</strong>{" "}
+                match and that aren't banks — probable MCA funders we're overlooking. Add the real ones (defaults to{" "}
+                <strong>exact</strong> mode for generic names to avoid over-matching) or dismiss the rest; dismissed names
+                never resurface. Runs weekly.
+              </p>
+
+              {radarErr && (
+                <div className="rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-4 py-3 text-sm text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                  <ExclamationTriangleIcon className="w-5 h-5 shrink-0" /> Radar failed to load: {radarErr}
+                </div>
+              )}
+              {radarFlash && (
+                <div className="rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
+                  <CheckCircleIcon className="w-5 h-5 shrink-0 mt-0.5" /> {radarFlash}
+                </div>
+              )}
+
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
+                {radarLoading ? (
+                  <p className="py-6 text-center text-sm text-gray-400">Loading radar…</p>
+                ) : radar.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <CheckCircleIcon className="w-8 h-8 mx-auto mb-1 text-emerald-400" />
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      Radar clear — no unmatched high-frequency funders right now. Runs weekly.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto max-h-[32rem] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-white dark:bg-gray-800">
+                        <tr className="text-left text-gray-400 border-b border-gray-100 dark:border-gray-700">
+                          <th className="py-2 px-3">Secured party (unmatched)</th>
+                          <th className="py-2 px-3">State</th>
+                          <th className="py-2 px-3 text-right">Filings</th>
+                          <th className="py-2 px-3 text-right"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {radar.map((row) => (
+                          <RadarCandidateRow
+                            key={row.id}
+                            row={row}
+                            onPromote={promoteRadar}
+                            onDismiss={dismissRadar}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                    {radarTotal != null && radarTotal > radar.length && (
+                      <p className="pt-2 text-center text-xs text-gray-400">
+                        Showing the top {radar.length} of {radarTotal.toLocaleString()} — triage these, the rest surface
+                        as you clear them.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
 
           {/* ── 4. Alias manager ── */}
           <section className="space-y-3">

@@ -53,7 +53,11 @@ NAMING LAW: every asset stays ph_ucc_* / state='FL'. Touches no MCA/VCF assets.
 Data files are NEVER committed — only this loader.
 """
 import argparse, csv, io, json, os, re, sys, urllib.request, zipfile
+from collections import Counter
 from datetime import date, datetime
+
+RADAR_TOP_N = 500       # top unmatched secured parties to emit to the missing-funder radar
+RADAR_MIN_COUNT = 5     # ignore long-tail one-offs (matches ph_ucc_upsert_unmatched floor)
 
 WINDOW_DAYS = 540
 csv.field_size_limit(10_000_000)
@@ -166,6 +170,13 @@ def main():
 
     # Pass 2: alias match against fresh set
     matches = {}
+    # Radar: count EVERY fresh-window secured-party name and track which we matched,
+    # so the unmatched high-frequency names can be surfaced as probable overlooked
+    # funders. Zero extra passes — piggybacks on this loop; only a tiny top-N set is
+    # pushed to the DB (ph_ucc_upsert_unmatched re-applies the depository + dictionary
+    # guards authoritatively).
+    sp_counter: Counter = Counter()
+    matched_raw: set = set()
     r = csv_reader(f"{dl}/secureds_full.zip", "secureds_full"); h = next(r)
     ci = {c: i for i, c in enumerate(h)}
     for row in r:
@@ -176,6 +187,8 @@ def main():
             continue
         raw = row[ci["SecName"]]
         spn = norm(raw)
+        if raw and raw.strip():
+            sp_counter[raw.strip()] += 1
         # token-boundary contains against token aliases, OR full-name equality
         # against exact aliases (mirrors public.ph_ucc_match_secured_parties).
         hit = False
@@ -185,10 +198,18 @@ def main():
         if not hit and exact_aliases:
             hit = norm_full(raw) in exact_aliases
         if hit:
+            if raw and raw.strip():
+                matched_raw.add(raw.strip())
             matches.setdefault(fn, [])
             if raw not in matches[fn]:
                 matches[fn].append(raw)
     print(f"[pass2] matched filings: {len(matches)}")
+
+    # Radar candidates: top unmatched secured parties by frequency (final filter —
+    # depository + already-in-dictionary — is done server-side by the RPC).
+    radar_rows = [{"name": n, "cnt": c} for n, c in sp_counter.most_common()
+                  if n not in matched_raw and c >= RADAR_MIN_COUNT][:RADAR_TOP_N]
+    print(f"[radar] {len(radar_rows)} FL unmatched candidates (>= {RADAR_MIN_COUNT})")
 
     # Pass 3: best debtor per matched filing
     best = {}
@@ -259,6 +280,14 @@ def main():
         "last_cursor='fullfile' where state='FL' and name='Florida SOS — floridaucc.com full download'")
     res = mgmt_sql(ref, token, "select * from public.ph_ucc_rebuild_leads()")[0]
     print(f"[rebuild] {res}")
+
+    # Feed the missing-funder radar (name+count snapshot only; RPC applies the
+    # depository + dictionary-match guards and never resurrects added/dismissed rows).
+    if radar_rows:
+        lit = json.dumps(radar_rows).replace("'", "''")
+        n = mgmt_sql(ref, token,
+            f"select public.ph_ucc_upsert_unmatched('FL', '{lit}'::jsonb, {RADAR_MIN_COUNT}) as n")[0]["n"]
+        print(f"[radar] {len(radar_rows)} FL candidates -> {n} upserted to ph_ucc_unmatched_parties")
 
 if __name__ == "__main__":
     main()
