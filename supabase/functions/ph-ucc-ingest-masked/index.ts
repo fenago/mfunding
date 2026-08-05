@@ -48,7 +48,10 @@ const CO_DEBTOR = "8upq-58vz";
 
 const WINDOW_DAYS = 540;             // freshness window (mirror named ingest)
 const PAGE = 1000;                   // Socrata max page
-const MIN_STACK = 2;                 // conservative promotion threshold
+// Store ALL fresh agent-filed business debtors (non-noise, not already named) and let
+// the rebuild TIER them by confidence: high=3+ / medium=2 / low=1 stacked liens. The
+// owner dials which tiers get loaded when the gate is flipped; all stay gated here.
+const MIN_STACK = 1;
 const CO_MAX_AGENT_FILES = 60_000;   // safety cap on CO agent fileids per run
 const HYDRATE_CHUNK = 200;           // fileid IN-list chunk for CO hydration
 const HYDRATE_CONCURRENCY = 8;       // concurrent CO hydration requests
@@ -115,12 +118,12 @@ type FilingRow = {
 type Tiers = {
   agent_filings_fresh: number;   // raw fresh agent-masked liens scanned
   agent_debtors: number;         // distinct business debtors with >=1 fresh agent lien
-  tier_1_single: number;         // debtors with exactly 1 (NOT promoted)
-  tier_2_plus: number;           // debtors with >=2 (stacking)
-  tier_3_plus: number;           // debtors with >=3
-  excluded_name_noise: number;   // stackers dropped as RE/leasing/holding/gov
-  excluded_already_named: number;// stackers already captured as a named_funder lead
-  promoted_debtors: number;      // net-new agent-masked leads stored
+  conf_high: number;             // promoted debtors, 3+ stacked (confidence 'high')
+  conf_medium: number;           // promoted debtors, exactly 2 stacked ('medium')
+  conf_low: number;              // promoted debtors, single lien ('low')
+  excluded_name_noise: number;   // dropped as RE/leasing/holding/gov
+  excluded_already_named: number;// already captured as a named_funder lead ('confirmed')
+  promoted_debtors: number;      // net-new agent-masked leads stored (all tiers)
   survivor_filing_rows: number;  // agent filing rows stored for promoted debtors
 };
 
@@ -153,18 +156,20 @@ function scoreAndSelect(
   const tiers: Tiers = {
     agent_filings_fresh: liens.length,
     agent_debtors: byDebtor.size,
-    tier_1_single: 0, tier_2_plus: 0, tier_3_plus: 0,
+    conf_high: 0, conf_medium: 0, conf_low: 0,
     excluded_name_noise: 0, excluded_already_named: 0,
     promoted_debtors: 0, survivor_filing_rows: 0,
   };
   const survivors: FilingRow[] = [];
   for (const [key, g] of byDebtor) {
     const depth = g.filings.size;
-    if (depth < 2) { tiers.tier_1_single++; continue; }
-    tiers.tier_2_plus++;
-    if (depth >= 3) tiers.tier_3_plus++;
+    // Exclusions first (noise + already-captured-as-named); the remainder are all
+    // promoted and TIERED by stacking (high 3+ / medium 2 / low 1).
     if (isAgentNoise(g.name)) { tiers.excluded_name_noise++; continue; }
     if (namedKeys.has(key)) { tiers.excluded_already_named++; continue; }
+    if (depth >= 3) tiers.conf_high++;
+    else if (depth === 2) tiers.conf_medium++;
+    else tiers.conf_low++;
     tiers.promoted_debtors++;
     for (const f of g.filings.values()) survivors.push(f);
   }
@@ -299,14 +304,13 @@ async function harvestOR(db: SupabaseClient, sourceId: string | null, agents: Ag
       });
     }
   }
-  // OR's window is "last month", so cross-month stacking must accumulate: store ALL
-  // agent liens on business debtors (they are few), and let the rebuild promote when
-  // accumulated stack reaches 2+. Drop obvious name-noise even here to stay lean.
-  const survivors = liens.filter((l) => !isAgentNoise(l.rec.debtor_name)).map((l) => l.rec);
+  // OR's window is "last month", so cross-month stacking accumulates in ph_ucc_filings;
+  // store every fresh non-noise, non-already-named agent lien (they are few) and let
+  // the rebuild tier by accumulated stack depth.
   const namedKeys = await loadNamedKeys(db, "OR");
-  const { tiers } = scoreAndSelect("OR", liens, namedKeys); // report tiers on THIS pull
+  const { survivors, tiers } = scoreAndSelect("OR", liens, namedKeys);
   const upserted = await upsertFilings(db, survivors);
-  return { tiers, upserted, note: "OR window is last-month; stacking accumulates in ph_ucc_filings across runs (rebuild promotes 2+)." };
+  return { tiers, upserted, note: "OR window is last-month; stacking accumulates in ph_ucc_filings across runs (rebuild re-tiers)." };
 }
 
 // ── COLORADO (3-table join, concurrent hydration) ───────────────────────────────

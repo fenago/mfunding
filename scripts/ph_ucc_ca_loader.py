@@ -57,7 +57,8 @@ WINDOW_DAYS = 540
 ALIAS_MIN_ALNUM = 5   # descriptor-preserving alias must have >= this many alnum chars
 RADAR_TOP_N = 500     # top unmatched secured parties to emit to the missing-funder radar
 RADAR_MIN_COUNT = 5   # ignore long-tail one-offs (matches ph_ucc_upsert_unmatched floor)
-MIN_STACK = 2         # conservative agent-masked promotion threshold (mirror rebuild default)
+MIN_STACK = 1         # store all fresh agent-filed non-noise debtors; the rebuild TIERS
+                      # them by confidence (high 3+ / medium 2 / low 1). Gated: nothing dials.
 
 
 def fetch_agents(ref, token):

@@ -104,7 +104,8 @@ def is_agent_noise(name: str) -> bool:
     u = (name or "").upper()
     return bool(_AGENT_NOISE_A.search(u) or _AGENT_NOISE_B.search(u))
 
-MIN_STACK = 2  # conservative agent-masked promotion threshold (mirror rebuild default)
+MIN_STACK = 1  # store all fresh agent-filed non-noise debtors; the rebuild TIERS them
+               # by confidence (high 3+ / medium 2 / low 1). Gated: nothing dials.
 
 def parse_date(s):
     s = (s or "").strip()
@@ -305,9 +306,11 @@ def main():
             "raw": {"source": "floridaucc.com full-download", "agent_canonical": canon}}))
     stack = Counter(k for k, _ in agent_liens)
     agent_recs = [rec for k, rec in agent_liens if stack[k] >= MIN_STACK]
-    n_debtors = sum(1 for k, c in stack.items() if c >= MIN_STACK)
-    print(f"[agent] {len(agent_matches)} agent-masked fresh filings; "
-          f"{n_debtors} debtors stack>={MIN_STACK} -> {len(agent_recs)} survivor filing rows")
+    hi = sum(1 for c in stack.values() if c >= 3)
+    med = sum(1 for c in stack.values() if c == 2)
+    lo = sum(1 for c in stack.values() if c == 1)
+    print(f"[agent] {len(agent_matches)} agent-masked fresh filings; debtors by tier "
+          f"high(3+)={hi} medium(2)={med} low(1)={lo} -> {len(agent_recs)} survivor filing rows")
 
     if args.dry_run:
         print("[dry-run] not writing to DB"); return
