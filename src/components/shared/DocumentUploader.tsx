@@ -39,7 +39,7 @@ export default function DocumentUploader({
   onUploadComplete,
   onError,
   acceptedTypes = [".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".xlsx", ".xls", ".csv"],
-  maxSizeMB = 10,
+  maxSizeMB = 25,
   documentType = "other",
   multiple = true,
 }: DocumentUploaderProps) {
