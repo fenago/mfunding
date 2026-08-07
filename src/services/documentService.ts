@@ -20,7 +20,7 @@ export interface ReviewDoc {
 
 const BUCKET = "customer-documents";
 
-/** Documents needing attention (pending + reviewed), oldest first. */
+/** Documents needing attention (pending + reviewed), newest first. */
 export async function getDocumentsForReview(includeAll = false): Promise<ReviewDoc[]> {
   let query = supabase
     .from("customer_documents")
@@ -28,7 +28,7 @@ export async function getDocumentsForReview(includeAll = false): Promise<ReviewD
       id, document_type, filename, storage_path, file_size, status, created_at, customer_id,
       customer:customers!customer_id ( business_name, first_name, last_name )
     `)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false });
   if (!includeAll) query = query.in("status", ["pending", "reviewed"]);
   const { data, error } = await query;
   if (error) throw error;
