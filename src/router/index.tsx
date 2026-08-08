@@ -96,6 +96,7 @@ const PipelinePlaybookPage = lazyWithReload(() => import("../pages/admin/Pipelin
 const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.tsx"));
 const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSetterPlaybookPage.tsx"));
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
+const DialerPage = lazyWithReload(() => import("../pages/admin/DialerPage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
@@ -674,6 +675,14 @@ export const routes: RouteObject[] = [
                 path: "ph-ucc",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <PhUccMachinePage /> }],
+              },
+              // Dialer Metrics — the HotProspector (PowerDialer) per-rep scorecard.
+              // A management surface for running the setter floor, so it carries the
+              // same admin-only guard as the other PH consoles.
+              {
+                path: "dialer",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <DialerPage /> }],
               },
               // Lead Tools management (operational — all staff)
               {

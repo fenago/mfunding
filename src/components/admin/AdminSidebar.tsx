@@ -32,6 +32,7 @@ import {
   BookOpenIcon,
   WrenchScrewdriverIcon,
   PhoneArrowUpRightIcon,
+  PhoneIcon,
   ChatBubbleLeftRightIcon,
   EnvelopeIcon,
   TableCellsIcon,
@@ -107,6 +108,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/rnd", // R&D game plan (roles: ADMIN) — Carlos manages the build-out too; pure closers excluded via roles
   "/admin/ph-setters", // PH Setter Playbook (roles: ADMIN) — same lens treatment as R&D; pure closers excluded via roles
   "/admin/ph-ucc", // PH UCC Machine (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
+  "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
 ]);
 
 const navGroups: NavGroup[] = [
@@ -127,6 +129,9 @@ const navGroups: NavGroup[] = [
       // UCC Machine — outbound UCC lead engine dashboard. Directly after PH
       // Setters (owner-specified order); same ADMIN gating + closer lens.
       { name: "UCC Machine", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
+      // Dialer Metrics — per-rep HotProspector scorecard for running the setter
+      // floor. Sits with the other PH consoles; same ADMIN gating + closer lens.
+      { name: "Dialer Metrics", path: "/admin/dialer", icon: PhoneIcon, roles: ADMIN },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
