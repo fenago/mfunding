@@ -33,6 +33,7 @@ import {
 import { getInstantlyKey } from "../_shared/instantly.ts";
 import { callLLM, resolveConfig } from "../_shared/llm.ts";
 import { buildPlaidHealth, getPlaidConfig, plaidFetch, resolveEnv, type PlaidHealth } from "../_shared/plaid.ts";
+import { getHotProspectorConfig, hotProspectorRequest, hotProspectorToken } from "../_shared/hotprospector.ts";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
 const FROM_EMAIL = "sales@send.mfunding.net"; // company dedicated sending domain
@@ -191,6 +192,51 @@ async function checkPlaid(db: SupabaseClient): Promise<CheckResult> {
     return { service: svc, status: "degraded", http_status: res.status, latency_ms: latency, detail: `HTTP ${res.status}: ${String(res.error ?? "").slice(0, 160)}` };
   } catch (e) {
     return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `not configured / unreachable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/** HotProspector (PowerDialer): the token exchange IS the health signal — a bad
+ * uid/key, an expired account, or a dead API all fail it, and a token proves the
+ * whole auth chain works. One call decides up/down. If that succeeds we make ONE
+ * cheap follow-up (fetchCreditCount) purely for the detail line: dialer credits at
+ * zero means calls stop, so the number is worth showing. A failure there never
+ * demotes the service — auth already succeeded. */
+async function checkHotProspector(db: SupabaseClient): Promise<CheckResult> {
+  const svc = "hotprospector";
+  const t0 = Date.now();
+  try {
+    const cfg = await getHotProspectorConfig(db);
+    const auth = await hotProspectorToken(cfg);
+    const latency = Date.now() - t0;
+    if (!auth.ok || !auth.token) {
+      const bad401 = auth.status === 401 || auth.status === 403;
+      return {
+        service: svc,
+        status: "down",
+        http_status: auth.status,
+        latency_ms: latency,
+        detail: bad401 || auth.status === 200
+          ? `auth rejected (${auth.status}) — check HOTPROSPECTOR_API_UID / HOTPROSPECTOR_API_KEY in the vault. ${auth.error ?? ""}`.trim()
+          : `HTTP ${auth.status}: ${auth.error ?? "no access_token returned"}`,
+      };
+    }
+
+    // Best-effort credit balance. Never changes the up/down verdict.
+    let credits: string | null = null;
+    try {
+      const cr = await hotProspectorRequest<{ response?: string; credits?: string | number }>(auth.token, "fetchCreditCount");
+      if (cr.ok && cr.data?.credits != null) credits = String(cr.data.credits);
+    } catch { /* detail-only — auth already proved the service is up */ }
+
+    const detail = credits !== null
+      ? `authenticated · ${credits} dialer credits.`
+      : "authenticated (credit balance unavailable).";
+    return { service: svc, status: "up", http_status: auth.status, latency_ms: latency, detail };
+  } catch (e) {
+    return {
+      service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0,
+      detail: `not configured / unreachable: ${e instanceof Error ? e.message : String(e)}`,
+    };
   }
 }
 
@@ -460,6 +506,7 @@ const LABELS: Record<string, string> = {
   ghl: "GoHighLevel / VibeReach",
   llm: "AI provider (underwriting / recommendations)",
   plaid: "Plaid (bank connection)",
+  hotprospector: "HotProspector (PowerDialer)",
   "site:mfunding.net": "Website (mfunding.net)",
   "site:my.mfunding.net": "Merchant portal (my.mfunding.net)",
   "edge-runtime": "Supabase edge runtime",
@@ -568,17 +615,18 @@ Deno.serve(async (req) => {
 
   // ── Run every probe (in parallel where independent) ──
   const results: CheckResult[] = [];
-  const [instantly, ghl, llm, plaid, site1, site2, cron, egress] = await Promise.all([
+  const [instantly, ghl, llm, plaid, hotprospector, site1, site2, cron, egress] = await Promise.all([
     checkInstantly(db),
     checkGhl(cfg, cfgErr),
     checkLlm(db),
     checkPlaid(db),
+    checkHotProspector(db),
     checkSite("site:mfunding.net", "https://mfunding.net"),
     checkSite("site:my.mfunding.net", "https://my.mfunding.net"),
     checkCron(db),
     checkSupabaseEgress(db),
   ]);
-  results.push(instantly, ghl, llm, plaid, site1, site2, cron, egress);
+  results.push(instantly, ghl, llm, plaid, hotprospector, site1, site2, cron, egress);
   // Edge-runtime self-check: if this line runs, the function + its scheduler are alive.
   results.push({ service: "edge-runtime", status: "up", http_status: null, latency_ms: null, detail: `edge function executed at ${new Date().toISOString()}.` });
 

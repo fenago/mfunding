@@ -61,6 +61,10 @@ const SERVICE_META: Record<string, { label: string; hint: string }> = {
     label: "Plaid (bank connection)",
     hint: "Check PLAID_CLIENT_ID / PLAID_SECRET_* in the vault and the environment toggle in platform_settings.plaid.",
   },
+  hotprospector: {
+    label: "HotProspector (PowerDialer)",
+    hint: "The dialer API rejected our token exchange. Check HOTPROSPECTOR_API_UID / HOTPROSPECTOR_API_KEY in the vault and the account status at hookscall.com — setters can't dial while this is down.",
+  },
   "site:mfunding.net": {
     label: "Website (mfunding.net)",
     hint: "Check the Netlify deploy + DNS.",
