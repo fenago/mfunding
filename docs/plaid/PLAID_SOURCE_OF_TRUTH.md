@@ -4,6 +4,11 @@
 (`dashboard.plaid.com/settings/team/products`, team **MFunding.net**, owner Ernesto Lee);
 integration state verified against the codebase + Supabase, not memory.
 
+**Full API references** (saved from Plaid docs):
+- `docs/plaid/api-reference-statements.md` — https://plaid.com/docs/api/products/statements/
+- `docs/plaid/api-reference-transactions.md` — https://plaid.com/docs/api/products/transactions/
+- Product guides: https://plaid.com/docs/statements/ · https://plaid.com/docs/transactions/
+
 ---
 
 ## 1. Products ENABLED on our account (dashboard-confirmed 2026-08-08)
