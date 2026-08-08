@@ -205,7 +205,7 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
       await mintAndCopyConnectBankLink(dealId);
       finish({
         ok: true,
-        text: "🔗 Connect-Bank link copied — text it; they verify revenue in ~60s (no statements to chase).",
+        text: "🔗 Connect-Bank link copied — text it; ~60s to verify revenue AND pull their last 6 months of bank statements.",
       });
     } catch (e) {
       finish({ ok: false, text: e instanceof Error ? e.message : "Could not create a Connect-Bank link." });
@@ -307,8 +307,10 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
           )}
 
           {/* Bank connection — mint + copy a 60-second Connect-Bank link. The
-              merchant links their bank via Plaid to verify revenue (statements
-              stop being a chase). Copy affordance, same as the upload link. */}
+              merchant links their bank via Plaid, which verifies revenue AND pulls
+              their bank-statement PDFs (where the bank supports Statements), so
+              statements stop being a chase. Copy affordance, same as the upload
+              link. ONE Connect-Bank action — the deal bar mints the same link. */}
           <p className="px-3 py-1 mt-1 text-[10px] uppercase tracking-wide text-gray-400 border-t border-gray-100 dark:border-gray-700">
             Bank connection
           </p>
@@ -317,10 +319,14 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
             disabled={!!busy}
             onClick={() => void copyConnectBankLink()}
             className={itemCls}
-            title="Mints a secure /connect-bank link and copies it — text it to the merchant so they can connect their bank in ~60 seconds"
+            title="Mints a secure /connect-bank link and copies it — text it to the merchant. One 60-second connect verifies revenue and pulls their last ~6 months of bank statements straight from the bank (where the bank supports it), so you don't have to chase PDFs."
           >
-            {busy === "connect-bank" ? "Creating link…" : "🔗 Copy their Connect-Bank link (verify revenue in 60s)"}
+            {busy === "connect-bank" ? "Creating link…" : "🔗 Copy their Connect-Bank link — verify revenue + pull 6 mo statements"}
           </button>
+          <p className="px-3 pb-1.5 -mt-0.5 text-[10px] leading-snug text-gray-400">
+            One 60-second connect: revenue verified and statements pulled from the bank —
+            no PDFs to chase. Statements come through where the bank supports them.
+          </p>
 
           {/* THIS merchant's signing links — every document already sent to them,
               one copy-click from a text message. Bearer links: whoever holds one

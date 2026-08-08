@@ -2125,7 +2125,9 @@ function HandoffDropBarChip({ deal }: { deal: DealWithCustomer }) {
 // inside the Send-docs dropdown; the owner couldn't find it, so this surfaces it
 // as a first-class action — one tap mints the tokenized /connect-bank link
 // (shared helper, same path the menu uses) and copies it, with an inline "link
-// copied ✓" flash (non-destructive copy → no armed two-step, no popups).
+// copied ✓" flash (non-destructive copy → no armed two-step, no popups). The
+// label says "+ statements" because that connect also pulls ~6 months of bank
+// statement PDFs (Plaid Statements consent), not just a revenue check.
 // CONNECTED: a compact green chip naming the institution, linking to the deal's
 // Documents tab for the full Plaid panel — so the owner sees the bank right on
 // his cockpit, not only on deal detail.
@@ -2168,7 +2170,7 @@ function ConnectBankBarChip({ dealId, customerId }: { dealId: string; customerId
       type="button"
       onClick={copy}
       disabled={busy}
-      title="Mint a secure Connect-Bank link and copy it — text it to the merchant so they connect their bank and verify revenue in ~60 seconds (no statements to chase)."
+      title="Mint a secure Connect-Bank link and copy it — text it to the merchant. One ~60-second connect verifies revenue AND pulls their last ~6 months of bank statements straight from the bank (where the bank supports it), so there are no statement PDFs to chase."
       className={`inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-60 ${
         err
           ? "border-red-400 text-red-600 dark:text-red-400"
@@ -2183,7 +2185,7 @@ function ConnectBankBarChip({ dealId, customerId }: { dealId: string; customerId
         ? "🏦 …"
         : flash
         ? "🏦 link copied ✓"
-        : "🏦 Connect bank"}
+        : "🏦 Connect bank + statements"}
     </button>
   );
 }

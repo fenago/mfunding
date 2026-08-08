@@ -12,6 +12,13 @@
 // us when transactions are ready. Products come from platform_settings.plaid.products
 // (default ['transactions']); we request 180 days so the underwriter gets ~6 months.
 //
+// STATEMENTS: we also consent to bank-statement PDFs so plaid-pull can list+download
+// them (it already does — it just needed the Item to be statements-consented). It goes
+// in `required_if_supported_products`, NOT the hard `products` array, so an institution
+// that does not support Statements still links successfully on transactions alone.
+// To add Statements to an ALREADY-linked Item, call /link/token/create with that item's
+// access_token + products:['statements'] (no full re-link needed) — not built here.
+//
 // Compliance: an MCA is a purchase of future receivables, NOT a loan. Merchant-facing
 // error copy uses "connect your bank to verify your business revenue" language only.
 
@@ -56,11 +63,23 @@ Deno.serve(async (req) => {
     if (supabaseUrl && secret) webhook = `${supabaseUrl}/functions/v1/plaid-webhook?secret=${encodeURIComponent(secret)}`;
   } catch { /* webhook is optional — link still works, we just won't get push updates */ }
 
+  // Statements window: first day of the month 6 months back → today. Anchoring the
+  // start on day 1 sidesteps end-of-month rollover (Aug 31 minus 6 months) and covers
+  // ~6 posted statements, which is what the underwriter wants.
+  const now = new Date();
+  const stmtEnd = now.toISOString().slice(0, 10);
+  const stmtStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 6, 1))
+    .toISOString().slice(0, 10);
+
   const products = settings.products; // default ['transactions']
   const linkBody: Record<string, unknown> = {
     user: { client_user_id: ctx.customerId },
     client_name: "Momentum Funding",
     products,
+    // Pull statement PDFs where the bank supports them; never fail the link if it doesn't.
+    // (Plaid rejects a product listed in BOTH arrays, so skip if the setting already has it.)
+    ...(products.includes("statements") ? {} : { required_if_supported_products: ["statements"] }),
+    statements: { start_date: stmtStart, end_date: stmtEnd },
     country_codes: ["US"],
     language: "en",
     ...(webhook ? { webhook } : {}),
