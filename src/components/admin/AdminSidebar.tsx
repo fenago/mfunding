@@ -207,6 +207,7 @@ const navGroups: NavGroup[] = [
       { name: "Users", path: "/admin/users", icon: UsersIcon, roles: SUPER },
       { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: SUPER },
       { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: SUPER },
+      { name: "Plaid", path: "/admin/plaid", icon: BanknotesIcon, roles: SUPER },
       { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: SUPER },
       { name: "Underwriting Settings", path: "/admin/underwriting-settings", icon: AdjustmentsHorizontalIcon, roles: SUPER },
       { name: "Platform Config", path: "/admin/platform-config", icon: Cog6ToothIcon, roles: SUPER },

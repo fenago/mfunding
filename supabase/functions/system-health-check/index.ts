@@ -32,7 +32,7 @@ import {
 } from "../_shared/ghl.ts";
 import { getInstantlyKey } from "../_shared/instantly.ts";
 import { callLLM, resolveConfig } from "../_shared/llm.ts";
-import { getPlaidConfig, plaidFetch, resolveEnv } from "../_shared/plaid.ts";
+import { buildPlaidHealth, getPlaidConfig, plaidFetch, resolveEnv, type PlaidHealth } from "../_shared/plaid.ts";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
 const FROM_EMAIL = "sales@send.mfunding.net"; // company dedicated sending domain
@@ -553,6 +553,19 @@ Deno.serve(async (req) => {
     await db.from("system_health_state").update({ alerted: true }).eq("service", t.service);
   }
 
+  // ── Plaid detail section: the UP/DOWN pill answers "is the API reachable"; this
+  // answers "is the integration actually usable" (keys, products, OAuth banks,
+  // connected items). Reuses the probe result above — no second Plaid call. Never
+  // fails the run: on error the section is omitted and the reason reported.
+  let plaidSection: PlaidHealth | null = null;
+  let plaidSectionError: string | null = null;
+  try {
+    plaidSection = await buildPlaidHealth(db, plaid.status === "up");
+  } catch (e) {
+    plaidSectionError = e instanceof Error ? e.message : String(e);
+    console.error("[system-health] plaid section failed", plaidSectionError);
+  }
+
   const summary = results.map((r) => ({ service: r.service, status: r.status, http_status: r.http_status, latency_ms: r.latency_ms, detail: r.detail }));
   const down = summary.filter((s) => s.status === "down").map((s) => s.service);
   const degraded = summary.filter((s) => s.status === "degraded").map((s) => s.service);
@@ -565,5 +578,7 @@ Deno.serve(async (req) => {
     degraded,
     transitions: transitions.map((t) => ({ service: t.service, from: t.from, to: t.to })),
     alerts,
+    plaid: plaidSection,
+    ...(plaidSectionError ? { plaid_error: plaidSectionError } : {}),
   });
 });

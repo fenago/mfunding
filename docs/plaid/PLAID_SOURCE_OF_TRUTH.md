@@ -97,3 +97,50 @@ to add the product to that Item without a full re-link (see §3). Then a `plaid-
 3. Merchant connects their bank (creates a `plaid_items` row with statements consent).
 4. `plaid-pull` lists + downloads the statement PDFs (already coded; grabs the most recent 6 → covers 4 months) and
    runs the underwriter.
+
+---
+
+## 6. OAuth institution enablement (dashboard snapshot, 2026-08-08)
+
+Source: `dashboard.plaid.com/activity/status/oauth-institutions`. **Plaid exposes no API for this** — per-bank OAuth
+approval is dashboard-only, so this is a recorded snapshot, not a live read. It is mirrored into
+`platform_settings.plaid_status.oauth_institutions` (`{ enabled[], request_needed[], as_of, source }`) and rendered
+on `/admin/plaid` and the System Monitor Plaid card, both explicitly labelled "as of <date>".
+
+**✅ Enabled (11)** — merchants at these banks can complete the OAuth connect flow:
+
+American Express · Bank of America · Bank of America Private Bank · Capital One · Chase · Citibank Online ·
+Merrill · Merrill Lynch – Benefits · Navy Federal Credit Union · PNC · U.S. Bank
+
+**🟡 Request needed (2)** — not yet approved for our account; a merchant banking there hits the
+`OAUTH_BLOCKED_MESSAGE` fallback in `_shared/plaid.ts` and is steered to the secure upload link instead:
+
+Charles Schwab · Fidelity
+
+**Why it matters:** OAuth banks (the Chase/BofA class) cannot be connected with credentials — Plaid must have our
+account approved for that specific institution. An unapproved OAuth bank fails at Link time, not at pull time.
+Re-check the dashboard page and update `as_of` whenever the list changes.
+
+---
+
+## 7. Admin surfaces for Plaid (built 2026-08-08)
+
+- **`/admin/plaid`** (super_admin) — the Plaid control room. Live: API reachability, vault key **presence** (never
+  values), connected-bank count, environment. Snapshot: product access, OAuth enablement (§6). Plus a live search of
+  Plaid's US institution directory (~10,000 institutions) showing each one's OAuth flag + supported products.
+- **`/admin/settings/integrations`** — `PlaidStatusPanel`, the *editable* recorded ledger (product statuses/dates,
+  `keys_rotated_at`, notes). `/admin/plaid` is read-only and links here rather than duplicating the editor.
+- **`/admin/system`** — the System Monitor now renders a Plaid card from the `plaid` section of
+  `system-health-check`'s response: `api_reachable`, `env`, `products_enabled`, `connected_items`,
+  `oauth_enabled_count`, `oauth_request_needed`, `keys_rotated_at`. Green when the API is reachable **and** both
+  Statements and Transactions are enabled; amber notes for request-needed banks and the never-rotated production key.
+- **Edge function `plaid-institutions`** (`verify_jwt = false`; in-code staff-JWT **or** `?secret=` gate, same pattern
+  as `plaid-pull`). Actions:
+  - `{ action:'search', query, products?, count? }` → `/institutions/search` (US)
+  - `{ action:'list', count?, offset? }` → `/institutions/get` (US, `include_optional_metadata`) + `total`
+  - `{ action:'status' }` → the integration health snapshot, built by `buildPlaidHealth()` in `_shared/plaid.ts` —
+    the **single** builder that `system-health-check` also uses, so the two surfaces can never drift.
+  Institution results are shaped to `{ institution_id, name, oauth, products[], logo, url }`.
+
+*Verified live 2026-08-08: `status` → api_reachable true, 6 products enabled, 0 connected items, 11 OAuth banks;
+`list` → 10,032 US institutions; `search "chase"` → Chase (`ins_56`, oauth true).*

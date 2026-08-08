@@ -128,6 +128,72 @@ export async function getPlaidLiveCounts(): Promise<PlaidLiveCounts> {
   };
 }
 
+// ── Live integration health + institution directory (via the plaid-institutions
+// edge function). The browser can never read the vault, so key PRESENCE and the
+// API-reachability probe have to come from the server. Everything here is either a
+// live probe or a recorded snapshot that the UI labels as such — never invented.
+
+export interface PlaidHealth {
+  api_reachable: boolean | null;
+  env: "production" | "sandbox";
+  products_enabled: string[];
+  products: Record<string, { status?: string; date?: string | null }>;
+  statements_enabled: boolean;
+  connected_items: number;
+  oauth_enabled: string[];
+  oauth_enabled_count: number;
+  oauth_request_needed: string[];
+  oauth_as_of: string | null;
+  oauth_source: string | null;
+  keys_present: { client_id: boolean; secret_production: boolean; secret_sandbox: boolean };
+  keys_rotated_at: string | null;
+}
+
+export interface PlaidInstitution {
+  institution_id: string;
+  name: string;
+  oauth: boolean;
+  products: string[];
+  logo: string | null;
+  url: string | null;
+}
+
+/** Invoke plaid-institutions and surface a real error message (invoke() hides the
+ * response body on non-2xx, so we re-read it from the FunctionsHttpError context). */
+async function callPlaidInstitutions<T>(body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await supabase.functions.invoke("plaid-institutions", { body });
+  if (error) {
+    let detail = error.message;
+    const ctx = (error as { context?: Response }).context;
+    if (ctx && typeof ctx.text === "function") {
+      try {
+        const txt = await ctx.text();
+        const parsed = JSON.parse(txt) as { error?: string };
+        if (parsed?.error) detail = parsed.error;
+      } catch { /* keep the generic message */ }
+    }
+    throw new Error(detail);
+  }
+  const res = data as { ok?: boolean; error?: string } | null;
+  if (!res || res.ok !== true) throw new Error(res?.error ?? "plaid-institutions returned no data");
+  return res as T;
+}
+
+/** Live integration health: env, vault key presence, products, OAuth banks, items. */
+export async function getPlaidHealth(): Promise<PlaidHealth> {
+  const res = await callPlaidInstitutions<{ plaid: PlaidHealth }>({ action: "status" });
+  return res.plaid;
+}
+
+/** Search Plaid's US institution directory (~10k). Empty query returns nothing —
+ * the caller guards, and this keeps us from firing a pointless API call. */
+export async function searchInstitutions(query: string, count = 25): Promise<PlaidInstitution[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const res = await callPlaidInstitutions<{ institutions: PlaidInstitution[] }>({ action: "search", query: q, count });
+  return res.institutions ?? [];
+}
+
 export interface PlaidRemediationItem {
   id: string;
   label: string;

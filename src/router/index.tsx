@@ -115,6 +115,7 @@ const LeadImportPage = lazyWithReload(() => import("../pages/admin/LeadImportPag
 const ReferralPartnersPage = lazyWithReload(() => import("../pages/admin/ReferralPartnersPage.tsx"));
 const SyncLogPage = lazyWithReload(() => import("../pages/admin/SyncLogPage.tsx"));
 const SystemHealthPage = lazyWithReload(() => import("../pages/admin/SystemHealthPage.tsx"));
+const PlaidPage = lazyWithReload(() => import("../pages/admin/PlaidPage.tsx"));
 const FunderContactsPage = lazyWithReload(() => import("../pages/admin/FunderContactsPage.tsx"));
 const PlatformConfigPage = lazyWithReload(() => import("../pages/admin/PlatformConfigPage.tsx"));
 const UnderwritingSettingsPage = lazyWithReload(() => import("../pages/admin/UnderwritingSettingsPage.tsx"));
@@ -759,6 +760,13 @@ export const routes: RouteObject[] = [
                 path: "system",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <SystemHealthPage /> }],
+              },
+              // Plaid control room — credentials, product access, OAuth banks,
+              // institution directory (super_admin only; reads the vault via an edge fn)
+              {
+                path: "plaid",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <PlaidPage /> }],
               },
               // Funder-reply reconciler — associate funder replies with lenders (admin + super_admin)
               {

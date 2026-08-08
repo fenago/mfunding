@@ -286,6 +286,11 @@ verify_jwt = false
 [functions.plaid-pull]
 verify_jwt = false
 
+# plaid-institutions: staff institution lookup + the integration health snapshot.
+# Same in-code gate as plaid-pull (staff JWT OR ?secret=) so cron/server callers work.
+[functions.plaid-institutions]
+verify_jwt = false
+
 # plaid-mint-link: staff-only textable connect link. verify_jwt = true + in-code role check.
 [functions.plaid-mint-link]
 verify_jwt = true

@@ -117,6 +117,99 @@ export async function plaidFetch<T = Record<string, unknown>>(
   return { ok: true, status: res.status, data: parsed as T };
 }
 
+// ── Integration health snapshot ───────────────────────────────────────────────
+// One shape, two consumers: system-health-check embeds it as its `plaid` section,
+// and plaid-institutions (action:'status') serves it to /admin/plaid + the System
+// Monitor card. Built here so the two can never drift.
+//
+// HONESTY: `api_reachable` is a LIVE probe result. Everything under `products` /
+// `oauth_*` is a RECORDED dashboard snapshot (platform_settings.plaid_status) — Plaid
+// exposes no API for either — so the shape carries `oauth_as_of` + `oauth_source` and
+// the UI must label it as such. Key presence is presence ONLY; values never leave here.
+
+export interface PlaidHealth {
+  api_reachable: boolean | null; // null = not probed on this call
+  env: PlaidEnv;
+  products_enabled: string[];
+  products: Record<string, { status?: string; date?: string | null }>;
+  statements_enabled: boolean;
+  connected_items: number;
+  oauth_enabled: string[];
+  oauth_enabled_count: number;
+  oauth_request_needed: string[];
+  oauth_as_of: string | null;
+  oauth_source: string | null;
+  keys_present: { client_id: boolean; secret_production: boolean; secret_sandbox: boolean };
+  keys_rotated_at: string | null;
+}
+
+interface PlaidStatusRecord {
+  products?: Record<string, { status?: string; date?: string | null }>;
+  keys_rotated_at?: string | null;
+  oauth_institutions?: { enabled?: string[]; request_needed?: string[]; as_of?: string | null; source?: string | null };
+}
+
+/** Assemble the Plaid integration health snapshot. Never throws — a failure in any
+ * one source degrades that field (false/0/[]) rather than the whole call.
+ *
+ * `apiReachable`: pass an already-known probe result to avoid a second Plaid call
+ * (system-health-check does this); pass undefined to probe here; pass null to skip. */
+export async function buildPlaidHealth(
+  db: SupabaseClient,
+  apiReachable?: boolean | null,
+): Promise<PlaidHealth> {
+  const settings = await getPlaidSettings(db).catch(() => ({
+    environment: "production" as PlaidEnv, products: ["transactions"], statements_enabled: true,
+  }));
+
+  const { data: statusRow } = await db.from("platform_settings").select("value").eq("key", "plaid_status").maybeSingle();
+  const status = (statusRow?.value ?? {}) as PlaidStatusRecord;
+  const products = status.products ?? {};
+  const oauth = status.oauth_institutions ?? {};
+  const oauthEnabled = Array.isArray(oauth.enabled) ? oauth.enabled : [];
+  const oauthNeeded = Array.isArray(oauth.request_needed) ? oauth.request_needed : [];
+
+  const { count } = await db.from("plaid_items").select("id", { count: "exact", head: true });
+
+  // Vault presence only — the RPC returns the real values, which we immediately
+  // reduce to booleans and never propagate.
+  let keys = { client_id: false, secret_production: false, secret_sandbox: false };
+  try {
+    const { data } = await db.rpc("get_plaid_config");
+    const d = (data ?? {}) as Record<string, unknown>;
+    keys = {
+      client_id: typeof d.client_id === "string" && d.client_id.length > 0,
+      secret_production: typeof d.secret_production === "string" && d.secret_production.length > 0,
+      secret_sandbox: typeof d.secret_sandbox === "string" && d.secret_sandbox.length > 0,
+    };
+  } catch { /* leave all false — the UI renders that as a red "missing" state */ }
+
+  let reachable: boolean | null = apiReachable ?? null;
+  if (apiReachable === undefined) {
+    try {
+      const cfg = await getPlaidConfig(db, settings.environment);
+      const res = await plaidFetch(cfg, "/institutions/get", { count: 1, offset: 0, country_codes: ["US"] });
+      reachable = res.ok;
+    } catch { reachable = false; }
+  }
+
+  return {
+    api_reachable: reachable,
+    env: settings.environment,
+    products_enabled: Object.entries(products).filter(([, v]) => v?.status === "enabled").map(([k]) => k).sort(),
+    products,
+    statements_enabled: settings.statements_enabled,
+    connected_items: count ?? 0,
+    oauth_enabled: oauthEnabled,
+    oauth_enabled_count: oauthEnabled.length,
+    oauth_request_needed: oauthNeeded,
+    oauth_as_of: oauth.as_of ?? null,
+    oauth_source: oauth.source ?? null,
+    keys_present: keys,
+    keys_rotated_at: status.keys_rotated_at ?? null,
+  };
+}
+
 /** Plaid error codes that mean "this institution needs Full Production / OAuth we
  * don't have yet". On Limited Production, OAuth (Chase/BofA-class) banks fail here. */
 const OAUTH_BLOCKED_CODES = new Set([

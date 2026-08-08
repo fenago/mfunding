@@ -8,6 +8,7 @@ import {
   SignalSlashIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
+import { getPlaidHealth, type PlaidHealth } from "@/services/plaidStatusService";
 
 // ── Types (mirror the live DB contract) ──────────────────────────────────────
 type Status = "up" | "degraded" | "down";
@@ -131,6 +132,119 @@ function fmtDuration(ms: number): string {
   return remH ? `${d}d ${remH}h` : `${d}d`;
 }
 
+// ── Plaid detail card ─────────────────────────────────────────────────────────
+// The plaid UP/DOWN tile above answers "is the API reachable". This card answers the
+// question that actually blocks funding: "can a merchant at their bank connect, and
+// will we get statements?" Source: the `plaid` section of system-health-check (and the
+// same builder via plaid-institutions on first load) — never hardcoded here.
+//
+// Product/OAuth facts are a recorded dashboard snapshot (Plaid has no API for them),
+// so the card says so and prints the "as of" date rather than implying a live read.
+function PlaidHealthCard({ health, error }: { health: PlaidHealth | null; error: string | null }) {
+  if (error) {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-red-200 dark:border-red-900/50 p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <ExclamationTriangleIcon className="w-5 h-5 text-red-500" />
+          <h2 className="font-bold text-gray-900 dark:text-white">Plaid (bank connection)</h2>
+        </div>
+        <p className="text-sm text-red-600 dark:text-red-400">Could not read the Plaid integration detail.</p>
+        <p className="text-xs text-gray-400 font-mono mt-1 break-all">{error}</p>
+      </div>
+    );
+  }
+  if (!health) {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+        <h2 className="font-bold text-gray-900 dark:text-white mb-1">Plaid (bank connection)</h2>
+        <p className="text-sm text-gray-400">Loading Plaid integration detail…</p>
+      </div>
+    );
+  }
+
+  const enabled = new Set(health.products_enabled);
+  const coreOk = enabled.has("statements") && enabled.has("transactions");
+  const pill: Status = health.api_reachable === false ? "down" : coreOk ? "up" : "degraded";
+  const notes: string[] = [];
+  if (health.api_reachable === false) notes.push("Plaid API is not responding — check the credentials in the vault.");
+  if (!enabled.has("transactions")) notes.push("Transactions is not enabled — bank-history pulls will fail.");
+  if (!enabled.has("statements")) notes.push("Statements is not enabled — statement PDFs won't reach the underwriter.");
+  if (health.oauth_request_needed.length > 0) {
+    notes.push(
+      `OAuth access not yet requested for ${health.oauth_request_needed.join(", ")} — merchants banking there fall back to the upload link.`,
+    );
+  }
+  if (!health.keys_rotated_at) notes.push("Production secret has never been rotated — rotate it in the Plaid dashboard.");
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-bold text-gray-900 dark:text-white">Plaid (bank connection)</h2>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            Product + OAuth rows are a Plaid-dashboard snapshot
+            {health.oauth_as_of ? ` as of ${health.oauth_as_of}` : ""} — Plaid exposes no API for them. The API check is live.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-wide ${PILL[pill]}`}>
+            {pill === "up" ? "healthy" : pill === "degraded" ? "attention" : "down"}
+          </span>
+          <a href="/admin/plaid" className="text-xs text-ocean-blue hover:underline whitespace-nowrap">
+            Open Plaid →
+          </a>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div>
+          <div className="text-xs text-gray-400">API</div>
+          <div className="font-semibold text-gray-900 dark:text-white">
+            {health.api_reachable === true ? "Reachable" : health.api_reachable === false ? "Unreachable" : "Not probed"}
+            <span className="text-gray-400 font-normal"> · {health.env}</span>
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-gray-400">Connected banks</div>
+          <div className="font-semibold text-gray-900 dark:text-white">{health.connected_items}</div>
+        </div>
+        <div>
+          <div className="text-xs text-gray-400">Products enabled</div>
+          <div className="font-semibold text-gray-900 dark:text-white">{health.products_enabled.length}</div>
+        </div>
+        <div>
+          <div className="text-xs text-gray-400">OAuth banks enabled</div>
+          <div className="font-semibold text-gray-900 dark:text-white">{health.oauth_enabled_count}</div>
+        </div>
+      </div>
+
+      {health.products_enabled.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {health.products_enabled.map((p) => (
+            <span
+              key={p}
+              className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+            >
+              {p}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {notes.length > 0 && (
+        <div className="text-xs rounded-lg px-3 py-2 bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:border-amber-900/40 space-y-1">
+          {notes.map((n) => (
+            <div key={n} className="flex gap-2">
+              <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>{n}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Status colors ─────────────────────────────────────────────────────────────
 const PILL: Record<Status, string> = {
   up: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
@@ -184,9 +298,16 @@ export default function SystemHealthPage() {
   const [window, setWindow] = useState<Window>("24h");
   const [running, setRunning] = useState(false);
   const [runMsg, setRunMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [plaid, setPlaid] = useState<PlaidHealth | null>(null);
+  const [plaidError, setPlaidError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    // Plaid detail comes from the same builder system-health-check uses; fetched
+    // separately so the card is populated on page load, not only after a manual run.
+    getPlaidHealth()
+      .then((h) => { setPlaid(h); setPlaidError(null); })
+      .catch((e: unknown) => { setPlaid(null); setPlaidError(e instanceof Error ? e.message : String(e)); });
     const sevenDaysAgo = new Date(Date.now() - WINDOW_MS["7d"]).toISOString();
     const [stateRes, checkRes, incidentRes] = await Promise.all([
       supabase
@@ -242,6 +363,10 @@ export default function SystemHealthPage() {
           .order("opened_at", { ascending: false })
           .limit(20),
       ]);
+      // The run returns a fresh `plaid` section — prefer it over the on-load fetch.
+      const plaidSection = (data as { plaid?: PlaidHealth | null } | null)?.plaid;
+      if (plaidSection) { setPlaid(plaidSection); setPlaidError(null); }
+
       const fresh = (stateRes.data || []) as HealthState[];
       setStates(fresh);
       setChecks((checkRes.data || []) as HealthCheck[]);
@@ -391,6 +516,9 @@ export default function SystemHealthPage() {
           })}
         </div>
       )}
+
+      {/* ── Plaid integration detail ─────────────────────────────────────────── */}
+      <PlaidHealthCard health={plaid} error={plaidError} />
 
       {/* ── Uptime history ───────────────────────────────────────────────────── */}
       {sortedStates.length > 0 && (
