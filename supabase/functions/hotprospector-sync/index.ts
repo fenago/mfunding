@@ -120,7 +120,18 @@ function results(o: Record<string, unknown>): Record<string, unknown>[] {
   return [];
 }
 
-interface SpeedStat { total: number; samples: number; calls: number }
+interface SpeedStat { total: number; samples: number; calls: number; transfers: number }
+
+/** Coerce a reported spam flag. Returns null (NOT false) when the API said
+ * nothing recognizable — "we don't know" must never render as "clean". */
+function bool(v: unknown): boolean | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "boolean") return v;
+  const s = String(v).trim().toLowerCase();
+  if (["true", "1", "yes", "y", "spam", "flagged"].includes(s)) return true;
+  if (["false", "0", "no", "n", "clean", "ok", "healthy"].includes(s)) return false;
+  return null;
+}
 
 /** Normalize a member's `dispositionStatus` into [{disposition, cnt}].
  * Shape is UNVERIFIED against live data (the account has no campaigns yet — see
@@ -271,9 +282,12 @@ Deno.serve(async (req) => {
       const who = (str(pick(r, "caller_name", "agent_name", "user_name")) ?? "").toLowerCase();
       if (!who) continue;
       const stl = num(r.speed_to_lead);
-      const cur = speedByName.get(who) ?? { total: 0, samples: 0, calls: 0 };
+      const cur = speedByName.get(who) ?? { total: 0, samples: 0, calls: 0, transfers: 0 };
       cur.calls++;
       if (stl !== null && stl >= 0) { cur.total += stl; cur.samples++; }
+      // Transfers feed the "appts + transfers" KPI — HP's dashboard object has
+      // no transfer count, but every call-log row carries transfer: "Yes"/"No".
+      if (String(pick(r, "transfer") ?? "").trim().toLowerCase() === "yes") cur.transfers++;
       speedByName.set(who, cur);
     }
     const hasMore = body.has_more === true || String(body.has_more) === "true";
@@ -330,6 +344,8 @@ Deno.serve(async (req) => {
 
       avg_speed_to_lead: speed && speed.samples > 0 ? speed.total / speed.samples : null,
       speed_to_lead_samples: speed ? speed.samples : null,
+      // NULL, not 0, when the call log couldn't be read — unknown is not zero.
+      transfers: callLogFailed ? null : (speed?.transfers ?? 0),
 
       raw: a,
       synced_at: now,
@@ -420,6 +436,48 @@ Deno.serve(async (req) => {
     dispositionRows += rows.length;
   }
 
+  // ── Number health (caller-ID spam reputation) ──────────────────────────────
+  // Current state, not per-day: refresh the whole set each run. A burned
+  // "Scam Likely" number destroys connect rate across the entire floor, so this
+  // drives a top-of-page alert. Field names are read through alias lists because
+  // the row shape is unverified (no numbers on the account yet).
+  let numbersSynced: number | null = null;
+  let numbersFlagged: number | null = null;
+  const nhRes = await hotProspectorRequest(token, "GetNumberHealthList", { page: 1, per_page: 200 }, 20000);
+  if (!nhRes.ok) {
+    warnings.push(`GetNumberHealthList HTTP ${nhRes.status} (number health not refreshed)`);
+  } else {
+    const nhBody = unwrap(nhRes.data);
+    const nhRows = results(nhBody);
+    const numberUpserts = nhRows.map((n) => {
+      const spam = bool(pick(n, "is_spam_detected", "isSpamDetected", "spam_detected", "is_spam", "spam"));
+      return {
+        phone: str(pick(n, "phone", "number", "phone_number", "phoneNumber", "did")) ?? "unknown",
+        friendly_name: str(pick(n, "friendly_name", "friendlyName", "name", "label")),
+        is_spam_detected: spam,
+        status: str(pick(n, "status", "health", "health_status", "reputation")),
+        carrier_status: (pick(n, "carrier_status", "carrierStatus", "carriers", "carrier") ?? {}) as unknown,
+        last_checked: str(pick(n, "last_checked", "lastChecked", "checked_at", "updated_at")),
+        raw: n,
+        synced_at: now,
+      };
+    }).filter((n) => n.phone !== "unknown");
+
+    if (numberUpserts.length > 0) {
+      const { error: nhErr } = await db
+        .from("hotprospector_number_health")
+        .upsert(numberUpserts, { onConflict: "phone" });
+      if (nhErr) {
+        return json({ ok: false, stage: "upsert_number_health", error: nhErr.message }, 500);
+      }
+    }
+    if (nhRows.length > 0 && numberUpserts.length === 0) {
+      warnings.push(`GetNumberHealthList returned ${nhRows.length} rows but none had a recognizable phone field`);
+    }
+    numbersSynced = numberUpserts.length;
+    numbersFlagged = numberUpserts.filter((n) => n.is_spam_detected === true).length;
+  }
+
   const { error: acctErr } = await db
     .from("hotprospector_account_daily")
     .upsert({
@@ -462,6 +520,8 @@ Deno.serve(async (req) => {
     calls_logged: callLogFailed ? null : callsLogged,
     campaigns_pulled: campaignsPulled,
     disposition_rows: dispositionRows,
+    numbers_synced: numbersSynced,
+    numbers_flagged_spam: numbersFlagged,
     dashboard_message: dashMessage,
     dashboard_last_updated: dashLastUpdated,
     warnings,
