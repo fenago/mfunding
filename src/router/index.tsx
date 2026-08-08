@@ -101,6 +101,7 @@ const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/Lea
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
 const FunderMatrixPage = lazyWithReload(() => import("../pages/admin/FunderMatrixPage.tsx"));
 const LenderCatalogPage = lazyWithReload(() => import("../pages/admin/LenderCatalogPage.tsx"));
+const FunderCheatSheetPage = lazyWithReload(() => import("../pages/admin/FunderCheatSheetPage.tsx"));
 const EmailPage = lazyWithReload(() => import("../pages/admin/EmailPage.tsx"));
 const ColdEmailPlannerPage = lazyWithReload(() => import("../pages/admin/ColdEmailPlannerPage.tsx"));
 const UnitEconomicsVCFPage = lazyWithReload(() => import("../pages/admin/UnitEconomicsVCFPage.tsx"));
@@ -502,6 +503,15 @@ export const routes: RouteObject[] = [
                 path: "lender-catalog",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <LenderCatalogPage /> }],
+              },
+              // Funder Cheat Sheet — the deal-matching reference every closer
+              // works off. NO extra guard on purpose: AdminProtectedRoute's
+              // isStaff check (closer + employee + admin + super_admin) is
+              // exactly the audience. Merchants (role `user`) fail isStaff and
+              // are bounced to "/" before this renders.
+              {
+                path: "cheat-sheet",
+                element: <FunderCheatSheetPage />,
               },
               // Cold-email (Instantly) dashboard + strategy (admins + super_admin)
               {

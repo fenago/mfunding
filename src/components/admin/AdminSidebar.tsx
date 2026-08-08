@@ -44,6 +44,7 @@ import {
   RectangleStackIcon,
   HeartIcon,
   BeakerIcon,
+  PuzzlePieceIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -81,6 +82,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/resources",
   "/admin/docs", // 📚 how the business + the product work — closers read the functional set
   "/admin/strategy", // 💡 sales doctrine — closers NEED the training
+  "/admin/cheat-sheet", // 🎯 Funder Cheat Sheet — deal-matching reference, every staff role
   "/admin/closer-comp", // their comp offer sheet + payout calculator (OPS)
   "/admin/closer-docs", // 📝 their onboarding paperwork — they have to read + e-sign it
   "/admin/my-earnings", // 💰 their own commissions + projected pipeline (OPS)
@@ -127,6 +129,10 @@ const navGroups: NavGroup[] = [
       { name: "UCC Machine", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
+      // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
+      // (every staff role, closers included) and in the closer lens: it's the
+      // reference they work off on every submission.
+      { name: "Funder Cheat Sheet", path: "/admin/cheat-sheet", icon: PuzzlePieceIcon, roles: OPS },
       { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
       // Directly under Lenders — owner-specified order.
       { name: "Lender Catalog", path: "/admin/lender-catalog", icon: RectangleStackIcon, roles: ADMIN },
