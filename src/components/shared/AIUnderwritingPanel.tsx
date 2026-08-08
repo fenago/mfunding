@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, ReferenceLine,
 } from "recharts";
@@ -13,6 +14,7 @@ import {
   type UWPosition, type UWEndedPosition, type UWOtherObligation,
   type UWTimelineRow, type UWRemainingPosition, type UWRefi, type UWRefiTerm,
   type UWVelocityRow, type UWPositionAnomaly, type UWProvenance,
+  type UWProfile, type UWRecommendedFunder,
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -454,6 +456,23 @@ function ResultView({ r }: { r: DealUnderwriting }) {
         </div>
       </div>
 
+      {/* Merchant profile + the deal→funder shortlist. Sits directly under the
+          verdict because "what is this file, and who buys it" is the payoff.
+          Runs stored before the profiler shipped have no profile — hint only. */}
+      {m.profile ? (
+        <>
+          <MerchantProfileSection p={m.profile} />
+          <RecommendedFundersSection
+            funders={m.profile.recommended_funders ?? []}
+            note={m.profile.recommended_funders_note ?? null}
+          />
+        </>
+      ) : (
+        <p className="text-xs text-gray-400">
+          This run predates the merchant profiler — re-run underwriting to get the paper tier and funder shortlist.
+        </p>
+      )}
+
       {/* Affordability — the headline read, directly under the verdict */}
       {m.affordability && <AffordabilitySection a={m.affordability} />}
 
@@ -660,6 +679,270 @@ function ResultView({ r }: { r: DealUnderwriting }) {
             </table>
           </div>
         </details>
+      )}
+    </div>
+  );
+}
+
+// ── Merchant profile — what this file IS, in the cheat sheet's language ──────
+// Deliberately shares the /admin/cheat-sheet semantics: A=green, B=blue, C=amber,
+// D=red for paper; mint/accent for the consolidation lane; gold for debt relief.
+// A closer reading the panel and the cheat sheet must see ONE colour system.
+const PAPER_TILE: Record<string, string> = {
+  A: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 ring-emerald-300/70 dark:ring-emerald-700/70",
+  B: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 ring-blue-300/70 dark:ring-blue-700/70",
+  C: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 ring-amber-300/70 dark:ring-amber-700/70",
+  D: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300 ring-rose-300/70 dark:ring-rose-700/70",
+};
+const PAPER_TEXT: Record<string, string> = {
+  A: "text-emerald-700 dark:text-emerald-300",
+  B: "text-blue-700 dark:text-blue-300",
+  C: "text-amber-700 dark:text-amber-300",
+  D: "text-rose-700 dark:text-rose-300",
+};
+const PAPER_MEANING: Record<string, string> = {
+  A: "clean file — best pricing, longest terms",
+  B: "solid file with a blemish or a position",
+  C: "stacked or stressed — priced accordingly",
+  D: "high risk — only the D-paper desks will look",
+};
+const SIZE_BUCKET_LABEL: Record<string, string> = {
+  micro: "Micro", small_mid: "Small–mid", mid_large: "Mid–large", jumbo: "Jumbo",
+};
+const PRODUCT_LABEL: Record<string, string> = {
+  mca: "MCA",
+  term_loan: "Term loan",
+  line_of_credit: "Line of credit",
+  sba_loan: "SBA",
+  real_estate_cre: "Real estate / CRE",
+  equipment_financing: "Equipment",
+  invoice_factoring: "Factoring",
+};
+const humanize = (s: string) => s.replace(/_/g, " ");
+const productLabel = (s: string) => PRODUCT_LABEL[s] ?? humanize(s);
+
+function MerchantProfileSection({ p }: { p: UWProfile }) {
+  const tier = p.paper_tier;
+  const tile = PAPER_TILE[tier] ?? PAPER_TILE.C;
+  const because = p.paper_tier_ceiling_because ?? [];
+  const basisNote =
+    p.paper_tier_basis === "fico_and_cashflow"
+      ? `FICO-based${p.fico_low != null ? ` — ${p.fico_low} low` : ""}`
+      : p.paper_tier_basis === "cashflow_inferred"
+        ? "cash-flow inferred — no credit pulled"
+        : null;
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Merchant profile</h4>
+        <span className="text-xs text-gray-400">what this file is — same grades as the cheat sheet</span>
+      </div>
+
+      <div className="flex flex-wrap items-start gap-5">
+        {/* Paper tier — the headline grade */}
+        <div className="flex items-center gap-3">
+          <div className={`w-14 h-14 rounded-xl ring-2 flex items-center justify-center text-3xl font-extrabold shrink-0 ${tile}`}>
+            {tier}
+          </div>
+          <div className="min-w-0">
+            <div className={`text-base font-bold ${PAPER_TEXT[tier] ?? ""}`}>{tier} paper</div>
+            {basisNote && <div className="text-xs text-gray-500 dark:text-gray-400">({basisNote})</div>}
+            <div className="text-xs text-gray-400">{PAPER_MEANING[tier] ?? ""}</div>
+          </div>
+        </div>
+
+        {/* Size bucket */}
+        {p.size_bucket && (
+          <div className="min-w-0">
+            <div className="text-xs uppercase tracking-wide text-gray-400">Size tier</div>
+            <div className="text-base font-bold text-gray-900 dark:text-white">
+              {SIZE_BUCKET_LABEL[p.size_bucket] ?? humanize(p.size_bucket)}
+              {p.size_basis_amount != null && p.size_basis_amount > 0 && (
+                <span className="ml-1.5 text-sm font-normal text-gray-500 dark:text-gray-400">
+                  {money(p.size_basis_amount)}
+                </span>
+              )}
+            </div>
+            {p.size_basis && (
+              <div className="text-xs text-gray-500 dark:text-gray-400 max-w-xs">{p.size_basis}</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Status badges — the ground truth a closer scans for */}
+      <div className="flex flex-wrap gap-2 mt-4">
+        {p.positions != null && (
+          <span className={`inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full ${
+            p.positions >= 3
+              ? "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300"
+              : p.positions > 0
+                ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+                : "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+          }`}>
+            {p.positions} open position{p.positions === 1 ? "" : "s"}
+          </span>
+        )}
+        {p.consolidation_candidate && (
+          <span className="inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+            🔗 Consolidation candidate
+          </span>
+        )}
+        {p.debt_relief_candidate && (
+          <span className="inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300">
+            🛟 Debt relief candidate
+          </span>
+        )}
+        {p.fast_track && (
+          <span className="inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300">
+            ⚡ Fast-track
+          </span>
+        )}
+      </div>
+
+      {/* Product signals */}
+      {p.product_signals && p.product_signals.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mt-3">
+          <span className="text-xs uppercase tracking-wide text-gray-400 mr-1">Products in play</span>
+          {p.product_signals.map((s) => (
+            <span key={s} className="inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded-md bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+              {productLabel(s)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Plain-English why */}
+      {p.profile_reason && (
+        <p className="mt-3 text-sm text-gray-700 dark:text-gray-300 leading-relaxed">{p.profile_reason}</p>
+      )}
+
+      {/* What pinned the ceiling — folded, because it's evidence, not the answer */}
+      {because.length > 0 && (
+        <details className="mt-3 group">
+          <summary className="flex items-center gap-1.5 cursor-pointer list-none text-xs font-medium text-gray-500 dark:text-gray-400">
+            <ChevronDownIcon className="w-4 h-4 text-gray-400 group-open:rotate-180 transition-transform" />
+            Why the grade can't go higher ({because.length})
+            {p.paper_tier_ai && p.paper_tier_ai !== tier && (
+              <span className="text-gray-400"> · AI read {p.paper_tier_ai}, capped to {tier}</span>
+            )}
+          </summary>
+          <div className="mt-2 space-y-1">
+            {because.map((b, i) => (
+              <div key={i} className="flex gap-2 text-xs text-gray-600 dark:text-gray-400">
+                <span className="text-gray-400 shrink-0">▸</span>
+                <span>{b}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// ── Send this deal to — the deterministic funder shortlist ───────────────────
+// Matched in CODE against lenders.category (the same payload /admin/cheat-sheet
+// reads), never named by the model. Ranked; each row carries WHY it matched so a
+// closer can sanity-check the play before submitting.
+function consoBadgeLabel(t: string): string {
+  return humanize(t).replace(/\//g, " / ").replace(/\s+/g, " ").trim();
+}
+// A reason that says "confirm" / "outside the band" / "not recorded" is a caveat,
+// not a match — tint it amber so it never reads as a green light.
+const isCaveat = (r: string) => /confirm|outside|not recorded/i.test(r);
+
+function FunderRow({ f, rank, canLink }: { f: UWRecommendedFunder; rank: number; canLink: boolean }) {
+  const reasons = (f.why_matched ?? "").split(";").map((r) => r.trim()).filter(Boolean);
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 border-l-mint-green p-3.5">
+      <div className="flex items-start gap-3">
+        <span className="shrink-0 w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs font-bold flex items-center justify-center mt-0.5">
+          {rank}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* /admin/lenders/:id is admin-only — a closer clicking it would be
+                bounced to "/", so they get the name as plain text. */}
+            {canLink ? (
+              <Link
+                to={`/admin/lenders/${f.lender_id}`}
+                className="font-semibold text-gray-900 dark:text-white hover:text-ocean-blue dark:hover:text-blue-300 hover:underline"
+              >
+                {f.company_name}
+              </Link>
+            ) : (
+              <span className="font-semibold text-gray-900 dark:text-white">{f.company_name}</span>
+            )}
+            {f.consolidation_type && (
+              <span className="inline-flex items-center px-2 py-0.5 text-[11px] font-semibold rounded-full bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300 uppercase tracking-wide">
+                {consoBadgeLabel(f.consolidation_type)}
+              </span>
+            )}
+            {f.relationship && (
+              <span className="text-[11px] uppercase tracking-wide text-gray-400">{humanize(f.relationship)}</span>
+            )}
+          </div>
+          {reasons.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {reasons.map((r, i) => (
+                <span
+                  key={i}
+                  className={`inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded-md ${
+                    isCaveat(r)
+                      ? "bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300"
+                  }`}
+                >
+                  {r}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecommendedFundersSection({
+  funders, note,
+}: {
+  funders: UWRecommendedFunder[];
+  note: string | null;
+}) {
+  const { isAdmin, isSuperAdmin } = useUserProfile();
+  const canLink = isAdmin || isSuperAdmin;
+  // Nothing to show and nothing to explain — stay silent rather than render an
+  // empty shell (older/partial runs).
+  if (funders.length === 0 && !note) return null;
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900 dark:text-white">Send this deal to</h4>
+        <span className="text-xs text-gray-400">
+          {funders.length > 0
+            ? `${funders.length} live funder${funders.length === 1 ? "" : "s"}, ranked`
+            : "no match"}
+        </span>
+      </div>
+      {funders.length > 0 && (
+        <div className="space-y-3">
+          {funders.map((f, i) => (
+            <FunderRow key={f.lender_id} f={f} rank={i + 1} canLink={canLink} />
+          ))}
+        </div>
+      )}
+      {note && (
+        <p className={`text-sm text-gray-500 dark:text-gray-400 ${funders.length > 0 ? "mt-3" : ""}`}>{note}</p>
+      )}
+      {funders.length > 0 && (
+        <p className="mt-3 text-xs text-gray-400">
+          Matched in code against each funder's recorded box — the same data behind the{" "}
+          <Link to="/admin/cheat-sheet" className="text-ocean-blue hover:underline">funder cheat sheet</Link>.
+          Confirm the box with the rep before submitting.
+        </p>
       )}
     </div>
   );

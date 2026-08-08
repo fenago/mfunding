@@ -9,7 +9,7 @@ import {
 } from "../../services/underwritingService";
 import {
   getLatestUnderwriting, runUnderwriting,
-  type DealUnderwriting, type AffordabilityRating, type RiskRating,
+  type DealUnderwriting, type AffordabilityRating, type RiskRating, type UWProfile,
 } from "../../services/aiUnderwritingService";
 import { updateDealStatus } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -57,6 +57,59 @@ function verdictTone(aff: AffordabilityRating | null, risk: RiskRating | null): 
   if (aff === "tight")
     return "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20";
   return "border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20";
+}
+
+// Same semantic paper colors as /admin/cheat-sheet and the full underwriting
+// panel — A=green, B=blue, C=amber, D=red. One system across every surface.
+const PAPER_CHIP: Record<string, string> = {
+  A: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
+  B: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  C: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
+  D: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300",
+};
+
+// Compact profile strip: paper grade + the lane badges + who to send it to.
+// Everything is null-guarded — runs stored before the profiler have no profile.
+function ProfileStrip({ p }: { p: UWProfile }) {
+  const funders = p.recommended_funders ?? [];
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 mb-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`px-2 py-0.5 text-xs font-bold rounded-md ${PAPER_CHIP[p.paper_tier] ?? PAPER_CHIP.C}`}>
+          {p.paper_tier} paper
+        </span>
+        {p.positions != null && (
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            {p.positions} open position{p.positions === 1 ? "" : "s"}
+          </span>
+        )}
+        {p.consolidation_candidate && (
+          <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+            🔗 Consolidation
+          </span>
+        )}
+        {p.debt_relief_candidate && (
+          <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300">
+            🛟 Debt relief
+          </span>
+        )}
+        {p.fast_track && (
+          <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300">
+            ⚡ Fast-track
+          </span>
+        )}
+      </div>
+      {funders.length > 0 ? (
+        <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+          <span className="font-semibold text-gray-900 dark:text-white">Send to:</span>{" "}
+          {funders.slice(0, 3).map((f) => f.company_name).join(" · ")}
+          {funders.length > 3 && <span className="text-gray-400"> +{funders.length - 3} more</span>}
+        </div>
+      ) : p.recommended_funders_note ? (
+        <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">{p.recommended_funders_note}</div>
+      ) : null}
+    </div>
+  );
 }
 
 export default function UnderwritingCard({ deal, onDecision, onSeeFullAnalysis }: Props) {
@@ -200,6 +253,8 @@ export default function UnderwritingCard({ deal, onDecision, onSeeFullAnalysis }
               <span className="text-gray-500 dark:text-gray-400"> vs {money(m.amount_requested)} requested</span>
             </div>
           </div>
+
+          {ai.metrics?.profile && <ProfileStrip p={ai.metrics.profile} />}
 
           <div className={`px-3 py-1.5 rounded-lg text-sm font-semibold inline-block mb-3 ${REC_STYLE[rec]}`}>
             {rec === "approve" ? "Recommend: Submit" : rec === "review" ? "Manual Review" : "Recommend: Decline"}

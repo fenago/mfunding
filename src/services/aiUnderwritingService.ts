@@ -224,6 +224,46 @@ export interface UWOtherObligation {
   monthly: number;
 }
 
+// ── Merchant profile + deterministic funder shortlist ────────────────────────
+// Written by underwrite-deal onto metrics.profile. ADDITIVE — every run stored
+// before the profiler shipped has no `profile` key at all, so every field here
+// is optional and every consumer must null-guard.
+export type PaperTier = "A" | "B" | "C" | "D";
+export type SizeBucket = "micro" | "small_mid" | "mid_large" | "jumbo";
+
+export interface UWRecommendedFunder {
+  lender_id: string;
+  company_name: string;
+  relationship: string | null;
+  consolidation_type: string | null;
+  /** Semicolon-joined match reasons, straight from the scorer. */
+  why_matched: string;
+  score: number;
+}
+
+export interface UWProfile {
+  paper_tier: PaperTier;
+  /** Deterministic ceiling the AI call is clamped to (tier is the WORSE of the two). */
+  paper_tier_ceiling?: PaperTier;
+  paper_tier_ceiling_because?: string[];
+  paper_tier_ai?: PaperTier | null;
+  paper_tier_basis?: "fico_and_cashflow" | "cashflow_inferred";
+  fico_low?: number | null;
+  size_bucket?: SizeBucket;
+  /** Human sentence explaining what the size bucket was measured against. */
+  size_basis?: string;
+  size_basis_amount?: number;
+  positions?: number;
+  consolidation_candidate?: boolean;
+  debt_relief_candidate?: boolean;
+  product_signals?: string[];
+  fast_track?: boolean;
+  profile_reason?: string;
+  /** Ranked top 5, matched in code against lenders.category (never AI-named). */
+  recommended_funders?: UWRecommendedFunder[];
+  recommended_funders_note?: string | null;
+}
+
 export interface UWMetrics {
   reported_avg_monthly_revenue: number;
   true_avg_monthly_revenue: number;
@@ -288,6 +328,8 @@ export interface UWMetrics {
   // Data provenance — bank-feed (Plaid) vs statement-PDF months + cross-checks.
   // Additive; older runs lack it and the provenance UI hides.
   provenance?: UWProvenance;
+  // Merchant profile + the deal→funder shortlist (additive; older runs lack it).
+  profile?: UWProfile;
 }
 
 export interface UWPerStatement {
