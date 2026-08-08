@@ -208,16 +208,68 @@ async function checkSite(service: string, url: string): Promise<CheckResult> {
   }
 }
 
-/** Rough expected cadence (minutes) from a cron minute/hour field, for staleness. */
+// ── Schedule-aware cadence ────────────────────────────────────────────────────
+// The old version read only the minute + hour fields, so EVERY weekly job
+// ('0 3 * * 0') and the monthly one ('0 9 1 * *') were treated as DAILY and went
+// "stalled (overdue)" ~3 days after a perfectly on-time run. That single wrong
+// assumption produced 5 of the false-alarm incidents. Parse all five fields.
+
+/** How many values a cron field matches, over its `range` of possible values.
+ * Handles `*`, lists, ranges, and steps (`*​/5`, `1-30/2`). */
+function fieldCount(field: string, range: number): number {
+  if (!field || field === "*") return range;
+  let n = 0;
+  for (const part of field.split(",")) {
+    const [spec, stepRaw] = part.split("/");
+    const step = stepRaw ? Math.max(1, parseInt(stepRaw, 10) || 1) : 1;
+    let span = 1;
+    if (spec === "*" || spec === "") span = range;
+    else if (spec.includes("-")) {
+      const [a, b] = spec.split("-").map((x) => parseInt(x, 10));
+      span = Number.isFinite(a) && Number.isFinite(b) ? Math.max(1, b - a + 1) : 1;
+    }
+    n += Math.max(1, Math.ceil(span / step));
+  }
+  return Math.max(1, n);
+}
+
+/** Expected minutes between runs, from a full 5-field cron expression.
+ * `*​/5 * * * *`→5 · `4,19,34,49 * * * *`→15 · `7 * * * *`→60 · `20 7 * * *`→1440
+ * `0 3 * * 0`→10080 (weekly) · `0 9 1 * *`→~43800 (monthly) · `0 9 1 1,4,7,10 *`→~131500 */
 function expectedIntervalMin(schedule: string): number {
-  const parts = schedule.trim().split(/\s+/);
-  const min = parts[0] ?? "*";
-  const hour = parts[1] ?? "*";
-  if (min.startsWith("*/")) return Math.max(1, parseInt(min.slice(2), 10) || 5);
-  if (min.includes(",")) return Math.max(1, Math.round(60 / min.split(",").length));
-  // fixed minute: hourly if hour is wildcard, else daily.
-  if (hour === "*") return 60;
-  return 1440;
+  const p = schedule.trim().split(/\s+/);
+  if (p.length < 5) return 60; // unparseable — assume hourly, the old default
+  const [min, hour, dom, mon, dow] = p;
+
+  const runsPerMatchingDay = fieldCount(min, 60) * fieldCount(hour, 24);
+
+  // How many days apart are two matching DAYS? pg_cron/vixie: when both dom and
+  // dow are restricted the job runs on EITHER, so take the more frequent one.
+  let dayInterval: number;
+  const domFree = dom === "*";
+  const dowFree = dow === "*";
+  if (domFree && dowFree) dayInterval = 1;
+  else if (domFree) dayInterval = 7 / fieldCount(dow, 7);
+  else if (dowFree) dayInterval = 30.44 / fieldCount(dom, 31);
+  else dayInterval = Math.min(7 / fieldCount(dow, 7), 30.44 / fieldCount(dom, 31));
+
+  // A month restriction stretches the gap (quarterly = every 3rd month).
+  if (mon !== "*") dayInterval *= 12 / fieldCount(mon, 12);
+
+  return Math.max(1, Math.round((dayInterval * 1440) / runsPerMatchingDay));
+}
+
+/** Overdue threshold: generous on fast jobs (one skipped tick must not alarm),
+ * proportionally tighter on slow ones. 5-min→25m · hourly→190m · daily→~1.5d
+ * · weekly→~10.5d · monthly→~46d. */
+function overdueThresholdMin(intervalMin: number): number {
+  return intervalMin <= 60 ? intervalMin * 3 + 10 : intervalMin * 1.5 + 60;
+}
+
+function humanAge(minutes: number): string {
+  if (minutes < 90) return `${Math.round(minutes)}m`;
+  if (minutes < 2880) return `${(minutes / 60).toFixed(1)}h`;
+  return `${(minutes / 1440).toFixed(1)}d`;
 }
 
 interface CronRow {
@@ -226,34 +278,60 @@ interface CronRow {
   last_status: string | null;
   last_start: string | null;
   minutes_since_last: number | null;
+  last_success_at: string | null;
+  minutes_since_success: number | null;
+  minutes_since_first_seen: number | null;
   failures_last_hour: number | null;
+  window_days: number | null;
 }
 
 /** Dead-man switch over pg_cron: any active job that FAILED in the last hour = down;
- * any job that hasn't run in >3× its cadence (with slack) = degraded (stalled). */
+ * any job that hasn't SUCCEEDED within its own schedule (+ grace) = degraded.
+ *
+ * Staleness is measured against the last SUCCESSFUL run and against the job's own
+ * cadence — a weekly job two days after its Sunday run is healthy, not stalled.
+ * A job with no recorded run is only actionable when it should run at least daily;
+ * a brand-new weekly/monthly/quarterly job simply hasn't had its turn yet. */
 async function checkCron(db: SupabaseClient): Promise<CheckResult> {
   const svc = "cron";
-  const { data, error } = await db.rpc("system_cron_health");
-  if (error) return { service: svc, status: "down", http_status: null, latency_ms: null, detail: `cron health query failed: ${error.message}` };
+  const t0 = Date.now();
+  const { data, error } = await db.rpc("system_cron_health", { p_window_days: 14 });
+  const latency = Date.now() - t0;
+  if (error) {
+    // We could not READ the cron state — that is a blind spot, not evidence that
+    // cron is down. Reporting 'down' here is what produced the false outages.
+    return { service: svc, status: "degraded", http_status: null, latency_ms: latency, detail: `cron health query failed (probe blind, not a confirmed cron outage): ${error.message}` };
+  }
   const rows = (data ?? []) as CronRow[];
-  if (!rows.length) return { service: svc, status: "degraded", http_status: null, latency_ms: null, detail: "no active cron jobs found." };
+  if (!rows.length) return { service: svc, status: "degraded", http_status: null, latency_ms: latency, detail: "no active cron jobs found." };
 
   const failing = rows.filter((r) => (r.failures_last_hour ?? 0) > 0).map((r) => r.jobname);
-  const stalled = rows.filter((r) => {
-    const exp = expectedIntervalMin(r.schedule);
-    const since = r.minutes_since_last;
-    // Never ran at all, or way overdue. Slack: 3× cadence + 10 min.
-    if (since == null) return true;
-    return since > exp * 3 + 10;
-  }).map((r) => r.jobname);
+
+  const stalled: string[] = [];
+  for (const r of rows) {
+    const interval = expectedIntervalMin(r.schedule);
+    const threshold = overdueThresholdMin(interval);
+    const since = r.minutes_since_success ?? r.minutes_since_last;
+    if (since == null) {
+      // Never observed. Only meaningful for jobs due at least daily, and only once
+      // the job has existed long enough to have had a turn — a job scheduled ten
+      // minutes ago is not stalled, it is new.
+      const age = r.minutes_since_first_seen ?? 0;
+      if (interval <= 1440 && age > threshold) stalled.push(`${r.jobname} (no successful run recorded)`);
+      continue;
+    }
+    if (since > threshold) {
+      stalled.push(`${r.jobname} (${humanAge(since)} since success, expects every ${humanAge(interval)})`);
+    }
+  }
 
   if (failing.length) {
-    return { service: svc, status: "down", http_status: null, latency_ms: null, detail: `${failing.length} job(s) FAILED in the last hour: ${failing.slice(0, 6).join(", ")}.` };
+    return { service: svc, status: "down", http_status: null, latency_ms: latency, detail: `${failing.length} job(s) FAILED in the last hour: ${failing.slice(0, 6).join(", ")}.` };
   }
   if (stalled.length) {
-    return { service: svc, status: "degraded", http_status: null, latency_ms: null, detail: `${stalled.length} job(s) stalled (overdue): ${stalled.slice(0, 6).join(", ")}.` };
+    return { service: svc, status: "degraded", http_status: null, latency_ms: latency, detail: `${stalled.length} job(s) stalled (overdue): ${stalled.slice(0, 4).join("; ")}.` };
   }
-  return { service: svc, status: "up", http_status: null, latency_ms: null, detail: `${rows.length} scheduled job(s) healthy.` };
+  return { service: svc, status: "up", http_status: null, latency_ms: latency, detail: `${rows.length} scheduled job(s) healthy (each within its own schedule).` };
 }
 
 /** Pull a single Prometheus gauge value by metric name + a label substring match. */
@@ -526,8 +604,13 @@ Deno.serve(async (req) => {
       }, { onConflict: "service" });
       if (upErr) console.error("[system-health] state upsert failed", r.service, upErr.message);
 
-      // Incidents: open on entering a bad state, close on recovery.
+      // Incidents: open on entering a bad state, close on recovery. A bad→bad
+      // change (degraded↔down) supersedes the previous incident — close it first,
+      // otherwise a flapping service piles up open rows that never resolve.
       if (r.status !== "up") {
+        if (priorStatus && priorStatus !== "up") {
+          await db.from("system_health_incidents").update({ closed_at: nowIso }).eq("service", r.service).is("closed_at", null);
+        }
         await db.from("system_health_incidents").insert({ service: r.service, status: r.status, detail: r.detail, opened_at: nowIso });
       } else if (priorStatus && priorStatus !== "up") {
         await db.from("system_health_incidents").update({ closed_at: nowIso }).eq("service", r.service).is("closed_at", null);
