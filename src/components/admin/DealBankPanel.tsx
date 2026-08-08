@@ -142,10 +142,10 @@ export default function DealBankPanel({ dealId, customerId }: Props) {
             onClick={copyConnectLink}
             disabled={minting}
             className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Mint a secure Connect-Bank link and copy it — text it to the merchant so they connect their bank in ~60 seconds"
+            title="Mint a secure Connect-Bank link and copy it — text it to the merchant. One ~60-second connect verifies revenue AND pulls their last ~6 months of bank statements from the bank (where the bank supports it)."
           >
             <BanknotesIcon className="w-4 h-4" />
-            {minting ? "Creating link…" : "🔗 Copy connect link"}
+            {minting ? "Creating link…" : "🔗 Copy connect link — revenue + statements"}
           </button>
           {note && (
             <p
