@@ -129,6 +129,11 @@ const CSS = `
 type PaperTier = "A" | "B" | "C" | "D" | "all_credit";
 type LenderCategory = {
   relationship?: string | null;
+  // Some funders are worked in more than one mode — Giggle funds off its own
+  // book but the broker channel is a pure referral, ROK is a marketplace we
+  // refer to. Those rows carry the full set here; older rows only have the
+  // singular `relationship`. Always read both through relSet().
+  relationships?: string[] | null;
   size_tier?: string | null;
   paper?: PaperTier[] | null;
   // `type` is a string on most rows but an ARRAY where a funder does both
@@ -188,12 +193,37 @@ const REL_LABEL: Record<string, string> = {
   referral_affiliate: "Referral",
   white_label: "White-label",
 };
-const relLabel = (l: LenderRow) => {
-  const r = cat(l).relationship ?? "";
-  return REL_LABEL[r] ?? (r ? r.replace(/_/g, " ") : "Funder");
+
+// The full relationship set: the `relationships` array when the row has one,
+// otherwise the singular `relationship`. Everything downstream reads this, so a
+// funder we work as BOTH a direct funder and a referral partner lands in both
+// places instead of only the first one.
+const relSet = (l: LenderRow): string[] => {
+  const c = cat(l);
+  const many = (c.relationships ?? []).map((r) => String(r).toLowerCase().trim()).filter(Boolean);
+  if (many.length > 0) return many;
+  const one = (c.relationship ?? "").toLowerCase().trim();
+  return one ? [one] : [];
 };
+const isReferralPartner = (l: LenderRow) => relSet(l).some((r) => /referral|affiliate/.test(r));
+const isMarketplace = (l: LenderRow) => relSet(l).some((r) => /marketplace|aggregator/.test(r));
+// The "Referral / marketplace" bucket: anything we refer out rather than submit
+// a package to — referral partners AND marketplaces.
 const isReferralModel = (l: LenderRow) =>
-  /marketplace|referral|affiliate|aggregator|white_label/.test(cat(l).relationship ?? "");
+  isReferralPartner(l) || isMarketplace(l) || relSet(l).some((r) => r === "white_label");
+
+const relLabel = (l: LenderRow) => {
+  const set = relSet(l);
+  if (set.length === 0) return "Funder";
+  const label = (r: string) => REL_LABEL[r] ?? r.replace(/_/g, " ");
+  // Worked as a referral on top of what they actually are — lead with the
+  // relationship the closer acts on, then how the funder itself operates.
+  if (isReferralPartner(l) && set.length > 1) {
+    const other = set.find((r) => !/referral|affiliate/.test(r));
+    return other ? `Active referral · ${label(other).toLowerCase()}` : "Active referral";
+  }
+  return label(set[0]);
+};
 
 const SIZE_TIER_LABEL: Record<string, string> = {
   micro: "Micro",
@@ -251,7 +281,9 @@ const tagsOf = (l: LenderRow): string[] => {
   const t: string[] = [];
   if (isRestructure(l)) t.push("Debt relief");
   if (isConsolidation(l)) t.push(consoLabel(l).replace(/ consolidation$/i, " consol."));
-  if (isReferralModel(l)) t.push(REL_LABEL[cat(l).relationship ?? ""] ?? "Referral");
+  if (isReferralPartner(l)) t.push("Referral");
+  if (isMarketplace(l)) t.push("Marketplace");
+  if (relSet(l).includes("white_label")) t.push("White-label");
   if (f.sba) t.push("SBA");
   if (f.real_estate) t.push("Real estate");
   if (f.micro) t.push("Micro");
@@ -395,8 +427,9 @@ export default function FunderCheatSheetPage() {
           <h1>Funder Cheat Sheet</h1>
           <p>
             Match the deal to the funder. Read the merchant's <b>paper grade</b>, check whether they're{" "}
-            <b>stacked</b> (needs consolidation), then filter to the right shortlist. Covers your{" "}
-            <b>{loading ? "…" : `${lenders.length} live funders`}</b> — the ones you submit to today.
+            <b>stacked</b> (needs consolidation), then filter to the right shortlist. Covers the funders you work
+            today — your <b>{loading ? "…" : `${lenders.length}`} live vendors</b> plus{" "}
+            <b>active referral partners</b>.
           </p>
         </header>
 
@@ -623,14 +656,13 @@ export default function FunderCheatSheetPage() {
           </div>
           <div className="pipe">
             <div className="pbox">
-              <h3>🎯 Micro gap-fillers ($500–$25K)</h3>
-              <div className="sub">Your live roster has no true micro specialist — these are the fix.</div>
+              <h3>🎯 Direct-submit micro ($500–$25K)</h3>
+              <div className="sub">
+                Giggle already covers referral micro (live). These would add micro you keep in-house / direct-submit.
+              </div>
               <ul>
                 <li>
                   <b>Fundo</b> — $500–$10K, no credit check, no personal guarantee (gig/1099).
-                </li>
-                <li>
-                  <b>Giggle Finance</b> — ≤$20K, gig workers &amp; solo operators, funded in minutes.
                 </li>
                 <li>
                   <b>Bitty Advance</b> — $2K+, small-ticket fast MCA, 500 FICO / all-credit.
