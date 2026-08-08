@@ -103,6 +103,18 @@ const numOr0 = (v: unknown): number => {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 };
+// MISSING-DATA-SAFE number. num() above looks null-safe but is NOT: Number(null) === 0
+// and Number("") === 0, both finite, so num(null) returns 0. Anywhere that 0 is a
+// MEANINGFUL value — a funder's approval_max, a revenue floor, a TIB minimum — that
+// silently turns "not recorded" into "zero" and makes missing data a hard
+// disqualifier. Use numOrNull for every criterion box field and every merchant value
+// compared against one: unknown stays unknown (⇒ no constraint / don't disqualify).
+// A genuinely recorded 0 still comes through as 0 and is honored.
+const numOrNull = (v: unknown): number | null => {
+  if (v == null || (typeof v === "string" && v.trim() === "")) return null;
+  const x = Number(v);
+  return Number.isFinite(x) ? x : null;
+};
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 // FNV-1a hash of a string → stable short hex. Used for docs_hash so an identical
@@ -1511,11 +1523,14 @@ Deno.serve(async (req) => {
       return {
         name: (l?.company_name as string) ?? "Funder",
         status: (l?.status as string) ?? "",
-        rev_req: num(p.monthly_revenue_required),
-        approval_min: num(p.approval_min),
-        approval_max: num(p.approval_max),
-        tib: num(p.time_in_business_months),
-        min_credit_score: num(p.min_credit_score),
+        // numOrNull, NOT num(): an unrecorded box field must stay null so it reads as
+        // "no constraint". With num() a blank approval_max became 0 and excluded the
+        // funder from every path (advance > 0 is always true).
+        rev_req: numOrNull(p.monthly_revenue_required),
+        approval_min: numOrNull(p.approval_min),
+        approval_max: numOrNull(p.approval_max),
+        tib: numOrNull(p.time_in_business_months),
+        min_credit_score: numOrNull(p.min_credit_score),
       };
     });
 
@@ -1609,7 +1624,9 @@ Deno.serve(async (req) => {
     // emits at least one ACTIONABLE path; a bare "decline" is forbidden output.
     // Each path is derived from the scenarios above + our real funder rails (box-
     // matching, NEVER an AI call), ranked by expected revenue.
-    const tibMonths = num(cust.time_in_business);
+    // numOrNull: an unrecorded time-in-business must stay null. num() read it as
+    // "0 months", which tripped EVERY funder's min-TIB gate.
+    const tibMonths = numOrNull(cust.time_in_business);
     const POINTS = 0.08;          // MFunding's new-deal commission (8 points).
     const COUNTER_FLOOR = 5000;   // smallest advance worth countering / a funder box wants.
     const cleanTo = (n: number) => Math.max(0, Math.floor(n / 1000) * 1000); // clean counter figure
@@ -1621,16 +1638,23 @@ Deno.serve(async (req) => {
     // (MCA = cash-flow underwriting); missing box fields don't exclude a funder.
     const fitFunders = (advance: number, revenue: number) => {
       const live: string[] = []; const referral: string[] = []; const pending: string[] = [];
+      let tibUnverified = false; // a matched funder has a TIB floor we could not check
       for (const b of funderBoxes) {
         if (b.rev_req != null && revenue < b.rev_req) continue;
         if (b.approval_min != null && advance < b.approval_min) continue;
         if (b.approval_max != null && advance > b.approval_max) continue;
-        if (b.tib != null && tibMonths != null && tibMonths < b.tib) continue;
+        // TIB gate. A funder with no recorded floor has no minimum. When the FUNDER has
+        // a floor but the MERCHANT's TIB is unrecorded we PASS (unknown is a stipulation,
+        // never a decline) and report it so the closer verifies before submitting.
+        if (b.tib != null) {
+          if (tibMonths == null) tibUnverified = true;
+          else if (tibMonths < b.tib) continue;
+        }
         if (b.status === "live_vendor") live.push(b.name);
         else if (b.status === "affiliate_referral") referral.push(b.name);
         else if (b.status === "application_submitted") pending.push(b.name);
       }
-      return { live, referral, pending };
+      return { live, referral, pending, tib_unverified: tibUnverified };
     };
 
     type Path = {
@@ -1663,7 +1687,10 @@ Deno.serve(async (req) => {
         action,
         expected_note: `Capacity ${money(c.cap)}/day supports ${money(amt)}` +
           (c.basis === "full_revenue" ? ` if the full ${money(reportedAvgMonthlyRevenue)}/mo verifies` : "") +
-          `. ${fit.live.length} live + ${fit.referral.length} referral fit, ${fit.pending.length} pending.`,
+          `. ${fit.live.length} live + ${fit.referral.length} referral fit, ${fit.pending.length} pending.` +
+          (fit.tib_unverified
+            ? " TIB UNVERIFIED — time in business is not on the merchant record; confirm it before submitting (some of these funders have a TIB floor)."
+            : ""),
         expected_revenue: amt * POINTS,
       });
     }
@@ -2107,13 +2134,11 @@ Deno.serve(async (req) => {
     // FICO, when the merchant record carries a range ("620-659", "700+", "below 500").
     // We take the LOW end — the conservative read. Unknown NEVER disqualifies (MCA is
     // cash-flow underwriting); it just means the tier is inferred from the statements.
-    // NOTE: the shared num() maps null → 0 (Number(null) === 0), so `tibMonths` above
-    // reads an UNKNOWN time-in-business as "0 months". Unknown must never act as a
-    // disqualifier (house rule: missing data is a stipulation, not a decline), so the
-    // profile reads it null-safely. (The same trap bites fitFunders' approval_max —
-    // flagged for a separate, deliberate fix; not changed here.)
-    const tibMonthsKnown: number | null =
-      cust.time_in_business == null || cust.time_in_business === "" ? null : num(cust.time_in_business);
+    // Unknown must never act as a disqualifier (house rule: missing data is a
+    // stipulation, not a decline) — numOrNull keeps an unrecorded TIB null instead of
+    // reading it as "0 months". Same value as `tibMonths` above; kept as its own name
+    // because the profile block reads it independently.
+    const tibMonthsKnown: number | null = numOrNull(cust.time_in_business);
 
     const ficoLow: number | null = (() => {
       const raw = String((cust.credit_score_range as string | null | undefined) ?? "").trim();
@@ -2330,8 +2355,10 @@ Deno.serve(async (req) => {
         business: cust.business_name ?? null,
         industry: cust.industry ?? cust.business_type ?? null,
         state: cust.address_state ?? null,
-        time_in_business_months: num(cust.time_in_business),
-        stated_monthly_revenue: num(cust.monthly_revenue),
+        // numOrNull so an unrecorded field reaches the judge as null ("unknown"),
+        // never as a literal 0 it would reason from ("0 months in business").
+        time_in_business_months: numOrNull(cust.time_in_business),
+        stated_monthly_revenue: numOrNull(cust.monthly_revenue),
         credit_score_range: cust.credit_score_range ?? null,
         use_of_funds: deal.use_of_funds ?? null,
         product: deal.deal_type,
@@ -2548,13 +2575,10 @@ Deno.serve(async (req) => {
         return true;
       });
 
-      // NOTE: num() maps null → 0 (Number(null) === 0), which would read an UNRECORDED
-      // funding band as a $0–$0 box and penalize every funder that hasn't published
-      // one. Missing data is not a disqualifier — null must stay null here.
-      const bandAmt = (v: number | string | null): number | null =>
-        v == null || v === "" ? null : num(v);
-      const minOf = (l: LenderRow) => bandAmt(l.min_funding_amount);
-      const maxOf = (l: LenderRow) => bandAmt(l.max_funding_amount);
+      // An UNRECORDED funding band must not read as a $0–$0 box and penalize every
+      // funder that hasn't published one — numOrNull keeps missing as missing.
+      const minOf = (l: LenderRow) => numOrNull(l.min_funding_amount);
+      const maxOf = (l: LenderRow) => numOrNull(l.max_funding_amount);
 
       const scored = eligible.map((l) => {
         const f = catFlagsOf(l);
