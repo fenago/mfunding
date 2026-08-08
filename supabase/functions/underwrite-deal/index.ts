@@ -395,7 +395,7 @@ Deno.serve(async (req) => {
     // --- Deal + customer. ---
     const { data: deal, error: dErr } = await db
       .from("deals")
-      .select("id, deal_number, deal_type, amount_requested, use_of_funds, underwriting_context, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, ghl_contact_id)")
+      .select("id, deal_number, deal_type, amount_requested, use_of_funds, underwriting_context, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, credit_score_range, ghl_contact_id)")
       .eq("id", dealId).maybeSingle();
     if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
     const cust = (deal.customer ?? {}) as Any;
@@ -2091,6 +2091,126 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── MERCHANT PROFILE — DETERMINISTIC FACTS (no AI) ─────────────────────────
+    // The cheat-sheet buckets a closer sorts by (/admin/cheat-sheet, lenders.category).
+    // House rule: CODE computes the facts, the AI only classifies the paper tier and
+    // explains. Everything below is derived from figures already computed above —
+    // nothing is recomputed and nothing here can be overridden by the model.
+    const TIERS = ["A", "B", "C", "D"] as const;
+    type PaperTier = (typeof TIERS)[number];
+
+    // Active MCA positions (latest-month anchored — never a cross-month union).
+    const positionsCount = activePositions.length;
+    // The most new money this merchant can SAFELY take, under either remit structure.
+    const newMoneyCeiling = round2(Math.max(affBase.max_advance_daily, affBase.max_advance_weekly));
+
+    // FICO, when the merchant record carries a range ("620-659", "700+", "below 500").
+    // We take the LOW end — the conservative read. Unknown NEVER disqualifies (MCA is
+    // cash-flow underwriting); it just means the tier is inferred from the statements.
+    // NOTE: the shared num() maps null → 0 (Number(null) === 0), so `tibMonths` above
+    // reads an UNKNOWN time-in-business as "0 months". Unknown must never act as a
+    // disqualifier (house rule: missing data is a stipulation, not a decline), so the
+    // profile reads it null-safely. (The same trap bites fitFunders' approval_max —
+    // flagged for a separate, deliberate fix; not changed here.)
+    const tibMonthsKnown: number | null =
+      cust.time_in_business == null || cust.time_in_business === "" ? null : num(cust.time_in_business);
+
+    const ficoLow: number | null = (() => {
+      const raw = String((cust.credit_score_range as string | null | undefined) ?? "").trim();
+      if (!raw) return null;
+      const nums = (raw.match(/\d{3}/g) ?? []).map(Number).filter((n) => n >= 300 && n <= 900);
+      return nums.length ? Math.min(...nums) : null;
+    })();
+
+    // CONSOLIDATION CANDIDATE — the Bay Finish pattern: stacked, no room for new
+    // money, and a stack big enough to be worth rolling up. The play is a
+    // consolidation (true payoff or reverse), not another advance.
+    const littleNewMoney =
+      newMoneyCeiling < COUNTER_FLOOR ||
+      affordabilityRating === "unaffordable" ||
+      (outstandingMid > 0 && newMoneyCeiling < outstandingMid * 0.25);
+    const consolidationCandidate = positionsCount >= 2 && littleNewMoney && outstandingMid >= 10000;
+
+    // DEBT-RELIEF CANDIDATE — distressed/near-default: unaffordable, heavily stacked,
+    // cash-stressed, AND the consolidation math itself doesn't clear (or debt service
+    // has passed 100% of revenue). That merchant needs a restructure, not more paper.
+    const cashStressed =
+      nsfTotal > nsfCap || negativeDays >= numOr0(settings.negative_days_flag) || revenueTrend === "down";
+    const heavilyStacked = positionsCount >= 3 || (positionsCount >= 2 && debtServicePct > 50);
+    const debtReliefCandidate =
+      affordabilityRating === "unaffordable" && heavilyStacked &&
+      (debtServicePct > 100 || (cashStressed && !refi.feasible));
+
+    // SIZE BUCKET — sized on what we can actually PLACE, never on the ask. For a
+    // consolidation that is the estimated payoff; otherwise the safe new-money ceiling.
+    const sizeBasis = consolidationCandidate ? Math.max(newMoneyCeiling, outstandingMid) : newMoneyCeiling;
+    const sizeBucket: "micro" | "small_mid" | "mid_large" | "jumbo" =
+      sizeBasis >= 1_000_000 ? "jumbo"
+      : sizeBasis >= 250_000 ? "mid_large"
+      : sizeBasis > 25_000 ? "small_mid"
+      : "micro";
+    const sizeBasisLabel = consolidationCandidate
+      ? `estimated consolidation payoff ${money(sizeBasis)}`
+      : `safe new-money ceiling ${money(sizeBasis)}`;
+
+    // FAST TRACK — thin file / doc-collection risk, where a light-stips fast funder
+    // matters more than the last basis point.
+    const coverageFlagCodes = new Set(["statements_stale", "month_gap", "docs_not_analyzed", "extraction_gaps"]);
+    const fastTrack =
+      monthsCovered < 3 || (tibMonthsKnown != null && tibMonthsKnown < 12) || failedStatements > 0 ||
+      flags.some((f) => coverageFlagCodes.has(f.code));
+
+    // PAPER-TIER CEILING (deterministic). The AI may classify the merchant WORSE than
+    // the facts allow, never better — a merchant with 3 open positions is not A paper
+    // no matter how the narrative reads. Mirrors the cheat-sheet definitions.
+    let tierCapIdx = 0;
+    const tierCapReasons: string[] = [];
+    const raiseCap = (idx: number, why: string) => {
+      if (idx > tierCapIdx) { tierCapIdx = idx; }
+      if (idx >= 1) tierCapReasons.push(why);
+    };
+    if (positionsCount >= 3) raiseCap(3, `${positionsCount} open MCA positions`);
+    else if (positionsCount === 2) raiseCap(2, "2 open MCA positions");
+    else if (positionsCount === 1) raiseCap(1, "1 open MCA position");
+    if (negativeDays >= numOr0(settings.negative_days_flag) || nsfTotal > nsfCap) {
+      raiseCap(2, `${nsfTotal} NSF event(s) / ${negativeDays} negative day(s)`);
+    } else if (nsfTotal > 0 || negativeDays > 0) {
+      raiseCap(1, `${nsfTotal} NSF event(s) / ${negativeDays} negative day(s)`);
+    }
+    if (debtReliefCandidate || debtServicePct > 50) {
+      raiseCap(3, `existing debits consume ${Math.round(debtServicePct)}% of true revenue`);
+    }
+    if (ficoLow != null) {
+      raiseCap(ficoLow < 500 ? 3 : ficoLow < 600 ? 2 : ficoLow < 680 ? 1 : 0, `FICO ~${ficoLow}`);
+    }
+    if (tibMonthsKnown != null && tibMonthsKnown < 24) raiseCap(1, `${tibMonthsKnown} months in business`);
+    const tierCap = TIERS[tierCapIdx];
+
+    // Facts handed to the judge so its classification is anchored to the same numbers.
+    const profileFacts = {
+      positions: positionsCount,
+      fico_low: ficoLow,
+      time_in_business_months: tibMonthsKnown,
+      true_avg_monthly_revenue: trueAvgMonthlyRevenue,
+      revenue_trend: revenueTrend,
+      nsf_total: nsfTotal,
+      negative_days: negativeDays,
+      avg_daily_balance: avgDailyBalance,
+      debt_service_pct: debtServicePct,
+      safe_new_money_ceiling: newMoneyCeiling,
+      est_outstanding_mid: outstandingMid,
+      refi_feasible: refi.feasible,
+      affordability_rating: affordabilityRating,
+      // Computed in code and FORCED onto the output — the model must not contradict them.
+      size_bucket: sizeBucket,
+      size_basis: sizeBasisLabel,
+      consolidation_candidate: consolidationCandidate,
+      debt_relief_candidate: debtReliefCandidate,
+      fast_track: fastTrack,
+      paper_tier_ceiling: tierCap,
+      paper_tier_ceiling_because: tierCapReasons,
+    };
+
     // ---- PASS C: JUDGE (Claude — narrative + risk_rating + funder-fit note) ----
     // Load active MCA funder minimums so the judge can say which paper grade / which
     // funders this true-revenue profile fits.
@@ -2161,8 +2281,31 @@ Deno.serve(async (req) => {
           "or the seasonal high months) that would substantiate the claim before sizing to it. State plainly when the " +
           "context, if it verifies, would change the verdict. "
         : "") +
+      // ── MERCHANT PROFILE (cheat-sheet classification) ──
+      "MERCHANT PROFILE — you must ALSO classify this merchant into the funder cheat-sheet buckets. " +
+      "PAPER TIER definitions (use these verbatim; they are the same definitions the funder cheat sheet uses):\n" +
+      "  A = ~680+ FICO, 2+ years in business, healthy consistent revenue, NO existing MCA positions, clean " +
+      "statements (no NSFs, good balances).\n" +
+      "  B = ~600-680 FICO, decent revenue, 0-1 existing position, minor blemishes.\n" +
+      "  C = ~500-600 FICO, shorter history, some NSFs / negative days, 1-2 stacked positions.\n" +
+      "  D = <500 FICO, heavily stacked (multiple positions), frequent NSFs / negative days, distressed.\n" +
+      "When FICO is UNKNOWN (it usually is — MCA is cash-flow underwriting and an unknown score NEVER " +
+      "disqualifies), infer the tier primarily from open positions + NSFs/negative days + balance stability + " +
+      "revenue consistency, and SAY SO in the reason. " +
+      "A DETERMINISTIC PROFILE FACTS block is provided below. Those figures were computed in code from the " +
+      "statements and are AUTHORITATIVE: positions, size_bucket, consolidation_candidate, debt_relief_candidate " +
+      "and fast_track are FORCED onto the stored output — do not contradict them. 'paper_tier_ceiling' is the " +
+      "BEST tier the hard facts permit; you may classify the merchant the same or WORSE, never better (a worse " +
+      "call is honored). " +
+      "PRODUCT SIGNALS: default to [\"mca\"]. Add \"real_estate_cre\", \"sba_loan\", \"equipment_financing\", " +
+      "\"invoice_factoring\", \"line_of_credit\" or \"term_loan\" ONLY when there is a real signal in the merchant " +
+      "record or use-of-funds (owned collateral, a stated equipment/property purchase, B2B receivables, an " +
+      "industry that obviously implies it). Do NOT force a product in without evidence. " +
+      "Do NOT name any funder — the funder shortlist is matched deterministically in code from this profile. " +
       "Return ONLY strict JSON: " +
-      '{"risk_rating":"low"|"medium"|"high","narrative":string,"funder_fit_note":string}. ' +
+      '{"risk_rating":"low"|"medium"|"high","narrative":string,"funder_fit_note":string,' +
+      '"profile":{"paper_tier":"A"|"B"|"C"|"D","product_signals":string[],"profile_reason":string}}. ' +
+      "profile.profile_reason = 1-2 plain-English sentences tying the tier to the actual numbers. " +
       "FORMAT the narrative as lightweight markdown the closer can scan in 5 seconds — NOT a wall of prose:\n" +
       "- Open with ONE short headline sentence (the bottom line), no bullet.\n" +
       "- Then labeled bullet lines, each starting with '- **Label:** ', e.g.:\n" +
@@ -2189,6 +2332,8 @@ Deno.serve(async (req) => {
         state: cust.address_state ?? null,
         time_in_business_months: num(cust.time_in_business),
         stated_monthly_revenue: num(cust.monthly_revenue),
+        credit_score_range: cust.credit_score_range ?? null,
+        use_of_funds: deal.use_of_funds ?? null,
         product: deal.deal_type,
       }) +
       "\n\nAFFORDABILITY METRICS (computed deterministically from the bank statements):\n" +
@@ -2227,19 +2372,28 @@ Deno.serve(async (req) => {
               bankFeedCrossChecks.map((c) => `${c.month} — statement ${money(c.pdf_deposits)} vs feed ${money(c.plaid_deposits)} (${c.pct_diff}%${c.fraud ? ", POSSIBLE DOCTORED STATEMENT" : ""})`).join("; ") + "."
             : "Overlapping months reconcile with the bank feed.")
         : "") +
+      "\n\nDETERMINISTIC PROFILE FACTS (computed in code — authoritative; classify the paper tier at or below " +
+        "paper_tier_ceiling and explain it against these numbers):\n" +
+        JSON.stringify(profileFacts, null, 2) +
       "\n\nReturn the JSON now.";
 
     let riskRating: "low" | "medium" | "high" = "medium";
     let aiNarrative = "";
     let funderFitNote = "";
+    // The judge's PROFILE half — tier + product signals + rationale. Everything else
+    // on the profile is deterministic; these are validated/clamped below.
+    let aiTier: PaperTier | null = null;
+    let aiProductSignals: string[] = [];
+    let aiProfileReason = "";
     try {
       const judgeText = await callLLM(db, {
         system: judgeSystem,
         prompt: judgeUser,
         // 1024 truncated the JSON mid-narrative on a real 3-statement deal — the
         // parse then failed and the run persisted an EMPTY narrative with a default
-        // "medium" rating. Give the judge room to close its JSON.
-        maxTokens: 2048,
+        // "medium" rating. Give the judge room to close its JSON (now also carrying
+        // the profile block).
+        maxTokens: 3072,
         temperature: 0.2,
         jsonMode: true,
         task: "underwrite_judge",
@@ -2252,6 +2406,11 @@ Deno.serve(async (req) => {
         if (["low", "medium", "high"].includes(parsed.risk_rating)) riskRating = parsed.risk_rating;
         if (typeof parsed.narrative === "string") aiNarrative = parsed.narrative.trim();
         if (typeof parsed.funder_fit_note === "string") funderFitNote = parsed.funder_fit_note.trim();
+        const p = (parsed.profile ?? {}) as Any;
+        const t = String(p.paper_tier ?? "").trim().toUpperCase();
+        if ((TIERS as readonly string[]).includes(t)) aiTier = t as PaperTier;
+        if (Array.isArray(p.product_signals)) aiProductSignals = p.product_signals.map((x: unknown) => String(x));
+        if (typeof p.profile_reason === "string") aiProfileReason = p.profile_reason.trim();
       }
       // A parse miss (or an empty narrative) must NOT silently ship a blank read —
       // fall back to the flag-derived rating + summary, exactly like a throw does.
@@ -2265,6 +2424,230 @@ Deno.serve(async (req) => {
       aiNarrative = `AI narrative unavailable (${e instanceof Error ? e.message : e}). Risk derived from flags: ${crit} critical, ${warn} warnings.`;
     }
     const narrativeOut = funderFitNote ? `${aiNarrative}\n- **Funder fit:** ${funderFitNote}` : aiNarrative;
+
+    // ── MERCHANT PROFILE + RECOMMENDED FUNDERS ─────────────────────────────────
+    // The AI classified the paper tier and read the product signals; CODE decides
+    // everything else and CODE picks the funders. The model is never allowed to name
+    // a funder (it hallucinates them) — the shortlist is matched against the real
+    // lenders.category payload that also drives /admin/cheat-sheet.
+
+    // Tier: the WORSE of the model's call and the deterministic ceiling.
+    const aiTierIdx = aiTier ? TIERS.indexOf(aiTier) : -1;
+    const paperTier: PaperTier = TIERS[Math.max(aiTierIdx, tierCapIdx)] ?? tierCap;
+
+    // Product signals: 'mca' always present; everything else must be a known product
+    // AND must not be invented — an unknown label is dropped rather than guessed at.
+    const KNOWN_PRODUCTS = [
+      "mca", "term_loan", "line_of_credit", "sba_loan", "real_estate_cre",
+      "equipment_financing", "invoice_factoring",
+    ];
+    // Tolerate the shorthand the prompt's bucket names use.
+    const PRODUCT_ALIASES: Record<string, string> = {
+      sba: "sba_loan", equipment: "equipment_financing", real_estate: "real_estate_cre",
+      cre: "real_estate_cre", factoring: "invoice_factoring", loc: "line_of_credit",
+    };
+    const productSignals = Array.from(new Set([
+      "mca",
+      ...aiProductSignals
+        .map((s) => s.toLowerCase().trim().replace(/\s+/g, "_"))
+        .map((s) => PRODUCT_ALIASES[s] ?? s)
+        .filter((s) => KNOWN_PRODUCTS.includes(s)),
+    ]));
+
+    const profileReason = aiProfileReason ||
+      `${paperTier} paper — ${positionsCount} open MCA position(s), ${nsfTotal} NSF event(s), ` +
+      `${negativeDays} negative day(s) on ${money(trueAvgMonthlyRevenue)}/mo true revenue` +
+      (ficoLow != null ? ` at ~${ficoLow} FICO` : " (credit unknown — classified from cash flow)") + ".";
+
+    // ---- Deterministic funder matching against lenders.category ----
+    type CatFlags = Record<string, boolean | undefined>;
+    interface LenderRow {
+      id: string; company_name: string;
+      min_funding_amount: number | string | null; max_funding_amount: number | string | null;
+      category: Any | null;
+    }
+    let recommendedFunders: Array<{
+      lender_id: string; company_name: string; relationship: string | null;
+      consolidation_type: string | null; why_matched: string; score: number;
+    }> = [];
+    let funderMatchNote: string | null = null;
+    try {
+      const { data: liveRows } = await db
+        .from("lenders")
+        .select("id, company_name, min_funding_amount, max_funding_amount, category")
+        .eq("status", "live_vendor");
+      const live = ((liveRows ?? []) as unknown as LenderRow[]).filter((l) => l.category != null);
+
+      // Read the category payload exactly the way /admin/cheat-sheet does, so the
+      // shortlist can never drift from what the closer sees on that page.
+      const catOf = (l: LenderRow): Any => (l.category ?? {}) as Any;
+      const catFlagsOf = (l: LenderRow): CatFlags => (catOf(l).flags ?? {}) as CatFlags;
+      const consoTypes = (l: LenderRow): string[] => {
+        const t = catOf(l).consolidation?.type;
+        const raw = Array.isArray(t) ? t : t == null ? [] : [t];
+        return raw.map((x: unknown) => String(x).toLowerCase().trim()).filter((x) => x && x !== "none");
+      };
+      const isRestructure = (l: LenderRow) => consoTypes(l).some((t) => /restructure|relief|settle/.test(t));
+      const isConsolidation = (l: LenderRow) =>
+        !isRestructure(l) && (catFlagsOf(l).consolidation === true || consoTypes(l).length > 0);
+      const isReverse = (l: LenderRow) => consoTypes(l).some((t) => /reverse|both/.test(t));
+      const isPayoff = (l: LenderRow) => consoTypes(l).some((t) => /payoff|true|both/.test(t));
+      const consoLabelOf = (l: LenderRow): string | null => {
+        if (isRestructure(l)) return "restructure";
+        const rev = isReverse(l); const pay = isPayoff(l);
+        if (rev && pay) return "true_consolidation/payoff + reverse_consolidation";
+        if (rev) return "reverse_consolidation";
+        if (pay) return "true_consolidation/payoff";
+        return isConsolidation(l) ? "consolidation" : null;
+      };
+      const relSet = (l: LenderRow): string[] => {
+        const c = catOf(l);
+        const many = ((c.relationships ?? []) as unknown[]).map((r) => String(r).toLowerCase().trim()).filter(Boolean);
+        if (many.length) return many;
+        const one = String(c.relationship ?? "").toLowerCase().trim();
+        return one ? [one] : [];
+      };
+      const paperOf = (l: LenderRow): string[] =>
+        ((catOf(l).paper ?? []) as unknown[]).map((p) => String(p).trim().toUpperCase());
+      const productsOf = (l: LenderRow): string[] =>
+        ((catOf(l).products ?? []) as unknown[]).map((p) => String(p).toLowerCase().trim());
+
+      const takesTier = (l: LenderRow) => paperOf(l).includes(paperTier);
+      const allCredit = (l: LenderRow) => paperOf(l).includes("ALL_CREDIT");
+
+      // POOL. The consolidation / debt-relief lanes are exclusive when they apply —
+      // sending a stacked merchant with no capacity to a straight new-money desk is
+      // the mistake this whole profile exists to prevent.
+      let pool: LenderRow[];
+      let lane: "debt_relief" | "consolidation" | "standard";
+      if (debtReliefCandidate) {
+        lane = "debt_relief";
+        pool = live.filter((l) => isRestructure(l) || isConsolidation(l));
+      } else if (consolidationCandidate) {
+        lane = "consolidation";
+        pool = live.filter((l) => isConsolidation(l));
+      } else {
+        lane = "standard";
+        pool = live.filter((l) => !isRestructure(l));
+      }
+      if (pool.length === 0) {
+        lane = "standard";
+        pool = live.filter((l) => !isRestructure(l));
+        funderMatchNote = "No onboarded funder carries the lane this profile calls for — showing the general live network instead.";
+      }
+
+      // Hard exclusions inside the pool: a recorded paper box that excludes this tier,
+      // and a recorded product menu that carries nothing this merchant needs. A funder
+      // with NO recorded box is never excluded (missing data is not a disqualifier).
+      const wanted = new Set(productSignals);
+      const eligible = pool.filter((l) => {
+        const paper = paperOf(l);
+        if (paper.length > 0 && !takesTier(l) && !allCredit(l) && !isRestructure(l)) return false;
+        const prods = productsOf(l);
+        if (prods.length > 0 && !isRestructure(l) && !prods.some((p) => wanted.has(p))) return false;
+        return true;
+      });
+
+      // NOTE: num() maps null → 0 (Number(null) === 0), which would read an UNRECORDED
+      // funding band as a $0–$0 box and penalize every funder that hasn't published
+      // one. Missing data is not a disqualifier — null must stay null here.
+      const bandAmt = (v: number | string | null): number | null =>
+        v == null || v === "" ? null : num(v);
+      const minOf = (l: LenderRow) => bandAmt(l.min_funding_amount);
+      const maxOf = (l: LenderRow) => bandAmt(l.max_funding_amount);
+
+      const scored = eligible.map((l) => {
+        const f = catFlagsOf(l);
+        const c = catOf(l);
+        const why: string[] = [];
+        let score = 0;
+
+        if (isRestructure(l)) {
+          score += 200;
+          why.push("debt-relief / restructure desk — the referral lane once even a consolidation is a stretch");
+        } else if (isConsolidation(l) && (consolidationCandidate || debtReliefCandidate)) {
+          score += debtReliefCandidate ? 60 : 100;
+          why.push(
+            `${(consoLabelOf(l) ?? "consolidation").replace(/_/g, " ")} — the play is rolling up ${positionsCount} open position(s) (~${money(outstandingMid)} est.), not new money`,
+          );
+          if (isReverse(l) && newMoneyCeiling < COUNTER_FLOOR) score += 6;
+          if (isPayoff(l) && refi.feasible) score += 6;
+        }
+
+        if (takesTier(l)) { score += 30; why.push(`takes ${paperTier} paper`); }
+        else if (allCredit(l)) { score += 20; why.push("all-credit box (no FICO floor)"); }
+        else if (paperOf(l).length === 0) { score += 5; why.push("paper box not recorded — confirm with the rep"); }
+        if (paperTier === "D" && f.high_risk_dpaper) { score += 12; why.push("high-risk / D-paper tolerant"); }
+
+        if (String(c.size_tier ?? "") === sizeBucket) { score += 12; why.push(`${sizeBucket.replace("_", "–")} size tier`); }
+        const lo = minOf(l); const hi = maxOf(l);
+        if (sizeBasis > 0 && (lo != null || hi != null)) {
+          const inRange = (lo == null || sizeBasis >= lo) && (hi == null || sizeBasis <= hi);
+          const band = `${lo != null ? money(lo) : "no min"}–${hi != null ? money(hi) : "no max"}`;
+          if (inRange) { score += 10; why.push(`${money(sizeBasis)} sits inside their ${band} band`); }
+          else { score -= 12; why.push(`${money(sizeBasis)} is outside their ${band} band — confirm before submitting`); }
+        }
+        if (sizeBucket === "micro" && !consolidationCandidate && !debtReliefCandidate && f.micro) {
+          score += 15; why.push("funds micro tickets");
+        }
+
+        for (const sig of productSignals) {
+          if (sig === "mca") continue;
+          if (productsOf(l).includes(sig)) { score += 20; why.push(`does ${sig.replace(/_/g, " ")}`); }
+        }
+        if (productSignals.includes("mca") && productsOf(l).includes("mca")) score += 5;
+
+        if (fastTrack && f.fast_funding) { score += 10; why.push("fast / light-stips — right for a thin file"); }
+
+        const rels = relSet(l);
+        if (rels.includes("direct_funder")) score += 6;
+        else if (rels.some((r) => /marketplace|aggregator/.test(r))) score += 1;
+
+        return {
+          lender_id: l.id,
+          company_name: l.company_name,
+          relationship: rels[0] ?? null,
+          consolidation_type: consoLabelOf(l),
+          why_matched: why.join("; "),
+          score,
+        };
+      });
+
+      scored.sort((a, b) => (b.score - a.score) || a.company_name.localeCompare(b.company_name));
+      recommendedFunders = scored.slice(0, 5);
+      if (recommendedFunders.length === 0) {
+        funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
+          "No live funder's recorded box matches this profile — widen the network or confirm boxes with the reps.";
+      }
+    } catch (e) {
+      // A funder-match failure must never sink the run: the profile still persists.
+      funderMatchNote = `Funder matching unavailable (${e instanceof Error ? e.message : e}).`;
+      console.warn("[underwrite-deal] funder match failed:", e instanceof Error ? e.message : e);
+    }
+
+    const profile = {
+      paper_tier: paperTier,
+      paper_tier_ceiling: tierCap,
+      paper_tier_ceiling_because: tierCapReasons,
+      paper_tier_ai: aiTier,
+      paper_tier_basis: ficoLow != null ? "fico_and_cashflow" : "cashflow_inferred",
+      fico_low: ficoLow,
+      size_bucket: sizeBucket,
+      size_basis_amount: round2(sizeBasis),
+      size_basis: sizeBasisLabel,
+      positions: positionsCount,
+      consolidation_candidate: consolidationCandidate,
+      debt_relief_candidate: debtReliefCandidate,
+      product_signals: productSignals,
+      fast_track: fastTrack,
+      profile_reason: profileReason,
+      // Deterministic shortlist off lenders.category — the deal→funder play.
+      recommended_funders: recommendedFunders,
+      recommended_funders_note: funderMatchNote,
+    };
+    // metrics is already frozen into the judge prompt above — the profile rides on the
+    // PERSISTED copy (additive: older stored rows simply have no `profile` key).
+    const metricsOut = { ...metrics, profile };
 
     // ---- Persist a new version ----
     const { data: prev } = await db
@@ -2284,7 +2667,7 @@ Deno.serve(async (req) => {
         run_mode: mode,
         docs_hash: docsHash,
         per_statement: perStatement,
-        metrics,
+        metrics: metricsOut,
         flags,
         assumptions,
         risk_rating: riskRating,
@@ -2319,7 +2702,7 @@ Deno.serve(async (req) => {
       risk_rating: riskRating,
       affordability_rating: affordabilityRating,
       ai_narrative: narrativeOut,
-      metrics,
+      metrics: metricsOut,
       flags,
       assumptions,
       per_statement: perStatement,
