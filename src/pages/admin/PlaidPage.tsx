@@ -8,7 +8,8 @@
 //              (product enablement, OAuth bank enablement). Plaid exposes no API for
 //              either, so every snapshot block carries its "as of" date + a dashboard
 //              link. Never dressed up as live.
-//   · DIRECTORY — Plaid's own institution list, searched on demand.
+//   · DIRECTORY — Plaid's own institution list: browsable by default (paged
+//              /institutions/get), or filtered by name (/institutions/search).
 //
 // The editable status ledger lives on /admin/settings/integrations (PlaidStatusPanel);
 // this page is read-only and links there rather than duplicating the editor.
@@ -27,6 +28,7 @@ import {
 } from "@heroicons/react/24/outline";
 import {
   getPlaidHealth,
+  listInstitutions,
   searchInstitutions,
   PLAID_PRODUCTS,
   PRODUCT_STATUS_LABEL,
@@ -34,6 +36,10 @@ import {
   type PlaidInstitution,
   type ProductStatus,
 } from "@/services/plaidStatusService";
+
+/** How many institutions each "Load more" pull fetches. Plaid caps a page at 500,
+ * but the payload carries base64 logos — 60 keeps the list snappy to scroll. */
+const BROWSE_PAGE = 60;
 
 const OAUTH_DASHBOARD_URL = "https://dashboard.plaid.com/activity/status/oauth-institutions";
 const KEYS_DASHBOARD_URL = "https://dashboard.plaid.com/developers/keys";
@@ -84,6 +90,58 @@ function Stat({ label, value, hint }: { label: string; value: React.ReactNode; h
   );
 }
 
+/** One bank in the directory — name first, then OAuth flag, site link, id, products. */
+function InstitutionRow({ inst }: { inst: PlaidInstitution }) {
+  return (
+    <div className="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+      {inst.logo ? (
+        <img
+          src={`data:image/png;base64,${inst.logo}`}
+          alt=""
+          className="w-9 h-9 rounded-lg object-contain bg-white shrink-0"
+        />
+      ) : (
+        <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center shrink-0">
+          <BuildingLibraryIcon className="w-5 h-5 text-gray-400" />
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold text-gray-900 dark:text-white">{inst.name}</span>
+          {inst.oauth && (
+            <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+              OAuth
+            </span>
+          )}
+          {inst.url && (
+            <a
+              href={inst.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-ocean-blue hover:underline inline-flex items-center gap-1"
+            >
+              site <ArrowTopRightOnSquareIcon className="w-3 h-3" />
+            </a>
+          )}
+        </div>
+        <p className="text-xs text-gray-400 font-mono mt-0.5">{inst.institution_id}</p>
+        {inst.products.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {inst.products.map((p) => (
+              <span
+                key={p}
+                className="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+              >
+                {p}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function PlaidPage() {
   const [health, setHealth] = useState<PlaidHealth | null>(null);
   const [loading, setLoading] = useState(true);
@@ -95,6 +153,36 @@ export default function PlaidPage() {
   const [searchError, setSearchError] = useState<string | null>(null);
   // Guards against an older in-flight search overwriting a newer one.
   const searchSeq = useRef(0);
+
+  // Browsable directory (no query) — paged through Plaid's /institutions/get.
+  const [browse, setBrowse] = useState<PlaidInstitution[]>([]);
+  const [browseTotal, setBrowseTotal] = useState<number | null>(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  const [browseDone, setBrowseDone] = useState(false);
+  // Set once the first page has been requested, so the effect never double-fires.
+  const browseStarted = useRef(false);
+
+  /** Fetch the next directory page and append it (deduped by institution_id). */
+  const loadMoreBanks = useCallback(async () => {
+    setBrowseLoading(true);
+    setBrowseError(null);
+    try {
+      const offset = browse.length;
+      const page = await listInstitutions(offset, BROWSE_PAGE);
+      setBrowseTotal(page.total);
+      setBrowse((prev) => {
+        const seen = new Set(prev.map((i) => i.institution_id));
+        return [...prev, ...page.institutions.filter((i) => !seen.has(i.institution_id))];
+      });
+      // Plaid returned a short page (or nothing) — that's the end of the directory.
+      if (page.institutions.length < BROWSE_PAGE) setBrowseDone(true);
+    } catch (e) {
+      setBrowseError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, [browse.length]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -111,6 +199,13 @@ export default function PlaidPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // First page of the browsable directory, once on mount.
+  useEffect(() => {
+    if (browseStarted.current) return;
+    browseStarted.current = true;
+    loadMoreBanks();
+  }, [loadMoreBanks]);
+
   // Debounced institution search (350ms after typing stops).
   useEffect(() => {
     const q = query.trim();
@@ -119,7 +214,7 @@ export default function PlaidPage() {
     const seq = ++searchSeq.current;
     const t = setTimeout(async () => {
       try {
-        const found = await searchInstitutions(q, 25);
+        const found = await searchInstitutions(q, 50);
         if (seq !== searchSeq.current) return;
         setResults(found);
         setSearchError(null);
@@ -362,7 +457,7 @@ export default function PlaidPage() {
       {/* ── Institution lookup (LIVE DIRECTORY) ───────────────────────────── */}
       <Card
         title="Institution lookup"
-        subtitle="Live search of Plaid's US institution directory (~10,000 banks) — shows each one's OAuth flag and supported products."
+        subtitle="Plaid's live US institution directory — browse the whole list, or search it by name. Each bank shows its OAuth flag and supported products."
       >
         <div className="relative mb-4">
           <MagnifyingGlassIcon className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -370,86 +465,114 @@ export default function PlaidPage() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search a bank by name — e.g. Chase, Navy Federal, Regions"
-            className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-ocean-blue/40"
+            placeholder="Filter by name — e.g. Chase, Navy Federal, Regions"
+            className="w-full pl-10 pr-24 py-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-ocean-blue/40"
           />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-ocean-blue hover:underline"
+            >
+              Clear · browse all
+            </button>
+          )}
         </div>
 
-        {searchError ? (
-          <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
-            <ExclamationTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
-            <div>
-              <div className="font-semibold">Institution search failed.</div>
-              <div className="mt-0.5 font-mono text-xs break-all">{searchError}</div>
+        {query.trim() ? (
+          /* ── Filtered: live /institutions/search ── */
+          searchError ? (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
+              <ExclamationTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-semibold">Institution search failed.</div>
+                <div className="mt-0.5 font-mono text-xs break-all">{searchError}</div>
+              </div>
             </div>
-          </div>
-        ) : searching ? (
-          <p className="text-sm text-gray-400">Searching Plaid…</p>
-        ) : !query.trim() ? (
-          <p className="text-sm text-gray-400">Type a bank name to search.</p>
-        ) : results && results.length === 0 ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            No institution in Plaid's directory matches "{query.trim()}".
-          </p>
-        ) : results ? (
-          <div className="space-y-2">
-            {results.map((inst) => (
-              <div
-                key={inst.institution_id}
-                className="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700"
-              >
-                {inst.logo ? (
-                  <img
-                    src={`data:image/png;base64,${inst.logo}`}
-                    alt=""
-                    className="w-9 h-9 rounded-lg object-contain bg-white shrink-0"
-                  />
-                ) : (
-                  <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center shrink-0">
-                    <BuildingLibraryIcon className="w-5 h-5 text-gray-400" />
-                  </div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-gray-900 dark:text-white">{inst.name}</span>
-                    {inst.oauth && (
-                      <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                        OAuth
-                      </span>
-                    )}
-                    {inst.url && (
-                      <a
-                        href={inst.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-ocean-blue hover:underline inline-flex items-center gap-1"
-                      >
-                        site <ArrowTopRightOnSquareIcon className="w-3 h-3" />
-                      </a>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-400 font-mono mt-0.5">{inst.institution_id}</p>
-                  {inst.products.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {inst.products.map((p) => (
-                        <span
-                          key={p}
-                          className="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-                        >
-                          {p}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+          ) : searching ? (
+            <p className="text-sm text-gray-400">Searching Plaid…</p>
+          ) : results && results.length === 0 ? (
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              No institution in Plaid's directory matches "{query.trim()}".
+            </p>
+          ) : results ? (
+            <>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                <span className="font-semibold text-gray-700 dark:text-gray-200">{results.length}</span> match
+                {results.length === 1 ? "" : "es"} for "{query.trim()}".
+              </p>
+              <div className="space-y-2 max-h-[32rem] overflow-y-auto pr-1">
+                {results.map((inst) => (
+                  <InstitutionRow key={inst.institution_id} inst={inst} />
+                ))}
+              </div>
+            </>
+          ) : null
+        ) : (
+          /* ── Browsing: paged /institutions/get, scrollable ── */
+          <>
+            {browseError && (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300 mb-3">
+                <ExclamationTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <div className="font-semibold">Could not load Plaid's institution directory.</div>
+                  <div className="mt-0.5 font-mono text-xs break-all">{browseError}</div>
+                  <button
+                    onClick={loadMoreBanks}
+                    disabled={browseLoading}
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold underline disabled:opacity-50"
+                  >
+                    <ArrowPathIcon className={`w-3.5 h-3.5 ${browseLoading ? "animate-spin" : ""}`} /> Try again
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
-        ) : null}
+            )}
+
+            {browse.length > 0 && (
+              <>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  Showing <span className="font-semibold text-gray-700 dark:text-gray-200">{browse.length}</span>
+                  {browseTotal !== null && <> of <span className="font-semibold text-gray-700 dark:text-gray-200">{browseTotal.toLocaleString()}</span></>}{" "}
+                  US institutions — scroll the list, or search above to jump to one.
+                </p>
+                <div className="space-y-2 max-h-[32rem] overflow-y-auto pr-1">
+                  {browse.map((inst) => (
+                    <InstitutionRow key={inst.institution_id} inst={inst} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {browseLoading && (
+              <p className="text-sm text-gray-400 mt-3">
+                {browse.length === 0 ? "Loading Plaid's institution directory…" : "Loading more banks…"}
+              </p>
+            )}
+
+            {!browseLoading && !browseError && browse.length === 0 && (
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Plaid returned no institutions for the US directory.
+              </p>
+            )}
+
+            {browse.length > 0 && !browseLoading && (
+              browseDone ? (
+                <p className="text-xs text-gray-400 mt-3">End of the directory — all {browse.length.toLocaleString()} loaded.</p>
+              ) : (
+                <button
+                  onClick={loadMoreBanks}
+                  className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Load {BROWSE_PAGE} more
+                </button>
+              )
+            )}
+          </>
+        )}
 
         <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">
           An <span className="font-semibold">OAuth</span> badge means the bank requires Plaid's OAuth flow — which only
-          works for us if that bank is on the enabled list above.
+          works for us if that bank is on the enabled list above. The directory order is Plaid's own; it is not ranked
+          by size or relevance.
         </p>
       </Card>
     </div>

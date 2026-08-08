@@ -194,6 +194,23 @@ export async function searchInstitutions(query: string, count = 25): Promise<Pla
   return res.institutions ?? [];
 }
 
+export interface PlaidInstitutionPage {
+  institutions: PlaidInstitution[];
+  /** Plaid's directory size for the requested country codes — null if it didn't say. */
+  total: number | null;
+}
+
+/** One page of Plaid's institution directory, for browsing without a query.
+ * Plaid caps /institutions/get at 500 per call; page through with `offset`. */
+export async function listInstitutions(offset = 0, count = 50): Promise<PlaidInstitutionPage> {
+  const res = await callPlaidInstitutions<{ institutions: PlaidInstitution[]; total: number | null }>({
+    action: "list",
+    count: Math.min(500, Math.max(1, count)),
+    offset: Math.max(0, offset),
+  });
+  return { institutions: res.institutions ?? [], total: typeof res.total === "number" ? res.total : null };
+}
+
 export interface PlaidRemediationItem {
   id: string;
   label: string;
