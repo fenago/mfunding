@@ -10,6 +10,9 @@ import {
   MagnifyingGlassIcon,
   ClipboardDocumentIcon,
   StarIcon,
+  FunnelIcon,
+  AcademicCapIcon,
+  ArrowsPointingInIcon,
 } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
 import supabase from "@/supabase";
@@ -51,6 +54,34 @@ const BANDS: Band[] = [
   { id: "inactive", statuses: ["inactive", "rejected"], label: "Inactive / Rejected", sub: "Out of rotation — kept for reference", defaultOpen: false, accent: "bg-gray-400" },
 ];
 
+// ── Categorization payload (lenders.category jsonb) ───────────────────────────
+// Written by the lender-categorization pass. Every field is optional on purpose:
+// older rows have no category at all, and the page must still render.
+type PaperTier = "A" | "B" | "C" | "D" | "all_credit";
+type LenderCategory = {
+  relationship?: string | null;
+  products?: string[] | null;
+  size_tier?: string | null;
+  paper?: PaperTier[] | null;
+  // `type` is a string on most rows but an array where a funder does both
+  // structures (e.g. Funderial) — always read it through consoTypes().
+  consolidation?: { type?: string | string[] | null; confidence?: string | null; note?: string | null } | null;
+  flags?: {
+    sba?: boolean;
+    real_estate?: boolean;
+    micro?: boolean;
+    first_position_only?: boolean;
+    high_risk_dpaper?: boolean;
+    fast_funding?: boolean;
+    consolidation?: boolean;
+    equipment?: boolean;
+    factoring?: boolean;
+  } | null;
+  known_for?: string | null;
+  deal_fit?: string | null;
+  confidence?: string | null;
+};
+
 type Lender = {
   id: string;
   company_name: string;
@@ -63,6 +94,35 @@ type Lender = {
   min_credit_score: number | null;
   website: string | null;
   notes: string | null;
+  category?: LenderCategory | null;
+};
+
+const cat = (l: Lender): LenderCategory => l.category ?? {};
+const flags = (l: Lender) => cat(l).flags ?? {};
+const paperOf = (l: Lender): PaperTier[] => cat(l).paper ?? [];
+
+// The consolidation "type" is one string on most rows and an array where a funder
+// does both structures. Normalize to a lowercase list once, so the call-out and
+// the filters agree on what "reverse" vs "true payoff" means.
+const consoTypes = (l: Lender): string[] => {
+  const t = cat(l).consolidation?.type;
+  const raw = Array.isArray(t) ? t : t == null ? [] : [t];
+  return raw.map((x) => String(x).toLowerCase().trim()).filter((x) => x !== "" && x !== "none");
+};
+const isConsolidation = (l: Lender) => flags(l).consolidation === true || consoTypes(l).length > 0;
+const isReverseConso = (l: Lender) => consoTypes(l).some((t) => /reverse|both/.test(t));
+const isTruePayoffConso = (l: Lender) => consoTypes(l).some((t) => /payoff|true|both/.test(t));
+// Debt-relief restructure is NOT a consolidation advance — it gets its own lane.
+const isRestructure = (l: Lender) => consoTypes(l).some((t) => /restructure|relief|settle/.test(t));
+
+const consoLabel = (l: Lender) => {
+  if (isRestructure(l)) return "Debt-relief restructure";
+  const rev = isReverseConso(l);
+  const payoff = isTruePayoffConso(l);
+  if (rev && payoff) return "Reverse + true payoff";
+  if (rev) return "Reverse consolidation";
+  if (payoff) return "True payoff";
+  return "Consolidation";
 };
 
 // ── Derivations ───────────────────────────────────────────────────────────────
@@ -151,6 +211,67 @@ const isMicroMca = (l: Lender) =>
 // are pending ISO approval right now; their live status is read from the DB row.
 const MICRO_HOUSE_PICKS = ["Bitty Advance", "Greenbox Capital"];
 
+// ── Paper-tier + bucket filters ───────────────────────────────────────────────
+// "all_credit" means the funder doesn't screen on grade, so it satisfies every
+// tier rather than none.
+const PAPER_TIERS: PaperTier[] = ["A", "B", "C", "D"];
+const doesPaper = (l: Lender, tier: PaperTier) => {
+  const p = paperOf(l);
+  return p.includes(tier) || p.includes("all_credit");
+};
+
+const relOf = (l: Lender) => (cat(l).relationship ?? "").toLowerCase();
+const catProducts = (l: Lender) => (cat(l).products ?? []).map((p) => p.toLowerCase());
+const hasCatProduct = (l: Lender, rx: RegExp) => catProducts(l).some((p) => rx.test(p));
+
+type Bucket = { id: string; label: string; test: (l: Lender) => boolean };
+const BUCKETS: Bucket[] = [
+  { id: "mca", label: "MCA", test: (l) => hasType(l, MCA_FAMILY) || hasCatProduct(l, /mca|advance|revenue/) },
+  { id: "sba", label: "SBA", test: (l) => flags(l).sba === true || hasType(l, ["sba"]) },
+  {
+    id: "real_estate",
+    label: "Real estate",
+    test: (l) => flags(l).real_estate === true || hasCatProduct(l, /real.?estate|\bcre\b|bridge/),
+  },
+  {
+    id: "equipment",
+    label: "Equipment",
+    test: (l) => flags(l).equipment === true || hasType(l, ["equipment"]) || hasCatProduct(l, /equipment/),
+  },
+  {
+    id: "micro",
+    label: "Micro",
+    test: (l) => flags(l).micro === true || (cat(l).size_tier ?? "").toLowerCase() === "micro" || isMicroMca(l),
+  },
+  {
+    id: "referral",
+    label: "Referral",
+    test: (l) => /referral|affiliate/.test(relOf(l)) || l.status === "affiliate_referral",
+  },
+  { id: "marketplace", label: "Marketplace", test: (l) => /marketplace|aggregator/.test(relOf(l)) },
+  {
+    id: "direct",
+    label: "Direct funder",
+    // Anyone who puts up the capital themselves — direct funders plus factoring
+    // companies, equipment lessors and white-label programs. Excludes the
+    // marketplaces and referral partners (they route the merchant on) and
+    // software vendors (not funders at all). Degrades for uncategorized rows.
+    test: (l) => {
+      const r = relOf(l);
+      if (!r) return l.status !== "affiliate_referral" && !isReferralModel(l);
+      return !/marketplace|aggregator|referral|affiliate|software|vendor/.test(r);
+    },
+  },
+];
+
+type ConsoFilter = "any" | "consolidation" | "reverse" | "true_payoff";
+const CONSO_FILTERS: { id: ConsoFilter; label: string }[] = [
+  { id: "any", label: "All" },
+  { id: "consolidation", label: "Consolidation only" },
+  { id: "reverse", label: "Reverse only" },
+  { id: "true_payoff", label: "True-payoff only" },
+];
+
 // ── Referral-channel curated links ────────────────────────────────────────────
 // The specific broker/referral portals the owner works — buried in freeform
 // notes, so pinned here. Each renders only if a matching live DB row exists, and
@@ -196,11 +317,18 @@ const REFERRAL_PARTNERS: RefPartner[] = [
   },
 ];
 
+const LENDER_COLS =
+  "id, company_name, status, lender_types, min_funding_amount, max_funding_amount, min_monthly_revenue, min_time_in_business, min_credit_score, website, notes";
+
 export default function LenderCatalogPage() {
   const [lenders, setLenders] = useState<Lender[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [categoryMissing, setCategoryMissing] = useState(false);
   const [productFilter, setProductFilter] = useState<string | null>(null); // null = All
+  const [paperFilter, setPaperFilter] = useState<PaperTier | null>(null); // null = All
+  const [consoFilter, setConsoFilter] = useState<ConsoFilter>("any");
+  const [bucketFilter, setBucketFilter] = useState<string | null>(null); // null = All
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [openBands, setOpenBands] = useState<Set<string>>(
     () => new Set(BANDS.filter((b) => b.defaultOpen).map((b) => b.id)),
@@ -212,11 +340,22 @@ export default function LenderCatalogPage() {
     try {
       const { data, error: err } = await supabase
         .from("lenders")
-        .select(
-          "id, company_name, status, lender_types, min_funding_amount, max_funding_amount, min_monthly_revenue, min_time_in_business, min_credit_score, website, notes",
-        )
+        .select(`${LENDER_COLS}, category`)
         .order("company_name");
-      if (err) throw err;
+      if (err) {
+        // The category column ships with the categorization migration. Until it
+        // lands, fall back to the base columns so the catalog still renders —
+        // but say so loudly instead of silently showing empty paper tiers.
+        if (err.code === "42703" || /column .*category/i.test(err.message ?? "")) {
+          const fb = await supabase.from("lenders").select(LENDER_COLS).order("company_name");
+          if (fb.error) throw fb.error;
+          setLenders((fb.data ?? []) as Lender[]);
+          setCategoryMissing(true);
+          return;
+        }
+        throw err;
+      }
+      setCategoryMissing(false);
       setLenders((data ?? []) as Lender[]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load lenders");
@@ -238,12 +377,42 @@ export default function LenderCatalogPage() {
   }, [fetchLenders]);
 
   const activeProduct = PRODUCTS.find((p) => p.id === productFilter) ?? null;
+  const activeBucket = BUCKETS.find((b) => b.id === bucketFilter) ?? null;
 
-  // The product filter narrows both table and analysis to the selected product.
+  // All four filters AND together and narrow both the table and the analysis.
   const matchesFilter = useCallback(
-    (l: Lender) => (activeProduct ? doesProduct(l, activeProduct) : true),
-    [activeProduct],
+    (l: Lender) => {
+      if (activeProduct && !doesProduct(l, activeProduct)) return false;
+      if (paperFilter && !doesPaper(l, paperFilter)) return false;
+      if (activeBucket && !activeBucket.test(l)) return false;
+      if (consoFilter === "consolidation" && !isConsolidation(l)) return false;
+      if (consoFilter === "reverse" && !isReverseConso(l)) return false;
+      if (consoFilter === "true_payoff" && !isTruePayoffConso(l)) return false;
+      return true;
+    },
+    [activeProduct, paperFilter, activeBucket, consoFilter],
   );
+
+  const activeFilterCount =
+    (activeProduct ? 1 : 0) + (paperFilter ? 1 : 0) + (activeBucket ? 1 : 0) + (consoFilter !== "any" ? 1 : 0);
+
+  const clearFilters = () => {
+    setProductFilter(null);
+    setPaperFilter(null);
+    setBucketFilter(null);
+    setConsoFilter("any");
+  };
+
+  // ── Consolidation shortlist — the stacked-book lifeline, always unfiltered ───
+  const consolidation = useMemo(() => {
+    const all = lenders
+      .filter(isConsolidation)
+      .sort((a, b) => statusRank(a.status) - statusRank(b.status) || a.company_name.localeCompare(b.company_name));
+    return {
+      funders: all.filter((l) => !isRestructure(l)),
+      restructure: all.filter(isRestructure),
+    };
+  }, [lenders]);
 
   // ── Counts strip (always over the full set, not the product filter) ─────────
   const counts = useMemo(() => {
@@ -327,6 +496,24 @@ export default function LenderCatalogPage() {
         </div>
       </div>
 
+      {categoryMissing && (
+        <div className="mb-5 flex items-start gap-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0" />
+          <span>
+            <b>Lender categorization not deployed yet.</b> The <code>lenders.category</code> column is
+            missing, so paper tiers, the consolidation shortlist, and the paper / consolidation /
+            bucket filters will come up empty. Everything else on this page is live.
+          </span>
+        </div>
+      )}
+
+      {/* ── Education: how to match a deal to a funder ── */}
+      <PaperEducation />
+      <ConsolidationEducation />
+
+      {/* ── Consolidation shortlist ── */}
+      {!loading && !error && <ConsolidationCallout groups={consolidation} />}
+
       {/* Counts strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         {[
@@ -345,32 +532,82 @@ export default function LenderCatalogPage() {
         ))}
       </div>
 
-      {/* Product filter chips */}
-      <div className="flex flex-wrap items-center gap-2 mb-5">
-        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Product:</span>
-        <button
-          onClick={() => setProductFilter(null)}
-          className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-            productFilter === null
-              ? "bg-ocean-blue text-white border-ocean-blue"
-              : "border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:border-ocean-blue"
-          }`}
-        >
-          All
-        </button>
-        {PRODUCTS.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => setProductFilter(productFilter === p.id ? null : p.id)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-              productFilter === p.id
-                ? "bg-ocean-blue text-white border-ocean-blue"
-                : "border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:border-ocean-blue"
+      {/* ── Filters ── */}
+      <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 p-4 mb-5 space-y-2.5">
+        <div className="flex items-center gap-2">
+          <FunnelIcon className="w-4 h-4 text-ocean-blue" />
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Filters</h2>
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+              activeFilterCount
+                ? "bg-ocean-blue/15 text-ocean-blue"
+                : "bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500"
             }`}
           >
-            {p.label}
-          </button>
-        ))}
+            {activeFilterCount} active
+          </span>
+          {activeFilterCount > 0 && (
+            <button
+              onClick={clearFilters}
+              className="ml-auto text-xs font-medium text-gray-500 hover:text-gray-700 dark:hover:text-gray-200 underline"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+
+        <FilterRow label="Product">
+          <FilterChip active={productFilter === null} onClick={() => setProductFilter(null)}>
+            All
+          </FilterChip>
+          {PRODUCTS.map((p) => (
+            <FilterChip
+              key={p.id}
+              active={productFilter === p.id}
+              onClick={() => setProductFilter(productFilter === p.id ? null : p.id)}
+            >
+              {p.label}
+            </FilterChip>
+          ))}
+        </FilterRow>
+
+        <FilterRow label="Paper tier">
+          <FilterChip active={paperFilter === null} onClick={() => setPaperFilter(null)}>
+            All
+          </FilterChip>
+          {PAPER_TIERS.map((t) => (
+            <FilterChip
+              key={t}
+              active={paperFilter === t}
+              onClick={() => setPaperFilter(paperFilter === t ? null : t)}
+            >
+              {t} paper
+            </FilterChip>
+          ))}
+        </FilterRow>
+
+        <FilterRow label="Consolidation">
+          {CONSO_FILTERS.map((c) => (
+            <FilterChip key={c.id} active={consoFilter === c.id} onClick={() => setConsoFilter(c.id)}>
+              {c.label}
+            </FilterChip>
+          ))}
+        </FilterRow>
+
+        <FilterRow label="Bucket">
+          <FilterChip active={bucketFilter === null} onClick={() => setBucketFilter(null)}>
+            All
+          </FilterChip>
+          {BUCKETS.map((b) => (
+            <FilterChip
+              key={b.id}
+              active={bucketFilter === b.id}
+              onClick={() => setBucketFilter(bucketFilter === b.id ? null : b.id)}
+            >
+              {b.label}
+            </FilterChip>
+          ))}
+        </FilterRow>
       </div>
 
       {error ? (
@@ -437,7 +674,7 @@ export default function LenderCatalogPage() {
                   {open &&
                     (rows.length === 0 ? (
                       <div className="px-4 py-6 text-center text-sm text-gray-400 dark:text-gray-500 border-t border-gray-100 dark:border-gray-700/50">
-                        {activeProduct ? `No ${activeProduct.label} lenders in this band.` : "No lenders in this band."}
+                        {activeFilterCount ? "No lenders in this band match the current filters." : "No lenders in this band."}
                       </div>
                     ) : (
                       <div className="overflow-x-auto border-t border-gray-100 dark:border-gray-700/50">
@@ -490,6 +727,315 @@ export default function LenderCatalogPage() {
           <OfferingsSection lenders={lenders} analysis={analysis} />
         </>
       )}
+    </div>
+  );
+}
+
+// ── Filter primitives ─────────────────────────────────────────────────────────
+function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs font-medium text-gray-500 dark:text-gray-400 w-[92px] flex-shrink-0">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+        active
+          ? "bg-ocean-blue text-white border-ocean-blue"
+          : "border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:border-ocean-blue"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Category chips ────────────────────────────────────────────────────────────
+const PAPER_CHIP: Record<PaperTier, string> = {
+  A: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  B: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+  C: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+  D: "bg-red-500/15 text-red-600 dark:text-red-400",
+  all_credit: "bg-violet-500/15 text-violet-600 dark:text-violet-400",
+};
+
+function PaperChips({ lender }: { lender: Lender }) {
+  const tiers = paperOf(lender);
+  if (tiers.length === 0) return null;
+  return (
+    <>
+      {tiers.map((t) => (
+        <span
+          key={t}
+          title={t === "all_credit" ? "Funds all credit grades" : `${t} paper`}
+          className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${PAPER_CHIP[t] ?? "bg-gray-400/15 text-gray-500"}`}
+        >
+          {t === "all_credit" ? "All credit" : t}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function ConsoBadge({ lender }: { lender: Lender }) {
+  if (!isConsolidation(lender)) return null;
+  const restructure = isRestructure(lender);
+  return (
+    <span
+      title={cat(lender).consolidation?.note ?? undefined}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap ${
+        restructure
+          ? "bg-purple-500/15 text-purple-600 dark:text-purple-400"
+          : "bg-mint-green/15 text-mint-green"
+      }`}
+    >
+      <ArrowsPointingInIcon className="w-3 h-3" /> {consoLabel(lender)}
+    </span>
+  );
+}
+
+// ── Education: paper tiers ────────────────────────────────────────────────────
+// Collapsible but open by default — this is the matching guide, not reference
+// material you go looking for.
+function Explainer({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden mb-4">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2.5 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40"
+      >
+        {open ? (
+          <ChevronDownIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+        ) : (
+          <ChevronRightIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+        )}
+        {icon}
+        <span className="font-semibold text-gray-900 dark:text-white">{title}</span>
+      </button>
+      {open && <div className="px-4 pb-4 border-t border-gray-100 dark:border-gray-700/50 pt-3">{children}</div>}
+    </div>
+  );
+}
+
+type PaperRow = { tier: string; chip: string; profile: string; pricing: string; who: string };
+const PAPER_ROWS: PaperRow[] = [
+  {
+    tier: "A paper",
+    chip: PAPER_CHIP.A,
+    profile:
+      "Strong: ~680+ FICO, 2+ yrs in business, healthy consistent revenue, no existing MCAs, clean statements (no NSFs, good balances)",
+    pricing: "Low factor (~1.10–1.25), longer terms (12–18mo), often weekly/monthly",
+    who: "Bank-like / prime funders (Kapitus, BriteCap, IOU, Vox, Nationwide)",
+  },
+  {
+    tier: "B paper",
+    chip: PAPER_CHIP.B,
+    profile: "Good-not-perfect: ~600–680 FICO, decent revenue, 0–1 existing position, minor blemishes",
+    pricing: "Factor ~1.25–1.35, terms ~6–12mo",
+    who: "Most mainstream MCA funders",
+  },
+  {
+    tier: "C paper",
+    chip: PAPER_CHIP.C,
+    profile: "Subprime: ~500–600 FICO, shorter history, some NSFs/negative days, 1–2 stacked positions",
+    pricing: "Factor ~1.35–1.45, terms ~3–6mo, daily payments",
+    who: "High-risk MCA shops",
+  },
+  {
+    tier: "D paper",
+    chip: PAPER_CHIP.D,
+    profile:
+      "Bottom tier: <500 FICO, heavily stacked (multiple positions), frequent NSFs/negative days, distressed",
+    pricing: "Factor ~1.45–1.49+, short terms (2–4mo), daily debits, smaller amounts",
+    who: "Last-resort funders who'll stack onto already-stacked merchants",
+  },
+];
+
+function PaperEducation() {
+  return (
+    <Explainer icon={<AcademicCapIcon className="w-5 h-5 text-mint-green" />} title="What A / B / C / D paper means">
+      <p className="text-sm text-gray-600 dark:text-gray-300 mb-3 max-w-4xl leading-relaxed">
+        <b>Paper</b> = the credit quality / risk grade of the merchant, which determines who'll fund
+        them, at what cost, and on what terms. The single most important thing for matching a deal to
+        the right funder.
+      </p>
+
+      <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="text-left bg-gray-50 dark:bg-gray-900/40 text-gray-500 dark:text-gray-400">
+              <th className="py-2.5 px-3 font-semibold whitespace-nowrap">Tier</th>
+              <th className="py-2.5 px-3 font-semibold min-w-[260px]">Merchant profile</th>
+              <th className="py-2.5 px-3 font-semibold min-w-[220px]">Pricing &amp; terms</th>
+              <th className="py-2.5 px-3 font-semibold min-w-[220px]">Who funds it</th>
+            </tr>
+          </thead>
+          <tbody>
+            {PAPER_ROWS.map((r) => (
+              <tr key={r.tier} className="border-t border-gray-100 dark:border-gray-700/50 align-top">
+                <td className="py-2.5 px-3">
+                  <span className={`inline-block px-2 py-0.5 rounded-md text-xs font-bold whitespace-nowrap ${r.chip}`}>
+                    {r.tier}
+                  </span>
+                </td>
+                <td className="py-2.5 px-3 text-gray-700 dark:text-gray-200 leading-snug">{r.profile}</td>
+                <td className="py-2.5 px-3 text-gray-700 dark:text-gray-200 leading-snug">{r.pricing}</td>
+                <td className="py-2.5 px-3 text-gray-700 dark:text-gray-200 leading-snug">{r.who}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-3 rounded-xl border-l-4 border-amber-400 bg-amber-50 dark:bg-amber-900/20 px-4 py-3">
+        <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-1">
+          Rule of thumb
+        </p>
+        <p className="text-sm text-amber-900 dark:text-amber-100 leading-relaxed max-w-4xl">
+          The further toward D, the worse the credit, the higher the cost, the shorter the term — but
+          the more willing the funder is to touch a stacked or blemished merchant. Sending an{" "}
+          <b>A-paper merchant to a D-paper funder overprices them</b> (you lose the deal); sending a{" "}
+          <b>D-paper merchant to an A-paper funder gets an instant decline</b>.
+        </p>
+      </div>
+    </Explainer>
+  );
+}
+
+function ConsolidationEducation() {
+  return (
+    <Explainer
+      icon={<ArrowsPointingInIcon className="w-5 h-5 text-mint-green" />}
+      title="Consolidation / Reverse-consolidation"
+    >
+      <p className="text-sm text-gray-600 dark:text-gray-300 mb-3 max-w-4xl leading-relaxed">
+        A distinct product — the lifeline for over-stacked merchants. A consolidation /
+        reverse-consolidation funder either pays off the merchant's multiple MCAs or advances against
+        them to replace several daily debits with one lower payment.{" "}
+        <span className="text-gray-500 dark:text-gray-400">
+          (We saw this live with Bay Finish — stacked on CFG + SBFS, couldn't afford a new advance;
+          needed a consolidation.)
+        </span>
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+          <h4 className="font-semibold text-gray-900 dark:text-white text-sm mb-1">True consolidation / payoff</h4>
+          <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+            The funder <b>pays the existing positions off</b> and folds them into one new advance. The
+            old MCAs are gone; the merchant is left with a single balance and a single payment.
+          </p>
+        </div>
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+          <h4 className="font-semibold text-gray-900 dark:text-white text-sm mb-1">Reverse consolidation</h4>
+          <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+            The funder <b>deposits money to cover the existing payments</b> as they come due — the old
+            positions stay in place. The merchant makes one smaller payment to the consolidator over a
+            longer term.
+          </p>
+        </div>
+      </div>
+    </Explainer>
+  );
+}
+
+// ── Consolidation shortlist — the stacked-book call-out ───────────────────────
+function ConsolidationCallout({ groups }: { groups: { funders: Lender[]; restructure: Lender[] } }) {
+  const { funders, restructure } = groups;
+  return (
+    <div className="rounded-2xl border-2 border-mint-green/50 bg-mint-green/5 dark:bg-mint-green/[0.07] overflow-hidden mb-5">
+      <div className="h-1 bg-mint-green" />
+      <div className="p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <ArrowsPointingInIcon className="w-5 h-5 text-mint-green" />
+          <h2 className="font-bold text-gray-900 dark:text-white">Consolidation funders — the stacked-book shortlist</h2>
+          <span className="text-sm font-bold text-gray-900 dark:text-white tabular-nums ml-auto">{funders.length}</span>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          Who to call when the merchant is stacked and can't carry another daily debit.
+        </p>
+
+        {funders.length === 0 ? (
+          <p className="text-xs text-gray-400 dark:text-gray-500 italic">
+            No consolidation funders flagged in the network yet — this fills in from each lender's
+            categorization.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {funders.map((l) => (
+              <li
+                key={l.id}
+                className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link to={`/admin/lenders/${l.id}`} className="font-semibold text-ocean-blue hover:underline text-sm">
+                    {l.company_name}
+                  </Link>
+                  <ConsoBadge lender={l} />
+                  <PaperChips lender={l} />
+                  <StatusChip status={l.status} />
+                  <span className="text-xs text-gray-400 dark:text-gray-500 tabular-nums ml-auto whitespace-nowrap">
+                    {sizeRange(l)}
+                  </span>
+                </div>
+                {(cat(l).consolidation?.note || cat(l).deal_fit) && (
+                  <p className="text-xs text-gray-600 dark:text-gray-300 mt-1 leading-snug">
+                    {cat(l).consolidation?.note || cat(l).deal_fit}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {restructure.length > 0 && (
+          <div className="mt-4 rounded-xl border-l-4 border-purple-400 bg-purple-50 dark:bg-purple-900/20 px-3 py-2.5">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-purple-700 dark:text-purple-300 mb-1.5">
+              Debt-relief referral — not a consolidation advance
+            </p>
+            <ul className="space-y-1.5">
+              {restructure.map((l) => (
+                <li key={l.id}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link to={`/admin/lenders/${l.id}`} className="font-semibold text-ocean-blue hover:underline text-sm">
+                      {l.company_name}
+                    </Link>
+                    <ConsoBadge lender={l} />
+                    <StatusChip status={l.status} />
+                  </div>
+                  <p className="text-xs text-purple-900 dark:text-purple-100 mt-0.5 leading-snug">
+                    {cat(l).consolidation?.note ||
+                      "Restructures the merchant's existing positions — for distressed / near-default merchants, not a reverse consolidation."}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -931,7 +1477,7 @@ function RowFragment({
     <>
       <tr className="border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30">
         <td className="py-2.5 px-4">
-          <button onClick={onToggle} className="flex items-center gap-2 text-left group">
+          <button onClick={onToggle} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-left group">
             {expanded ? (
               <ChevronDownIcon className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
             ) : (
@@ -949,7 +1495,17 @@ function RowFragment({
                 <ExclamationTriangleIcon className="w-3 h-3" /> Not a funder
               </span>
             )}
+            <PaperChips lender={lender} />
+            <ConsoBadge lender={lender} />
           </button>
+          {lender.category?.known_for && (
+            <p
+              title={lender.category.known_for}
+              className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 pl-[22px] leading-snug max-w-[340px] truncate"
+            >
+              {lender.category.known_for}
+            </p>
+          )}
         </td>
         {PRODUCTS.map((p) => (
           <td key={p.id} className="py-2.5 px-2 text-center">
@@ -983,7 +1539,27 @@ function RowFragment({
       </tr>
       {expanded && (
         <tr className="bg-gray-50 dark:bg-gray-900/30">
-          <td colSpan={PRODUCTS.length + 6} className="px-4 py-3">
+          <td colSpan={PRODUCTS.length + 6} className="px-4 py-3 space-y-2">
+            {lender.category?.deal_fit && (
+              <div className="rounded-lg border-l-4 border-mint-green bg-mint-green/10 px-3 py-2 max-w-3xl">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-mint-green mb-0.5">
+                  What to send them
+                </p>
+                <p className="text-xs text-gray-700 dark:text-gray-200 leading-relaxed">{lender.category.deal_fit}</p>
+              </div>
+            )}
+            {lender.category?.known_for && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 max-w-3xl">
+                <span className="font-semibold text-gray-600 dark:text-gray-300">Known for:</span>{" "}
+                {lender.category.known_for}
+              </p>
+            )}
+            {lender.category?.consolidation?.note && isConsolidation(lender) && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 max-w-3xl">
+                <span className="font-semibold text-gray-600 dark:text-gray-300">{consoLabel(lender)}:</span>{" "}
+                {lender.category.consolidation.note}
+              </p>
+            )}
             {lender.notes ? (
               <p className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap break-words leading-relaxed max-w-3xl">
                 {lender.notes}
