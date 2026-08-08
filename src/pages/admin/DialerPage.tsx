@@ -55,6 +55,19 @@ interface AccountDaily {
   dashboard_last_updated: string | null;
   dashboard_message: string | null;
   synced_at: string;
+  // The poller stashes the campaign list here so the campaign filter still has
+  // options on a day that produced zero disposition rows.
+  raw: { campaigns?: unknown[] } | null;
+}
+
+interface DispositionDaily {
+  stat_date: string;
+  campaign_id: string;
+  campaign_title: string | null;
+  member_id: string;
+  agent_name: string | null;
+  disposition: string;
+  cnt: number;
 }
 
 // Credits are consumed per dial, so a low balance silently stops the floor.
@@ -209,6 +222,32 @@ const COLUMNS: Column[] = [
   },
 ];
 
+// ── Disposition tone ─────────────────────────────────────────────────────────
+// HotProspector disposition labels are free text set per account, so these are
+// heuristics on the label, not a fixed enum. NEGATIVE is tested first: "Not
+// Interested" contains "Interested" and must never read as a win.
+function dispositionTone(label: string): "good" | "bad" | "neutral" {
+  const l = label.toLowerCase();
+  if (/\b(not interested|no answer|dnc|do not call|wrong|bad number|disconnect|dead|unqualified|declin)/.test(l)) {
+    return "bad";
+  }
+  if (/\b(hot lead|appointment|appt|sale|sold|qualified|interested|transfer|closed won|booked)/.test(l)) {
+    return "good";
+  }
+  return "neutral";
+}
+
+const TONE_TEXT: Record<"good" | "bad" | "neutral", string> = {
+  good: "text-emerald-600 dark:text-emerald-400 font-semibold",
+  bad: "text-gray-500 dark:text-gray-400",
+  neutral: "text-gray-700 dark:text-gray-300",
+};
+const TONE_BAR: Record<"good" | "bad" | "neutral", string> = {
+  good: "bg-emerald-500",
+  bad: "bg-gray-300 dark:bg-gray-600",
+  neutral: "bg-sky-400",
+};
+
 // ── Trend metric options ─────────────────────────────────────────────────────
 type TrendKey = "calls" | "convos" | "appts";
 const TREND_META: Record<TrendKey, { label: string; value: (r: AgentDaily) => number | null }> = {
@@ -223,6 +262,8 @@ export default function DialerPage() {
   const [trend, setTrend] = useState<AgentDaily[]>([]);
   const [account, setAccount] = useState<AccountDaily | null>(null);
   const [latestAccount, setLatestAccount] = useState<AccountDaily | null>(null);
+  const [dispositions, setDispositions] = useState<DispositionDaily[]>([]);
+  const [campaignFilter, setCampaignFilter] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "calls", desc: true });
@@ -237,19 +278,22 @@ export default function DialerPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
-    const [agentRes, trendRes, acctRes, latestAcctRes] = await Promise.all([
+    const [agentRes, trendRes, acctRes, latestAcctRes, dispRes] = await Promise.all([
       supabase.from("hotprospector_agent_daily").select("*").eq("stat_date", date),
       supabase.from("hotprospector_agent_daily").select("*")
         .gte("stat_date", trendStart).lte("stat_date", date).order("stat_date"),
       supabase.from("hotprospector_account_daily").select("*").eq("stat_date", date).maybeSingle(),
       supabase.from("hotprospector_account_daily").select("*")
         .order("synced_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("hotprospector_disposition_daily")
+        .select("stat_date, campaign_id, campaign_title, member_id, agent_name, disposition, cnt")
+        .eq("stat_date", date),
     ]);
     // Loud on failure — a read error must never render as an empty floor.
-    const err = agentRes.error || trendRes.error || acctRes.error || latestAcctRes.error;
+    const err = agentRes.error || trendRes.error || acctRes.error || latestAcctRes.error || dispRes.error;
     if (err) {
       setLoadError(err.message);
-      setAgents([]); setTrend([]); setAccount(null); setLatestAccount(null);
+      setAgents([]); setTrend([]); setAccount(null); setLatestAccount(null); setDispositions([]);
       setLoading(false);
       return;
     }
@@ -257,6 +301,7 @@ export default function DialerPage() {
     setTrend((trendRes.data ?? []) as AgentDaily[]);
     setAccount((acctRes.data ?? null) as AccountDaily | null);
     setLatestAccount((latestAcctRes.data ?? null) as AccountDaily | null);
+    setDispositions((dispRes.data ?? []) as DispositionDaily[]);
     setLoading(false);
   }, [date, trendStart]);
 
@@ -350,6 +395,64 @@ export default function DialerPage() {
     for (const rep of trendByRep) for (const v of rep.byDay.values()) if (v !== null && v > max) max = v;
     return max;
   }, [trendByRep]);
+
+  // ── Dispositions ───────────────────────────────────────────────────────────
+  // Campaign options come from the stored campaign list (so the filter exists even
+  // on a zero-disposition day) unioned with whatever campaigns actually produced
+  // rows — a campaign that vanished from the account still explains old data.
+  const campaignOptions = useMemo(() => {
+    const opts = new Map<string, string>();
+    const listed = (account?.raw?.campaigns ?? latestAccount?.raw?.campaigns ?? []) as Record<string, unknown>[];
+    for (const c of listed) {
+      const id = c?.campaign_id ?? c?.campaignId ?? c?.id;
+      if (id === undefined || id === null) continue;
+      const title = c?.CampaignTitle ?? c?.campaign_title ?? c?.title ?? c?.name;
+      opts.set(String(id), title ? String(title) : `Campaign ${id}`);
+    }
+    for (const d of dispositions) {
+      if (!opts.has(d.campaign_id)) opts.set(d.campaign_id, d.campaign_title ?? `Campaign ${d.campaign_id}`);
+    }
+    return [...opts.entries()].map(([id, title]) => ({ id, title }));
+  }, [account, latestAccount, dispositions]);
+
+  const visibleDispositions = useMemo(
+    () => (campaignFilter === "all" ? dispositions : dispositions.filter((d) => d.campaign_id === campaignFilter)),
+    [dispositions, campaignFilter],
+  );
+
+  // Disposition → total, biggest first.
+  const dispositionTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const d of visibleDispositions) totals.set(d.disposition, (totals.get(d.disposition) ?? 0) + d.cnt);
+    return [...totals.entries()]
+      .map(([disposition, total]) => ({ disposition, total, tone: dispositionTone(disposition) }))
+      .sort((a, b) => b.total - a.total);
+  }, [visibleDispositions]);
+
+  const dispositionGrandTotal = useMemo(
+    () => dispositionTotals.reduce((s, d) => s + d.total, 0),
+    [dispositionTotals],
+  );
+
+  // Rep × disposition. A rep with no row for a disposition renders "—", not 0 —
+  // HotProspector simply didn't report that pairing.
+  const dispositionByRep = useMemo(() => {
+    const reps = new Map<string, { name: string; byDisposition: Map<string, number>; total: number; good: number }>();
+    for (const d of visibleDispositions) {
+      const rep = reps.get(d.member_id)
+        ?? { name: d.agent_name ?? d.member_id, byDisposition: new Map(), total: 0, good: 0 };
+      rep.name = d.agent_name ?? rep.name;
+      rep.byDisposition.set(d.disposition, (rep.byDisposition.get(d.disposition) ?? 0) + d.cnt);
+      rep.total += d.cnt;
+      if (dispositionTone(d.disposition) === "good") rep.good += d.cnt;
+      reps.set(d.member_id, rep);
+    }
+    // Best "positive" producer first — the question this table answers is
+    // "who is generating Hot Leads".
+    return [...reps.entries()]
+      .map(([id, r]) => ({ id, ...r }))
+      .sort((a, b) => b.good - a.good || b.total - a.total);
+  }, [visibleDispositions]);
 
   const credits = account?.credits ?? latestAccount?.credits ?? null;
   const creditTone =
@@ -583,6 +686,119 @@ export default function DialerPage() {
         </div>
       </div>
 
+      {/* ── Dispositions ── */}
+      <div className="card bg-base-100 shadow-sm border border-base-300">
+        <div className="card-body p-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h2 className="font-semibold text-gray-900 dark:text-white">
+                Dispositions — {prettyDate(date)}
+              </h2>
+              <p className="text-xs text-gray-500">
+                How dials ended, per campaign and per rep. Positive outcomes are highlighted.
+              </p>
+            </div>
+            <select
+              className="select select-sm select-bordered"
+              value={campaignFilter}
+              onChange={(e) => setCampaignFilter(e.target.value)}
+              disabled={campaignOptions.length === 0}
+            >
+              <option value="all">
+                {campaignOptions.length === 0 ? "No campaigns" : "All campaigns"}
+              </option>
+              {campaignOptions.map((c) => (
+                <option key={c.id} value={c.id}>{c.title}</option>
+              ))}
+            </select>
+          </div>
+
+          {loading ? (
+            <div className="text-gray-500 mt-3">Loading dispositions…</div>
+          ) : dispositionGrandTotal === 0 ? (
+            // Honest empty state — and say WHICH reason applies.
+            <div className="mt-3 text-sm space-y-1">
+              <div className="font-medium text-gray-900 dark:text-white">
+                No dispositions recorded for {campaignFilter === "all" ? "any campaign" : "this campaign"} on{" "}
+                {prettyDate(date)}.
+              </div>
+              <div className="text-gray-500">
+                {!account
+                  ? "No sync has run for this day yet — hit Refresh now."
+                  : (account.campaign_count ?? 0) === 0
+                    ? "HotProspector reports no dialer campaigns configured on the account, so there is nothing to break down yet. Dispositions appear once campaigns exist and reps start dialing them."
+                    : "The campaigns were pulled but HotProspector returned no disposition counts for this day."}
+              </div>
+            </div>
+          ) : (
+            <div className="mt-4 space-y-6">
+              {/* Totals */}
+              <div className="space-y-2">
+                {dispositionTotals.map((d) => (
+                  <div key={d.disposition} className="flex items-center gap-3">
+                    <div className={`w-44 shrink-0 text-sm ${TONE_TEXT[d.tone]}`}>{d.disposition}</div>
+                    <div className="flex-1 h-3 bg-base-200 rounded overflow-hidden">
+                      <div
+                        className={`h-full ${TONE_BAR[d.tone]}`}
+                        style={{ width: `${Math.max(2, Math.round((d.total / dispositionGrandTotal) * 100))}%` }}
+                      />
+                    </div>
+                    <div className="w-24 text-right text-sm tabular-nums">
+                      <span className={TONE_TEXT[d.tone]}>{d.total}</span>
+                      <span className="text-xs text-gray-400 ml-1">
+                        {Math.round((d.total / dispositionGrandTotal) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Rep × disposition */}
+              <div className="overflow-x-auto">
+                <table className="table table-sm">
+                  <thead>
+                    <tr>
+                      <th>Rep</th>
+                      {dispositionTotals.map((d) => (
+                        <th key={d.disposition} className={`whitespace-nowrap ${TONE_TEXT[d.tone]}`}>
+                          {d.disposition}
+                        </th>
+                      ))}
+                      <th className="whitespace-nowrap">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dispositionByRep.map((rep) => (
+                      <tr key={rep.id}>
+                        <td className="font-medium text-gray-900 dark:text-white whitespace-nowrap">{rep.name}</td>
+                        {dispositionTotals.map((d) => {
+                          const v = rep.byDisposition.get(d.disposition);
+                          return (
+                            <td key={d.disposition} className="tabular-nums">
+                              {v === undefined ? (
+                                <span
+                                  className="text-gray-300 dark:text-gray-600"
+                                  title="Not reported by HotProspector for this rep"
+                                >
+                                  —
+                                </span>
+                              ) : (
+                                <span className={d.tone === "good" ? TONE_TEXT.good : ""}>{v}</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="tabular-nums font-medium">{rep.total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* ── 7-day trend ── */}
       <div className="card bg-base-100 shadow-sm border border-base-300">
         <div className="card-body p-4">
@@ -653,8 +869,8 @@ export default function DialerPage() {
       <p className="text-xs text-gray-500">
         A dash means HotProspector did not report that metric for the day — it is never rendered as a zero.
         Snapshots refresh hourly during business hours plus a settling pass the next morning; use
-        <span className="font-medium"> Refresh now</span> for an immediate pull. Disposition breakdowns by
-        campaign and number health are the next layer and are not on this page yet.
+        <span className="font-medium"> Refresh now</span> for an immediate pull, which also re-pulls dispositions.
+        Number health and call-transcript intelligence are the next layer and are not on this page yet.
       </p>
     </div>
   );

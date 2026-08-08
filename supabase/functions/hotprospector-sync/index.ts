@@ -31,6 +31,7 @@ import { getHotProspectorConfig, hotProspectorToken, hotProspectorRequest } from
 
 const CALL_LOG_PAGE = 500;   // rows per FetchUserCallLog page
 const CALL_LOG_MAX_PAGES = 6; // hard cap → at most 3,000 rows for one day
+const MAX_CAMPAIGNS = 40;    // disposition pulls are one sequential call each — cap the fan-out
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -120,6 +121,35 @@ function results(o: Record<string, unknown>): Record<string, unknown>[] {
 }
 
 interface SpeedStat { total: number; samples: number; calls: number }
+
+/** Normalize a member's `dispositionStatus` into [{disposition, cnt}].
+ * Shape is UNVERIFIED against live data (the account has no campaigns yet — see
+ * the migration header), so both plausible shapes are accepted:
+ *   • a map:   {"Hot Lead": "3", "Not Interested": "5"}
+ *   • an array: [{status|disposition|name|title, count|cnt|total}]
+ * Entries whose count doesn't parse are DROPPED rather than coerced to 0 — a
+ * fake zero here would read as "this rep got no Hot Leads". */
+function parseDispositions(v: unknown): { disposition: string; cnt: number }[] {
+  const out: { disposition: string; cnt: number }[] = [];
+  if (!v || typeof v !== "object") return out;
+
+  if (Array.isArray(v)) {
+    for (const e of v) {
+      if (!e || typeof e !== "object") continue;
+      const row = e as Record<string, unknown>;
+      const label = str(pick(row, "status", "disposition", "dispositionStatus", "name", "title"));
+      const cnt = int(pick(row, "count", "cnt", "total", "value"));
+      if (label && cnt !== null) out.push({ disposition: label, cnt });
+    }
+    return out;
+  }
+
+  for (const [label, raw] of Object.entries(v as Record<string, unknown>)) {
+    const cnt = int(raw);
+    if (label.trim() && cnt !== null) out.push({ disposition: label.trim(), cnt });
+  }
+  return out;
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -315,6 +345,81 @@ Deno.serve(async (req) => {
     }
   }
 
+  // ── Per-campaign disposition breakdown ─────────────────────────────────────
+  // One sequential call per campaign, reusing the run's token. Bounded by
+  // MAX_CAMPAIGNS. A campaign that fails is recorded as a warning and skipped —
+  // it never aborts the run or the campaigns that did succeed.
+  //
+  // NOTE: this endpoint 404s for a campaign_id that doesn't exist, and an unknown
+  // Method name 404s identically, so a 404 is reported as an explicit warning
+  // rather than being swallowed. See the migration header.
+  const campaignsToPull = campaigns.slice(0, MAX_CAMPAIGNS);
+  if (campaigns.length > MAX_CAMPAIGNS) {
+    warnings.push(`${campaigns.length} campaigns found — dispositions pulled for the first ${MAX_CAMPAIGNS} only`);
+  }
+  let dispositionRows = 0;
+  let campaignsPulled = 0;
+
+  for (const c of campaignsToPull) {
+    const campaignId = str(pick(c, "campaign_id", "campaignId", "id"));
+    if (!campaignId) continue;
+    const campaignTitle = str(pick(c, "CampaignTitle", "campaign_title", "title", "name"));
+
+    const dispRes = await hotProspectorRequest(token, "getDashboardMemberDatabyCampaign", {
+      campaign_id: campaignId,
+      date: target,
+    }, 20000);
+    if (!dispRes.ok) {
+      warnings.push(
+        dispRes.status === 404
+          ? `dispositions: campaign ${campaignId} returned 404 (campaign not found, or the endpoint is unavailable on this account)`
+          : `dispositions: campaign ${campaignId} HTTP ${dispRes.status}`,
+      );
+      continue;
+    }
+
+    const rows: Record<string, unknown>[] = [];
+    for (const m of results(unwrap(dispRes.data))) {
+      const memberId = str(pick(m, "agentId", "agent_id", "memberId", "member_id", "id"));
+      if (!memberId) continue;
+      const agentName = str(pick(m, "agentName", "agent_name", "name"))
+        ?? roster.get(memberId)?.name ?? null;
+      for (const d of parseDispositions(pick(m, "dispositionStatus", "disposition_status", "dispositions"))) {
+        rows.push({
+          stat_date: target,
+          campaign_id: campaignId,
+          campaign_title: campaignTitle,
+          member_id: memberId,
+          agent_name: agentName,
+          disposition: d.disposition,
+          cnt: d.cnt,
+          raw: m,
+          synced_at: now,
+        });
+      }
+    }
+
+    // Delete + reinsert this campaign-day so a disposition that disappeared
+    // (or a rep who moved off the campaign) cannot linger as a stale row. Only
+    // runs for a campaign whose pull actually succeeded.
+    const { error: delErr } = await db
+      .from("hotprospector_disposition_daily")
+      .delete()
+      .eq("stat_date", target)
+      .eq("campaign_id", campaignId);
+    if (delErr) {
+      return json({ ok: false, stage: "clear_dispositions", campaign_id: campaignId, error: delErr.message }, 500);
+    }
+    if (rows.length > 0) {
+      const { error: insErr } = await db.from("hotprospector_disposition_daily").insert(rows);
+      if (insErr) {
+        return json({ ok: false, stage: "insert_dispositions", campaign_id: campaignId, error: insErr.message }, 500);
+      }
+    }
+    campaignsPulled++;
+    dispositionRows += rows.length;
+  }
+
   const { error: acctErr } = await db
     .from("hotprospector_account_daily")
     .upsert({
@@ -331,8 +436,12 @@ Deno.serve(async (req) => {
       raw: {
         credits: creditsBody,
         limits: limitBody,
+        // The campaign list is kept here so the UI can offer the campaign filter
+        // even on a day with zero disposition rows.
         campaigns: campaigns.slice(0, 50),
         roster_size: roster.size,
+        campaigns_pulled: campaignsPulled,
+        disposition_rows: dispositionRows,
         warnings,
       },
       synced_at: now,
@@ -351,6 +460,8 @@ Deno.serve(async (req) => {
     seats: { total: seatsTotal, active: seatsActive, remaining: seatsRemaining },
     campaigns: campaignCount,
     calls_logged: callLogFailed ? null : callsLogged,
+    campaigns_pulled: campaignsPulled,
+    disposition_rows: dispositionRows,
     dashboard_message: dashMessage,
     dashboard_last_updated: dashLastUpdated,
     warnings,
