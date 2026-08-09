@@ -33,6 +33,50 @@ import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 import { getPlaidSettings } from "../_shared/plaid.ts";
 
+// ── PROVIDER-FAILURE PREDICATE ───────────────────────────────────────────────
+// Distinguishes "the AI provider is down / out of credit / misconfigured" from
+// "the model read the data and the data was odd". The first is INFRASTRUCTURE:
+// the run is worthless, re-running after a top-up fixes it, and it must NEVER be
+// persisted as a new underwriting version (a zeroed row becomes the newest row
+// and buries the deal's last good analysis everywhere). The second is tolerated
+// and still persists with loud flags, exactly as before.
+//
+// Shapes matched come from _shared/llm.ts: `anthropic HTTP 400: {...credit
+// balance is too low...}`, `No API key configured for provider "x"`, etc.
+const PROVIDER_ERROR_RE = new RegExp([
+  String.raw`\bHTTP\s+[45]\d\d\b`,                 // "anthropic HTTP 400:", "gemini HTTP 529:"
+  String.raw`credit balance is too low`,
+  String.raw`insufficient[_ ]?quota`,
+  String.raw`\bquota\b[^|]{0,40}\bexceed`,
+  String.raw`No API key configured for provider`,
+  String.raw`Could not read key for provider`,
+  String.raw`Unknown LLM provider`,
+  String.raw`\brate[_ ]?limit`,
+  String.raw`\boverloaded\b`,
+  String.raw`authentication[_ ]?error`,
+  String.raw`\bbilling\b`,
+].join("|"), "i");
+function isProviderError(msg: unknown): boolean {
+  return PROVIDER_ERROR_RE.test(String(msg ?? ""));
+}
+// The subset the owner can fix with a card: out of credit / over quota / unpaid.
+const CREDITS_RE = /credit balance is too low|insufficient[_ ]?quota|\bbilling\b|payment required|HTTP\s+402\b|\bquota\b[^|]{0,40}\bexceed/i;
+function isCreditsExhausted(msg: unknown): boolean {
+  return CREDITS_RE.test(String(msg ?? ""));
+}
+// The caller-facing sentence for a provider failure. The credit case gets plain
+// English (it is the one the owner can FIX in a minute); anything else carries a
+// trimmed detail — the provider's raw JSON body is 400 chars of noise in a toast,
+// and the full string still rides on `provider_error` for the log.
+function providerErrorMessage(detail: string): string {
+  const tail = "No version was saved; the previous underwriting is unchanged.";
+  if (isCreditsExhausted(detail)) {
+    return `Underwriting could not run: the AI provider is out of credit — top up the account in Plans & Billing, then re-run. ${tail}`;
+  }
+  const short = detail.length > 220 ? `${detail.slice(0, 220)}…` : detail;
+  return `Underwriting could not run: AI provider error — ${short}. ${tail}`;
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -883,6 +927,35 @@ Deno.serve(async (req) => {
     const monthsCovered =
       new Set(analyzed.map((s) => String(s.month ?? "").trim().toLowerCase()).filter(Boolean)).size ||
       analyzed.length;
+
+    // ── FAILED-RUN GUARD #1: nothing extracted ──────────────────────────────
+    // Not one statement (or bank-feed month) survived extraction, so months_covered
+    // is 0 and EVERY metric below would be a zero that is not a fact. Persisting
+    // that as a new version silently buries the deal's last good underwriting in
+    // every UI that reads the newest row — which is exactly what happened when the
+    // Anthropic key ran out of credit: a 200 response carrying months_covered=0 and
+    // true_avg_monthly_revenue=0 for two real deals. House rule: loud error, never a
+    // silent zero. We write NOTHING here, so the previous version stays the latest.
+    if (analyzed.length === 0) {
+      const stErrors = perStatement.map((s) => s._error).filter((e): e is string => !!e);
+      const providerErr = stErrors.find(isProviderError) ?? null;
+      console.error(
+        `[underwrite-deal] refusing to persist an empty run for deal ${dealId} — ` +
+        (stErrors.join(" | ") || "no statements extracted"),
+      );
+      return json({
+        error: providerErr
+          ? providerErrorMessage(providerErr)
+          : `Underwriting could not run: none of the ${perStatement.length} bank statement(s) could be read — ${stErrors[0] ?? "unknown extraction failure"}. No version was saved; the previous underwriting is unchanged.`,
+        code: providerErr ? "ai_provider_error" : "extraction_failed",
+        provider_error: providerErr,
+        credits_exhausted: isCreditsExhausted(providerErr),
+        persisted: false,
+        dealId,
+        statement_errors: stErrors.slice(0, 12),
+        document_ledger: documentLedger,
+      }, providerErr ? 502 : 422);
+    }
 
     // Explicit per-month table rows (chronologically sortable in the UI):
     // month | true deposit count | true-deposit $ | ending balance | avg daily balance | negative days.
@@ -2632,6 +2705,9 @@ Deno.serve(async (req) => {
     let riskRating: "low" | "medium" | "high" = "medium";
     let aiNarrative = "";
     let funderFitNote = "";
+    // Set ONLY when the judge failed because the PROVIDER failed (out of credit, bad
+    // key, 5xx) — a data/parse miss leaves this null and still persists (below).
+    let judgeProviderError: string | null = null;
     // The judge's PROFILE half — tier + product signals + rationale. Everything else
     // on the profile is deterministic; these are validated/clamped below.
     let aiTier: PaperTier | null = null;
@@ -2673,9 +2749,36 @@ Deno.serve(async (req) => {
       const crit = flags.filter((f) => f.severity === "critical").length;
       const warn = flags.filter((f) => f.severity === "warn").length;
       riskRating = crit > 0 ? "high" : warn >= 2 ? "medium" : "low";
-      aiNarrative = `AI narrative unavailable (${e instanceof Error ? e.message : e}). Risk derived from flags: ${crit} critical, ${warn} warnings.`;
+      const judgeErr = e instanceof Error ? e.message : String(e);
+      if (isProviderError(judgeErr)) judgeProviderError = judgeErr;
+      aiNarrative = `AI narrative unavailable (${judgeErr}). Risk derived from flags: ${crit} critical, ${warn} warnings.`;
     }
     const narrativeOut = funderFitNote ? `${aiNarrative}\n- **Funder fit:** ${funderFitNote}` : aiNarrative;
+
+    // ── FAILED-RUN GUARD #2: the AI provider failed on the judge ────────────
+    // A judge that failed on the DATA (JSON parse miss, empty narrative) still
+    // persists — the metrics are deterministic and the flag-derived rating is an
+    // honest read. But a PROVIDER failure means the narrative, the risk rating AND
+    // the paper tier on this run are all placeholders; writing that as the newest
+    // version buries the last good AI read for a reason a credit top-up fixes.
+    // Nothing is written — the previous version stays the latest.
+    if (judgeProviderError) {
+      console.error(
+        `[underwrite-deal] refusing to persist a provider-degraded run for deal ${dealId} — ${judgeProviderError}`,
+      );
+      return json({
+        error: providerErrorMessage(judgeProviderError),
+        code: "ai_provider_error",
+        provider_error: judgeProviderError,
+        credits_exhausted: isCreditsExhausted(judgeProviderError),
+        persisted: false,
+        dealId,
+        // The deterministic half DID compute — returned so the caller can show what
+        // was read, while making it unmistakable that nothing was saved.
+        months_covered: monthsCovered,
+        flags,
+      }, 502);
+    }
 
     // ── MERCHANT PROFILE + RECOMMENDED FUNDERS ─────────────────────────────────
     // The AI classified the paper tier and read the product signals; CODE decides
