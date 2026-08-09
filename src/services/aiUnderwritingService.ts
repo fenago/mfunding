@@ -239,6 +239,28 @@ export interface UWRecommendedFunder {
   /** Semicolon-joined match reasons, straight from the scorer. */
   why_matched: string;
   score: number;
+  /** Criteria the funder publishes that the merchant record can't answer yet. */
+  unverified?: string[];
+}
+
+/** A funder in the right lane that failed ONE published criterion (near-miss). */
+export interface UWExcludedFunder {
+  lender_id: string;
+  company_name: string;
+  /** The gate it failed, e.g. "merchant has 3 position(s), max 2". */
+  reason: string;
+}
+
+/** Merchant side of the criteria gate — what the shortlist was matched against. */
+export interface UWMerchantSignals {
+  positions: number;
+  industry: string | null;
+  state: string | null;
+  fico_low: number | null;
+  time_in_business_months: number | null;
+  true_monthly_revenue: number | null;
+  default_flag: boolean;
+  default_basis: string[];
 }
 
 export interface UWProfile {
@@ -262,6 +284,9 @@ export interface UWProfile {
   /** Ranked top 5, matched in code against lenders.category (never AI-named). */
   recommended_funders?: UWRecommendedFunder[];
   recommended_funders_note?: string | null;
+  /** Near-misses with the gate each one failed (older rows have none). */
+  excluded_note?: UWExcludedFunder[];
+  merchant_signals?: UWMerchantSignals;
 }
 
 export interface UWMetrics {

@@ -117,6 +117,28 @@ const numOrNull = (v: unknown): number | null => {
 };
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+// US state name → USPS code. Funder criteria record restricted states as free-ish
+// text ("CA", "HI (not currently funding)", "Canada (non-US)") and the merchant
+// record may carry either a code or a full name, so both sides are normalized to a
+// code before anything is compared. Anything that resolves to no code (Canada,
+// "Puerto Rico" for a merchant with no state) is simply not a match — never a
+// silent exclusion.
+const US_STATES: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA",
+  colorado: "CO", connecticut: "CT", delaware: "DE", "district of columbia": "DC",
+  florida: "FL", georgia: "GA", hawaii: "HI", idaho: "ID", illinois: "IL",
+  indiana: "IN", iowa: "IA", kansas: "KS", kentucky: "KY", louisiana: "LA",
+  maine: "ME", maryland: "MD", massachusetts: "MA", michigan: "MI", minnesota: "MN",
+  mississippi: "MS", missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV",
+  "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+  "north carolina": "NC", "north dakota": "ND", ohio: "OH", oklahoma: "OK",
+  oregon: "OR", pennsylvania: "PA", "puerto rico": "PR", "rhode island": "RI",
+  "south carolina": "SC", "south dakota": "SD", tennessee: "TN", texas: "TX",
+  utah: "UT", vermont: "VT", virginia: "VA", washington: "WA",
+  "west virginia": "WV", wisconsin: "WI", wyoming: "WY",
+};
+const US_STATE_CODES = new Set(Object.values(US_STATES));
+
 // FNV-1a hash of a string → stable short hex. Used for docs_hash so an identical
 // analyzed doc set (same ids + timestamps) produces the same hash across runs.
 function stableHash(s: string): string {
@@ -2486,6 +2508,50 @@ Deno.serve(async (req) => {
       `${negativeDays} negative day(s) on ${money(trueAvgMonthlyRevenue)}/mo true revenue` +
       (ficoLow != null ? ` at ~${ficoLow} FICO` : " (credit unknown — classified from cash flow)") + ".";
 
+    // ---- MERCHANT SIGNALS for the granular criteria gate ----
+    // lenders.category.criteria carries each funder's published box (max_positions,
+    // min_tib_months, min_monthly_revenue, fico_floor, restricted_states/industries,
+    // collections/decline free text). To gate on it we need the MERCHANT side of the
+    // same fields. House rules apply on both sides: an unrecorded FUNDER criterion is
+    // NO constraint, and an unknown MERCHANT value NEVER disqualifies — it surfaces as
+    // "unverified" on the match so the closer knows to confirm it.
+    const merchantState: string | null = (() => {
+      const raw = String(cust.address_state ?? "").trim();
+      if (!raw) return null;
+      if (/^[A-Za-z]{2}$/.test(raw)) {
+        const code = raw.toUpperCase();
+        return US_STATE_CODES.has(code) ? code : null;
+      }
+      return US_STATES[raw.toLowerCase()] ?? null;
+    })();
+    const merchantIndustry: string | null =
+      String(cust.industry ?? cust.business_type ?? "").trim() || null;
+    // Revenue tested against a funder floor is the VERIFIED figure, not the stated ask
+    // — that is the number the funder will compute off the statements themselves.
+    const merchantRevenue: number | null = trueAvgMonthlyRevenue > 0 ? trueAvgMonthlyRevenue : null;
+
+    // BEST-EFFORT default / collections signal. Nothing in a bank statement literally
+    // says "default", so this is the distress read the underwriter already computes.
+    // Kept DELIBERATELY narrow — merely stacked-and-tight is NOT a default, and a
+    // false positive here would push every hard-no-default desk off a placeable file.
+    // No signal ⇒ unknown ⇒ nobody is penalized (it only ever RE-RANKS, never gates).
+    const defaultBasis: string[] = [];
+    if (debtReliefCandidate) defaultBasis.push("debt-relief candidate (distressed / near-default)");
+    if (debtServicePct > 100) {
+      defaultBasis.push(`existing debits consume ${Math.round(debtServicePct)}% of true revenue`);
+    }
+    const defaultSignal = defaultBasis.length > 0;
+    const merchantSignals = {
+      positions: positionsCount,
+      industry: merchantIndustry,
+      state: merchantState,
+      fico_low: ficoLow,
+      time_in_business_months: tibMonthsKnown,
+      true_monthly_revenue: merchantRevenue,
+      default_flag: defaultSignal,
+      default_basis: defaultBasis,
+    };
+
     // ---- Deterministic funder matching against lenders.category ----
     type CatFlags = Record<string, boolean | undefined>;
     interface LenderRow {
@@ -2496,7 +2562,12 @@ Deno.serve(async (req) => {
     let recommendedFunders: Array<{
       lender_id: string; company_name: string; relationship: string | null;
       consolidation_type: string | null; why_matched: string; score: number;
+      /** Criteria the funder publishes but the merchant record can't answer yet. */
+      unverified?: string[];
     }> = [];
+    // Near-misses the owner wants to SEE: a funder that cleared the lane/paper/product
+    // filter but failed one published criterion, with the gate it failed.
+    let excludedFunders: Array<{ lender_id: string; company_name: string; reason: string }> = [];
     let funderMatchNote: string | null = null;
     try {
       const { data: liveRows } = await db
@@ -2575,12 +2646,184 @@ Deno.serve(async (req) => {
         return true;
       });
 
+      // ---- GRANULAR CRITERIA GATE (lenders.category.criteria) ----
+      // STRUCTURED fields (max_positions, first_position_only, restricted_states,
+      // restricted_industries, min_tib_months, min_monthly_revenue, fico_floor) are
+      // reliable enough to HARD-EXCLUDE on. The free-text fields (collections_policy,
+      // decline_signal) only ever RE-RANK — fuzzy prose must never silently kill a
+      // placement.
+      const critOf = (l: LenderRow): Any => (catOf(l).criteria ?? {}) as Any;
+      const strList = (v: unknown): string[] =>
+        Array.isArray(v) ? v.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
+      // A restriction entry carrying a caveat ("Trucking (selective)", "CA (selective —
+      // clean files only)", "Gas stations (weak)") means CASE-BY-CASE, not a closed
+      // door: those downgrade to a soft penalty + a confirm-with-the-rep note.
+      const SOFT_QUALIFIER =
+        /selective|case[- ]by[- ]case|sometimes|exception|depends|scrutin|prefer|weak|rarely|with no |without/i;
+      // Head of an entry = the part before any parenthetical/slash caveat.
+      const headOf = (s: string) => s.split(/[(\/]/)[0].trim();
+      const normPhrase = (s: string) => ` ${s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+      // Whole-phrase, word-boundary containment in either direction ("construction"
+      // matches "General construction (usually declined)"). Short strings must match
+      // exactly so a 2-3 letter industry can't collide inside an unrelated word.
+      const phraseHit = (entry: string, value: string): boolean => {
+        const a = normPhrase(headOf(entry));
+        const b = normPhrase(value);
+        if (a.trim().length < 4 || b.trim().length < 4) return a === b;
+        return a.includes(b) || b.includes(a);
+      };
+      const stateCodesIn = (entry: string): string[] => {
+        const out: string[] = [];
+        // Leading UPPERCASE two-letter token only, so "Canada (non-US)" is not read as CA.
+        const lead = entry.match(/^\s*([A-Z]{2})\b/);
+        if (lead && US_STATE_CODES.has(lead[1])) out.push(lead[1]);
+        const low = entry.toLowerCase();
+        for (const [name, code] of Object.entries(US_STATES)) if (low.includes(name)) out.push(code);
+        return out;
+      };
+      // Free-text stance on prior defaults / open collections. Hard patterns come from
+      // real decline emails and published cards; friendly patterns from desks whose
+      // whole product IS the defaulted merchant. Every pattern is anchored to
+      // default/collections language on purpose: a bare "auto-decline" is usually about
+      // an INDUSTRY (FundKite's logistics/construction), and bare "settlement"/"debt
+      // relief" is usually an ISO-conduct clause barring us from referring merchants
+      // out — neither says anything about this merchant's default history.
+      const HARD_DEFAULT_RE = new RegExp([
+        String.raw`(?:0|zero|no)\s+(?:active\s+|open\s+)?defaults?`,
+        String.raw`no previous or current default`,
+        String.raw`recent default`,
+        String.raw`already in default on`,
+        String.raw`debt collection activity`,
+        String.raw`auto[- ]?decline[^.]{0,80}(?:default|collection|bankrupt|lien|judgment)`,
+        String.raw`(?:default|collection|bankrupt|lien|judgment)[^.]{0,80}auto[- ]?decline`,
+      ].join("|"), "i");
+      // "no stated position on merchants already in default" is the ABSENCE of a policy,
+      // not a gate — a hard hit sitting behind one of these is discarded.
+      const HARD_NEGATED_RE =
+        /(?:no stated position|no published|not published|nothing (?:is )?published|silent on|no policy|unknown)[^.]{0,60}$/i;
+      const FRIENDLY_DEFAULT_RE =
+        /accepts?\s+default|funds?\s+default|\bZBLs?\b|tax liens?\s+acceptable|defaulted and delinquent/i;
+
+      interface CritRead {
+        hard: string | null;
+        soft: string[];
+        why: string[];
+        unverified: string[];
+        preferred: boolean;
+        defaultStance: "hard" | "friendly" | "unknown";
+      }
+      const readCriteria = (l: LenderRow): CritRead => {
+        const cr = critOf(l);
+        const out: CritRead = {
+          hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown",
+        };
+        const fail = (why: string) => { if (!out.hard) out.hard = why; };
+
+        // POSITIONS — the single most common reason a stacked file bounces.
+        const maxPos = numOrNull(cr.max_positions);
+        if (maxPos != null) {
+          if (positionsCount > maxPos) fail(`merchant has ${positionsCount} position(s), max ${maxPos}`);
+          else out.why.push(`takes up to ${maxPos} position(s); merchant has ${positionsCount}`);
+        }
+        if (cr.first_position_only === true && positionsCount > 0) {
+          fail(`first position only; merchant has ${positionsCount} open position(s)`);
+        }
+
+        // STATE
+        const rs = strList(cr.restricted_states);
+        if (rs.length > 0) {
+          if (merchantState) {
+            const hit = rs.find((e) => stateCodesIn(e).includes(merchantState));
+            if (!hit) out.why.push(`no state restriction for ${merchantState}`);
+            else if (SOFT_QUALIFIER.test(hit)) {
+              out.soft.push(`${merchantState} is case-by-case for them (${headOf(hit) || merchantState}) — confirm before submitting`);
+            } else fail(`does not fund ${merchantState}`);
+          } else out.unverified.push("merchant state not recorded — their state restrictions unchecked");
+        }
+
+        // INDUSTRY
+        const ri = strList(cr.restricted_industries);
+        if (ri.length > 0) {
+          if (merchantIndustry) {
+            const hit = ri.find((e) => phraseHit(e, merchantIndustry));
+            if (!hit) out.why.push(`${merchantIndustry} is not on their restricted list`);
+            else if (SOFT_QUALIFIER.test(hit)) {
+              out.soft.push(`"${headOf(hit)}" is case-by-case on their restricted list — confirm before submitting`);
+            } else fail(`restricted industry: ${headOf(hit)}`);
+          } else out.unverified.push("merchant industry not recorded — their industry restrictions unchecked");
+        }
+        if (merchantIndustry && strList(cr.preferred_industries).some((e) => phraseHit(e, merchantIndustry))) {
+          out.preferred = true;
+          out.why.push(`${merchantIndustry} is on their preferred-industry list`);
+        }
+
+        // NUMERIC FLOORS — only bite when the MERCHANT value is actually known.
+        const minTib = numOrNull(cr.min_tib_months);
+        if (minTib != null && minTib > 0) {
+          if (tibMonthsKnown == null) out.unverified.push(`needs ${minTib} mo in business — merchant TIB not recorded`);
+          else if (tibMonthsKnown < minTib) fail(`${tibMonthsKnown} mo in business, they need ${minTib}`);
+          else out.why.push(`${tibMonthsKnown} mo in business clears their ${minTib} mo floor`);
+        }
+        const minRev = numOrNull(cr.min_monthly_revenue);
+        if (minRev != null && minRev > 0) {
+          if (merchantRevenue == null) out.unverified.push(`needs ${money(minRev)}/mo — no verified revenue to check against`);
+          else if (merchantRevenue < minRev) fail(`${money(merchantRevenue)}/mo true revenue, they need ${money(minRev)}`);
+          else out.why.push(`${money(merchantRevenue)}/mo true revenue clears their ${money(minRev)} floor`);
+        }
+        const ficoFloor = numOrNull(cr.fico_floor);
+        if (ficoFloor != null && ficoFloor > 0) {
+          // Unknown credit NEVER disqualifies — MCA is cash-flow underwriting.
+          if (ficoLow == null) out.unverified.push(`FICO floor ${ficoFloor} — merchant credit unknown (cash-flow file, not a decline)`);
+          else if (ficoLow < ficoFloor) fail(`FICO ~${ficoLow} below their ${ficoFloor} floor`);
+          else out.why.push(`FICO ~${ficoLow} clears their ${ficoFloor} floor`);
+        }
+
+        // DEFAULT / COLLECTIONS STANCE (soft re-rank only).
+        if (isRestructure(l)) out.defaultStance = "friendly";
+        else {
+          const policyText = `${cr.collections_policy ?? ""} ${cr.decline_signal ?? ""}`.trim();
+          if (policyText) {
+            const hit = policyText.match(HARD_DEFAULT_RE);
+            const negated = hit != null &&
+              HARD_NEGATED_RE.test(policyText.slice(Math.max(0, (hit.index ?? 0) - 60), hit.index ?? 0));
+            if (hit && !negated) out.defaultStance = "hard";
+            else if (FRIENDLY_DEFAULT_RE.test(policyText)) out.defaultStance = "friendly";
+          }
+        }
+        return out;
+      };
+
+      const reads = new Map<string, CritRead>(eligible.map((l) => [l.id, readCriteria(l)]));
+      // Categorical gates (positions / state / industry) are the surprising ones a
+      // closer needs to see; a revenue floor a small file simply doesn't reach is
+      // obvious. Rank the categorical ones first so the cap never buries them.
+      const exclRank = (reason: string) =>
+        /position/.test(reason) ? 0 : /does not fund/.test(reason) ? 1 : /restricted industry/.test(reason) ? 2 : 3;
+      excludedFunders = eligible
+        .filter((l) => reads.get(l.id)?.hard)
+        .map((l) => ({ lender_id: l.id, company_name: l.company_name, reason: reads.get(l.id)!.hard! }))
+        .sort((a, b) => (exclRank(a.reason) - exclRank(b.reason)) || a.company_name.localeCompare(b.company_name))
+        .slice(0, 12);
+      let gated = eligible.filter((l) => !reads.get(l.id)?.hard);
+      // If the criteria gate empties the lane, ship the funders anyway with the failed
+      // gate written onto the match — a shortlist that needs a rep call beats no play
+      // at all, which is the one outcome this profile exists to prevent.
+      if (gated.length === 0 && eligible.length > 0) {
+        for (const l of eligible) {
+          const r = reads.get(l.id)!;
+          if (r.hard) { r.soft.push(`FAILS their published box: ${r.hard}`); r.hard = null; }
+        }
+        gated = eligible;
+        funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
+          "Every live funder in this lane fails a published criterion — shown anyway with the failed gate noted; call the reps before submitting.";
+      }
+
       // An UNRECORDED funding band must not read as a $0–$0 box and penalize every
       // funder that hasn't published one — numOrNull keeps missing as missing.
       const minOf = (l: LenderRow) => numOrNull(l.min_funding_amount);
       const maxOf = (l: LenderRow) => numOrNull(l.max_funding_amount);
 
-      const scored = eligible.map((l) => {
+      const scored = gated.map((l) => {
         const f = catFlagsOf(l);
         const c = catOf(l);
         const why: string[] = [];
@@ -2627,6 +2870,31 @@ Deno.serve(async (req) => {
         if (rels.includes("direct_funder")) score += 6;
         else if (rels.some((r) => /marketplace|aggregator/.test(r))) score += 1;
 
+        // ---- granular criteria: what PASSED, what is soft, what is unverified ----
+        const read = reads.get(l.id) ?? {
+          hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown" as const,
+        };
+        // Every criterion the merchant actually cleared is cited by name — the owner
+        // wants to read WHY a funder is on the list, not just that it scored.
+        score += Math.min(read.why.length, 6) * 4;
+        why.push(...read.why);
+        if (read.preferred) score += 8;
+        for (const s of read.soft) { score -= 10; why.push(s); }
+        // Free-text default/collections stance: re-rank only, never a gate.
+        if (defaultSignal) {
+          if (read.defaultStance === "hard") {
+            score -= 80;
+            why.push("hard default/collections gate on file — this merchant shows a default/collections signal, expect a decline");
+          } else if (read.defaultStance === "friendly") {
+            score += 60;
+            why.push("accepts defaults / collections — the right desk for a distressed file");
+          }
+        }
+        // Unknown merchant values are stipulations, not declines: shown, never scored.
+        if (read.unverified.length) {
+          why.push(`unverified — ${read.unverified.slice(0, 2).join("; ")}`);
+        }
+
         return {
           lender_id: l.id,
           company_name: l.company_name,
@@ -2634,6 +2902,7 @@ Deno.serve(async (req) => {
           consolidation_type: consoLabelOf(l),
           why_matched: why.join("; "),
           score,
+          unverified: read.unverified,
         };
       });
 
@@ -2668,6 +2937,10 @@ Deno.serve(async (req) => {
       // Deterministic shortlist off lenders.category — the deal→funder play.
       recommended_funders: recommendedFunders,
       recommended_funders_note: funderMatchNote,
+      // Near-misses: funders in the right lane that failed one published criterion.
+      excluded_note: excludedFunders,
+      // The merchant side of the criteria gate, so the UI can show what was matched on.
+      merchant_signals: merchantSignals,
     };
     // metrics is already frozen into the judge prompt above — the profile rides on the
     // PERSISTED copy (additive: older stored rows simply have no `profile` key).
