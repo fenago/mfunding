@@ -27,12 +27,25 @@ Verified account state as of setup: GHL sync is LIVE (4 groups — Customers/Lea
 - [ ] Understands the compliance rules (below) — this is non-negotiable.
 - [ ] Knows their daily targets (KPIs below).
 
+## The setter's PRIMARY objective (in priority order)
+On every live call, the goal is to get, **while still on the phone:**
+1. **A signed application (e-sign).**
+2. **Bank statements** — either the merchant **connects Plaid** (~60s, best) or sends **4 months of statements** via the upload link.
+**Fallback only if you can't get either live:** book an **appointment / callback**. The appointment is the *backup*, not the goal.
+
 ## The daily flow (what a setter does all day)
 1. Log in → open the assigned **campaign** → start the dialer.
-2. On a live answer, the lead card shows the business (and, for UCC leads, that they have existing funding). Run the **script**.
-3. **Set a disposition on every call** — this is how the CRM updates and how you're tracked.
-4. **Booked?** set the appointment / **transfer** to a closer. Then next call.
-5. Keep dialing toward the daily number.
+2. On a live answer, the lead card shows the business (for UCC leads, that they already have funding). Read the **Scripts** tab.
+3. Get the verbal yes → **send the application + bank request right now** (see next section) → keep them on the line and walk them through **e-signing** and **connecting Plaid** (or sending statements).
+4. **Set a disposition on every call** — this writes back to GHL/VibeReach and fires the follow-up workflow.
+5. If they won't sign/connect live → **book the appointment/callback** (fallback) and disposition it. Then next call.
+6. Keep dialing toward the daily number.
+
+## How a setter sends the application + Plaid/upload from HotProspector
+Two real paths (both visible on the lead card — Email/Sms tabs, ✉️/💬 icons, Contracts, and a "GoHighLevel Custom Link"):
+- **Disposition/tag → GHL workflow (recommended for the real docs).** Our e-sign application and the **Plaid Connect-Bank + upload links are per-merchant / tokenized**, so they can't live in a static template. The clean way: the setter applies a tag/disposition (e.g. "send-application") → it syncs to GHL instantly → the GHL workflow emails/texts that merchant their **e-sign app + Connect-Bank link + upload link** (from send.mfunding.net). The setter says "check your email/text now while I'm on the line."
+- **HP Email/SMS templates (for generic/first-touch).** From the lead card, ✉️ Email or 💬 Sms → pick a template → send. Good for generic content; NOT for the per-merchant tokenized links unless merge-fielded.
+- The **"GoHighLevel Custom Link"** on the lead card jumps the setter straight to the GHL contact if they need it.
 
 ## Dispositions (use one on every call)
 Keep them mapped to the funnel + GHL workflows:
