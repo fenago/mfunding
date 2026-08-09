@@ -265,6 +265,15 @@ verify_jwt = true
 [functions.vendor-conversation-sweep]
 verify_jwt = true
 
+# Funder decline intel — backfills funder_replies from the full bodies we already
+# have, parses each funder "no" into structured reason categories, and rolls the
+# result up onto lenders.category.criteria.decline_history (NEVER decline_signal,
+# which is human-curated). Same two callers as the sweep: pg_cron hourly
+# (?secret=<GHL webhook secret> + anon-key Bearer) OR staff run-now (user JWT +
+# in-code role check).
+[functions.funder-decline-intel]
+verify_jwt = true
+
 # ---- Plaid bank connection --------------------------------------------------
 # plaid-create-link-token / plaid-exchange run verify_jwt = false because they serve
 # BOTH the authenticated portal (merchant/staff JWT) AND a public tokenized "connect

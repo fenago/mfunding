@@ -28,6 +28,7 @@ import {
 // ingest-ghl-documents function use the exact same code path).
 import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 import { resolveReplyTarget, type SubCandidate } from "../_shared/funder-reply-match.ts";
+import { captureFunderReply } from "../_shared/funderDecline.ts";
 
 // Internal alerts go ONLY here — never to a funder or merchant.
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -674,6 +675,16 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
       : resolution.kind === "general" ? "marketing / onboarding / general (not about a specific file)"
       : resolution.kind === "ambiguous" ? "could not tell which open deal it is about"
       : "no open submission to this funder";
+    // Unplaceable, but still box intel: keep the FULL body (a decline we can't tie
+    // to a deal still tells us what this funder says no to). Marketing blasts are
+    // skipped. Best-effort — never blocks the park. funder-decline-intel parses it.
+    if (resolution.kind !== "general") {
+      await captureFunderReply(db, {
+        lenderId: lender.id, source: "webhook", fullBody: body,
+        emailRecordId: null, dedupeKey: `wh:${lender.id}:${conversationId || contactId}:${emailDate}`,
+        subject, fromEmail: String(cd.from ?? evt.from ?? ""), receivedAt: emailDate,
+      });
+    }
     await db.from("ghl_webhook_events").insert({
       event_type: resolution.kind === "general" ? "FunderReplyGeneral" : "FunderReplyUnmatched",
       ghl_contact_id: contactId,
@@ -731,6 +742,17 @@ async function handleInboundMessage(db: DB, evt: Record<string, unknown>): Promi
   const convMsgId = String(evt.messageId ?? cd.messageId ?? evt.message_id ?? cd.message_id ?? "");
   const idMarker = emailRecordId ? ` [emsg:${emailRecordId}]` : convMsgId ? ` [msg:${convMsgId}]` : "";
   const fromLabel = String((evt.contact as Record<string, unknown> | undefined)?.email ?? cd.from ?? evt.from ?? contactId);
+
+  // Keep the COMPLETE body before the 180-char activity_log preview throws it away.
+  // Best-effort — the log line is the record; this is the intel copy.
+  await captureFunderReply(db, {
+    lenderId: lender.id, source: "webhook", fullBody: body,
+    dealId: sub.deal_id, dealSubmissionId: sub.id,
+    emailRecordId: emailRecordId || null,
+    dedupeKey: emailRecordId ? null : `wh:${lender.id}:${convMsgId || conversationId || contactId}:${emailDate}`,
+    subject, fromEmail: fromLabel, receivedAt: emailDate,
+  });
+
   await db.from("activity_log").insert({
     entity_type: "deal", entity_id: sub.deal_id, interaction_type: "email",
     subject: `ghl:funder-reply — ${lender.company_name}`,

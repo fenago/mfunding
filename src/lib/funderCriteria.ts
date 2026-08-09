@@ -32,6 +32,30 @@ export type FunderCriteria = {
   commission_points?: string | null;
   confidence?: string | null;
   notes?: string | null;
+
+  // ── Auto-derived, written by the funder-decline-intel edge function ──
+  // NOT the same thing as `decline_signal` above, which is hand-written by the
+  // owner and must never be overwritten by code. These two keys are the machine's
+  // read of the funder's ACTUAL decline emails (parsed from funder_replies), and
+  // are observed behaviour rather than a published gate — a single decline is a
+  // data point, not a rule. Weigh them against decline_signal, don't replace it.
+  decline_history?: Array<{
+    reason_category: string;
+    count: number;
+    last_seen_quote: string;
+    last_seen: string;
+    /** single_datapoint | low | medium | high — by how many declines back it. */
+    confidence: string;
+  }> | null;
+  decline_history_meta?: {
+    total_declines?: number;
+    distinct_reasons?: number;
+    updated_at?: string;
+    source?: string;
+    note?: string;
+    /** Where the observed declines disagree with the published box above. */
+    contradicts_published_box?: string[];
+  } | null;
 };
 
 type WithCriteria = { category?: { criteria?: FunderCriteria | null } | null } | null | undefined;

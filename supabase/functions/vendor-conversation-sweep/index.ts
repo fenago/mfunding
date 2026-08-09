@@ -27,6 +27,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient, getGhlConfig, ghlFetch, type GhlConfig } from "../_shared/ghl.ts";
+import { captureFunderReply } from "../_shared/funderDecline.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 function json(body: unknown, status = 200) {
@@ -82,12 +83,13 @@ function channelOf(messageType: string | undefined): "email" | "sms" | "call" | 
   return null;
 }
 
-// First ~200 chars of readable body: drop style/script/head blocks and HTML
-// comments (funder newsletters are full of them — otherwise the snippet is raw
-// CSS), strip remaining tags, decode the common entities, collapse whitespace.
-function snippetOf(raw: string | undefined): string {
+// The whole readable body: drop style/script/head blocks and HTML comments (funder
+// newsletters are full of them — otherwise the text is raw CSS), strip remaining
+// tags, decode the common entities, collapse whitespace. snippetOf() caps this for
+// the activity_log preview; funder_replies stores it in full.
+function plainTextOf(raw: string | undefined): string {
   if (!raw) return "";
-  const text = raw
+  return raw
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<[^>]+>/g, " ")
@@ -103,6 +105,11 @@ function snippetOf(raw: string | undefined): string {
     .replace(/[­͏​‌‍⁠﻿]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// First ~200 chars of the readable body — the activity_log preview.
+function snippetOf(raw: string | undefined): string {
+  const text = plainTextOf(raw);
   return text.length > 200 ? `${text.slice(0, 200)}…` : text;
 }
 
@@ -117,20 +124,29 @@ function interactionType(channel: "email" | "sms" | "call"): string {
 // read "inbound email / (no preview)"). Fetch the record for the real content.
 // Direction from the record is authoritative too: the conversation message's
 // direction lies about sibling-address replies (ghl-email-records-vs-messages).
+// `full` is the complete de-HTML'd body — activity_log only ever gets the snippet,
+// so this is the ONLY place the whole text is available to persist for lenders.
 async function fetchEmailDetail(
   cfg: GhlConfig,
   emailRecordId: string,
-): Promise<{ subject: string; snippet: string; direction: string | null }> {
+): Promise<{ subject: string; snippet: string; full: string; from: string; direction: string | null }> {
   const res = await ghlFetch<{ emailMessage?: Record<string, unknown> }>(
     cfg, "GET", `/conversations/messages/email/${emailRecordId}`,
   );
   const em = res.data?.emailMessage;
-  if (!res.ok || !em) return { subject: "", snippet: "", direction: null };
+  if (!res.ok || !em) return { subject: "", snippet: "", full: "", from: "", direction: null };
   const subject = typeof em.subject === "string" ? em.subject.trim() : "";
   const bodyRaw = typeof em.body === "string" ? em.body
     : typeof em.text === "string" ? em.text : "";
   const dir = typeof em.direction === "string" ? em.direction.toLowerCase() : null;
-  return { subject, snippet: snippetOf(bodyRaw), direction: dir };
+  const full = plainTextOf(bodyRaw);
+  return {
+    subject,
+    snippet: full.length > 200 ? `${full.slice(0, 200)}…` : full,
+    full,
+    from: typeof em.from === "string" ? em.from : "",
+    direction: dir,
+  };
 }
 
 /**
@@ -180,6 +196,19 @@ async function syncEntity(
               emailSubject = detail.subject;
               emailSnippet = detail.snippet;
               if (detail.direction === "inbound" || detail.direction === "outbound") direction = detail.direction;
+
+              // Keep the FULL body for INBOUND FUNDER email before the 200-char
+              // preview below throws it away — a funder's decline reason is
+              // permanent box intel. Scoped to lenders (vendors get no row) and to
+              // inbound only. Idempotent on the email-record id; best-effort so a
+              // capture failure can never stall the mirror.
+              if (entity.type === "lender" && direction === "inbound" && detail.full) {
+                await captureFunderReply(db, {
+                  lenderId: entity.id, source: "vendor_sweep", fullBody: detail.full,
+                  emailRecordId, subject: detail.subject,
+                  fromEmail: detail.from, receivedAt: m.dateAdded,
+                });
+              }
             }
           }
 

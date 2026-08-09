@@ -18,6 +18,7 @@ import {
 } from "../_shared/ghl.ts";
 import { callLLM } from "../_shared/llm.ts";
 import { resolveReplyTarget, type SubCandidate } from "../_shared/funder-reply-match.ts";
+import { attachReplyDeal, captureFunderReply } from "../_shared/funderDecline.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const OWNER_EMAIL = "socrates73@gmail.com";
@@ -665,6 +666,9 @@ async function routeByDealNumber(
     .select("id").eq("entity_type", "deal").eq("entity_id", sub.deal_id as string)
     .like("content", `%[emsg:${reply.eid}]%`).limit(1);
   if (dup?.length) return `${lender.company_name} → ${dealNumber} (already logged)`;
+  // The body was captured before routing with no deal attached — now that we know
+  // which deal it belongs to, back-fill it.
+  await attachReplyDeal(db, `emsg:${reply.eid}`, sub.deal_id as string, sub.id as string);
   return await applyFunderReply(
     db, cfg, lender,
     sub as { id: string; deal_id: string; status: string; response_at: string | null },
@@ -816,6 +820,20 @@ Deno.serve(async (req) => {
 
       const res = resolveReplyTarget({ subject, body: text, subs: subCands, lenderName: lender.company_name, emailDate: at });
       markedEids.add(ref.eid); // don't reconsider this record again this run
+
+      // Keep the COMPLETE body before anything truncates it. Every routing outcome
+      // except pure marketing is box intel — a decline we couldn't tie to a deal
+      // still tells us what this funder says no to. Best-effort: capture must never
+      // break the reply path. (funder-decline-intel parses these on its own cron.)
+      if (res.kind !== "general") {
+        const cap = await captureFunderReply(db, {
+          lenderId: lender.id, source: "poll", fullBody: text,
+          dealId: res.kind === "match" ? res.sub.dealId : null,
+          dealSubmissionId: res.kind === "match" ? res.sub.submissionId : null,
+          emailRecordId: ref.eid, subject, fromEmail: fromRaw, receivedAt: at || null,
+        });
+        if (cap.error) details.push(`${lender.company_name}: capture failed — ${cap.error}`);
+      }
 
       if (res.kind === "match") {
         const sub = lenderPending.find((p) => p.id === res.sub.submissionId);
