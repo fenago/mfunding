@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import supabase from "@/supabase";
+import {
+  type FunderCriteria,
+  acceptsPositions,
+  collectionsLabel,
+  collectionsTone,
+  criteriaOf,
+  fmtFico,
+  fmtRev,
+  fmtTib,
+  listOf,
+  positionStance,
+} from "@/lib/funderCriteria";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Funder Deal-Matching Cheat Sheet
@@ -110,6 +122,27 @@ const CSS = `
 .fcs .tag.re{background:var(--c-bg);color:var(--c)}
 .fcs .tag.dr{background:color-mix(in srgb,var(--gold) 20%,transparent);color:var(--gold)}
 .fcs .empty{padding:40px;text-align:center;color:var(--ink-faint);border:1px dashed var(--line);border-radius:var(--radius);margin-top:16px}
+/* criteria box — max positions + the collections gate, always visible */
+.fcs .box{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.fcs .bchip{font-size:11px;font-weight:750;padding:3px 8px;border-radius:7px;background:var(--chip);color:var(--chip-ink);white-space:nowrap}
+.fcs .bchip.pos{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent-ink)}
+.fcs .bchip.pos.deep{background:var(--b-bg);color:var(--b)}
+.fcs .bchip.pos.unk{background:var(--chip);color:var(--ink-faint);font-weight:600}
+.fcs .bchip.hard{background:var(--d-bg);color:var(--d)}
+.fcs .bchip.open{background:var(--a-bg);color:var(--a)}
+.fcs .more{align-self:flex-start;font:inherit;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-ink);background:none;border:0;padding:0;cursor:pointer}
+.fcs .more:hover{text-decoration:underline}
+.fcs .more:focus-visible{outline:2px solid var(--gold);outline-offset:2px;border-radius:3px}
+.fcs .detail{border-top:1px dashed var(--line);padding-top:9px;display:flex;flex-direction:column;gap:8px}
+.fcs .dgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:6px}
+.fcs .dcell{background:var(--line-soft);border-radius:8px;padding:6px 8px}
+.fcs .dcell .k{font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint)}
+.fcs .dcell .v{font-size:12.5px;font-weight:750;color:var(--ink);font-variant-numeric:tabular-nums}
+.fcs .drow{font-size:12px;color:var(--ink-soft);line-height:1.45}
+.fcs .drow b{color:var(--ink);font-weight:750}
+.fcs .quote{border-left:3px solid var(--d);background:var(--d-bg);border-radius:0 8px 8px 0;padding:8px 11px;font-size:12px;color:var(--ink);line-height:1.45}
+.fcs .quote .k{display:block;font-size:9.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--d);margin-bottom:2px}
+.fcs .fhint{font-size:11.5px;color:var(--ink-faint);flex-basis:100%;margin-top:2px}
 /* pipeline */
 .fcs .pipe{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
 .fcs .pbox{border:1px dashed var(--line);border-radius:var(--radius);background:var(--panel);padding:15px 17px}
@@ -152,6 +185,9 @@ type LenderCategory = {
   } | null;
   known_for?: string | null;
   deal_fit?: string | null;
+  // Underwriting box extracted from the funder's own packets / decline emails.
+  // Absent on most rows — read it only through the @/lib/funderCriteria helpers.
+  criteria?: FunderCriteria | null;
 };
 
 type LenderRow = {
@@ -354,12 +390,30 @@ const BUCKET_FILTERS: { v: "all" | BucketId; label: string }[] = [
   { v: "fast", label: "Fast / light stips" },
 ];
 
+// Max positions — the closer's first question on a stacked merchant. "2+" means
+// the funder's published ceiling is at least a 2nd position (or they publish no
+// cap at all); a funder whose box we haven't recorded never counts as a yes.
+type PosFilter = "all" | "2" | "3" | "4" | "deep";
+const POSITION_FILTERS: { v: PosFilter; label: string }[] = [
+  { v: "all", label: "All" },
+  { v: "2", label: "Accepts 2+" },
+  { v: "3", label: "3+" },
+  { v: "4", label: "4+" },
+  { v: "deep", label: "Deep / no cap" },
+];
+const matchesPositions = (l: LenderRow, f: PosFilter): boolean => {
+  if (f === "all") return true;
+  if (f === "deep") return positionStance(l).deep;
+  return acceptsPositions(l, Number(f));
+};
+
 export default function FunderCheatSheetPage() {
   const [lenders, setLenders] = useState<LenderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [paper, setPaper] = useState<(typeof PAPER_FILTERS)[number]>("all");
   const [bucket, setBucket] = useState<"all" | BucketId>("all");
+  const [positions, setPositions] = useState<PosFilter>("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -404,9 +458,10 @@ export default function FunderCheatSheetPage() {
       decorated.filter(
         (d) =>
           (paper === "all" || d.papers.includes(paper)) &&
-          (bucket === "all" || d.buckets.includes(bucket)),
+          (bucket === "all" || d.buckets.includes(bucket)) &&
+          matchesPositions(d.l, positions),
       ),
-    [decorated, paper, bucket],
+    [decorated, paper, bucket, positions],
   );
 
   const consolidators = useMemo(() => lenders.filter(isConsolidation), [lenders]);
@@ -596,6 +651,25 @@ export default function FunderCheatSheetPage() {
               ))}
             </div>
             <div className="fgroup">
+              <span className="flabel">Positions</span>
+              {POSITION_FILTERS.map((p) => (
+                <button
+                  key={p.v}
+                  type="button"
+                  className="pill"
+                  aria-pressed={positions === p.v}
+                  onClick={() => setPositions(p.v)}
+                >
+                  {p.label}
+                </button>
+              ))}
+              {positions !== "all" && (
+                <span className="fhint">
+                  Only funders with a published position box count — anyone whose ceiling we haven't recorded is hidden.
+                </span>
+              )}
+            </div>
+            <div className="fgroup">
               <span className="flabel">Bucket</span>
               {BUCKET_FILTERS.map((b) => (
                 <button
@@ -616,31 +690,7 @@ export default function FunderCheatSheetPage() {
 
           <div className="grid">
             {shown.map(({ l, papers, tags }) => (
-              <article className="card" key={l.id}>
-                <div className="top">
-                  <div>
-                    <div className="nm">{l.company_name}</div>
-                    <div className="rel">{relLabel(l)}</div>
-                  </div>
-                  <div className="papers">
-                    {papers.map((p) => (
-                      <span className={`pchip p${p}`} key={p}>
-                        {p}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="size mono">{sizeRange(l)}</div>
-                {cat(l).known_for && <div className="known">{cat(l).known_for}</div>}
-                {cat(l).deal_fit && <div className="fit">{cat(l).deal_fit}</div>}
-                <div className="tags">
-                  {tags.map((t) => (
-                    <span className={tagClass(t)} key={t}>
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              </article>
+              <FunderCard key={l.id} l={l} papers={papers} tags={tags} />
             ))}
           </div>
           {!loading && shown.length === 0 && (
@@ -710,11 +760,163 @@ export default function FunderCheatSheetPage() {
 
         <footer>
           Live-funder data reads straight from the funder catalog (lenders marked <b>live vendor</b>), so this page
-          updates as the network changes · buckets are directional — always confirm the current credit box and any
-          consolidation product with the funder's rep · this is an internal working tool, not a merchant-facing
-          document.
+          updates as the network changes · position caps, floors and restrictions come from each funder's own packets
+          and rate sheets; <b>decline signals are quoted from real decline emails</b> · a blank field means the funder
+          never published it, not that there's no limit · buckets are directional — always confirm the current credit
+          box and any consolidation product with the funder's rep · this is an internal working tool, not a
+          merchant-facing document.
         </footer>
       </div>
     </div>
+  );
+}
+
+// ── Live-funder card ─────────────────────────────────────────────────────────
+// Compact face = name, paper, size, and the two criteria the closer screens on
+// first: how deep a stack the funder takes, and whether defaults/collections are
+// a hard stop. Everything else folds away (reference content folds; the box the
+// closer acts on stays visible).
+function FunderCard({ l, papers, tags }: { l: LenderRow; papers: string[]; tags: string[] }) {
+  const [open, setOpen] = useState(false);
+  const c = criteriaOf(l);
+  const pos = positionStance(l);
+  const ctone = collectionsTone(l);
+  const clabel = collectionsLabel(ctone);
+
+  const industries = listOf(c.restricted_industries);
+  const states = listOf(c.restricted_states);
+  const floors: { k: string; v: string }[] = [];
+  const tib = fmtTib(c.min_tib_months);
+  const rev = fmtRev(c.min_monthly_revenue);
+  const fico = fmtFico(c.fico_floor);
+  if (tib) floors.push({ k: "Time in biz", v: tib });
+  if (rev) floors.push({ k: "Revenue", v: rev });
+  if (fico) floors.push({ k: "FICO", v: fico });
+  if (c.max_nsf_monthly != null) floors.push({ k: "NSF / mo", v: `max ${c.max_nsf_monthly}` });
+
+  const hasDetail =
+    floors.length > 0 ||
+    industries.length > 0 ||
+    states.length > 0 ||
+    !!c.negative_days_policy ||
+    !!c.funding_speed ||
+    !!c.factor_range ||
+    !!c.positions_note ||
+    !!c.collections_policy ||
+    !!c.decline_signal;
+
+  return (
+    <article className="card">
+      <div className="top">
+        <div>
+          <div className="nm">{l.company_name}</div>
+          <div className="rel">{relLabel(l)}</div>
+        </div>
+        <div className="papers">
+          {papers.map((p) => (
+            <span className={`pchip p${p}`} key={p}>
+              {p}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="size mono">{sizeRange(l)}</div>
+
+      {(pos.tone !== "na" || clabel) && (
+        <div className="box">
+          {pos.tone !== "na" && (
+            <span
+              className={`bchip pos${pos.tone === "deep" ? " deep" : pos.tone === "cap" ? "" : " unk"}`}
+              title={c.positions_note ?? undefined}
+            >
+              {pos.label}
+            </span>
+          )}
+          {clabel && (
+            <span className={`bchip ${ctone}`} title={c.collections_policy ?? c.decline_signal ?? undefined}>
+              {ctone === "hard" ? "🔴" : "🟢"} {clabel}
+            </span>
+          )}
+        </div>
+      )}
+
+      {cat(l).known_for && <div className="known">{cat(l).known_for}</div>}
+      {cat(l).deal_fit && <div className="fit">{cat(l).deal_fit}</div>}
+
+      {hasDetail && (
+        <button type="button" className="more" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          {open ? "Hide the box ↑" : "The full box ↓"}
+        </button>
+      )}
+
+      {open && hasDetail && (
+        <div className="detail">
+          {floors.length > 0 && (
+            <div className="dgrid">
+              {floors.map((f) => (
+                <div className="dcell" key={f.k}>
+                  <div className="k">{f.k}</div>
+                  <div className="v">{f.v}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {c.positions_note && (
+            <div className="drow">
+              <b>Positions:</b> {c.positions_note}
+            </div>
+          )}
+          {c.negative_days_policy && (
+            <div className="drow">
+              <b>Negative days:</b> {c.negative_days_policy}
+            </div>
+          )}
+          {c.collections_policy && (
+            <div className="drow">
+              <b>Collections / defaults:</b> {c.collections_policy}
+            </div>
+          )}
+          {industries.length > 0 && (
+            <div className="drow">
+              <b>Restricted industries:</b> {industries.join(" · ")}
+            </div>
+          )}
+          {states.length > 0 && (
+            <div className="drow">
+              <b>Restricted states:</b> {states.join(" · ")}
+            </div>
+          )}
+          {(c.funding_speed || c.factor_range) && (
+            <div className="drow">
+              {c.funding_speed && (
+                <>
+                  <b>Speed:</b> {c.funding_speed}
+                </>
+              )}
+              {c.funding_speed && c.factor_range && " · "}
+              {c.factor_range && (
+                <>
+                  <b>Factor:</b> {c.factor_range}
+                </>
+              )}
+            </div>
+          )}
+          {c.decline_signal && (
+            <div className="quote">
+              <span className="k">Decline signal — from a real decline email</span>
+              {c.decline_signal}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="tags">
+        {tags.map((t) => (
+          <span className={tagClass(t)} key={t}>
+            {t}
+          </span>
+        ))}
+      </div>
+    </article>
   );
 }

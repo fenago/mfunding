@@ -16,6 +16,18 @@ import {
 } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
 import supabase from "@/supabase";
+import {
+  type FunderCriteria,
+  acceptsPositions,
+  collectionsLabel,
+  collectionsTone,
+  criteriaOf,
+  fmtFico,
+  fmtRev,
+  fmtTib,
+  listOf,
+  positionStance,
+} from "@/lib/funderCriteria";
 
 // ── Product columns ───────────────────────────────────────────────────────────
 // A product "checks" if any of its underlying lender_types is on the record.
@@ -80,6 +92,9 @@ type LenderCategory = {
   known_for?: string | null;
   deal_fit?: string | null;
   confidence?: string | null;
+  // Underwriting box extracted from the funder's own packets / decline emails.
+  // Absent on most rows — read it only through the @/lib/funderCriteria helpers.
+  criteria?: FunderCriteria | null;
 };
 
 type Lender = {
@@ -264,6 +279,23 @@ const BUCKETS: Bucket[] = [
   },
 ];
 
+// Max positions — how deep a stack the funder will sit behind. "2+" means the
+// published ceiling is at least a 2nd position (or the funder publishes no cap
+// at all); a funder whose box we haven't recorded never counts as a yes.
+type PosFilter = "any" | "2" | "3" | "4" | "deep";
+const POSITION_FILTERS: { id: PosFilter; label: string }[] = [
+  { id: "any", label: "All" },
+  { id: "2", label: "Accepts 2+" },
+  { id: "3", label: "3+" },
+  { id: "4", label: "4+" },
+  { id: "deep", label: "Deep / no cap" },
+];
+const matchesPositions = (l: Lender, f: PosFilter): boolean => {
+  if (f === "any") return true;
+  if (f === "deep") return positionStance(l).deep;
+  return acceptsPositions(l, Number(f));
+};
+
 type ConsoFilter = "any" | "consolidation" | "reverse" | "true_payoff";
 const CONSO_FILTERS: { id: ConsoFilter; label: string }[] = [
   { id: "any", label: "All" },
@@ -328,6 +360,7 @@ export default function LenderCatalogPage() {
   const [productFilter, setProductFilter] = useState<string | null>(null); // null = All
   const [paperFilter, setPaperFilter] = useState<PaperTier | null>(null); // null = All
   const [consoFilter, setConsoFilter] = useState<ConsoFilter>("any");
+  const [posFilter, setPosFilter] = useState<PosFilter>("any");
   const [bucketFilter, setBucketFilter] = useState<string | null>(null); // null = All
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [openBands, setOpenBands] = useState<Set<string>>(
@@ -388,19 +421,25 @@ export default function LenderCatalogPage() {
       if (consoFilter === "consolidation" && !isConsolidation(l)) return false;
       if (consoFilter === "reverse" && !isReverseConso(l)) return false;
       if (consoFilter === "true_payoff" && !isTruePayoffConso(l)) return false;
+      if (!matchesPositions(l, posFilter)) return false;
       return true;
     },
-    [activeProduct, paperFilter, activeBucket, consoFilter],
+    [activeProduct, paperFilter, activeBucket, consoFilter, posFilter],
   );
 
   const activeFilterCount =
-    (activeProduct ? 1 : 0) + (paperFilter ? 1 : 0) + (activeBucket ? 1 : 0) + (consoFilter !== "any" ? 1 : 0);
+    (activeProduct ? 1 : 0) +
+    (paperFilter ? 1 : 0) +
+    (activeBucket ? 1 : 0) +
+    (consoFilter !== "any" ? 1 : 0) +
+    (posFilter !== "any" ? 1 : 0);
 
   const clearFilters = () => {
     setProductFilter(null);
     setPaperFilter(null);
     setBucketFilter(null);
     setConsoFilter("any");
+    setPosFilter("any");
   };
 
   // ── Consolidation shortlist — the stacked-book lifeline, always unfiltered ───
@@ -586,6 +625,19 @@ export default function LenderCatalogPage() {
           ))}
         </FilterRow>
 
+        <FilterRow label="Max positions">
+          {POSITION_FILTERS.map((p) => (
+            <FilterChip key={p.id} active={posFilter === p.id} onClick={() => setPosFilter(p.id)}>
+              {p.label}
+            </FilterChip>
+          ))}
+          {posFilter !== "any" && (
+            <span className="text-[11px] text-gray-400 dark:text-gray-500">
+              only funders with a published position box — unrecorded ceilings are hidden
+            </span>
+          )}
+        </FilterRow>
+
         <FilterRow label="Consolidation">
           {CONSO_FILTERS.map((c) => (
             <FilterChip key={c.id} active={consoFilter === c.id} onClick={() => setConsoFilter(c.id)}>
@@ -720,7 +772,9 @@ export default function LenderCatalogPage() {
           <p className="mt-6 text-xs text-gray-400 dark:text-gray-500">
             Product checkmarks are derived from each lender's type tags (MCA groups advance /
             revenue-based / working-capital — never "loans"). Floors show only where a lender record
-            has them filled in; a dash means unspecified, not unlimited.
+            has them filled in; a dash means unspecified, not unlimited. Position caps, the
+            collections/default badge and the restricted lists come from each funder's own packets and
+            rate sheets — expand a row for the full recorded box and any quoted decline signal.
           </p>
 
           {/* ── Our offerings — products as a business ── */}
@@ -805,6 +859,108 @@ function ConsoBadge({ lender }: { lender: Lender }) {
     >
       <ArrowsPointingInIcon className="w-3 h-3" /> {consoLabel(lender)}
     </span>
+  );
+}
+
+// ── Criteria chips — max positions + the collections gate ─────────────────────
+// The two things a closer screens on before anything else. Both render only off
+// recorded criteria; an unrecorded box shows as "not published", never as a cap.
+function PositionChip({ lender }: { lender: Lender }) {
+  const s = positionStance(lender);
+  if (s.tone === "na") return null;
+  const chip =
+    s.tone === "deep"
+      ? "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+      : s.tone === "cap"
+        ? "bg-mint-green/15 text-mint-green"
+        : "bg-gray-400/15 text-gray-500 dark:text-gray-400";
+  return (
+    <span
+      title={criteriaOf(lender).positions_note ?? undefined}
+      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${chip}`}
+    >
+      {s.tone === "unknown" ? "Positions n/p" : s.label}
+    </span>
+  );
+}
+
+function CollectionsBadge({ lender }: { lender: Lender }) {
+  const tone = collectionsTone(lender);
+  const label = collectionsLabel(tone);
+  if (!label) return null;
+  const c = criteriaOf(lender);
+  return (
+    <span
+      title={c.collections_policy ?? c.decline_signal ?? undefined}
+      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+        tone === "hard" ? "bg-red-500/15 text-red-600 dark:text-red-400" : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+      }`}
+    >
+      {tone === "hard" ? "🔴" : "🟢"} {label}
+    </span>
+  );
+}
+
+// The full recorded box, shown inside the expanded row.
+function CriteriaBlock({ lender }: { lender: Lender }) {
+  const c = criteriaOf(lender);
+  const industries = listOf(c.restricted_industries);
+  const states = listOf(c.restricted_states);
+
+  const floors: { k: string; v: string }[] = [];
+  const tib = fmtTib(c.min_tib_months);
+  const rev = fmtRev(c.min_monthly_revenue);
+  const fico = fmtFico(c.fico_floor);
+  if (tib) floors.push({ k: "Time in biz", v: tib });
+  if (rev) floors.push({ k: "Revenue", v: rev });
+  if (fico) floors.push({ k: "FICO", v: fico });
+  if (c.max_nsf_monthly != null) floors.push({ k: "NSF / mo", v: `max ${c.max_nsf_monthly}` });
+  if (c.funding_speed) floors.push({ k: "Speed", v: c.funding_speed });
+  if (c.factor_range) floors.push({ k: "Factor", v: c.factor_range });
+
+  const rows: { k: string; v: string }[] = [];
+  if (c.positions_note) rows.push({ k: "Positions", v: c.positions_note });
+  if (c.negative_days_policy) rows.push({ k: "Negative days", v: c.negative_days_policy });
+  if (c.collections_policy) rows.push({ k: "Collections / defaults", v: c.collections_policy });
+  if (industries.length > 0) rows.push({ k: "Restricted industries", v: industries.join(" · ") });
+  if (states.length > 0) rows.push({ k: "Restricted states", v: states.join(" · ") });
+  if (c.remittance) rows.push({ k: "Remittance", v: c.remittance });
+
+  if (floors.length === 0 && rows.length === 0 && !c.decline_signal) return null;
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2.5 max-w-3xl space-y-2">
+      <p className="text-[10px] font-bold uppercase tracking-wide text-gray-400">Recorded underwriting box</p>
+
+      {floors.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {floors.map((f) => (
+            <span
+              key={f.k}
+              className="inline-flex items-baseline gap-1 rounded-md bg-gray-100 dark:bg-gray-900/50 px-2 py-1 text-[11px]"
+            >
+              <span className="font-semibold uppercase tracking-wide text-gray-400">{f.k}</span>
+              <span className="font-semibold text-gray-800 dark:text-gray-100 tabular-nums">{f.v}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {rows.map((r) => (
+        <p key={r.k} className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+          <span className="font-semibold text-gray-700 dark:text-gray-200">{r.k}:</span> {r.v}
+        </p>
+      ))}
+
+      {c.decline_signal && (
+        <div className="rounded-lg border-l-4 border-red-400 bg-red-50 dark:bg-red-900/20 px-3 py-2">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-red-700 dark:text-red-300 mb-0.5">
+            Decline signal — from a real decline email
+          </p>
+          <p className="text-xs text-red-900 dark:text-red-100 leading-relaxed">{c.decline_signal}</p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1496,6 +1652,8 @@ function RowFragment({
               </span>
             )}
             <PaperChips lender={lender} />
+            <PositionChip lender={lender} />
+            <CollectionsBadge lender={lender} />
             <ConsoBadge lender={lender} />
           </button>
           {lender.category?.known_for && (
@@ -1548,6 +1706,7 @@ function RowFragment({
                 <p className="text-xs text-gray-700 dark:text-gray-200 leading-relaxed">{lender.category.deal_fit}</p>
               </div>
             )}
+            <CriteriaBlock lender={lender} />
             {lender.category?.known_for && (
               <p className="text-xs text-gray-500 dark:text-gray-400 max-w-3xl">
                 <span className="font-semibold text-gray-600 dark:text-gray-300">Known for:</span>{" "}
