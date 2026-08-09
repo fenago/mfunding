@@ -419,7 +419,7 @@ export default function DialerPage() {
   const [numbers, setNumbers] = useState<NumberHealth[]>([]);
   // 14 days of account snapshots — enough to estimate the credit burn rate.
   const [creditHistory, setCreditHistory] = useState<{ stat_date: string; credits: number | null }[]>([]);
-  const [showTargets, setShowTargets] = useState(false);
+  const [showTargets, setShowTargets] = useState(true); // open by default — the owner wants the targets visible at a glance
   const [draftTargets, setDraftTargets] = useState<Targets | null>(null);
   const [savingTargets, setSavingTargets] = useState(false);
   const [targetMsg, setTargetMsg] = useState<{ ok: boolean; text: string } | null>(null);
