@@ -1,10 +1,13 @@
 # Setter Call Scripts — UCC & Aged Leads
 
-> ⚠️ **DRAFT — compliance review required before live dialing.** MCA compliance is baked in
-> (advance/funding, not "loan"; no upfront fees; no guarantees; honor opt-out), but per policy
-> all merchant-facing copy gets a compliance pass before it goes on the floor.
+> ✅ **Compliance pass applied 2026-08-09** (MCA + TCPA): advance/funding not "loan"; no upfront fees;
+> no guarantees ("may improve," not "we'll beat it"); DNC/opt-out honored; 8am–9pm local calling hours;
+> **call-recording disclosure added** (HP records calls — required in CA & other two-party states);
+> aged-lead opener corrected so it never claims a prior relationship that isn't real.
+> **Still recommended before scaling:** a final human/legal check on state-specific MCA disclosure
+> wording (NY/CA/VA/UT/FL/CT/GA/KS/TX/MO) for any written follow-up.
 
-**Golden rules on every call:** identify yourself + Momentum Funding · it's an *advance / working capital*, never a "loan" · no guarantees of approval/rate/amount · no upfront fees · honor DNC instantly · call 8am–9pm the merchant's local time.
+**Golden rules on every call:** identify yourself + Momentum Funding · it's an *advance / working capital*, never a "loan" · no guarantees of approval/rate/amount · no upfront fees · honor DNC instantly · call 8am–9pm the merchant's local time · **disclose the call may be recorded** (HotProspector records calls; CA + other two-party-consent states require notice).
 
 ---
 
@@ -12,10 +15,10 @@
 *(These merchants already have an MCA/advance on file — from a UCC filing. Angle: better terms, more capital, or consolidation. Warm-ish.)*
 
 **Opener**
-> "Hi, is this the owner of {business}? … Hey {first name}, this is {your name} with **Momentum Funding**. Quick reason for the call — we work with business owners who already have **business funding** in place and are usually leaving money on the table. Do you have 30 seconds?"
+> "Hi, is this the owner of {business}? … Hey {first name}, this is {your name} with **Momentum Funding** — quick heads-up, this call may be recorded. The reason for the call — we work with business owners who already have **business funding** in place and are usually leaving money on the table. Do you have 30 seconds?"
 
 **Hook / value**
-> "A lot of owners we talk to are carrying **advances at rough factor rates or stacked daily payments**. We help with two things: getting you **additional working capital**, or **consolidating what you've got into one lower payment** so your cash flow breathes. Depending on your numbers we can usually beat what you're in."
+> "A lot of owners we talk to are carrying **advances at rough factor rates or stacked daily payments**. We help with two things: getting you **additional working capital**, or **consolidating what you've got into one lower payment** so your cash flow breathes. Depending on your numbers, we **may be able to improve on** what you're in." *(never promise you'll beat it — it's subject to underwriting.)*
 
 **Qualify (quick — don't interrogate)**
 - "Roughly what are you doing in monthly revenue?"
@@ -33,7 +36,9 @@
 *(Older/colder leads who once inquired about funding. Angle: check back in, new programs.)*
 
 **Opener**
-> "Hi {first name}, {your name} with **Momentum Funding** — you'd looked into **business funding** with us a while back. I'm circling back because our programs have opened up and I wanted to see where you're at. Still running {business}?"
+> "Hi {first name}, {your name} with **Momentum Funding** — quick note, this call may be recorded. I'm reaching out to business owners about **working-capital options**; you'd come up as someone who'd looked into funding. Still running {business}?"
+
+> ⚠️ **Only say "you inquired with us" if it's actually true.** If these are *purchased* aged leads (not prior MFunding inquiries), do NOT claim a prior relationship — use the neutral "you'd come up as someone who'd looked into funding" wording above. Misstating the source is a compliance risk.
 
 **Hook**
 > "We've got **new working-capital programs** with better terms than earlier this year, and approvals are fast — usually 24–48 hours with a few months of bank statements, no upfront cost to you. Worth a quick look?"
