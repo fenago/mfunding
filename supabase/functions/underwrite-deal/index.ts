@@ -174,6 +174,13 @@ interface PerStatement {
   // counts as true revenue is a judgment call resolved by owner_payroll_treatment.
   questionable_deposits: Array<{ date?: string; desc?: string; amount?: number; source?: string; reason?: string }>;
   mca_debits: Array<{ date?: string; desc?: string; amount?: number; occurrences?: number; cadence?: string; funder?: string; debit_class?: string }>;
+  // COLLECTION-ACTIVITY candidates the model flagged while reading this statement —
+  // debts being collected FROM the merchant by force or by a collector: collection
+  // agencies, wage/bank garnishments, tax levies, judgments/writs. NOT ordinary
+  // vendor payments, and NOT the merchant paying an agency to collect its OWN A/R.
+  // Deliberately separate from mca_debits: a collection debit is a legal/distress
+  // event, not a financing position, and must never inflate the stacking count.
+  collection_debits: Array<{ date?: string; desc?: string; amount?: number; type?: string; confidence?: string; reason?: string }>;
   _filename?: string;
   // EVERY source filename represented by this statement — the byte-identical group
   // members PLUS any files period-dedup folded in. Drives the per-document ledger so
@@ -228,6 +235,22 @@ function extractionSystem(enabledCategories: string[]): string {
     "'consumer_finance' = a consumer-installment lender (e.g. Lendmark Financial); 'vendor_other' = a one-off or " +
     "vendor/supplier/bill ACH that is NOT a financing obligation. Put the SAME funder's two distinct recurring " +
     "amounts as SEPARATE lines (they are separate tranches — e.g. Calabria at $352.95/day and $230.77/day). " +
+    "SEPARATELY AGAIN, list COLLECTION-ACTIVITY debits in collection_debits — debits that show a debt being " +
+    "collected FROM this merchant by a collector or by legal force. Real examples: a payment to a debt-collection " +
+    "agency (Portfolio Recovery, Midland Credit/Funding, IC System, Convergent, Enhanced Recovery/ERC, NCB " +
+    "Management, Cavalry Portfolio, LVNV Funding, Transworld Systems, Nationwide Recovery); a WAGE or BANK " +
+    "GARNISHMENT; a TAX LEVY / IRS LEVY / state revenue levy; a JUDGMENT, WRIT OF EXECUTION, court-ordered " +
+    "attachment, or sheriff's levy; a lien payoff being enforced. Set type to one of 'collections', " +
+    "'garnishment', 'tax_levy', 'judgment'. " +
+    "BE CONSERVATIVE — this flag can cost the merchant a funder, so do NOT guess. An ordinary vendor, supplier, " +
+    "insurance, payroll-service or software payment is NOT collection activity even if the company's NAME happens " +
+    "to contain a word like 'lien', 'recovery', 'collection' or 'levy' (e.g. 'Lien Solutions' is a UCC filing " +
+    "service; 'Levy Brothers Produce' is a food vendor; a towing/auto 'Recovery' company is a vendor). Likewise, a " +
+    "merchant PAYING a collection agency a fee to collect ITS OWN receivables is a business expense, not collection " +
+    "activity against the merchant — if you cannot tell which it is, include it with confidence 'low'. " +
+    "Set confidence to 'high' only when the descriptor unmistakably reads as a garnishment, levy, judgment or a " +
+    "debt-collection payment; 'medium' when it very likely is; 'low' when it is a guess. Give a short 'reason'. " +
+    "Return an EMPTY collection_debits array when the statement shows none — that is the normal case. " +
     "Return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
     "CRITICAL — DEBIT vs CREDIT COLUMNS: total_deposits is the CREDITS/deposits total (money IN); total_withdrawals " +
     "is the DEBITS total (money OUT). Some statement formats (e.g. Banc of California 'Activity & Balances Summary') " +
@@ -316,10 +339,24 @@ const EXTRACTION_TOOL = {
           },
         },
       },
+      collection_debits: {
+        type: "array",
+        description: "Debits showing a debt being collected FROM the merchant (collection agency, garnishment, tax levy, judgment/writ). Empty array when none — the normal case. Never include ordinary vendor payments.",
+        items: {
+          type: "object",
+          properties: {
+            date: { type: "string" }, desc: { type: "string" }, amount: { type: "number" },
+            type: { type: "string", description: "'collections' | 'garnishment' | 'tax_levy' | 'judgment'" },
+            confidence: { type: "string", description: "'high' | 'medium' | 'low'" },
+            reason: { type: "string", description: "Short why — what in the descriptor makes this collection activity." },
+          },
+        },
+      },
     },
     required: [
       "month", "closing_balance", "avg_daily_balance", "negative_days", "deposit_count",
       "total_deposits", "deposits", "padding_deposits", "questionable_deposits", "mca_debits",
+      "collection_debits",
     ],
   },
 };
@@ -975,6 +1012,142 @@ Deno.serve(async (req) => {
       });
     }
     const overdraftFeesTotal = round2(perMonth.reduce((a, r) => a + r.overdraft_fees, 0));
+
+    // ── COLLECTION ACTIVITY — the funder-gating signal ──────────────────────────
+    // Two readers, merged: the extraction model's collection_debits (primary — it
+    // saw every line of the statement) and a keyword backstop over the same debits
+    // PLUS the financing-debit list (so a garnishment the model filed as an
+    // ordinary vendor ACH is still caught). The keyword read is authoritative on
+    // TYPE when it fires, because "garnishment"/"levy"/"judgment" in a descriptor
+    // is not a judgment call; the model's confidence is honored only downward.
+    interface CollectionItem {
+      date: string | null; desc: string; amount: number;
+      type: CollectionType; month: string | null;
+      confidence: CollectionConfidence; source: "ai" | "keyword";
+    }
+    // De-duped on (month, normalized descriptor, rounded amount) so the same debit
+    // reported by BOTH readers lands once, keeping the stronger confidence.
+    const collectionByKey = new Map<string, CollectionItem>();
+    const CONF_RANK: Record<CollectionConfidence, number> = { low: 0, medium: 1, high: 2 };
+    const pushCollection = (it: CollectionItem) => {
+      const key = `${it.month ?? "?"}|${it.desc.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 60)}|${Math.round(it.amount)}`;
+      const prior = collectionByKey.get(key);
+      if (!prior) { collectionByKey.set(key, it); return; }
+      if (CONF_RANK[it.confidence] > CONF_RANK[prior.confidence]) {
+        prior.confidence = it.confidence; prior.source = it.source; prior.type = it.type;
+      }
+    };
+
+    for (const s of analyzed) {
+      const mLabel = s.month ?? null;
+      // (1) Model-flagged candidates.
+      for (const c of (s.collection_debits ?? [])) {
+        const desc = String(c.desc ?? "").trim();
+        if (!desc) continue;
+        const kw = readCollectionText(desc);
+        // A descriptor the false-friend guard vetoes is dropped even when the model
+        // flagged it — "Lien Solutions" is a UCC vendor, not a collections event.
+        if (COLLECTION_FALSE_FRIEND_RE.test(desc)) continue;
+        const type = kw?.type ?? normCollectionType(c.type) ?? "collections";
+        const modelConf = normCollectionConfidence(c.confidence) ?? "medium";
+        // Keyword corroboration can raise the read to high; without it the model's
+        // own word is capped at medium — an unverifiable AI hunch never hard-gates.
+        const confidence: CollectionConfidence =
+          kw && kw.confidence === "high" ? "high" : modelConf === "high" ? "medium" : modelConf;
+        pushCollection({
+          date: c.date ? String(c.date) : null, desc, amount: round2(Math.abs(numOr0(c.amount))),
+          type, month: mLabel, confidence, source: "ai",
+        });
+      }
+      // (2) Keyword backstop over the financing/vendor debits the model DID return.
+      for (const d of (s.mca_debits ?? [])) {
+        const desc = String(d.desc ?? d.funder ?? "").trim();
+        if (!desc) continue;
+        const kw = readCollectionText(desc);
+        if (!kw || kw.confidence !== "high") continue; // backstop only promotes unmistakable hits
+        pushCollection({
+          date: d.date ? String(d.date) : null, desc, amount: round2(Math.abs(numOr0(d.amount))),
+          type: kw.type, month: mLabel, confidence: "high", source: "keyword",
+        });
+      }
+    }
+
+    const collectionItems = [...collectionByKey.values()];
+    // DETECTION RULE (conservative on purpose): one unmistakable hit is enough, or
+    // two independent medium hits. A pile of low-confidence wording alone is NOT
+    // collection activity — it is surfaced in items but never fires the gate.
+    const highHits = collectionItems.filter((i) => i.confidence === "high");
+    const medHits = collectionItems.filter((i) => i.confidence === "medium");
+    const collectionDetected = highHits.length >= 1 || medHits.length >= 2;
+    const firingItems = collectionDetected ? [...highHits, ...medHits] : [];
+    const collectionConfidence: CollectionConfidence =
+      highHits.length >= 1 ? "high" : medHits.length >= 2 ? "medium" : "low";
+    const collectionTypes = [...new Set(firingItems.map((i) => i.type))];
+    const collectionMonths = new Set(firingItems.map((i) => i.month).filter(Boolean));
+    const collectionTotal = round2(firingItems.reduce((a, i) => a + i.amount, 0));
+    const monthsForRate = Math.max(1, analyzed.filter((s) => !s._error).length);
+    const TYPE_LABEL: Record<CollectionType, string> = {
+      collections: "collection-agency payment", garnishment: "garnishment",
+      tax_levy: "tax levy/lien", judgment: "judgment / writ",
+    };
+
+    // ── SECONDARY: UCC corroboration (a DISTINCT signal, never conflated) ────────
+    // A UCC lien on the business confirms existing FINANCED POSITIONS — it is the
+    // normal footprint of an MCA, not evidence of collection activity. It rides
+    // alongside as corroboration only, and never sets or clears the flag.
+    let uccCorroboration: {
+      matched: boolean; business_name: string | null; filings: number;
+      secured_parties: string[]; note: string;
+    } | null = null;
+    try {
+      const bizName = String(cust.business_name ?? "").trim();
+      if (bizName.length >= 4) {
+        // EXACT (case-insensitive) name match only — a fuzzy match would hang some
+        // other business's liens on this merchant. LIKE wildcards in the name are
+        // escaped so a stray % can't turn the lookup into a prefix scan.
+        const likeSafe = bizName.replace(/[%_\\]/g, (ch) => `\\${ch}`);
+        const { data: uccRows } = await db
+          .from("ph_ucc_filings")
+          .select("secured_party_raw, filed_date, state")
+          .ilike("debtor_name", likeSafe)
+          .limit(25);
+        const rows = (uccRows ?? []) as Any[];
+        if (rows.length) {
+          const parties = [...new Set(rows.map((r) => String(r.secured_party_raw ?? "").trim()).filter(Boolean))].slice(0, 6);
+          uccCorroboration = {
+            matched: true,
+            business_name: bizName,
+            filings: rows.length,
+            secured_parties: parties,
+            note: `${rows.length} public UCC filing(s) on record for this business${parties.length ? ` (${parties.join(", ")})` : ""}. A UCC lien is the normal footprint of an existing financed position — it is NOT collection activity, but it corroborates that the business already carries secured obligations.`,
+          };
+        }
+      }
+    } catch (e) {
+      // UCC is a nice-to-have cross-reference; it must never sink an underwriting run.
+      console.warn("[underwrite-deal] ucc corroboration lookup failed:", e instanceof Error ? e.message : e);
+    }
+
+    const collectionNote = collectionDetected
+      ? `${firingItems.length} collection-activity debit(s) across ${collectionMonths.size || 1} statement month(s) — ` +
+        `${collectionTypes.map((t) => TYPE_LABEL[t]).join(", ")}${collectionTotal > 0 ? `, ${money(collectionTotal)} total` : ""}. ` +
+        `Several funders auto-decline on active collection activity, so confirm this with the merchant before submitting.` +
+        (collectionConfidence !== "high" ? " Read is MEDIUM confidence — verify the descriptors on the statements." : "")
+      : collectionItems.length > 0
+        ? `No collection activity detected. ${collectionItems.length} debit(s) carried collections-adjacent wording but read as ordinary business payments — not flagged.`
+        : "No collection activity detected in the analyzed statements — no garnishments, levies, judgments or collection-agency debits.";
+
+    const collectionActivity = {
+      detected: collectionDetected,
+      confidence: collectionConfidence,
+      types: collectionTypes,
+      items: (collectionDetected ? firingItems : collectionItems).slice(0, 25),
+      monthly_count: round2(firingItems.length / monthsForRate),
+      months_with_activity: collectionMonths.size,
+      total_amount: collectionTotal,
+      note: collectionNote,
+      ucc_corroboration: uccCorroboration,
+    };
 
     // ── MCA POSITIONS — grouped, classified, LATEST-MONTH-anchored ──────────────
     // The core fix for the position-inflation bug. Previously mca_debits were unioned
@@ -1862,6 +2035,10 @@ Deno.serve(async (req) => {
       stacking_velocity: velocityByMonth,
       stacking_velocity_narrative: stackingVelocityNarrative,
       overdraft_fees_total: overdraftFeesTotal,
+      // Collection activity read off the statements (additive; older runs lack it and
+      // the UI hides the callout). Drives the funder shortlist's collections gate —
+      // Green Note et al. auto-decline on it.
+      collection_activity: collectionActivity,
       normal_season_avg_monthly_revenue: normalSeasonAvgMonthlyRevenue,
       worst_month_revenue: worstMonthRevenue,
       latest_month_is_partial: latestIsPartial,
@@ -1917,6 +2094,18 @@ Deno.serve(async (req) => {
             severity: "warn",
             message: `${cc.month}: uploaded-statement deposits ${money(cc.pdf_deposits)} differ ${cc.pct_diff}% from the bank feed's ${money(cc.plaid_deposits)} (Plaid) — likely pending/timing items, but confirm.`,
           });
+    }
+
+    // ── COLLECTION ACTIVITY FLAG (submission risk, not a decline) ──
+    if (collectionActivity.detected) {
+      flags.push({
+        code: "collection_activity",
+        severity: collectionActivity.confidence === "high" ? "critical" : "warn",
+        message: `Collection activity detected — ${collectionActivity.types.join(", ")} across ` +
+          `${collectionActivity.months_with_activity || 1} statement month(s). ` +
+          `Funders that auto-decline on collection activity have been removed from the shortlist; ` +
+          `confirm the items with the merchant before submitting.`,
+      });
     }
 
     // ── Statement coverage vs the CALENDAR: are we current, and are we continuous? ──
@@ -2256,6 +2445,11 @@ Deno.serve(async (req) => {
       fast_track: fastTrack,
       paper_tier_ceiling: tierCap,
       paper_tier_ceiling_because: tierCapReasons,
+      // Computed in code. Collection activity is a WATCH-OUT and a funder-routing
+      // fact — never an auto-disqualifier on our side. The funders decide.
+      has_collection_activity: collectionActivity.detected,
+      collection_activity_types: collectionActivity.types,
+      collection_activity_note: collectionActivity.detected ? collectionActivity.note : null,
     };
 
     // ---- PASS C: JUDGE (Claude — narrative + risk_rating + funder-fit note) ----
@@ -2308,6 +2502,15 @@ Deno.serve(async (req) => {
       "If a cross-check shows an uploaded statement reporting materially MORE deposits than the bank feed for the same " +
       "month (a bank_feed_fraud_mismatch flag), treat it as a POSSIBLE DOCTORED STATEMENT: say so plainly, lean on the " +
       "bank-feed number, and make verification the next step — do not size to the inflated PDF figure. " +
+      "COLLECTION ACTIVITY: metrics.collection_activity flags debits that read as a debt being collected FROM the " +
+      "merchant — collection-agency payments, wage/bank garnishments, tax levies, judgments or writs. When " +
+      "detected is true this is a MATERIAL SUBMISSION RISK and you must name it in the narrative and in the risks: " +
+      "several funders (Green Note Capital's own decline email says \"Debt collection activity detected\") " +
+      "auto-decline on it, so the file has to be routed to desks that accept it and the merchant has to be asked " +
+      "about it before submission. It is a WATCH-OUT and a routing fact, NOT a decline on our side — never turn it " +
+      "into a bare 'decline'. When confidence is 'medium', say the read needs verification against the statements. " +
+      "Do NOT confuse a UCC lien (ucc_corroboration — the ordinary public footprint of an existing advance) with " +
+      "collection activity; they are separate signals. When detected is false, say nothing about it. " +
       "This is INTERNAL underwriting done BEFORE funder submission from the submitted docs ALONE — you must " +
       "NOT ask the merchant anything. Where a judgment call was made (see ASSUMPTIONS), STATE the key " +
       "assumption(s) in the narrative and give the SENSITIVITY: the base case (assumption holds) vs. the " +
@@ -2540,6 +2743,15 @@ Deno.serve(async (req) => {
     if (debtServicePct > 100) {
       defaultBasis.push(`existing debits consume ${Math.round(debtServicePct)}% of true revenue`);
     }
+    // Collection activity IS observed evidence (unlike the distress proxies above),
+    // so it feeds the same default/collections stance — and additionally drives the
+    // hard collections gate below.
+    if (collectionActivity.detected) {
+      defaultBasis.push(
+        `collection activity in the statements (${collectionActivity.types.join(", ")}; ` +
+        `${collectionActivity.items.length} debit(s), ${collectionActivity.confidence} confidence)`,
+      );
+    }
     const defaultSignal = defaultBasis.length > 0;
     const merchantSignals = {
       positions: positionsCount,
@@ -2550,6 +2762,9 @@ Deno.serve(async (req) => {
       true_monthly_revenue: merchantRevenue,
       default_flag: defaultSignal,
       default_basis: defaultBasis,
+      collection_activity: collectionActivity.detected,
+      collection_activity_types: collectionActivity.types,
+      collection_activity_confidence: collectionActivity.detected ? collectionActivity.confidence : null,
     };
 
     // ---- Deterministic funder matching against lenders.category ----
@@ -2567,7 +2782,13 @@ Deno.serve(async (req) => {
     }> = [];
     // Near-misses the owner wants to SEE: a funder that cleared the lane/paper/product
     // filter but failed one published criterion, with the gate it failed.
-    let excludedFunders: Array<{ lender_id: string; company_name: string; reason: string }> = [];
+    let excludedFunders: Array<{
+      lender_id: string; company_name: string; reason: string;
+      /** Hard-excluded BECAUSE collection activity was detected in the statements. */
+      collections_exclusion?: true;
+      /** Still submittable, but pushed down the list by the same signal. */
+      deprioritized?: true;
+    }> = [];
     let funderMatchNote: string | null = null;
     try {
       const { data: liveRows } = await db
@@ -2702,7 +2923,25 @@ Deno.serve(async (req) => {
       const HARD_NEGATED_RE =
         /(?:no stated position|no published|not published|nothing (?:is )?published|silent on|no policy|unknown)[^.]{0,60}$/i;
       const FRIENDLY_DEFAULT_RE =
-        /accepts?\s+default|funds?\s+default|\bZBLs?\b|tax liens?\s+acceptable|defaulted and delinquent/i;
+        /accepts?\s+default|funds?\s+default|\bZBLs?\b|tax liens?\s+acceptable|defaulted and delinquent|past defaults? eligible/i;
+      // COLLECTIONS AUTO-DECLINE — the narrow subset of hard-default desks whose
+      // published stance is an outright NO on collections/defaults, i.e. the ones
+      // that will bounce the file on sight. Green Note's decline email ("Debt
+      // collection activity detected"), United Capital Source's "No previous or
+      // current Defaults", Velocity's "HARD AUTO-DECLINE ... prior default /
+      // collections", Green Note's "0 ACTIVE DEFAULTS" card all land here. This
+      // ONLY bites when collection activity was actually detected in the statements.
+      // Narrower than HARD_DEFAULT_RE on purpose: "recent default" or "already in
+      // default on positions" is a stance on DEFAULTS, not on collection activity —
+      // those desks get deprioritized, not removed.
+      const COLLECTIONS_AUTODECLINE_RE = new RegExp([
+        String.raw`debt collection activity`,
+        String.raw`(?:0|zero|no)\s+(?:active\s+|open\s+)?defaults?`,
+        String.raw`no previous or current default`,
+        String.raw`auto[- ]?decline[^.]{0,80}(?:default|collection|judgment|tax lien)`,
+        String.raw`(?:default|collection|judgment|tax lien)[^.]{0,80}auto[- ]?decline`,
+        String.raw`no\s+(?:open\s+)?collections?\b`,
+      ].join("|"), "i");
 
       interface CritRead {
         hard: string | null;
@@ -2711,11 +2950,14 @@ Deno.serve(async (req) => {
         unverified: string[];
         preferred: boolean;
         defaultStance: "hard" | "friendly" | "unknown";
+        /** Verbatim published wording behind an explicit collections auto-decline. */
+        collectionsAutoDecline: string | null;
       }
       const readCriteria = (l: LenderRow): CritRead => {
         const cr = critOf(l);
         const out: CritRead = {
           hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown",
+          collectionsAutoDecline: null,
         };
         const fail = (why: string) => { if (!out.hard) out.hard = why; };
 
@@ -2788,6 +3030,23 @@ Deno.serve(async (req) => {
               HARD_NEGATED_RE.test(policyText.slice(Math.max(0, (hit.index ?? 0) - 60), hit.index ?? 0));
             if (hit && !negated) out.defaultStance = "hard";
             else if (FRIENDLY_DEFAULT_RE.test(policyText)) out.defaultStance = "friendly";
+
+            // COLLECTIONS HARD GATE. Only a funder whose stance is hard AND whose
+            // wording is an outright no-collections/no-defaults rule qualifies — a
+            // friendly desk is never gated, and a merely investigative one isn't
+            // either. The matched phrase is quoted back so the owner can see the
+            // receipt rather than trust a regex.
+            // CONFLICT GUARD: some records carry BOTH stances (Cashable's packet says
+            // "NO defaults on other MCA companies" on one page and "PAST DEFAULTS
+            // ELIGIBLE" on another). Contradictory prose must never hard-kill a
+            // placement — a conflicted desk is deprioritized and left callable.
+            const conflicted = FRIENDLY_DEFAULT_RE.test(policyText);
+            if (out.defaultStance === "hard" && !conflicted) {
+              const cHit = policyText.match(COLLECTIONS_AUTODECLINE_RE);
+              const cNegated = cHit != null &&
+                HARD_NEGATED_RE.test(policyText.slice(Math.max(0, (cHit.index ?? 0) - 60), cHit.index ?? 0));
+              if (cHit && !cNegated) out.collectionsAutoDecline = cHit[0].trim();
+            }
           }
         }
         return out;
@@ -2799,23 +3058,60 @@ Deno.serve(async (req) => {
       // obvious. Rank the categorical ones first so the cap never buries them.
       const exclRank = (reason: string) =>
         /position/.test(reason) ? 0 : /does not fund/.test(reason) ? 1 : /restricted industry/.test(reason) ? 2 : 3;
-      excludedFunders = eligible
-        .filter((l) => reads.get(l.id)?.hard)
-        .map((l) => ({ lender_id: l.id, company_name: l.company_name, reason: reads.get(l.id)!.hard! }))
-        .sort((a, b) => (exclRank(a.reason) - exclRank(b.reason)) || a.company_name.localeCompare(b.company_name))
-        .slice(0, 12);
-      let gated = eligible.filter((l) => !reads.get(l.id)?.hard);
+
+      // ── COLLECTIONS HARD EXCLUSION ──────────────────────────────────────────
+      // Only fires when collection activity was actually DETECTED in the statements
+      // and the funder publishes an outright collections/defaults auto-decline. This
+      // exclusion is stickier than the ordinary criteria gate: it survives the
+      // "everything failed, show them anyway" rescue below, because sending a
+      // collections file to Green Note is exactly the outcome this exists to prevent.
+      const collectionsBlocked = new Map<string, string>();
+      if (collectionActivity.detected) {
+        for (const l of eligible) {
+          const q = reads.get(l.id)?.collectionsAutoDecline;
+          if (q) {
+            collectionsBlocked.set(
+              l.id,
+              `auto-declines on collection activity (detected in the statements) — their published stance: "${q}"`,
+            );
+          }
+        }
+      }
+      const collectionsExclusions = eligible
+        .filter((l) => collectionsBlocked.has(l.id))
+        .map((l) => ({
+          lender_id: l.id, company_name: l.company_name,
+          reason: collectionsBlocked.get(l.id)!, collections_exclusion: true as const,
+        }))
+        .sort((a, b) => a.company_name.localeCompare(b.company_name));
+
+      excludedFunders = [
+        ...collectionsExclusions,
+        ...eligible
+          .filter((l) => !collectionsBlocked.has(l.id) && reads.get(l.id)?.hard)
+          .map((l) => ({ lender_id: l.id, company_name: l.company_name, reason: reads.get(l.id)!.hard! }))
+          .sort((a, b) => (exclRank(a.reason) - exclRank(b.reason)) || a.company_name.localeCompare(b.company_name)),
+      ].slice(0, 12 + collectionsExclusions.length);
+
+      const placeable = eligible.filter((l) => !collectionsBlocked.has(l.id));
+      let gated = placeable.filter((l) => !reads.get(l.id)?.hard);
       // If the criteria gate empties the lane, ship the funders anyway with the failed
       // gate written onto the match — a shortlist that needs a rep call beats no play
-      // at all, which is the one outcome this profile exists to prevent.
-      if (gated.length === 0 && eligible.length > 0) {
-        for (const l of eligible) {
+      // at all, which is the one outcome this profile exists to prevent. The
+      // collections-blocked desks are NOT rescued: for them the decline is certain.
+      if (gated.length === 0 && placeable.length > 0) {
+        for (const l of placeable) {
           const r = reads.get(l.id)!;
           if (r.hard) { r.soft.push(`FAILS their published box: ${r.hard}`); r.hard = null; }
         }
-        gated = eligible;
+        gated = placeable;
         funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
           "Every live funder in this lane fails a published criterion — shown anyway with the failed gate noted; call the reps before submitting.";
+      }
+      if (collectionsExclusions.length) {
+        funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
+          `${collectionsExclusions.length} funder(s) removed from the shortlist because the statements show collection activity and their published policy auto-declines it: ` +
+          collectionsExclusions.map((x) => x.company_name).join(", ") + ".";
       }
 
       // An UNRECORDED funding band must not read as a $0–$0 box and penalize every
@@ -2873,6 +3169,7 @@ Deno.serve(async (req) => {
         // ---- granular criteria: what PASSED, what is soft, what is unverified ----
         const read = reads.get(l.id) ?? {
           hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown" as const,
+          collectionsAutoDecline: null,
         };
         // Every criterion the merchant actually cleared is cited by name — the owner
         // wants to read WHY a funder is on the list, not just that it scored.
@@ -2880,14 +3177,22 @@ Deno.serve(async (req) => {
         why.push(...read.why);
         if (read.preferred) score += 8;
         for (const s of read.soft) { score -= 10; why.push(s); }
-        // Free-text default/collections stance: re-rank only, never a gate.
+        // Free-text default/collections stance: re-rank only, never a gate. The
+        // outright collections auto-decliners were already removed above; what is
+        // left here is the softer hard-default crowd, pushed DOWN hard when actual
+        // collection activity is on the statements, and the accept-defaults desks
+        // pushed UP — that reordering is the whole routing play.
         if (defaultSignal) {
           if (read.defaultStance === "hard") {
-            score -= 80;
-            why.push("hard default/collections gate on file — this merchant shows a default/collections signal, expect a decline");
+            score -= collectionActivity.detected ? 150 : 80;
+            why.push(collectionActivity.detected
+              ? "hard default/collections gate on file AND this merchant shows collection activity in the statements — deprioritized; clear it with the rep before submitting"
+              : "hard default/collections gate on file — this merchant shows a default/collections signal, expect a decline");
           } else if (read.defaultStance === "friendly") {
-            score += 60;
-            why.push("accepts defaults / collections — the right desk for a distressed file");
+            score += collectionActivity.detected ? 90 : 60;
+            why.push(collectionActivity.detected
+              ? "accepts defaults / collections / tax liens — the right desk for a file with collection activity"
+              : "accepts defaults / collections — the right desk for a distressed file");
           }
         }
         // Unknown merchant values are stipulations, not declines: shown, never scored.
@@ -2908,6 +3213,23 @@ Deno.serve(async (req) => {
 
       scored.sort((a, b) => (b.score - a.score) || a.company_name.localeCompare(b.company_name));
       recommendedFunders = scored.slice(0, 5);
+
+      // Hard-default desks that survived the gate but got pushed off the shortlist by
+      // the collection-activity signal are recorded so the owner sees WHY they aren't
+      // there — a deprioritization, not an exclusion (they can still be called).
+      if (collectionActivity.detected) {
+        const onList = new Set(recommendedFunders.map((r) => r.lender_id));
+        const deprioritized = placeable
+          .filter((l) => !onList.has(l.id) && reads.get(l.id)?.defaultStance === "hard")
+          .map((l) => ({
+            lender_id: l.id, company_name: l.company_name,
+            reason: "deprioritized — publishes a hard default/collections gate and the statements show collection activity",
+            deprioritized: true as const,
+          }))
+          .sort((a, b) => a.company_name.localeCompare(b.company_name))
+          .slice(0, 6);
+        excludedFunders = [...excludedFunders, ...deprioritized];
+      }
       if (recommendedFunders.length === 0) {
         funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
           "No live funder's recorded box matches this profile — widen the network or confirm boxes with the reps.";
@@ -2933,6 +3255,10 @@ Deno.serve(async (req) => {
       debt_relief_candidate: debtReliefCandidate,
       product_signals: productSignals,
       fast_track: fastTrack,
+      // Collection activity — a funder-ROUTING fact, never a disqualifier on our
+      // side. Additive; older persisted rows simply lack these keys.
+      has_collection_activity: collectionActivity.detected,
+      collection_activity_summary: collectionActivity.detected ? collectionActivity.note : null,
       profile_reason: profileReason,
       // Deterministic shortlist off lenders.category — the deal→funder play.
       recommended_funders: recommendedFunders,
@@ -3019,7 +3345,7 @@ function emptyStatement(filename: string, err: string, filenames?: string[]): Pe
     month: null, account_last4: null, opening_balance: null, closing_balance: null,
     total_deposits: null, total_withdrawals: null, avg_daily_balance: null,
     min_balance: null, negative_days: null, nsf_count: null, overdraft_fee_total: null, deposit_count: null,
-    deposits: [], padding_deposits: [], questionable_deposits: [], mca_debits: [],
+    deposits: [], padding_deposits: [], questionable_deposits: [], mca_debits: [], collection_debits: [],
     _filename: filename, _filenames: filenames ?? [filename], _error: err,
     source: "statement_pdf",
   };
@@ -3098,6 +3424,127 @@ function normDebitClass(raw: unknown): "mca" | "sba_loan" | "equipment_lease" | 
   return "mca";
 }
 
+// ── COLLECTION-ACTIVITY DETECTION ────────────────────────────────────────────
+// WHY: several funders auto-decline on active collection activity — Green Note
+// Capital's own decline email reads "Debt collection activity detected", and it
+// killed a 25-year / $58K-a-month file. Catching it BEFORE we submit is the whole
+// point: the owner must never unknowingly send a collections file to that desk.
+//
+// The primary read is the extraction model, which is already looking at every line
+// of every statement (collection_debits). This keyword layer is the BACKSTOP: it
+// (a) re-types and confidence-checks what the model flagged, and (b) promotes a
+// genuine collection debit the model filed as an ordinary vendor debit.
+//
+// Everything here is deliberately conservative. A false positive costs the merchant
+// a funder, so a match needs a real legal/collections read — a vendor whose NAME
+// merely contains "lien", "levy" or "recovery" must not trip it.
+type CollectionType = "collections" | "garnishment" | "tax_levy" | "judgment";
+type CollectionConfidence = "high" | "medium" | "low";
+
+// Named debt collectors. Distinctive enough to be a HIGH-confidence read on their
+// own; short/ambiguous house names (NCB, Cavalry, Transworld) require their
+// qualifier so a bank or a church can't match.
+const COLLECTOR_RE = new RegExp([
+  String.raw`portfolio\s+recover`,
+  String.raw`midland\s+(credit|funding)`,
+  String.raw`\bi\.?\s?c\.?\s*system`,
+  String.raw`convergent\s+(outsourcing|healthcare|resources)`,
+  String.raw`enhanced\s+recovery`,
+  String.raw`\berc\s+(collection|recovery)`,
+  String.raw`ncb\s+management`,
+  String.raw`cavalry\s+(portfolio|spv|investment)`,
+  String.raw`\blvnv\b`,
+  String.raw`transworld\s+system`,
+  String.raw`nationwide\s+recovery`,
+  String.raw`allied\s+interstate`,
+  String.raw`\balltran\b`,
+  String.raw`credit\s+control\s+llc`,
+  String.raw`diversified\s+consultants`,
+  String.raw`radius\s+global`,
+  String.raw`pioneer\s+credit\s+recovery`,
+  String.raw`receivables?\s+performance`,
+  String.raw`\bcbe\s+group\b`,
+  String.raw`professional\s+(account|debt)\s+management`,
+].join("|"), "i");
+
+// Unmistakable legal-collection language. Word-boundary anchored throughout so
+// "CLIENT" can never match \blien\b and "believe" can never match \blevy\b.
+const GARNISH_RE = /\bgarnish(?:ment|ee|ed|ing)?s?\b/i;
+const TAX_LEVY_RE = new RegExp([
+  String.raw`\b(?:irs|federal|state|franchise\s+tax|dept\.?\s+of\s+revenue|department\s+of\s+revenue|treasury|us\s*treas|comptroller)\b[^|;]{0,40}\blev(?:y|ies|ied)\b`,
+  String.raw`\blev(?:y|ies|ied)\b[^|;]{0,40}\b(?:irs|tax|treasury|revenue|comptroller)\b`,
+  String.raw`\btax\s+lev(?:y|ies|ied)\b`,
+  String.raw`\btax\s+lien\b`,
+].join("|"), "i");
+const JUDGMENT_RE = new RegExp([
+  String.raw`\bjudge?ment\b`,
+  String.raw`\bwrit\b`,
+  String.raw`\bsheriff\b[^|;]{0,30}\b(?:levy|sale|execution|attach)`,
+  String.raw`\bcourt\s+order(?:ed)?\b`,
+  String.raw`\bcivil\s+(?:judgment|action|recovery)\b`,
+  String.raw`\bexecution\s+of\s+judgment\b`,
+  String.raw`\b(?:bank|account|wage)\s+lev(?:y|ies|ied)\b`,
+].join("|"), "i");
+// Explicit debt-collection language (as opposed to a bare "collection" that could
+// be a waste-collection route, a card-processing "collections" batch, etc.).
+const COLLECTIONS_STRONG_RE = new RegExp([
+  String.raw`\bdebt\s+collect(?:ion|or)`,
+  String.raw`\bcollection\s+(?:agency|agencies|bureau|dept|department)\b`,
+  String.raw`\bcollections?\s+(?:payment|settlement|recovery|acct|account)\b`,
+  String.raw`\baccounts?\s+receivable\s+management\b`,
+  String.raw`\bcredit\s+bureau\s+collect`,
+].join("|"), "i");
+// Weak signals: real when corroborated, noise on their own. A BARE "levy" is
+// deliberately absent — it is a common surname/brand (Levy Restaurants, Levy Bros
+// Produce) and the genuine cases are all covered by TAX_LEVY_RE / JUDGMENT_RE.
+const COLLECTIONS_WEAK_RE = /\bcollections?\b|\blien\b|\battachment\b|\brepossess/i;
+// Descriptors that LOOK like collections but are ordinary business. These veto a
+// match outright — the false-positive guard the house doctrine demands.
+const COLLECTION_FALSE_FRIEND_RE = new RegExp([
+  String.raw`lien\s+solutions`,          // Wolters Kluwer UCC filing service
+  String.raw`\bucc\b`,                    // UCC search/filing vendors
+  String.raw`lien\s+(?:search|filing|release|waiver)`,
+  String.raw`waste|refuse|garbage|sanitation|trash|recycl`, // "collection" routes
+  String.raw`\bdata\s+collection\b`,
+  String.raw`\bcollection\s+(?:of\s+)?(?:art|agency\s+services\s+for\s+us)\b`,
+  String.raw`auto\s+recovery|towing|vehicle\s+recovery|disaster\s+recovery|data\s+recovery`,
+  String.raw`\blevy\s+(?:brothers|bros|restaurant|premium|foods?|produce)\b`,
+  String.raw`\bjudgment\s+free\b`,
+].join("|"), "i");
+
+function normCollectionType(raw: unknown): CollectionType | null {
+  const s = String(raw ?? "").toLowerCase().trim();
+  if (s === "collections" || s === "garnishment" || s === "tax_levy" || s === "judgment") return s as CollectionType;
+  if (s.includes("garnish")) return "garnishment";
+  if (s.includes("levy") || s.includes("tax")) return "tax_levy";
+  if (s.includes("judg") || s.includes("writ") || s.includes("court")) return "judgment";
+  if (s.includes("collect")) return "collections";
+  return null;
+}
+
+function normCollectionConfidence(raw: unknown): CollectionConfidence | null {
+  const s = String(raw ?? "").toLowerCase().trim();
+  return s === "high" || s === "medium" || s === "low" ? s : null;
+}
+
+/**
+ * Keyword read of ONE debit descriptor. Returns null when the text does not
+ * genuinely read as a collections / legal action. Never guesses from an amount or
+ * a cadence — only from language.
+ */
+function readCollectionText(text: string): { type: CollectionType; confidence: CollectionConfidence; reason: string } | null {
+  const t = (text || "").trim();
+  if (!t) return null;
+  if (COLLECTION_FALSE_FRIEND_RE.test(t)) return null;
+  if (GARNISH_RE.test(t)) return { type: "garnishment", confidence: "high", reason: "descriptor names a garnishment" };
+  if (TAX_LEVY_RE.test(t)) return { type: "tax_levy", confidence: "high", reason: "descriptor names a tax levy/lien" };
+  if (JUDGMENT_RE.test(t)) return { type: "judgment", confidence: "high", reason: "descriptor names a judgment / writ / court order" };
+  if (COLLECTOR_RE.test(t)) return { type: "collections", confidence: "high", reason: "paid to a known debt-collection agency" };
+  if (COLLECTIONS_STRONG_RE.test(t)) return { type: "collections", confidence: "high", reason: "descriptor names debt-collection activity" };
+  if (COLLECTIONS_WEAK_RE.test(t)) return { type: "collections", confidence: "low", reason: "descriptor carries collections/lien wording but is ambiguous" };
+  return null;
+}
+
 // Funder GROUPING key — aggressive normalization so the same creditor collapses to
 // one identity across months regardless of transaction/account ids or product-word
 // noise ("Calabria Funding LLC 51647", "Calabria Funding", "Calabria Funding LLC
@@ -3149,6 +3596,7 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
     padding_deposits: arr(p.padding_deposits),
     questionable_deposits: arr(p.questionable_deposits),
     mca_debits: arr(p.mca_debits),
+    collection_debits: arr(p.collection_debits),
     _filename: filename,
     source: "statement_pdf",
   };
@@ -3173,7 +3621,8 @@ function hashBytes(bytes: Uint8Array): string {
 function dedupByPeriod(statements: PerStatement[]): PerStatement[] {
   const richness = (s: PerStatement) =>
     (s.deposits?.length ?? 0) + (s.padding_deposits?.length ?? 0) +
-    (s.questionable_deposits?.length ?? 0) + (s.mca_debits?.length ?? 0);
+    (s.questionable_deposits?.length ?? 0) + (s.mca_debits?.length ?? 0) +
+    (s.collection_debits?.length ?? 0);
   const namesOf = (s: PerStatement) => s._filenames ?? (s._filename ? [s._filename] : []);
   const byPeriod = new Map<string, number>(); // period key → index in `out`
   const out: PerStatement[] = [];
@@ -3351,6 +3800,20 @@ function buildPlaidStatements(txns: PlaidTxRow[], institution: string | null): P
       if (NSF_NAME_RE.test(plaidTxName(t))) { nsf += 1; odFees += Math.abs(Number(t.amount)); }
     }
 
+    // COLLECTION ACTIVITY — the bank feed carries every debit descriptor, so the
+    // keyword reader runs over ALL of them here (no extraction model in this path).
+    // Only unmistakable hits are kept: a Plaid merchant_name is terse and a weak
+    // wording match on it would be pure noise.
+    const collection_debits = debits.flatMap((t) => {
+      const nm = plaidTxName(t);
+      const kw = readCollectionText(nm);
+      if (!kw || kw.confidence !== "high") return [];
+      return [{
+        date: t.date ?? undefined, desc: nm, amount: round2(Math.abs(Number(t.amount))),
+        type: kw.type, confidence: "high", reason: `${kw.reason} (bank feed)`,
+      }];
+    });
+
     // Financing debits → one aggregated entry per (funder, amount) this month.
     const mcaAgg = new Map<string, { name: string; amount: number; occ: number; klass: string }>();
     for (const t of debits) {
@@ -3387,6 +3850,7 @@ function buildPlaidStatements(txns: PlaidTxRow[], institution: string | null): P
       padding_deposits: [],
       questionable_deposits: [],
       mca_debits,
+      collection_debits,
       source: "plaid",
       _filename: `Bank feed — ${institution ?? "Plaid"} (${label})`,
       _filenames: [`Bank feed (Plaid) — ${label}`],

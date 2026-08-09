@@ -195,6 +195,9 @@ export default function UnderwritingCard({ deal, onDecision, onSeeFullAnalysis }
   const rec = ai ? aiRecommendation(ai) : (result?.recommendation ?? "review");
   const m = ai?.metrics ?? {};
   const topFlags = (ai?.flags ?? []).slice(0, 2);
+  // Null-guarded: only runs from the collections detector carry this key.
+  const collectionActivity = ai?.metrics?.collection_activity;
+  const collectionCount = collectionActivity?.items?.length ?? 0;
 
   const runBtn = canRun && (
     <button
@@ -245,6 +248,14 @@ export default function UnderwritingCard({ deal, onDecision, onSeeFullAnalysis }
               {ai.affordability_rating && (
                 <span className={`px-2.5 py-1 text-xs font-semibold rounded-full capitalize ${RATING_BADGE[ai.affordability_rating]}`}>
                   {ai.affordability_rating}
+                </span>
+              )}
+              {/* Collections / garnishment / tax levy / judgment — additive, so
+                  runs stored before the detector shipped show nothing here. */}
+              {collectionActivity?.detected && (
+                <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
+                  ⚠ Collection activity
+                  {collectionCount > 0 && ` (${collectionCount})`}
                 </span>
               )}
             </div>

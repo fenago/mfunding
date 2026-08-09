@@ -14,7 +14,8 @@ import {
   type UWPosition, type UWEndedPosition, type UWOtherObligation,
   type UWTimelineRow, type UWRemainingPosition, type UWRefi, type UWRefiTerm,
   type UWVelocityRow, type UWPositionAnomaly, type UWProvenance,
-  type UWProfile, type UWRecommendedFunder,
+  type UWProfile, type UWRecommendedFunder, type UWExcludedFunder,
+  type UWCollectionActivity, type UWCollectionType,
 } from "../../services/aiUnderwritingService";
 import { modelLabel } from "../../services/platformService";
 import { useUserProfile } from "../../context/UserProfileContext";
@@ -456,6 +457,18 @@ function ResultView({ r }: { r: DealUnderwriting }) {
         </div>
       </div>
 
+      {/* Collection activity — collections / garnishment / tax levy / judgment.
+          Sits directly above the profile: it knocks funders off the shortlist,
+          so it has to be read first. Additive —
+          runs stored before the detector shipped render nothing here. */}
+      {m.collection_activity?.detected && (
+        <CollectionActivitySection
+          ca={m.collection_activity}
+          summary={m.profile?.collection_activity_summary ?? null}
+          excluded={m.profile?.excluded_note ?? []}
+        />
+      )}
+
       {/* Merchant profile + the deal→funder shortlist. Sits directly under the
           verdict because "what is this file, and who buys it" is the payoff.
           Runs stored before the profiler shipped have no profile — hint only. */}
@@ -679,6 +692,145 @@ function ResultView({ r }: { r: DealUnderwriting }) {
             </table>
           </div>
         </details>
+      )}
+    </div>
+  );
+}
+
+// ── Collection activity ──────────────────────────────────────────────────────
+// Collections, garnishments, tax levies and judgment/writ debits found in the
+// statements. Rendered in the SAME critical-flag treatment as the doctored-
+// statement banner (red-300/red-800 ring, red-50/red-900-25 fill) because it
+// carries the same weight: several funders hard-decline on it.
+// The UCC line underneath is deliberately NOT red — filings are context about
+// existing financed positions, not collection activity.
+const COLLECTION_TYPE_LABEL: Record<UWCollectionType, string> = {
+  collections: "Collections",
+  garnishment: "Garnishment",
+  tax_levy: "Tax levy",
+  judgment: "Judgment / writ",
+};
+const collectionTypeLabel = (t: string) =>
+  COLLECTION_TYPE_LABEL[t as UWCollectionType] ?? t.replace(/_/g, " ");
+
+function CollectionItemRows({ items }: { items: UWCollectionActivity["items"] }) {
+  return (
+    <div className="space-y-1.5">
+      {items.map((it, i) => (
+        <div
+          key={i}
+          className="flex items-start justify-between gap-3 text-sm bg-white/60 dark:bg-black/20 rounded-lg px-3 py-1.5"
+        >
+          <span className="min-w-0 text-red-800 dark:text-red-200">
+            <span className="font-semibold">{it.date ?? it.month ?? "—"}</span>
+            <span className="text-red-700 dark:text-red-300"> · {it.desc}</span>
+          </span>
+          <span className="shrink-0 text-right">
+            <span className="font-semibold text-red-800 dark:text-red-200">{money(it.amount)}</span>
+            <span className="ml-2 inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded-md bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
+              {collectionTypeLabel(it.type)}
+            </span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CollectionActivitySection({
+  ca, summary, excluded,
+}: {
+  ca: UWCollectionActivity;
+  summary: string | null;
+  excluded: UWExcludedFunder[];
+}) {
+  const items = ca.items ?? [];
+  const types = ca.types ?? [];
+  const ucc = ca.ucc_corroboration;
+  const knockedOut = (excluded ?? []).filter((e) => e.collections_exclusion === true);
+
+  return (
+    <div className="rounded-xl border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/25 p-4">
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <h4 className="font-bold text-red-800 dark:text-red-200">⚠ Collection activity detected</h4>
+        {types.map((t) => (
+          <span
+            key={t}
+            className="inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300"
+          >
+            {collectionTypeLabel(t)}
+          </span>
+        ))}
+        <span className="ml-auto text-xs font-medium text-red-700 dark:text-red-300 capitalize">
+          {ca.confidence} confidence
+        </span>
+      </div>
+
+      {summary && summary.trim() && (
+        <p className="text-sm font-semibold text-red-800 dark:text-red-200 mb-2">{summary}</p>
+      )}
+
+      <div className="text-sm text-red-700 dark:text-red-300 mb-2">
+        <span className="font-semibold">{num(items.length)}</span> flagged item{items.length === 1 ? "" : "s"} across{" "}
+        <span className="font-semibold">{num(ca.months_with_activity)}</span> month
+        {ca.months_with_activity === 1 ? "" : "s"} ·{" "}
+        <span className="font-semibold">{money(ca.total_amount)}</span> total
+        {ca.monthly_count > 0 && (
+          <span className="text-red-600 dark:text-red-400"> · {ca.monthly_count.toFixed(1)} per month</span>
+        )}
+      </div>
+
+      {ca.note && <p className="text-sm text-red-700 dark:text-red-300 mb-2">{ca.note}</p>}
+
+      {/* ≤4 items read at a glance; anything longer folds, like the rest of the panel. */}
+      {items.length > 0 && (
+        items.length <= 4 ? (
+          <CollectionItemRows items={items} />
+        ) : (
+          <details className="group">
+            <summary className="flex items-center gap-1.5 cursor-pointer list-none text-sm font-medium text-red-700 dark:text-red-300">
+              <ChevronDownIcon className="w-4 h-4 text-red-500 group-open:rotate-180 transition-transform" />
+              Show {items.length} items
+            </summary>
+            <div className="mt-2">
+              <CollectionItemRows items={items} />
+            </div>
+          </details>
+        )
+      )}
+
+      {/* Funders this knocked out of the shortlist */}
+      {knockedOut.length > 0 && (
+        <div className="mt-3 border-t border-red-200 dark:border-red-800/60 pt-2.5">
+          <div className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300 mb-1.5">
+            Funders excluded because of this:
+          </div>
+          <div className="space-y-1">
+            {knockedOut.map((e, i) => (
+              <div key={e.lender_id ?? i} className="flex gap-2 text-xs text-red-700 dark:text-red-300">
+                <span className="text-red-400 shrink-0">▸</span>
+                <span>
+                  <span className="font-semibold text-red-800 dark:text-red-200">{e.company_name}</span>
+                  {e.reason ? ` — ${e.reason}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* UCC filings — separate, lower-key signal. Liens/financed positions on
+          record, NOT collection activity; never styled red. */}
+      {ucc?.matched && (
+        <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-gray-900/40 px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+          <span className="font-semibold text-gray-700 dark:text-gray-200">UCC corroboration:</span>{" "}
+          {num(ucc.filings)} filing{ucc.filings === 1 ? "" : "s"} on record
+          {ucc.business_name ? ` for ${ucc.business_name}` : ""}
+          {ucc.secured_parties && ucc.secured_parties.length > 0
+            ? ` (${ucc.secured_parties.join(", ")})`
+            : ""}
+          .{ucc.note ? ` ${ucc.note}` : ""}
+        </div>
       )}
     </div>
   );

@@ -249,6 +249,48 @@ export interface UWExcludedFunder {
   company_name: string;
   /** The gate it failed, e.g. "merchant has 3 position(s), max 2". */
   reason: string;
+  /** Hard-excluded BECAUSE of detected collection activity (additive; older rows lack it). */
+  collections_exclusion?: true;
+  /** Still submittable but ranked down (additive; older rows lack it). */
+  deprioritized?: true;
+}
+
+// ── Collection activity — collections / garnishment / tax levy / judgment ────
+// Additive: runs stored before the detector shipped have no collection_activity
+// key at all, so every read must be null-guarded.
+export type UWCollectionType = "collections" | "garnishment" | "tax_levy" | "judgment";
+export type UWConfidence = "high" | "medium" | "low";
+
+export interface UWCollectionItem {
+  date: string | null;
+  desc: string;
+  amount: number;
+  type: UWCollectionType;
+  month: string | null;
+  confidence: UWConfidence;
+  source: "ai" | "keyword";
+}
+
+/** Secondary signal only — existing financed positions/liens, NOT collection activity. */
+export interface UWUccCorroboration {
+  matched: boolean;
+  business_name: string | null;
+  filings: number;
+  secured_parties: string[];
+  note: string;
+}
+
+export interface UWCollectionActivity {
+  detected: boolean;
+  confidence: UWConfidence;
+  types: UWCollectionType[];
+  items: UWCollectionItem[];
+  /** Average flagged items per analyzed month. */
+  monthly_count: number;
+  months_with_activity: number;
+  total_amount: number;
+  note: string;
+  ucc_corroboration: UWUccCorroboration | null;
 }
 
 /** Merchant side of the criteria gate — what the shortlist was matched against. */
@@ -287,6 +329,9 @@ export interface UWProfile {
   /** Near-misses with the gate each one failed (older rows have none). */
   excluded_note?: UWExcludedFunder[];
   merchant_signals?: UWMerchantSignals;
+  /** Mirrors metrics.collection_activity.detected (additive; older rows lack it). */
+  has_collection_activity?: boolean;
+  collection_activity_summary?: string | null;
 }
 
 export interface UWMetrics {
@@ -355,6 +400,8 @@ export interface UWMetrics {
   provenance?: UWProvenance;
   // Merchant profile + the deal→funder shortlist (additive; older runs lack it).
   profile?: UWProfile;
+  // Collections / garnishment / tax levy / judgment sweep (additive; older runs lack it).
+  collection_activity?: UWCollectionActivity;
 }
 
 export interface UWPerStatement {
