@@ -99,6 +99,7 @@ const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSette
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
 const DialerPage = lazyWithReload(() => import("../pages/admin/DialerPage.tsx"));
 const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
+const UccMachineGuidePage = lazyWithReload(() => import("../pages/admin/UccMachineGuidePage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
@@ -534,6 +535,15 @@ export const routes: RouteObject[] = [
               {
                 path: "dialing-machine",
                 element: <DialingMachinePage />,
+              },
+              // How the UCC Lead Machine Works — the Source → Match → Build →
+              // Skip-Trace → Activate one-pager. This is the EXPLAINER; the
+              // operational console is "ph-ucc" above. Same no-extra-guard
+              // treatment as the dialing-machine page: every staff role reads it,
+              // merchants (role `user`) are bounced by AdminProtectedRoute.
+              {
+                path: "ucc-machine-guide",
+                element: <UccMachineGuidePage />,
               },
               // Cold-email (Instantly) dashboard + strategy (admins + super_admin)
               {

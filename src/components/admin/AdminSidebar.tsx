@@ -47,6 +47,7 @@ import {
   BeakerIcon,
   PuzzlePieceIcon,
   ShareIcon,
+  CircleStackIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -111,6 +112,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/ph-ucc", // PH UCC Machine (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
   "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — onboarding reference, every staff role
+  "/admin/ucc-machine-guide", // 🔗 How the UCC Machine Works — the sibling one-pager, every staff role
 ]);
 
 const navGroups: NavGroup[] = [
@@ -139,6 +141,17 @@ const navGroups: NavGroup[] = [
       // OPS (every staff role) + in the closer lens, same as the Funder Cheat
       // Sheet: it's reference material, not a management surface.
       { name: "Dialing Machine", path: "/admin/dialing-machine", icon: ShareIcon, roles: OPS },
+      // How the UCC Machine Works — the sibling one-pager (Source → Match →
+      // Build → Skip-Trace → Activate). The owner wants the two explainers
+      // adjacent, so it sits immediately after Dialing Machine. Same OPS gating:
+      // it's reference material every staff role reads, and it's the EXPLAINER —
+      // the operational console is "UCC Machine" (/admin/ph-ucc) above.
+      {
+        name: "UCC Machine — Guide",
+        path: "/admin/ucc-machine-guide",
+        icon: CircleStackIcon,
+        roles: OPS,
+      },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
