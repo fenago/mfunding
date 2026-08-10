@@ -164,6 +164,12 @@ verify_jwt = true
 [functions.deal-assistant]
 verify_jwt = true
 
+# Resolve-or-create the deal behind a GHL contact for the setter "Open in Playbook"
+# deep-link. Signed-in staff only (in-code role check); a closer claims the
+# resulting deal so RLS lets them read it. Idempotent (no duplicate deals).
+[functions.playbook-open-contact]
+verify_jwt = true
+
 # Sends a merchant a passwordless magic-link portal invite. Signed-in staff only
 # (in-code role check); closers limited to their own customers.
 [functions.merchant-invite]

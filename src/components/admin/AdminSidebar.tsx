@@ -254,6 +254,13 @@ export default function AdminSidebar() {
   const role: NavRole | undefined =
     profile?.role === "employee" ? "admin" : (profile?.role as NavRole | undefined);
   const canSee = (item: NavItem) => {
+    // SETTERS ARE LOCKED TO THE PLAYBOOK. A pure setter carries role === "closer"
+    // exactly; the Revenue Playbook is their ONLY screen (they open a merchant
+    // from a contact deep link and work the steps there), so nothing else renders
+    // in the nav. This is deliberately narrower than the closer lens below.
+    // An admin who also has a closer row (e.g. Carlos) has role "admin", not
+    // "closer" (see UserProfileContext) — they keep the full manager nav.
+    if (profile?.role === "closer" && item.path !== "/admin/playbooks") return false;
     // Closer lens: only the daily operating links, regardless of group.
     if (isCloserLens && !CLOSER_LENS_PATHS.has(item.path)) return false;
     if (!(isSuperAdmin || (!!role && item.roles.includes(role)))) return false;

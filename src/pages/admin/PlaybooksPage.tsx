@@ -203,6 +203,58 @@ export default function PlaybooksPage() {
   useEffect(() => {
     listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
   }, []);
+  // ── Deep link: open a merchant straight from their contact ────────────────
+  // A setter clicks ONE link on the contact (GHL / HotProspector) and lands here
+  // with that merchant's deal ALREADY loaded on the right flow tab — no hunting
+  // through My Day, no typing. Forms supported:
+  //   /admin/playbooks?deal=<dealId>          → load that deal directly
+  //   /admin/playbooks?contact=<ghlContactId> → resolve via playbook-open-contact
+  //   HP style: HotProspector's integration force-appends
+  //     /v2/location/{loc}/contacts/detail/{id} to the base link, so the contact
+  //     id lands in ?x= (or on the path) — same recovery SendAppPage uses.
+  // Runs exactly ONCE, then strips the params so a refresh can't re-fire it.
+  const deepLinkRan = useRef(false);
+  const [deepLink, setDeepLink] = useState<{ phase: "loading" | "error"; message?: string } | null>(null);
+  useEffect(() => {
+    if (deepLinkRan.current) return;
+    deepLinkRan.current = true;
+    const sp = new URLSearchParams(window.location.search);
+    const dealParam = sp.get("deal")?.trim() ?? "";
+    let contactParam = sp.get("contact")?.trim() ?? "";
+    if (!contactParam) {
+      const hay = `${sp.get("x") ?? ""} ${window.location.pathname}`;
+      contactParam = hay.match(/\/contacts\/detail\/([^/?#\s]+)/)?.[1] ?? "";
+    }
+    if (!dealParam && !contactParam) return; // the normal case — nothing to open
+    setDeepLink({ phase: "loading" });
+    void (async () => {
+      try {
+        let targetDealId = dealParam;
+        if (!targetDealId) {
+          const { data, error } = await supabase.functions.invoke("playbook-open-contact", {
+            body: { ghl_contact_id: contactParam },
+          });
+          if (error) await invokeThrow(error);
+          const res = data as { ok?: boolean; deal_id?: string; error?: string } | null;
+          if (!res?.ok || !res.deal_id) throw new Error(res?.error || "Couldn't open that contact.");
+          targetDealId = res.deal_id;
+        }
+        const found = await getDealById(targetDealId);
+        if (!found) throw new Error("Couldn't load that merchant's deal — find it in My Day.");
+        pickFromQueue(found.deal); // loads the deal AND switches to the right flow tab
+        window.scrollTo({ top: 0 });
+        setDeepLink(null);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Couldn't open that merchant.";
+        setDeepLink({ phase: "error", message: msg });
+        notify(msg, "error");
+      } finally {
+        // Clean URL: a refresh reopens the playbook, not the deep link.
+        window.history.replaceState({}, "", "/admin/playbooks");
+      }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const dealCampaign = deal ? campaigns.find((c) => c.id === deal.campaign_id) ?? null : null;
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
   const { isSuperAdmin, profile, effectiveUserId } = useUserProfile();
@@ -664,6 +716,36 @@ export default function PlaybooksPage() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Deep-link status — only while resolving ?contact= / ?deal=, or if it failed. */}
+      {deepLink && (
+        <div
+          className={`flex items-center gap-2 rounded-xl border px-4 py-3 text-sm ${
+            deepLink.phase === "loading"
+              ? "border-ocean-blue/30 bg-ocean-blue/10 text-ocean-blue"
+              : "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300"
+          }`}
+        >
+          {deepLink.phase === "loading" ? (
+            <>
+              <span className="loading loading-spinner loading-xs" />
+              <span className="font-semibold">Opening merchant…</span>
+            </>
+          ) : (
+            <>
+              <span className="font-bold">⚠</span>
+              <span>{deepLink.message}</span>
+              <button
+                type="button"
+                onClick={() => setDeepLink(null)}
+                className="ml-auto text-xs font-semibold underline"
+              >
+                dismiss
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
