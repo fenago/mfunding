@@ -71,13 +71,52 @@ export function redactForLog(value: unknown, depth = 0): unknown {
   return out;
 }
 
+// ---- Retry / backoff ---------------------------------------------------------
+//
+// GHL rate-limits bulk work (HTTP 429; LeadConnector v2 ~100 req / 10s per
+// resource) and occasionally 5xx's. Without a retry, a bulk push (many upserts +
+// tag attaches + custom-field sets in a row) sheds calls the moment it bursts
+// past the limit — each shed call becomes a hard error and, in the UCC push, a
+// lead that never loads. So EVERY caller of ghlFetch gets automatic retry with
+// exponential backoff on the transient failures (429 / 5xx / network) and only
+// those — a 400 (bad data) is a real error and is returned immediately.
+
+const MAX_RETRIES = 4;                 // 5 attempts total
+const BASE_BACKOFF_MS = 500;           // 500ms → 1s → 2s → 4s (before jitter)
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** ±20% jitter so parallel callers don't resynchronize onto the same retry beat. */
+const withJitter = (ms: number): number => Math.round(ms * (0.8 + Math.random() * 0.4));
+
+/** A 429/5xx is transient and worth retrying; other 4xx are real errors. */
+const isRetryableStatus = (s: number): boolean => s === 429 || s >= 500;
+
+/** Parse a Retry-After header (delta-seconds OR HTTP-date) into ms, or null. */
+function retryAfterMs(res: Response): number | null {
+  const h = res.headers.get("Retry-After");
+  if (!h) return null;
+  const secs = Number(h.trim());
+  if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
+  const when = Date.parse(h);
+  if (!Number.isNaN(when)) return Math.max(0, when - Date.now());
+  return null;
+}
+
 /** Authenticated request against the LeadConnector API.
  *
- * OBSERVABILITY: every non-2xx is logged server-side with the endpoint, the
- * request payload (secrets/PII redacted), the HTTP status and GHL's FULL
- * response body. A GHL failure must never leave nothing to look at — the
- * K.L. Breen 400 ("Contact's email is invalid") could not be reconstructed from
- * the logs because this function used to swallow everything but the return value.
+ * RESILIENCE: retries transient failures (429 with Retry-After honored, 5xx, and
+ * network/fetch errors) up to MAX_RETRIES with exponential backoff + jitter.
+ * Non-429 4xx are NOT retried (bad data won't get better). Retries are safe here
+ * because the calls we make are idempotent by design: /contacts/upsert dedupes by
+ * email/phone, tag attach is set-union, custom-field set is last-write-wins.
+ *
+ * OBSERVABILITY: intermediate retries log at warn; the FINAL non-2xx is logged
+ * with the endpoint, the request payload (secrets/PII redacted), the HTTP status,
+ * the attempt count and GHL's FULL response body. A GHL failure must never leave
+ * nothing to look at — the K.L. Breen 400 ("Contact's email is invalid") could
+ * not be reconstructed from the logs because this used to swallow everything but
+ * the return value.
  */
 export async function ghlFetch<T = unknown>(
   cfg: GhlConfig,
@@ -85,7 +124,8 @@ export async function ghlFetch<T = unknown>(
   path: string,
   body?: unknown,
 ): Promise<GhlResponse<T>> {
-  const res = await fetch(`${GHL_API_BASE}${path}`, {
+  const endpoint = `${method} ${path}`;
+  const init: RequestInit = {
     method,
     headers: {
       Authorization: `Bearer ${cfg.apiKey}`,
@@ -94,26 +134,68 @@ export async function ghlFetch<T = unknown>(
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
-  });
-  let parsed: unknown = null;
-  const text = await res.text();
-  if (text) {
-    try { parsed = JSON.parse(text); } catch { parsed = text; }
-  }
-  if (!res.ok) {
+  };
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // ── the network hop (a thrown fetch is itself transient) ──
+    let res: Response;
+    try {
+      res = await fetch(`${GHL_API_BASE}${path}`, init);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (attempt < MAX_RETRIES) {
+        const wait = withJitter(BASE_BACKOFF_MS * 2 ** attempt);
+        console.warn("[ghl] network error — retrying", JSON.stringify({
+          endpoint, attempt: attempt + 1, wait_ms: wait, error: msg,
+        }));
+        await sleep(wait);
+        continue;
+      }
+      console.error("[ghl] REQUEST FAILED (network)", JSON.stringify({
+        endpoint, attempts: attempt + 1, error: msg,
+      }));
+      return { ok: false, status: 0, data: null, error: msg };
+    }
+
+    let parsed: unknown = null;
+    const text = await res.text();
+    if (text) {
+      try { parsed = JSON.parse(text); } catch { parsed = text; }
+    }
+
+    if (res.ok) {
+      return { ok: true, status: res.status, data: parsed as T };
+    }
+
+    // ── transient HTTP failure: back off and retry ──
+    if (isRetryableStatus(res.status) && attempt < MAX_RETRIES) {
+      const ra = res.status === 429 ? retryAfterMs(res) : null;
+      const wait = Math.max(ra ?? 0, withJitter(BASE_BACKOFF_MS * 2 ** attempt));
+      console.warn("[ghl] transient failure — backing off", JSON.stringify({
+        endpoint, status: res.status, attempt: attempt + 1, wait_ms: wait, retry_after_ms: ra,
+      }));
+      await sleep(wait);
+      continue;
+    }
+
+    // ── terminal failure (non-retryable 4xx, or retries exhausted) ──
     console.error("[ghl] REQUEST FAILED", JSON.stringify({
-      endpoint: `${method} ${path}`,
+      endpoint,
       status: res.status,
+      attempts: attempt + 1,
       request: body === undefined ? null : redactForLog(body),
       response: typeof parsed === "string" ? parsed.slice(0, 2000) : parsed,
     }));
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      error: typeof parsed === "string" ? parsed : JSON.stringify(parsed),
+    };
   }
-  return {
-    ok: res.ok,
-    status: res.status,
-    data: res.ok ? (parsed as T) : null,
-    error: res.ok ? undefined : (typeof parsed === "string" ? parsed : JSON.stringify(parsed)),
-  };
+
+  // Unreachable (loop always returns), kept for exhaustiveness.
+  return { ok: false, status: 0, data: null, error: "retry loop exhausted" };
 }
 
 /** Pull the human message out of a GHL error body (which is usually

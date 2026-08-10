@@ -334,6 +334,13 @@ const PAGE_SIZE = 25;
 const TRACE_COST_DISPLAY = 0.07;
 const TRACE_COST_GUARD = 0.1;
 const HARD_CALL_CAP = 100; // the edge fn traces at most 100 leads per call, and we batch in chunks of this
+// The GHL/HP push does a few rate-limited GHL calls PER lead (upsert + tags +
+// custom fields) with retry/backoff + pacing, so it processes far fewer leads
+// per call than skip-trace. Chunk at 50 so a clean chunk finishes well inside the
+// edge fn's time budget; anything a chunk doesn't reach comes back as
+// `unprocessed_ids` and is re-invoked, so the size only affects round-trips, not
+// completeness.
+const PUSH_CALL_CAP = 50;
 
 /* Stable CSV column order for the lead export. phone/email stay in the shape
    even though they're null until skip-trace is live — keeps the file layout
@@ -1859,31 +1866,71 @@ export default function PhUccMachinePage() {
         }
         setPushProgress({ done: 0, total: ids.length });
 
-        // 2) Loop in batches of 100 (the edge fn's per-call ceiling).
+        // 2) Loop in batches. CONTINUE-ON-ERROR end to end: a batch that fails
+        //    (network/HTTP/5xx from the fn itself) must NOT abort the run — the
+        //    remaining batches still get attempted. Within a batch we also drain
+        //    the fn's `unprocessed_ids` (leads it didn't reach inside its time
+        //    budget) by re-invoking with exactly those, so a big push finishes in
+        //    one click without silently dropping leads. Re-push is idempotent.
         let pushed = 0,
           updated = 0,
           skipped = 0,
-          errored = 0;
-        for (let i = 0; i < ids.length; i += HARD_CALL_CAP) {
-          const chunk = ids.slice(i, i + HARD_CALL_CAP);
-          const { data, error } = await supabase.functions.invoke("ph-ucc-push-ghl", {
-            body: { lead_ids: chunk, batch_date: todayStamp() },
-          });
-          if (error) throw new Error(await fnErrorMessage(error));
-          const r = (data as Record<string, unknown>) ?? {};
-          if (r.ok === false) throw new Error(String(r.error || "push failed"));
-          pushed += Number(r.pushed ?? 0) || 0;
-          updated += Number(r.updated ?? 0) || 0;
-          skipped += Number(r.skipped_no_contact ?? 0) || 0;
-          errored += Number(r.errors ?? 0) || 0;
-          setPushProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length });
+          errored = 0,
+          done = 0;
+        let hpGroupTitle = "";
+        for (let i = 0; i < ids.length; i += PUSH_CALL_CAP) {
+          const chunk = ids.slice(i, i + PUSH_CALL_CAP);
+          let remaining = chunk;
+          let guard = 0; // hard stop against a non-advancing fn
+          while (remaining.length > 0 && guard < 25) {
+            guard++;
+            try {
+              const { data, error } = await supabase.functions.invoke("ph-ucc-push-ghl", {
+                body: { lead_ids: remaining, batch_date: todayStamp() },
+              });
+              if (error) throw new Error(await fnErrorMessage(error));
+              const r = (data as Record<string, unknown>) ?? {};
+              if (r.ok === false) throw new Error(String(r.error || "push failed"));
+              pushed += Number(r.pushed ?? 0) || 0;
+              updated += Number(r.updated ?? 0) || 0;
+              skipped += Number(r.skipped_no_contact ?? 0) || 0;
+              errored += Number(r.errors ?? 0) || 0;
+              if (typeof r.hp_group_title === "string" && r.hp_group_title) hpGroupTitle = r.hp_group_title;
+              const unproc = Array.isArray(r.unprocessed_ids)
+                ? (r.unprocessed_ids as unknown[]).filter((x): x is string => typeof x === "string")
+                : [];
+              const advanced = remaining.length - unproc.length;
+              done += Math.max(0, advanced);
+              setPushProgress({ done: Math.min(done, ids.length), total: ids.length });
+              // No progress and still unprocessed → treat as errored rather than spin.
+              if (advanced <= 0) {
+                errored += remaining.length;
+                done += remaining.length;
+                setPushProgress({ done: Math.min(done, ids.length), total: ids.length });
+                remaining = [];
+                break;
+              }
+              remaining = unproc;
+            } catch (batchErr) {
+              // Batch-level failure: count the unconfirmed leads as errored and
+              // move on to the next batch (never abort the whole run). They're
+              // idempotent, so a later re-push cleanly loads them.
+              console.warn("[ph-ucc push] batch failed, continuing", batchErr);
+              errored += remaining.length;
+              done += remaining.length;
+              setPushProgress({ done: Math.min(done, ids.length), total: ids.length });
+              remaining = [];
+            }
+          }
         }
 
         const errStr = errored > 0 ? ` · ${errored} errored` : "";
+        const groupName = hpGroupTitle || `UCC ${todayStamp()}`;
         setPushResult(
-          `Loaded ${(pushed + updated).toLocaleString()} to GHL/HP · ${pushed.toLocaleString()} new · ` +
-            `${updated.toLocaleString()} updated · ${skipped.toLocaleString()} skipped (no contact)${errStr}. ` +
-            `Batch tag "${batchTag}" applied — target it in an HP dialer campaign. They'll appear in HotProspector automatically.`,
+          `Loaded ${pushed.toLocaleString()} into HotProspector · ${updated.toLocaleString()} already loaded · ` +
+            `${skipped.toLocaleString()} skipped (no contact)${errStr}. ` +
+            `Added to HP group "${groupName}" (tag "${batchTag}") — target THAT GROUP in an HP dialer campaign. ` +
+            `HP queues the load, so leads appear in the dialer within a few minutes, then sync up to GHL automatically.`,
         );
         // Refresh funnel / lead table / summaries to reflect the loaded rows.
         await Promise.all([loadFunnel(), loadLeads(), loadPushSummary(), loadTraceSummary()]);
@@ -2773,10 +2820,10 @@ export default function PhUccMachinePage() {
                 >
                   <ArrowUpTrayIcon className="w-4 h-4" />
                   {pushRunning
-                    ? "Pushing…"
+                    ? "Loading…"
                     : plannedPush > 0
-                      ? `Push these ${plannedPush.toLocaleString()} to GHL/HP`
-                      : "Push this set to GHL/HP"}
+                      ? `Load these ${plannedPush.toLocaleString()} into HP`
+                      : "Load this set into HP"}
                 </button>
               </div>
 
@@ -2804,10 +2851,12 @@ export default function PhUccMachinePage() {
               {pushErr && <p className="text-sm text-rose-600 dark:text-rose-400">push failed: {pushErr}</p>}
 
               <p className="text-[11px] text-gray-400">
-                De-duped by phone/email — a merchant already in GHL is updated, never duplicated. Only dialable leads are
-                pushed; <code>needs_skiptrace</code> rows are skipped. Contacts are tagged (<code>ucc-lead</code>,{" "}
-                <code>ucc-&lt;state&gt;</code>, confidence, funder, and today's batch tag) and appear in HotProspector
-                automatically.
+                Loads leads DIRECTLY into HotProspector (the reliable direction — HP then syncs them up to GHL). Only
+                dialable leads are pushed; <code>needs_skiptrace</code> rows are skipped, and a lead already loaded into
+                HP is skipped (idempotent — never duplicated). Leads go into the per-batch HP group{" "}
+                <code>UCC &lt;date&gt;</code> (tagged <code>ucc-lead</code> + today's batch tag), with UCC context on each
+                lead — target THAT GROUP in an HP dialer campaign. HP queues the load, so leads appear in the dialer
+                within a few minutes.
               </p>
             </div>
 
@@ -3449,7 +3498,7 @@ export default function PhUccMachinePage() {
           <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
             <div className="flex items-center gap-2">
               <ArrowUpTrayIcon className="w-6 h-6 text-emerald-500 shrink-0" />
-              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Push to GHL / HotProspector</h2>
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Load into HotProspector</h2>
             </div>
             <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-4 space-y-2 text-sm">
               <div className="flex justify-between gap-4">
@@ -3470,9 +3519,9 @@ export default function PhUccMachinePage() {
               </div>
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              Each lead becomes a de-duped GHL contact (a merchant already in GHL is updated, not duplicated) and appears
-              in HotProspector automatically. Only dialable leads are pushed; skip-trace-pending rows are skipped. Loads
-              in batches of 100 with a live count.
+              Loads leads DIRECTLY into HotProspector's per-batch group <code>UCC &lt;date&gt;</code> (HP then syncs them
+              up to GHL). A lead already loaded into HP is skipped — idempotent, never duplicated. Only dialable leads are
+              loaded; skip-trace-pending rows are skipped. Runs in batches with a live count.
             </p>
             <div className="flex items-center justify-end gap-2">
               <button onClick={() => setPushConfirmOpen(false)} className="btn-ghost">
@@ -3484,7 +3533,7 @@ export default function PhUccMachinePage() {
                 className="btn-primary inline-flex items-center gap-1.5"
               >
                 <ArrowUpTrayIcon className="w-4 h-4" />
-                Yes — push {plannedPush.toLocaleString()} to GHL/HP
+                Yes — load {plannedPush.toLocaleString()} into HP
               </button>
             </div>
           </div>
