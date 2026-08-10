@@ -484,8 +484,6 @@ function useDebounced<T>(value: T, ms = 350): T {
 /* Lead-book contact/skip-trace status filter — resolved entirely from the lead
    row (traced_at / phone / email), no join to ph_ucc_contacts needed. */
 type ContactFilter = "" | "traced" | "not_traced" | "dialable" | "email_only";
-/* Stack posture filter. */
-type StackFilter = "all" | "stacked" | "single";
 
 /* ── Bulk-file UCC ingest control (file_upload / file_autofetch sources) ──
    Uploads each CSV to the private ph-ucc-uploads bucket via resumable TUS
@@ -1150,6 +1148,20 @@ export default function PhUccMachinePage() {
   const [batchResult, setBatchResult] = useState<string | null>(null);
   const [batchErr, setBatchErr] = useState<string | null>(null);
 
+  // ── Filter-driven "Push to GHL/HP" (FREE — no spend) ──
+  // Loads the CURRENT filtered, skip-traced set into GHL contacts (which HP mirrors
+  // for dialing). Only dialable leads (phone OR email) are pushed; needs_skiptrace
+  // rows are skipped server-side. A per-run batch tag lets an HP campaign target
+  // this exact load.
+  const [pushDialable, setPushDialable] = useState<number | null>(null); // filtered ∩ has phone/email
+  const [pushAlready, setPushAlready] = useState<number | null>(null); // filtered ∩ already pushed
+  const [pushCap, setPushCap] = useState(""); // "" = push all dialable; else partial ("top N")
+  const [pushConfirmOpen, setPushConfirmOpen] = useState(false); // in-app confirm modal (no browser popup)
+  const [pushRunning, setPushRunning] = useState(false);
+  const [pushProgress, setPushProgress] = useState<{ done: number; total: number } | null>(null);
+  const [pushResult, setPushResult] = useState<string | null>(null);
+  const [pushErr, setPushErr] = useState<string | null>(null);
+
   // Lead browser state.
   const [leads, setLeads] = useState<UccLead[]>([]);
   const [leadCount, setLeadCount] = useState(0);
@@ -1165,8 +1177,11 @@ export default function PhUccMachinePage() {
   const [fDebtor, setFDebtor] = useState(""); // debtor / merchant name (ilike)
   const [fCity, setFCity] = useState(""); // debtor city (ilike)
   const [fFreshness, setFFreshness] = useState(""); // "" | "90" | "180" | "540" (max freshness_days)
-  const [fStacked, setFStacked] = useState<StackFilter>("all");
-  const [fMinScore, setFMinScore] = useState("");
+  // Lead heat: preset MINIMUM number of stacked MCA advances (stack_depth). Plain-
+  // English stand-in for the raw 1–31 score, which is never shown as a filter now.
+  // "" = all; else "2" (Warm), "3" (Hot), "5" (Hottest). The raw score still drives
+  // default sort + the skip-trace/push "highest-first" ordering under the hood.
+  const [fHeat, setFHeat] = useState("");
   const [fContact, setFContact] = useState<ContactFilter>("");
   const [fLeadClass, setFLeadClass] = useState<"" | "named_funder" | "agent_masked">("");
   // Confidence is MULTI-select: any combination of tiers, OR'd together.
@@ -1437,13 +1452,12 @@ export default function PhUccMachinePage() {
     if (fDebtor.trim()) n++;
     if (fCity.trim()) n++;
     if (fFreshness) n++;
-    if (fStacked !== "all") n++;
-    if (fMinScore) n++;
+    if (fHeat) n++;
     if (fContact) n++;
     if (fLeadClass) n++;
     if (fConfidence.length) n++;
     return n;
-  }, [fState, fStatus, fMinStack, fFunder, fDebtor, fCity, fFreshness, fStacked, fMinScore, fContact, fLeadClass, fConfidence]);
+  }, [fState, fStatus, fMinStack, fFunder, fDebtor, fCity, fFreshness, fHeat, fContact, fLeadClass, fConfidence]);
 
   const clearLeadFilters = useCallback(() => {
     setFState("");
@@ -1453,8 +1467,7 @@ export default function PhUccMachinePage() {
     setFDebtor("");
     setFCity("");
     setFFreshness("");
-    setFStacked("all");
-    setFMinScore("");
+    setFHeat("");
     setFContact("");
     setFLeadClass("");
     setFConfidence([]);
@@ -1477,10 +1490,11 @@ export default function PhUccMachinePage() {
       if (dDebtor.trim()) q = q.ilike("debtor_name", `%${dDebtor.trim()}%`);
       if (dCity.trim()) q = q.ilike("debtor_city", `%${dCity.trim()}%`);
       if (fFreshness) q = q.lte("freshness_days", Number(fFreshness));
-      if (fStacked === "stacked") q = q.gte("stack_depth", 2);
-      else if (fStacked === "single") q = q.lte("stack_depth", 1);
+      // Lead heat (preset) and Min open advances (exact) both floor stack_depth; if
+      // both are set PostgREST AND's them (the higher wins). The raw score is never
+      // a user filter — only the sort order below.
+      if (fHeat) q = q.gte("stack_depth", Number(fHeat) || 0);
       if (fMinStack) q = q.gte("stack_depth", Number(fMinStack) || 0);
-      if (fMinScore) q = q.gte("score", Number(fMinScore) || 0);
       if (fContact === "traced") q = q.not("traced_at", "is", null);
       else if (fContact === "not_traced") q = q.is("traced_at", null);
       else if (fContact === "dialable") q = q.not("phone", "is", null);
@@ -1495,7 +1509,7 @@ export default function PhUccMachinePage() {
       if (orClause) q = q.or(orClause);
       return q;
     },
-    [fState, fStatus, funderMatchList, dDebtor, dCity, fFreshness, fStacked, fMinStack, fMinScore, fContact, fLeadClass, fConfidence],
+    [fState, fStatus, funderMatchList, dDebtor, dCity, fFreshness, fHeat, fMinStack, fContact, fLeadClass, fConfidence],
   );
 
   /* Filtered ∩ needs-skip-trace summary + already-traced count, computed off the
@@ -1517,6 +1531,24 @@ export default function PhUccMachinePage() {
     // A: already traced within the current filter (free — never re-charged).
     const aRes = await buildFilteredLeadQuery("id", { count: "exact", head: true }).not("traced_at", "is", null);
     if (!isMissingRelation(aRes.error)) setATraced(aRes.error ? null : aRes.count ?? 0);
+  }, [buildFilteredLeadQuery, funderForcesEmpty]);
+
+  /* Filtered ∩ dialable (has phone OR email) + already-pushed count, off the SAME
+     query the lead book uses so the push numbers match what's on screen. Pushing is
+     FREE, so there's no wallet math — only "how many will load". */
+  const loadPushSummary = useCallback(async () => {
+    if (funderForcesEmpty) {
+      setPushDialable(0);
+      setPushAlready(0);
+      return;
+    }
+    // Dialable = a usable phone OR email OR apollo email (mirrors the edge fn's
+    // eligibility). needs_skiptrace rows have neither and are excluded here + skipped there.
+    const dRes = await buildFilteredLeadQuery("id", { count: "exact", head: true })
+      .or("phone.not.is.null,email.not.is.null,apollo_business_email.not.is.null");
+    if (!isMissingRelation(dRes.error)) setPushDialable(dRes.error ? null : dRes.count ?? 0);
+    const pRes = await buildFilteredLeadQuery("id", { count: "exact", head: true }).not("pushed_to_ghl_at", "is", null);
+    if (!isMissingRelation(pRes.error)) setPushAlready(pRes.error ? null : pRes.count ?? 0);
   }, [buildFilteredLeadQuery, funderForcesEmpty]);
 
   /* ── Lead browser (paginated, filtered, ranked by score) ── */
@@ -1635,7 +1667,7 @@ export default function PhUccMachinePage() {
   // Reset to first page whenever any filter changes (debounced values for text).
   useEffect(() => {
     setPage(0);
-  }, [fState, fStatus, fMinStack, dFunder, dDebtor, dCity, fFreshness, fStacked, fMinScore, fContact, fLeadClass, fConfidence]);
+  }, [fState, fStatus, fMinStack, dFunder, dDebtor, dCity, fFreshness, fHeat, fContact, fLeadClass, fConfidence]);
   // Auto-disarm a primed alias delete after 5s.
   useEffect(() => {
     if (!aliasArmed) return;
@@ -1647,6 +1679,10 @@ export default function PhUccMachinePage() {
   useEffect(() => {
     if (!backendMissing) loadTraceSummary();
   }, [loadTraceSummary, backendMissing]);
+  // Recompute the filtered push summary (dialable / already-pushed) on filter change.
+  useEffect(() => {
+    if (!backendMissing) loadPushSummary();
+  }, [loadPushSummary, backendMissing]);
   // Load pipeline settings for super_admins once the backend is present.
   useEffect(() => {
     if (isSuperAdmin && !backendMissing) loadPhSettings();
@@ -1783,6 +1819,83 @@ export default function PhUccMachinePage() {
       }
     },
     [buildFilteredLeadQuery, wallet, loadFunnel, loadLeads, loadTraceSummary, loadWallet],
+  );
+
+  /* Push the CURRENT filtered set into GHL contacts (which HotProspector mirrors),
+     up to `cap` leads. FREE — no wallet involved. It:
+       1) pulls up to `cap` dialable ids (phone OR email) from the SAME filtered
+          query, highest-score first,
+       2) loops them in batches of 100 (the edge fn's per-call ceiling), invoking
+          ph-ucc-push-ghl with the day's batch tag, showing live progress,
+       3) reports the ACTUAL totals (new / updated / skipped-no-contact / errors).
+     De-dupe + idempotency are enforced server-side: GHL upsert collapses an existing
+     merchant onto one contact, and a re-push updates rather than duplicates. */
+  const runFilteredPush = useCallback(
+    async (cap: number) => {
+      setPushConfirmOpen(false);
+      setPushRunning(true);
+      setPushErr(null);
+      setPushResult(null);
+      setPushProgress({ done: 0, total: cap });
+      const batchTag = `ucc-batch-${todayStamp()}`;
+      try {
+        // 1) Gather up to `cap` dialable ids from the filtered set (score desc).
+        const ids: string[] = [];
+        const WINDOW = 1000;
+        let offset = 0;
+        while (ids.length < cap) {
+          const want = Math.min(WINDOW, cap - ids.length);
+          const res = await buildFilteredLeadQuery("id")
+            .or("phone.not.is.null,email.not.is.null,apollo_business_email.not.is.null")
+            .range(offset, offset + want - 1);
+          if (res.error) throw res.error;
+          const rows = (res.data as unknown as { id: string }[]) ?? [];
+          ids.push(...rows.map((r) => r.id));
+          if (rows.length < want) break; // drained
+          offset += rows.length;
+        }
+        if (ids.length === 0) {
+          setPushResult("Nothing to push — no dialable (traced) leads in the current filter.");
+          return;
+        }
+        setPushProgress({ done: 0, total: ids.length });
+
+        // 2) Loop in batches of 100 (the edge fn's per-call ceiling).
+        let pushed = 0,
+          updated = 0,
+          skipped = 0,
+          errored = 0;
+        for (let i = 0; i < ids.length; i += HARD_CALL_CAP) {
+          const chunk = ids.slice(i, i + HARD_CALL_CAP);
+          const { data, error } = await supabase.functions.invoke("ph-ucc-push-ghl", {
+            body: { lead_ids: chunk, batch_date: todayStamp() },
+          });
+          if (error) throw new Error(await fnErrorMessage(error));
+          const r = (data as Record<string, unknown>) ?? {};
+          if (r.ok === false) throw new Error(String(r.error || "push failed"));
+          pushed += Number(r.pushed ?? 0) || 0;
+          updated += Number(r.updated ?? 0) || 0;
+          skipped += Number(r.skipped_no_contact ?? 0) || 0;
+          errored += Number(r.errors ?? 0) || 0;
+          setPushProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length });
+        }
+
+        const errStr = errored > 0 ? ` · ${errored} errored` : "";
+        setPushResult(
+          `Loaded ${(pushed + updated).toLocaleString()} to GHL/HP · ${pushed.toLocaleString()} new · ` +
+            `${updated.toLocaleString()} updated · ${skipped.toLocaleString()} skipped (no contact)${errStr}. ` +
+            `Batch tag "${batchTag}" applied — target it in an HP dialer campaign. They'll appear in HotProspector automatically.`,
+        );
+        // Refresh funnel / lead table / summaries to reflect the loaded rows.
+        await Promise.all([loadFunnel(), loadLeads(), loadPushSummary(), loadTraceSummary()]);
+      } catch (e) {
+        setPushErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setPushRunning(false);
+        setPushProgress(null);
+      }
+    },
+    [buildFilteredLeadQuery, loadFunnel, loadLeads, loadPushSummary, loadTraceSummary],
   );
 
   const reloadAliases = useCallback(async () => {
@@ -1990,6 +2103,14 @@ export default function PhUccMachinePage() {
     walletKnown && // never run blind — a hard budget guard needs a known balance
     !overBudget &&
     !batchRunning;
+
+  // ── Push-to-GHL/HP math (FREE — no wallet). The optional "push up to N" cap
+  // makes a partial run; empty = push all dialable in the current filter. ──
+  const pushBatchTag = `ucc-batch-${todayStamp()}`;
+  const pushCapNum = pushCap.trim() ? Math.max(0, Math.floor(Number(pushCap) || 0)) : null;
+  const plannedPush =
+    pushDialable == null ? 0 : pushCapNum != null ? Math.min(pushDialable, pushCapNum) : pushDialable;
+  const canPush = plannedPush > 0 && !pushRunning;
 
   /* ── Render ── */
   return (
@@ -2390,19 +2511,23 @@ export default function PhUccMachinePage() {
                 </select>
                 <span className="text-[10px] text-gray-400">Age of the latest filing — fresher = hotter</span>
               </div>
-              {/* Stack posture. */}
+              {/* Lead heat — plain-English preset over # of stacked MCA advances
+                  (replaces the obtuse raw 1–31 score as a filter). */}
               <div className="flex flex-col gap-0.5">
-                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Positions</label>
-                <select className={input} value={fStacked} onChange={(e) => setFStacked(e.target.value as StackFilter)}>
-                  <option value="all">All positions</option>
-                  <option value="stacked">Stacked (2+)</option>
-                  <option value="single">Single position</option>
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Lead heat</label>
+                <select className={input} value={fHeat} onChange={(e) => setFHeat(e.target.value)}>
+                  <option value="">All leads</option>
+                  <option value="2">🔥 Warm — 2+ advances</option>
+                  <option value="3">🔥🔥 Hot — 3+ advances</option>
+                  <option value="5">🔥🔥🔥 Hottest — 5+ advances</option>
                 </select>
-                <span className="text-[10px] text-gray-400">Open advances stacked on the business</span>
+                <span className="text-[10px] text-gray-400">
+                  How many MCA advances this merchant is already stacked with — more = more cash-hungry = hotter target.
+                </span>
               </div>
-              {/* Min positions. */}
+              {/* Min open advances — exact power-user control (heat picker = quick preset). */}
               <div className="flex flex-col gap-0.5">
-                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Min positions</label>
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Min open advances</label>
                 <input
                   type="number"
                   min={0}
@@ -2411,20 +2536,7 @@ export default function PhUccMachinePage() {
                   value={fMinStack}
                   onChange={(e) => setFMinStack(e.target.value)}
                 />
-                <span className="text-[10px] text-gray-400">At least this many open advances</span>
-              </div>
-              {/* Min score. */}
-              <div className="flex flex-col gap-0.5">
-                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Min score</label>
-                <input
-                  type="number"
-                  min={0}
-                  placeholder="any"
-                  className={`${input} w-28`}
-                  value={fMinScore}
-                  onChange={(e) => setFMinScore(e.target.value)}
-                />
-                <span className="text-[10px] text-gray-400">MCA value — higher = more stacked = hotter (~1–31)</span>
+                <span className="text-[10px] text-gray-400">At least this many stacked MCA advances.</span>
               </div>
               {/* Lead status. */}
               <div className="flex flex-col gap-0.5">
@@ -2613,6 +2725,111 @@ export default function PhUccMachinePage() {
                 </p>
               </div>
             )}
+
+            {/* ── Push THIS filtered set to GHL/HP (FREE — confirm-gated) ── */}
+            <div className="rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-900/10 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <ArrowUpTrayIcon className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white">Push to GHL / HotProspector</h3>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-semibold">
+                  free · no spend
+                </span>
+              </div>
+
+              {/* Live summary — tied EXACTLY to the filters above. */}
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm">
+                <span className="text-gray-600 dark:text-gray-300">
+                  <strong className="text-gray-900 dark:text-white">{leadCount.toLocaleString()}</strong> leads match
+                </span>
+                <span className="text-gray-600 dark:text-gray-300">
+                  <strong className="text-emerald-700 dark:text-emerald-300">
+                    {pushDialable == null ? "—" : pushDialable.toLocaleString()}
+                  </strong>{" "}
+                  dialable (traced) <span className="text-gray-400">— pushable</span>
+                </span>
+                <span className="text-gray-600 dark:text-gray-300">
+                  <strong className="text-gray-900 dark:text-white">
+                    {pushAlready == null ? "—" : pushAlready.toLocaleString()}
+                  </strong>{" "}
+                  already loaded <span className="text-gray-400">(re-push = update)</span>
+                </span>
+                <span className="text-gray-600 dark:text-gray-300">
+                  batch tag{" "}
+                  <code className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                    {pushBatchTag}
+                  </code>
+                </span>
+              </div>
+
+              {/* Optional partial-run cap. */}
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                    Push up to (optional)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    placeholder={pushDialable == null ? "all" : `all ${pushDialable.toLocaleString()}`}
+                    className={`${input} w-40`}
+                    value={pushCap}
+                    onChange={(e) => setPushCap(e.target.value)}
+                  />
+                  <span className="text-[10px] text-gray-400">
+                    Blank = push all {pushDialable == null ? "" : pushDialable.toLocaleString()}. Highest-score first.
+                  </span>
+                </div>
+                <button
+                  onClick={() => setPushConfirmOpen(true)}
+                  disabled={!canPush}
+                  className="btn-primary inline-flex items-center gap-1.5"
+                >
+                  <ArrowUpTrayIcon className="w-4 h-4" />
+                  {pushRunning
+                    ? "Pushing…"
+                    : plannedPush > 0
+                      ? `Push these ${plannedPush.toLocaleString()} to GHL/HP`
+                      : "Push this set to GHL/HP"}
+                </button>
+              </div>
+
+              {!settings.ucc_load_enabled && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                  <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
+                  Auto-load is off (<code>ucc_load_enabled = false</code>) pending the TCPA scrub — this is a manual,
+                  owner-driven push, so it still runs. Make sure a cell scrub has cleared these numbers before dialing.
+                </p>
+              )}
+              {pushDialable === 0 && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Nothing to push in this filter — no matching lead has a phone or email yet (skip-trace them first).
+                </p>
+              )}
+
+              {/* Live progress while looping batches of 100. */}
+              {pushProgress && (
+                <div className="space-y-1">
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-emerald-200/60 dark:bg-emerald-900/40">
+                    <div
+                      className="h-full rounded-full bg-emerald-500 transition-all"
+                      style={{ width: `${pushProgress.total > 0 ? Math.round((pushProgress.done / pushProgress.total) * 100) : 0}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-600 dark:text-gray-300">
+                    pushed {pushProgress.done.toLocaleString()} / {pushProgress.total.toLocaleString()}…
+                  </p>
+                </div>
+              )}
+              {pushResult && <p className="text-sm text-emerald-600 dark:text-emerald-400">{pushResult}</p>}
+              {pushErr && <p className="text-sm text-rose-600 dark:text-rose-400">push failed: {pushErr}</p>}
+
+              <p className="text-[11px] text-gray-400">
+                De-duped by phone/email — a merchant already in GHL is updated, never duplicated. Only dialable leads are
+                pushed; <code>needs_skiptrace</code> rows are skipped. Contacts are tagged (<code>ucc-lead</code>,{" "}
+                <code>ucc-&lt;state&gt;</code>, confidence, funder, and today's batch tag) and appear in HotProspector
+                automatically.
+              </p>
+            </div>
 
             <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm">
@@ -3238,6 +3455,56 @@ export default function PhUccMachinePage() {
               >
                 <BoltIcon className="w-4 h-4" />
                 Yes — trace {plannedCount.toLocaleString()} leads (~${estCost.toFixed(2)})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Push-to-GHL/HP confirm modal (in-app overlay — NOT a browser popup).
+          Restates the count + batch tag before loading anything. FREE — no spend. */}
+      {pushConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button className="absolute inset-0 bg-black/50" onClick={() => setPushConfirmOpen(false)} aria-label="Cancel" />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <ArrowUpTrayIcon className="w-6 h-6 text-emerald-500 shrink-0" />
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Push to GHL / HotProspector</h2>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-4 space-y-2 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Leads to load</span>
+                <span className="font-bold text-gray-900 dark:text-white">{plannedPush.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Batch tag</span>
+                <span className="font-semibold text-gray-900 dark:text-white">
+                  <code className="text-xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                    {pushBatchTag}
+                  </code>
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Cost</span>
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">Free — no spend</span>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Each lead becomes a de-duped GHL contact (a merchant already in GHL is updated, not duplicated) and appears
+              in HotProspector automatically. Only dialable leads are pushed; skip-trace-pending rows are skipped. Loads
+              in batches of 100 with a live count.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setPushConfirmOpen(false)} className="btn-ghost">
+                Cancel
+              </button>
+              <button
+                onClick={() => runFilteredPush(plannedPush)}
+                disabled={!canPush}
+                className="btn-primary inline-flex items-center gap-1.5"
+              >
+                <ArrowUpTrayIcon className="w-4 h-4" />
+                Yes — push {plannedPush.toLocaleString()} to GHL/HP
               </button>
             </div>
           </div>
