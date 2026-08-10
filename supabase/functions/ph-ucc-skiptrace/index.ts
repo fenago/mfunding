@@ -13,8 +13,14 @@
 //   • else              → no_match      (no usable phone, no email)
 //
 // SPEND CONTROL: reads the wallet first; aborts loudly if balance < $5. Never
-// traces more than `limit` leads per call. Idempotent — a lead with traced_at set
-// is skipped unless force:true.
+// traces more than `limit` leads per call (HARD 100 ceiling). Idempotent — a lead
+// with traced_at set is skipped unless force:true.
+//
+// TARGETED SET: pass `lead_ids: string[]` to trace an EXACT set (the UI's filtered
+// lead book passes the ids it shows, in batches of ≤100/call). The same hard
+// safety still applies to every id: needs_skiptrace only, must have a street
+// address, and never re-charged if already traced. When lead_ids is present the
+// score/freshness filters are ignored (the UI already did that filtering).
 //
 // AUTH (mirrors ph-ucc-ingest): trusted cron via ?secret=<GHL webhook secret> +
 // anon-key Bearer, OR a signed-in staff user (closer/admin/super_admin). A
@@ -213,17 +219,26 @@ type Lead = {
 
 async function pickLeads(
   db: SupabaseClient, limit: number, minScore: number | null, maxFreshnessDays: number, force: boolean,
+  leadIds?: string[] | null,
 ): Promise<Lead[]> {
   let q = db.from("ph_ucc_leads")
     .select("id,debtor_name,state,debtor_address,debtor_city,debtor_state,debtor_zip,score,freshness_days")
-    .eq("status", "needs_skiptrace")
+    .eq("status", "needs_skiptrace")        // SAFETY: only ever trace needs_skiptrace leads
     .not("debtor_address", "is", null)      // need a street to skip-trace an address
-    .lte("freshness_days", maxFreshnessDays)
     .order("freshness_days", { ascending: true, nullsFirst: false }) // FRESH first
     .order("score", { ascending: false, nullsFirst: false })          // then high-score
     .limit(limit);
+  if (leadIds && leadIds.length) {
+    // Explicit set from the UI's filtered lead book. Trace exactly these — but the
+    // needs_skiptrace + address + (below) idempotent traced_at safety still holds,
+    // so an id that's already been traced or isn't eligible is silently dropped,
+    // never re-charged. Score/freshness filters are intentionally NOT applied here.
+    q = q.in("id", leadIds);
+  } else {
+    q = q.lte("freshness_days", maxFreshnessDays);
+    if (minScore != null) q = q.gte("score", minScore);
+  }
   if (!force) q = q.is("traced_at", null);   // idempotent: never re-trace
-  if (minScore != null) q = q.gte("score", minScore);
   const { data, error } = await q;
   if (error) throw new Error(`pickLeads failed: ${error.message}`);
   return (data as Lead[]) ?? [];
@@ -355,7 +370,15 @@ Deno.serve(async (req) => {
     return json({ ok: true, skipped: true, reason: "ph_settings.skiptrace_enabled is false — stage paused by owner. Pass force:true to override." });
   }
 
-  const rawLimit = num(payload.limit ?? url.searchParams.get("limit")) ?? DEFAULT_LIMIT;
+  // Explicit id set (from the filtered lead book). Hard-capped to 100 here too, so
+  // no caller can ever push more than the ceiling into a single call.
+  const leadIdsRaw = (payload as { lead_ids?: unknown }).lead_ids;
+  const leadIds = Array.isArray(leadIdsRaw)
+    ? leadIdsRaw.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, HARD_MAX_LIMIT)
+    : null;
+
+  // When lead_ids is present the default cap is the set size; otherwise DEFAULT_LIMIT.
+  const rawLimit = num(payload.limit ?? url.searchParams.get("limit")) ?? (leadIds ? leadIds.length : DEFAULT_LIMIT);
   // Effective per-call cap = min(requested, hard ceiling, owner's batch cap).
   const limit = Math.max(1, Math.min(HARD_MAX_LIMIT, Math.floor(maxBatch), Math.floor(rawLimit)));
   const minScore = num(payload.min_score ?? url.searchParams.get("min_score"));
@@ -371,7 +394,7 @@ Deno.serve(async (req) => {
     }
 
     // 2) Select leads.
-    const leads = await pickLeads(db, limit, minScore, maxFreshnessDays, force);
+    const leads = await pickLeads(db, limit, minScore, maxFreshnessDays, force, leadIds);
     if (leads.length === 0) {
       return json({ ok: true, traced: 0, message: "No needs_skiptrace leads matched the filters.", balance_before: w0.balance });
     }
@@ -463,6 +486,7 @@ Deno.serve(async (req) => {
       ok: true,
       provider: "batchdata",
       requested_limit: limit,
+      requested_ids: leadIds ? leadIds.length : null,
       candidates: leads.length,
       traced, needs_scrub: needsScrub, email_only: emailOnly, no_match: noMatch, errored,
       balance_before: w0.balance, balance_after: w1.balance, run_spend_usd: runSpend, per_lead_cost_est: perLeadCost,

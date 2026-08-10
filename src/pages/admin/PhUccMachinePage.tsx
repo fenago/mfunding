@@ -253,6 +253,31 @@ const CONFIDENCE_TIER_META: Record<Exclude<ConfidenceTier, "confirmed">, { label
   },
 };
 
+/* Filter labels for EVERY tier (CONFIDENCE_TIER_META omits "confirmed"). Drives the
+   multi-select checkbox list in the lead book. */
+const CONFIDENCE_FILTER_OPTIONS: { tier: ConfidenceTier; label: string }[] = [
+  { tier: "confirmed", label: "Confirmed funder" },
+  { tier: "high", label: "Agent-masked · High" },
+  { tier: "medium", label: "Agent-masked · Medium" },
+  { tier: "low", label: "Agent-masked · Low" },
+];
+
+/* Build a PostgREST or() clause for the selected confidence tiers. Each tier is an
+   and(...) sub-group over lead_class + stack_depth (the documented tier contract);
+   the groups are comma-joined so PostgREST OR's them. Returns null when nothing is
+   selected (no confidence filter). */
+function confidenceOrClause(tiers: ConfidenceTier[]): string | null {
+  if (!tiers.length) return null;
+  const parts: string[] = [];
+  for (const t of tiers) {
+    if (t === "confirmed") parts.push("and(lead_class.eq.named_funder)");
+    else if (t === "high") parts.push("and(lead_class.eq.agent_masked,stack_depth.gte.3)");
+    else if (t === "medium") parts.push("and(lead_class.eq.agent_masked,stack_depth.eq.2)");
+    else if (t === "low") parts.push("and(lead_class.eq.agent_masked,stack_depth.lte.1)");
+  }
+  return parts.join(",");
+}
+
 /* Pull the plain-English "why" out of score_reasons (jsonb). Handles the real
    shape ({ reasons: string[], … }), a bare string, or a bare array. */
 function reasonsFrom(sr: unknown): string[] {
@@ -309,9 +334,7 @@ const PAGE_SIZE = 25;
    the edge fn (run_spend_usd). */
 const TRACE_COST_DISPLAY = 0.07;
 const TRACE_COST_GUARD = 0.1;
-const FRESH_ONLY_DAYS = 90; // the highest-value scope for a skip-trace run
-const DEFAULT_MAX_FRESHNESS_DAYS = 120; // the edge fn's default when fresh-only is off
-const HARD_CALL_CAP = 100; // the edge fn traces at most 100 leads per call, regardless of limit
+const HARD_CALL_CAP = 100; // the edge fn traces at most 100 leads per call, and we batch in chunks of this
 
 /* Stable CSV column order for the lead export. phone/email stay in the shape
    even though they're null until skip-trace is live — keeps the file layout
@@ -1114,13 +1137,16 @@ export default function PhUccMachinePage() {
   const [wallet, setWallet] = useState<{ balance: number; currency: string } | null>(null);
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletErr, setWalletErr] = useState<string | null>(null);
-  // Skip-trace batch runner (spends the wallet — budget-guarded).
-  const [batchLimit, setBatchLimit] = useState("100");
-  const [batchMinScore, setBatchMinScore] = useState("");
-  const [batchFreshOnly, setBatchFreshOnly] = useState(true); // ≤90d = highest-value scope, default on
-  const [batchEligible, setBatchEligible] = useState<number | null>(null);
+  // ── Filter-driven skip-trace (spends the wallet — money-guarded) ──
+  // One path: the trace operates on the CURRENT lead-book filter set. Counts and
+  // cost are computed off that exact query so what you see is what you'll spend.
+  const [aTraced, setATraced] = useState<number | null>(null); // filtered ∩ already traced (free)
+  const [bNeedsTrace, setBNeedsTrace] = useState<number | null>(null); // filtered ∩ still needs skip-trace (the spend)
+  const [perLeadCost, setPerLeadCost] = useState<number>(TRACE_COST_DISPLAY); // last real trace_cost, else $0.07
+  const [traceCap, setTraceCap] = useState(""); // "" = trace all B; else partial ("top N")
+  const [traceProgress, setTraceProgress] = useState<{ done: number; total: number } | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false); // in-app confirm modal (no browser popup)
   const [batchRunning, setBatchRunning] = useState(false);
-  const [batchArmed, setBatchArmed] = useState(false);
   const [batchResult, setBatchResult] = useState<string | null>(null);
   const [batchErr, setBatchErr] = useState<string | null>(null);
 
@@ -1143,7 +1169,8 @@ export default function PhUccMachinePage() {
   const [fMinScore, setFMinScore] = useState("");
   const [fContact, setFContact] = useState<ContactFilter>("");
   const [fLeadClass, setFLeadClass] = useState<"" | "named_funder" | "agent_masked">("");
-  const [fConfidence, setFConfidence] = useState<"" | ConfidenceTier>("");
+  // Confidence is MULTI-select: any combination of tiers, OR'd together.
+  const [fConfidence, setFConfidence] = useState<ConfidenceTier[]>([]);
   const [distinctFunders, setDistinctFunders] = useState<string[]>([]); // canonical funders for the combobox
   // Debounced text filters — keep keystrokes from hammering PostgREST.
   const dFunder = useDebounced(fFunder);
@@ -1267,27 +1294,21 @@ export default function PhUccMachinePage() {
     }
   }, []);
 
-  /* How many needs_skiptrace leads a run would actually hit, given the current
-     batch filters (min_score / fresh≤90d). Shrinks as backend runs drain the
-     backlog — the trace is idempotent so this is the honest "what a run touches". */
-  const loadEligible = useCallback(async () => {
-    // Mirror the edge fn's eligibility exactly: needs_skiptrace, not yet traced,
-    // has a street address (can't trace without one), within the freshness window,
-    // and above min_score when set.
-    const maxFresh = batchFreshOnly ? FRESH_ONLY_DAYS : DEFAULT_MAX_FRESHNESS_DAYS;
-    let q = supabase
+  /* Most-recent REAL per-lead skip-trace cost (ph_ucc_leads.trace_cost, stamped by
+     the edge fn from the actual wallet delta). Drives the honest cost estimate;
+     falls back to the $0.07 display default when nothing's been traced yet. */
+  const loadPerLeadCost = useCallback(async () => {
+    const res = await supabase
       .from("ph_ucc_leads")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "needs_skiptrace")
-      .is("traced_at", null)
-      .not("debtor_address", "is", null)
-      .lte("freshness_days", maxFresh);
-    const min = Number(batchMinScore);
-    if (batchMinScore && !isNaN(min)) q = q.gte("score", min);
-    const res = await q;
-    if (isMissingRelation(res.error)) return;
-    setBatchEligible(res.error ? null : res.count ?? 0);
-  }, [batchFreshOnly, batchMinScore]);
+      .select("trace_cost")
+      .not("trace_cost", "is", null)
+      .order("traced_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    if (res.error || !res.data) return;
+    const c = Number((res.data as { trace_cost: number | string | null }).trace_cost);
+    if (Number.isFinite(c) && c > 0) setPerLeadCost(c);
+  }, []);
 
   /* Lead-book filter metadata: the distinct canonical funders (for the funder
      combobox) and the baseline lead total (excl. suppressed) for "showing X of
@@ -1386,13 +1407,13 @@ export default function PhUccMachinePage() {
       if (!isMissingRelation(aliasRes.error)) setAliases((aliasRes.data as UccAlias[]) ?? []);
       setSettings({ ...DEFAULT_SETTINGS, ...((setRes.data?.value as Partial<PhUccSettings>) ?? {}) });
 
-      await Promise.all([loadFunnel(), loadFreshness(), loadWallet(), loadEligible(), loadLeadMeta()]);
+      await Promise.all([loadFunnel(), loadFreshness(), loadWallet(), loadPerLeadCost(), loadLeadMeta()]);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [loadFunnel, loadFreshness, loadWallet, loadEligible, loadLeadMeta]);
+  }, [loadFunnel, loadFreshness, loadWallet, loadPerLeadCost, loadLeadMeta]);
 
   /* Resolve the funder text/combobox filter to the set of canonical funders it
      matches (matched_funders is an array of canonical names — aliases already
@@ -1420,7 +1441,7 @@ export default function PhUccMachinePage() {
     if (fMinScore) n++;
     if (fContact) n++;
     if (fLeadClass) n++;
-    if (fConfidence) n++;
+    if (fConfidence.length) n++;
     return n;
   }, [fState, fStatus, fMinStack, fFunder, fDebtor, fCity, fFreshness, fStacked, fMinScore, fContact, fLeadClass, fConfidence]);
 
@@ -1436,7 +1457,7 @@ export default function PhUccMachinePage() {
     setFMinScore("");
     setFContact("");
     setFLeadClass("");
-    setFConfidence("");
+    setFConfidence([]);
   }, []);
 
   /* Single source of truth for the filtered ph_ucc_leads query. Both the lead
@@ -1465,17 +1486,38 @@ export default function PhUccMachinePage() {
       else if (fContact === "dialable") q = q.not("phone", "is", null);
       else if (fContact === "email_only") q = q.not("email", "is", null).is("phone", null);
       if (fLeadClass) q = q.eq("lead_class", fLeadClass);
-      // Confidence is derived from lead_class + stack_depth (the documented tier
-      // contract) so it filters correctly whether or not the `confidence` column
-      // is live yet, and the CSV export honors it via this same query.
-      if (fConfidence === "confirmed") q = q.eq("lead_class", "named_funder");
-      else if (fConfidence === "high") q = q.eq("lead_class", "agent_masked").gte("stack_depth", 3);
-      else if (fConfidence === "medium") q = q.eq("lead_class", "agent_masked").eq("stack_depth", 2);
-      else if (fConfidence === "low") q = q.eq("lead_class", "agent_masked").lte("stack_depth", 1);
+      // Confidence is MULTI-select and derived from lead_class + stack_depth (the
+      // documented tier contract), so it filters correctly whether or not the
+      // `confidence` column is live yet, and the CSV export honors it via this same
+      // query. Selected tiers are OR'd together via a PostgREST or() group; each
+      // tier is its own and(...) sub-group.
+      const orClause = confidenceOrClause(fConfidence);
+      if (orClause) q = q.or(orClause);
       return q;
     },
     [fState, fStatus, funderMatchList, dDebtor, dCity, fFreshness, fStacked, fMinStack, fMinScore, fContact, fLeadClass, fConfidence],
   );
+
+  /* Filtered ∩ needs-skip-trace summary + already-traced count, computed off the
+     SAME query the lead book uses so the numbers (and cost) match exactly what's
+     on screen. B (needs skip-trace) is the ONLY thing that costs money. */
+  const loadTraceSummary = useCallback(async () => {
+    if (funderForcesEmpty) {
+      setBNeedsTrace(0);
+      setATraced(0);
+      return;
+    }
+    // B: still needs skip-trace within the current filter (mirrors the edge fn's
+    // eligibility — needs_skiptrace, not yet traced, has a street to trace).
+    const bRes = await buildFilteredLeadQuery("id", { count: "exact", head: true })
+      .eq("status", "needs_skiptrace")
+      .is("traced_at", null)
+      .not("debtor_address", "is", null);
+    if (!isMissingRelation(bRes.error)) setBNeedsTrace(bRes.error ? null : bRes.count ?? 0);
+    // A: already traced within the current filter (free — never re-charged).
+    const aRes = await buildFilteredLeadQuery("id", { count: "exact", head: true }).not("traced_at", "is", null);
+    if (!isMissingRelation(aRes.error)) setATraced(aRes.error ? null : aRes.count ?? 0);
+  }, [buildFilteredLeadQuery, funderForcesEmpty]);
 
   /* ── Lead browser (paginated, filtered, ranked by score) ── */
   const loadLeads = useCallback(async () => {
@@ -1600,17 +1642,11 @@ export default function PhUccMachinePage() {
     const t = setTimeout(() => setAliasArmed(null), 5000);
     return () => clearTimeout(t);
   }, [aliasArmed]);
-  // Recompute eligible-untraced count when the batch filters change; disarm on change.
+  // Recompute the filtered trace summary (A traced / B needs-trace) whenever the
+  // lead-book filter set changes — so the cost estimate always tracks the filters.
   useEffect(() => {
-    if (!backendMissing) loadEligible();
-    setBatchArmed(false);
-  }, [loadEligible, backendMissing]);
-  // Auto-disarm a primed batch run after 5s.
-  useEffect(() => {
-    if (!batchArmed) return;
-    const t = setTimeout(() => setBatchArmed(false), 5000);
-    return () => clearTimeout(t);
-  }, [batchArmed]);
+    if (!backendMissing) loadTraceSummary();
+  }, [loadTraceSummary, backendMissing]);
   // Load pipeline settings for super_admins once the backend is present.
   useEffect(() => {
     if (isSuperAdmin && !backendMissing) loadPhSettings();
@@ -1651,61 +1687,103 @@ export default function PhUccMachinePage() {
     [loadOverview],
   );
 
-  /* Run a skip-trace batch. Spends the wallet, so it's budget-guarded (blocked
-     above when projected > balance) AND two-step armed at the call site. After
-     the run we re-fetch the authoritative wallet balance for "wallet now $Y". */
-  const runBatch = useCallback(async () => {
-    setBatchRunning(true);
-    setBatchErr(null);
-    setBatchResult(null);
-    const limit = Math.max(1, Math.floor(Number(batchLimit) || 0));
-    try {
-      // Send max_freshness_days explicitly (90 fresh-only, else the fn's 120
-      // default) so what runs matches the eligible count we showed.
-      const body: Record<string, unknown> = {
-        limit,
-        max_freshness_days: batchFreshOnly ? FRESH_ONLY_DAYS : DEFAULT_MAX_FRESHNESS_DAYS,
-      };
-      const min = Number(batchMinScore);
-      if (batchMinScore && !isNaN(min)) body.min_score = min;
-
-      const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", { body });
-      // Budget-abort (402) / wallet-lookup (502) come back as an invoke error with
-      // the {ok:false,error} body in error.context — surface that, not "traced".
-      if (error) {
-        const msg = await fnErrorMessage(error);
-        throw new Error(msg);
-      }
-      const res = (data as Record<string, unknown>) ?? {};
-      if (res.ok === false) throw new Error(String(res.error || "skip-trace failed"));
-
-      // Stage paused: skiptrace_enabled=false (no force) → skipped:true, not traced:0.
-      if (res.skipped === true) {
-        setBatchResult("stage paused by owner — skip-trace is disabled in Settings");
-      } else if (res.balance_after == null && typeof res.message === "string") {
-        // Nothing-eligible branch: {ok:true, traced:0, message, balance_before} —
-        // no balance_after/run_spend_usd; show the message, leave the wallet as-is.
-        setBatchResult(res.message);
-      } else {
-        const traced = Number(res.traced ?? 0) || 0;
-        const spent = Number(res.run_spend_usd ?? 0) || 0;
-        let nowStr = "";
-        if (typeof res.balance_after === "number") {
-          // balance_after is a genuine post-run wallet read — authoritative.
-          setWallet((w) => ({ balance: res.balance_after as number, currency: w?.currency || "USD" }));
-          nowStr = ` · wallet now $${(res.balance_after as number).toFixed(2)}`;
+  /* Skip-trace the CURRENT filtered lead set, up to `cap` leads. Spends the wallet,
+     so it only runs after the explicit in-app confirm modal. It:
+       1) pulls up to `cap` eligible ids (needs_skiptrace, untraced, has address)
+          from the SAME filtered query, highest-score first,
+       2) loops them in batches of 100 (the edge fn's hard ceiling), showing live
+          progress and updating the wallet from each call's authoritative balance,
+       3) reports the ACTUAL totals (phones / email-only / no-match / $ spent).
+     Every guard stays server-side too: the edge fn re-reads the wallet and aborts
+     below $5, never re-charges an already-traced lead, and caps at 100/call. */
+  const runFilteredTrace = useCallback(
+    async (cap: number) => {
+      setConfirmOpen(false);
+      setBatchRunning(true);
+      setBatchErr(null);
+      setBatchResult(null);
+      setTraceProgress({ done: 0, total: cap });
+      try {
+        // 1) Gather up to `cap` eligible ids from the filtered set (score desc).
+        const ids: string[] = [];
+        const WINDOW = 1000;
+        let offset = 0;
+        while (ids.length < cap) {
+          const want = Math.min(WINDOW, cap - ids.length);
+          const res = await buildFilteredLeadQuery("id")
+            .eq("status", "needs_skiptrace")
+            .is("traced_at", null)
+            .not("debtor_address", "is", null)
+            .range(offset, offset + want - 1);
+          if (res.error) throw res.error;
+          const rows = (res.data as unknown as { id: string }[]) ?? [];
+          ids.push(...rows.map((r) => r.id));
+          if (rows.length < want) break; // drained
+          offset += rows.length;
         }
-        setBatchResult(`traced ${traced.toLocaleString()} · $${spent.toFixed(2)} spent${nowStr}`);
+        if (ids.length === 0) {
+          setBatchResult("Nothing to trace — no eligible leads in the current filter.");
+          return;
+        }
+        setTraceProgress({ done: 0, total: ids.length });
+
+        // 2) Loop in batches of 100.
+        let traced = 0,
+          needsScrub = 0,
+          emailOnly = 0,
+          noMatch = 0,
+          errored = 0,
+          spent = 0;
+        let lastBalance: number | null = wallet?.balance ?? null;
+        let paused = false;
+        for (let i = 0; i < ids.length; i += HARD_CALL_CAP) {
+          const chunk = ids.slice(i, i + HARD_CALL_CAP);
+          const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", {
+            body: { lead_ids: chunk },
+          });
+          if (error) throw new Error(await fnErrorMessage(error));
+          const r = (data as Record<string, unknown>) ?? {};
+          if (r.ok === false) throw new Error(String(r.error || "skip-trace failed"));
+          // Stage paused by owner (skiptrace_enabled=false) — stop, don't keep calling.
+          if (r.skipped === true) {
+            paused = true;
+            break;
+          }
+          traced += Number(r.traced ?? 0) || 0;
+          needsScrub += Number(r.needs_scrub ?? 0) || 0;
+          emailOnly += Number(r.email_only ?? 0) || 0;
+          noMatch += Number(r.no_match ?? 0) || 0;
+          errored += Number(r.errored ?? 0) || 0;
+          spent += Number(r.run_spend_usd ?? 0) || 0;
+          if (typeof r.balance_after === "number") {
+            lastBalance = r.balance_after as number;
+            setWallet((w) => ({ balance: r.balance_after as number, currency: w?.currency || "USD" }));
+          }
+          setTraceProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length });
+        }
+
+        if (paused) {
+          setBatchErr("Skip-trace is paused in Settings (skiptrace_enabled = OFF). Turn it on to run.");
+        } else {
+          const nowStr = lastBalance != null ? ` · wallet now $${lastBalance.toFixed(2)}` : "";
+          const errStr = errored > 0 ? ` · ${errored} errored` : "";
+          setBatchResult(
+            `Traced ${traced.toLocaleString()} · ${needsScrub.toLocaleString()} with phone · ` +
+              `${emailOnly.toLocaleString()} email-only · ${noMatch.toLocaleString()} no-match · ` +
+              `$${spent.toFixed(2)} spent${nowStr}${errStr}`,
+          );
+        }
+        // Refresh funnel / lead table / summary / wallet to reflect the traced rows.
+        await Promise.all([loadFunnel(), loadLeads(), loadTraceSummary(), loadWallet()]);
+      } catch (e) {
+        setBatchErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBatchRunning(false);
+        setTraceProgress(null);
       }
-      // Refresh the funnel / eligible / lead table to reflect the traced rows.
-      await Promise.all([loadFunnel(), loadEligible(), loadLeads()]);
-    } catch (e) {
-      setBatchErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBatchRunning(false);
-      setBatchArmed(false);
-    }
-  }, [batchLimit, batchMinScore, batchFreshOnly, loadFunnel, loadEligible, loadLeads]);
+    },
+    [buildFilteredLeadQuery, wallet, loadFunnel, loadLeads, loadTraceSummary, loadWallet],
+  );
 
   const reloadAliases = useCallback(async () => {
     const aliasRes = await supabase.from("ph_ucc_funder_aliases").select("*").order("alias", { ascending: true });
@@ -1894,19 +1972,22 @@ export default function PhUccMachinePage() {
   const batchCapDirty = phSettings != null && batchCapInput !== String(phSettings.max_skiptrace_batch ?? 300);
   const dncDirty = phSettings != null && dncInput !== String(phSettings.skiptrace_dnc_policy ?? "");
 
-  // A single call traces at most min(limit, 100, eligible) leads. Base both the
-  // shown estimate (× $0.07) and the hard budget guard (× $0.10) on that true
-  // per-call size so we neither overstate cost nor overrun the wallet.
-  const parsedLimit = Math.max(0, Math.floor(Number(batchLimit) || 0));
-  const effectiveRun = Math.min(parsedLimit, HARD_CALL_CAP, batchEligible ?? Infinity);
-  const projectedCost = effectiveRun * TRACE_COST_DISPLAY;
-  const guardCost = effectiveRun * TRACE_COST_GUARD;
-  const overBudget = wallet != null && guardCost > wallet.balance;
-  const canRunBatch =
+  // ── Filter-driven trace money math (exact + honest) ──
+  // B (bNeedsTrace) is the ONLY spend. The optional "trace up to N" cap makes a
+  // partial run; empty = trace all of B. Cost uses the last REAL per-lead cost
+  // (or $0.07); the hard guard uses $0.10 so we never overrun the wallet.
+  const capNum = traceCap.trim() ? Math.max(0, Math.floor(Number(traceCap) || 0)) : null;
+  const plannedCount =
+    bNeedsTrace == null ? 0 : capNum != null ? Math.min(bNeedsTrace, capNum) : bNeedsTrace;
+  const estCost = plannedCount * perLeadCost;
+  const estGuard = plannedCount * TRACE_COST_GUARD;
+  const walletKnown = wallet != null;
+  const overBudget = walletKnown && estGuard > wallet.balance;
+  const walletAfter = walletKnown ? wallet.balance - estCost : null;
+  const canTrace =
     settings.skiptrace_provider_configured &&
-    parsedLimit > 0 &&
-    (batchEligible == null || batchEligible > 0) &&
-    wallet != null && // never run blind — a hard budget guard needs a known balance
+    plannedCount > 0 &&
+    walletKnown && // never run blind — a hard budget guard needs a known balance
     !overBudget &&
     !batchRunning;
 
@@ -2199,117 +2280,6 @@ export default function PhUccMachinePage() {
             </div>
           </section>
 
-          {/* ── Skip-trace runner (spends the wallet — budget-guarded) ── */}
-          {settings.skiptrace_provider_configured && (
-            <section className="space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400 flex items-center gap-2">
-                <BoltIcon className="w-4 h-4" /> Run skip-trace
-              </h2>
-              <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
-                <div className="flex flex-wrap items-end gap-3">
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Limit</label>
-                    <input
-                      type="number"
-                      min={1}
-                      className={`${input} w-24`}
-                      value={batchLimit}
-                      onChange={(e) => {
-                        setBatchLimit(e.target.value);
-                        setBatchArmed(false);
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Min score (optional)</label>
-                    <input
-                      type="number"
-                      min={0}
-                      placeholder="any"
-                      className={`${input} w-28`}
-                      value={batchMinScore}
-                      onChange={(e) => setBatchMinScore(e.target.value)}
-                    />
-                  </div>
-                  <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200 pb-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="checkbox checkbox-sm"
-                      checked={batchFreshOnly}
-                      onChange={(e) => setBatchFreshOnly(e.target.checked)}
-                    />
-                    fresh ≤90d only
-                  </label>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-4 text-sm">
-                  <span className="text-gray-500 dark:text-gray-400">
-                    <strong className="text-gray-900 dark:text-white">
-                      {batchEligible == null ? "—" : batchEligible.toLocaleString()}
-                    </strong>{" "}
-                    eligible untraced
-                  </span>
-                  <span className="text-gray-500 dark:text-gray-400">
-                    est. <strong className="text-gray-900 dark:text-white">~${projectedCost.toFixed(2)}</strong>
-                    <span className="text-gray-400"> ({effectiveRun === Infinity ? parsedLimit.toLocaleString() : effectiveRun.toLocaleString()} × ${TRACE_COST_DISPLAY.toFixed(2)})</span>
-                  </span>
-                  <span className="text-gray-500 dark:text-gray-400">
-                    wallet{" "}
-                    <strong className={overBudget ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}>
-                      {wallet ? `$${wallet.balance.toFixed(2)}` : "—"}
-                    </strong>
-                  </span>
-                </div>
-
-                {overBudget && (
-                  <p className="text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1">
-                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
-                    At the ${TRACE_COST_GUARD.toFixed(2)} guard rate this run could reach ${guardCost.toFixed(2)}, above
-                    the ${wallet?.balance.toFixed(2)} wallet — lower the limit or top up.
-                  </p>
-                )}
-                {batchEligible === 0 && (
-                  <p className="text-xs text-gray-400">No eligible untraced leads for these filters right now.</p>
-                )}
-                {wallet == null && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
-                    Wallet balance unavailable — runs are blocked until it can be read (refresh the wallet tile).
-                  </p>
-                )}
-
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={() => {
-                      if (batchArmed) runBatch();
-                      else setBatchArmed(true);
-                    }}
-                    disabled={!canRunBatch}
-                    className={`inline-flex items-center gap-1.5 ${batchArmed ? "btn-warning" : "btn-primary"}`}
-                  >
-                    <BoltIcon className="w-4 h-4" />
-                    {batchRunning
-                      ? "Tracing…"
-                      : batchArmed
-                        ? `Confirm — trace up to ${(effectiveRun === Infinity ? parsedLimit : effectiveRun).toLocaleString()}`
-                        : "Run skip-trace batch"}
-                  </button>
-                  {batchArmed && !batchRunning && (
-                    <button onClick={() => setBatchArmed(false)} className="btn-ghost text-sm">
-                      Cancel
-                    </button>
-                  )}
-                  {batchResult && <span className="text-sm text-emerald-600 dark:text-emerald-400">{batchResult}</span>}
-                  {batchErr && <span className="text-sm text-rose-600 dark:text-rose-400">run failed: {batchErr}</span>}
-                </div>
-                <p className="text-xs text-gray-400">
-                  Traces only <code>needs_skiptrace</code> leads and is idempotent — already-traced leads are never
-                  re-charged. Each call traces at most 100 (min with Max skip-trace batch); the weekly cron drains the rest.
-                </p>
-              </div>
-            </section>
-          )}
-
           {/* ── 3. Lead browser ── */}
           <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2356,134 +2326,293 @@ export default function PhUccMachinePage() {
 
             {/* Filter bar — every control maps to a real ph_ucc_leads column and
                 filters the query server-side; the CSV export honors it too. */}
-            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 flex flex-wrap items-center gap-2">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 flex flex-wrap items-start gap-x-3 gap-y-3">
               {/* Funder — text search + datalist of distinct canonical funders. */}
-              <input
-                list="ph-ucc-funder-options"
-                placeholder="Funder"
-                className={`${input} w-44`}
-                value={fFunder}
-                onChange={(e) => setFFunder(e.target.value)}
-                title="Filter by matched funder (aliases collapse to a canonical name)"
-              />
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Funder</label>
+                <input
+                  list="ph-ucc-funder-options"
+                  placeholder="any funder"
+                  className={`${input} w-44`}
+                  value={fFunder}
+                  onChange={(e) => setFFunder(e.target.value)}
+                />
+                <span className="text-[10px] text-gray-400">Matched funder name (aliases collapsed)</span>
+              </div>
               <datalist id="ph-ucc-funder-options">
                 {distinctFunders.map((f) => (
                   <option key={f} value={f} />
                 ))}
               </datalist>
               {/* Debtor / merchant name. */}
-              <input
-                placeholder="Debtor / merchant"
-                className={`${input} w-44`}
-                value={fDebtor}
-                onChange={(e) => setFDebtor(e.target.value)}
-              />
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Debtor / merchant</label>
+                <input
+                  placeholder="business name"
+                  className={`${input} w-44`}
+                  value={fDebtor}
+                  onChange={(e) => setFDebtor(e.target.value)}
+                />
+                <span className="text-[10px] text-gray-400">The financed business</span>
+              </div>
               {/* State. */}
-              <select className={input} value={fState} onChange={(e) => setFState(e.target.value)}>
-                <option value="">All states</option>
-                {usStates.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
-                  </option>
-                ))}
-              </select>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">State</label>
+                <select className={input} value={fState} onChange={(e) => setFState(e.target.value)}>
+                  <option value="">All states</option>
+                  {usStates.map((st) => (
+                    <option key={st} value={st}>
+                      {st}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-gray-400">Filing state</span>
+              </div>
               {/* City. */}
-              <input
-                placeholder="City"
-                className={`${input} w-32`}
-                value={fCity}
-                onChange={(e) => setFCity(e.target.value)}
-              />
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">City</label>
+                <input
+                  placeholder="city"
+                  className={`${input} w-32`}
+                  value={fCity}
+                  onChange={(e) => setFCity(e.target.value)}
+                />
+                <span className="text-[10px] text-gray-400">Debtor city</span>
+              </div>
               {/* Freshness bucket (max freshness_days). */}
-              <select
-                className={input}
-                value={fFreshness}
-                onChange={(e) => setFFreshness(e.target.value)}
-                title="Max age of the latest filing"
-              >
-                <option value="">Any freshness</option>
-                <option value="90">≤ 90d</option>
-                <option value="180">≤ 180d</option>
-                <option value="540">≤ 540d</option>
-              </select>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Freshness</label>
+                <select className={input} value={fFreshness} onChange={(e) => setFFreshness(e.target.value)}>
+                  <option value="">Any age</option>
+                  <option value="90">≤ 90d (hottest)</option>
+                  <option value="180">≤ 180d</option>
+                  <option value="540">≤ 540d</option>
+                </select>
+                <span className="text-[10px] text-gray-400">Age of the latest filing — fresher = hotter</span>
+              </div>
               {/* Stack posture. */}
-              <select
-                className={input}
-                value={fStacked}
-                onChange={(e) => setFStacked(e.target.value as StackFilter)}
-                title="Number of open advance positions"
-              >
-                <option value="all">All positions</option>
-                <option value="stacked">Stacked (2+)</option>
-                <option value="single">Single position</option>
-              </select>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Positions</label>
+                <select className={input} value={fStacked} onChange={(e) => setFStacked(e.target.value as StackFilter)}>
+                  <option value="all">All positions</option>
+                  <option value="stacked">Stacked (2+)</option>
+                  <option value="single">Single position</option>
+                </select>
+                <span className="text-[10px] text-gray-400">Open advances stacked on the business</span>
+              </div>
               {/* Min positions. */}
-              <input
-                type="number"
-                min={0}
-                placeholder="Min positions"
-                className={`${input} w-32`}
-                value={fMinStack}
-                onChange={(e) => setFMinStack(e.target.value)}
-                title="Minimum open positions"
-              />
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Min positions</label>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="any"
+                  className={`${input} w-28`}
+                  value={fMinStack}
+                  onChange={(e) => setFMinStack(e.target.value)}
+                />
+                <span className="text-[10px] text-gray-400">At least this many open advances</span>
+              </div>
               {/* Min score. */}
-              <input
-                type="number"
-                min={0}
-                placeholder="Min score"
-                className={`${input} w-28`}
-                value={fMinScore}
-                onChange={(e) => setFMinScore(e.target.value)}
-                title="Minimum lead score"
-              />
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Min score</label>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="any"
+                  className={`${input} w-28`}
+                  value={fMinScore}
+                  onChange={(e) => setFMinScore(e.target.value)}
+                />
+                <span className="text-[10px] text-gray-400">MCA value — higher = more stacked = hotter (~1–31)</span>
+              </div>
               {/* Lead status. */}
-              <select className={input} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-                <option value="">All (excl. suppressed)</option>
-                {(Object.keys(LEAD_STATUS_META) as LeadStatus[]).map((s) => (
-                  <option key={s} value={s}>
-                    {LEAD_STATUS_META[s].label}
-                  </option>
-                ))}
-              </select>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Status</label>
+                <select className={input} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+                  <option value="">All (excl. suppressed)</option>
+                  {(Object.keys(LEAD_STATUS_META) as LeadStatus[]).map((s) => (
+                    <option key={s} value={s}>
+                      {LEAD_STATUS_META[s].label}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-gray-400">Pipeline stage of the lead</span>
+              </div>
               {/* Contact / skip-trace status — derived from the lead row. */}
-              <select
-                className={input}
-                value={fContact}
-                onChange={(e) => setFContact(e.target.value as ContactFilter)}
-                title="Skip-trace / contactability status"
-              >
-                <option value="">Any contact</option>
-                <option value="traced">Traced</option>
-                <option value="not_traced">Not traced</option>
-                <option value="dialable">Has phone (dialable)</option>
-                <option value="email_only">Email only</option>
-              </select>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Contact</label>
+                <select className={input} value={fContact} onChange={(e) => setFContact(e.target.value as ContactFilter)}>
+                  <option value="">Any contact</option>
+                  <option value="traced">Traced</option>
+                  <option value="not_traced">Not traced</option>
+                  <option value="dialable">Has phone (dialable)</option>
+                  <option value="email_only">Email only</option>
+                </select>
+                <span className="text-[10px] text-gray-400">Skip-trace result on this lead</span>
+              </div>
               {/* Lead class — named funder vs agent-masked. */}
-              <select
-                className={input}
-                value={fLeadClass}
-                onChange={(e) => setFLeadClass(e.target.value as "" | "named_funder" | "agent_masked")}
-                title="Do we know the funder, or is it masked behind a filing agent?"
-              >
-                <option value="">All lead classes</option>
-                <option value="named_funder">Named funder</option>
-                <option value="agent_masked">Agent-masked</option>
-              </select>
-              {/* Confidence — derived from lead class + stack depth. */}
-              <select
-                className={input}
-                value={fConfidence}
-                onChange={(e) => setFConfidence(e.target.value as "" | ConfidenceTier)}
-                title="How confident we are in this lead"
-              >
-                <option value="">Any confidence</option>
-                <option value="confirmed">Confirmed funder</option>
-                <option value="high">Agent-masked · High</option>
-                <option value="medium">Agent-masked · Medium</option>
-                <option value="low">Agent-masked · Low</option>
-              </select>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Lead class</label>
+                <select
+                  className={input}
+                  value={fLeadClass}
+                  onChange={(e) => setFLeadClass(e.target.value as "" | "named_funder" | "agent_masked")}
+                >
+                  <option value="">All lead classes</option>
+                  <option value="named_funder">Named funder</option>
+                  <option value="agent_masked">Agent-masked</option>
+                </select>
+                <span className="text-[10px] text-gray-400">Do we know the funder, or is it hidden?</span>
+              </div>
+              {/* Confidence — MULTI-select checkbox list. Derived from lead class + stack depth. */}
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Confidence</label>
+                <div className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2.5 py-1.5 space-y-1">
+                  {CONFIDENCE_FILTER_OPTIONS.map(({ tier, label }) => {
+                    const checked = fConfidence.includes(tier);
+                    return (
+                      <label
+                        key={tier}
+                        className="flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-200 cursor-pointer whitespace-nowrap"
+                      >
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-xs"
+                          checked={checked}
+                          onChange={(e) =>
+                            setFConfidence((prev) =>
+                              e.target.checked ? [...prev, tier] : prev.filter((t) => t !== tier),
+                            )
+                          }
+                        />
+                        {label}
+                      </label>
+                    );
+                  })}
+                </div>
+                <span className="text-[10px] text-gray-400">Check any combination (matches any ticked)</span>
+              </div>
             </div>
+
+            {/* ── Skip-trace THIS filtered set (spends real money — confirm-gated) ── */}
+            {settings.skiptrace_provider_configured && (
+              <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/10 p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <BoltIcon className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <h3 className="text-sm font-bold text-gray-900 dark:text-white">Skip-trace this filtered set</h3>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 font-semibold">
+                    spends real money
+                  </span>
+                </div>
+
+                {/* Live money summary — tied EXACTLY to the filters above. */}
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm">
+                  <span className="text-gray-600 dark:text-gray-300">
+                    <strong className="text-gray-900 dark:text-white">{leadCount.toLocaleString()}</strong> leads match
+                  </span>
+                  <span className="text-gray-600 dark:text-gray-300">
+                    <strong className="text-gray-900 dark:text-white">
+                      {aTraced == null ? "—" : aTraced.toLocaleString()}
+                    </strong>{" "}
+                    already traced <span className="text-gray-400">(free)</span>
+                  </span>
+                  <span className="text-gray-600 dark:text-gray-300">
+                    <strong className="text-amber-700 dark:text-amber-300">
+                      {bNeedsTrace == null ? "—" : bNeedsTrace.toLocaleString()}
+                    </strong>{" "}
+                    still need skip-trace
+                  </span>
+                  <span className="text-gray-600 dark:text-gray-300">
+                    est.{" "}
+                    <strong className="text-gray-900 dark:text-white">~${estCost.toFixed(2)}</strong>{" "}
+                    <span className="text-gray-400">
+                      ({plannedCount.toLocaleString()} × ${perLeadCost.toFixed(2)} est.)
+                    </span>
+                  </span>
+                  <span className="text-gray-600 dark:text-gray-300">
+                    wallet{" "}
+                    <strong className={overBudget ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}>
+                      {wallet ? `$${wallet.balance.toFixed(2)}` : "—"}
+                    </strong>
+                  </span>
+                </div>
+
+                {/* Optional partial-run cap. */}
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                      Trace up to (optional)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      placeholder={bNeedsTrace == null ? "all" : `all ${bNeedsTrace.toLocaleString()}`}
+                      className={`${input} w-40`}
+                      value={traceCap}
+                      onChange={(e) => setTraceCap(e.target.value)}
+                    />
+                    <span className="text-[10px] text-gray-400">
+                      Blank = trace all {bNeedsTrace == null ? "" : bNeedsTrace.toLocaleString()}. Highest-score first.
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setConfirmOpen(true)}
+                    disabled={!canTrace}
+                    className="btn-primary inline-flex items-center gap-1.5"
+                  >
+                    <BoltIcon className="w-4 h-4" />
+                    {batchRunning
+                      ? "Tracing…"
+                      : plannedCount > 0
+                        ? `Skip-trace these ${plannedCount.toLocaleString()} leads (~$${estCost.toFixed(2)})`
+                        : "Skip-trace this set"}
+                  </button>
+                </div>
+
+                {overBudget && (
+                  <p className="text-xs text-rose-600 dark:text-rose-400 flex items-center gap-1">
+                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
+                    At the ${TRACE_COST_GUARD.toFixed(2)} guard rate this run could reach ${estGuard.toFixed(2)}, above the
+                    ${wallet?.balance.toFixed(2)} wallet — lower "trace up to" or top up.
+                  </p>
+                )}
+                {wallet == null && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
+                    Wallet balance unavailable — tracing is blocked until it can be read (refresh the wallet tile above).
+                  </p>
+                )}
+                {bNeedsTrace === 0 && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Nothing to trace in this filter — every matching lead is already traced or isn't skip-trace-eligible.
+                  </p>
+                )}
+
+                {/* Live progress while looping batches of 100. */}
+                {traceProgress && (
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-amber-200/60 dark:bg-amber-900/40">
+                      <div
+                        className="h-full rounded-full bg-amber-500 transition-all"
+                        style={{ width: `${traceProgress.total > 0 ? Math.round((traceProgress.done / traceProgress.total) * 100) : 0}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-600 dark:text-gray-300">
+                      traced {traceProgress.done.toLocaleString()} / {traceProgress.total.toLocaleString()}…
+                    </p>
+                  </div>
+                )}
+                {batchResult && <p className="text-sm text-emerald-600 dark:text-emerald-400">{batchResult}</p>}
+                {batchErr && <p className="text-sm text-rose-600 dark:text-rose-400">run failed: {batchErr}</p>}
+
+                <p className="text-[11px] text-gray-400">
+                  Only <code>needs_skiptrace</code> leads are charged; already-traced leads are always free (idempotent).
+                  Runs in batches of 100 with a live count. Each batch re-checks the wallet and stops if it drops below
+                  $5.
+                </p>
+              </div>
+            )}
 
             <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm">
@@ -3056,6 +3185,64 @@ export default function PhUccMachinePage() {
 
       {/* Debtor drill-down drawer (in-app; no popup). */}
       {selectedLead && <LeadDetailDrawer lead={selectedLead} onClose={() => setSelectedLead(null)} />}
+
+      {/* Skip-trace confirm modal (in-app overlay — NOT a browser popup). Restates the
+          EXACT count + cost + wallet impact before any money is spent. */}
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button className="absolute inset-0 bg-black/50" onClick={() => setConfirmOpen(false)} aria-label="Cancel" />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <ExclamationTriangleIcon className="w-6 h-6 text-amber-500 shrink-0" />
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Confirm skip-trace — this spends real money</h2>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-4 space-y-2 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Leads to trace</span>
+                <span className="font-bold text-gray-900 dark:text-white">{plannedCount.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Estimated cost</span>
+                <span className="font-bold text-gray-900 dark:text-white">
+                  ~${estCost.toFixed(2)}{" "}
+                  <span className="font-normal text-gray-400">
+                    ({plannedCount.toLocaleString()} × ${perLeadCost.toFixed(2)})
+                  </span>
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Wallet now</span>
+                <span className="font-semibold text-gray-900 dark:text-white">
+                  {wallet ? `$${wallet.balance.toFixed(2)}` : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Wallet after (est.)</span>
+                <span className="font-semibold text-gray-900 dark:text-white">
+                  {walletAfter == null ? "—" : `~$${walletAfter.toFixed(2)}`}
+                </span>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              You're charged only for leads actually traced; already-traced leads are never re-charged. The run loops in
+              batches of 100 and stops automatically if the wallet drops below $5.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setConfirmOpen(false)} className="btn-ghost">
+                Cancel
+              </button>
+              <button
+                onClick={() => runFilteredTrace(plannedCount)}
+                disabled={!canTrace}
+                className="btn-primary inline-flex items-center gap-1.5"
+              >
+                <BoltIcon className="w-4 h-4" />
+                Yes — trace {plannedCount.toLocaleString()} leads (~${estCost.toFixed(2)})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
