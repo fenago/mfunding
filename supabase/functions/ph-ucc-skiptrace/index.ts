@@ -7,8 +7,10 @@
 // HARD DNC RULE (conservative): every number BatchData returns is stored, but any
 // number with dnc:true is flagged suppressed_dnc and is NEVER written to
 // ph_ucc_leads.phone and NEVER exported to a dial CSV. A lead's dialable phone is
-// only ever a NON-DNC number. Post-trace status:
-//   • ≥1 non-DNC phone  → needs_scrub   (still owes a TCPA cell-scrub before dialing)
+// only ever a NON-DNC, non-TCPA-litigator number. Post-trace status (STRAIGHT-THROUGH
+// per the owner's decision — BatchData's DNC + TCPA-litigator suppression IS the
+// compliance scrub, so a usable phone is already clean and needs no separate gate):
+//   • ≥1 usable phone   → ready         (DNC + TCPA-litigator suppressed; ready to load)
 //   • else ≥1 email     → email_only    (usable by the cold-email channel)
 //   • else              → no_match      (no usable phone, no email)
 //
@@ -28,7 +30,7 @@
 //
 // PHONE-DNC RE-CHECK: BatchData's skip-trace already returns a per-number dnc flag,
 // so a separate /phone verification pass is redundant today. If a future provider
-// omits dnc, add a phone-dnc re-check here before promoting to needs_scrub. (future)
+// omits dnc, add a phone-dnc re-check here before promoting to ready. (future)
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -193,13 +195,16 @@ function aggregate(persons: Person[]) {
   const bestEmail = allEmails[0] ?? null;
   const primaryName = persons.find((p) => p.person_name)?.person_name ?? null;
 
-  const status: "needs_scrub" | "email_only" | "no_match" =
-    usablePhones.length > 0 ? "needs_scrub" : allEmails.length > 0 ? "email_only" : "no_match";
+  // STRAIGHT-THROUGH: a usable phone (neither DNC nor TCPA-litigator) is already
+  // compliance-clean per the owner's Option-A decision, so it goes straight to
+  // `ready` (loadable/dialable) — no separate needs_scrub cell-scrub gate.
+  const status: "ready" | "email_only" | "no_match" =
+    usablePhones.length > 0 ? "ready" : allEmails.length > 0 ? "email_only" : "no_match";
 
   const tcpaNote = tcpaPhones.length ? ` ${tcpaPhones.length} suppressed as TCPA-litigator.` : "";
   const statusReason =
-    status === "needs_scrub"
-      ? `${usablePhones.length} dialable number(s) found; ${dncPhones.length} DNC-suppressed.${tcpaNote} Awaiting TCPA cell-scrub.`
+    status === "ready"
+      ? `${usablePhones.length} dialable number(s) found; ${dncPhones.length} DNC-suppressed.${tcpaNote} DNC + TCPA-litigator suppressed (BatchData); ready to load.`
     : status === "email_only"
       ? `${allEmails.length} email(s) found; ${dncPhones.length} DNC + ${tcpaPhones.length} TCPA-litigator number(s) suppressed. Routed to cold-email.`
     : anyPerson
@@ -400,7 +405,7 @@ Deno.serve(async (req) => {
     }
 
     const perLead: Record<string, unknown>[] = [];
-    let traced = 0, needsScrub = 0, emailOnly = 0, noMatch = 0, errored = 0;
+    let traced = 0, ready = 0, emailOnly = 0, noMatch = 0, errored = 0;
     let firstRaw: unknown = null;
 
     for (const lead of leads) {
@@ -424,7 +429,7 @@ Deno.serve(async (req) => {
       // Shared aggregation: DNC + TCPA-litigator both suppress a number from becoming dialable.
       const { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones,
               bestPhone, bestEmail, primaryName, status, statusReason } = aggregate(persons);
-      if (status === "needs_scrub") needsScrub++;
+      if (status === "ready") ready++;
       else if (status === "email_only") emailOnly++;
       else noMatch++;
 
@@ -488,7 +493,7 @@ Deno.serve(async (req) => {
       requested_limit: limit,
       requested_ids: leadIds ? leadIds.length : null,
       candidates: leads.length,
-      traced, needs_scrub: needsScrub, email_only: emailOnly, no_match: noMatch, errored,
+      traced, ready, email_only: emailOnly, no_match: noMatch, errored,
       balance_before: w0.balance, balance_after: w1.balance, run_spend_usd: runSpend, per_lead_cost_est: perLeadCost,
       elapsed_ms: Date.now() - started,
       per_lead: perLead,

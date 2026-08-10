@@ -199,8 +199,7 @@ const FUNNEL: { key: string; label: string }[] = [
   { key: "debtors", label: "Debtors" },
   { key: "matched", label: "MCA-matched leads" },
   { key: "needs_skiptrace", label: "Needs skip-trace" },
-  { key: "needs_scrub", label: "Needs scrub" },
-  { key: "ready", label: "Ready" },
+  { key: "ready", label: "Ready (dialable)" },
   { key: "loaded", label: "Loaded" },
 ];
 
@@ -1765,7 +1764,7 @@ export default function PhUccMachinePage() {
 
         // 2) Loop in batches of 100.
         let traced = 0,
-          needsScrub = 0,
+          ready = 0,
           emailOnly = 0,
           noMatch = 0,
           errored = 0,
@@ -1786,7 +1785,7 @@ export default function PhUccMachinePage() {
             break;
           }
           traced += Number(r.traced ?? 0) || 0;
-          needsScrub += Number(r.needs_scrub ?? 0) || 0;
+          ready += Number(r.ready ?? 0) || 0;
           emailOnly += Number(r.email_only ?? 0) || 0;
           noMatch += Number(r.no_match ?? 0) || 0;
           errored += Number(r.errored ?? 0) || 0;
@@ -1804,7 +1803,7 @@ export default function PhUccMachinePage() {
           const nowStr = lastBalance != null ? ` · wallet now $${lastBalance.toFixed(2)}` : "";
           const errStr = errored > 0 ? ` · ${errored} errored` : "";
           setBatchResult(
-            `Traced ${traced.toLocaleString()} · ${needsScrub.toLocaleString()} with phone · ` +
+            `Traced ${traced.toLocaleString()} · ${ready.toLocaleString()} ready (dialable) · ` +
               `${emailOnly.toLocaleString()} email-only · ${noMatch.toLocaleString()} no-match · ` +
               `$${spent.toFixed(2)} spent${nowStr}${errStr}`,
           );
@@ -2313,30 +2312,18 @@ export default function PhUccMachinePage() {
                 </span>
               </div>
             )}
-            {!settings.scrub_provider_configured && (funnel.needs_scrub ?? 0) > 0 && (
-              <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-300 flex items-start gap-2">
-                <ExclamationTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
-                <span>
-                  <strong>{(funnel.needs_scrub ?? 0).toLocaleString()} leads parked at needs_scrub.</strong> No
-                  TCPA-scrub provider is configured — sign one up to advance them (see Phase U.4).
-                </span>
-              </div>
-            )}
-            {!settings.ucc_load_enabled && (
-              <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-300 flex items-start gap-2">
-                <NoSymbolIcon className="w-5 h-5 shrink-0 mt-0.5" />
-                <span>
-                  <strong>Loading to GHL is disabled</strong> (<code>ucc_load_enabled = false</code>) until the
-                  TCPA scrub is live. Ready leads will hold until it's turned on.
-                </span>
-              </div>
-            )}
-            {settings.ucc_load_enabled && settings.scrub_provider_configured && settings.skiptrace_provider_configured && (
-              <div className="rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
-                <CheckCircleIcon className="w-5 h-5 shrink-0" /> All gates open — skip-trace, scrub, and GHL loading are
-                live.
-              </div>
-            )}
+            {/* Straight-through: no separate cell-scrub gate. BatchData's skip-trace
+                suppresses DNC + TCPA-litigator numbers, so a traced lead with a usable
+                phone is already compliance-clean and lands in `ready`, loadable via the
+                Push button. */}
+            <div className="rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300 flex items-start gap-2">
+              <CheckCircleIcon className="w-5 h-5 shrink-0 mt-0.5" />
+              <span>
+                Scrub = <strong>DNC + TCPA-litigator suppression applied at skip-trace</strong> (BatchData). Leads with a
+                usable phone go straight to <strong>ready</strong> and load to GHL/HP via the Push button — no separate
+                cell-scrub gate.
+              </span>
+            </div>
           </section>
 
           {/* ── 5. Metric tiles: freshness SLA · skip-trace wallet · off-ramps ── */}
@@ -2793,13 +2780,6 @@ export default function PhUccMachinePage() {
                 </button>
               </div>
 
-              {!settings.ucc_load_enabled && (
-                <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                  <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
-                  Auto-load is off (<code>ucc_load_enabled = false</code>) pending the TCPA scrub — this is a manual,
-                  owner-driven push, so it still runs. Make sure a cell scrub has cleared these numbers before dialing.
-                </p>
-              )}
               {pushDialable === 0 && (
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Nothing to push in this filter — no matching lead has a phone or email yet (skip-trace them first).
