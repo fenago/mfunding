@@ -78,6 +78,20 @@ verify_jwt = true
 [functions.push-application-to-ghl]
 verify_jwt = true
 
+# Setter "Send Application" — sends the fully pre-filled 04B e-sign application,
+# sourcing values from the GHL CONTACT itself (HotProspector fields). Called by a GHL
+# workflow webhook, so verify_jwt = false; auth is an in-code shared-secret gate
+# (?secret= / x-webhook-secret vs vault GHL_SEND_APP_SECRET).
+[functions.ghl-send-application]
+verify_jwt = false
+
+# send-app-link: the setter's one-press "Send Application" control ON THE CONTACT.
+# GET renders a confirm page; the POST fires the 04B PREFILL send (shared logic).
+# Public (verify_jwt = false) — gate is the GET-safe SEND_APP_LINK_TOKEN in-code,
+# NOT the master GHL_SEND_APP_SECRET.
+[functions.send-app-link]
+verify_jwt = false
+
 # Ad-hoc, any-time send of a standalone document (broker agreement / TCPA consent,
 # per the platform_settings adhoc_docs registry) — enrollment-only delivery with
 # read-back verification; staff-only + closer-owns-deal enforced in code. Never

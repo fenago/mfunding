@@ -41,6 +41,7 @@ import AboutPage from "../pages/AboutPage.tsx";
 import ContactPage from "../pages/ContactPage.tsx";
 import OptinPage from "../pages/OptinPage.tsx";
 import ApplyPage from "../pages/ApplyPage.tsx";
+import SendAppPage from "../pages/SendAppPage.tsx";
 import ConnectBankPage from "../pages/ConnectBankPage.tsx";
 import VCFReliefPage from "../pages/VCFReliefPage.tsx";
 import VCFSavingsCalculatorPage from "../pages/calculators/VCFSavingsCalculatorPage.tsx";
@@ -230,6 +231,15 @@ export const routes: RouteObject[] = [
       {
         path: "/apply",
         element: <ApplyPage />,
+      },
+      {
+        // Public, token-gated setter control: the one-press "Send Application"
+        // confirm page. A setter opens this from a link on the contact; it peeks
+        // the merchant name then sends the pre-filled 04B on an explicit click.
+        // Auth is the SEND_APP_LINK_TOKEN carried in the URL (?k=), verified by the
+        // send-app-link edge function — no login required.
+        path: "/send-app",
+        element: <SendAppPage />,
       },
       {
         path: "/debt-relief",
