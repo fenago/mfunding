@@ -98,6 +98,7 @@ const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.
 const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSetterPlaybookPage.tsx"));
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
 const DialerPage = lazyWithReload(() => import("../pages/admin/DialerPage.tsx"));
+const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
@@ -523,6 +524,16 @@ export const routes: RouteObject[] = [
               {
                 path: "cheat-sheet",
                 element: <FunderCheatSheetPage />,
+              },
+              // How the Dialing Machine Works — the Lists → GHL → HotProspector →
+              // Revenue Playbook one-pager. Setters (role `closer`) read it as
+              // onboarding, so it takes the same NO-extra-guard treatment as the
+              // cheat sheet: AdminProtectedRoute's isStaff check (closer +
+              // employee + admin + super_admin) is exactly the audience, and
+              // merchants (role `user`) are bounced to "/" before it renders.
+              {
+                path: "dialing-machine",
+                element: <DialingMachinePage />,
               },
               // Cold-email (Instantly) dashboard + strategy (admins + super_admin)
               {

@@ -46,6 +46,7 @@ import {
   HeartIcon,
   BeakerIcon,
   PuzzlePieceIcon,
+  ShareIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -109,6 +110,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/ph-setters", // PH Setter Playbook (roles: ADMIN) — same lens treatment as R&D; pure closers excluded via roles
   "/admin/ph-ucc", // PH UCC Machine (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
   "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
+  "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — onboarding reference, every staff role
 ]);
 
 const navGroups: NavGroup[] = [
@@ -132,6 +134,11 @@ const navGroups: NavGroup[] = [
       // Dialer Metrics — per-rep HotProspector scorecard for running the setter
       // floor. Sits with the other PH consoles; same ADMIN gating + closer lens.
       { name: "Dialer Metrics", path: "/admin/dialer", icon: PhoneIcon, roles: ADMIN },
+      // How the Dialing Machine Works — Lists → GHL → HotProspector → Revenue
+      // Playbook, the onboarding one-pager. Closes out the PH console cluster.
+      // OPS (every staff role) + in the closer lens, same as the Funder Cheat
+      // Sheet: it's reference material, not a management surface.
+      { name: "Dialing Machine", path: "/admin/dialing-machine", icon: ShareIcon, roles: OPS },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
