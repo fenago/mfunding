@@ -109,6 +109,19 @@ const CSS = `
 .dmw .stbox ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:7px}
 .dmw .stbox li{font-size:12.8px;color:var(--ink-soft)}
 .dmw .stbox li b{color:var(--ink)}
+.dmw .stbox ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:9px}
+.dmw .stbox ol li{font-size:12.8px;color:var(--ink-soft)}
+.dmw .stbox ol li b{color:var(--ink)}
+.dmw .stbox ol li::marker{color:var(--accent-ink);font-weight:800}
+.dmw .stbox ol ul{margin:7px 0 2px;padding-left:16px;display:flex;flex-direction:column;gap:5px;list-style:disc}
+.dmw .stbox ol ul li{font-size:12.4px}
+.dmw .sop-h{display:flex;align-items:baseline;gap:9px;margin-bottom:10px}
+.dmw .sop-h .badge{font-size:12px;font-weight:800;color:var(--num-ink);background:var(--accent);border-radius:6px;padding:2px 9px}
+.dmw .sop-h h3{font-size:14px;font-weight:800}
+.dmw .sopbox{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;background:var(--panel);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:14px}
+.dmw .warn{margin-bottom:16px;border-left:3px solid var(--gold);background:var(--panel);border-radius:0 10px 10px 0;padding:13px 16px;font-size:13.5px;color:var(--ink-soft);box-shadow:var(--shadow)}
+.dmw .warn b{color:var(--ink)}
+.dmw .warn u{text-decoration-color:var(--gold);text-underline-offset:2px}
 .dmw .ok::marker{content:"✅  "}
 .dmw .todo::marker{content:"⏳  "}
 .dmw footer{margin-top:40px;padding-top:15px;border-top:1px solid var(--line);color:var(--ink-faint);font-size:12px}
@@ -142,7 +155,12 @@ const SYSTEMS = [
     cls: "s-hp",
     kicker: "The dialer",
     name: "HotProspector",
-    body: <>Where setters spend the day. It auto-dials the list and pops the merchant on a live answer.</>,
+    body: (
+      <>
+        Where setters spend the day. You <b>Import a CSV</b> of traced leads into a Group, build a
+        Campaign on it, and it power-dials + pops the merchant on a live answer.
+      </>
+    ),
   },
   {
     cls: "s-play",
@@ -165,18 +183,28 @@ const STEPS = [
     cls: "w-list",
     body: (
       <>
-        A lead appears — a <b>Synergy</b> live transfer, or a merchant your <b>UCC machine</b>{" "}
+        A merchant appears — a <b>Synergy</b> live transfer, or a business your <b>UCC machine</b>{" "}
         surfaced.
       </>
     ),
   },
   {
-    where: "GoHighLevel",
-    cls: "w-ghl",
+    where: "UCC Machine",
+    cls: "w-list",
     body: (
       <>
-        It's loaded into GoHighLevel as a <b>Contact</b> — tagged to the campaign and dropped at the
-        first pipeline stage. (Contacts → Import a CSV, or I load it by API.)
+        In <b>/admin/ph-ucc</b> you <b>filter</b> the leads you want — Lead heat (# of stacked
+        advances), Confidence (Confirmed / High), state — then <b>skip-trace</b> the filtered set
+        (BatchData ~$0.06/lead fills phone + email; only DNC/TCPA-clean numbers survive).
+      </>
+    ),
+  },
+  {
+    where: "UCC Machine",
+    cls: "w-list",
+    body: (
+      <>
+        You <b>Export CSV</b> from the UCC Machine — the traced, dialable leads.
       </>
     ),
   },
@@ -185,8 +213,9 @@ const STEPS = [
     cls: "w-hp",
     body: (
       <>
-        The <b>native sync</b> flows that contact into HotProspector's <b>Leads group</b>{" "}
-        automatically. You never upload to the dialer separately.
+        <b>This is the key step:</b> HotProspector → <b>Contacts → "Import Leads"</b> → upload the CSV
+        → map the columns → import into a <b>per-batch Group</b> (e.g. "UCC 2026-08-10"). The old "it
+        auto-syncs from GoHighLevel" idea is <b>not reliable</b> — always Import.
       </>
     ),
   },
@@ -195,8 +224,18 @@ const STEPS = [
     cls: "w-hp",
     body: (
       <>
-        You build a <b>Campaign</b> on the Leads group (calling hours, caller-ID, script) and assign
-        the setter. The setter opens it and starts dialing.
+        You build a <b>Dialer Campaign</b> on that Group (Power mode, calling hours, caller-ID,
+        statuses) — see the load SOP below. This is what actually dials.
+      </>
+    ),
+  },
+  {
+    where: "HotProspector",
+    cls: "w-hp",
+    body: (
+      <>
+        You <b>assign a setter and Start</b> — only then does it call real businesses (<b>TCPA hours
+        enforced</b> per the lead's timezone, 8am–9pm). Until a setter presses Start it sits idle.
       </>
     ),
   },
@@ -205,20 +244,9 @@ const STEPS = [
     cls: "w-play",
     body: (
       <>
-        Merchant answers → the setter{" "}
-        <b>clicks the link on the lead card → the Revenue Playbook opens with that deal preloaded.</b>{" "}
-        This is where they actually run the call.
-      </>
-    ),
-  },
-  {
-    where: "Playbook",
-    cls: "w-play",
-    body: (
-      <>
-        From the Playbook the setter follows the script and hits the buttons:{" "}
-        <b>send the e-sign application</b> and the <b>Connect-Bank (Plaid) + upload links</b> — each
-        one per-merchant, sent from send.mfunding.net. "Check your text while I've got you."
+        Live answer → the setter opens the <b>Revenue Playbook</b> (deal preloaded), sends the{" "}
+        <b>04B e-sign application</b> + the <b>Connect-Bank / upload links</b>, and presses the{" "}
+        <b>"Send Application"</b> call-status. "Check your text while I've got you."
       </>
     ),
   },
@@ -227,19 +255,9 @@ const STEPS = [
     cls: "w-ghl",
     body: (
       <>
-        The call's outcome becomes its <b>disposition</b>, which flows back to GoHighLevel, fires the
-        right follow-up <b>workflow</b>, and moves the pipeline stage. The setter never re-types
-        anything into the CRM.
-      </>
-    ),
-  },
-  {
-    where: "Closers",
-    cls: "w-close",
-    body: (
-      <>
-        When the file is complete (<b>signed + bank connected</b>), the workflow hands it to the{" "}
-        <b>MCA pipeline</b> for your closers. You watch each setter's numbers on <b>/admin/dialer</b>.
+        The <b>disposition writes back to GoHighLevel</b> (reliable HP→GHL) → fires the follow-up{" "}
+        <b>workflow</b> → moves the pipeline. Complete files (<b>signed + bank connected</b>) hand to
+        the <b>MCA pipeline</b> for your closers. Watch per-setter KPIs on <b>/admin/dialer</b>.
       </>
     ),
   },
@@ -247,8 +265,8 @@ const STEPS = [
 
 // GHL ↔ HotProspector vocabulary. An em dash means the concept doesn't exist there.
 const VOCAB: [string, string, string][] = [
-  ["Contact", "Lead (in a Group)", "the merchant's record — the same person in both systems"],
-  ["Tag", "Tag (synced)", "a label that can trigger an automation"],
+  ["Contact", "Lead (in a Group)", "the merchant's record — loaded into HotProspector by CSV Import, not by sync"],
+  ["Tag", "Tag", "a label that can trigger an automation"],
   [
     "Pipeline · Stage · Opportunity",
     "— (no pipeline)",
@@ -273,10 +291,11 @@ export default function DialingMachinePage() {
           <p className="eyebrow" style={{ marginTop: 14 }}>
             Internal · How the Machine Fits Together
           </p>
-          <h1>Lists → GoHighLevel → HotProspector → Revenue Playbook</h1>
+          <h1>Lists → HotProspector → Revenue Playbook → GoHighLevel</h1>
           <p>
-            Where a lead comes from, how it lands in the CRM, how it reaches the dialer, and how a
-            setter actually works the call. Read the picture first, then the steps.
+            Where a lead comes from, how you <b>load it into the dialer</b> (skip-trace → CSV Import —
+            not auto-sync), how a setter works the live call, and how the outcome writes back to the
+            CRM. Read the picture first, then the steps, then the load SOP.
           </p>
         </header>
 
@@ -302,7 +321,7 @@ export default function DialingMachinePage() {
               className="diagram"
               viewBox="0 0 720 300"
               role="img"
-              aria-label="Leads from Synergy and the UCC machine are imported into GoHighLevel; GoHighLevel and HotProspector are joined by a native two-way sync; on a live call the setter clicks from HotProspector into the Revenue Playbook, which sends the app and Plaid and writes the disposition back to GoHighLevel, which moves the pipeline and hands a complete file to the closers."
+              aria-label="Leads from Synergy and the UCC machine are skip-traced and exported to CSV, then imported directly into HotProspector; on a live call the setter clicks from HotProspector into the Revenue Playbook, which sends the application and Connect-Bank links and writes the disposition back to GoHighLevel, which fires the follow-up workflow, moves the pipeline, and hands a complete file to the closers."
             >
               <defs>
                 <marker
@@ -371,31 +390,19 @@ export default function DialingMachinePage() {
               </text>
 
               {/* edges */}
-              {/* lists -> ghl */}
-              <line className="edge" x1="164" y1="84" x2="246" y2="84" markerEnd="url(#dmw-ar)" />
-              <text className="elabel" x="205" y="76" textAnchor="middle">
-                import + scrub
+              {/* lists -> hotprospector (the load path) */}
+              <polyline
+                className="edge"
+                points="89,114 89,175 251,175 251,206"
+                markerEnd="url(#dmw-ar)"
+              />
+              <text className="elabel" x="96" y="168" textAnchor="start">
+                skip-trace → CSV Import
               </text>
               {/* ghl -> closers */}
               <line className="edge" x1="450" y1="84" x2="544" y2="84" markerEnd="url(#dmw-ar)" />
               <text className="elabel" x="497" y="76" textAnchor="middle">
                 handoff
-              </text>
-              {/* ghl <-> hp native sync (double headed) */}
-              <line
-                className="edge"
-                x1="300"
-                y1="114"
-                x2="300"
-                y2="206"
-                markerStart="url(#dmw-ar)"
-                markerEnd="url(#dmw-ar)"
-              />
-              <text className="elabel" x="312" y="150" textAnchor="start">
-                native
-              </text>
-              <text className="elabel" x="312" y="164" textAnchor="start">
-                2-way sync
               </text>
               {/* hp -> playbook */}
               <line
@@ -409,23 +416,23 @@ export default function DialingMachinePage() {
               <text className="elabel-a" x="380" y="232" textAnchor="middle">
                 clicks in
               </text>
-              {/* playbook -> ghl (action back) */}
+              {/* playbook -> ghl (disposition writeback) */}
               <polyline
                 className="edge-accent"
-                points="536,206 536,150 396,150 396,118"
+                points="536,206 536,150 350,150 350,118"
                 markerEnd="url(#dmw-ara)"
               />
-              <text className="elabel-a" x="466" y="143" textAnchor="middle">
-                sends app + Plaid · disposition → workflow
+              <text className="elabel-a" x="443" y="143" textAnchor="middle">
+                sends app + bank · disposition → workflow
               </text>
             </svg>
             <figcaption>
-              <b>The one idea:</b> the shared object is the <b>contact</b>. Leads import into
-              GoHighLevel; the <b>native 2-way sync</b> mirrors them into HotProspector automatically
-              (and mirrors call outcomes back). On a live answer the setter{" "}
-              <b>clicks from the dialer into the Revenue Playbook</b> with the deal preloaded, works
-              the call, and the outcome flows back to GoHighLevel to fire the follow-up and move the
-              pipeline — no double entry.
+              <b>The one idea:</b> leads reach the dialer by <b>skip-trace → CSV Import</b>, straight
+              into a HotProspector Group — <b>not</b> by auto-sync from GoHighLevel (that direction
+              silently drops contacts, so we never rely on it). On a live answer the setter{" "}
+              <b>clicks from the dialer into the Revenue Playbook</b> with the deal preloaded, sends
+              the app + bank links, and the call's outcome <b>writes back to GoHighLevel</b> (that
+              direction is reliable) to fire the follow-up and move the pipeline.
             </figcaption>
           </figure>
         </section>
@@ -441,6 +448,88 @@ export default function DialingMachinePage() {
                 <div className="stext">{s.body}</div>
               </div>
             ))}
+          </div>
+        </section>
+
+        {/* LOAD SOP */}
+        <section>
+          <div className="sec-h">How to load a batch into the dialer (do this every time)</div>
+
+          <div className="warn">
+            <b>The one rule:</b> GoHighLevel does <u>not</u> reliably push contacts into
+            HotProspector — HP's inbound queue (API / webhook / "Sync Leads") silently accepts new
+            leads and drops them. The <b>only</b> proven way to get leads dialing is{" "}
+            <b>CSV Import</b>. (The reverse direction, HP → GoHighLevel writeback of dispositions,{" "}
+            <b>is</b> reliable — that's why the pipeline still moves itself.)
+          </div>
+
+          <div className="sopbox">
+            <div className="sop-h">
+              <span className="badge">A</span>
+              <h3>Get leads into HotProspector</h3>
+            </div>
+            <ol>
+              <li>
+                <b>UCC Machine (/admin/ph-ucc)</b> — <b>filter</b> the leads you want (Lead heat,
+                Confidence = Confirmed / High, state), then <b>skip-trace</b> the filtered set
+                (BatchData ~$0.06/lead — fills phone + email; only DNC/TCPA-clean numbers survive).
+              </li>
+              <li>
+                <b>Export CSV</b> — download the traced, dialable leads from the UCC Machine.
+              </li>
+              <li>
+                <b>HotProspector → Contacts → "Import Leads"</b> → upload the CSV → <b>map columns</b>{" "}
+                → import into a <b>per-batch Group</b> (e.g. "UCC 2026-08-10").
+              </li>
+              <li>
+                <b>Verify by opening that Group</b> (the Group filter) — <b>NOT the search box</b>;
+                HP's search is broken. If the Group shows your count, the import worked.
+              </li>
+            </ol>
+          </div>
+
+          <div className="sopbox">
+            <div className="sop-h">
+              <span className="badge">B</span>
+              <h3>Build the dialer campaign (tab by tab)</h3>
+            </div>
+            <ol>
+              <li>
+                <b>Dialer → New Campaign</b> — 7 tabs; use the green <b>Next</b> button to advance
+                (clicking the tab names does not switch tabs).
+              </li>
+              <li>
+                <b>Campaign Settings:</b> name it; <b>Group</b> = the per-batch group (confirm{" "}
+                <b>"NN Leads Found" &gt; 0</b>); <b>Mode = Power</b>; Dial attempts 20 / 2-per-day
+                (defaults); <b>Dialer Access Hours = Yes</b> → <b>8:00 AM–9:00 PM</b> ("times are the
+                lead's timezone" = TCPA).
+              </li>
+              <li>
+                <b>Call Handling:</b> Phone Number (caller ID) = <b>+1 954-860-7138</b>; check the
+                call-recording disclaimer box.
+              </li>
+              <li>
+                <b>Call Statuses:</b> ensure standard dispositions <b>+ "Send Application"</b> are
+                enabled.
+              </li>
+              <li>
+                <b>Lead Details / Workflows:</b> leave default / empty.
+              </li>
+              <li>
+                <b>Timezone Settings:</b> leave all zones checked; check <b>"selected carefully."</b>
+              </li>
+              <li>
+                <b>Disclaimer:</b> check the box → <b>Next &amp; Create</b> → OK.
+              </li>
+              <li>
+                It now sits <b>IDLE</b> (Last Login "---", 0 attempts) until a setter is assigned and
+                presses Start.
+              </li>
+              <li>
+                <b>GO LIVE (deliberate):</b> campaign row → <b>Action</b> → assign-members icon →
+                assign the setter → the setter opens Dialer → <b>Start</b>.
+              </li>
+            </ol>
           </div>
         </section>
 
@@ -485,8 +574,16 @@ export default function DialingMachinePage() {
               <h3>✅ Already live</h3>
               <ul>
                 <li className="ok">
-                  <b>GoHighLevel ↔ HotProspector sync</b> — connected by one-click OAuth (4 groups +
-                  104 tags synced).
+                  <b>CSV Import is the proven load path</b> — HotProspector → Contacts → "Import
+                  Leads" reliably lands leads in a per-batch Group.
+                </li>
+                <li className="ok">
+                  <b>HP → GoHighLevel writeback</b> — dispositions / call outcomes flow up to GHL
+                  reliably and fire the follow-up workflows.
+                </li>
+                <li className="ok">
+                  <b>The "UCC 2026-08-10" campaign is built + idle</b> — Group loaded, campaign
+                  configured; it starts calling the moment a setter is assigned and presses Start.
                 </li>
                 <li className="ok">
                   <b>Revenue Playbook cockpit</b> — deal preloads on click; send-app + Connect-Bank +
@@ -498,20 +595,20 @@ export default function DialingMachinePage() {
               </ul>
             </div>
             <div className="stbox">
-              <h3>⏳ One-time setup (owner)</h3>
+              <h3>⚠️ Do NOT rely on this</h3>
               <ul>
                 <li className="todo">
-                  <b>In HotProspector:</b> confirm caller-ID/Twilio, build the <b>Campaign</b> on the
-                  Leads group, assign the setter.
+                  <b>GoHighLevel → HotProspector contact auto-sync is NOT reliable.</b> HP's inbound
+                  queue (API / webhook / "Sync Leads") silently accepts new contacts and then drops
+                  them. <b>Always CSV Import.</b> (Only the HP→GHL writeback direction is trustworthy.)
                 </li>
                 <li className="todo">
-                  <b>In the GoHighLevel UI:</b> build the two workflows — <b>PH 01 (Packet Send)</b>{" "}
-                  and <b>PH 02 (File Complete)</b>. GHL's API can't create workflows, so these are by
-                  hand.
+                  <b>HotProspector's search box is broken</b> — verify an import by opening the{" "}
+                  <b>Group</b> (Group filter), never by searching for a name.
                 </li>
                 <li className="todo">
-                  <b>Load a list</b> — hand me a Synergy/UCC file and I import it, or upload via
-                  Contacts → Import.
+                  <b>Per batch (owner):</b> filter + skip-trace in the UCC Machine, Export CSV, Import
+                  into a new dated Group, build the Campaign, assign the setter — the SOP above.
                 </li>
               </ul>
             </div>
