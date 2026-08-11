@@ -535,36 +535,37 @@ export default function DialingMachinePage() {
 
         {/* DIALING MODE / LINES */}
         <section>
-          <div className="sec-h">How the dialing actually works (one line, not three)</div>
+          <div className="sec-h">How the dialing actually works (3 lines at once)</div>
 
           <div className="warn">
-            <b>Verified on a live call 2026-08-11 (owner's own cell as the only test lead):</b> on
-            HotProspector's <b>Power</b> dialer there is <u>no</u> "3 lines at once" control anywhere —
-            not in the campaign wizard, and <b>not on the live calling screen</b> (the only buttons
-            there are record, email, mic, hang-up, voicemail-drop, conference, and the dial pad).{" "}
-            <b>Power mode dials ONE lead at a time</b>, sequentially: it calls, the setter talks and
-            dispositions, then it dials the next. Our "UCC 2026-08-10" campaign is Power = single-line.
+            <b>Verified in the account 2026-08-11 (live UI + HotProspector's own docs):</b>{" "}
+            HotProspector <b>does dial 3 numbers at once</b> — it's included on your{" "}
+            <b>Business plan ($297/mo)</b>, no add-on. The catch was the <b>mode name</b>: HP's mode
+            called <b>"Power" is one-at-a-time</b> (that's why the earlier test showed a single line).
+            The 3-line behavior lives in the mode called <b>"Progressive(M)"</b>, which reveals a{" "}
+            <b>"Dialing Leads"</b> field you set to <b>3</b>. It dials 3, connects you to the first
+            pickup, drops the other two — and (unlike a predictive dialer) <b>won't fire the next set
+            until the setter hangs up</b>, which keeps abandoned calls down.
           </div>
 
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">1</span>
-              <h3>Single-line (Power) — what you have, and what to start on</h3>
+              <h3>The two modes (mode LOCKS at creation — pick it up front)</h3>
             </div>
             <ol>
               <li>
-                The <b>mode</b> is chosen when you <b>create the campaign</b> (Campaign Settings tab)
-                and <b>locks after creation</b> — you can't switch a Power campaign to multi-line
-                later, you'd build a new one.
+                <b>Power</b> = dials <b>one lead at a time</b>. Simplest, zero abandoned calls.
               </li>
               <li>
-                To dial: campaign row <b>green ▶</b> → the <b>Session Settings</b> modal → check the
-                timezone row → <b>Start Dialing</b>. It then places one call at a time.
+                <b>Progressive(M)</b> = the <b>3-line</b> mode. Choosing it reveals <b>"Dialing
+                Leads"</b> (1 / 2 / 3, max 3) = how many numbers it rings simultaneously. Set it to{" "}
+                <b>3</b>. (Progressive-<i>A</i> / predictive is hidden on this account — we don't use
+                it.)
               </li>
               <li>
-                <b>Recommendation:</b> run <b>single-line</b> for MCA. Setters need to be present and
-                warm on every connect (send-app + Connect-Bank live on the call), and single-line has{" "}
-                <b>zero abandoned calls</b> — the cleanest TCPA posture while you're ramping.
+                <b>The mode can't be changed after a campaign is created</b> — to switch, you build a
+                new campaign. Our live 3-line campaign is <b>"UCC Power-3 — 2026-08-11"</b>.
               </li>
             </ol>
           </div>
@@ -572,36 +573,52 @@ export default function DialingMachinePage() {
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">2</span>
-              <h3>Multi-line / parallel — a different campaign mode, not a toggle</h3>
+              <h3>Build a 3-line campaign (the repeatable click-path)</h3>
             </div>
             <ol>
               <li>
-                Parallel dialing (calling several numbers so a setter lands on whoever answers first)
-                is a <b>separate HotProspector campaign MODE</b>, selected at campaign-creation time —
-                <b> it is not a setting on the live screen</b> and you can't flip an existing Power
-                campaign into it.
+                <b>Dialer → New Campaign.</b> Advance with the green <b>Next</b> button (clicking tab
+                names doesn't switch tabs), and note HP <b>creates the campaign as you Next through</b>
+                {" "}— it exists before the final screen.
               </li>
               <li>
-                <b>Before relying on it, confirm two things in the HP account:</b> (a) that the
-                multi-line mode is actually enabled on your plan, and (b) exactly how it's configured.
-                These were sales claims we have <b>not</b> yet verified in the live UI — don't assume
-                "3 lines" is included.
+                <b>Campaign Settings:</b> Name it; <b>Group</b> = the per-batch lead group; <b>Mode =
+                Progressive(M)</b> → the <b>Dialing Leads</b> field appears → set it to <b>3</b>;{" "}
+                <b>Dialer Access Hours = Yes</b> (defaults to <b>8:00 AM–9:00 PM in the lead's
+                timezone</b> = TCPA). ⚠️ Check <b>Maximum Dial Attempts</b> — it can save as 1; set it
+                to <b>20</b>.
               </li>
               <li>
-                <b>The TCPA warning that comes with it:</b> HotProspector exposes <b>no
-                abandoned-call % cap and no abandonment message</b>. Its only built-in guards are the{" "}
-                <b>DNC scrub</b> and the <b>timezone calling hours</b>. Multi-line means calls can
-                connect with no setter free — an <b>abandoned call</b>, which is exactly what carriers
-                flag and what TCPA penalizes. That risk is the owner's to manage. Go multi-line only
-                deliberately, with enough setters staffed to answer.
+                <b>Call Handling:</b> Phone Number (caller ID) = <b>+1 954-860-7138</b>. (Call
+                recording — see the callout below; it needs an owner sign-off, so leave it off for
+                now.)
+              </li>
+              <li>
+                <b>Call Statuses:</b> confirm <b>"Send Application"</b> is enabled (it's a global,
+                account-wide status).
+              </li>
+              <li>
+                <b>Lead Details / Workflows:</b> defaults. <b>Timezone Settings:</b> tick <b>"I have
+                selected time zone carefully."</b> <b>Disclaimer:</b> check the box → <b>Create</b>.
+              </li>
+              <li>
+                It sits <b>IDLE</b> until an owner <b>assigns a setter</b> (campaign row → Action →
+                assign-members) and the setter presses <b>Start</b>.
               </li>
             </ol>
           </div>
 
+          <div className="warn">
+            <b>Call recording is OFF and needs your sign-off.</b> Turning it on (Edit → Call Handling →
+            Call Recording = <b>Automatic</b>) pops HP's <b>"Call Recording Disclosure and Consent
+            Agreement"</b> — a legal attestation only <b>you</b> can accept. Until you do, calls aren't
+            recorded (so no AI call scoring). Enable it when you're ready by accepting that modal.
+          </div>
+
           <div className="callout">
             <b>Answering machines:</b> when a call hits voicemail, the setter drops a pre-recorded
-            message with the <b>Voicemail Drop</b> button on the live screen and moves on — no dead
-            air. Record/manage those under <b>Settings → Templates → Voicemail / RVM</b>.
+            message with the <b>Voicemail Drop</b> button and moves on — no dead air. Record/manage
+            those under <b>Settings → Templates → Voicemail / RVM</b>.
           </div>
         </section>
 
