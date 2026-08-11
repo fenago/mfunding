@@ -183,6 +183,92 @@ const US_STATES: Record<string, string> = {
 };
 const US_STATE_CODES = new Set(Object.values(US_STATES));
 
+// A single free-text value ("TX", "texas", "Texas ") → USPS code, else null.
+const normStateCode = (v: unknown): string | null => {
+  const raw = String(v ?? "").trim();
+  if (!raw) return null;
+  if (/^[A-Za-z]{2}$/.test(raw)) {
+    const code = raw.toUpperCase();
+    return US_STATE_CODES.has(code) ? code : null;
+  }
+  return US_STATES[raw.toLowerCase()] ?? null;
+};
+
+// ZIP3 → state. The merchant record often carries a zip with NO state (GHL and the
+// intake form both let state through empty), and a zip is deterministic data — it
+// beats any AI read. Ranges are inclusive ZIP3 prefixes; gaps (military/territory
+// prefixes) resolve to null rather than guessing.
+const ZIP3_RANGES: Array<[number, number, string]> = [
+  [5, 5, "NY"], [6, 9, "PR"], [10, 27, "MA"], [28, 29, "RI"], [30, 38, "NH"],
+  [39, 49, "ME"], [50, 59, "VT"], [60, 69, "CT"], [70, 89, "NJ"], [100, 149, "NY"],
+  [150, 196, "PA"], [197, 199, "DE"], [200, 200, "DC"], [201, 201, "VA"],
+  [202, 205, "DC"], [206, 219, "MD"], [220, 246, "VA"], [247, 268, "WV"],
+  [270, 289, "NC"], [290, 299, "SC"], [300, 319, "GA"], [320, 339, "FL"],
+  [341, 349, "FL"], [350, 369, "AL"], [370, 385, "TN"], [386, 397, "MS"],
+  [398, 399, "GA"], [400, 427, "KY"], [430, 459, "OH"], [460, 479, "IN"],
+  [480, 499, "MI"], [500, 528, "IA"], [530, 549, "WI"], [550, 567, "MN"],
+  [570, 577, "SD"], [580, 588, "ND"], [590, 599, "MT"], [600, 629, "IL"],
+  [630, 658, "MO"], [660, 679, "KS"], [680, 693, "NE"], [700, 714, "LA"],
+  [716, 729, "AR"], [730, 749, "OK"], [750, 799, "TX"], [800, 816, "CO"],
+  [820, 831, "WY"], [832, 838, "ID"], [840, 847, "UT"], [850, 865, "AZ"],
+  [870, 884, "NM"], [885, 885, "TX"], [889, 898, "NV"], [900, 961, "CA"],
+  [967, 968, "HI"], [970, 979, "OR"], [980, 994, "WA"], [995, 999, "AK"],
+];
+const stateFromZip = (v: unknown): string | null => {
+  const m = String(v ?? "").trim().match(/^(\d{3})\d*/);
+  if (!m) return null;
+  const p = Number(m[1]);
+  for (const [lo, hi, code] of ZIP3_RANGES) if (p >= lo && p <= hi) return code;
+  return null;
+};
+
+// NANP area code → state. The WEAKEST derivation (a cell number travels with its
+// owner), used only as a last resort and always marked low-confidence — it is
+// enough to raise a "verify the state" flag, never enough to hard-exclude a funder.
+const AREA_CODES_BY_STATE: Record<string, number[]> = {
+  AL: [205, 251, 256, 334, 659, 938], AK: [907], AZ: [480, 520, 602, 623, 928],
+  AR: [327, 479, 501, 870],
+  CA: [209, 213, 279, 310, 323, 341, 350, 408, 415, 424, 442, 510, 530, 559, 562, 619, 626,
+    628, 650, 657, 661, 669, 707, 714, 747, 760, 805, 818, 820, 831, 840, 858, 909, 916, 925, 949, 951],
+  CO: [303, 719, 720, 970, 983], CT: [203, 475, 860, 959], DE: [302], DC: [202],
+  FL: [239, 305, 321, 324, 352, 386, 407, 448, 561, 656, 689, 727, 754, 772, 786, 813, 850, 863, 904, 941, 954],
+  GA: [229, 404, 470, 478, 678, 706, 762, 770, 912, 943], HI: [808], ID: [208, 986],
+  IL: [217, 224, 309, 312, 331, 447, 464, 618, 630, 708, 730, 773, 779, 815, 847, 872],
+  IN: [219, 260, 317, 463, 574, 765, 812, 930], IA: [319, 515, 563, 641, 712],
+  KS: [316, 620, 785, 913], KY: [270, 364, 502, 606, 859], LA: [225, 318, 337, 504, 985],
+  ME: [207], MD: [227, 240, 301, 410, 443, 667],
+  MA: [339, 351, 413, 508, 617, 774, 781, 857, 978],
+  MI: [231, 248, 269, 313, 517, 586, 616, 679, 734, 810, 906, 947, 989],
+  MN: [218, 320, 507, 612, 651, 763, 952], MS: [228, 601, 662, 769],
+  MO: [235, 314, 417, 557, 573, 636, 660, 816, 975], MT: [406], NE: [308, 402, 531],
+  NV: [702, 725, 775], NH: [603],
+  NJ: [201, 551, 609, 640, 732, 848, 856, 862, 908, 973], NM: [505, 575],
+  NY: [212, 315, 329, 332, 347, 363, 516, 518, 585, 607, 631, 646, 680, 716, 718, 838, 845, 914, 917, 929, 934],
+  NC: [252, 336, 704, 743, 828, 910, 919, 980, 984], ND: [701],
+  OH: [216, 220, 234, 283, 326, 330, 380, 419, 436, 440, 513, 567, 614, 740, 937],
+  OK: [405, 539, 572, 580, 918], OR: [458, 503, 541, 971],
+  PA: [215, 223, 267, 272, 412, 445, 484, 570, 582, 610, 717, 724, 814, 835, 878],
+  RI: [401], SC: [803, 821, 839, 843, 854, 864], SD: [605],
+  TN: [423, 615, 629, 731, 865, 901, 931],
+  TX: [210, 214, 254, 281, 325, 346, 361, 409, 430, 432, 469, 512, 682, 713, 726, 737, 806,
+    817, 830, 832, 903, 915, 936, 940, 945, 956, 972, 979],
+  UT: [385, 435, 801], VT: [802],
+  VA: [276, 434, 540, 571, 686, 703, 757, 804, 826, 948],
+  WA: [206, 253, 360, 425, 509, 564], WV: [304, 681],
+  WI: [262, 274, 414, 534, 608, 715, 920], WY: [307], PR: [787, 939],
+};
+const AREA_CODE_STATE: Record<string, string> = (() => {
+  const m: Record<string, string> = {};
+  for (const [code, acs] of Object.entries(AREA_CODES_BY_STATE)) for (const ac of acs) m[String(ac)] = code;
+  return m;
+})();
+const stateFromPhone = (v: unknown): string | null => {
+  const digits = String(v ?? "").replace(/\D+/g, "");
+  const nat = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  if (nat.length < 10) return null;
+  return AREA_CODE_STATE[nat.slice(0, 3)] ?? null;
+};
+
 // FNV-1a hash of a string → stable short hex. Used for docs_hash so an identical
 // analyzed doc set (same ids + timestamps) produces the same hash across runs.
 function stableHash(s: string): string {
@@ -225,6 +311,11 @@ interface PerStatement {
   // Deliberately separate from mca_debits: a collection debit is a legal/distress
   // event, not a financing position, and must never inflate the stacking count.
   collection_debits: Array<{ date?: string; desc?: string; amount?: number; type?: string; confidence?: string; reason?: string }>;
+  // USPS code for the state in the ACCOUNT-HOLDER address block printed on the
+  // statement. Statements are the one document we always have, so this is the
+  // fallback that keeps a state-restricted funder from being recommended blind
+  // when the CRM record has no state. Never used to override a recorded state.
+  business_state?: string | null;
   _filename?: string;
   // EVERY source filename represented by this statement — the byte-identical group
   // members PLUS any files period-dedup folded in. Drives the per-document ledger so
@@ -296,6 +387,10 @@ function extractionSystem(enabledCategories: string[]): string {
     "debt-collection payment; 'medium' when it very likely is; 'low' when it is a guess. Give a short 'reason'. " +
     "Return an EMPTY collection_debits array when the statement shows none — that is the normal case. " +
     "Return the statement's account_last4 (last 4 digits of the account number) if visible, else null. " +
+    "Return business_state = the two-letter USPS state code from the ACCOUNT-HOLDER / mailing address block " +
+    "printed on the statement (the 'CITY ST 12345' line under the business name, usually page 1). Return the " +
+    "STATE OF THE ACCOUNT HOLDER — never the bank's own corporate address, and never a state that merely appears " +
+    "in a transaction descriptor. If no account-holder address is printed, return null (do not guess). " +
     "CRITICAL — DEBIT vs CREDIT COLUMNS: total_deposits is the CREDITS/deposits total (money IN); total_withdrawals " +
     "is the DEBITS total (money OUT). Some statement formats (e.g. Banc of California 'Activity & Balances Summary') " +
     "print the DEBITS column BEFORE the Credits column, or a Totals row reading 'Debits $X | Credits $Y' — do NOT " +
@@ -330,6 +425,10 @@ const EXTRACTION_TOOL = {
     properties: {
       month: { type: ["string", "null"], description: "Statement period, e.g. 'March 2026'. Always present on a real statement." },
       account_last4: { type: ["string", "null"] },
+      business_state: {
+        type: ["string", "null"],
+        description: "Two-letter USPS state code from the ACCOUNT-HOLDER mailing address printed on the statement (not the bank's address). null if no account-holder address is shown.",
+      },
       opening_balance: { type: ["number", "null"] },
       closing_balance: { type: "number", description: "Ending balance shown on the statement. Always present." },
       total_deposits: { type: ["number", "null"], description: "Sum of all deposits/credits for the month." },
@@ -400,7 +499,7 @@ const EXTRACTION_TOOL = {
     required: [
       "month", "closing_balance", "avg_daily_balance", "negative_days", "deposit_count",
       "total_deposits", "deposits", "padding_deposits", "questionable_deposits", "mca_debits",
-      "collection_debits",
+      "collection_debits", "business_state",
     ],
   },
 };
@@ -510,7 +609,7 @@ Deno.serve(async (req) => {
     // --- Deal + customer. ---
     const { data: deal, error: dErr } = await db
       .from("deals")
-      .select("id, deal_number, deal_type, amount_requested, use_of_funds, underwriting_context, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, credit_score_range, ghl_contact_id)")
+      .select("id, deal_number, deal_type, amount_requested, use_of_funds, underwriting_context, customer_id, vcf_active_positions, vcf_daily_debit, customer:customers!customer_id(business_name, monthly_revenue, time_in_business, industry, business_type, address_state, address_zip, phone, credit_score_range, ghl_contact_id)")
       .eq("id", dealId).maybeSingle();
     if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
     const cust = (deal.customer ?? {}) as Any;
@@ -520,6 +619,25 @@ Deno.serve(async (req) => {
     // hard evidence (a $100K-baseline claim against $12K statements produces a
     // "verify with prior-year statements" path, not a fabricated approval).
     const ownerContext = ((deal.underwriting_context as string | null | undefined) ?? "").trim();
+
+    // --- MCA application on file (deterministic merchant facts the CRM record may be
+    // missing). Today it is read only for the merchant's STATE: the CRM's
+    // customers.address_state is blank on most real deals, and a blank state used to
+    // let a state-restricted funder onto the shortlist unchecked (a TX merchant was
+    // recommended True Advance, who does not fund TX). Deal-scoped app first, then any
+    // app for this customer. Best-effort: a failure here never sinks the run.
+    let appRow: Any | null = null;
+    try {
+      const { data: apps } = await db
+        .from("mca_applications")
+        .select("id, deal_id, business_state, business_zip, business_phone, owner_home_state, owner_home_zip, created_at")
+        .eq("customer_id", deal.customer_id)
+        .order("created_at", { ascending: false });
+      const list = (apps ?? []) as Any[];
+      appRow = list.find((a) => a.deal_id === deal.id) ?? list[0] ?? null;
+    } catch (e) {
+      console.warn("[underwrite-deal] application load failed:", e instanceof Error ? e.message : e);
+    }
 
     // --- Documents: bank statements (analyzed) + applications (context only). ---
     const loadDocs = async (): Promise<Any[]> => {
@@ -2821,15 +2939,62 @@ Deno.serve(async (req) => {
     // same fields. House rules apply on both sides: an unrecorded FUNDER criterion is
     // NO constraint, and an unknown MERCHANT value NEVER disqualifies — it surfaces as
     // "unverified" on the match so the closer knows to confirm it.
-    const merchantState: string | null = (() => {
-      const raw = String(cust.address_state ?? "").trim();
-      if (!raw) return null;
-      if (/^[A-Za-z]{2}$/.test(raw)) {
-        const code = raw.toUpperCase();
-        return US_STATE_CODES.has(code) ? code : null;
+    // MERCHANT STATE — derived, not just read. customers.address_state is NULL on most
+    // real deals (GHL and the intake form both let it through empty), and a missing
+    // state used to make every state restriction unenforceable: the gate fell through
+    // to "not recorded — unchecked" and a restricted funder was recommended clean. A
+    // TX merchant was sent to True Advance (restricted_states ["TX","ND"]) that way.
+    // So walk a source chain, strongest evidence first. Deterministic records beat the
+    // AI's statement read; the phone area code is a last resort and is marked LOW
+    // confidence — it raises a verify-flag, it never hard-excludes anyone (see the
+    // restricted-states gate below).
+    const statementStates = (() => {
+      const tally = new Map<string, number>();
+      for (const s of perStatement) {
+        if (s._error) continue;
+        const code = normStateCode(s.business_state);
+        if (code) tally.set(code, (tally.get(code) ?? 0) + 1);
       }
-      return US_STATES[raw.toLowerCase()] ?? null;
+      return [...tally.entries()].sort((a, b) => b[1] - a[1]);
     })();
+    const stateChain: Array<{ code: string | null; source: string; confidence: "high" | "medium" | "low" }> = [
+      { code: normStateCode(cust.address_state), source: "customer_record", confidence: "high" },
+      { code: normStateCode(appRow?.business_state), source: "application", confidence: "high" },
+      { code: stateFromZip(cust.address_zip), source: "customer_zip", confidence: "high" },
+      { code: stateFromZip(appRow?.business_zip), source: "application_zip", confidence: "high" },
+      { code: statementStates[0]?.[0] ?? null, source: "bank_statements", confidence: "medium" },
+      { code: normStateCode(appRow?.owner_home_state), source: "application_owner_home", confidence: "medium" },
+      { code: stateFromPhone(cust.phone), source: "phone_area_code", confidence: "low" },
+      { code: stateFromPhone(appRow?.business_phone), source: "application_phone_area_code", confidence: "low" },
+    ];
+    const stateHit = stateChain.find((c) => c.code != null) ?? null;
+    const merchantState: string | null = stateHit?.code ?? null;
+    const merchantStateSource: string | null = stateHit?.source ?? null;
+    const merchantStateConfidence: "high" | "medium" | "low" | null = stateHit?.confidence ?? null;
+    // Statements disagreeing with each other (two states in the address blocks) is
+    // worth surfacing rather than silently taking the mode.
+    const statementStateConflict = statementStates.length > 1
+      ? statementStates.map(([c, n]) => `${c}×${n}`).join(", ")
+      : null;
+
+    // SELF-HEAL the CRM record. Only from evidence we'd stand behind (never the area
+    // code), only when the field is genuinely empty, never overwriting a recorded
+    // value. Best-effort — a failed write must not affect the run.
+    let merchantStateWriteback = false;
+    if (
+      merchantState && merchantStateConfidence !== "low" &&
+      merchantStateSource !== "customer_record" && !String(cust.address_state ?? "").trim()
+    ) {
+      try {
+        const { error: wbErr } = await db
+          .from("customers").update({ address_state: merchantState }).eq("id", deal.customer_id);
+        if (wbErr) throw new Error(wbErr.message);
+        merchantStateWriteback = true;
+        console.log(`[underwrite-deal] wrote back address_state=${merchantState} (${merchantStateSource}) for customer ${deal.customer_id}`);
+      } catch (e) {
+        console.warn("[underwrite-deal] address_state write-back failed:", e instanceof Error ? e.message : e);
+      }
+    }
     const merchantIndustry: string | null =
       String(cust.industry ?? cust.business_type ?? "").trim() || null;
     // Revenue tested against a funder floor is the VERIFIED figure, not the stated ask
@@ -2860,6 +3025,9 @@ Deno.serve(async (req) => {
       positions: positionsCount,
       industry: merchantIndustry,
       state: merchantState,
+      state_source: merchantStateSource,
+      state_confidence: merchantStateConfidence,
+      state_conflict: statementStateConflict,
       fico_low: ficoLow,
       time_in_business_months: tibMonthsKnown,
       true_monthly_revenue: merchantRevenue,
@@ -2882,6 +3050,8 @@ Deno.serve(async (req) => {
       consolidation_type: string | null; why_matched: string; score: number;
       /** Criteria the funder publishes but the merchant record can't answer yet. */
       unverified?: string[];
+      /** Loud warning: they restrict states and we could not verify the merchant's. */
+      state_verify?: string | null;
     }> = [];
     // Near-misses the owner wants to SEE: a funder that cleared the lane/paper/product
     // filter but failed one published criterion, with the gate it failed.
@@ -3055,12 +3225,19 @@ Deno.serve(async (req) => {
         defaultStance: "hard" | "friendly" | "unknown";
         /** Verbatim published wording behind an explicit collections auto-decline. */
         collectionsAutoDecline: string | null;
+        /**
+         * This funder publishes state restrictions but we could not establish the
+         * merchant's state well enough to check them. Never a gate (an unknown
+         * merchant value never disqualifies) — it down-ranks and prints a loud
+         * verify-before-submitting warning so nobody submits blind again.
+         */
+        stateVerify: string | null;
       }
       const readCriteria = (l: LenderRow): CritRead => {
         const cr = critOf(l);
         const out: CritRead = {
           hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown",
-          collectionsAutoDecline: null,
+          collectionsAutoDecline: null, stateVerify: null,
         };
         const fail = (why: string) => { if (!out.hard) out.hard = why; };
 
@@ -3074,16 +3251,33 @@ Deno.serve(async (req) => {
           fail(`first position only; merchant has ${positionsCount} open position(s)`);
         }
 
-        // STATE
+        // STATE. A recorded restriction is only enforceable against a merchant state we
+        // actually trust. Three cases:
+        //   · state known (high/medium confidence) → gate exactly as before;
+        //   · state only INFERRED from the phone area code → too weak to exclude on
+        //     (a cell number travels), so warn loudly instead;
+        //   · state unknown → warn loudly. Never a silent pass: that is precisely how a
+        //     TX merchant got recommended a funder that does not fund TX.
         const rs = strList(cr.restricted_states);
         if (rs.length > 0) {
-          if (merchantState) {
+          const restrictedList = Array.from(new Set(rs.map((e) => headOf(e)).filter(Boolean))).join(", ");
+          const noFund = `does not fund ${restrictedList || "certain states"}`;
+          if (merchantState && merchantStateConfidence !== "low") {
             const hit = rs.find((e) => stateCodesIn(e).includes(merchantState));
             if (!hit) out.why.push(`no state restriction for ${merchantState}`);
             else if (SOFT_QUALIFIER.test(hit)) {
               out.soft.push(`${merchantState} is case-by-case for them (${headOf(hit) || merchantState}) — confirm before submitting`);
-            } else fail(`does not fund ${merchantState}`);
-          } else out.unverified.push("merchant state not recorded — their state restrictions unchecked");
+            } else fail(`${noFund} — merchant is in ${merchantState}`);
+          } else if (merchantState) {
+            const hit = rs.find((e) => stateCodesIn(e).includes(merchantState));
+            out.stateVerify = hit
+              ? `⚠ verify merchant state before submitting — the only state signal on file is the phone area code (${merchantState}), and this funder ${noFund}`
+              : `⚠ verify merchant state before submitting — merchant state is inferred from the phone area code only (${merchantState}); this funder ${noFund}`;
+            out.unverified.push(`merchant state inferred from phone area code (${merchantState}) — state restrictions not verified`);
+          } else {
+            out.stateVerify = `⚠ verify merchant state before submitting — no merchant state on file, and this funder ${noFund}`;
+            out.unverified.push("merchant state not recorded — their state restrictions unchecked");
+          }
         }
 
         // INDUSTRY
@@ -3272,7 +3466,7 @@ Deno.serve(async (req) => {
         // ---- granular criteria: what PASSED, what is soft, what is unverified ----
         const read = reads.get(l.id) ?? {
           hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown" as const,
-          collectionsAutoDecline: null,
+          collectionsAutoDecline: null, stateVerify: null,
         };
         // Every criterion the merchant actually cleared is cited by name — the owner
         // wants to read WHY a funder is on the list, not just that it scored.
@@ -3298,6 +3492,14 @@ Deno.serve(async (req) => {
               : "accepts defaults / collections — the right desk for a distressed file");
           }
         }
+        // UNVERIFIABLE STATE RESTRICTION. Still not a gate — an unknown merchant value
+        // never disqualifies — but it must never read as a clean match either. Down-rank
+        // it below every funder whose box we could actually check, and print the warning
+        // first so the closer sees it before the reasons this funder scored at all.
+        if (read.stateVerify) {
+          score -= 40;
+          why.unshift(read.stateVerify);
+        }
         // Unknown merchant values are stipulations, not declines: shown, never scored.
         if (read.unverified.length) {
           why.push(`unverified — ${read.unverified.slice(0, 2).join("; ")}`);
@@ -3311,11 +3513,23 @@ Deno.serve(async (req) => {
           why_matched: why.join("; "),
           score,
           unverified: read.unverified,
+          state_verify: read.stateVerify,
         };
       });
 
       scored.sort((a, b) => (b.score - a.score) || a.company_name.localeCompare(b.company_name));
       recommendedFunders = scored.slice(0, 5);
+
+      // One loud line at the top of the shortlist whenever a state-restricted funder
+      // made it on with the merchant's state unconfirmed. This is the note that would
+      // have stopped a TX merchant going to a funder that does not fund TX.
+      const needStateCheck = recommendedFunders.filter((r) => r.state_verify);
+      if (needStateCheck.length) {
+        funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
+          `⚠ MERCHANT STATE ${merchantState ? `is only inferred (${merchantState}, ${merchantStateSource?.replace(/_/g, " ")})` : "is not on file"} — ` +
+          `confirm it before submitting to ${needStateCheck.map((r) => r.company_name).join(", ")}: ` +
+          "each of them publishes state restrictions we could not check.";
+      }
 
       // Hard-default desks that survived the gate but got pushed off the shortlist by
       // the collection-activity signal are recorded so the owner sees WHY they aren't
@@ -3362,6 +3576,12 @@ Deno.serve(async (req) => {
       // side. Additive; older persisted rows simply lack these keys.
       has_collection_activity: collectionActivity.detected,
       collection_activity_summary: collectionActivity.detected ? collectionActivity.note : null,
+      // MERCHANT STATE + where it came from. Additive; older persisted rows lack these.
+      merchant_state: merchantState,
+      merchant_state_source: merchantStateSource,
+      merchant_state_confidence: merchantStateConfidence,
+      merchant_state_written_back: merchantStateWriteback,
+      merchant_state_conflict: statementStateConflict,
       profile_reason: profileReason,
       // Deterministic shortlist off lenders.category — the deal→funder play.
       recommended_funders: recommendedFunders,
@@ -3685,6 +3905,7 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
   return {
     month: deriveMonth(p.month, filename),
     account_last4: p.account_last4 != null ? String(p.account_last4) : null,
+    business_state: normStateCode(p.business_state),
     opening_balance: num(p.opening_balance),
     closing_balance: num(p.closing_balance),
     total_deposits: num(p.total_deposits),

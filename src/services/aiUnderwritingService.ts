@@ -241,6 +241,11 @@ export interface UWRecommendedFunder {
   score: number;
   /** Criteria the funder publishes that the merchant record can't answer yet. */
   unverified?: string[];
+  /**
+   * Loud warning: this funder restricts states and the merchant's state could not be
+   * confirmed, so the restriction went unchecked. Additive — older rows lack it.
+   */
+  state_verify?: string | null;
 }
 
 /** A funder in the right lane that failed ONE published criterion (near-miss). */
@@ -298,6 +303,10 @@ export interface UWMerchantSignals {
   positions: number;
   industry: string | null;
   state: string | null;
+  /** Where `state` was derived from (additive; older rows lack these). */
+  state_source?: string | null;
+  state_confidence?: "high" | "medium" | "low" | null;
+  state_conflict?: string | null;
   fico_low: number | null;
   time_in_business_months: number | null;
   true_monthly_revenue: number | null;
@@ -332,6 +341,17 @@ export interface UWProfile {
   /** Mirrors metrics.collection_activity.detected (additive; older rows lack it). */
   has_collection_activity?: boolean;
   collection_activity_summary?: string | null;
+  /**
+   * Merchant state as DERIVED by the underwriter (customer record → application →
+   * zip → bank-statement address → phone area code), with where it came from.
+   * Additive — older rows lack these keys entirely.
+   */
+  merchant_state?: string | null;
+  merchant_state_source?: string | null;
+  merchant_state_confidence?: "high" | "medium" | "low" | null;
+  merchant_state_written_back?: boolean;
+  /** Two different states across the statement address blocks, if they disagreed. */
+  merchant_state_conflict?: string | null;
 }
 
 export interface UWMetrics {
