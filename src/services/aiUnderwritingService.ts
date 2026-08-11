@@ -242,10 +242,14 @@ export interface UWRecommendedFunder {
   /** Criteria the funder publishes that the merchant record can't answer yet. */
   unverified?: string[];
   /**
-   * Loud warning: this funder restricts states and the merchant's state could not be
-   * confirmed, so the restriction went unchecked. Additive — older rows lack it.
+   * Loud warning: the state question could not be settled on one side or the other —
+   * either this funder restricts states and the merchant's state could not be
+   * confirmed, or the funder's own footprint was never verified. Additive — older
+   * rows lack it.
    */
   state_verify?: string | null;
+  /** Which side is unverified: "merchant" state or funder "coverage". Additive. */
+  state_verify_kind?: "merchant" | "coverage" | null;
 }
 
 /** A funder in the right lane that failed ONE published criterion (near-miss). */

@@ -1,6 +1,6 @@
 // funder-decline-intel — turn every funder "no" into permanent box intel.
 //
-// Four idempotent phases, all of them run on each invocation (cron, hourly):
+// Five idempotent phases, all of them run on each invocation (cron, hourly):
 //
 //   1. BACKFILL — seed funder_replies from the full bodies that already exist
 //      elsewhere: deal_submissions.response_data->>'raw', keyed to the GHL email
@@ -13,6 +13,10 @@
 //      it's retried next hour, never silently dropped.
 //   4. ROLLUP   — aggregate parsed declines per funder and write
 //      lenders.category.criteria.decline_history.
+//   5. SELFHEAL — the one phase that CHANGES the published box: a "we don't fund
+//      <state>" decline adds the merchant's state to criteria.restricted_states and
+//      sets states_coverage="restricted", so the underwriter hard-excludes that
+//      funder for the next merchant in that state. Add-only, never removes.
 //
 // ⚠️ criteria.decline_signal is HUMAN-CURATED (the owner wrote it for Green Note,
 // Nationwide, Funderial, FundKite). This function NEVER reads back over it or
@@ -418,6 +422,152 @@ async function rollup(db: SupabaseClient): Promise<{
   return { funders, entries, contradictions: contradictionCount, errors };
 }
 
+// ── Phase 4: self-heal (state) ───────────────────────────────────────────────
+// A "we don't fund <state>" decline is the funder telling us its own box is wrong on
+// file. Every other phase only OBSERVES; this one REPAIRS: the merchant's state goes
+// onto criteria.restricted_states and states_coverage flips to "restricted", so the
+// underwriter's state gate hard-excludes that funder for the next merchant in that
+// state instead of learning the same lesson again.
+//
+// Rules, in the order they matter:
+//   · ADD ONLY. A human-set entry is never removed, never rewritten, never
+//     down-graded — if the code already appears in any entry (including a caveated
+//     one like "CA (selective)"), this leaves the row alone.
+//   · The merchant's state comes from the DEAL (customers.address_state), never from
+//     the decline prose — a funder's email mentions its own HQ as often as the
+//     merchant's state.
+//   · Idempotent: dedup on the 2-letter code, and criteria.states_learned is keyed by
+//     state so re-runs append nothing.
+const STATE_HEAL_BATCH = 200;
+
+/** Leading UPPERCASE 2-letter token — the same head-code read the underwriter uses. */
+function headCode(entry: string): string | null {
+  const m = String(entry ?? "").trim().match(/^([A-Za-z]{2})\b/);
+  return m ? m[1].toUpperCase() : null;
+}
+
+async function selfHealStates(db: SupabaseClient): Promise<{
+  declines: number; funders_updated: number; states_added: string[];
+  skipped_no_state: number; already_known: number; errors: string[];
+}> {
+  const empty = {
+    declines: 0, funders_updated: 0, states_added: [] as string[],
+    skipped_no_state: 0, already_known: 0, errors: [] as string[],
+  };
+  const { data: rows, error } = await db.from("funder_replies")
+    .select("id, lender_id, deal_id, verbatim_quote, received_at")
+    .eq("is_decline", true)
+    .not("deal_id", "is", null)
+    .contains("reason_categories", ["state_restricted"])
+    .order("received_at", { ascending: true })
+    .limit(STATE_HEAL_BATCH);
+  if (error) return { ...empty, errors: [error.message] };
+  if (!rows?.length) return empty;
+  empty.declines = rows.length;
+
+  // deal → customer → state, in two batched reads.
+  const dealIds = [...new Set(rows.map((r) => r.deal_id as string))];
+  const { data: deals } = await db.from("deals").select("id, deal_number, customer_id").in("id", dealIds);
+  const custOf = new Map((deals ?? []).map((d) => [d.id as string, d.customer_id as string | null]));
+  const dealNoOf = new Map((deals ?? []).map((d) => [d.id as string, (d.deal_number as string) ?? d.id as string]));
+  const custIds = [...new Set([...custOf.values()].filter(Boolean) as string[])];
+  const { data: custs } = custIds.length
+    ? await db.from("customers").select("id, address_state").in("id", custIds)
+    : { data: [] as Array<{ id: string; address_state: string | null }> };
+  const stateOf = new Map((custs ?? []).map((c) => [c.id as string, String(c.address_state ?? "").trim().toUpperCase()]));
+
+  // Everything this run wants to teach, grouped per funder.
+  interface Lesson { state: string; reply_id: string; deal: string; quote: string; seen_at: string | null }
+  const byLender = new Map<string, Lesson[]>();
+  let skippedNoState = 0;
+  for (const r of rows) {
+    const cid = custOf.get(r.deal_id as string) ?? null;
+    const st = cid ? (stateOf.get(cid) ?? "") : "";
+    if (!/^[A-Z]{2}$/.test(st)) { skippedNoState++; continue; }
+    const list = byLender.get(r.lender_id as string) ?? [];
+    list.push({
+      state: st,
+      reply_id: r.id as string,
+      deal: dealNoOf.get(r.deal_id as string) ?? (r.deal_id as string),
+      quote: String(r.verbatim_quote ?? "").slice(0, 200),
+      seen_at: (r.received_at as string | null) ?? null,
+    });
+    byLender.set(r.lender_id as string, list);
+  }
+  if (byLender.size === 0) {
+    return { ...empty, declines: rows.length, skipped_no_state: skippedNoState };
+  }
+
+  const { data: lenders, error: lErr } = await db.from("lenders")
+    .select("id, company_name, category").in("id", [...byLender.keys()]);
+  if (lErr) return { ...empty, declines: rows.length, skipped_no_state: skippedNoState, errors: [lErr.message] };
+
+  const errors: string[] = [];
+  const added: string[] = [];
+  let funders = 0, alreadyKnown = 0;
+  const now = new Date().toISOString();
+
+  for (const l of lenders ?? []) {
+    const lessons = byLender.get(l.id as string) ?? [];
+    const category = (l.category ?? {}) as Record<string, unknown>;
+    const criteria = ((category.criteria ?? {}) as Record<string, unknown>);
+
+    // Coerce defensively: some rows carry JSON null here rather than [].
+    const existing = Array.isArray(criteria.restricted_states)
+      ? (criteria.restricted_states as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean)
+      : [];
+    const known = new Set(existing.map(headCode).filter(Boolean) as string[]);
+
+    const learnedPrior = Array.isArray(criteria.states_learned)
+      ? (criteria.states_learned as Array<Record<string, unknown>>)
+      : [];
+    const learnedBy = new Map(learnedPrior.map((e) => [String(e.state ?? "").toUpperCase(), e]));
+
+    const nextStates = [...existing];
+    const newHere: string[] = [];
+    for (const lesson of lessons) {
+      if (known.has(lesson.state)) { alreadyKnown++; continue; }
+      known.add(lesson.state);
+      nextStates.push(lesson.state);
+      newHere.push(lesson.state);
+      learnedBy.set(lesson.state, {
+        state: lesson.state,
+        source: "decline",
+        learned_at: now,
+        funder_reply_id: lesson.reply_id,
+        deal: lesson.deal,
+        quote: lesson.quote,
+        seen_at: lesson.seen_at,
+        note: "Added automatically from a real funder decline citing the merchant's state.",
+      });
+    }
+    if (newHere.length === 0) continue;
+
+    const nextCategory = {
+      ...category,
+      criteria: {
+        ...criteria,
+        restricted_states: nextStates,
+        states_coverage: "restricted",
+        states_learned: [...learnedBy.values()],
+      },
+    };
+    const { error: upErr } = await db.from("lenders")
+      .update({ category: nextCategory }).eq("id", l.id as string);
+    if (upErr) { errors.push(`${l.company_name}: ${upErr.message}`); continue; }
+    funders++;
+    for (const st of newHere) {
+      added.push(`${l.company_name}: +${st}`);
+      console.log(`[funder-decline-intel] self-heal — ${l.company_name} restricted_states += ${st} (learned from decline)`);
+    }
+  }
+
+  return {
+    declines: rows.length, funders_updated: funders, states_added: added,
+    skipped_no_state: skippedNoState, already_known: alreadyKnown, errors,
+  };
+}
+
 // ── Entry ────────────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -445,14 +595,17 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ?phases=backfill,recover,parse,rollup — default is all four, in order.
-    const want = (url.searchParams.get("phases") ?? "backfill,recover,parse,rollup")
+    // ?phases=backfill,recover,parse,rollup,selfheal — default is all five, in order.
+    // selfheal runs LAST so it reads a lenders row rollup has already written: both
+    // phases read-modify-write the whole category object, and the later reader wins.
+    const want = (url.searchParams.get("phases") ?? "backfill,recover,parse,rollup,selfheal")
       .split(",").map((s) => s.trim()).filter(Boolean);
     const out: Record<string, unknown> = { ok: true, phases: want };
     if (want.includes("backfill")) out.backfill = await backfill(db);
     if (want.includes("recover")) out.recover = await recover(db);
     if (want.includes("parse")) out.parse = await parsePending(db);
     if (want.includes("rollup")) out.rollup = await rollup(db);
+    if (want.includes("selfheal")) out.selfheal = await selfHealStates(db);
     return json(out);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);

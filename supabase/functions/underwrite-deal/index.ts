@@ -2935,7 +2935,7 @@ Deno.serve(async (req) => {
     // ---- MERCHANT SIGNALS for the granular criteria gate ----
     // lenders.category.criteria carries each funder's published box (max_positions,
     // min_tib_months, min_monthly_revenue, fico_floor, restricted_states/industries,
-    // collections/decline free text). To gate on it we need the MERCHANT side of the
+    // states_coverage, collections/decline free text). To gate on it we need the MERCHANT side of the
     // same fields. House rules apply on both sides: an unrecorded FUNDER criterion is
     // NO constraint, and an unknown MERCHANT value NEVER disqualifies — it surfaces as
     // "unverified" on the match so the closer knows to confirm it.
@@ -3050,8 +3050,10 @@ Deno.serve(async (req) => {
       consolidation_type: string | null; why_matched: string; score: number;
       /** Criteria the funder publishes but the merchant record can't answer yet. */
       unverified?: string[];
-      /** Loud warning: they restrict states and we could not verify the merchant's. */
+      /** Loud warning: the state question could not be answered on one side or the other. */
       state_verify?: string | null;
+      /** Which side is unverified — the merchant's state, or the funder's footprint. */
+      state_verify_kind?: "merchant" | "coverage" | null;
     }> = [];
     // Near-misses the owner wants to SEE: a funder that cleared the lane/paper/product
     // filter but failed one published criterion, with the gate it failed.
@@ -3232,12 +3234,19 @@ Deno.serve(async (req) => {
          * verify-before-submitting warning so nobody submits blind again.
          */
         stateVerify: string | null;
+        /**
+         * WHICH side of the state question is unverified — the MERCHANT's state, or the
+         * FUNDER's coverage (criteria.states_coverage === "unknown": we could not confirm
+         * they fund every state, and they publish no restricted list to check). Both
+         * down-rank identically; they need different wording on the shortlist note.
+         */
+        stateVerifyKind: "merchant" | "coverage" | null;
       }
       const readCriteria = (l: LenderRow): CritRead => {
         const cr = critOf(l);
         const out: CritRead = {
           hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown",
-          collectionsAutoDecline: null, stateVerify: null,
+          collectionsAutoDecline: null, stateVerify: null, stateVerifyKind: null,
         };
         const fail = (why: string) => { if (!out.hard) out.hard = why; };
 
@@ -3251,7 +3260,16 @@ Deno.serve(async (req) => {
           fail(`first position only; merchant has ${positionsCount} open position(s)`);
         }
 
-        // STATE. A recorded restriction is only enforceable against a merchant state we
+        // STATE. Two unknowns have to be honoured at once — what state the MERCHANT is
+        // in, and whether the FUNDER's footprint was ever verified — and neither may
+        // resolve to a silent pass. criteria.states_coverage records the second:
+        //   · "restricted" → they publish a restricted list; gate on it (below);
+        //   · "all_50"     → verified to fund every state; clean regardless of merchant;
+        //   · "unknown"    → we could NOT verify their footprint. An empty
+        //     restricted_states on an unknown-coverage funder is absence of evidence, not
+        //     evidence of absence — so it gets the same treatment as an unknown MERCHANT
+        //     state: never a gate, always a down-rank plus a loud confirm-first note.
+        // A recorded restriction is only enforceable against a merchant state we
         // actually trust. Three cases:
         //   · state known (high/medium confidence) → gate exactly as before;
         //   · state only INFERRED from the phone area code → too weak to exclude on
@@ -3259,6 +3277,16 @@ Deno.serve(async (req) => {
         //   · state unknown → warn loudly. Never a silent pass: that is precisely how a
         //     TX merchant got recommended a funder that does not fund TX.
         const rs = strList(cr.restricted_states);
+        const coverage = String(cr.states_coverage ?? "").trim().toLowerCase();
+        if (rs.length === 0 && coverage === "all_50") {
+          out.why.push("funds all 50 states (footprint verified)");
+        } else if (rs.length === 0 && coverage === "unknown") {
+          out.stateVerify = `⚠ state coverage unverified — confirm this funder funds ${merchantState ?? "the merchant's state"} before submitting`;
+          out.stateVerifyKind = "coverage";
+          out.unverified.push(
+            `funder state coverage never verified${merchantState ? ` — confirm they fund ${merchantState}` : ""}`,
+          );
+        }
         if (rs.length > 0) {
           const restrictedList = Array.from(new Set(rs.map((e) => headOf(e)).filter(Boolean))).join(", ");
           const noFund = `does not fund ${restrictedList || "certain states"}`;
@@ -3273,9 +3301,11 @@ Deno.serve(async (req) => {
             out.stateVerify = hit
               ? `⚠ verify merchant state before submitting — the only state signal on file is the phone area code (${merchantState}), and this funder ${noFund}`
               : `⚠ verify merchant state before submitting — merchant state is inferred from the phone area code only (${merchantState}); this funder ${noFund}`;
+            out.stateVerifyKind = "merchant";
             out.unverified.push(`merchant state inferred from phone area code (${merchantState}) — state restrictions not verified`);
           } else {
             out.stateVerify = `⚠ verify merchant state before submitting — no merchant state on file, and this funder ${noFund}`;
+            out.stateVerifyKind = "merchant";
             out.unverified.push("merchant state not recorded — their state restrictions unchecked");
           }
         }
@@ -3466,7 +3496,7 @@ Deno.serve(async (req) => {
         // ---- granular criteria: what PASSED, what is soft, what is unverified ----
         const read = reads.get(l.id) ?? {
           hard: null, soft: [], why: [], unverified: [], preferred: false, defaultStance: "unknown" as const,
-          collectionsAutoDecline: null, stateVerify: null,
+          collectionsAutoDecline: null, stateVerify: null, stateVerifyKind: null,
         };
         // Every criterion the merchant actually cleared is cited by name — the owner
         // wants to read WHY a funder is on the list, not just that it scored.
@@ -3492,10 +3522,11 @@ Deno.serve(async (req) => {
               : "accepts defaults / collections — the right desk for a distressed file");
           }
         }
-        // UNVERIFIABLE STATE RESTRICTION. Still not a gate — an unknown merchant value
-        // never disqualifies — but it must never read as a clean match either. Down-rank
-        // it below every funder whose box we could actually check, and print the warning
-        // first so the closer sees it before the reasons this funder scored at all.
+        // UNVERIFIABLE STATE. Still not a gate — neither an unknown merchant value nor an
+        // unverified funder footprint disqualifies — but it must never read as a clean
+        // match either. Down-rank it below every funder whose box we could actually check,
+        // and print the warning first so the closer sees it before the reasons this funder
+        // scored at all.
         if (read.stateVerify) {
           score -= 40;
           why.unshift(read.stateVerify);
@@ -3514,6 +3545,7 @@ Deno.serve(async (req) => {
           score,
           unverified: read.unverified,
           state_verify: read.stateVerify,
+          state_verify_kind: read.stateVerifyKind,
         };
       });
 
@@ -3523,12 +3555,21 @@ Deno.serve(async (req) => {
       // One loud line at the top of the shortlist whenever a state-restricted funder
       // made it on with the merchant's state unconfirmed. This is the note that would
       // have stopped a TX merchant going to a funder that does not fund TX.
-      const needStateCheck = recommendedFunders.filter((r) => r.state_verify);
+      const needStateCheck = recommendedFunders.filter((r) => r.state_verify_kind === "merchant");
       if (needStateCheck.length) {
         funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
           `⚠ MERCHANT STATE ${merchantState ? `is only inferred (${merchantState}, ${merchantStateSource?.replace(/_/g, " ")})` : "is not on file"} — ` +
           `confirm it before submitting to ${needStateCheck.map((r) => r.company_name).join(", ")}: ` +
           "each of them publishes state restrictions we could not check.";
+      }
+      // The mirror image: the merchant's state is fine, but these funders' footprints
+      // were never verified, so nothing on file says they fund it. Also not a gate —
+      // a confirm-first call, printed by name.
+      const needCoverageCheck = recommendedFunders.filter((r) => r.state_verify_kind === "coverage");
+      if (needCoverageCheck.length) {
+        funderMatchNote = (funderMatchNote ? funderMatchNote + " " : "") +
+          `⚠ STATE COVERAGE UNVERIFIED for ${needCoverageCheck.map((r) => r.company_name).join(", ")} — ` +
+          `nothing on file confirms they fund ${merchantState ?? "the merchant's state"}; confirm with the rep before submitting.`;
       }
 
       // Hard-default desks that survived the gate but got pushed off the shortlist by
