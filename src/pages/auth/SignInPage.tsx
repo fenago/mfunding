@@ -105,6 +105,9 @@ const SignInPage = () => {
           autoComplete="current-password"
         />
         <button className="btn-primary w-full" type="submit">Login</button>
+        <Link className="os-auth-smalllink" to="/auth/set-password">
+          Forgot your password?
+        </Link>
         <Link className="os-auth-smalllink" to="/auth/sign-up">
           Need a team account? Sign up
         </Link>

@@ -27,6 +27,7 @@ function lazyWithReload<T extends { default: ComponentType<unknown> }>(
 import SignInPage from "../pages/auth/SignInPage.tsx";
 import SignUpPage from "../pages/auth/SignUpPage.tsx";
 import MerchantAuthPage from "../pages/auth/MerchantAuthPage.tsx";
+import SetPasswordPage from "../pages/auth/SetPasswordPage.tsx";
 import ProtectedPage from "../pages/ProtectedPage.tsx";
 import NotFoundPage from "../pages/404Page.tsx";
 import PrivacyPolicyPage from "../pages/PrivacyPolicyPage.tsx";
@@ -189,6 +190,12 @@ export const routes: RouteObject[] = [
         // Magic-link landing for merchants (Supabase OTP redirect → /portal).
         path: "/auth/merchant",
         element: <MerchantAuthPage />,
+      },
+      {
+        // Recovery/invite landing for STAFF — where a new hire picks a password.
+        // Also the "forgot password" self-serve entry point.
+        path: "/auth/set-password",
+        element: <SetPasswordPage />,
       },
       {
         path: "/privacy",
