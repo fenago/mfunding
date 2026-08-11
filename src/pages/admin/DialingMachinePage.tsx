@@ -533,6 +533,78 @@ export default function DialingMachinePage() {
           </div>
         </section>
 
+        {/* DIALING MODE / LINES */}
+        <section>
+          <div className="sec-h">How the dialing actually works (one line, not three)</div>
+
+          <div className="warn">
+            <b>Verified on a live call 2026-08-11 (owner's own cell as the only test lead):</b> on
+            HotProspector's <b>Power</b> dialer there is <u>no</u> "3 lines at once" control anywhere —
+            not in the campaign wizard, and <b>not on the live calling screen</b> (the only buttons
+            there are record, email, mic, hang-up, voicemail-drop, conference, and the dial pad).{" "}
+            <b>Power mode dials ONE lead at a time</b>, sequentially: it calls, the setter talks and
+            dispositions, then it dials the next. Our "UCC 2026-08-10" campaign is Power = single-line.
+          </div>
+
+          <div className="sopbox">
+            <div className="sop-h">
+              <span className="badge">1</span>
+              <h3>Single-line (Power) — what you have, and what to start on</h3>
+            </div>
+            <ol>
+              <li>
+                The <b>mode</b> is chosen when you <b>create the campaign</b> (Campaign Settings tab)
+                and <b>locks after creation</b> — you can't switch a Power campaign to multi-line
+                later, you'd build a new one.
+              </li>
+              <li>
+                To dial: campaign row <b>green ▶</b> → the <b>Session Settings</b> modal → check the
+                timezone row → <b>Start Dialing</b>. It then places one call at a time.
+              </li>
+              <li>
+                <b>Recommendation:</b> run <b>single-line</b> for MCA. Setters need to be present and
+                warm on every connect (send-app + Connect-Bank live on the call), and single-line has{" "}
+                <b>zero abandoned calls</b> — the cleanest TCPA posture while you're ramping.
+              </li>
+            </ol>
+          </div>
+
+          <div className="sopbox">
+            <div className="sop-h">
+              <span className="badge">2</span>
+              <h3>Multi-line / parallel — a different campaign mode, not a toggle</h3>
+            </div>
+            <ol>
+              <li>
+                Parallel dialing (calling several numbers so a setter lands on whoever answers first)
+                is a <b>separate HotProspector campaign MODE</b>, selected at campaign-creation time —
+                <b> it is not a setting on the live screen</b> and you can't flip an existing Power
+                campaign into it.
+              </li>
+              <li>
+                <b>Before relying on it, confirm two things in the HP account:</b> (a) that the
+                multi-line mode is actually enabled on your plan, and (b) exactly how it's configured.
+                These were sales claims we have <b>not</b> yet verified in the live UI — don't assume
+                "3 lines" is included.
+              </li>
+              <li>
+                <b>The TCPA warning that comes with it:</b> HotProspector exposes <b>no
+                abandoned-call % cap and no abandonment message</b>. Its only built-in guards are the{" "}
+                <b>DNC scrub</b> and the <b>timezone calling hours</b>. Multi-line means calls can
+                connect with no setter free — an <b>abandoned call</b>, which is exactly what carriers
+                flag and what TCPA penalizes. That risk is the owner's to manage. Go multi-line only
+                deliberately, with enough setters staffed to answer.
+              </li>
+            </ol>
+          </div>
+
+          <div className="callout">
+            <b>Answering machines:</b> when a call hits voicemail, the setter drops a pre-recorded
+            message with the <b>Voicemail Drop</b> button on the live screen and moves on — no dead
+            air. Record/manage those under <b>Settings → Templates → Voicemail / RVM</b>.
+          </div>
+        </section>
+
         {/* VOCAB */}
         <section>
           <div className="sec-h">The words, translated</div>
