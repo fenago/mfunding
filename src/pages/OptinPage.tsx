@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom';
 import SEO from '../components/seo/SEO';
 import { CheckCircleIcon } from '@heroicons/react/24/outline';
 import supabase from '../supabase';
-import TcpaConsent from '../components/ui/TcpaConsent';
-import { recordConsent } from '../lib/consent';
+import SmsConsentCheckbox from '../components/ui/SmsConsentCheckbox';
+import { recordConsent, SMS_ACCOUNT_CONSENT_TEXT, SMS_MARKETING_CONSENT_TEXT } from '../lib/consent';
 import { OSSection, Eyebrow, Display, Lede } from '../components/landing/os/OSKit';
 import { ToolShell, ToolPanel, Field } from '../components/landing/os/tools/ToolsKit';
 
@@ -14,7 +14,9 @@ export default function OptinPage() {
     email: '',
     phone: '',
   });
-  const [agreedToSms, setAgreedToSms] = useState(false);
+  // Toll-free / A2P 10DLC compliance: a SEPARATE opt-in per message use case.
+  const [agreedAccount, setAgreedAccount] = useState(false);   // account/customer-care texts
+  const [agreedMarketing, setAgreedMarketing] = useState(false); // marketing/promotional texts
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,30 +28,41 @@ export default function OptinPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!agreedToSms) {
-      setError("Please agree to the consent terms to proceed.");
+    if (!agreedAccount && !agreedMarketing) {
+      setError("Please check at least one consent option to opt in.");
       return;
     }
 
     setIsSubmitting(true);
     setError(null);
 
-    // Persist the express-written consent (durable proof).
-    await recordConsent({
-      name: formData.name, email: formData.email, phone: formData.phone,
-      source: "optin", page: "/optin",
-    });
+    // Persist each opt-in SEPARATELY — one durable proof row per use case, storing
+    // the exact wording the user saw for that message type.
+    if (agreedAccount) {
+      await recordConsent({
+        name: formData.name, email: formData.email, phone: formData.phone,
+        source: "optin:account", page: "/optin", consentText: SMS_ACCOUNT_CONSENT_TEXT,
+      });
+    }
+    if (agreedMarketing) {
+      await recordConsent({
+        name: formData.name, email: formData.email, phone: formData.phone,
+        source: "optin:marketing", page: "/optin", consentText: SMS_MARKETING_CONSENT_TEXT,
+      });
+    }
 
     // Route through contact-intake so the opt-in becomes a real GHL contact tagged
-    // for SMS consent — i.e. it actually REACHES the SMS automation (audit #13).
+    // per use case — i.e. it actually REACHES the right SMS automations.
     const { data, error: submitError } = await supabase.functions.invoke('contact-intake', {
       body: {
         name: formData.name,
         email: formData.email,
         phone: formData.phone,
         subject: 'Communication Opt-In',
-        message: 'User opted in to SMS and phone communication.',
-        tcpa_consent: true,
+        message: `SMS opt-in — account: ${agreedAccount ? 'yes' : 'no'}, marketing: ${agreedMarketing ? 'yes' : 'no'}.`,
+        tcpa_consent: agreedAccount,
+        sms_account_consent: agreedAccount,
+        sms_marketing_consent: agreedMarketing,
       },
     });
 
@@ -129,14 +142,39 @@ export default function OptinPage() {
                     />
                   </div>
 
-                  <TcpaConsent checked={agreedToSms} onChange={setAgreedToSms} />
+                  <p className="text-[13px] font-semibold text-gray-700 dark:text-gray-200 mt-2">
+                    Choose which text messages you want. Each is a separate opt-in.
+                  </p>
+                  <div className="flex flex-col gap-3">
+                    <SmsConsentCheckbox
+                      id="sms-account"
+                      title="Account &amp; application updates"
+                      checked={agreedAccount}
+                      onChange={setAgreedAccount}
+                      description={
+                        <>Texts about <strong>your funding request</strong> — application status,
+                        document and verification requests, and account/customer-care updates.</>
+                      }
+                    />
+                    <SmsConsentCheckbox
+                      id="sms-marketing"
+                      title="Offers &amp; promotions"
+                      optional
+                      checked={agreedMarketing}
+                      onChange={setAgreedMarketing}
+                      description={
+                        <>Marketing texts with <strong>special offers, promotions, and funding
+                        tips</strong>.</>
+                      }
+                    />
+                  </div>
 
                   {error && <p className="ost-err">{error}</p>}
 
                   <button
                     type="submit"
                     className="os-cta-primary ost-submit"
-                    disabled={isSubmitting || !agreedToSms}
+                    disabled={isSubmitting || (!agreedAccount && !agreedMarketing)}
                   >
                     {isSubmitting ? 'Processing…' : 'Subscribe & opt in →'}
                   </button>

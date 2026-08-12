@@ -26,6 +26,10 @@ Deno.serve(async (req) => {
   const subject = String(body.subject ?? "").trim();
   const message = String(body.message ?? "").trim();
   const tcpaConsent = body.tcpa_consent === true;
+  // Per-use-case SMS consent (toll-free / A2P 10DLC): each message type is its own
+  // opt-in, so tag them separately. Falls back to tcpaConsent for older callers.
+  const smsAccountConsent = body.sms_account_consent === true || (tcpaConsent && body.sms_marketing_consent === undefined);
+  const smsMarketingConsent = body.sms_marketing_consent === true;
   if (!name || !email || !message) {
     return json({ ok: false, error: "name, email, and message are required" }, 400);
   }
@@ -63,7 +67,9 @@ Deno.serve(async (req) => {
       // only fire for people who actually opted in (audit #13).
       const tags: string[] = [];
       if (subject) tags.push(`topic:${subject}`.slice(0, 60));
-      if (tcpaConsent) tags.push("sms-consent");
+      if (smsAccountConsent || smsMarketingConsent) tags.push("sms-consent");
+      if (smsAccountConsent) tags.push("sms-consent:account");
+      if (smsMarketingConsent) tags.push("sms-consent:marketing");
       if (tags.length) { try { await addContactTags(cfg, contactId, tags); } catch { /* non-fatal */ } }
     } else {
       ghlWarning = cr.error || "GHL upsert returned no contact id";
