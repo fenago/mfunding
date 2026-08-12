@@ -145,6 +145,15 @@ async function invokeThrow(error: unknown): Promise<never> {
   throw new Error((error as { message?: string } | null)?.message ?? "Request failed.");
 }
 
+// A setter pastes whatever the dialer shows — "(305) 555-0134", "+1 305-555-0134",
+// "13055550134". Phone IDENTITY is the digits, so strip everything else and drop
+// the US country code; anything that isn't a 10/11-digit NANP number passes
+// through as bare digits (empty = nothing to look up).
+function dialDigits(raw: string): string {
+  const d = raw.replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+}
+
 export default function PlaybooksPage() {
   // Live Transfer is the DEFAULT flow — the merchant is on the line the instant
   // the page opens, so it must be pre-selected with zero clicks. Speed > all.
@@ -210,51 +219,92 @@ export default function PlaybooksPage() {
   // through My Day, no typing. Forms supported:
   //   /admin/playbooks?deal=<dealId>          → load that deal directly
   //   /admin/playbooks?contact=<ghlContactId> → resolve via playbook-open-contact
+  //   /admin/playbooks?phone=<phone>          → resolve via playbook-open-contact
+  //     (the UCC/HotProspector path: those leads were CSV-imported into HP and
+  //      have NO GHL contact id, so the phone number is the only identifier the
+  //      setter has on screen. Same fn, same response shape.)
   //   HP style: HotProspector's integration force-appends
   //     /v2/location/{loc}/contacts/detail/{id} to the base link, so the contact
   //     id lands in ?x= (or on the path) — same recovery SendAppPage uses.
   // Runs exactly ONCE, then strips the params so a refresh can't re-fire it.
   const deepLinkRan = useRef(false);
   const [deepLink, setDeepLink] = useState<{ phase: "loading" | "error"; message?: string } | null>(null);
+
+  // Resolve → load a merchant into the playbook. ONE path for the deep link and
+  // for the manual "open by phone" box below, so both get the same spinner, the
+  // same error banner, and the same "lands on the right flow tab" behavior.
+  // Never throws — it reports through setDeepLink/notify and returns ok/not-ok.
+  async function openMerchant(
+    lookup: { dealId?: string; ghlContactId?: string; phone?: string },
+  ): Promise<boolean> {
+    setDeepLink({ phase: "loading" });
+    try {
+      let targetDealId = lookup.dealId ?? "";
+      if (!targetDealId) {
+        const body = lookup.ghlContactId
+          ? { ghl_contact_id: lookup.ghlContactId }
+          : { phone: lookup.phone };
+        const { data, error } = await supabase.functions.invoke("playbook-open-contact", { body });
+        if (error) await invokeThrow(error);
+        const res = data as { ok?: boolean; deal_id?: string; error?: string } | null;
+        if (!res?.ok || !res.deal_id) throw new Error(res?.error || "Couldn't open that merchant.");
+        targetDealId = res.deal_id;
+      }
+      const found = await getDealById(targetDealId);
+      if (!found) throw new Error("Couldn't load that merchant's deal — find it in My Day.");
+      pickFromQueue(found.deal); // loads the deal AND switches to the right flow tab
+      window.scrollTo({ top: 0 });
+      setDeepLink(null);
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Couldn't open that merchant.";
+      setDeepLink({ phase: "error", message: msg });
+      notify(msg, "error");
+      return false;
+    }
+  }
+
   useEffect(() => {
     if (deepLinkRan.current) return;
     deepLinkRan.current = true;
     const sp = new URLSearchParams(window.location.search);
     const dealParam = sp.get("deal")?.trim() ?? "";
+    const phoneParam = dialDigits(sp.get("phone") ?? "");
     let contactParam = sp.get("contact")?.trim() ?? "";
     if (!contactParam) {
       const hay = `${sp.get("x") ?? ""} ${window.location.pathname}`;
       contactParam = hay.match(/\/contacts\/detail\/([^/?#\s]+)/)?.[1] ?? "";
     }
-    if (!dealParam && !contactParam) return; // the normal case — nothing to open
-    setDeepLink({ phase: "loading" });
+    // the normal case — nothing to open
+    if (!dealParam && !contactParam && !phoneParam) return;
     void (async () => {
       try {
-        let targetDealId = dealParam;
-        if (!targetDealId) {
-          const { data, error } = await supabase.functions.invoke("playbook-open-contact", {
-            body: { ghl_contact_id: contactParam },
-          });
-          if (error) await invokeThrow(error);
-          const res = data as { ok?: boolean; deal_id?: string; error?: string } | null;
-          if (!res?.ok || !res.deal_id) throw new Error(res?.error || "Couldn't open that contact.");
-          targetDealId = res.deal_id;
-        }
-        const found = await getDealById(targetDealId);
-        if (!found) throw new Error("Couldn't load that merchant's deal — find it in My Day.");
-        pickFromQueue(found.deal); // loads the deal AND switches to the right flow tab
-        window.scrollTo({ top: 0 });
-        setDeepLink(null);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "Couldn't open that merchant.";
-        setDeepLink({ phase: "error", message: msg });
-        notify(msg, "error");
+        await openMerchant(
+          dealParam
+            ? { dealId: dealParam }
+            : contactParam
+              ? { ghlContactId: contactParam }
+              : { phone: phoneParam },
+        );
       } finally {
         // Clean URL: a refresh reopens the playbook, not the deep link.
         window.history.replaceState({}, "", "/admin/playbooks");
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Manual "open by phone" box — the setter reads the number off HotProspector
+  // and pastes it however it's formatted; we only ever send digits.
+  const [phoneBox, setPhoneBox] = useState("");
+  const [phoneBoxBusy, setPhoneBoxBusy] = useState(false);
+  const phoneBoxDigits = dialDigits(phoneBox);
+  async function openByPhoneBox() {
+    if (!phoneBoxDigits || phoneBoxBusy) return;
+    setPhoneBoxBusy(true);
+    const ok = await openMerchant({ phone: phoneBoxDigits });
+    setPhoneBoxBusy(false);
+    if (ok) setPhoneBox("");
+  }
 
   const dealCampaign = deal ? campaigns.find((c) => c.id === deal.campaign_id) ?? null : null;
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
@@ -772,6 +822,37 @@ export default function PlaybooksPage() {
           <ArrowRightIcon className="w-4 h-4" />
         </Link>
       </div>
+
+      {/* Open a merchant by phone — ALWAYS visible. A setter dialing out of
+          HotProspector has no working GHL link (those leads were CSV-imported),
+          but they always have the number on screen: paste it, hit Open, and this
+          runs the same resolve-or-create path as the ?phone= deep link. */}
+      <form
+        onSubmit={(e) => { e.preventDefault(); void openByPhoneBox(); }}
+        className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3"
+      >
+        <PhoneIcon className="w-4 h-4 shrink-0 text-ocean-blue" />
+        <span className="text-sm font-semibold text-gray-900 dark:text-white">Open a merchant by phone</span>
+        <input
+          type="tel"
+          inputMode="tel"
+          value={phoneBox}
+          onChange={(e) => setPhoneBox(e.target.value)}
+          placeholder="(305) 555-0134"
+          aria-label="Merchant phone number"
+          className="input input-sm input-bordered w-44 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
+        />
+        <button
+          type="submit"
+          disabled={phoneBoxDigits.length < 10 || phoneBoxBusy}
+          className="btn btn-sm border-0 bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {phoneBoxBusy ? <span className="loading loading-spinner loading-xs" /> : "Open"}
+        </button>
+        <span className="text-xs text-gray-400 dark:text-gray-500">
+          Paste the number you're dialing — spaces, dashes and +1 are all fine.
+        </span>
+      </form>
 
       {/* My Day — ranked work queue; a card loads that deal + switches the flow tab */}
       <MyDayQueue onPick={pickFromQueue} />
