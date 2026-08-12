@@ -22,7 +22,13 @@ import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields, ghlFetch, addContactTags,
   lastEmailFailure, bounceMessage, recordEmailOutcome,
 } from "../_shared/ghl.ts";
-import type { GhlConfig } from "../_shared/ghl.ts";
+// Field-id map + doc-merge machinery: the SINGLE SOURCE OF TRUTH shared with
+// ghl-send-application, so the two functions can never drift (see _shared header).
+import {
+  F, s, joinCsz, REQUIRED_FOR_PREFILL,
+  MCA_04_WORKFLOW_ID, MCA_04B_WORKFLOW_ID, MCA_04C_WORKFLOW_ID, PREFILL_TAG, PARTIAL_TAG,
+  DOC_PREFILL, type SendMode, enrollWithRetry, verifyDocumentSent,
+} from "../_shared/application-fields.ts";
 
 // TWO PARALLEL DOC PATHS (parallel GHL workflows):
 //  · MCA 04  — SELF-FILL: was SUPPOSED to send the original fillable application
@@ -35,15 +41,11 @@ import type { GhlConfig } from "../_shared/ghl.ts";
 // PATH CROSSING: a merchant being chased down path 1 whom the closer later
 // prefill-sends is REMOVED from MCA 04, tagged, and enrolled in 04B (and the
 // reverse on a blank send) — exactly one path active at a time.
-const MCA_04_WORKFLOW_ID = "076bee21-5667-4cdf-83ae-caf50bea44e2";
-const MCA_04B_WORKFLOW_ID = "afc21762-6879-4de1-89a2-82cc77479bfa";
 // PATH 3 — 04C PARTIAL: we prefill the ~14 fields the LEAD already gave us (merge
 // tags), and the merchant completes the rest as fillable fields on the document
 // itself (EIN, SSN, addresses, banking). Enrollment-only, like 04B — NO stage
-// trigger, ever. Built by the owner 2026-07-13; ids read from his GHL account.
-const MCA_04C_WORKFLOW_ID = "cdc8dbfa-aa89-4cc3-8d8b-7f1968ecf155";
-const PREFILL_TAG = "app-prefilled";
-const PARTIAL_TAG = "app-partial";
+// trigger, ever. Workflow ids (MCA_04*_WORKFLOW_ID), tags (PREFILL_TAG/PARTIAL_TAG)
+// and the doc-verification helpers all live in ../_shared/application-fields.ts now.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST-SEND VERIFICATION — the safety net this system never had.
@@ -55,124 +57,12 @@ const PARTIAL_TAG = "app-partial";
 // {{merge tags}} in front of five real merchants, and one of them SIGNED it. It went
 // unnoticed for hours because every screen in this app said the send had succeeded.
 //
-// So we now read the documents BACK from GHL and confirm the template by name.
-// Verification is evidence, not optimism: we only report "confirmed" for a document
-// we actually saw. Anything else is reported honestly as unconfirmed, and a document
-// that is the WRONG template for the path the closer chose fails the whole call.
-const DOC_PREFILL = /04B\s*MCA\s*PREFILL/i;
-const DOC_PARTIAL = /04C\s*MCA\s*PARTIAL/i;
-const DOC_SELF_FILL = /MCA[\s_-]*Merchant[\s_-]*Funding[\s_-]*Application/i;
-// Rides along on BOTH paths, so it can never settle WHICH application went out.
-const DOC_COMPANION = /broker\s*compensation\s*disclosure/i;
-
-type Verification = "confirmed" | "unconfirmed" | "wrong_template";
-type GhlDoc = {
-  name?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  recipients?: Array<{ id?: string; email?: string }>;
-  links?: Array<{ recipientId?: string; referenceId?: string }>;
-};
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// The per-recipient viewer/signing link for THIS contact on a document record,
-// derived exactly as ghl-docs-status does: links[] entry whose recipientId is ours
-// → its referenceId → the bearer viewer URL. Null when the record carries no link
-// for this contact. Bearer link — only ever returned to the gated caller, never
-// logged. Handed back so a closer whose merchant has a dead email can TEXT the link.
-function signingUrlFor(doc: GhlDoc, contactId: string): string | null {
-  const myLink = (doc.links ?? []).find((l) => l.recipientId === contactId);
-  const referenceId = myLink?.referenceId;
-  return referenceId ? `https://link.vibereach.io/documents/v1/${referenceId}?locale=en-US` : null;
-}
-
-/**
- * Ask GHL what it ACTUALLY created for this contact, and confirm it is the template
- * the closer asked for.
- *
- * Enrollment is async — GHL takes a few seconds to mint the document — so we poll
- * with a short backoff. A document that hasn't appeared inside the window is NOT a
- * failure: GHL is often just slow, and crying wolf on a send that was fine would
- * train closers to ignore the one alarm that matters. That case reports
- * "unconfirmed" and the UI says "sent, not yet confirmed" — honest, not alarming.
- *
- * `sinceMs` scopes us to documents minted by THIS send. Without it, a re-send would
- * happily "confirm" itself against the document from the PREVIOUS send and we'd be
- * right back to asserting things we haven't checked.
- */
-type SendMode = "prefill" | "blank" | "partial";
-
-// GHL's API intermittently fails single calls (Colorful Garden 2026-07-23: the
-// enrollment POST errored once; the identical call succeeded minutes later and
-// three times this week the same class of blip cost a real send). Enrollment is
-// the one call that actually triggers delivery, so it gets up to 2 retries with
-// backoff before we give up and report the failure.
-async function enrollWithRetry(cfg: GhlConfig, contactId: string, workflowId: string) {
-  let wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${workflowId}`, {});
-  for (const delay of [1200, 2500]) {
-    if (wf.ok) break;
-    console.warn(`[push-app] enrollment failed (${wf.status}) — retrying in ${delay}ms`, wf.error?.slice(0, 300));
-    await sleep(delay);
-    wf = await ghlFetch(cfg, "POST", `/contacts/${contactId}/workflow/${workflowId}`, {});
-  }
-  return wf;
-}
-const EXPECTED_DOC: Record<SendMode, RegExp> = {
-  prefill: DOC_PREFILL,
-  blank: DOC_SELF_FILL,
-  partial: DOC_PARTIAL,
-};
-
-async function verifyDocumentSent(
-  cfg: GhlConfig,
-  contactId: string,
-  email: string,
-  mode: SendMode,
-  sinceMs: number,
-): Promise<{ verification: Verification; template: string | null; signingUrl: string | null }> {
-  const expected = EXPECTED_DOC[mode];
-  const wantEmail = email.trim().toLowerCase();
-
-  const deadline = Date.now() + 15_000;
-  let delay = 1_500;
-
-  for (;;) {
-    await sleep(delay);
-
-    // Same endpoint + limit cap (21) that ghl-docs-status documents and relies on.
-    const res = await ghlFetch<{ documents?: GhlDoc[] }>(
-      cfg,
-      "GET",
-      `/proposals/document?locationId=${cfg.locationId}&limit=20`,
-    );
-
-    if (res.ok) {
-      const mine = (res.data?.documents ?? []).filter((d) => {
-        const ts = Date.parse(d.createdAt ?? d.updatedAt ?? "");
-        // A document from an EARLIER send is not evidence about THIS one.
-        if (!Number.isFinite(ts) || ts < sinceMs) return false;
-        return (d.recipients ?? []).some(
-          (r) => r.id === contactId || (r.email ?? "").trim().toLowerCase() === wantEmail,
-        );
-      });
-
-      // The disclosure accompanies both paths — exclude it before judging.
-      const apps = mine.filter((d) => !DOC_COMPANION.test(d.name ?? ""));
-
-      const right = apps.find((d) => expected.test(d.name ?? ""));
-      if (right) return { verification: "confirmed", template: right.name ?? null, signingUrl: signingUrlFor(right, contactId) };
-
-      // ANY other application document — one of the two other known templates, or
-      // something unrecognized — is not what the closer asked to send.
-      const wrong = apps[0];
-      if (wrong) return { verification: "wrong_template", template: wrong.name ?? null, signingUrl: null };
-    }
-
-    if (Date.now() >= deadline) return { verification: "unconfirmed", template: null, signingUrl: null };
-    delay = Math.min(Math.round(delay * 1.6), 4_000);
-  }
-}
+// So we now read the documents BACK from GHL and confirm the template by name (see
+// verifyDocumentSent in ../_shared/application-fields.ts). Verification is evidence,
+// not optimism: we only report "confirmed" for a document we actually saw. Anything
+// else is reported honestly as unconfirmed, and a document that is the WRONG template
+// for the path the closer chose fails the whole call. DOC_PREFILL, SendMode,
+// enrollWithRetry and verifyDocumentSent are imported from the shared module.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ⚠️ INCIDENT 2026-07-13 — historical record. READ BEFORE TOUCHING THE DOC PATHS.
@@ -231,35 +121,8 @@ async function verifyDocumentSent(
 // Application Sent and confirming the document that lands is the fillable
 // "MCA_Merchant_Funding_Application" — then flip this to false.
 
-// The fields the 04B PREFILL template merges that ONLY a filled-in application
-// can supply. GHL renders an EMPTY custom field as its literal "{{tag}}", so any
-// one of these left blank prints as raw garbage on a document a merchant signs.
-// A prefill template with nothing to prefill is broken by definition — this list
-// is what "prefilled" MEANS, and it mirrors REQUIRED_KEYS in MerchantApplicationModal.
-const REQUIRED_FOR_PREFILL: Array<[string, string]> = [
-  ["business_legal_name", "Business legal name"], ["business_type", "Entity type"],
-  ["ein", "EIN"], ["business_start_date", "Business start date"], ["industry", "Industry"],
-  ["business_phone", "Business phone"], ["business_email", "Business email"],
-  ["business_address", "Business street address"], ["business_city", "Business city"],
-  ["business_state", "Business state"], ["business_zip", "Business ZIP"],
-  ["owner_first_name", "Owner first name"], ["owner_last_name", "Owner last name"],
-  ["owner_title", "Owner title"], ["owner_ownership_pct", "Ownership %"],
-  // owner_ssn is deliberately NOT required (owner's call, 2026-07-13). It still
-  // merges when present; when blank, GHL prints the literal
-  // "{{contact.social_security_number}}" on the signed document. The closer is warned
-  // about that next to the Send button and decides — it does not block the send.
-  ["owner_dob", "Owner date of birth"],
-  // DL number optional (owner's call) — the merchant uploads a photo of the licence
-  // with their stips, so the number needn't gate the send.
-  ["owner_email", "Owner email"],
-  ["owner_phone", "Owner cell phone"], ["owner_home_address", "Owner home address"],
-  ["owner_home_city", "Owner home city"], ["owner_home_state", "Owner home state"],
-  ["owner_home_zip", "Owner home ZIP"],
-  ["bank_name", "Bank name"], ["bank_routing_number", "Bank routing number"],
-  ["bank_account_number", "Bank account number"],
-  ["amount_requested", "Amount requested"], ["use_of_funds", "Use of funds"],
-  ["monthly_revenue", "Average monthly revenue"],
-];
+// REQUIRED_FOR_PREFILL (the completeness gate mirroring MerchantApplicationModal's
+// REQUIRED_KEYS) is imported from ../_shared/application-fields.ts.
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -268,78 +131,10 @@ function json(body: unknown, status = 200) {
   });
 }
 
-// ── Field-ID map (MFunding location t7NmVR4WCy927j4Zon4b) ─────────────────────
-// The document merges from these contact custom fields. Where a field has a
-// "(Doc)" TEXT variant, THAT is the document's merge source — so we populate the
-// (Doc) variant AND the plain typed field (numeric/monetary) when both exist.
-// Only TEXT / NUMERICAL / MONETORY / DATE fields are written — never a
-// SINGLE/MULTIPLE_OPTIONS field with free text (a bad option value would reject
-// the whole PUT), except Business Entity which the doc needs and whose options
-// match the entity types closers type (LLC, Corp, Sole Prop…).
-const F = {
-  business_name: "uUpbL8PP2iGbGKkof7jX",        // Business Name (TEXT)
-  dba: "kXEd1I68aUSpn9hrJBos",                    // DBA (Doing Business As) (TEXT)
-  business_entity: "bg2F006hXRWpFBC0UcJQ",        // Business Entity (SINGLE_OPTIONS)
-  ein: "xkJOmrJcV70Rb9stoQjL",                    // Federal Tax ID (EIN) (TEXT)
-  date_established_text: "in2QGmSAMsUE8vgsdov7",  // Date Business Established (TEXT, doc)
-  business_established_date: "yuu47NYYgNcoaVPNSPZf", // Business Established Date (DATE)
-  business_phone: "OmXNC2kiyQNS1L2pYVpH",         // Business Phone (TEXT)
-  business_email: "snE5zda8bij8nbIQEyv5",         // Business Email (TEXT)
-  business_address: "PA7kUj7o5s87dsh4JrVQ",       // Business Address (TEXT)
-  business_city_state_zip: "IM1VGEoADF6VvGpe8sH8", // Business City State ZIP (TEXT)
-  industry_doc: "8u3WNvasTBqqpZg7v2aq",           // Industry (Doc) (TEXT)
-
-  owner_full_name: "3QhArEyCuFSSfeYNZJ1L",        // Owner Full Name (TEXT)
-  owner_title: "H43TGhc3iqkGUduq5oE6",            // Owner Title / Position (TEXT)
-  ownership_pct_doc: "IoHyRiDTZuJC5cTwEyYF",      // Ownership Percent (Doc) (TEXT)
-  ownership_pct_num: "OuX7uj6pZe8EEtNJj63c",      // Ownership % (NUMERICAL)
-  ssn: "MYu4ceeAuebFuhrVLYAj",                    // Social Security Number (TEXT)
-  owner_dob: "hKPmMa4rtVYSWRMZlAeb",              // Owner Date of Birth (TEXT)
-  dl_number: "nWLHi7I8qQhTujVBjNRO",              // Driver's License Number (TEXT)
-  owner_email: "ZZtXaRTB7mK5u8BgqHTC",            // Owner Email (TEXT)
-  owner_cell_phone: "E0xwdkSiZyYZxL1rrCH1",       // Owner Cell Phone (TEXT)
-  owner_home_address: "I1s7NPQrMKbZjIHDpIZf",     // Owner Home Address (TEXT)
-  owner_city_state_zip: "qUlRkDnSWBrCtsEh2CX1",   // Owner City State ZIP (TEXT)
-
-  business_website: "OBGCHWdcOdl2mSNlDJqb",       // Business Website (TEXT)
-  owner_home_phone: "GjrEktqueuhPjQvatDjm",       // Owner Home Phone (TEXT)
-  bank_account_type: "gxdgf6Dcs4aoeZGIvdfW",      // Bank Account Type (SINGLE_OPTIONS: Checking | Savings)
-  bank_name: "FvxB7vdMuoaZagKSilez",              // Bank Name (TEXT)
-  bank_routing: "8ozLoigFG8RC3Ce50JJL",           // Bank Routing Number (TEXT)
-  bank_account: "XSHgbnsVQ9Mfs2V393X8",           // Bank Account Number (TEXT)
-  bank_holder: "BCnfWTd40q3lt29d5LYZ",            // Bank Account Holder Name (TEXT)
-
-  amount_requested_doc: "TC3PwzFysAhEnBtYGZa1",   // Amount Requested (Doc) (TEXT)
-  funding_amount_requested: "neO6CR6lZOxQ02E37ktx", // Funding Amount Requested (MONETORY)
-  use_of_funds_doc: "UYyM3aewFc7CLXdaC5po",       // Use of Funds (Doc) (TEXT)
-  avg_monthly_revenue_doc: "KVkNckRzVT1GHtg8zzwc", // Avg Monthly Revenue (Doc) (TEXT)
-  avg_monthly_revenue_num: "XM1zs3a1LuiZcv9IEYlb", // Avg Monthly Revenue ($) (MONETORY)
-  active_mca_positions: "iqp4xxbM71Qkpn8xTQrK",   // Active MCA Positions (NUMERICAL)
-  total_outstanding_mca_balance: "ChoLJU0EuLh22zHkVfO2", // Total Outstanding MCA Balance (MONETORY)
-
-  // Business financials (the PDF's "Business Financial Information" section).
-  annual_gross_revenue_doc: "q7bLalmdbBVkpFWf97Ik", // Annual Gross Revenue (Doc) (TEXT)
-  annual_gross_revenue_num: "E4q0GUonhOKtzyNBIhy6", // Annual Gross Revenue (MONETORY)
-  avg_monthly_deposits_doc: "rn1Is6Bg5yn4cM3QKi9Z", // Avg Monthly Deposits (Doc) (TEXT)
-  avg_monthly_deposits_num: "41DkL0Wz3kvuxXuJts7B", // Average Monthly Deposits (MONETORY)
-  number_of_employees_doc: "Elu4SI1XCNuqFupQhYJA", // Number of Employees (Doc) (TEXT)
-  number_of_employees_num: "hR4DxjGNp2uSRpw8LH30", // Number of Employees (NUMERICAL)
-  // Derogatory disclosures. The RADIOs are written ONLY with EXACT option values
-  // (a bad option value rejects the whole PUT). Tax liens is a clean Yes/No, so we
-  // map the boolean directly. Bankruptcy History's "Yes" options are "Yes -
-  // discharged" / "Yes - active" — we can't tell which from a single boolean, so
-  // we only write the radio for a definite "No" and otherwise rely on the details
-  // TEXT field (which always gets written when there's content).
-  bankruptcy_history_radio: "m0szKaJ6b238TmB5sxS6", // Bankruptcy History (RADIO: No | Yes - discharged | Yes - active)
-  bankruptcy_details: "IxvevRxrPbgboHA5AMJo",       // Bankruptcy Details (TEXT)
-  tax_liens_radio: "BZATgeXZTImXxCm2yPyb",          // Tax Liens or Judgments (RADIO: No | Yes)
-  tax_lien_details: "aGs110pozxr3o8ICU2In",         // Tax Lien Details (TEXT)
-} as const;
-
+// The field-id map `F` (MFunding location t7NmVR4WCy927j4Zon4b) and the `s` /
+// `joinCsz` value helpers are imported from ../_shared/application-fields.ts — the
+// single source of truth shared with ghl-send-application. Do not re-declare them.
 type App = Record<string, unknown>;
-const s = (v: unknown): string => (v === null || v === undefined ? "" : String(v).trim());
-const joinCsz = (city: unknown, state: unknown, zip: unknown) =>
-  [s(city), [s(state), s(zip)].filter(Boolean).join(" ")].filter(Boolean).join(", ");
 
 /**
  * The 04C push: the ~14 fields the LEAD already gave us, straight from

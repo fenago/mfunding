@@ -6,7 +6,7 @@ import { useSession } from "./SessionContext";
 export type UserRole = "user" | "closer" | "employee" | "admin" | "super_admin";
 
 const PROFILE_COLS =
-  "id, email, display_name, first_name, last_name, role, avatar_url, phone_number, bio, date_of_birth, location, timezone, preferred_language, profile_completed, address_line1, address_line2, city, state, postal_code, company_name, business_address, company_phone, ein";
+  "id, email, display_name, first_name, last_name, role, avatar_url, phone_number, bio, date_of_birth, location, timezone, preferred_language, profile_completed, address_line1, address_line2, city, state, postal_code, country, whatsapp_number, contact_email, company_name, business_address, company_phone, ein";
 const IMPERSONATE_KEY = "mf_impersonate_uid";
 
 export interface UserProfile {
@@ -19,6 +19,8 @@ export interface UserProfile {
   avatar_url: string | null;
   // Personal / contact
   phone_number: string | null;
+  whatsapp_number: string | null;
+  contact_email: string | null;
   bio: string | null;
   date_of_birth: string | null;
   location: string | null;
@@ -31,6 +33,7 @@ export interface UserProfile {
   city: string | null;
   state: string | null;
   postal_code: string | null;
+  country: string | null;
   // Business & tax (1099)
   company_name: string | null;
   business_address: string | null;

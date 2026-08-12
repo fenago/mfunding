@@ -15,6 +15,8 @@ export interface EditableProfileFields {
   last_name?: string | null;
   display_name?: string | null;
   phone_number?: string | null;
+  whatsapp_number?: string | null;
+  contact_email?: string | null;
   date_of_birth?: string | null;
   bio?: string | null;
   timezone?: string | null;
@@ -25,6 +27,7 @@ export interface EditableProfileFields {
   city?: string | null;
   state?: string | null;
   postal_code?: string | null;
+  country?: string | null;
   location?: string | null;
   company_name?: string | null;
   business_address?: string | null;
@@ -39,6 +42,8 @@ const EDITABLE_KEYS: (keyof EditableProfileFields)[] = [
   "last_name",
   "display_name",
   "phone_number",
+  "whatsapp_number",
+  "contact_email",
   "date_of_birth",
   "bio",
   "timezone",
@@ -49,6 +54,7 @@ const EDITABLE_KEYS: (keyof EditableProfileFields)[] = [
   "city",
   "state",
   "postal_code",
+  "country",
   "location",
   "company_name",
   "business_address",
