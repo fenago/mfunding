@@ -75,6 +75,7 @@ const CURRENCIES = ["PHP", "USD"];
 const PAYOUT_METHODS: { value: string; label: string }[] = [
   { value: "wise", label: "Wise" },
   { value: "payoneer", label: "Payoneer" },
+  { value: "zelle", label: "Zelle" },
   { value: "gcash", label: "GCash" },
   { value: "bank_ph", label: "PH bank transfer" },
   { value: "other", label: "Other" },
@@ -133,6 +134,8 @@ type PayForm = {
   preferred_method: string;
   wise_email: string;
   payoneer_email: string;
+  zelle_handle: string;
+  zelle_name: string;
   gcash_number: string;
   gcash_name: string;
   bank_name: string;
@@ -154,6 +157,8 @@ const EMPTY_PAY: PayForm = {
   preferred_method: "",
   wise_email: "",
   payoneer_email: "",
+  zelle_handle: "",
+  zelle_name: "",
   gcash_number: "",
   gcash_name: "",
   bank_name: "",
@@ -229,6 +234,8 @@ export default function MyProfilePage() {
             preferred_method: row.preferred_method || "",
             wise_email: row.wise_email || "",
             payoneer_email: row.payoneer_email || "",
+            zelle_handle: row.zelle_handle || "",
+            zelle_name: row.zelle_name || "",
             gcash_number: row.gcash_number || "",
             gcash_name: row.gcash_name || "",
             bank_name: row.bank_name || "",
@@ -321,6 +328,8 @@ export default function MyProfilePage() {
         country: isUS ? US_COUNTRY : "PH",
         wise_email: pay.wise_email,
         payoneer_email: pay.payoneer_email,
+        zelle_handle: pay.zelle_handle,
+        zelle_name: pay.zelle_name,
         gcash_number: pay.gcash_number,
         gcash_name: pay.gcash_name,
         bank_name: pay.bank_name,
@@ -553,6 +562,22 @@ export default function MyProfilePage() {
                   <Field label="Payoneer email" hint="The email tied to your Payoneer account.">
                     <input type="email" className="input-field" value={pay.payoneer_email} onChange={setPayField("payoneer_email")} placeholder="you@payoneer.com" />
                   </Field>
+                )}
+
+                {method === "zelle" && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <Field label="Zelle email or U.S. mobile number" hint="The email or U.S. mobile number enrolled with Zelle.">
+                        <input type="text" className="input-field" value={pay.zelle_handle} onChange={setPayField("zelle_handle")} placeholder="you@email.com or (555) 123-4567" />
+                      </Field>
+                      <Field label="Name on Zelle account">
+                        <input type="text" className="input-field" value={pay.zelle_name} onChange={setPayField("zelle_name")} placeholder="Jane Doe" />
+                      </Field>
+                    </div>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Zelle pays into U.S. bank accounts only.
+                    </p>
+                  </div>
                 )}
 
                 {method === "gcash" && (

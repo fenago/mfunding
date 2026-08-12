@@ -19,6 +19,8 @@ export interface EditablePayoutFields {
   preferred_method?: string | null;
   wise_email?: string | null;
   payoneer_email?: string | null;
+  zelle_handle?: string | null;
+  zelle_name?: string | null;
   gcash_number?: string | null;
   gcash_name?: string | null;
   bank_name?: string | null;
@@ -51,6 +53,8 @@ const EDITABLE_KEYS: (keyof EditablePayoutFields)[] = [
   "preferred_method",
   "wise_email",
   "payoneer_email",
+  "zelle_handle",
+  "zelle_name",
   "gcash_number",
   "gcash_name",
   "bank_name",
