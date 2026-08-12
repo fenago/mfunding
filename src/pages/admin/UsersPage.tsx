@@ -14,10 +14,14 @@ import {
   ExclamationTriangleIcon,
   ArrowPathIcon,
   ShieldCheckIcon,
+  UserPlusIcon,
+  ClipboardDocumentIcon,
+  CheckCircleIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile, type UserRole } from "../../context/UserProfileContext";
 import {
   adminListUsers,
+  adminInvite,
   adminSetRole,
   adminUpdateFields,
   adminSetPaused,
@@ -26,6 +30,7 @@ import {
   adminDeleteUser,
   ROLE_OPTIONS,
   type AdminUser,
+  type AdminInviteResult,
 } from "../../services/adminUserService";
 import { ACCESS_GROUPS, ROLE_LABELS } from "../../config/roleAccess";
 
@@ -62,6 +67,7 @@ export default function UsersPage() {
   const [pwUser, setPwUser] = useState<AdminUser | null>(null);
   const [confirm, setConfirm] = useState<{ user: AdminUser; kind: "delete" | "logout" } | null>(null);
   const [showRoles, setShowRoles] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -135,6 +141,12 @@ export default function UsersPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowInvite((v) => !v)}
+            className="inline-flex items-center gap-1 text-sm px-3 py-2 rounded-lg font-semibold text-white bg-ocean-blue hover:opacity-90"
+          >
+            <UserPlusIcon className="w-4 h-4" /> Invite user
+          </button>
           <button onClick={() => setShowRoles((v) => !v)} className="inline-flex items-center gap-1 text-sm px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
             <ShieldCheckIcon className="w-4 h-4" /> What each role sees
           </button>
@@ -143,6 +155,17 @@ export default function UsersPage() {
           </button>
         </div>
       </div>
+
+      {showInvite && (
+        <InvitePanel
+          inputClass={input}
+          onClose={() => setShowInvite(false)}
+          onInvited={(msg) => {
+            load();
+            flash(msg);
+          }}
+        />
+      )}
 
       {showRoles && <RolePermissions onClose={() => setShowRoles(false)} />}
 
@@ -284,8 +307,9 @@ export default function UsersPage() {
       </div>
 
       <p className="text-xs text-gray-400">
-        New teammates appear here automatically once they sign up at{" "}
-        <code className="text-gray-500">/auth/sign-up</code>. Then set their role above. "User" = a merchant/customer.
+        Use <strong>Invite user</strong> to create a teammate's account and email them a set-password link. Anyone who
+        signs up at <code className="text-gray-500">/auth/sign-up</code> also lands here as a "User" — set their role above.
+        "User" = a merchant/customer.
       </p>
 
       {editing && (
@@ -361,6 +385,197 @@ function MenuItem({
     >
       <Icon className="w-4 h-4" /> {children}
     </button>
+  );
+}
+
+/**
+ * Inline "Invite user" panel — create a staff account, set their role, and send the
+ * set-password email in one submit. Inline by design (owner rule: no browser popups).
+ *
+ * The returned link is shown on success and is NOT decoration: this project has no
+ * custom auth SMTP, so Supabase's built-in mailer is rate-limited and may not deliver
+ * to arbitrary addresses. The link is the dependable delivery path.
+ */
+function InvitePanel({
+  inputClass,
+  onClose,
+  onInvited,
+}: {
+  inputClass: string;
+  onClose: () => void;
+  onInvited: (msg: string) => void;
+}) {
+  const [form, setForm] = useState({ email: "", first_name: "", last_name: "", role: "closer" as UserRole });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<AdminInviteResult | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const email = form.email.trim();
+    if (!email) return setErr("Enter their work email.");
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await adminInvite({
+        email,
+        firstName: form.first_name.trim(),
+        lastName: form.last_name.trim(),
+        role: form.role,
+      });
+      setResult(res);
+      const label = ROLE_OPTIONS.find((r) => r.value === res.role)?.label ?? res.role;
+      onInvited(
+        res.email_sent
+          ? `Invited ${res.email} as ${label} — password-setup email sent`
+          : `Created ${res.email} as ${label} — send them the link below`
+      );
+    } catch (e2) {
+      setErr(e2 instanceof Error ? e2.message : "Failed to invite user");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function copyLink(link: string) {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setErr("Couldn't copy automatically — select the link and copy it manually.");
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white">Invite a teammate</h2>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            Creates their account, sets their role, and emails them a link to choose a password.
+          </p>
+        </div>
+        <button onClick={onClose} className="text-sm text-gray-400 hover:text-gray-600">
+          Close
+        </button>
+      </div>
+
+      {err && (
+        <div className="mt-4 flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" /> {err}
+        </div>
+      )}
+
+      {result ? (
+        <div className="mt-4 space-y-3">
+          <div className="flex items-start gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+            <CheckCircleIcon className="w-5 h-5 shrink-0" />
+            <span>
+              <strong>{result.email}</strong> is set up as{" "}
+              {ROLE_OPTIONS.find((r) => r.value === result.role)?.label ?? result.role}.{" "}
+              {result.email_sent ? "A password-setup email is on its way." : "No email was sent."}
+            </span>
+          </div>
+
+          {result.warning && (
+            <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+              {result.warning}
+            </div>
+          )}
+
+          {result.invite_link && (
+            <div>
+              <p className="text-sm text-gray-600 dark:text-gray-300">
+                Set-password link — send this if the email doesn't arrive. It expires in about an hour;
+                after that they can request a fresh one from the sign-in page.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <input readOnly value={result.invite_link} onFocus={(e) => e.currentTarget.select()} className={`${inputClass} font-mono text-xs`} />
+                <button
+                  type="button"
+                  onClick={() => copyLink(result.invite_link!)}
+                  className="mt-1 shrink-0 inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  <ClipboardDocumentIcon className="w-4 h-4" /> {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-1">
+            <button
+              onClick={() => {
+                setResult(null);
+                setErr(null);
+                setForm({ email: "", first_name: "", last_name: "", role: "closer" });
+              }}
+              className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+            >
+              Invite another
+            </button>
+            <button onClick={onClose} className="px-5 py-2 rounded-lg text-sm font-semibold text-white bg-ocean-blue hover:opacity-90">
+              Done
+            </button>
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={submit} className="mt-4">
+          <div className="grid sm:grid-cols-2 gap-3">
+            <label className="sm:col-span-2 text-sm text-gray-600 dark:text-gray-300">
+              Work email <span className="text-red-500">*</span>
+              <input
+                type="email"
+                required
+                autoComplete="off"
+                className={inputClass}
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                placeholder="name@company.com"
+              />
+            </label>
+            <label className="text-sm text-gray-600 dark:text-gray-300">
+              First name
+              <input className={inputClass} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
+            </label>
+            <label className="text-sm text-gray-600 dark:text-gray-300">
+              Last name
+              <input className={inputClass} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+            </label>
+            <label className="text-sm text-gray-600 dark:text-gray-300">
+              Role
+              <select
+                className={inputClass}
+                value={form.role}
+                onChange={(e) => setForm({ ...form, role: e.target.value as UserRole })}
+              >
+                {ROLE_OPTIONS.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+              <span className="block text-xs text-gray-400 mt-1">
+                Appointment setters and closers both use <strong>Closer</strong>. "User" = a merchant/customer.
+              </span>
+            </label>
+          </div>
+          <div className="mt-5 flex justify-end gap-3">
+            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-5 py-2 rounded-lg text-sm font-semibold text-white bg-ocean-blue hover:opacity-90 disabled:opacity-50"
+            >
+              {saving ? "Inviting…" : "Send invite"}
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }
 

@@ -42,6 +42,36 @@ export async function adminListUsers(): Promise<AdminUser[]> {
   return data.users ?? [];
 }
 
+export interface AdminInviteResult {
+  ok: true;
+  userId: string;
+  email: string;
+  role: UserRole;
+  /** Set-password link — the fallback when the invite email doesn't arrive. */
+  invite_link: string | null;
+  email_sent: boolean;
+  warning: string | null;
+}
+
+/**
+ * Create a staff account (setter/closer/admin), stamp their role, and send the
+ * set-password invite in one call. The returned `invite_link` is the manual
+ * delivery path for when Supabase's mailer can't send.
+ */
+export const adminInvite = (input: {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  role: UserRole;
+}) =>
+  callAdmin<AdminInviteResult>("invite", {
+    email: input.email,
+    firstName: input.firstName ?? "",
+    lastName: input.lastName ?? "",
+    role: input.role,
+    redirectBase: `${window.location.origin}/auth/set-password`,
+  });
+
 export const adminSetRole = (userId: string, role: UserRole) => callAdmin("setRole", { userId, role });
 
 export const adminUpdateFields = (
