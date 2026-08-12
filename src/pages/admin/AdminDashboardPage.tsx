@@ -15,6 +15,7 @@ import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
 import NeedsAttention from "../../components/admin/NeedsAttention";
 import MoneyInPlay from "../../components/admin/MoneyInPlay";
+import CompleteProfileNudge from "../../components/admin/CompleteProfileNudge";
 
 interface Stats {
   totalLenders: number;
@@ -173,6 +174,9 @@ export default function AdminDashboardPage() {
           Welcome to the mFunding admin portal
         </p>
       </div>
+
+      {/* Nudge staff to complete their profile so payroll has their details */}
+      <CompleteProfileNudge />
 
       {/* Start here — the money workflows */}
       <Link

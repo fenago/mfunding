@@ -41,6 +41,7 @@ import FunderAvailabilityChecklist from "../../components/admin/FunderAvailabili
 import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
+import CompleteProfileNudge from "../../components/admin/CompleteProfileNudge";
 import NewLeadToast from "../../components/admin/NewLeadToast";
 import VendorEmailBanner from "../../components/admin/VendorEmailBanner";
 import DealAssistant from "../../components/admin/DealAssistant";
@@ -716,6 +717,9 @@ export default function PlaybooksPage() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Nudge setters/staff to complete their profile so payroll can pay them */}
+      <CompleteProfileNudge />
+
       {/* Deep-link status — only while resolving ?contact= / ?deal=, or if it failed. */}
       {deepLink && (
         <div
