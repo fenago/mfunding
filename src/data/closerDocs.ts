@@ -167,6 +167,25 @@ export const CLOSER_DOCS: CloserDoc[] = [
   },
 ];
 
+/**
+ * Substitute Form W-8BEN — foreign-contractor tax certificate.
+ *
+ * DELIBERATELY NOT in CLOSER_DOCS: it applies only to non-US contractors, is
+ * materialized on demand from the My Profile → Tax tab (self-service) rather than
+ * the onboarding package, and must not count toward every closer's checklist or
+ * be swept into ESIGNABLE_SLUGS. It lives here (and in ALL_DOCS) purely so the
+ * /admin/closer-docs/:slug viewer can resolve it to read + sign.
+ */
+export const W8BEN_DOC: CloserDoc = {
+  slug: "w-8ben",
+  order: 10,
+  title: "Substitute Form W-8BEN — Certificate of Foreign Status",
+  summary: "Foreign (non-US) contractors certify non-US status. Kept for our records; not tax advice.",
+  action: "sign",
+  delivery: "esign",
+  path: "closer_doc_templates (slug: w-8ben)",
+};
+
 /** Received, never signed. Kept separate so they can't be mistaken for paperwork. */
 export const REFERENCE_DOCS: CloserDoc[] = [
   {
@@ -191,7 +210,7 @@ export const REFERENCE_DOCS: CloserDoc[] = [
   },
 ];
 
-export const ALL_DOCS: CloserDoc[] = [...CLOSER_DOCS, ...REFERENCE_DOCS];
+export const ALL_DOCS: CloserDoc[] = [...CLOSER_DOCS, W8BEN_DOC, ...REFERENCE_DOCS];
 
 /** The slugs that can actually be merged + e-signed. */
 export const ESIGNABLE_SLUGS: string[] = CLOSER_DOCS.filter((d) => d.delivery === "esign").map(

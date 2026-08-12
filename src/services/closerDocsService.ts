@@ -196,6 +196,46 @@ export async function sendOnboardingPackage(
   return { ...(data as SendPackageResult), ok: true };
 }
 
+// --- Materialize a single doc (self-service W-8BEN) ------------------------
+
+export interface MaterializeResult {
+  ok: boolean;
+  /** Absolute URL to read + sign; the UI links to the in-app route instead. */
+  signUrl?: string;
+  slug?: string;
+  alreadySigned?: boolean;
+  sha256?: string;
+  /** Set when required profile fields are still blank — nothing was prepared. */
+  blocked?: { slug: string; title: string; missing: { token: string; label: string; fix: string }[] }[];
+  error?: string;
+}
+
+/**
+ * Merge + freeze ONE e-signable document for the signed-in contractor (or, for an
+ * admin, a given closerId) and return where to sign it. Built for the substitute
+ * W-8BEN self-service flow. If required profile fields are blank the server
+ * BLOCKS and returns `blocked` with exactly what to fill in first.
+ */
+export async function materializeMyDoc(
+  slug: string,
+  closerId?: string,
+): Promise<MaterializeResult> {
+  const { data, error } = await supabase.functions.invoke("materialize-closer-doc", {
+    body: closerId ? { slug, closerId } : { slug },
+  });
+  // supabase-js discards the body on non-2xx — dig the 422 "what's missing" out.
+  if (error) {
+    let parsed: MaterializeResult | null = null;
+    const ctx = (error as { context?: Response }).context;
+    if (ctx && typeof ctx.json === "function") {
+      try { parsed = await ctx.json(); } catch { /* not JSON */ }
+    }
+    if (parsed?.blocked?.length) return { ok: false, blocked: parsed.blocked, error: parsed.error };
+    return { ok: false, error: parsed?.error ?? error.message };
+  }
+  return { ...(data as MaterializeResult), ok: true };
+}
+
 // --- Signing ---------------------------------------------------------------
 
 export const CONSENT_TEXT =

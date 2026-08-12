@@ -347,3 +347,10 @@ verify_jwt = true
 # continuations use the cron path (?secret + anon Bearer). Ingest only — no dialing/skiptrace.
 [functions.ph-ucc-file-ingest]
 verify_jwt = true
+
+# materialize-closer-doc: self-service merge+freeze of ONE e-signable closer doc
+# (built for the substitute W-8BEN). A contractor materializes their OWN doc
+# (closerId omitted → resolved from their closers row); an admin may pass closerId.
+# verify_jwt = true; caller must own the closer row OR be admin (enforced in code).
+[functions.materialize-closer-doc]
+verify_jwt = true

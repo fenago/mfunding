@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import {
   UserCircleIcon,
   MapPinIcon,
@@ -16,6 +17,12 @@ import {
   type EditablePayoutFields,
   type PayoutProfile,
 } from "../../services/payoutService";
+import {
+  getMyCloser,
+  getCloserDocuments,
+  materializeMyDoc,
+  type DocStatus,
+} from "../../services/closerDocsService";
 
 type TabId = "personal" | "address" | "payment" | "tax";
 
@@ -185,9 +192,17 @@ export default function MyProfilePage() {
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // --- Substitute W-8BEN self-service (foreign contractors) ---
+  const [w8benRow, setW8benRow] = useState<{ status: DocStatus; signed_at: string | null } | null>(null);
+  const [w8benBusy, setW8benBusy] = useState(false);
+  const [w8benMissing, setW8benMissing] = useState<{ label: string }[] | null>(null);
+  const [w8benErr, setW8benErr] = useState<string | null>(null);
+  const [hasCloserRecord, setHasCloserRecord] = useState<boolean | null>(null);
+
   // Writes always target the real signed-in user (impersonation is view-only),
   // so prefill from realProfile when present. Displayed identity uses `profile`.
   const source = realProfile ?? profile;
+  const isImpersonating = !!realProfile && !!profile && realProfile.id !== profile.id;
 
   useEffect(() => {
     if (!source) return;
@@ -265,6 +280,55 @@ export default function MyProfilePage() {
     };
   }, [source?.id]);
 
+  // Load the signed-in contractor's W-8BEN status (real user only — the action
+  // always targets the real account, so we never read it while impersonating).
+  const refreshW8ben = async () => {
+    const me = await getMyCloser();
+    setHasCloserRecord(!!me);
+    if (!me) { setW8benRow(null); return; }
+    const rows = await getCloserDocuments(me.id);
+    const w = rows.find((r) => r.doc_slug === "w-8ben") ?? null;
+    setW8benRow(w ? { status: w.status, signed_at: w.signed_at } : null);
+  };
+
+  useEffect(() => {
+    if (isImpersonating) { setW8benRow(null); setHasCloserRecord(null); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const me = await getMyCloser();
+        if (cancelled) return;
+        setHasCloserRecord(!!me);
+        if (!me) { setW8benRow(null); return; }
+        const rows = await getCloserDocuments(me.id);
+        if (cancelled) return;
+        const w = rows.find((r) => r.doc_slug === "w-8ben") ?? null;
+        setW8benRow(w ? { status: w.status, signed_at: w.signed_at } : null);
+      } catch { /* non-fatal; the button will surface any error on click */ }
+    })();
+    return () => { cancelled = true; };
+  }, [source?.id, isImpersonating]);
+
+  const handleGenerateW8ben = async () => {
+    setW8benBusy(true);
+    setW8benErr(null);
+    setW8benMissing(null);
+    try {
+      const res = await materializeMyDoc("w-8ben");
+      if (res.ok) {
+        await refreshW8ben();
+      } else if (res.blocked?.length) {
+        setW8benMissing(res.blocked[0].missing.map((m) => ({ label: m.label })));
+      } else {
+        setW8benErr(res.error ?? "Could not prepare your W-8BEN.");
+      }
+    } catch (e) {
+      setW8benErr(e instanceof Error ? e.message : "Could not prepare your W-8BEN.");
+    } finally {
+      setW8benBusy(false);
+    }
+  };
+
   const set = (key: keyof FormState) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
   ) => {
@@ -284,7 +348,6 @@ export default function MyProfilePage() {
     setError(null);
   };
 
-  const isImpersonating = !!realProfile && !!profile && realProfile.id !== profile.id;
   const isUS = form.country === US_COUNTRY;
 
   const handleSave = async () => {
@@ -705,6 +768,87 @@ export default function MyProfilePage() {
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   We never collect an SSN from foreign contractors.
                 </p>
+
+                {/* Substitute W-8BEN e-sign — the real action behind the checkbox. */}
+                <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+                  <div className="flex items-start gap-2">
+                    <DocumentTextIcon className="w-5 h-5 flex-shrink-0 mt-0.5 text-gray-500 dark:text-gray-400" />
+                    <div>
+                      <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                        Substitute IRS Form W-8BEN
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                        We generate this from your profile details, then you read it and sign it in the
+                        app. We keep it on file for our records — it is not tax advice.
+                      </p>
+                    </div>
+                  </div>
+
+                  {w8benRow?.status === "signed" ? (
+                    <div className="flex items-center gap-2 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-200">
+                      <CheckCircleIcon className="w-5 h-5 flex-shrink-0" />
+                      <span>
+                        W-8BEN signed
+                        {w8benRow.signed_at && <> on {new Date(w8benRow.signed_at).toLocaleDateString()}</>}.
+                      </span>
+                      <Link to="/admin/closer-docs/w-8ben" className="ml-auto text-xs font-semibold text-ocean-blue hover:underline">
+                        View
+                      </Link>
+                    </div>
+                  ) : isImpersonating ? (
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Switch out of impersonation to generate your own W-8BEN.
+                    </p>
+                  ) : hasCloserRecord === false ? (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
+                      Your contractor record isn&apos;t set up yet — ask an admin to add you before
+                      generating your W-8BEN.
+                    </p>
+                  ) : (
+                    <>
+                      {w8benMissing && w8benMissing.length > 0 && (
+                        <div className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2">
+                          <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+                            Add these to your profile first, then try again:
+                          </p>
+                          <ul className="mt-1 space-y-0.5">
+                            {w8benMissing.map((m) => (
+                              <li key={m.label} className="text-xs text-amber-800 dark:text-amber-200 flex gap-1.5">
+                                <span className="opacity-60">▸</span>
+                                <span>{m.label}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {w8benErr && (
+                        <p className="text-xs text-rose-600 dark:text-rose-400">{w8benErr}</p>
+                      )}
+                      {w8benRow?.status === "sent" ? (
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Link to="/admin/closer-docs/w-8ben" className="btn-primary">
+                            Open to read &amp; sign
+                          </Link>
+                          <button
+                            onClick={handleGenerateW8ben}
+                            disabled={w8benBusy}
+                            className="text-xs text-gray-500 dark:text-gray-400 hover:underline disabled:opacity-50"
+                          >
+                            {w8benBusy ? "Refreshing…" : "Regenerate from current profile"}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={handleGenerateW8ben}
+                          disabled={w8benBusy}
+                          className="btn-primary disabled:opacity-50"
+                        >
+                          {w8benBusy ? "Preparing…" : "Generate & sign my W-8BEN"}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </>
             )}
           </div>

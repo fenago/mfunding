@@ -26,7 +26,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, sendMarker,
 } from "../_shared/ghl.ts";
-import { mergeCloserDoc, sha256Hex, type MergeSettings } from "../_shared/closerDocMerge.ts";
+import { mergeCloserDoc, sha256Hex, buildW8benInputs, type MergeSettings } from "../_shared/closerDocMerge.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -78,18 +78,42 @@ Deno.serve(async (req) => {
     .from("platform_settings").select("value").eq("key", "closer_docs").maybeSingle();
   const settings = (settingRow?.value ?? {}) as MergeSettings;
 
+  // The substitute W-8BEN is an e-signable template too, but it is a foreign-only
+  // tax form materialized through the self-service `materialize-closer-doc` path,
+  // NOT part of the onboarding package. Include it ONLY when explicitly requested
+  // by slug, so a default "send everything" never sweeps a W-8BEN onto a closer
+  // (and never blocks the whole package on missing W-8BEN fields).
   let q = db.from("closer_doc_templates").select("slug, title, body_md, version, esignable, sort_order").eq("esignable", true);
   if (payload.slugs?.length) q = q.in("slug", payload.slugs);
+  else q = q.neq("slug", "w-8ben");
   const { data: templates, error: tErr } = await q.order("sort_order");
   if (tErr) return json({ error: `templates: ${tErr.message}` }, 500);
   if (!templates?.length) return json({ error: "No e-signable documents selected." }, 400);
+
+  // Enrich the closer with substitute-W-8BEN inputs (profiles + payout_profiles).
+  // Cheap, and only ever used if a w-8ben slug is among the requested templates;
+  // no-op tokens on every other doc. Read via service role — payout_profiles is
+  // owner-only under RLS, but this function already runs as service_role.
+  const needsW8ben = templates.some((t) => t.slug === "w-8ben");
+  let mergeCloser: Record<string, unknown> = closer;
+  if (needsW8ben) {
+    const { data: profileRow } = await db
+      .from("profiles")
+      .select("first_name, last_name, display_name, country, address_line1, address_line2, city, state, postal_code")
+      .eq("id", closer.user_id).maybeSingle();
+    const { data: payoutRow } = await db
+      .from("payout_profiles")
+      .select("tax_country, foreign_tax_id")
+      .eq("profile_id", closer.user_id).maybeSingle();
+    mergeCloser = { ...closer, ...buildW8benInputs(profileRow, payoutRow) };
+  }
 
   // --- Merge everything FIRST. One unresolved placeholder blocks the whole send. ---
   const merged: { slug: string; title: string; content: string; sha: string; version: number }[] = [];
   const blocked: { slug: string; title: string; missing: unknown[] }[] = [];
 
   for (const t of templates) {
-    const res = mergeCloserDoc(t.slug, t.body_md, closer, settings);
+    const res = mergeCloserDoc(t.slug, t.body_md, mergeCloser as Parameters<typeof mergeCloserDoc>[2], settings);
     if (res.missing.length) {
       blocked.push({ slug: t.slug, title: t.title, missing: res.missing });
       continue;

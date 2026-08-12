@@ -56,6 +56,78 @@ export interface MergeCloser {
   draw_start_date?: string | null;
   draw_end_date?: string | null;
   start_date?: string | null;
+  // --- Substitute W-8BEN (foreign contractor tax) inputs. Populated by the edge
+  // functions from profiles + payout_profiles via buildW8benInputs(); absent for
+  // the onboarding docs, whose templates contain none of these tokens.
+  legal_name?: string | null;
+  citizenship_country?: string | null;
+  residence_address?: string | null;
+  mailing_address?: string | null;
+  foreign_tin?: string | null;
+}
+
+/** Profile fields the substitute W-8BEN pulls from (public.profiles). */
+export interface W8benProfile {
+  first_name?: string | null;
+  last_name?: string | null;
+  display_name?: string | null;
+  country?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postal_code?: string | null;
+}
+
+/** Payout fields the substitute W-8BEN pulls from (public.payout_profiles). */
+export interface W8benPayout {
+  tax_country?: string | null;
+  foreign_tax_id?: string | null;
+}
+
+/**
+ * Assemble the W-8BEN merge inputs from a contractor's profile + payout rows.
+ *
+ * PURE — no DB, no auth. The edge functions read the rows (service role) and
+ * hand them here. Any required field it cannot fill is returned null, which makes
+ * the merge report it as `missing` and BLOCKS the send — we never freeze a
+ * W-8BEN with a missing legal name, country, residence, or TIN.
+ *
+ * `mailing_address` always resolves ("Same as permanent residence address
+ * above.") — the official W-8BEN allows the mailing address to be omitted when it
+ * matches the residence, so it must never block a foreign contractor's form.
+ */
+export function buildW8benInputs(
+  profile?: W8benProfile | null,
+  payout?: W8benPayout | null,
+): {
+  legal_name: string | null;
+  citizenship_country: string | null;
+  residence_address: string | null;
+  mailing_address: string;
+  foreign_tin: string | null;
+} {
+  const p = profile ?? {};
+  const pay = payout ?? {};
+  const t = (v?: string | null) => (v ?? "").trim();
+
+  const legal_name = `${t(p.first_name)} ${t(p.last_name)}`.trim() || t(p.display_name) || null;
+  const citizenship_country = t(p.country) || t(pay.tax_country) || null;
+
+  const cityLine = [t(p.city), t(p.state), t(p.postal_code)].filter(Boolean).join(", ");
+  const parts = [t(p.address_line1), t(p.address_line2), cityLine, t(p.country)].filter(Boolean);
+  // Require at least a street line + city before we call the address complete.
+  const residence_address = t(p.address_line1) && t(p.city) ? parts.join(", ") : null;
+
+  const foreign_tin = t(pay.foreign_tax_id) || null;
+
+  return {
+    legal_name,
+    citizenship_country,
+    residence_address,
+    mailing_address: "Same as permanent residence address above.",
+    foreign_tin,
+  };
 }
 
 export interface MissingField {
@@ -131,6 +203,13 @@ const LABELS: Record<string, { label: string; fix: "settings" | "closer" }> = {
   "[STATE]": { label: "Governing-law state", fix: "settings" },
   "[CLOSER NAME]": { label: "Closer's full legal name", fix: "closer" },
   "[DATE]": { label: "Effective date", fix: "closer" },
+  // Substitute W-8BEN — the contractor fixes all of these on their own profile.
+  "[LEGAL NAME]": { label: "Your full legal name (Personal tab)", fix: "closer" },
+  "[CITIZENSHIP COUNTRY]": { label: "Country of citizenship (Mailing Address tab)", fix: "closer" },
+  "[RESIDENCE ADDRESS]": { label: "Permanent residence address (Mailing Address tab)", fix: "closer" },
+  "[MAILING ADDRESS]": { label: "Mailing address", fix: "closer" },
+  "[FOREIGN TIN]": { label: "Foreign tax ID / TIN (Tax tab)", fix: "closer" },
+  "[SIGN DATE]": { label: "Signing date", fix: "closer" },
 };
 
 function labelFor(token: string): { label: string; fix: "settings" | "closer" } {
@@ -208,6 +287,17 @@ export function mergeCloserDoc(
   s = sub(s, "[SIGNATORY NAME, TITLE]", settings.company_signatory ?? null);
   s = sub(s, "[STATE]", settings.governing_state ?? null);
   s = sub(s, "[DATE]", effectiveDate);
+
+  // --- Substitute W-8BEN tokens. No-ops on the onboarding docs (none contain
+  // them). [MAILING ADDRESS] and [SIGN DATE] always resolve, so they can never
+  // block; [LEGAL NAME] / [CITIZENSHIP COUNTRY] / [RESIDENCE ADDRESS] /
+  // [FOREIGN TIN] block when the contractor hasn't filled their profile.
+  s = sub(s, "[LEGAL NAME]", closer.legal_name ?? closerName);
+  s = sub(s, "[CITIZENSHIP COUNTRY]", closer.citizenship_country ?? null);
+  s = sub(s, "[RESIDENCE ADDRESS]", closer.residence_address ?? null);
+  s = sub(s, "[MAILING ADDRESS]", closer.mailing_address ?? null);
+  s = sub(s, "[FOREIGN TIN]", closer.foreign_tin ?? null);
+  s = sub(s, "[SIGN DATE]", formatDocDate() || null);
 
   // --- What's still unfilled?
   const seen = new Set<string>();
