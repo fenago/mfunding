@@ -49,6 +49,7 @@ import {
   ShareIcon,
   CircleStackIcon,
   UserCircleIcon,
+  LifebuoyIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -115,6 +116,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — onboarding reference, every staff role
   "/admin/ucc-machine-guide", // 🔗 How the UCC Machine Works — the sibling one-pager, every staff role
+  "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
 ]);
 
 const navGroups: NavGroup[] = [
@@ -154,6 +156,12 @@ const navGroups: NavGroup[] = [
         icon: CircleStackIcon,
         roles: OPS,
       },
+      // Setter Onboarding Guide — the day-one read for a brand-new setter (Chrome
+      // + same-session login, both profiles, the dialer, the on-call flow,
+      // compliance, troubleshooting). Sits with the other PH explainers. OPS, and
+      // pure setters reach it too (canSee carries an explicit exception): this is
+      // the one doc they have to read before their first live call.
+      { name: "Setter Guide", path: "/admin/setter-guide", icon: LifebuoyIcon, roles: OPS },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
@@ -286,13 +294,15 @@ export default function AdminSidebar() {
     // in the nav. This is deliberately narrower than the closer lens below.
     // An admin who also has a closer row (e.g. Carlos) has role "admin", not
     // "closer" (see UserProfileContext) — they keep the full manager nav.
-    // Exception: a setter can always reach "My Profile" to keep their own
-    // name/address/1099 details current — that's the one self-service screen
-    // outside the Playbook they're allowed.
+    // Exceptions: a setter can always reach "My Profile" to keep their own
+    // name/address/1099 details current, and the "Setter Guide" — their day-one
+    // onboarding doc, which they have to be able to re-open on the floor. Those
+    // are the only two screens outside the Playbook they're allowed.
     if (
       profile?.role === "closer" &&
       item.path !== "/admin/playbooks" &&
-      item.path !== "/admin/my-profile"
+      item.path !== "/admin/my-profile" &&
+      item.path !== "/admin/setter-guide"
     )
       return false;
     // Closer lens: only the daily operating links, regardless of group.

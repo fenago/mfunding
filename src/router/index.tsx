@@ -101,6 +101,7 @@ const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachin
 const DialerPage = lazyWithReload(() => import("../pages/admin/DialerPage.tsx"));
 const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
 const UccMachineGuidePage = lazyWithReload(() => import("../pages/admin/UccMachineGuidePage.tsx"));
+const SetterGuidePage = lazyWithReload(() => import("../pages/admin/SetterGuidePage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
@@ -552,6 +553,16 @@ export const routes: RouteObject[] = [
               {
                 path: "ucc-machine-guide",
                 element: <UccMachineGuidePage />,
+              },
+              // Setter Onboarding Guide — the day-one read for a brand-new setter
+              // (Chrome + same-session login, both profiles, the dialer, the
+              // on-call flow, compliance, troubleshooting). Deliberately NO extra
+              // guard: setters carry role `closer`, and AdminProtectedRoute's
+              // isStaff check (closer + employee + admin + super_admin) is exactly
+              // the audience. Merchants (role `user`) are bounced to "/".
+              {
+                path: "setter-guide",
+                element: <SetterGuidePage />,
               },
               // Cold-email (Instantly) dashboard + strategy (admins + super_admin)
               {
