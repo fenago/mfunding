@@ -108,20 +108,20 @@ const CSS = `
 // Troubleshooting table — symptom on the left, the fix on the right.
 const FIXES: { q: string; a: React.ReactNode }[] = [
   {
-    q: 'The "Open by phone" box shows a login screen, not the merchant',
+    q: "The MFunding button shows a login screen, not the merchant",
     a: (
       <>
-        You're not signed into <b>mfunding.net</b>. Log in (same Chrome window as HotProspector),
-        then paste the number again.
+        You're not signed into <b>mfunding.net</b> in this Chrome window. Open a tab, log in, then
+        click <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> again.
       </>
     ),
   },
   {
-    q: '"Open by phone" says it can\'t find a number',
+    q: 'The button says "Lead data not Synced"',
     a: (
       <>
-        Make sure you pasted <b>10 digits</b> (the box strips dashes/spaces/+1 automatically).
-        Re-copy the number from your script and try again.
+        Tell your manager &mdash; that lead wasn't loaded correctly. Meanwhile, find the merchant with
+        MFunding's <b>search bar</b> (name, business, or phone) and keep working.
       </>
     ),
   },
@@ -183,9 +183,9 @@ export default function SetterGuidePage() {
             <div className="h">The one rule that makes everything work</div>
             Use <b>Google Chrome</b>, and sign into <b>both</b> HotProspector <b>and</b> MFunding in
             the <b>same Chrome window</b>. You'll be logged into both at once, side by side. That
-            shared session is what lets the merchant's file open when you <b>paste their number</b>,
-            instead of bouncing you to a login screen. Don't use two different browsers, and don't
-            use a private/incognito window.
+            shared session is what lets the <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> button open
+            the merchant's file in MFunding instead of bouncing you to a login screen. Don't use two
+            different browsers, and don't use a private/incognito window.
           </div>
           <ol className="steps">
             <li>
@@ -315,13 +315,12 @@ export default function SetterGuidePage() {
             </li>
             <li>
               <div>
-                <div className="st-t">Open the merchant in MFunding — by phone</div>
+                <div className="st-t">Open the merchant in MFunding — one click</div>
                 <div className="st-d">
-                  <b>Copy the merchant's phone number</b> (it's shown right in your script), switch to
-                  your <b>MFunding tab</b>, and paste it into the{" "}
-                  <b>&ldquo;Open a merchant by phone&rdquo;</b> box at the top of the Playbook &rarr;
-                  click <b>Open</b>. Their file opens with everything preloaded.{" "}
-                  <i>(Any format works &mdash; with or without dashes or +1.)</i>
+                  On the contact card, look at the <b>bottom of the right-hand sidebar</b> and click{" "}
+                  <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> (it has a ↗ icon). Because you're
+                  signed into MFunding in the same Chrome window, the <b>Revenue Playbook</b> opens
+                  with this merchant's file preloaded.
                 </div>
               </div>
             </li>
@@ -347,14 +346,12 @@ export default function SetterGuidePage() {
             </li>
           </ol>
           <div className="note warn">
-            <div className="h">Don't use the "Gohighlevel Custom Link" in HotProspector</div>
-            There's a <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> and a <b>&ldquo;Playbook&rdquo;</b>{" "}
-            tab inside HotProspector &mdash; <b>ignore both.</b> The way into MFunding is always the
-            same:{" "}
-            <b>
-              copy the phone number and paste it into the &ldquo;Open a merchant by phone&rdquo; box
-            </b>{" "}
-            on your MFunding Playbook. That works on every lead.
+            <div className="h">Two things to know</div>
+            The <b>&ldquo;Playbook&rdquo;</b> tab on the HotProspector call screen is <b>not ours</b>{" "}
+            &mdash; the button that opens MFunding is <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> on
+            the contact card. And if that button ever errors (&ldquo;Lead data not Synced&rdquo;),
+            tell your manager &mdash; it means the lead wasn't loaded correctly; meanwhile you can
+            find the merchant with the <b>search bar</b> in MFunding (name, business, or phone).
           </div>
         </section>
 
