@@ -92,6 +92,8 @@ const CSS = `
 .son .fix .a{padding:12px 15px;font-size:13.6px;color:var(--ink-soft)}
 .son .fix .a b{color:var(--ink)}
 
+.son a{color:var(--accent-ink);font-weight:700;text-decoration:underline;text-underline-offset:2px}
+.son .card .sub a{color:var(--accent-ink)}
 .son footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink-faint);font-size:12px}
 
 @media (max-width:620px){
@@ -412,9 +414,45 @@ export default function SetterGuidePage() {
           </div>
         </section>
 
+        {/* 07 — COMMS */}
+        <section>
+          <div className="kicker">
+            <span className="n">07</span>
+            <h2>Need help? Message us on Google Chat</h2>
+          </div>
+          <div className="note key">
+            <div className="h">Ad-hoc requests &amp; questions go through Google Chat</div>
+            For anything during your shift &mdash; a stuck screen, a lead question, a judgment call
+            &mdash; message us on <b>Google Chat</b>. Open it here:{" "}
+            <a href="https://chat.google.com/" target="_blank" rel="noopener noreferrer">
+              chat.google.com
+            </a>{" "}
+            (or the <b>Chat</b> icon in Gmail), then search the email below and send a message.
+          </div>
+          <div className="cards">
+            <div className="card">
+              <div className="role">Ping on Google Chat</div>
+              <div className="nm">Dr. Lee</div>
+              <div className="sub">
+                <a href="mailto:sales@mfunding.net">sales@mfunding.net</a>
+                <br />
+                <a href="mailto:socrates73@gmail.com">socrates73@gmail.com</a>
+              </div>
+            </div>
+            <div className="card mf">
+              <div className="role">Ping on Google Chat</div>
+              <div className="nm">Mr. Carlos Marquez</div>
+              <div className="sub">
+                <a href="mailto:cmarq2k8@gmail.com">cmarq2k8@gmail.com</a>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <footer>
           Internal training reference for Momentum Funding appointment setters. Not a customer-facing
-          document. Questions? Ask your manager before your first live call.
+          document. Questions? Reach Dr. Lee or Mr. Marquez on Google Chat (above) before your first
+          live call.
         </footer>
       </div>
     </div>
