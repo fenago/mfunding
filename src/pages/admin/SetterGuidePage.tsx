@@ -183,9 +183,9 @@ export default function SetterGuidePage() {
             <div className="h">The one rule that makes everything work</div>
             Use <b>Google Chrome</b>, and sign into <b>both</b> HotProspector <b>and</b> MFunding in
             the <b>same Chrome window</b>. You'll be logged into both at once, side by side. That
-            shared session is exactly what lets the button on a call open the merchant's file in
-            MFunding instead of bouncing you to a login screen. Don't use two different browsers, and
-            don't use a private/incognito window.
+            shared session is what lets the merchant's file open when you <b>paste their number</b>,
+            instead of bouncing you to a login screen. Don't use two different browsers, and don't
+            use a private/incognito window.
           </div>
           <ol className="steps">
             <li>
