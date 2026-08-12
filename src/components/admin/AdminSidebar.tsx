@@ -48,6 +48,7 @@ import {
   PuzzlePieceIcon,
   ShareIcon,
   CircleStackIcon,
+  UserCircleIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -89,6 +90,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/closer-comp", // their comp offer sheet + payout calculator (OPS)
   "/admin/closer-docs", // 📝 their onboarding paperwork — they have to read + e-sign it
   "/admin/my-earnings", // 💰 their own commissions + projected pipeline (OPS)
+  "/admin/my-profile", // 👤 self-service edit of their own name/address/1099 details (OPS)
   "/admin/renewals", // shown per closers.renewals_enabled (handled in canSee)
   // Visible through the lens but still role-gated below — so an ADMIN who also
   // has a closer row (e.g. Carlos) gets these, while pure closers never do.
@@ -208,6 +210,10 @@ const navGroups: NavGroup[] = [
     title: "Team & Money",
     items: [
       { name: "My Earnings", path: "/admin/my-earnings", icon: BanknotesIcon, roles: OPS },
+      // My Profile — self-service edit of the signed-in user's own name,
+      // mailing address, and 1099 business/tax details. Every staff role, and
+      // reachable by pure setters (see canSee exception above).
+      { name: "My Profile", path: "/admin/my-profile", icon: UserCircleIcon, roles: OPS },
       // OPS, not SUPER: a closer opens this to read and e-sign their own docs.
       // The manager view (every closer's status) only renders for admin/super.
       { name: "Closer Documents", path: "/admin/closer-docs", icon: DocumentTextIcon, roles: OPS },
@@ -280,7 +286,15 @@ export default function AdminSidebar() {
     // in the nav. This is deliberately narrower than the closer lens below.
     // An admin who also has a closer row (e.g. Carlos) has role "admin", not
     // "closer" (see UserProfileContext) — they keep the full manager nav.
-    if (profile?.role === "closer" && item.path !== "/admin/playbooks") return false;
+    // Exception: a setter can always reach "My Profile" to keep their own
+    // name/address/1099 details current — that's the one self-service screen
+    // outside the Playbook they're allowed.
+    if (
+      profile?.role === "closer" &&
+      item.path !== "/admin/playbooks" &&
+      item.path !== "/admin/my-profile"
+    )
+      return false;
     // Closer lens: only the daily operating links, regardless of group.
     if (isCloserLens && !CLOSER_LENS_PATHS.has(item.path)) return false;
     if (!(isSuperAdmin || (!!role && item.roles.includes(role)))) return false;

@@ -139,6 +139,7 @@ const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDet
 // Commission & Financial Engine pages
 const CloserListPage = lazyWithReload(() => import("../pages/admin/closers/CloserListPage.tsx"));
 const MyEarningsPage = lazyWithReload(() => import("../pages/admin/closers/MyEarningsPage.tsx"));
+const MyProfilePage = lazyWithReload(() => import("../pages/admin/MyProfilePage.tsx"));
 const CloserDetailPage = lazyWithReload(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
 const DocsIndexPage = lazyWithReload(() => import("../pages/admin/docs/DocsIndexPage.tsx"));
 const DocViewerPage = lazyWithReload(() => import("../pages/admin/docs/DocViewerPage.tsx"));
@@ -681,6 +682,14 @@ export const routes: RouteObject[] = [
               {
                 path: "my-earnings",
                 element: <MyEarningsPage />,
+              },
+              // My Profile (all staff) — self-service edit of the signed-in
+              // user's own profiles row. RLS ("Users can update own profile")
+              // scopes writes to auth.uid(); no extra route guard beyond
+              // AdminProtectedRoute's isStaff check.
+              {
+                path: "my-profile",
+                element: <MyProfilePage />,
               },
               // Live Transfer ROI (super_admin only)
               {
