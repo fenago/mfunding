@@ -293,18 +293,10 @@ export default function PlaybooksPage() {
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Manual "open by phone" box — the setter reads the number off HotProspector
-  // and pastes it however it's formatted; we only ever send digits.
-  const [phoneBox, setPhoneBox] = useState("");
-  const [phoneBoxBusy, setPhoneBoxBusy] = useState(false);
-  const phoneBoxDigits = dialDigits(phoneBox);
-  async function openByPhoneBox() {
-    if (!phoneBoxDigits || phoneBoxBusy) return;
-    setPhoneBoxBusy(true);
-    const ok = await openMerchant({ phone: phoneBoxDigits });
-    setPhoneBoxBusy(false);
-    if (ok) setPhoneBox("");
-  }
+  // (The visible "open by phone" box was removed — the native HP "Gohighlevel
+  // Custom Link" works now that leads sync in linked, and the header search
+  // covers name/business/phone lookups. The silent ?phone= deep link above
+  // remains as a backstop for bookmarklets/automation.)
 
   const dealCampaign = deal ? campaigns.find((c) => c.id === deal.campaign_id) ?? null : null;
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
@@ -822,37 +814,6 @@ export default function PlaybooksPage() {
           <ArrowRightIcon className="w-4 h-4" />
         </Link>
       </div>
-
-      {/* Open a merchant by phone — ALWAYS visible. A setter dialing out of
-          HotProspector has no working GHL link (those leads were CSV-imported),
-          but they always have the number on screen: paste it, hit Open, and this
-          runs the same resolve-or-create path as the ?phone= deep link. */}
-      <form
-        onSubmit={(e) => { e.preventDefault(); void openByPhoneBox(); }}
-        className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3"
-      >
-        <PhoneIcon className="w-4 h-4 shrink-0 text-ocean-blue" />
-        <span className="text-sm font-semibold text-gray-900 dark:text-white">Open a merchant by phone</span>
-        <input
-          type="tel"
-          inputMode="tel"
-          value={phoneBox}
-          onChange={(e) => setPhoneBox(e.target.value)}
-          placeholder="(305) 555-0134"
-          aria-label="Merchant phone number"
-          className="input input-sm input-bordered w-44 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
-        />
-        <button
-          type="submit"
-          disabled={phoneBoxDigits.length < 10 || phoneBoxBusy}
-          className="btn btn-sm border-0 bg-ocean-blue text-white hover:opacity-90 disabled:opacity-50"
-        >
-          {phoneBoxBusy ? <span className="loading loading-spinner loading-xs" /> : "Open"}
-        </button>
-        <span className="text-xs text-gray-400 dark:text-gray-500">
-          Paste the number you're dialing — spaces, dashes and +1 are all fine.
-        </span>
-      </form>
 
       {/* My Day — ranked work queue; a card loads that deal + switches the flow tab */}
       <MyDayQueue onPick={pickFromQueue} />
