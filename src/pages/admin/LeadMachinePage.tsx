@@ -6,6 +6,8 @@ import {
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
   TrashIcon,
+  ArrowDownTrayIcon,
+  EnvelopeIcon,
   RectangleStackIcon,
   TagIcon,
   XMarkIcon,
@@ -16,6 +18,7 @@ import {
 import * as tus from "tus-js-client";
 import supabase from "@/supabase";
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from "@/config";
+import { exportToCsv } from "@/lib/csv";
 
 /* ------------------------------------------------------------------ */
 /* LEAD MACHINE — /admin/lead-machine                                  */
@@ -61,6 +64,15 @@ interface LeadBatch {
   byte_offset: number | null;
   bytes_total: number | null;
   created_at: string | null;
+  /* From the lead_batch_overview view — per-batch aggregates over lead_records,
+     so the batch table never counts 85k rows in the browser. Undefined when the
+     row came straight off lead_batches (the ingest poller). */
+  records?: number | null;
+  dialable?: number | null;
+  pushed?: number | null;
+  errored?: number | null;
+  skipped?: number | null;
+  dup_of_prior?: number | null;
 }
 
 type LeadRecordStatus = "loaded" | "pushed" | "skipped" | "error";
@@ -173,6 +185,10 @@ const PAGE_SIZE = 25;
 /* lead-push-ghl caps an explicit lead_ids[] at 5,000 — bigger sets have to go as
    server-side `filters`, which the fn re-runs itself. */
 const MAX_LEAD_IDS = 5000;
+/* Rows fetched per page while streaming an export. 85k rows = 85 round trips. */
+const EXPORT_WINDOW = 1000;
+/* PostgREST puts filters in the URL, so an `in.(...)` list has to stay short. */
+const ID_WINDOW = 300;
 
 /* ── Small helpers ── */
 
@@ -347,6 +363,34 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
     pollRef.current = setInterval(tick, 2000);
   };
 
+  /* The one ingest path — both the file upload and the already-in-the-bucket
+     files land here. The FUNCTION creates the batch row (batch_code comes from
+     next_lead_batch_code server-side), so nothing is pre-inserted here. */
+  const beginIngest = async (opts: {
+    storagePath: string;
+    leadType: LeadType;
+    label?: string | null;
+    fileName?: string;
+    fileSize?: number;
+  }) => {
+    setPhase("ingesting");
+    setUploadMsg("Starting ingest…");
+    const { data, error } = await supabase.functions.invoke("lead-file-ingest", {
+      body: {
+        action: "start",
+        storage_path: opts.storagePath,
+        lead_type: opts.leadType,
+        label: opts.label || null,
+        ...(opts.fileName ? { file_name: opts.fileName } : {}),
+        ...(opts.fileSize ? { file_size: opts.fileSize } : {}),
+      },
+    });
+    if (error) throw new Error(await fnErrorMessage(error));
+    const res = data as { ok?: boolean; batch_id?: string; batch_code?: string; error?: string } | null;
+    if (res?.ok === false || !res?.batch_id) throw new Error(res?.error || "ingest did not start");
+    pollBatch(res.batch_id);
+  };
+
   const start = async () => {
     if (!file) return;
     setErr(null);
@@ -361,22 +405,30 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
         const p = total > 0 ? Math.round((sent / total) * 100) : 0;
         setUploadMsg(`Uploading ${file.name} (${p}%)`);
       });
-
-      setPhase("ingesting");
-      setUploadMsg("Starting ingest…");
-      const { data, error } = await supabase.functions.invoke("lead-file-ingest", {
-        body: {
-          storage_path: path,
-          lead_type: type,
-          label: label.trim() || null,
-          file_name: file.name,
-          file_size: file.size,
-        },
+      await beginIngest({
+        storagePath: path,
+        leadType: type,
+        label: label.trim(),
+        fileName: file.name,
+        fileSize: file.size,
       });
-      if (error) throw new Error(await fnErrorMessage(error));
-      const res = data as { ok?: boolean; batch_id?: string; batch_code?: string; error?: string } | null;
-      if (res?.ok === false || !res?.batch_id) throw new Error(res?.error || "ingest did not start");
-      pollBatch(res.batch_id);
+    } catch (e) {
+      setPhase("error");
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const ingestStaged = async (f: StagedFile) => {
+    setErr(null);
+    setBatch(null);
+    try {
+      await beginIngest({
+        storagePath: f.path,
+        leadType: f.leadType,
+        label: f.name,
+        fileName: f.name.split("/").pop(),
+        fileSize: f.size ?? undefined,
+      });
     } catch (e) {
       setPhase("error");
       setErr(e instanceof Error ? e.message : String(e));
@@ -393,21 +445,19 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
     if (fileRef.current) fileRef.current.value = "";
   };
 
+  /* Ingest counters, with the semantics the backend actually writes:
+       total_rows    — data rows read from the file (ticks during the run)
+       dup_rows      — rows dropped as an IN-FILE duplicate phone (finalize only)
+       ingested_rows — rows stored = total − dup (finalize only). Includes rows
+                       with no phone; those are stored as status='skipped'.
+     ingested_rows / dup_rows are written at finalize, so they are only rendered
+     once the batch is `ready`. Bytes are the honest progress bar until then. */
+  const running = phase === "ingesting";
   const total = n0(batch?.total_rows);
   const ingested = n0(batch?.ingested_rows);
   const dupes = n0(batch?.dup_rows);
-  /* The ingester streams the file, so bytes are the honest progress bar while
-     total_rows is still being discovered; rows take over once it knows the count. */
   const bytesTotal = n0(batch?.bytes_total);
-  const pct =
-    bytesTotal > 0
-      ? Math.min(100, Math.round((n0(batch?.byte_offset) / bytesTotal) * 100))
-      : total > 0
-        ? Math.min(100, Math.round((ingested / total) * 100))
-        : null;
-  /* Rows in the file that produced no lead — no usable phone, unparseable, etc.
-     Derived, because the batch keeps no explicit skipped counter. */
-  const unusable = total > 0 ? Math.max(0, total - ingested) : 0;
+  const pct = bytesTotal > 0 ? Math.min(100, Math.round((n0(batch?.byte_offset) / bytesTotal) * 100)) : null;
 
   const input =
     "px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
@@ -426,7 +476,7 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
                 key={t.type}
                 type="button"
                 onClick={() => setType(t.type)}
-                disabled={phase === "uploading" || phase === "ingesting"}
+                disabled={phase === "uploading" || running}
                 className={`text-left rounded-xl border p-3 transition-colors disabled:opacity-60 ${
                   active
                     ? "border-ocean-blue bg-ocean-blue/5 dark:bg-ocean-blue/10 ring-1 ring-ocean-blue"
@@ -479,7 +529,7 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
                   className="block w-full text-xs text-gray-600 dark:text-gray-300 file:mr-2 file:rounded-md file:border-0 file:bg-ocean-blue/10 file:px-2 file:py-1.5 file:text-xs file:font-semibold file:text-ocean-blue"
                 />
                 <span className="text-[10px] text-gray-400">
-                  One file per batch. Rows without a usable phone are skipped and counted.
+                  One file per batch. Only a phone column is required — everything else is mapped when it's there.
                 </span>
               </div>
             </div>
@@ -490,7 +540,9 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
                 <code className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-100 font-semibold">
                   {plannedCode}
                 </code>{" "}
-                <span className="text-gray-400">— the server confirms the final code when ingest starts.</span>
+                <span className="text-gray-400">
+                  — the server mints the final code (a second list the same day gets a -2).
+                </span>
               </span>
               <button
                 onClick={start}
@@ -505,10 +557,13 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
                 <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> {err}
               </p>
             )}
+
+            {/* Files already sitting in the bucket — no re-upload needed. */}
+            <StagedFiles onIngest={ingestStaged} />
           </>
         ) : phase === "uploading" ? (
           <p className="text-sm text-gray-600 dark:text-gray-300">{uploadMsg}</p>
-        ) : phase === "ingesting" ? (
+        ) : running ? (
           <div className="space-y-1.5">
             {pct != null && (
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
@@ -516,9 +571,11 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
               </div>
             )}
             <p className="text-sm text-gray-600 dark:text-gray-300">
-              {total > 0
-                ? `Ingesting ${ingested.toLocaleString()} of ${total.toLocaleString()}…`
-                : batch?.message || uploadMsg || "Ingesting…"}
+              {total > 0 ? `Read ${total.toLocaleString()} rows so far…` : batch?.message || uploadMsg || "Ingesting…"}
+              {pct != null && <span className="text-gray-400"> · {pct}% of the file</span>}
+            </p>
+            <p className="text-[11px] text-gray-400">
+              This keeps running if you leave the page — the batch below shows the result either way.
             </p>
           </div>
         ) : (
@@ -538,16 +595,126 @@ function UploadPanel({ onIngested }: { onIngested: (batchId: string) => void }) 
               ) : null}
             </p>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              {total.toLocaleString()} rows in the file · {unusable.toLocaleString()} skipped (no usable phone) ·{" "}
-              {dupes.toLocaleString()} already seen in an earlier batch
+              {total.toLocaleString()} rows read · {dupes.toLocaleString()} dropped as duplicate phones inside the file
+              · {ingested.toLocaleString()} stored. How many of those are dialable is in the batch row below.
             </p>
             <button onClick={reset} className="text-xs text-ocean-blue hover:underline">
-              Upload another list
+              Load another list
             </button>
           </div>
         )}
       </div>
     </section>
+  );
+}
+
+/* ── Files already in the lead-uploads bucket ──────────────────────────────────
+   The owner's purchased files get dropped into the bucket directly; ingesting one
+   needs no re-upload, just a lead_type and its path. Anything already ingested is
+   shown as such (matched on storage_path) so the same file isn't loaded twice. */
+interface StagedFile {
+  path: string;
+  name: string;
+  size: number | null;
+  leadType: LeadType;
+}
+
+/** Guess the list type from the filename — the owner's files are named for it. */
+function guessType(name: string): LeadType {
+  const n = name.toLowerCase();
+  if (n.includes("ucc")) return "ucc";
+  if (n.includes("trigger") || n.includes("trig")) return "trigger";
+  return "aged";
+}
+
+function StagedFiles({ onIngest }: { onIngest: (f: StagedFile) => void }) {
+  const [files, setFiles] = useState<StagedFile[] | null>(null);
+  const [ingestedPaths, setIngestedPaths] = useState<Set<string>>(new Set());
+  const [armed, setArmed] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(null), 5000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase.storage.from("lead-uploads").list("raw", {
+        limit: 50,
+        sortBy: { column: "created_at", order: "desc" },
+      });
+      if (cancelled) return;
+      if (error || !data) {
+        setFiles([]);
+        return;
+      }
+      const list = data
+        .filter((o) => o.name.toLowerCase().endsWith(".csv"))
+        .map((o) => ({
+          path: `raw/${o.name}`,
+          name: o.name,
+          size: (o.metadata?.size as number | undefined) ?? null,
+          leadType: guessType(o.name),
+        }));
+      setFiles(list);
+      // Which of these already produced a batch — so "load" isn't offered twice.
+      if (list.length > 0) {
+        const { data: done } = await supabase
+          .from("lead_batches")
+          .select("storage_path")
+          .in("storage_path", list.map((f) => f.path));
+        if (!cancelled && done) {
+          setIngestedPaths(new Set((done as { storage_path: string | null }[]).map((d) => d.storage_path ?? "")));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!files || files.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-600 p-3 space-y-2">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+        Already in the bucket — no upload needed
+      </p>
+      {files.map((f) => {
+        const already = ingestedPaths.has(f.path);
+        const meta = TYPE_META[f.leadType];
+        return (
+          <div key={f.path} className="flex flex-wrap items-center gap-2 text-xs">
+            <span className={`px-1.5 py-0.5 rounded-full font-semibold ${meta.chip}`}>{meta.label}</span>
+            <span className="text-gray-700 dark:text-gray-200 font-medium">{f.name}</span>
+            {f.size != null && (
+              <span className="text-gray-400">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+            )}
+            {already ? (
+              <span className="text-emerald-600 dark:text-emerald-400 font-semibold">✓ already loaded</span>
+            ) : (
+              <button
+                onClick={() => {
+                  if (armed === f.path) {
+                    setArmed(null);
+                    onIngest(f);
+                  } else setArmed(f.path);
+                }}
+                className={`btn-ghost btn-sm ${armed === f.path ? "text-amber-600 dark:text-amber-400 font-semibold" : "text-ocean-blue"}`}
+                title={`Ingest ${f.name} as a ${meta.label} list`}
+              >
+                {armed === f.path ? "⚠️ Tap again — load it →" : "Load into Supabase"}
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <p className="text-[10px] text-gray-400">
+        Type is read from the filename. A file that already produced a batch is marked, so nothing gets loaded twice.
+      </p>
+    </div>
   );
 }
 
@@ -564,8 +731,10 @@ export default function LeadMachinePage() {
 
   const loadBatches = useCallback(async () => {
     setBatchesLoading(true);
+    // The VIEW, not the table — it carries records / dialable / pushed / errored /
+    // skipped / dup_of_prior per batch, already aggregated server-side.
     const { data, error } = await supabase
-      .from("lead_batches")
+      .from("lead_batch_overview")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(100);
@@ -819,23 +988,13 @@ export default function LeadMachinePage() {
   const usingSelection = selectedIds.size > 0;
   const pushCount = usingSelection ? selectedIds.size : leadCount;
 
-  /* The server only pushes rows still marked `loaded` that HAVE a phone, so the
-     filtered count can overstate the run. This is the honest number, computed off
-     the same filtered query, and it's what the button promises. */
+  /* How many the push will ACTUALLY touch. This comes from lead-push-ghl's own
+     `count` action — the same filter code the push runs — so the number on the
+     button and the number pushed agree by construction rather than by two
+     implementations staying in sync. Only for the filter-driven case; a checkbox
+     selection is its own answer, and the job's target_count corrects it after. */
   const [pushEligible, setPushEligible] = useState<number | null>(null);
-  useEffect(() => {
-    if (backendMissing) return;
-    let cancelled = false;
-    void (async () => {
-      const { count, error } = await buildFilteredQuery("id", { count: "exact", head: true })
-        .eq("status", "loaded")
-        .not("phone", "is", null);
-      if (!cancelled) setPushEligible(error ? null : (count ?? 0));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [buildFilteredQuery, backendMissing]);
+  const [countingPush, setCountingPush] = useState(false);
 
   /* The same filter set, in the shape lead-push-ghl runs server-side. Every
      control on the filter bar has a server equivalent, so a set too big for an
@@ -863,6 +1022,31 @@ export default function LeadMachinePage() {
      VibeReach. So that filter selects re-tag mode, and the panel says so. */
   const retagMode = fStatus === "pushed" || fStatus === "error";
 
+  /* Ask the function for the eligible count whenever the filter set changes.
+     Skipped while a selection is driving the panel (that count is the selection
+     itself) and while a push is running (the job reports its own progress). */
+  useEffect(() => {
+    if (backendMissing || usingSelection || pushRunning) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void (async () => {
+        setCountingPush(true);
+        const body: Record<string, unknown> = { action: "count", filters: serverFilters };
+        if (fBatch) body.batch_id = fBatch;
+        if (retagMode) body.retag = true;
+        const { data, error } = await supabase.functions.invoke("lead-push-ghl", { body });
+        if (cancelled) return;
+        setCountingPush(false);
+        const res = (data as { ok?: boolean; count?: number } | null) ?? null;
+        setPushEligible(error || !res || typeof res.count !== "number" ? null : res.count);
+      })();
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [serverFilters, fBatch, retagMode, backendMissing, usingSelection, pushRunning]);
+
   /* The count the button promises. In re-tag mode already-pushed rows ARE the
      target, so the "still loaded" eligibility count doesn't apply. */
   const plannedPush = usingSelection ? selectedIds.size : retagMode ? leadCount : (pushEligible ?? leadCount);
@@ -872,6 +1056,138 @@ export default function LeadMachinePage() {
      closer/owner sees the full tag set before firing. */
   const autoTypeTag = fType ? TYPE_META[fType]?.tag : null;
   const autoBatchTag = pinnedBatch?.batch_code ? kebab(pinnedBatch.batch_code) : null;
+
+  /* ── CSV export ─────────────────────────────────────────────────────────────
+     Exports the CURRENT filtered set (or the checkbox selection) — every page,
+     not the 25 on screen. Rows stream in a page at a time so an 85k-row pull
+     shows real progress instead of hanging. Two shapes:
+       · "email campaign" — the columns an email tool wants, has-email forced on
+       · "full"           — every stored column
+     Both always carry batch_code, lead_type and the tags, because a slice is
+     useless if you can't tell which list and which push it came from. */
+  const [exportProgress, setExportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [exportErr, setExportErr] = useState<string | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+
+  /* batch_id → batch_code for the export's Batch column. Read once off the batch
+     list (small table) rather than embedding a join into an 85k-row scan. */
+  const batchCodeById = useMemo(() => {
+    const m = new Map<string, string>();
+    batches.forEach((b) => m.set(b.id, b.batch_code));
+    return m;
+  }, [batches]);
+
+  /* A short, readable name for what's being exported: the batch code if one is
+     pinned, else the type, else "leads". */
+  const exportSlug = useMemo(() => {
+    if (pinnedBatch?.batch_code) return kebab(pinnedBatch.batch_code);
+    if (fType) return fType;
+    return "leads";
+  }, [pinnedBatch, fType]);
+
+  const runExport = useCallback(
+    async (preset: "email" | "full") => {
+      setExportErr(null);
+      setExportNote(null);
+      setExportProgress({ done: 0, total: 0 });
+      try {
+        const emailOnly = preset === "email";
+        // The email preset FORCES has-email in the query itself rather than
+        // relying on a state update landing first — and mirrors it into the
+        // filter bar so the screen agrees with the file.
+        if (emailOnly && !fHasEmail) setFHasEmail(true);
+
+        const ids = usingSelection ? Array.from(selectedIds) : null;
+        const rows: LeadRecord[] = [];
+
+        if (ids) {
+          setExportProgress({ done: 0, total: ids.length });
+          for (let i = 0; i < ids.length; i += ID_WINDOW) {
+            let q = supabase.from("lead_records").select(LEAD_SELECT).in("id", ids.slice(i, i + ID_WINDOW));
+            if (emailOnly) q = q.not("email", "is", null);
+            const { data, error } = await q;
+            if (error) throw error;
+            rows.push(...((data as unknown as LeadRecord[]) ?? []));
+            setExportProgress({ done: Math.min(i + ID_WINDOW, ids.length), total: ids.length });
+          }
+        } else {
+          // Count first so the progress bar is a real fraction, not a spinner.
+          let countQ = buildFilteredQuery("id", { count: "exact", head: true });
+          if (emailOnly) countQ = countQ.not("email", "is", null);
+          const { count } = await countQ;
+          const total = count ?? 0;
+          setExportProgress({ done: 0, total });
+          for (let offset = 0; offset < total; offset += EXPORT_WINDOW) {
+            let q = buildFilteredQuery(LEAD_SELECT).range(offset, offset + EXPORT_WINDOW - 1);
+            if (emailOnly) q = q.not("email", "is", null);
+            const { data, error } = await q;
+            if (error) throw error;
+            const page = (data as unknown as LeadRecord[]) ?? [];
+            rows.push(...page);
+            setExportProgress({ done: Math.min(offset + EXPORT_WINDOW, total), total });
+            if (page.length < EXPORT_WINDOW) break; // drained
+          }
+        }
+
+        if (rows.length === 0) {
+          setExportNote(
+            emailOnly
+              ? "Nothing to export — no lead in this set has an email address."
+              : "Nothing to export — no lead matches these filters.",
+          );
+          return;
+        }
+
+        const tagsOf = (l: LeadRecord) => (l.push_tags ?? []).join(";");
+        const batchOf = (l: LeadRecord) => (l.batch_id ? (batchCodeById.get(l.batch_id) ?? "") : "");
+
+        const flat: Record<string, unknown>[] = emailOnly
+          ? rows.map((l) => ({
+              email: l.email ?? "",
+              first_name: l.first_name ?? "",
+              last_name: l.last_name ?? "",
+              company: l.company ?? "",
+              state: l.state ?? "",
+              lead_type: l.lead_type ?? "",
+              batch_code: batchOf(l),
+              tags: tagsOf(l),
+            }))
+          : rows.map((l) => ({
+              batch_code: batchOf(l),
+              lead_type: l.lead_type ?? "",
+              company: l.company ?? "",
+              first_name: l.first_name ?? "",
+              last_name: l.last_name ?? "",
+              phone: l.phone ?? "",
+              line_type: l.line_type ?? "",
+              email: l.email ?? "",
+              city: l.city ?? "",
+              state: l.state ?? "",
+              zip: l.zip ?? "",
+              revenue: l.revenue ?? "",
+              employees: l.employees ?? "",
+              sic_description: l.sic_description ?? "",
+              filing_date: l.filing_date ?? "",
+              secured_party: l.secured_party ?? "",
+              is_dup_of_prior: l.is_dup_of_prior ? "yes" : "no",
+              status: l.status ?? "",
+              pushed_at: l.pushed_at ?? "",
+              ghl_contact_id: l.ghl_contact_id ?? "",
+              tags: tagsOf(l),
+            }));
+
+        // e.g. ucc-20260813-emails-20260814.csv
+        const name = `${exportSlug}-${emailOnly ? "emails" : "full"}-${todayCode()}.csv`;
+        exportToCsv(name, flat);
+        setExportNote(`${flat.length.toLocaleString()} rows exported to ${name}`);
+      } catch (e) {
+        setExportErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setExportProgress(null);
+      }
+    },
+    [batchCodeById, buildFilteredQuery, exportSlug, fHasEmail, selectedIds, usingSelection],
+  );
 
   const runPush = useCallback(async () => {
     setPushArmed(false);
@@ -1009,6 +1325,14 @@ export default function LeadMachinePage() {
     usingSelection,
   ]);
 
+  /* Filter option lists, built from what's actually on the page — the vendor's
+     own casing, never a guessed enum. */
+  const lineTypeOptions = useMemo(() => {
+    const set = new Set<string>();
+    leads.forEach((l) => l.line_type && set.add(l.line_type));
+    return Array.from(set).sort();
+  }, [leads]);
+
   const stateOptions = useMemo(() => {
     const set = new Set<string>();
     leads.forEach((l) => l.state && set.add(l.state));
@@ -1049,6 +1373,11 @@ export default function LeadMachinePage() {
           gets the <strong>type tag</strong> (<code>ucc-lead</code> / <code>aged-lead</code> / <code>trigger-lead</code>
           ), the <strong>batch tag</strong>, plus <strong>your campaign tags</strong>. HotProspector campaigns dial by
           tag, so the tags you add here are how a list becomes a dial session.
+        </p>
+        <p>
+          <strong className="text-gray-800 dark:text-gray-100">Exports</strong> follow the same filters as the push, and
+          always carry <code>batch_code</code>, <code>lead_type</code> and a <code>tags</code> column (semicolon-
+          separated), so an exported slice can always be traced back to the list and the push it came from.
         </p>
         <p className="text-gray-400">
           Different surface from{" "}
@@ -1097,10 +1426,12 @@ export default function LeadMachinePage() {
                     <th className={th}>Batch</th>
                     <th className={th}>Type</th>
                     <th className={th}>Label</th>
-                    <th className={th}>Rows</th>
-                    <th className={th}>Loaded</th>
+                    <th className={th}>Rows read</th>
+                    <th className={th}>Stored</th>
+                    <th className={th}>Dialable</th>
                     <th className={th}>Pushed</th>
-                    <th className={th}>Dupes</th>
+                    <th className={th}>No phone</th>
+                    <th className={th}>Seen before</th>
                     <th className={th}>Status</th>
                     <th className={th}>Uploaded</th>
                   </tr>
@@ -1108,13 +1439,13 @@ export default function LeadMachinePage() {
                 <tbody>
                   {batchesLoading ? (
                     <tr>
-                      <td colSpan={9} className="py-8 text-center text-gray-400">
+                      <td colSpan={11} className="py-8 text-center text-gray-400">
                         Loading…
                       </td>
                     </tr>
                   ) : batches.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-8 text-center text-gray-400">
+                      <td colSpan={11} className="py-8 text-center text-gray-400">
                         No lists uploaded yet — start with the upload panel above.
                       </td>
                     </tr>
@@ -1144,15 +1475,40 @@ export default function LeadMachinePage() {
                           <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300">{b.label || "—"}</td>
                           <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300">
                             {n0(b.total_rows).toLocaleString()}
+                            {n0(b.dup_rows) > 0 && (
+                              <span
+                                className="block text-[10px] text-gray-400"
+                                title="Rows dropped because the same phone appeared earlier in this same file"
+                              >
+                                −{n0(b.dup_rows).toLocaleString()} dupes in file
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold">
-                            {n0(b.ingested_rows).toLocaleString()}
+                            {n0(b.records).toLocaleString()}
+                          </td>
+                          <td
+                            className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold"
+                            title="Has a phone number — the only rows the push can send"
+                          >
+                            {n0(b.dialable).toLocaleString()}
                           </td>
                           <td className="py-2.5 px-4 text-emerald-600 dark:text-emerald-400 font-semibold">
-                            {n0(b.pushed_rows).toLocaleString()}
+                            {n0(b.pushed).toLocaleString()}
+                            {n0(b.errored) > 0 && (
+                              <span className="block text-[10px] text-rose-500">
+                                {n0(b.errored).toLocaleString()} errored
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400">
-                            {n0(b.dup_rows).toLocaleString()}
+                            {n0(b.skipped).toLocaleString()}
+                          </td>
+                          <td
+                            className="py-2.5 px-4 text-gray-500 dark:text-gray-400"
+                            title="Phone already seen in an earlier batch (or in the UCC pool) — these DID load; it's a filter, not a rejection"
+                          >
+                            {n0(b.dup_of_prior).toLocaleString()}
                           </td>
                           <td className="py-2.5 px-4">
                             <span
@@ -1260,12 +1616,21 @@ export default function LeadMachinePage() {
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Line type</label>
-                <select className={input} value={fLine} onChange={(e) => setFLine(e.target.value)}>
-                  <option value="">Any line</option>
-                  <option value="mobile">Mobile</option>
-                  <option value="landline">Landline</option>
-                  <option value="voip">VoIP</option>
-                </select>
+                {/* Matched VERBATIM as the vendor wrote it ("Mobile", "Landline",
+                    …), so this is free text over the values actually present
+                    rather than a guessed enum. */}
+                <input
+                  list="lead-machine-line-types"
+                  className={`${input} w-32`}
+                  placeholder="any line"
+                  value={fLine}
+                  onChange={(e) => setFLine(e.target.value)}
+                />
+                <datalist id="lead-machine-line-types">
+                  {lineTypeOptions.map((v) => (
+                    <option key={v} value={v} />
+                  ))}
+                </datalist>
                 <span className="text-[10px] text-gray-400">Mobile connects best</span>
               </div>
               <div className="flex flex-col gap-0.5">
@@ -1353,9 +1718,15 @@ export default function LeadMachinePage() {
               )}
             </div>
 
-            {/* ── 4. Push panel — sticky once there's something to push ── */}
-            {(activeFilterCount > 0 || usingSelection) && (
-              <div className="sticky top-0 z-20 rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/90 dark:bg-emerald-900/30 backdrop-blur p-4 space-y-3 shadow-sm">
+            {/* ── 4. Act on this set — push into VibeReach, or export it as CSV.
+                Always present when there are leads (export needs no filter);
+                goes sticky once a filter or a selection is driving it. ── */}
+            {leadCount > 0 && (
+              <div
+                className={`rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/90 dark:bg-emerald-900/30 backdrop-blur p-4 space-y-3 shadow-sm ${
+                  activeFilterCount > 0 || usingSelection ? "sticky top-0 z-20" : ""
+                }`}
+              >
                 <div className="flex flex-wrap items-center gap-2">
                   <ArrowUpTrayIcon className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                   <h3 className="text-sm font-bold text-gray-900 dark:text-white">
@@ -1371,7 +1742,10 @@ export default function LeadMachinePage() {
                   </span>
                   {/* What will ACTUALLY go: the server pushes only rows still marked
                       `loaded` that have a phone, so this is the honest number. */}
-                  {!retagMode && !usingSelection && pushEligible != null && pushEligible !== leadCount && (
+                  {!retagMode && !usingSelection && countingPush && (
+                    <span className="text-xs text-gray-400">· checking how many are pushable…</span>
+                  )}
+                  {!retagMode && !usingSelection && !countingPush && pushEligible != null && pushEligible !== leadCount && (
                     <span className="text-sm text-gray-700 dark:text-gray-200">
                       ·{" "}
                       <strong className="text-emerald-700 dark:text-emerald-300">
@@ -1484,7 +1858,48 @@ export default function LeadMachinePage() {
                       in the background.
                     </span>
                   )}
+
+                  {/* Export — same set, different destination. No confirm: writing
+                      a file changes nothing. */}
+                  <span className="h-5 w-px bg-emerald-300/60 dark:bg-emerald-700/60" />
+                  <button
+                    onClick={() => void runExport("email")}
+                    disabled={exportProgress != null}
+                    className="btn-ghost btn-sm inline-flex items-center gap-1.5"
+                    title="Export the email-campaign columns for this set: Email, First/Last, Company, State, Lead type, Batch, Tags — leads with no email are left out"
+                  >
+                    <EnvelopeIcon className="w-4 h-4" />
+                    Export emails (CSV)
+                  </button>
+                  <button
+                    onClick={() => void runExport("full")}
+                    disabled={exportProgress != null}
+                    className="btn-ghost btn-sm inline-flex items-center gap-1.5"
+                    title="Export every stored column for this set, including batch code, tags and push status"
+                  >
+                    <ArrowDownTrayIcon className="w-4 h-4" />
+                    Export full (CSV)
+                  </button>
                 </div>
+
+                {exportProgress && (
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-ocean-blue/20">
+                      <div
+                        className="h-full rounded-full bg-ocean-blue transition-all"
+                        style={{
+                          width: `${exportProgress.total > 0 ? Math.round((exportProgress.done / exportProgress.total) * 100) : 0}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-600 dark:text-gray-300">
+                      building the CSV — {exportProgress.done.toLocaleString()}
+                      {exportProgress.total > 0 && <> / {exportProgress.total.toLocaleString()}</>} rows…
+                    </p>
+                  </div>
+                )}
+                {exportNote && <p className="text-sm text-ocean-blue">{exportNote}</p>}
+                {exportErr && <p className="text-sm text-rose-600 dark:text-rose-400">export failed: {exportErr}</p>}
 
                 {pushProgress && (
                   <div className="space-y-1">
@@ -1599,7 +2014,8 @@ export default function LeadMachinePage() {
                             {l.line_type && (
                               <span
                                 className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
-                                  l.line_type === "mobile"
+                                  l.line_type.toLowerCase().includes("mobile") ||
+                                  l.line_type.toLowerCase().includes("cell")
                                     ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                                     : "bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
                                 }`}
