@@ -36,6 +36,8 @@ import {
 
 const BUDGET_MS = 50_000;   // stop consuming rows past this, then self-reinvoke
 const INSERT_BATCH = 1000;  // rows per insert round-trip
+const MIN_SPLIT = 50;       // stop halving a failing insert below this
+const CHECKPOINT_EVERY = 10; // flushes between byte_offset checkpoints
 const BUCKET = "lead-uploads";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -105,6 +107,46 @@ async function readHeader(url: string): Promise<{ cols: Record<string, number>; 
 
 type RecordRow = Record<string, unknown>;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Insert one chunk, surviving a busy database.
+ *
+ * A 1,000-row jsonb upsert is comfortably inside the statement timeout on a quiet
+ * instance, but NOT when several 85k ingests stream at once — the first real run
+ * of three parallel files killed a batch outright with "canceling statement due to
+ * statement timeout". A whole purchased file must not be lost to write contention,
+ * so a failed chunk is HALVED and retried (recursively, down to MIN_SPLIT rows)
+ * before it is allowed to fail the batch. Smaller statements finish inside the
+ * timeout, so the ingest degrades in throughput instead of dying.
+ *
+ * Re-inserting rows that already landed is harmless: (batch_id, phone) +
+ * ON CONFLICT DO NOTHING makes every insert here idempotent.
+ */
+async function insertChunk(db: SupabaseClient, rows: RecordRow[], depth = 0): Promise<void> {
+  const { error } = await db.from("lead_records")
+    .upsert(rows, { onConflict: "batch_id,phone", ignoreDuplicates: true });
+  if (!error) return;
+
+  if (rows.length > MIN_SPLIT) {
+    const mid = Math.floor(rows.length / 2);
+    console.warn("[lead-file-ingest] insert failed — splitting", JSON.stringify({
+      rows: rows.length, depth, error: error.message,
+    }));
+    await insertChunk(db, rows.slice(0, mid), depth + 1);
+    await insertChunk(db, rows.slice(mid), depth + 1);
+    return;
+  }
+  // Already small: the database is busy rather than the statement being too big.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await sleep(500 * attempt);
+    const { error: retryErr } = await db.from("lead_records")
+      .upsert(rows, { onConflict: "batch_id,phone", ignoreDuplicates: true });
+    if (!retryErr) return;
+    if (attempt === 3) throw new Error(`insert failed after retries: ${retryErr.message}`);
+  }
+}
+
 /** Map one CSV record to a lead_records row. Never throws on bad data. */
 function mapRow(batch: Batch, fields: string[], cols: Record<string, number>, names: string[]): RecordRow {
   const raw: Record<string, string> = {};
@@ -154,18 +196,26 @@ async function processChunk(db: SupabaseClient, batch: Batch, budgetMs: number):
   const startByte = batch.byte_offset > 0 ? batch.byte_offset : dataStart;
   await patchBatch(db, batch.id, { bytes_total: totalBytes, status: "ingesting" });
 
+  const committed = batch.total_rows ?? 0; // rows counted by previous windows
   const pending: RecordRow[] = [];
+  const started = Date.now();
+  let scanned = 0, lastByteEnd = startByte, hitBudget = false, flushes = 0;
+
+  // In-file duplicate phones are dropped by the (batch_id, phone) unique index.
   const flush = async () => {
     if (!pending.length) return;
-    const rows = pending.splice(0);
-    // In-file duplicate phones are dropped by the (batch_id, phone) unique index.
-    const { error } = await db.from("lead_records")
-      .upsert(rows, { onConflict: "batch_id,phone", ignoreDuplicates: true });
-    if (error) throw new Error(`insert failed: ${error.message}`);
+    await insertChunk(db, pending.splice(0));
   };
-
-  const started = Date.now();
-  let scanned = 0, lastByteEnd = startByte, hitBudget = false;
+  // total_rows and byte_offset are ALWAYS written together: `scanned` rows are
+  // exactly the rows up to `lastByteEnd`, so any checkpoint is a consistent resume
+  // point and a crash costs at most one checkpoint's worth of re-reading.
+  const checkpoint = async () => {
+    await patchBatch(db, batch.id, {
+      total_rows: committed + scanned, byte_offset: lastByteEnd,
+      message: `ingesting — ${committed + scanned} rows read`
+        + `${totalBytes ? ` (${Math.floor((lastByteEnd / totalBytes) * 100)}%)` : ""}`,
+    });
+  };
 
   for await (const { line, byteEnd } of streamCsvRecords(url, startByte)) {
     if (line.trim()) {
@@ -174,6 +224,7 @@ async function processChunk(db: SupabaseClient, batch: Batch, budgetMs: number):
       if (pending.length >= INSERT_BATCH) {
         await flush();
         lastByteEnd = byteEnd;
+        if (++flushes % CHECKPOINT_EVERY === 0) await checkpoint();
         if (Date.now() - started > budgetMs) { hitBudget = true; break; }
         continue;
       }
@@ -182,7 +233,7 @@ async function processChunk(db: SupabaseClient, batch: Batch, budgetMs: number):
   }
   await flush();
 
-  const total = (batch.total_rows ?? 0) + scanned;
+  const total = committed + scanned;
   if (hitBudget) {
     await patchBatch(db, batch.id, {
       total_rows: total, byte_offset: lastByteEnd,
@@ -275,6 +326,26 @@ Deno.serve(async (req) => {
       if (secret) reinvoke(secret, created.id as string);
       else console.error("[lead-file-ingest] no webhook secret — batch will not self-continue");
       return json({ ok: true, batch_id: created.id, batch_code: created.batch_code, lead_type: leadType });
+    }
+
+    // ── resume: restart a batch that died mid-stream ──
+    // Safe to call at any time: the ingest restarts from the last checkpointed
+    // byte_offset, and re-reading is idempotent (ON CONFLICT DO NOTHING), so the
+    // worst case is re-scanning up to one checkpoint of already-landed rows.
+    if (action === "resume") {
+      const batchId = String(payload.batch_id ?? "");
+      if (!batchId) return json({ error: "batch_id required" }, 400);
+      const batch = await loadBatch(db, batchId);
+      if (!batch) return json({ error: "batch not found" }, 404);
+      if (batch.status === "ready") return json({ ok: true, skipped: true, status: "ready" });
+      await patchBatch(db, batchId, {
+        status: "ingesting", error: null, finished_at: null,
+        message: `resuming from byte ${batch.byte_offset}`,
+      });
+      const secret = await webhookSecret(db);
+      if (!secret) return json({ error: "no webhook secret — cannot self-continue" }, 500);
+      reinvoke(secret, batchId);
+      return json({ ok: true, batch_id: batchId, resumed_from_byte: batch.byte_offset });
     }
 
     // ── continue: one budget window, then reinvoke or finish ──
