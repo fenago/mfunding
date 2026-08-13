@@ -1257,6 +1257,15 @@ export default function PhUccMachinePage() {
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchResult, setBatchResult] = useState<string | null>(null);
   const [batchErr, setBatchErr] = useState<string | null>(null);
+  // ── Re-check status (FREE reparse — no BatchData call, no wallet spend) ──
+  // Recomputes phones/status from STORED skip-trace results, promoting leads that
+  // were traced but got stuck at needs_skiptrace (e.g. "Awaiting TCPA cell-scrub")
+  // to 'ready', and backfilling TCPA-litigator suppression. See ph-ucc-skiptrace
+  // { action: "reparse" }. Distinct from the money-spending trace above.
+  const [reparseConfirmOpen, setReparseConfirmOpen] = useState(false);
+  const [reparseRunning, setReparseRunning] = useState(false);
+  const [reparseResult, setReparseResult] = useState<string | null>(null);
+  const [reparseErr, setReparseErr] = useState<string | null>(null);
   // ── Granular skip-trace: per-row + multi-select ──
   // selectedIds survives paging (keyed by id); cleared after a successful trace
   // and on any filter change. rowTracingId shows the inline spinner on ONE row.
@@ -1951,6 +1960,45 @@ export default function PhUccMachinePage() {
     },
     [wallet, loadFunnel, loadLeads, loadTraceSummary, loadPushSummary, loadWallet],
   );
+
+  /* ── Re-check status (FREE) ──
+     Invokes the reparse action, which recomputes phones/best_phone/status from
+     each traced lead's STORED ph_ucc_contacts.raw — NO BatchData call, NO wallet
+     spend, no skiptrace_enabled gate. It backfills the missing TCPA-litigator
+     "cell-scrub", promoting clean traced leads to 'ready' and suppressing
+     TCPA-litigator ones. limit 2000 clears the whole current backlog in one call.
+     Refreshes the SAME surfaces a paid run does, so promoted leads immediately
+     show as ready with their phone in the Contact column. */
+  const runReparse = useCallback(async () => {
+    setReparseConfirmOpen(false);
+    setReparseRunning(true);
+    setReparseErr(null);
+    setReparseResult(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", {
+        body: { action: "reparse", limit: 2000 },
+      });
+      if (error) throw new Error(await fnErrorMessage(error));
+      const r = (data as Record<string, unknown>) ?? {};
+      if (r.ok === false) throw new Error(String(r.error || "re-check failed"));
+      const scanned = Number(r.scanned ?? 0) || 0;
+      const promoted = Number(r.status_changed ?? 0) || 0;
+      const suppressed = Number(r.litigator_leads ?? 0) || 0;
+      const errored = Number(r.errored ?? 0) || 0;
+      setReparseResult(
+        `Re-checked ${scanned.toLocaleString()} leads · ${promoted.toLocaleString()} promoted to ready · ` +
+          `${suppressed.toLocaleString()} TCPA-suppressed` +
+          (errored > 0 ? ` · ${errored} errored` : ""),
+      );
+      // Same refresh set as a paid trace: funnel/status counts, lead book, and the
+      // filtered trace + push summaries (plus wallet, which reparse never touches).
+      await Promise.all([loadFunnel(), loadLeads(), loadTraceSummary(), loadPushSummary(), loadWallet()]);
+    } catch (e) {
+      setReparseErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReparseRunning(false);
+    }
+  }, [loadFunnel, loadLeads, loadTraceSummary, loadPushSummary, loadWallet]);
 
   /* Gather up to `cap` eligible ids from the CURRENT filtered set (score desc),
      mirroring the edge fn's eligibility (needs_skiptrace, untraced, has address). */
@@ -2980,6 +3028,39 @@ export default function PhUccMachinePage() {
                 </div>
                 <span className="text-[10px] text-gray-400">Check any combination (matches any ticked)</span>
               </div>
+            </div>
+
+            {/* ── Re-check status (FREE — no BatchData call, no wallet spend) ──
+                Promotes leads that were already skip-traced but got stuck at
+                needs_skiptrace ("Awaiting TCPA cell-scrub") to ready by recomputing
+                status from stored results. Deliberately styled as a neutral/secondary
+                control with a "no charge" chip so it's never confused with the
+                money-spending amber skip-trace card below. Ungated: reparse works
+                regardless of the skiptrace provider toggle. */}
+            <div className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/40 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <ArrowPathIcon className="w-4 h-4 text-slate-500 dark:text-slate-300 shrink-0" />
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white">Re-check status</h3>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200 font-semibold">
+                  free · no charge
+                </span>
+              </div>
+              <p className="text-xs text-gray-600 dark:text-gray-300">
+                Re-checks leads that were already skip-traced but got stuck at{" "}
+                <code>needs_skiptrace</code> (e.g. "Awaiting TCPA cell-scrub") and promotes the
+                dialable ones to <strong>ready</strong>. This <strong>does not</strong> call the
+                trace provider and <strong>costs nothing</strong>.
+              </p>
+              <button
+                onClick={() => setReparseConfirmOpen(true)}
+                disabled={reparseRunning}
+                className="btn-secondary btn-sm inline-flex items-center gap-1.5"
+              >
+                <ArrowPathIcon className={`w-4 h-4 ${reparseRunning ? "animate-spin" : ""}`} />
+                {reparseRunning ? "Re-checking…" : "Re-check status (no charge)"}
+              </button>
+              {reparseResult && <p className="text-sm text-emerald-600 dark:text-emerald-400">{reparseResult}</p>}
+              {reparseErr && <p className="text-sm text-rose-600 dark:text-rose-400">re-check failed: {reparseErr}</p>}
             </div>
 
             {/* ── Skip-trace THIS filtered set (spends real money — confirm-gated) ── */}
@@ -4037,6 +4118,34 @@ export default function PhUccMachinePage() {
               >
                 <BoltIcon className="w-4 h-4" />
                 Yes — trace {plannedCount.toLocaleString()} leads (~${estCost.toFixed(2)})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Re-check status confirm modal (in-app overlay — NOT a browser popup).
+          FREE: recomputes status from stored trace results; no provider call. */}
+      {reparseConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button className="absolute inset-0 bg-black/50" onClick={() => setReparseConfirmOpen(false)} aria-label="Cancel" />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <ArrowPathIcon className="w-6 h-6 text-slate-500 dark:text-slate-300 shrink-0" />
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Re-check status — free, no charge</h2>
+            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-300">
+              This re-checks already-traced leads and promotes the dialable ones to{" "}
+              <strong>ready</strong> — it does <strong>not</strong> call the trace provider and
+              costs nothing. Leads flagged as TCPA-litigators are suppressed at the same time.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setReparseConfirmOpen(false)} className="btn-ghost">
+                Cancel
+              </button>
+              <button onClick={runReparse} className="btn-primary inline-flex items-center gap-1.5">
+                <ArrowPathIcon className="w-4 h-4" />
+                Re-check now (no charge)
               </button>
             </div>
           </div>
