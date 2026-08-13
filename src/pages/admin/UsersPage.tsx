@@ -17,7 +17,14 @@ import {
   UserPlusIcon,
   ClipboardDocumentIcon,
   CheckCircleIcon,
+  IdentificationIcon,
+  BanknotesIcon,
+  MapPinIcon,
+  DocumentTextIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
+import supabase from "@/supabase";
+import { type PayoutProfile } from "@/services/payoutService";
 import { useUserProfile, type UserRole } from "../../context/UserProfileContext";
 import {
   adminListUsers,
@@ -63,6 +70,7 @@ export default function UsersPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<AdminUser | null>(null);
   const [editing, setEditing] = useState<AdminUser | null>(null);
   const [pwUser, setPwUser] = useState<AdminUser | null>(null);
   const [confirm, setConfirm] = useState<{ user: AdminUser; kind: "delete" | "logout" } | null>(null);
@@ -214,11 +222,17 @@ export default function UsersPage() {
                   return (
                     <tr key={u.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/40">
                       <td className="px-4 py-3">
-                        <div className="font-medium text-gray-900 dark:text-white">
-                          {fullName(u)}
-                          {isSelf && <span className="ml-2 text-xs text-gray-400">(you)</span>}
-                        </div>
-                        <div className="text-xs text-gray-500 dark:text-gray-400">{u.email ?? "—"}</div>
+                        <button
+                          onClick={() => setViewing(u)}
+                          className="text-left group"
+                          title={`View ${fullName(u)}'s profile & payout`}
+                        >
+                          <div className="font-medium text-gray-900 dark:text-white group-hover:text-ocean-blue group-hover:underline">
+                            {fullName(u)}
+                            {isSelf && <span className="ml-2 text-xs text-gray-400">(you)</span>}
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">{u.email ?? "—"}</div>
+                        </button>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -269,6 +283,9 @@ export default function UsersPage() {
                               <EllipsisVerticalIcon className="w-5 h-5" />
                             </summary>
                             <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg py-1 text-sm">
+                              <MenuItem icon={IdentificationIcon} onClick={() => setViewing(u)}>
+                                View profile &amp; payout
+                              </MenuItem>
                               <MenuItem icon={PencilSquareIcon} onClick={() => setEditing(u)}>
                                 Edit details
                               </MenuItem>
@@ -311,6 +328,8 @@ export default function UsersPage() {
         signs up at <code className="text-gray-500">/auth/sign-up</code> also lands here as a "User" — set their role above.
         "User" = a merchant/customer.
       </p>
+
+      {viewing && <UserDetailDrawer user={viewing} onClose={() => setViewing(null)} />}
 
       {editing && (
         <EditModal
@@ -837,6 +856,304 @@ function ModalActions({
       >
         {confirmLabel}
       </button>
+    </div>
+  );
+}
+
+/** Full profile row read directly from `profiles` (super_admin RLS allows it). */
+interface FullProfile {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  display_name: string | null;
+  email: string | null;
+  role: UserRole | null;
+  phone_number: string | null;
+  whatsapp_number: string | null;
+  contact_email: string | null;
+  country: string | null;
+  address_line1: string | null;
+  address_line2: string | null;
+  city: string | null;
+  state: string | null;
+  postal_code: string | null;
+  timezone: string | null;
+  bio: string | null;
+  company_name: string | null;
+  ein: string | null;
+  business_address: string | null;
+}
+
+const PROFILE_DETAIL_COLS =
+  "id, first_name, last_name, display_name, email, role, phone_number, whatsapp_number, contact_email, country, address_line1, address_line2, city, state, postal_code, timezone, bio, company_name, ein, business_address";
+
+const PAYOUT_METHOD_LABELS: Record<string, string> = {
+  wise: "Wise",
+  payoneer: "Payoneer",
+  zelle: "Zelle",
+  gcash: "GCash",
+  bank_ph: "PH bank transfer",
+  other: "Other",
+};
+
+const fmtDate = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : null;
+
+/**
+ * Read-only detail panel for one user — full profile + how they get paid + tax
+ * status. Slides in from the right (in-app drawer, not a browser popup).
+ * Queries profiles + payout_profiles directly; super_admin RLS permits both.
+ * Sensitive values (bank account #, Zelle handle, foreign TIN, EIN) render
+ * masked with a per-field Show toggle so payroll can reveal on demand.
+ */
+function UserDetailDrawer({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+  const [profile, setProfile] = useState<FullProfile | null>(null);
+  const [profileErr, setProfileErr] = useState<string | null>(null);
+  const [payout, setPayout] = useState<PayoutProfile | null>(null);
+  const [payoutErr, setPayoutErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setProfileErr(null);
+      setPayoutErr(null);
+      const [pRes, payRes] = await Promise.all([
+        supabase.from("profiles").select(PROFILE_DETAIL_COLS).eq("id", user.id).single(),
+        supabase.from("payout_profiles").select("*").eq("profile_id", user.id).maybeSingle(),
+      ]);
+      if (cancelled) return;
+      if (pRes.error) setProfileErr(pRes.error.message);
+      else setProfile(pRes.data as unknown as FullProfile);
+      if (payRes.error) setPayoutErr(payRes.error.message);
+      else setPayout((payRes.data as PayoutProfile | null) ?? null);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user.id]);
+
+  const name = fullName(user);
+  const method = payout?.preferred_method || "";
+  const address = profile
+    ? [profile.address_line1, profile.address_line2, [profile.city, profile.state].filter(Boolean).join(", "), profile.postal_code, profile.country]
+        .filter((v) => v && v.trim())
+        .join("\n")
+    : "";
+  const isUS = (profile?.country || "").toLowerCase() === "united states";
+  const hasPayoutMethod = !!payout && !!method;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
+      <div
+        className="w-full max-w-md h-full overflow-y-auto bg-white dark:bg-gray-900 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-5 py-4">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white truncate">{name}</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 truncate">{user.email ?? "—"}</p>
+            <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium ${ROLE_BADGE[user.role]}`}>
+              {ROLE_OPTIONS.find((r) => r.value === user.role)?.label ?? user.role}
+            </span>
+          </div>
+          <button
+            onClick={onClose}
+            className="shrink-0 p-1.5 rounded-md text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600"
+            title="Close"
+          >
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-6">
+          {loading && <p className="text-sm text-gray-500 dark:text-gray-400">Loading details…</p>}
+
+          {!loading && (
+            <>
+              {/* Profile */}
+              <Section icon={IdentificationIcon} title="Profile">
+                {profileErr ? (
+                  <InlineErr msg={profileErr} />
+                ) : (
+                  <dl className="space-y-2">
+                    <DRow label="First name" value={profile?.first_name} />
+                    <DRow label="Last name" value={profile?.last_name} />
+                    <DRow label="Display name" value={profile?.display_name} />
+                    <DRow label="Login email" value={profile?.email ?? user.email} />
+                    <DRow label="Contact email" value={profile?.contact_email} />
+                    <DRow label="Phone" value={profile?.phone_number} />
+                    <DRow label="WhatsApp" value={profile?.whatsapp_number} />
+                    <DRow label="Country" value={profile?.country} />
+                    <DRow label="Timezone" value={profile?.timezone} />
+                    <DRow label="Bio" value={profile?.bio} />
+                  </dl>
+                )}
+              </Section>
+
+              {/* Mailing address */}
+              {!profileErr && (
+                <Section icon={MapPinIcon} title="Mailing address">
+                  {address ? (
+                    <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-line">{address}</p>
+                  ) : (
+                    <p className="text-sm text-gray-400">No address on file.</p>
+                  )}
+                </Section>
+              )}
+
+              {/* How they get paid */}
+              <Section icon={BanknotesIcon} title="How they get paid">
+                {payoutErr ? (
+                  <InlineErr msg={payoutErr} />
+                ) : !hasPayoutMethod ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-sm text-amber-800 dark:text-amber-200">
+                    <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                    <span>
+                      <strong>No payment method on file</strong> — this person can&apos;t be paid yet.
+                    </span>
+                  </div>
+                ) : (
+                  <dl className="space-y-2">
+                    <DRow
+                      label="Method"
+                      value={PAYOUT_METHOD_LABELS[method] ?? method}
+                    />
+                    <DRow label="Account holder" value={payout?.account_holder_name} />
+                    <DRow label="Currency" value={payout?.currency} />
+                    {method === "wise" && <DRow label="Wise email" value={payout?.wise_email} />}
+                    {method === "payoneer" && <DRow label="Payoneer email" value={payout?.payoneer_email} />}
+                    {method === "zelle" && (
+                      <>
+                        <DRow label="Zelle handle" value={payout?.zelle_handle} sensitive />
+                        <DRow label="Name on Zelle" value={payout?.zelle_name} />
+                      </>
+                    )}
+                    {method === "gcash" && (
+                      <>
+                        <DRow label="GCash number" value={payout?.gcash_number} />
+                        <DRow label="Name on GCash" value={payout?.gcash_name} />
+                      </>
+                    )}
+                    {method === "bank_ph" && (
+                      <>
+                        <DRow label="Bank" value={payout?.bank_name} />
+                        <DRow label="Account name" value={payout?.bank_account_name} />
+                        <DRow label="Account number" value={payout?.bank_account_number} sensitive />
+                        <DRow label="Branch" value={payout?.bank_branch} />
+                        <DRow label="SWIFT / BIC" value={payout?.bank_swift_bic} />
+                      </>
+                    )}
+                    {method === "other" && (
+                      <>
+                        <DRow label="Method name" value={payout?.other_method_name} />
+                        <DRow label="Details" value={payout?.other_method_details} />
+                      </>
+                    )}
+                    <DRow label="Notes for payroll" value={payout?.payout_notes} />
+                  </dl>
+                )}
+              </Section>
+
+              {/* Tax status */}
+              {!profileErr && (
+                <Section icon={DocumentTextIcon} title="Tax status">
+                  {isUS ? (
+                    <dl className="space-y-2">
+                      <DRow label="Tax country" value="United States (1099)" />
+                      <DRow label="Company / entity" value={profile?.company_name} />
+                      <DRow label="EIN" value={profile?.ein} sensitive />
+                      <DRow label="Business address" value={profile?.business_address} />
+                    </dl>
+                  ) : (
+                    <dl className="space-y-2">
+                      <DRow label="Tax country" value={payout?.tax_country || profile?.country} />
+                      <DRow
+                        label="Foreign status (W-8BEN)"
+                        value={
+                          payout?.foreign_status_certified
+                            ? `Certified not a U.S. person${
+                                fmtDate(payout?.foreign_status_certified_at) ? ` · ${fmtDate(payout?.foreign_status_certified_at)}` : ""
+                              }`
+                            : "Not certified"
+                        }
+                      />
+                      <DRow label="Foreign tax ID" value={payout?.foreign_tax_id} sensitive />
+                    </dl>
+                  )}
+                </Section>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Section({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+        <Icon className="w-4 h-4" /> {title}
+      </h3>
+      {children}
+    </div>
+  );
+}
+
+function InlineErr({ msg }: { msg: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2.5 text-sm text-red-700 dark:text-red-300">
+      <ExclamationTriangleIcon className="w-5 h-5 shrink-0" /> {msg}
+    </div>
+  );
+}
+
+/** One label/value row. Sensitive values render masked with a Show toggle. */
+function DRow({
+  label,
+  value,
+  sensitive,
+}: {
+  label: string;
+  value: string | null | undefined;
+  sensitive?: boolean;
+}) {
+  const [show, setShow] = useState(false);
+  const has = !!value && value.trim().length > 0;
+  return (
+    <div className="grid grid-cols-3 gap-3">
+      <dt className="col-span-1 text-xs text-gray-500 dark:text-gray-400 pt-0.5">{label}</dt>
+      <dd className="col-span-2 text-sm text-gray-900 dark:text-gray-100 break-words">
+        {!has ? (
+          <span className="text-gray-400">—</span>
+        ) : sensitive ? (
+          <span className="inline-flex items-center gap-2">
+            <span className="font-mono">{show ? value : "•".repeat(Math.min(value!.length, 12))}</span>
+            <button
+              type="button"
+              onClick={() => setShow((s) => !s)}
+              className="text-xs font-medium text-ocean-blue hover:underline"
+            >
+              {show ? "Hide" : "Show"}
+            </button>
+          </span>
+        ) : (
+          <span className="whitespace-pre-line">{value}</span>
+        )}
+      </dd>
     </div>
   );
 }

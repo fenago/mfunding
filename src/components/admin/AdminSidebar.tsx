@@ -402,25 +402,49 @@ export default function AdminSidebar() {
         })}
       </nav>
 
-      {/* User section */}
+      {/* User section — the profile entry point everyone looks for. The whole
+          card links to My Profile (one click, regardless of nav length). */}
       <div className="border-t border-gray-200 dark:border-gray-700 p-3">
-        {!isCollapsed && (
-          <div className="mb-2 px-2">
-            <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-              {profile?.display_name || profile?.email?.split("@")[0]}
-            </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{profile?.email}</p>
-            <span
-              className={`inline-block mt-1 px-2 py-0.5 text-xs font-medium rounded-full ${
-                isSuperAdmin
-                  ? "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
-                  : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-              }`}
-            >
-              {profile?.role}
-            </span>
-          </div>
-        )}
+        <Link
+          to="/admin/my-profile"
+          title={isCollapsed ? "My Profile" : "Open My Profile"}
+          className={`flex items-center gap-3 rounded-lg mb-1 transition-colors ${
+            isCollapsed ? "justify-center p-2" : "px-2 py-2"
+          } ${
+            isActive("/admin/my-profile")
+              ? "bg-mint-green/10"
+              : "hover:bg-gray-100 dark:hover:bg-gray-700"
+          }`}
+        >
+          <UserCircleIcon
+            className={`w-7 h-7 flex-shrink-0 ${
+              isActive("/admin/my-profile") ? "text-mint-green" : "text-gray-400 dark:text-gray-500"
+            }`}
+          />
+          {!isCollapsed && (
+            <div className="min-w-0">
+              <p
+                className={`text-sm font-medium truncate ${
+                  isActive("/admin/my-profile")
+                    ? "text-mint-green"
+                    : "text-gray-900 dark:text-gray-100"
+                }`}
+              >
+                {profile?.display_name || profile?.email?.split("@")[0]}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{profile?.email}</p>
+              <span
+                className={`inline-block mt-1 px-2 py-0.5 text-xs font-medium rounded-full ${
+                  isSuperAdmin
+                    ? "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
+                    : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                }`}
+              >
+                {profile?.role}
+              </span>
+            </div>
+          )}
+        </Link>
         <button
           onClick={handleSignOut}
           className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white transition-colors ${
