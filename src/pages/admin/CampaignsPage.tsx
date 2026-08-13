@@ -309,6 +309,8 @@ function MiniStat({ label, value, tone }: { label: string; value: string; tone?:
 function StatusBadge({ status }: { status: CampaignStatus }) {
   const tone: Record<CampaignStatus, string> = {
     draft: "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300",
+    // Set up but not dialing yet — the state every new dial campaign starts in.
+    planned: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300",
     active: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
     paused: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
     completed: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",

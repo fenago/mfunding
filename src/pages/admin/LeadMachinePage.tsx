@@ -14,11 +14,23 @@ import {
   CheckCircleIcon,
   DocumentArrowUpIcon,
   BoltIcon,
+  MegaphoneIcon,
 } from "@heroicons/react/24/outline";
 import * as tus from "tus-js-client";
 import supabase from "@/supabase";
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from "@/config";
 import { exportToCsv } from "@/lib/csv";
+import {
+  listDialCampaigns,
+  createDialCampaign,
+  validateDialTag,
+  normalizeDialTag,
+  suggestDialTag,
+  campaignLabel,
+  type Campaign,
+  type DialSource,
+  type DialTagCheck,
+} from "@/services/campaignService";
 
 /* ------------------------------------------------------------------ */
 /* LEAD MACHINE — /admin/lead-machine                                  */
@@ -868,6 +880,153 @@ function ProcessStrip() {
 }
 
 /* ================================================================== */
+/* New dial campaign — the inline creator inside the push panel         */
+/* ================================================================== */
+/* Deliberately LIGHTER than the Campaigns page wizard, which is driven by the
+   Synergy product catalog and asks for budget, vendor, pricing and a channel.
+   A dial campaign needs two things: a name and the tag that joins it to HP.
+   Everything else (the code, the GHL tag, the HP setup checklist) is minted
+   server-side by the dial-campaign function. */
+function NewDialCampaign({
+  suggestedName,
+  suggestedTag,
+  listLabel,
+  dialSource,
+  onCreated,
+  onCancel,
+}: {
+  suggestedName: string;
+  suggestedTag: string;
+  listLabel: string;
+  dialSource: () => DialSource;
+  onCreated: (c: Campaign, ghlTagCreated: boolean) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(suggestedName);
+  const [tag, setTag] = useState(suggestedTag);
+  const [check, setCheck] = useState<DialTagCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const debouncedTag = useDebounced(tag, 400);
+  /* The instant preview is a local mirror of the SQL normalizer; the VERDICT is
+     always the server's, because only the DB knows about reserved prefixes and
+     collisions with other campaigns and batch codes. */
+  const preview = normalizeDialTag(tag);
+
+  /* Validate against the DB whenever the typing settles. Guarded so a slow
+     response for an old value can't overwrite the answer for the current one. */
+  useEffect(() => {
+    if (!debouncedTag.trim()) {
+      setCheck(null);
+      return;
+    }
+    let stale = false;
+    setChecking(true);
+    validateDialTag(debouncedTag)
+      .then((r) => {
+        if (!stale) setCheck(r);
+      })
+      .catch((e) => {
+        // A validation outage must not look like a valid tag. Say what happened
+        // and let the server's own check at create time be the backstop.
+        if (!stale) setCheck({ normalized: null, problem: `couldn't check this tag: ${e instanceof Error ? e.message : String(e)}`, valid: false });
+      })
+      .finally(() => {
+        if (!stale) setChecking(false);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [debouncedTag]);
+
+  const settled = check != null && debouncedTag === tag && !checking;
+  const canCreate = name.trim().length > 0 && settled && check.valid && !creating;
+
+  const create = async () => {
+    setCreating(true);
+    setErr(null);
+    try {
+      const { campaign, ghlTagCreated } = await createDialCampaign({
+        name: name.trim(),
+        tag,
+        list_label: listLabel,
+        dial_source: dialSource(),
+      });
+      onCreated(campaign, ghlTagCreated);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const field =
+    "px-2 py-1 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white";
+
+  return (
+    <div className="rounded-lg border border-cyan-300 dark:border-cyan-800 bg-cyan-50/70 dark:bg-cyan-900/20 p-3 space-y-2">
+      <p className="text-xs font-bold text-gray-900 dark:text-white">New dial campaign</p>
+      <div className="flex flex-wrap items-start gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-gray-500 dark:text-gray-400">Name</span>
+          <input
+            className={`${field} w-64`}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="UCC dial — Aug"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-gray-500 dark:text-gray-400">Dial tag</span>
+          <input
+            className={`${field} w-64 font-mono`}
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            placeholder="dial-ucc-0813"
+          />
+        </label>
+      </div>
+
+      {/* Tag status. Three distinct states, never collapsed into one: still
+          checking, a stated problem, or confirmed free. */}
+      <div className="text-[11px] min-h-[1.25rem]">
+        {preview !== tag && tag.trim() !== "" && (
+          <span className="text-gray-500 dark:text-gray-400">
+            will be saved as <code className="font-mono text-gray-700 dark:text-gray-200">{preview || "—"}</code> ·{" "}
+          </span>
+        )}
+        {checking || debouncedTag !== tag ? (
+          <span className="text-gray-400">checking…</span>
+        ) : check?.problem ? (
+          <span className="text-rose-600 dark:text-rose-400">{check.problem}</span>
+        ) : check?.valid ? (
+          <span className="text-emerald-700 dark:text-emerald-300">
+            ✓ <code className="font-mono">{check.normalized}</code> is free
+          </span>
+        ) : (
+          <span className="text-gray-400">type a tag — it's what the dialer targets</span>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => void create()} disabled={!canCreate} className="btn-primary btn-sm">
+          {creating ? "Creating…" : "Create campaign + GHL tag"}
+        </button>
+        <button onClick={onCancel} disabled={creating} className="btn-ghost btn-sm">
+          Cancel
+        </button>
+        <span className="text-[11px] text-gray-500 dark:text-gray-400">
+          Creates the campaign and the <strong>tag</strong> in VibeReach. No contact is created, messaged or dialed.
+        </span>
+      </div>
+      {err && <p className="text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+    </div>
+  );
+}
+
+/* ================================================================== */
 /* The page                                                            */
 /* ================================================================== */
 export default function LeadMachinePage() {
@@ -1181,6 +1340,20 @@ export default function LeadMachinePage() {
   };
   const sortArrow = (key: typeof sortKey) => (sortKey === key ? (sortAsc ? " ↑" : " ↓") : "");
 
+  /* ── Dial campaign ────────────────────────────────────────────────────────
+     A dial campaign is ONE TAG bound to one campaigns row, and that tag is the
+     join key across three systems: we write it into lead_records.push_tags, it
+     lands on the GHL contact, and the HotProspector campaign's "Tags to Dial"
+     targets it. Picking one here fills the tag in for you and stamps
+     lead_push_jobs.campaign_id, so the push is attributable later.
+
+     Picking a campaign is the DEFAULT path, not a cage: the free-text tag box
+     below still works exactly as it did, and an ad-hoc push with no campaign is
+     still a legitimate thing to do. */
+  const [dialCampaigns, setDialCampaigns] = useState<Campaign[]>([]);
+  const [campaignsErr, setCampaignsErr] = useState<string | null>(null);
+  const [campaignId, setCampaignId] = useState<string>("");
+
   /* ── Tags + push ── */
   const [tags, setTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState("");
@@ -1221,6 +1394,64 @@ export default function LeadMachinePage() {
     setTags((prev) => (prev.includes(k) ? prev : [...prev, k]));
     setTagDraft("");
   };
+
+  /* Open dial campaigns for the picker. A handful of rows on a small table — the
+     count discipline that governs lead_records has nothing to do with this. A
+     failure sets an error and leaves the picker out; it must never take the push
+     panel down, because an ad-hoc tagged push is still perfectly valid. */
+  const loadDialCampaigns = useCallback(async () => {
+    try {
+      setDialCampaigns(await listDialCampaigns());
+      setCampaignsErr(null);
+    } catch (e) {
+      setCampaignsErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+  useEffect(() => {
+    void loadDialCampaigns();
+  }, [loadDialCampaigns]);
+
+  /* Only a campaign that HAS a dial tag can be pushed into — the tag is the whole
+     mechanism. Tag-less ones are counted separately and named on screen rather
+     than dropped, so an owner looking at PH-UCC-2026-001 on the Campaigns page
+     isn't left wondering why it's missing here. */
+  const taggedCampaigns = useMemo(() => dialCampaigns.filter((c) => !!c.dial_tag), [dialCampaigns]);
+  const untaggedCampaigns = useMemo(() => dialCampaigns.filter((c) => !c.dial_tag), [dialCampaigns]);
+  const pickedCampaign = useMemo(
+    () => taggedCampaigns.find((c) => c.id === campaignId) ?? null,
+    [taggedCampaigns, campaignId],
+  );
+
+  /* Selecting a campaign swaps its tag in; deselecting takes it back out. The two
+     stay in lockstep in BOTH directions — removing the campaign's tag chip by hand
+     also clears the selection (see the chip's remove handler), because a campaign
+     selected without its tag attached would stamp campaign_id on a push the dialer
+     will never call. */
+  const pickCampaign = useCallback(
+    (id: string) => {
+      const prevTag = dialCampaigns.find((c) => c.id === campaignId)?.dial_tag ?? null;
+      const nextTag = dialCampaigns.find((c) => c.id === id)?.dial_tag ?? null;
+      setCampaignId(id);
+      setTags((prev) => {
+        const kept = prevTag ? prev.filter((t) => t !== prevTag) : prev;
+        return nextTag && !kept.includes(nextTag) ? [...kept, nextTag] : kept;
+      });
+    },
+    [dialCampaigns, campaignId],
+  );
+
+  /* Dropping a tag chip. When it's the selected campaign's tag, the selection goes
+     with it — never leave campaign_id pointing at a tag that isn't being applied. */
+  const removeTag = useCallback(
+    (t: string) => {
+      setTags((prev) => prev.filter((x) => x !== t));
+      setCampaignId((cur) => {
+        const curTag = dialCampaigns.find((c) => c.id === cur)?.dial_tag ?? null;
+        return curTag === t ? "" : cur;
+      });
+    },
+    [dialCampaigns],
+  );
 
   /* What the push will actually touch: the checkbox subset when one exists,
      otherwise the whole filtered set. */
@@ -1406,6 +1637,68 @@ export default function LeadMachinePage() {
     return "leads";
   }, [pinnedBatch, fTypes]);
 
+  /* ── The inline "New dial campaign" creator ───────────────────────────────── */
+  const [creatorOpen, setCreatorOpen] = useState(false);
+  const [createdNote, setCreatedNote] = useState<string | null>(null);
+
+  /* What the campaign is provisionally called and tagged, from the slice you're
+     looking at. Both are editable in the creator — these are a head start, not a
+     decision. */
+  const campaignSlug = useMemo(() => {
+    if (fTypes.length === 1) return fTypes[0];
+    if (pinnedBatch?.batch_code) return kebab(pinnedBatch.batch_code);
+    if (fTypes.length > 1) return fTypes.join("-");
+    return "leads";
+  }, [fTypes, pinnedBatch]);
+
+  const suggestedTag = useMemo(() => suggestDialTag(campaignSlug), [campaignSlug]);
+  const suggestedName = useMemo(() => {
+    const what = fTypes.length === 1 ? `${TYPE_META[fTypes[0]]?.label ?? fTypes[0]} dial` : "Dial campaign";
+    const where = fStates.length > 0 && fStates.length <= 3 ? ` — ${fStates.join("/")}` : "";
+    const when = new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return `${what}${where} — ${when}`;
+  }, [fTypes, fStates]);
+
+  /* Provenance stamped onto the campaign at create time: exactly which slice of
+     which list it was minted from. Built lazily at click time so it records the
+     filters as they stand when Create is pressed, not when the panel rendered. */
+  const buildDialSource = useCallback(
+    (): DialSource => ({
+      source: "lead_machine",
+      lead_types: fTypes,
+      batch_id: fBatch || null,
+      batch_code: pinnedBatch?.batch_code ?? null,
+      states: fStates,
+      line_types: fLines,
+      filters: serverFilters,
+      planned_count: plannedPush,
+      stamped_at: new Date().toISOString(),
+    }),
+    [fTypes, fBatch, pinnedBatch, fStates, fLines, serverFilters, plannedPush],
+  );
+
+  /* A freshly created campaign goes straight into the list AND gets selected, so
+     its tag is already attached and the push is one click away. */
+  const onCampaignCreated = useCallback(
+    (c: Campaign, ghlTagCreated: boolean) => {
+      setDialCampaigns((prev) => [c, ...prev]);
+      setCampaignId(c.id);
+      if (c.dial_tag) {
+        const t = c.dial_tag;
+        setTags((prev) => (prev.includes(t) ? prev : [...prev, t]));
+      }
+      setCreatorOpen(false);
+      setCreatedNote(
+        `${campaignLabel(c)} created. The tag ${c.dial_tag} ` +
+          (ghlTagCreated
+            ? "was just created in VibeReach, so HotProspector will not see it until you run Refresh Meta."
+            : "already existed in VibeReach.") +
+          " Its setup checklist on the Campaigns page has the remaining HotProspector steps.",
+      );
+    },
+    [],
+  );
+
   const runExport = useCallback(
     async (preset: "email" | "full") => {
       setExportErr(null);
@@ -1529,6 +1822,10 @@ export default function LeadMachinePage() {
       //   · a bigger set goes as server-side filters, which the fn re-runs and
       //     self-continues through — every filter here has a server equivalent.
       const body: Record<string, unknown> = { action: "start", tags: effectiveTags };
+      /* Which dial campaign this run feeds. The fn does NOT derive the tag from
+         this — tags[] is still what actually lands on the contact — so the two are
+         sent together and the picker keeps them in sync. */
+      if (pickedCampaign) body.campaign_id = pickedCampaign.id;
       if (retagMode) body.retag = true;
       // ALWAYS forward the status filter, even on the id path. The fn resolves
       // status as: filters.status → exactly that set; else retag → widens to
@@ -1627,7 +1924,10 @@ export default function LeadMachinePage() {
             ? `Tagged ${pushed.toLocaleString()} of ${eligible.toLocaleString()} contacts already in VibeReach`
             : `Pushed ${pushed.toLocaleString()} of ${eligible.toLocaleString()} into VibeReach`) +
             (errored > 0 ? ` · ${errored.toLocaleString()} errored` : "") +
-            `. Tags: ${tagList} — target those tags in a HotProspector campaign to dial them.`,
+            `. Tags: ${tagList}` +
+            (pickedCampaign
+              ? ` — attributed to ${campaignLabel(pickedCampaign)}. HotProspector dials it once that campaign's "Tags to Dial" includes ${pickedCampaign.dial_tag}.`
+              : " — target those tags in a HotProspector campaign to dial them."),
         );
       }
       setSelectedIds(new Set());
@@ -1649,6 +1949,7 @@ export default function LeadMachinePage() {
     plannedPush,
     selectedIds,
     effectiveTags,
+    pickedCampaign,
     retagMode,
     serverFilters,
     tooBigForIds,
@@ -2227,6 +2528,68 @@ export default function LeadMachinePage() {
                   )}
                 </div>
 
+                {/* Dial campaign — pick one and its tag fills in below, and the
+                    push gets stamped with campaign_id so the deals it produces
+                    roll up on the Campaigns page. Optional by design. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <MegaphoneIcon className="w-4 h-4 text-gray-400 shrink-0" />
+                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Dial campaign</span>
+                  <select
+                    className={`${input} py-1 text-sm`}
+                    value={campaignId}
+                    onChange={(e) => pickCampaign(e.target.value)}
+                    disabled={pushRunning}
+                  >
+                    <option value="">— none (ad-hoc tag below) —</option>
+                    {taggedCampaigns.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {campaignLabel(c)} · {c.dial_tag} · {c.status}
+                      </option>
+                    ))}
+                  </select>
+                  {!creatorOpen && (
+                    <button onClick={() => setCreatorOpen(true)} disabled={pushRunning} className="btn-ghost btn-sm">
+                      + New dial campaign
+                    </button>
+                  )}
+                  {pickedCampaign && (
+                    <Link to="/admin/campaigns" className="text-xs text-ocean-blue hover:underline">
+                      open campaign →
+                    </Link>
+                  )}
+                </div>
+
+                {/* A campaigns read that failed is NOT "no campaigns" — say which
+                    one it was, and leave the ad-hoc tag path fully working. */}
+                {campaignsErr && (
+                  <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                    Couldn't load dial campaigns ({campaignsErr}) — you can still push with a tag typed below.
+                  </p>
+                )}
+                {!campaignsErr && taggedCampaigns.length === 0 && (
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    No dial campaigns yet. Create one to make this push attributable, or just type a tag below.
+                  </p>
+                )}
+                {untaggedCampaigns.length > 0 && (
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    Not listed: {untaggedCampaigns.map((c) => campaignLabel(c)).join(", ")} —{" "}
+                    {untaggedCampaigns.length === 1 ? "it has" : "they have"} no dial tag, so nothing can be pushed into{" "}
+                    {untaggedCampaigns.length === 1 ? "it" : "them"} yet.
+                  </p>
+                )}
+                {creatorOpen && (
+                  <NewDialCampaign
+                    suggestedName={suggestedName}
+                    suggestedTag={suggestedTag}
+                    listLabel={campaignSlug}
+                    dialSource={buildDialSource}
+                    onCreated={onCampaignCreated}
+                    onCancel={() => setCreatorOpen(false)}
+                  />
+                )}
+                {createdNote && <p className="text-[11px] text-emerald-700 dark:text-emerald-300">{createdNote}</p>}
+
                 {/* Tags — auto chips are fixed; the free-text ones are yours. */}
                 <div className="flex flex-wrap items-center gap-2">
                   <TagIcon className="w-4 h-4 text-gray-400 shrink-0" />
@@ -2250,17 +2613,29 @@ export default function LeadMachinePage() {
                       batch tag · auto, per lead
                     </span>
                   )}
-                  {tags.map((t) => (
-                    <span
-                      key={t}
-                      className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-600 text-white font-semibold inline-flex items-center gap-1"
-                    >
-                      {t}
-                      <button onClick={() => setTags((prev) => prev.filter((x) => x !== t))} title={`Remove ${t}`}>
-                        <XMarkIcon className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
+                  {tags.map((t) => {
+                    /* The selected campaign's tag is marked so it's obvious which
+                       chip the picker put there — and removing it deselects the
+                       campaign rather than leaving a stamp with no tag. */
+                    const isCampaignTag = pickedCampaign?.dial_tag === t;
+                    return (
+                      <span
+                        key={t}
+                        className={`text-[11px] px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${
+                          isCampaignTag ? "bg-cyan-600 text-white" : "bg-emerald-600 text-white"
+                        }`}
+                      >
+                        {t}
+                        {isCampaignTag && <span className="text-cyan-100">· campaign</span>}
+                        <button
+                          onClick={() => removeTag(t)}
+                          title={isCampaignTag ? `Remove ${t} and deselect the campaign` : `Remove ${t}`}
+                        >
+                          <XMarkIcon className="w-3 h-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
                   <input
                     className={`${input} w-52`}
                     placeholder="add a campaign tag…"

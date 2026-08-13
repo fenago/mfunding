@@ -21,7 +21,12 @@ export type CampaignChannel =
   | "aged_transfer"
   | "cold_email";
 
-export type CampaignStatus = "draft" | "active" | "paused" | "completed";
+// `planned` is not decoration: it is what the DB actually stores. campaigns.status
+// has NO check constraint, PH-UCC-2026-001 has been `planned` since 1 Aug 2026, and
+// the dial-campaign edge fn defaults every new dial campaign to it. While it was
+// missing from this union the status <select> rendered a value with no matching
+// <option> — a blank box over a real status.
+export type CampaignStatus = "draft" | "planned" | "active" | "paused" | "completed";
 
 export interface ChecklistItem {
   key: string;
@@ -60,6 +65,21 @@ export interface Campaign {
   setup_checklist: ChecklistItem[];
   product_id: string | null;                     // Synergy catalog product key
   pricing_snapshot: Record<string, unknown> | null; // computed selection at create time
+  // ── Dial campaigns (channel 'outbound_dial') ────────────────────────────────
+  // THE TAG IS THE JOIN KEY. `dial_tag` is one string that ties three systems
+  // together: lead-push-ghl writes it into lead_records.push_tags, it lands on the
+  // GHL contact, and the HotProspector campaign's "Tags to Dial" targets it. It is
+  // UNIQUE across campaigns (partial unique index campaigns_dial_tag_uidx), so no
+  // two campaigns can ever claim the same slice.
+  dial_tag: string | null;
+  // HP linkage is a STORED column, not a live lookup — HP exposes only campaign_id
+  // and CampaignTitle (no tags, no per-campaign detail endpoint), so the owner
+  // links it by hand once and we remember it.
+  hp_campaign_id: string | null;
+  hp_campaign_name: string | null;
+  // Which slice of the Lead Machine this campaign was minted from. Written by the
+  // creator in the push panel; see DIAL_SOURCE_SHAPE below.
+  dial_source: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -164,7 +184,7 @@ export const SELECTABLE_CHANNELS: CampaignChannel[] = [
   "web_purchased", "google_ads", "referral", "seo", "social", "trigger", "other",
 ];
 
-export const STATUSES: CampaignStatus[] = ["draft", "active", "paused", "completed"];
+export const STATUSES: CampaignStatus[] = ["draft", "planned", "active", "paused", "completed"];
 
 // ── Channel-driven setup checklists ──────────────────────────────────────────
 // The "don't forget" reminders auto-attached when a campaign is created. Each
@@ -565,6 +585,10 @@ function normalizeCampaign(row: Record<string, unknown>): Campaign {
     tracking_phone: (row.tracking_phone as string) ?? null,
     product_id: (row.product_id as string) ?? null,
     pricing_snapshot: (row.pricing_snapshot as Record<string, unknown>) ?? null,
+    dial_tag: (row.dial_tag as string) ?? null,
+    hp_campaign_id: (row.hp_campaign_id as string) ?? null,
+    hp_campaign_name: (row.hp_campaign_name as string) ?? null,
+    dial_source: (row.dial_source as Record<string, unknown>) ?? {},
   };
 }
 
@@ -579,6 +603,187 @@ export async function saveCampaign(id: string | null, input: Partial<CampaignInp
 
 export async function deleteCampaign(id: string): Promise<void> {
   await mustWrite("delete campaign", supabase.from("campaigns").delete().eq("id", id));
+}
+
+// ── Dial campaigns ───────────────────────────────────────────────────────────
+// Everything below is a thin client over the `dial-campaign` edge function.
+//
+// WHY AN EDGE FUNCTION AND NOT A TABLE WRITE: the campaigns RLS policy grants
+// SELECT to any staff member but ALL/write to super_admin ONLY. A plain `admin`
+// therefore cannot insert or update a campaign from the browser at all. The edge
+// fn runs service-role behind its own admin/super_admin check, so it is the only
+// path that works for both roles. Do not "simplify" any of these into a direct
+// supabase.from("campaigns") write — it will 403 for admins and pass silently in
+// testing if the tester happens to be super_admin.
+
+/** The channel every dial campaign uses. One value, deliberately — a second
+ *  spelling would split the concept and halve every per-channel KPI. */
+export const DIAL_CHANNEL: CampaignChannel = "outbound_dial";
+
+/** Which campaigns the Lead Machine's picker offers. `completed`/`paused` are
+ *  excluded: pushing fresh leads into a finished campaign is always a mistake. */
+export const OPEN_DIAL_STATUSES: CampaignStatus[] = ["planned", "active"];
+
+/**
+ * Client mirror of the SQL `normalize_dial_tag(text)`, for the instant preview
+ * while typing. It is NOT the verdict — validateDialTag() is, because the real
+ * check also tests reserved prefixes and collisions that only the DB can see.
+ * Keep this identical to the SQL: lowercase → non-alphanumeric runs to a single
+ * dash → trim dashes → empty becomes null.
+ */
+export function normalizeDialTag(raw: string): string {
+  return (raw ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** The suggested tag for a new campaign: dial-<list>-<mmdd>. Always editable. */
+export function suggestDialTag(listLabel: string, when = new Date()): string {
+  const mmdd = `${String(when.getMonth() + 1).padStart(2, "0")}${String(when.getDate()).padStart(2, "0")}`;
+  const slug = normalizeDialTag(listLabel).slice(0, 24).replace(/-+$/, "");
+  return normalizeDialTag(`dial-${slug || "leads"}-${mmdd}`);
+}
+
+/**
+ * The shape written into `campaigns.dial_source` by the Lead Machine's creator.
+ * Defined here so the campaign detail view reads the same keys the push panel
+ * writes. Nothing server-side interprets it — it is provenance: months later it
+ * answers "which slice of which list did this campaign actually come from?".
+ */
+export interface DialSource {
+  source: "lead_machine";
+  lead_types: string[];
+  batch_id: string | null;
+  batch_code: string | null;
+  states: string[];
+  line_types: string[];
+  filters: Record<string, unknown>;
+  planned_count: number;
+  stamped_at: string;
+}
+
+export interface DialTagCheck {
+  normalized: string | null;
+  /** Human-readable reason the tag is unusable, or null when it is fine. */
+  problem: string | null;
+  valid: boolean;
+}
+
+/** One HotProspector campaign as the link picker sees it. HP exposes ONLY these
+ *  two fields — no tags, no stats, no detail endpoint. */
+export interface HpCampaignOption {
+  hp_campaign_id: string;
+  hp_campaign_name: string;
+  /** Set when another of our campaigns already claims it. */
+  linked_to: { id: string; code: string | null; name: string } | null;
+}
+
+/** supabase-js buries the function's real message in error.context — dig it out,
+ *  otherwise every failure surfaces as a useless "non-2xx status code". */
+async function dialFnError(error: unknown): Promise<string> {
+  const ctx = (error as { context?: { json?: () => Promise<unknown> } })?.context;
+  if (ctx && typeof ctx.json === "function") {
+    try {
+      const body = (await ctx.json()) as { error?: string } | null;
+      if (body?.error) return body.error;
+    } catch {
+      /* body already consumed or not JSON */
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function callDialFn<T>(body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await supabase.functions.invoke("dial-campaign", { body });
+  if (error) throw new Error(await dialFnError(error));
+  const res = (data ?? {}) as Record<string, unknown>;
+  if (res.error) throw new Error(String(res.error));
+  return res as T;
+}
+
+/**
+ * Dial campaigns available to push into. Reads `campaigns` directly (SELECT is
+ * open to staff) — this table has single-digit rows, so it is nothing like the
+ * lead_records reads that have to go through the counting function.
+ *
+ * Returns EVERY open dial campaign, including ones with no dial_tag, and lets the
+ * caller split them. Filtering the tag-less ones out here would silently hide
+ * PH-UCC-2026-001 from an owner who is looking straight at it on the Campaigns
+ * page and wondering why it isn't in the list.
+ */
+export async function listDialCampaigns(): Promise<Campaign[]> {
+  const { data, error } = await supabase
+    .from("campaigns")
+    .select("*")
+    .eq("channel", DIAL_CHANNEL)
+    .in("status", OPEN_DIAL_STATUSES)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map(normalizeCampaign);
+}
+
+/** Live tag check — reserved prefixes, length, and collisions with other
+ *  campaigns and with uploaded batch codes. The DB is the only thing that knows. */
+export async function validateDialTag(tag: string, campaignId?: string | null): Promise<DialTagCheck> {
+  const res = await callDialFn<{ normalized: string | null; problem: string | null; valid: boolean }>({
+    action: "validate_tag",
+    tag,
+    campaign_id: campaignId ?? null,
+  });
+  return { normalized: res.normalized ?? null, problem: res.problem ?? null, valid: !!res.valid };
+}
+
+export interface CreatedDialCampaign {
+  campaign: Campaign;
+  /** Whether the tag had to be CREATED in GHL, or already existed there. Drives
+   *  the "Refresh Meta" step: HP's tag picker reads a cached copy of GHL's tag
+   *  list, so a brand-new tag is invisible to HP until that refresh runs. */
+  ghlTagCreated: boolean;
+}
+
+/**
+ * Create a dial campaign. The function mints the `code`, creates the tag in GHL
+ * (a location-level label only — no contact is created, updated or messaged) and
+ * seeds the HP setup checklist server-side. Do NOT seed a checklist here: the
+ * server owns those item keys.
+ */
+export async function createDialCampaign(input: {
+  name: string;
+  tag?: string;
+  list_label?: string;
+  market?: string | null;
+  notes?: string | null;
+  leads_target?: number | null;
+  dial_source?: DialSource | Record<string, unknown>;
+}): Promise<CreatedDialCampaign> {
+  const res = await callDialFn<{
+    campaign: Record<string, unknown>;
+    ghl_tag?: { name: string; created: boolean };
+  }>({ action: "create", ...input });
+  return {
+    campaign: normalizeCampaign(res.campaign ?? {}),
+    ghlTagCreated: res.ghl_tag?.created === true,
+  };
+}
+
+/** Read-only list of HotProspector campaigns for the manual link picker. */
+export async function listHpCampaigns(): Promise<HpCampaignOption[]> {
+  const res = await callDialFn<{ campaigns: HpCampaignOption[] }>({ action: "hp_campaigns" });
+  return res.campaigns ?? [];
+}
+
+/** Attach (or, with a null id, detach) a HotProspector campaign. */
+export async function linkHpCampaign(
+  campaignId: string,
+  hp: { hp_campaign_id: string; hp_campaign_name: string } | null,
+): Promise<void> {
+  await callDialFn({
+    action: "link_hp",
+    campaign_id: campaignId,
+    hp_campaign_id: hp?.hp_campaign_id ?? null,
+    hp_campaign_name: hp?.hp_campaign_name ?? null,
+  });
 }
 
 /** Persist just the setup checklist (from ticking an item). */
