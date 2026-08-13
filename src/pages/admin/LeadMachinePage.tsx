@@ -181,6 +181,17 @@ const STATUS_META: Record<string, { label: string; chip: string }> = {
   error: { label: "error", chip: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300" },
 };
 
+/* Which list types actually CARRY each field — measured on the real book, not
+   assumed. Filtering on a field a list doesn't have silently excludes every row
+   of that list, which reads as "there are no Texas aged leads" when the truth is
+   "aged files have no state column at all". The filter bar says so out loud. */
+const FIELD_ONLY_ON: Record<string, { types: LeadType[]; label: string }> = {
+  state: { types: ["ucc"], label: "UCC lists only" },
+  city: { types: ["ucc"], label: "UCC lists only" },
+  revenue: { types: ["ucc", "trigger"], label: "UCC + trigger only" },
+  secured_party: { types: ["ucc"], label: "UCC lists only" },
+};
+
 const PAGE_SIZE = 25;
 /* lead-push-ghl caps an explicit lead_ids[] at 5,000 — bigger sets have to go as
    server-side `filters`, which the fn re-runs itself. */
@@ -1483,6 +1494,19 @@ export default function LeadMachinePage() {
 
   const input =
     "px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
+
+  /* Warn when an ACTIVE filter can only ever match some list types — without it
+     the empty result looks like "no such leads" instead of "wrong list type". */
+  const narrowingFilters = useMemo(() => {
+    const active: string[] = [];
+    if (fState) active.push("state");
+    if (dRevMin.trim() || dRevMax.trim()) active.push("revenue");
+    if (dSecured.trim()) active.push("secured_party");
+    return active
+      .map((f) => ({ field: f, ...FIELD_ONLY_ON[f] }))
+      .filter((f) => f.types && !(fType && f.types.includes(fType as LeadType)));
+  }, [fState, dRevMin, dRevMax, dSecured, fType]);
+
   const th = "py-3 px-4 text-left";
   const thSortable = `${th} cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200`;
 
@@ -1772,7 +1796,7 @@ export default function LeadMachinePage() {
                     <option key={s} value={s} />
                   ))}
                 </datalist>
-                <span className="text-[10px] text-gray-400">2-letter</span>
+                <span className="text-[10px] text-gray-400">2-letter · UCC lists only</span>
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Line type</label>
@@ -1814,7 +1838,7 @@ export default function LeadMachinePage() {
                     onChange={(e) => setFRevMax(e.target.value)}
                   />
                 </div>
-                <span className="text-[10px] text-gray-400">As stated on the list</span>
+                <span className="text-[10px] text-gray-400">As stated · UCC + trigger only</span>
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Push status</label>
@@ -1873,10 +1897,25 @@ export default function LeadMachinePage() {
                     value={fSecured}
                     onChange={(e) => setFSecured(e.target.value)}
                   />
-                  <span className="text-[10px] text-gray-400">Who they already took capital from</span>
+                  <span className="text-[10px] text-gray-400">Who they already took capital from · UCC only</span>
                 </div>
               )}
             </div>
+
+            {/* A filter that only exists on some list types silently excludes the
+                others — say so, with the fix, rather than showing a bare 0. */}
+            {narrowingFilters.length > 0 && (
+              <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+                <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-px" />
+                <span>
+                  {narrowingFilters.map((f) => f.field).join(" and ")}{" "}
+                  {narrowingFilters.length === 1 ? "exists" : "exist"} on{" "}
+                  <strong>{narrowingFilters.map((f) => f.label).join(" / ")}</strong> — every lead from the other list
+                  types is excluded by {narrowingFilters.length === 1 ? "that filter" : "those filters"}, however it
+                  looks. Purchased aged files carry no state or revenue at all.
+                </span>
+              </p>
+            )}
 
             {/* ── 4. Act on this set — push into VibeReach, or export it as CSV.
                 Always present when there are leads (export needs no filter);
