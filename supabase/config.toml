@@ -173,6 +173,15 @@ verify_jwt = true
 
 # Sends a merchant a passwordless magic-link portal invite. Signed-in staff only
 # (in-code role check); closers limited to their own customers.
+# resync-deal-positions: on-demand "Re-sync from UCC" — re-reads the backing
+# ph_ucc_lead and refreshes the deal's existing MCA positions/funders/detail/score,
+# but ONLY when the deal's existing_positions_source is a UCC estimate or unset
+# (shared rank rule in _shared/positionsSource.ts — never overwrites a human or
+# bank-statement value). Signed-in staff only (in-code role check); a closer may
+# only re-sync a deal they own or that is unassigned.
+[functions.resync-deal-positions]
+verify_jwt = true
+
 [functions.merchant-invite]
 verify_jwt = true
 
