@@ -201,6 +201,11 @@ const EXPORT_WINDOW = 1000;
 /* PostgREST puts filters in the URL, so an `in.(...)` list has to stay short. */
 const ID_WINDOW = 300;
 
+/* A HEAD count scoped to one batch — served by the (batch_id, status) index. */
+function buildBatchCount(batchId: string) {
+  return supabase.from("lead_records").select("id", { count: "exact", head: true }).eq("batch_id", batchId);
+}
+
 /* ── Small helpers ── */
 
 /** YYYYMMDD in local time — the batch-code stamp. */
@@ -271,9 +276,15 @@ function kebab(s: string): string {
     .slice(0, 48);
 }
 
-/** PostgREST or() filters break on commas/parens — strip them from user text. */
-function safeTerm(s: string): string {
-  return s.replace(/[,()*%]/g, " ").trim();
+/** Normalise a search term for `search_text`. A term that is clearly a phone
+ *  ("(305) 555-1212") is reduced to bare digits, because phones are stored as a
+ *  bare last-10 and the punctuation would match nothing. Everything else just
+ *  loses the characters that confuse a LIKE pattern. */
+function searchTerm(s: string): string {
+  const trimmed = s.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length >= 7 && /^[\d\s()+.-]+$/.test(trimmed)) return digits.slice(-10);
+  return trimmed.replace(/[%_\\]/g, " ").trim();
 }
 
 function useDebounced<T>(value: T, ms = 350): T {
@@ -835,18 +846,23 @@ function ProcessStrip() {
 /* ================================================================== */
 export default function LeadMachinePage() {
   const [backendMissing, setBackendMissing] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   /* ── Batches ── */
   const [batches, setBatches] = useState<LeadBatch[]>([]);
   const [batchesLoading, setBatchesLoading] = useState(true);
 
+  const [batchesError, setBatchesError] = useState<string | null>(null);
+
+  /* Read lead_batches DIRECTLY — three rows, instant.
+     NOT lead_batch_overview: that view runs a correlated aggregate over every
+     lead_records row (measured 10.3s on the live 250k book) and `authenticated`
+     carries statement_timeout=8s, so it fails 100% of the time at this size. It
+     failing is what rendered "No lists uploaded yet" over three healthy batches.
+     The per-batch live aggregates are fetched separately below, cheaply. */
   const loadBatches = useCallback(async () => {
     setBatchesLoading(true);
-    // The VIEW, not the table — it carries records / dialable / pushed / errored /
-    // skipped / dup_of_prior per batch, already aggregated server-side.
     const { data, error } = await supabase
-      .from("lead_batch_overview")
+      .from("lead_batches")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(100);
@@ -856,13 +872,47 @@ export default function LeadMachinePage() {
         setBackendMissing(true);
         return;
       }
-      setLoadError(error.message);
+      // An error is NOT an empty list. Keep whatever we last had on screen and
+      // say what went wrong — never fall through to the empty state.
+      setBatchesError(error.message || "could not load the batch list");
       return;
     }
     setBackendMissing(false);
-    setLoadError(null);
+    setBatchesError(null);
     setBatches((data as LeadBatch[]) ?? []);
   }, []);
+
+  /* The live per-batch numbers the view used to supply (dialable / no-phone /
+     errored). Each is a counting query on the (batch_id, status) index, so it's
+     a few ms — and it's best-effort: if one fails the batch row just shows "—"
+     for that column instead of the whole table disappearing. */
+  const [batchStats, setBatchStats] = useState<Record<string, { dialable: number; skipped: number; errored: number }>>(
+    {},
+  );
+  useEffect(() => {
+    if (batches.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const out: Record<string, { dialable: number; skipped: number; errored: number }> = {};
+      for (const b of batches) {
+        const countFor = async (build: (q: ReturnType<typeof buildBatchCount>) => typeof q) => {
+          const { count, error } = await build(buildBatchCount(b.id));
+          return error ? null : (count ?? 0);
+        };
+        const [dialable, skipped, errored] = await Promise.all([
+          countFor((q) => q.not("phone", "is", null)),
+          countFor((q) => q.eq("status", "skipped")),
+          countFor((q) => q.eq("status", "error")),
+        ]);
+        if (cancelled) return;
+        out[b.id] = { dialable: dialable ?? -1, skipped: skipped ?? -1, errored: errored ?? -1 };
+      }
+      if (!cancelled) setBatchStats(out);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [batches]);
 
   useEffect(() => {
     void loadBatches();
@@ -908,6 +958,10 @@ export default function LeadMachinePage() {
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   const [leadCount, setLeadCount] = useState(0);
   const [leadsLoading, setLeadsLoading] = useState(true);
+  const [leadsError, setLeadsError] = useState<string | null>(null);
+  /* Whether leadCount came from a real count or the planner's estimate — drives
+     the "≈" prefix, so the number never claims more precision than it has. */
+  const [countIsExact, setCountIsExact] = useState(false);
   const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -975,18 +1029,13 @@ export default function LeadMachinePage() {
       if (dSecured.trim()) q = q.ilike("secured_party", `%${dSecured.trim()}%`);
       // Tag containment hits the push_tags GIN index — the same filter the push fn runs.
       if (dTag.trim()) q = q.contains("push_tags", [kebab(dTag)]);
-      const t = safeTerm(dSearch);
-      if (t) {
-        q = q.or(
-          [
-            `company.ilike.*${t}*`,
-            `first_name.ilike.*${t}*`,
-            `last_name.ilike.*${t}*`,
-            `email.ilike.*${t}*`,
-            `phone.ilike.*${t}*`,
-          ].join(","),
-        );
-      }
+      // ONE predicate against the generated `search_text` column (first/last/
+      // company/email/phone concatenated), which carries a GIN trigram index.
+      // The old 5-column OR could use no index at all — measured 2,474ms against
+      // 358ms — and on a loaded server that was enough to blow the 8s statement
+      // timeout and surface as "no leads match".
+      const t = searchTerm(dSearch);
+      if (t) q = q.ilike("search_text", `%${t}%`);
       return q;
     },
     [
@@ -1024,14 +1073,49 @@ export default function LeadMachinePage() {
         setBackendMissing(true);
         return;
       }
-      setLoadError(error.message);
-      setLeads([]);
-      setLeadCount(0);
+      // A failed fetch is NOT "no leads match". Blanking the table and zeroing
+      // the count turns a timeout into a confident lie about the data, which is
+      // exactly what the owner hit. Keep the last good page on screen and say
+      // what happened.
+      setLeadsError(
+        /timeout|57014|canceling statement/i.test(error.message || "")
+          ? "that query took too long and the server cut it off — narrow the filters, or try again"
+          : error.message || "could not load leads",
+      );
       return;
     }
-    setLoadError(null);
-    setLeads((data as unknown as LeadRecord[]) ?? []);
-    setLeadCount(count ?? 0);
+    setLeadsError(null);
+    const rows = (data as unknown as LeadRecord[]) ?? [];
+
+    // An empty page PAST the end is a paging artifact, not a result. Step back
+    // rather than telling the user their filter matches nothing.
+    if (rows.length === 0 && page > 0) {
+      setPage((p) => Math.max(0, p - 1));
+      return;
+    }
+
+    setLeads(rows);
+
+    /* The count is an ESTIMATE (planner stats) so the browse never pays for a
+       full scan. But an estimate that contradicts what we just fetched must
+       never reach the screen — "≈0 leads match" above 25 visible rows is worse
+       than slow. When it's absent, zero, or smaller than what this page already
+       proves exists, fall back to an exact count; if THAT fails too, floor it at
+       what we can prove and mark it as a minimum. */
+    const floor = page * PAGE_SIZE + rows.length;
+    if (count != null && count >= floor) {
+      setLeadCount(count);
+      setCountIsExact(false);
+      return;
+    }
+    const exact = await buildFilteredQuery("id", { count: "exact", head: true });
+    if (!exact.error && exact.count != null) {
+      setLeadCount(exact.count);
+      setCountIsExact(true);
+    } else {
+      setLeadCount(floor);
+      setCountIsExact(false);
+    }
   }, [buildFilteredQuery, page]);
 
   useEffect(() => {
@@ -1161,7 +1245,7 @@ export default function LeadMachinePage() {
     if (dRevMax.trim() && !isNaN(Number(dRevMax))) f.max_revenue = Number(dRevMax);
     if (dSecured.trim()) f.secured_party_ilike = dSecured.trim();
     if (dTag.trim()) f.push_tags_contains = kebab(dTag);
-    if (safeTerm(dSearch)) f.search = safeTerm(dSearch);
+    if (searchTerm(dSearch)) f.search = searchTerm(dSearch);
     if (fExcludeDups) f.exclude_dups = true;
     return f;
   }, [fType, fState, fLine, fStatus, fHasEmail, dRevMin, dRevMax, dSecured, dTag, dSearch, fExcludeDups]);
@@ -1571,12 +1655,6 @@ export default function LeadMachinePage() {
         </p>
       </div>
 
-      {loadError && (
-        <div className="rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-4 py-3 text-sm text-rose-700 dark:text-rose-300 flex items-center gap-2">
-          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" /> Failed to load: {loadError}
-        </div>
-      )}
-
       {backendMissing ? (
         <div className="rounded-xl border border-dashed border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-6 py-12 text-center">
           <DocumentArrowUpIcon className="w-10 h-10 mx-auto text-gray-300 dark:text-gray-600" />
@@ -1614,21 +1692,38 @@ export default function LeadMachinePage() {
                     <th className={th}>Dialable</th>
                     <th className={th}>Pushed</th>
                     <th className={th}>No phone</th>
-                    <th className={th}>Seen before</th>
                     <th className={th}>Status</th>
                     <th className={th}>Uploaded</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {batchesLoading ? (
+                  {batchesLoading && batches.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="py-8 text-center text-gray-400">
+                      <td colSpan={10} className="py-8 text-center text-gray-400">
                         Loading…
+                      </td>
+                    </tr>
+                  ) : batchesError && batches.length === 0 ? (
+                    /* A FAILED query is not an empty list. This must never read
+                       as "no lists uploaded" — that wording is reserved for a
+                       result the server actually confirmed was empty. */
+                    <tr>
+                      <td colSpan={10} className="py-6 px-4">
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-rose-700 dark:text-rose-300">
+                          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                          <span>
+                            <strong>Couldn't load your lists</strong> — this is a load failure, not an empty account.
+                            Your batches are still there. ({batchesError})
+                          </span>
+                          <button onClick={() => void loadBatches()} className="btn-ghost btn-sm">
+                            Try again
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ) : batches.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="py-8 text-center text-gray-400">
+                      <td colSpan={10} className="py-8 text-center text-gray-400">
                         No lists uploaded yet — start with the upload panel above.
                       </td>
                     </tr>
@@ -1647,6 +1742,7 @@ export default function LeadMachinePage() {
                          mean anything once the batch is terminal. Seen live:
                          a running batch read "20,000 read / 28,000 stored". */
                       const settled = !["uploaded", "ingesting"].includes(st);
+                      const stat = batchStats[b.id];
                       return (
                         <tr
                           key={b.id}
@@ -1675,30 +1771,32 @@ export default function LeadMachinePage() {
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold">
-                            {settled ? n0(b.records).toLocaleString() : <span className="text-gray-400">—</span>}
+                            {settled ? n0(b.ingested_rows).toLocaleString() : <span className="text-gray-400">—</span>}
                           </td>
                           <td
                             className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold"
                             title="Has a phone number — the only rows the push can send"
                           >
-                            {settled ? n0(b.dialable).toLocaleString() : <span className="text-gray-400">—</span>}
+                            {stat && stat.dialable >= 0 ? (
+                              stat.dialable.toLocaleString()
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
                           </td>
                           <td className="py-2.5 px-4 text-emerald-600 dark:text-emerald-400 font-semibold">
-                            {n0(b.pushed).toLocaleString()}
-                            {n0(b.errored) > 0 && (
+                            {n0(b.pushed_rows).toLocaleString()}
+                            {stat && stat.errored > 0 && (
                               <span className="block text-[10px] text-rose-500">
-                                {n0(b.errored).toLocaleString()} errored
+                                {stat.errored.toLocaleString()} errored
                               </span>
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400">
-                            {settled ? n0(b.skipped).toLocaleString() : <span className="text-gray-400">—</span>}
-                          </td>
-                          <td
-                            className="py-2.5 px-4 text-gray-500 dark:text-gray-400"
-                            title="Phone already seen in an earlier batch (or in the UCC pool) — these DID load; it's a filter, not a rejection"
-                          >
-                            {n0(b.dup_of_prior).toLocaleString()}
+                            {stat && stat.skipped >= 0 ? (
+                              stat.skipped.toLocaleString()
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
                           </td>
                           <td className="py-2.5 px-4">
                             {!settled && n0(b.bytes_total) > 0 && (
@@ -1737,8 +1835,8 @@ export default function LeadMachinePage() {
                   className="normal-case font-normal text-gray-400"
                   title="Estimated for speed — an exact count is a full scan of the whole book. The number the push promises is exact."
                 >
-                  · ≈<strong className="text-gray-700 dark:text-gray-200">{leadCount.toLocaleString()}</strong> leads
-                  match
+                  · {countIsExact ? "" : "≈"}
+                  <strong className="text-gray-700 dark:text-gray-200">{leadCount.toLocaleString()}</strong> leads match
                 </span>
                 {activeFilterCount > 0 && (
                   <span className="normal-case text-xs px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue font-semibold">
@@ -2140,6 +2238,18 @@ export default function LeadMachinePage() {
               </div>
             )}
 
+            {/* The table still shows the last good page, so the failure needs to
+                be visible on its own rather than implied by stale rows. */}
+            {leadsError && leads.length > 0 && (
+              <p className="flex items-center gap-1.5 text-xs text-rose-700 dark:text-rose-300">
+                <ExclamationTriangleIcon className="w-4 h-4 shrink-0" />
+                Showing the last page that loaded — the newest request failed ({leadsError}).
+                <button onClick={() => void loadLeads()} className="btn-ghost btn-sm">
+                  Try again
+                </button>
+              </p>
+            )}
+
             {/* Lead table */}
             <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm">
@@ -2179,10 +2289,25 @@ export default function LeadMachinePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {leadsLoading ? (
+                  {leadsLoading && leads.length === 0 ? (
                     <tr>
                       <td colSpan={11} className="py-8 text-center text-gray-400">
                         Loading…
+                      </td>
+                    </tr>
+                  ) : leadsError && leads.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="py-6 px-4">
+                        <div className="flex flex-wrap items-center gap-2 text-sm text-rose-700 dark:text-rose-300">
+                          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                          <span>
+                            <strong>Couldn't load these leads</strong> — a load failure, not an empty result. Your
+                            leads are still there. ({leadsError})
+                          </span>
+                          <button onClick={() => void loadLeads()} className="btn-ghost btn-sm">
+                            Try again
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ) : leads.length === 0 ? (
@@ -2303,7 +2428,9 @@ export default function LeadMachinePage() {
             {(hasNextPage || page > 0) && (
               <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
                 <span>
-                  ≈{leadCount.toLocaleString()} leads · page {page + 1} of ≈{totalPages}
+                  {countIsExact ? "" : "≈"}
+                  {leadCount.toLocaleString()} leads · page {page + 1} of {countIsExact ? "" : "≈"}
+                  {totalPages}
                 </span>
                 <div className="flex gap-2">
                   <button
