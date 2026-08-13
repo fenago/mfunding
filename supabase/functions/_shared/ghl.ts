@@ -242,6 +242,12 @@ export interface ContactInput {
   postalCode?: string | null;
   tags?: string[];
   source?: string | null;
+  /** Additional phone numbers. GHL requires OBJECTS here, not strings — verified
+   * live: a string array 422s with "each value ... must be either object or
+   * array", while [{phone:"+1555..."}] round-trips. NOTE there is no
+   * additionalEmails counterpart on upsert: GHL rejects that property outright
+   * ("property additionalEmails should not exist"), whatever shape you send. */
+  additionalPhones?: { phone: string }[];
   /** GHL custom fields by field key (e.g. "business_name") — these are what
    * Documents & Contracts "linked fields" pre-fill from. */
   customFields?: { key: string; field_value: unknown }[];

@@ -216,9 +216,10 @@ interface LeadRow {
   first_name: string | null; last_name: string | null; company: string | null;
   address: string | null; city: string | null; state: string | null; zip: string | null;
   push_tags: string[] | null;
+  extra_phones: { phone: string }[] | null;
 }
 const LEAD_COLS = "id,batch_id,lead_type,status,phone,email,first_name,last_name,"
-  + "company,address,city,state,zip,push_tags";
+  + "company,address,city,state,zip,push_tags,extra_phones";
 
 /** Count the rows a job will touch (respecting its limit). This is the SAME
  * filter code the push itself runs, which is why `action:'count'` is exposed to
@@ -324,6 +325,14 @@ async function pushOne(
     city: clean(lead.city),
     state: clean(lead.state),
     postalCode: clean(lead.zip),
+    // Extra numbers ride along so a setter sees every way to reach the merchant.
+    // GHL wants OBJECTS here (a string array 422s), and there is deliberately no
+    // email equivalent: /contacts/upsert rejects additionalEmails outright, so
+    // extra emails live in Supabase + the export rather than in a second API
+    // call per contact that would double this push's rate-limited cost.
+    ...((lead.extra_phones ?? []).length
+      ? { additionalPhones: (lead.extra_phones ?? []).map((p) => ({ phone: `+1${p.phone}` })) }
+      : {}),
     tags,
     source: `Lead Machine${batchCode ? ` ${batchCode.toUpperCase()}` : ""}`,
   });
