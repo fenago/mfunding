@@ -196,6 +196,22 @@ const FIELD_ONLY_ON: Record<string, { types: LeadType[]; label: string }> = {
   secured_party: { types: ["ucc"], label: "UCC lists only" },
 };
 
+/* Hardcoded so no DISTINCT ever runs over 250k rows (house law: aggregates come
+   from counters, never from scans). Line types are stored VERBATIM as the vendor
+   wrote them — capitalised — so these values must match exactly; only the label
+   is prettified. */
+const US_STATES = [
+  "AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI",
+  "MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
+  "VA","WA","WV","WI","WY",
+];
+const LINE_TYPES: { value: string; label: string }[] = [
+  { value: "Mobile", label: "Mobile" },
+  { value: "Landline", label: "Landline" },
+  { value: "Voip", label: "VoIP" },
+  { value: "Toll-Free", label: "Toll-Free" },
+];
+
 const PAGE_SIZE = 25;
 /* lead-push-ghl caps an explicit lead_ids[] at 5,000 — bigger sets have to go as
    server-side `filters`, which the fn re-runs itself. */
@@ -936,13 +952,14 @@ export default function LeadMachinePage() {
   const [fType, setFType] = useState<"" | LeadType>("");
   const [fBatch, setFBatch] = useState("");
   const [fSearch, setFSearch] = useState("");
-  const [fState, setFState] = useState("");
-  const [fLine, setFLine] = useState("");
+  const [fStates, setFStates] = useState<string[]>([]);
+  const [fLines, setFLines] = useState<string[]>([]);
   const [fRevMin, setFRevMin] = useState("");
   const [fRevMax, setFRevMax] = useState("");
   const [fStatus, setFStatus] = useState("");
   const [fHasEmail, setFHasEmail] = useState(false);
   const [fSecured, setFSecured] = useState("");
+  const [stateDraft, setStateDraft] = useState("");
   const [fTag, setFTag] = useState("");
   /* Duplicates are excluded by DEFAULT — a phone that already came in on an
      earlier list is a second dial to the same merchant. Unticking it is the
@@ -958,12 +975,8 @@ export default function LeadMachinePage() {
   const dRevMax = useDebounced(fRevMax);
 
   const [leads, setLeads] = useState<LeadRecord[]>([]);
-  const [leadCount, setLeadCount] = useState(0);
   const [leadsLoading, setLeadsLoading] = useState(true);
   const [leadsError, setLeadsError] = useState<string | null>(null);
-  /* Whether leadCount came from a real count or the planner's estimate — drives
-     the "≈" prefix, so the number never claims more precision than it has. */
-  const [countIsExact, setCountIsExact] = useState(false);
   const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -976,8 +989,8 @@ export default function LeadMachinePage() {
     if (fType) n++;
     if (fBatch) n++;
     if (dSearch.trim()) n++;
-    if (fState) n++;
-    if (fLine) n++;
+    if (fStates.length) n++;
+    if (fLines.length) n++;
     if (dRevMin.trim()) n++;
     if (dRevMax.trim()) n++;
     if (fStatus) n++;
@@ -986,14 +999,14 @@ export default function LeadMachinePage() {
     if (dTag.trim()) n++;
     if (!fExcludeDups) n++; // "include duplicates" is the deviation from default
     return n;
-  }, [fType, fBatch, dSearch, fState, fLine, dRevMin, dRevMax, fStatus, fHasEmail, dSecured, dTag, fExcludeDups]);
+  }, [fType, fBatch, dSearch, fStates, fLines, dRevMin, dRevMax, fStatus, fHasEmail, dSecured, dTag, fExcludeDups]);
 
   const clearFilters = useCallback(() => {
     setFType("");
     setFBatch("");
     setFSearch("");
-    setFState("");
-    setFLine("");
+    setFStates([]);
+    setFLines([]);
     setFRevMin("");
     setFRevMax("");
     setFStatus("");
@@ -1021,8 +1034,8 @@ export default function LeadMachinePage() {
         .order("id", { ascending: true });
       if (fType) q = q.eq("lead_type", fType);
       if (fBatch) q = q.eq("batch_id", fBatch);
-      if (fState) q = q.eq("state", fState);
-      if (fLine) q = q.eq("line_type", fLine);
+      if (fStates.length) q = q.in("state", fStates);
+      if (fLines.length) q = q.in("line_type", fLines);
       if (fStatus) q = q.eq("status", fStatus);
       if (fHasEmail) q = q.not("email", "is", null);
       if (fExcludeDups) q = q.eq("is_dup_of_prior", false);
@@ -1043,8 +1056,8 @@ export default function LeadMachinePage() {
     [
       fType,
       fBatch,
-      fState,
-      fLine,
+      fStates,
+      fLines,
       fStatus,
       fHasEmail,
       fExcludeDups,
@@ -1065,7 +1078,14 @@ export default function LeadMachinePage() {
     // planner's estimate is instant and is only ever used to size the pager and
     // label the browse; the number the PUSH promises comes from lead-push-ghl's
     // own count action, which is exact by construction.
-    const { data, error, count } = await buildFilteredQuery(LEAD_SELECT, { count: "estimated" }).range(
+    /* NO count option on this request — not even "estimated". PostgREST's
+       estimated count silently falls back to an EXACT count when the planner's
+       estimate is small, and an exact count here scans the whole book with the
+       RLS predicate evaluated per row (~250k is_admin_or_super() calls). That
+       blows the 8s statement timeout and takes the ROWS DOWN WITH IT, because
+       it's the same request — which is how a healthy 48ms page turned into an
+       error banner. Rows are fetched alone; the number arrives separately. */
+    const { data, error } = await buildFilteredQuery(LEAD_SELECT).range(
       page * PAGE_SIZE,
       page * PAGE_SIZE + PAGE_SIZE - 1,
     );
@@ -1075,10 +1095,8 @@ export default function LeadMachinePage() {
         setBackendMissing(true);
         return;
       }
-      // A failed fetch is NOT "no leads match". Blanking the table and zeroing
-      // the count turns a timeout into a confident lie about the data, which is
-      // exactly what the owner hit. Keep the last good page on screen and say
-      // what happened.
+      // A failed fetch is NOT "no leads match". Keep the last good page on
+      // screen and say what happened.
       setLeadsError(
         /timeout|57014|canceling statement/i.test(error.message || "")
           ? "that query took too long and the server cut it off — narrow the filters, or try again"
@@ -1089,40 +1107,12 @@ export default function LeadMachinePage() {
     setLeadsError(null);
     const rows = (data as unknown as LeadRecord[]) ?? [];
 
-    // An empty page PAST the end is a paging artifact, not a result. Step back
-    // rather than telling the user their filter matches nothing.
+    // An empty page PAST the end is a paging artifact, not a result.
     if (rows.length === 0 && page > 0) {
       setPage((p) => Math.max(0, p - 1));
       return;
     }
-
     setLeads(rows);
-
-    /* THE COUNT, without ever running an expensive one.
-
-       House rule for this table: `authenticated` has statement_timeout=8s AND
-       RLS evaluates is_admin_or_super() per row, so any count whose plan touches
-       the whole book blows the limit no matter what indexes exist. An exact
-       count is therefore never worth attempting here.
-
-       Two cases cover everything:
-       · a SHORT page is the last page, so the total is already known exactly —
-         everything before it, plus what we just got. No query, and exact.
-       · a FULL page means there is more, so use the planner's estimate — but
-         only if it doesn't contradict what this page already proves exists.
-         Otherwise fall back to that provable floor.
-       Either way the number can never read ≈0 above a screen of rows. */
-    const floor = page * PAGE_SIZE + rows.length;
-    if (rows.length < PAGE_SIZE) {
-      setLeadCount(floor);
-      setCountIsExact(true);
-    } else if (count != null && count > floor) {
-      setLeadCount(count);
-      setCountIsExact(false);
-    } else {
-      setLeadCount(floor);
-      setCountIsExact(false);
-    }
   }, [buildFilteredQuery, page]);
 
   useEffect(() => {
@@ -1138,8 +1128,8 @@ export default function LeadMachinePage() {
     fType,
     fBatch,
     dSearch,
-    fState,
-    fLine,
+    fStates,
+    fLines,
     dRevMin,
     dRevMax,
     fStatus,
@@ -1155,7 +1145,11 @@ export default function LeadMachinePage() {
      it alone — an over-estimate would offer a page that doesn't exist, an
      under-estimate would hide the tail. "Next" therefore keys off whether THIS
      page came back full, which is always true. */
-  const totalPages = Math.max(1, Math.ceil(leadCount / PAGE_SIZE));
+  const [filteredCount, setFilteredCount] = useState<number | null>(null);
+  const [countingPush, setCountingPush] = useState(false);
+  const [countError, setCountError] = useState(false);
+
+  const totalPages = filteredCount == null ? null : Math.max(1, Math.ceil(filteredCount / PAGE_SIZE));
   const hasNextPage = leads.length === PAGE_SIZE;
 
   const toggleRow = (id: string) =>
@@ -1228,24 +1222,23 @@ export default function LeadMachinePage() {
   /* What the push will actually touch: the checkbox subset when one exists,
      otherwise the whole filtered set. */
   const usingSelection = selectedIds.size > 0;
-  const pushCount = usingSelection ? selectedIds.size : leadCount;
+  const pushCount = usingSelection ? selectedIds.size : (filteredCount ?? 0);
 
-  /* How many the push will ACTUALLY touch. This comes from lead-push-ghl's own
-     `count` action — the same filter code the push runs — so the number on the
-     button and the number pushed agree by construction rather than by two
-     implementations staying in sync. Only for the filter-driven case; a checkbox
-     selection is its own answer, and the job's target_count corrects it after. */
-  const [pushEligible, setPushEligible] = useState<number | null>(null);
-  const [countingPush, setCountingPush] = useState(false);
+  /* THE ONE COUNT, and it never rides along with a data request.
 
+     lead-push-ghl {action:'count'} runs server-side under the service role, so
+     it pays no per-row RLS cost, and it runs the IDENTICAL filter code the push
+     runs — so the number on screen and the number pushed agree by construction.
+     It resolves independently of the rows: while it's in flight the header
+     shows "…", and if it fails the table is untouched. */
   /* The same filter set, in the shape lead-push-ghl runs server-side. Every
      control on the filter bar has a server equivalent, so a set too big for an
      explicit id list still pushes as exactly what's on screen. */
   const serverFilters = useMemo(() => {
     const f: Record<string, unknown> = {};
     if (fType) f.lead_type = fType;
-    if (fState) f.state = fState;
-    if (fLine) f.line_type = fLine;
+    if (fStates.length) f.state = fStates; // the fn accepts string | string[]
+    if (fLines.length) f.line_type = fLines;
     if (fStatus) f.status = fStatus;
     if (fHasEmail) f.has_email = true;
     if (dRevMin.trim() && !isNaN(Number(dRevMin))) f.min_revenue = Number(dRevMin);
@@ -1255,7 +1248,7 @@ export default function LeadMachinePage() {
     if (searchTerm(dSearch)) f.search = searchTerm(dSearch);
     if (fExcludeDups) f.exclude_dups = true;
     return f;
-  }, [fType, fState, fLine, fStatus, fHasEmail, dRevMin, dRevMax, dSecured, dTag, dSearch, fExcludeDups]);
+  }, [fType, fStates, fLines, fStatus, fHasEmail, dRevMin, dRevMax, dSecured, dTag, dSearch, fExcludeDups]);
 
   /* RE-TAG. A normal push drains rows still marked `loaded` — which is exactly
      what makes it un-double-pushable, and also means it would find nothing in a
@@ -1264,15 +1257,15 @@ export default function LeadMachinePage() {
      VibeReach. So that filter selects re-tag mode, and the panel says so. */
   const retagMode = fStatus === "pushed" || fStatus === "error";
 
-  /* Ask the function for the eligible count whenever the filter set changes.
-     Skipped while a selection is driving the panel (that count is the selection
-     itself) and while a push is running (the job reports its own progress). */
+  /* Ask the function for the count whenever the filter set changes. Debounced,
+     cancelled on change, and completely decoupled from the row fetch. */
   useEffect(() => {
-    if (backendMissing || usingSelection || pushRunning) return;
+    if (backendMissing || pushRunning) return;
     let cancelled = false;
+    setCountingPush(true);
+    setCountError(false);
     const t = setTimeout(() => {
       void (async () => {
-        setCountingPush(true);
         const body: Record<string, unknown> = { action: "count", filters: serverFilters };
         if (fBatch) body.batch_id = fBatch;
         if (retagMode) body.retag = true;
@@ -1280,18 +1273,22 @@ export default function LeadMachinePage() {
         if (cancelled) return;
         setCountingPush(false);
         const res = (data as { ok?: boolean; count?: number } | null) ?? null;
-        setPushEligible(error || !res || typeof res.count !== "number" ? null : res.count);
+        if (error || !res || typeof res.count !== "number") {
+          setCountError(true);
+          return;
+        }
+        setFilteredCount(res.count);
       })();
     }, 400);
     return () => {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [serverFilters, fBatch, retagMode, backendMissing, usingSelection, pushRunning]);
+  }, [serverFilters, fBatch, retagMode, backendMissing, pushRunning]);
 
   /* The count the button promises. In re-tag mode already-pushed rows ARE the
      target, so the "still loaded" eligibility count doesn't apply. */
-  const plannedPush = usingSelection ? selectedIds.size : retagMode ? leadCount : (pushEligible ?? leadCount);
+  const plannedPush = usingSelection ? selectedIds.size : (filteredCount ?? 0);
   const tooBigForIds = !usingSelection && plannedPush > MAX_LEAD_IDS;
 
   /* The auto tags the edge fn adds server-side, shown as fixed chips so the
@@ -1353,12 +1350,9 @@ export default function LeadMachinePage() {
             setExportProgress({ done: Math.min(i + ID_WINDOW, ids.length), total: ids.length });
           }
         } else {
-          // Sizes the progress bar only — an estimate is plenty, and it keeps the
-          // export from paying a full-scan count before it fetches a single row.
-          let countQ = buildFilteredQuery("id", { count: "estimated", head: true });
-          if (emailOnly) countQ = countQ.not("email", "is", null);
-          const { count } = await countQ;
-          const total = count ?? 0;
+          // No count query at all — see loadLeads. The bar grows against what
+          // has actually been fetched, and the total firms up as pages arrive.
+          const total = 0;
           setExportProgress({ done: 0, total });
           // Page over the deterministic sort. (A keyset walk on the PK was tried
           // and is WORSE here: the PK is a random uuid, so ordering by it makes
@@ -1579,20 +1573,6 @@ export default function LeadMachinePage() {
     usingSelection,
   ]);
 
-  /* Filter option lists, built from what's actually on the page — the vendor's
-     own casing, never a guessed enum. */
-  const lineTypeOptions = useMemo(() => {
-    const set = new Set<string>();
-    leads.forEach((l) => l.line_type && set.add(l.line_type));
-    return Array.from(set).sort();
-  }, [leads]);
-
-  const stateOptions = useMemo(() => {
-    const set = new Set<string>();
-    leads.forEach((l) => l.state && set.add(l.state));
-    return Array.from(set).sort();
-  }, [leads]);
-
   const input =
     "px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
 
@@ -1600,13 +1580,13 @@ export default function LeadMachinePage() {
      the empty result looks like "no such leads" instead of "wrong list type". */
   const narrowingFilters = useMemo(() => {
     const active: string[] = [];
-    if (fState) active.push("state");
+    if (fStates.length) active.push("state");
     if (dRevMin.trim() || dRevMax.trim()) active.push("revenue");
     if (dSecured.trim()) active.push("secured_party");
     return active
       .map((f) => ({ field: f, ...FIELD_ONLY_ON[f] }))
       .filter((f) => f.types && !(fType && f.types.includes(fType as LeadType)));
-  }, [fState, dRevMin, dRevMax, dSecured, fType]);
+  }, [fStates, dRevMin, dRevMax, dSecured, fType]);
 
   const th = "py-3 px-4 text-left";
   const thSortable = `${th} cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200`;
@@ -1861,8 +1841,11 @@ export default function LeadMachinePage() {
                   className="normal-case font-normal text-gray-400"
                   title="Estimated for speed — an exact count is a full scan of the whole book. The number the push promises is exact."
                 >
-                  · {countIsExact ? "" : "≈"}
-                  <strong className="text-gray-700 dark:text-gray-200">{leadCount.toLocaleString()}</strong> leads match
+                  ·{" "}
+                  <strong className="text-gray-700 dark:text-gray-200">
+                    {countError ? "—" : filteredCount == null ? "…" : filteredCount.toLocaleString()}
+                  </strong>{" "}
+                  dialable leads match
                 </span>
                 {activeFilterCount > 0 && (
                   <span className="normal-case text-xs px-2 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue font-semibold">
@@ -1920,40 +1903,86 @@ export default function LeadMachinePage() {
                 </select>
                 <span className="text-[10px] text-gray-400">One uploaded list</span>
               </div>
+              {/* STATE — multi-select. Pick several at once (FL + TX + GA); each
+                  selection becomes a removable chip and the set goes to the
+                  server as an array. */}
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">State</label>
-                <input
-                  list="lead-machine-states"
-                  className={`${input} w-24`}
-                  placeholder="any"
-                  value={fState}
-                  onChange={(e) => setFState(e.target.value.toUpperCase().slice(0, 2))}
-                />
+                <div className="flex flex-wrap items-center gap-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1.5 min-h-[2.4rem] w-56">
+                  {fStates.map((st) => (
+                    <span
+                      key={st}
+                      className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-ocean-blue/10 text-ocean-blue font-semibold"
+                    >
+                      {st}
+                      <button
+                        onClick={() => setFStates((prev) => prev.filter((x) => x !== st))}
+                        title={`Remove ${st}`}
+                      >
+                        <XMarkIcon className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    list="lead-machine-states"
+                    className="flex-1 min-w-[3.5rem] bg-transparent text-sm text-gray-900 dark:text-gray-100 outline-none"
+                    placeholder={fStates.length ? "" : "any state"}
+                    value={stateDraft}
+                    onChange={(e) => {
+                      const v = e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2);
+                      // Two letters that name a real state commit immediately —
+                      // picking from the list shouldn't also need Enter.
+                      if (v.length === 2 && US_STATES.includes(v)) {
+                        setFStates((prev) => (prev.includes(v) ? prev : [...prev, v]));
+                        setStateDraft("");
+                      } else setStateDraft(v);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Backspace" && stateDraft === "" && fStates.length > 0) {
+                        setFStates((prev) => prev.slice(0, -1));
+                      }
+                    }}
+                  />
+                </div>
                 <datalist id="lead-machine-states">
-                  {stateOptions.map((s) => (
-                    <option key={s} value={s} />
+                  {US_STATES.filter((st) => !fStates.includes(st)).map((st) => (
+                    <option key={st} value={st} />
                   ))}
                 </datalist>
-                <span className="text-[10px] text-gray-400">2-letter · UCC lists only</span>
+                <span className="text-[10px] text-gray-400">
+                  {fStates.length > 1 ? `${fStates.length} states · any of them` : "Type or pick · UCC lists only"}
+                </span>
               </div>
+              {/* LINE TYPE — the four values actually stored, as toggles. Free
+                  text here meant only "Mobile" was ever really reachable. */}
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Line type</label>
-                {/* Matched VERBATIM as the vendor wrote it ("Mobile", "Landline",
-                    …), so this is free text over the values actually present
-                    rather than a guessed enum. */}
-                <input
-                  list="lead-machine-line-types"
-                  className={`${input} w-32`}
-                  placeholder="any line"
-                  value={fLine}
-                  onChange={(e) => setFLine(e.target.value)}
-                />
-                <datalist id="lead-machine-line-types">
-                  {lineTypeOptions.map((v) => (
-                    <option key={v} value={v} />
-                  ))}
-                </datalist>
-                <span className="text-[10px] text-gray-400">Mobile connects best</span>
+                <div className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 flex flex-wrap gap-x-2 gap-y-0.5 w-44">
+                  {LINE_TYPES.map((lt) => {
+                    const on = fLines.includes(lt.value);
+                    return (
+                      <label
+                        key={lt.value}
+                        className="flex items-center gap-1 text-xs text-gray-700 dark:text-gray-200 cursor-pointer whitespace-nowrap"
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 accent-ocean-blue"
+                          checked={on}
+                          onChange={(e) =>
+                            setFLines((prev) =>
+                              e.target.checked ? [...prev, lt.value] : prev.filter((x) => x !== lt.value),
+                            )
+                          }
+                        />
+                        {lt.label}
+                      </label>
+                    );
+                  })}
+                </div>
+                <span className="text-[10px] text-gray-400">
+                  {fLines.length === 0 ? "All lines · mobile connects best" : `${fLines.length} selected`}
+                </span>
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Revenue</label>
@@ -2058,7 +2087,7 @@ export default function LeadMachinePage() {
             {/* ── 4. Act on this set — push into VibeReach, or export it as CSV.
                 Always present when there are leads (export needs no filter);
                 goes sticky once a filter or a selection is driving it. ── */}
-            {leadCount > 0 && (
+            {(leads.length > 0 || (filteredCount ?? 0) > 0) && (
               <div
                 className={`rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/90 dark:bg-emerald-900/30 backdrop-blur p-4 space-y-3 shadow-sm ${
                   activeFilterCount > 0 || usingSelection ? "sticky top-0 z-20" : ""
@@ -2079,17 +2108,12 @@ export default function LeadMachinePage() {
                   </span>
                   {/* What will ACTUALLY go: the server pushes only rows still marked
                       `loaded` that have a phone, so this is the honest number. */}
-                  {!retagMode && !usingSelection && countingPush && (
-                    <span className="text-xs text-gray-400">· checking how many are pushable…</span>
+                  {!usingSelection && countingPush && (
+                    <span className="text-xs text-gray-400">· counting…</span>
                   )}
-                  {!retagMode && !usingSelection && !countingPush && pushEligible != null && pushEligible !== leadCount && (
-                    <span className="text-sm text-gray-700 dark:text-gray-200">
-                      ·{" "}
-                      <strong className="text-emerald-700 dark:text-emerald-300">
-                        {pushEligible.toLocaleString()}
-                      </strong>{" "}
-                      pushable
-                      <span className="text-gray-500 dark:text-gray-400"> (not yet pushed, has a phone)</span>
+                  {!usingSelection && countError && (
+                    <span className="text-xs text-amber-600 dark:text-amber-400">
+                      · couldn't count this set — the leads below are unaffected
                     </span>
                   )}
                   {usingSelection && (
@@ -2454,9 +2478,8 @@ export default function LeadMachinePage() {
             {(hasNextPage || page > 0) && (
               <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
                 <span>
-                  {countIsExact ? "" : "≈"}
-                  {leadCount.toLocaleString()} leads · page {page + 1} of {countIsExact ? "" : "≈"}
-                  {totalPages}
+                  {filteredCount == null ? "…" : filteredCount.toLocaleString()} leads · page {page + 1}
+                  {totalPages != null && <> of {totalPages}</>}
                 </span>
                 <div className="flex gap-2">
                   <button
