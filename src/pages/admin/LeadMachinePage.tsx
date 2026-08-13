@@ -718,6 +718,107 @@ function StagedFiles({ onIngest }: { onIngest: (f: StagedFile) => void }) {
   );
 }
 
+/* ── The process, at a glance ─────────────────────────────────────────────────
+   The one thing that confuses people here is WHEN tags happen: they are not on
+   the file and not on the upload — they're chosen per SLICE at push time. This
+   strip exists to make that unmissable, so it leads the page. */
+function ProcessStrip() {
+  const steps: {
+    key: string;
+    title: string;
+    sub: string;
+    chip?: string;
+    chipClass?: string;
+    tone: string;
+    arrow?: string;
+  }[] = [
+    {
+      key: "csv",
+      title: "Raw CSV",
+      sub: "the list you bought",
+      tone: "border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800",
+      arrow: "upload / load a staged file",
+    },
+    {
+      key: "supabase",
+      title: "Supabase",
+      sub: "staged as a batch — e.g. UCC-20260813",
+      chip: "no tags yet · nothing sent anywhere",
+      chipClass: "bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300",
+      tone: "border-ocean-blue/50 bg-ocean-blue/5 dark:bg-ocean-blue/10",
+      arrow: "you filter a slice — state, revenue, line type…",
+    },
+    {
+      key: "push",
+      title: "Tag + Push",
+      sub: "auto type tag + batch tag, plus your campaign tag",
+      chip: "⬅ tags are applied HERE",
+      chipClass: "bg-amber-500 text-white",
+      tone: "border-amber-400 dark:border-amber-500 bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-400",
+      arrow: "contacts land tagged",
+    },
+    {
+      key: "vibereach",
+      title: "VibeReach",
+      sub: "the contact record, carrying its tags",
+      tone: "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20",
+      arrow: "HotProspector syncs by tag",
+    },
+    {
+      key: "dial",
+      title: "The dialer",
+      sub: "the campaign dials that tag",
+      tone: "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20",
+    },
+  ];
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-stretch gap-1 overflow-x-auto pb-1">
+        {steps.map((st, i) => (
+          <div key={st.key} className="flex items-stretch gap-1 shrink-0">
+            <div className={`w-44 rounded-xl border p-3 flex flex-col justify-between ${st.tone}`}>
+              <div>
+                <p className="text-sm font-bold text-gray-900 dark:text-white">{st.title}</p>
+                <p className="mt-0.5 text-[11px] leading-snug text-gray-600 dark:text-gray-300">{st.sub}</p>
+              </div>
+              {st.chip && (
+                <span
+                  className={`mt-2 inline-block self-start text-[10px] px-1.5 py-0.5 rounded-full font-bold ${st.chipClass}`}
+                >
+                  {st.chip}
+                </span>
+              )}
+            </div>
+            {i < steps.length - 1 && (
+              <div className="flex flex-col items-center justify-center w-28 shrink-0 px-1">
+                <span className="text-[10px] leading-tight text-center text-gray-500 dark:text-gray-400">
+                  {st.arrow}
+                </span>
+                <span className="text-gray-400 dark:text-gray-500 text-lg leading-none">→</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <ul className="space-y-1 text-xs text-gray-600 dark:text-gray-300">
+        <li>
+          • Uploading applies <strong>no tags</strong> and sends nothing — it just stages the rows here.
+        </li>
+        <li>
+          • Tags are chosen when you <strong>push a filtered slice</strong> — different slices of one file can go to
+          different campaigns with different tags.
+        </li>
+        <li>
+          • Every pushed lead always carries its <strong>type tag + batch tag</strong> automatically, plus your campaign
+          tag — so everything stays traceable.
+        </li>
+      </ul>
+    </section>
+  );
+}
+
 /* ================================================================== */
 /* The page                                                            */
 /* ================================================================== */
@@ -1207,6 +1308,11 @@ export default function LeadMachinePage() {
       //     self-continues through — every filter here has a server equivalent.
       const body: Record<string, unknown> = { action: "start", tags };
       if (retagMode) body.retag = true;
+      // ALWAYS forward the status filter, even on the id path. The fn resolves
+      // status as: filters.status → exactly that set; else retag → widens to
+      // loaded|pushed|error; else loaded. Sending retag without a status would
+      // therefore silently widen the run past what the browser showed.
+      if (fStatus) body.filters = { status: fStatus };
       if (!tooBigForIds) {
         let ids: string[] = [];
         if (usingSelection) {
@@ -1233,6 +1339,7 @@ export default function LeadMachinePage() {
       } else {
         // Too big for an explicit id list — hand the fn the same filters instead;
         // it re-runs them server-side and self-continues until the set is done.
+        // serverFilters already carries status, so this supersedes the stub above.
         body.filters = serverFilters;
         if (fBatch) body.batch_id = fBatch;
       }
@@ -1314,6 +1421,7 @@ export default function LeadMachinePage() {
     autoTypeTag,
     buildFilteredQuery,
     fBatch,
+    fStatus,
     loadBatches,
     loadLeads,
     plannedPush,
@@ -1361,6 +1469,9 @@ export default function LeadMachinePage() {
           <ArrowPathIcon className={`w-4 h-4 ${batchesLoading ? "animate-spin" : ""}`} /> Refresh
         </button>
       </div>
+
+      {/* The model, before anything else: where tags come from. */}
+      <ProcessStrip />
 
       {/* Naming convention — the one rule that makes the tags dialable. */}
       <div className="rounded-xl border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 px-4 py-3 text-xs text-gray-600 dark:text-gray-300 space-y-1">
