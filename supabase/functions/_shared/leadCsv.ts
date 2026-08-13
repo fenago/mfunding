@@ -118,6 +118,33 @@ export function normalizePhone(raw: string | null): string | null {
   return d;
 }
 
+/**
+ * Canonicalize the phone line type.
+ *
+ * The real files ship case variants of the SAME value — "VoIP" (9,152 rows) and
+ * "Voip" (2,282), "Toll-Free" (1,139) and "Toll-free" (9). Those are one value
+ * spelled two ways, so a user filtering line_type='VoIP' silently missed 2,282
+ * rows. Known values are folded to one spelling.
+ *
+ * UNLIKE state, an unrecognized value is KEPT rather than nulled. A bad state
+ * ("TEXAS") collides with a real one ("TX") and produces a wrong answer to a
+ * state filter; an unknown line type ("Satellite") collides with nothing, so
+ * keeping it is informative and safe.
+ */
+const LINE_TYPES: Record<string, string> = {
+  "MOBILE": "Mobile", "CELL": "Mobile", "CELLULAR": "Mobile", "WIRELESS": "Mobile",
+  "LANDLINE": "Landline", "LAND LINE": "Landline", "FIXED": "Landline",
+  "VOIP": "VoIP", "VOICE OVER IP": "VoIP",
+  "TOLL FREE": "Toll-Free", "TOLLFREE": "Toll-Free",
+};
+export function normalizeLineType(raw: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const key = trimmed.toUpperCase().replace(/[^A-Z ]+/g, " ").replace(/\s+/g, " ").trim();
+  return LINE_TYPES[key] ?? trimmed;
+}
+
 const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[A-Za-z]{2,}$/;
 export function validEmail(raw: string | null): string | null {
   if (!raw) return null;

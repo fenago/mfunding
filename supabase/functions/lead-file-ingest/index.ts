@@ -30,8 +30,8 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 import {
   cell, filingDate, headerIndexNorm, headerNames, type LeadType, LEAD_TYPES,
-  normalizePhone, resolveColumns, splitDelimited, streamCsvRecords, toInt, toNum,
-  upperState, validEmail,
+  normalizeLineType, normalizePhone, resolveColumns, splitDelimited, streamCsvRecords,
+  toInt, toNum, upperState, validEmail,
 } from "../_shared/leadCsv.ts";
 
 // Window size is a RELIABILITY setting, not a speed one. At 50s/1000 rows the
@@ -167,7 +167,7 @@ function mapRow(batch: Batch, fields: string[], cols: Record<string, number>, na
     batch_id: batch.id,
     lead_type: batch.lead_type,
     phone,
-    line_type: cell(fields, cols, "line_type"),
+    line_type: normalizeLineType(cell(fields, cols, "line_type")),
     first_name: cell(fields, cols, "first_name"),
     last_name: cell(fields, cols, "last_name"),
     email: validEmail(cell(fields, cols, "email")),
