@@ -475,6 +475,42 @@ export function findFieldByName(fields: GhlCustomField[], term: string): GhlCust
 
 // ---- Tags --------------------------------------------------------------------
 
+/** List the LOCATION's tags (not a contact's). Used to check whether a tag
+ * already exists before creating one. */
+export async function listLocationTags(cfg: GhlConfig) {
+  return await ghlFetch<{ tags: Array<{ id: string; name: string }> }>(
+    cfg, "GET", `/locations/${cfg.locationId}/tags`,
+  );
+}
+
+/**
+ * Create a LOCATION-LEVEL tag — an empty label, attached to no contact.
+ *
+ * This exists because HotProspector's tag picker reads a CACHED copy of GHL's
+ * tag list: a tag that has never been created in GHL cannot be selected as a
+ * campaign's "Tags to Dial", so a dial campaign would have nothing to point at
+ * until the first contact happened to be pushed with it. Creating the tag up
+ * front lets the owner wire the HP campaign before any leads move.
+ *
+ * NOTE ON SCOPE: creating a tag is NOT a contact push. It touches no contact,
+ * sends no message and enters no dial list. The no-contact-push policy is
+ * unaffected by this call.
+ *
+ * Idempotent: GHL rejects a duplicate name, which is reported as ok+existing
+ * rather than an error, so a re-run is safe.
+ */
+export async function createLocationTag(cfg: GhlConfig, name: string) {
+  const res = await ghlFetch<{ tag: { id: string; name: string } }>(
+    cfg, "POST", `/locations/${cfg.locationId}/tags`, { name },
+  );
+  if (res.ok) return { ok: true, created: true, id: res.data?.tag?.id ?? null, error: null };
+  const msg = ghlErrorMessage(res.error).toLowerCase();
+  if (res.status === 400 && (msg.includes("already") || msg.includes("exist") || msg.includes("duplicate"))) {
+    return { ok: true, created: false, id: null, error: null };
+  }
+  return { ok: false, created: false, id: null, error: ghlErrorMessage(res.error) };
+}
+
 /** Add one or more tags to a contact (fires GHL "tag added" workflows). */
 export async function addContactTags(cfg: GhlConfig, contactId: string, tags: string[]) {
   return await ghlFetch<{ tags: string[] }>(

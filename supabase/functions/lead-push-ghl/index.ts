@@ -134,11 +134,11 @@ export interface LeadFilters {
 type Job = {
   id: string; batch_id: string | null; lead_ids: string[] | null;
   filters: LeadFilters; tags: string[]; limit_n: number | null; retag: boolean;
-  cursor_id: string | null;
+  cursor_id: string | null; campaign_id: string | null;
   status: string; target_count: number; pushed: number; errored: number; skipped: number;
 };
 const JOB_COLS = "id,batch_id,lead_ids,filters,tags,limit_n,retag,cursor_id,status,"
-  + "target_count,pushed,errored,skipped";
+  + "target_count,pushed,errored,skipped,campaign_id";
 
 /**
  * DRAIN vs CURSOR — the one thing to understand about this function.
@@ -524,6 +524,10 @@ Deno.serve(async (req) => {
         tags,
         limit_n: Number(payload.limit) > 0 ? Number(payload.limit) : null,
         retag: payload.retag === true,
+        // Which dial campaign this push feeds. The job row records the RUN; the
+        // durable per-lead attribution is the campaign's dial_tag inside
+        // lead_records.push_tags, which outlives the job row.
+        campaign_id: clean(payload.campaign_id),
         status: "running",
         message: "counting",
         created_by: callerId,
@@ -573,7 +577,7 @@ Deno.serve(async (req) => {
           ? (payload.lead_ids as string[]).slice(0, MAX_LEAD_IDS) : null,
         filters: (payload.filters as LeadFilters) ?? {}, tags: [],
         limit_n: Number(payload.limit) > 0 ? Number(payload.limit) : null,
-        retag: payload.retag === true, cursor_id: null,
+        retag: payload.retag === true, cursor_id: null, campaign_id: null,
         status: "", target_count: 0, pushed: 0, errored: 0, skipped: 0,
       } as Job;
       const count = await countTarget(db, job);

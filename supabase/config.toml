@@ -387,3 +387,13 @@ verify_jwt = true
 # re-invoke can't double-push). verify_jwt = true PLUS an in-code admin/super_admin check.
 [functions.lead-push-ghl]
 verify_jwt = true
+
+# dial-campaign: creates DIAL CAMPAIGNS (rows in public.campaigns, channel outbound_dial)
+# where one lowercase-kebab dial_tag is the join key across our app, GHL and HotProspector.
+# Mints the campaign code via the existing trigger, validates the tag against reserved
+# prefixes, and CREATES THE TAG IN GHL (an empty location-level label — not a contact push;
+# HP's picker reads a cached copy of GHL's tag list). HP access is strictly READ-ONLY
+# (FetchAllCampaigns) — HP campaigns are UI-only, API edits silently revert.
+# verify_jwt = true PLUS an in-code admin/super_admin check.
+[functions.dial-campaign]
+verify_jwt = true
