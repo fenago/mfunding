@@ -34,6 +34,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, getContact, upsertContact, ghlErrorMessage,
+  updateContactCustomFields,
 } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
@@ -80,6 +81,29 @@ interface Identity {
   phone: string | null;
 }
 
+/** The sentinel matched_funders value ph-ucc-ingest writes for agent-filed leads
+ * (the real funder is hidden behind a representation agent). It is NOT a real
+ * funder name — mirror of AGENT_FILED_SENTINEL in ph-ucc-push-ghl. */
+const AGENT_FILED_SENTINEL = "— agent-filed (funder unknown) —";
+
+/** The backing UCC lead behind a merchant — the source of the auto-populated
+ * address + existing-MCA-positions. Recovered by phone (phone path) or by
+ * ghl_contact_id (deep-link path). */
+interface UccLeadRow {
+  id: string;
+  debtor_address: string | null;
+  debtor_city: string | null;
+  debtor_state: string | null;
+  debtor_zip: string | null;
+  stack_depth: number | null;
+  matched_funders: string[] | null;
+  mca_score: number | string | null;
+}
+
+/** ph_ucc_leads columns needed to enrich the customer address + deal positions. */
+const UCC_ENRICH_COLS =
+  "id, debtor_address, debtor_city, debtor_state, debtor_zip, stack_depth, matched_funders, mca_score";
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -115,6 +139,9 @@ Deno.serve(async (req) => {
     let seed: Identity | null = null;   // identity we already know — skips getContact
     let uccLeadId: string | null = null;
     let matchedUcc = false;
+    // The backing UCC lead (address + existing positions). Set on the phone path
+    // here; recovered by ghl_contact_id on the deep-link path further down.
+    let uccLead: UccLeadRow | null = null;
     if (!ghlContactId) {
       const digits = last10(rawPhone);
       if (!digits) return json({ ok: false, error: `"${rawPhone}" isn't a usable 10-digit phone number.` }, 400);
@@ -123,7 +150,7 @@ Deno.serve(async (req) => {
       // up any row written as +1XXXXXXXXXX or 1XXXXXXXXXX.
       const { data: leads, error: leadErr } = await db
         .from("ph_ucc_leads")
-        .select("id, phone, person_name, debtor_name, email, debtor_city, debtor_state, debtor_zip, ghl_contact_id")
+        .select(`id, phone, person_name, debtor_name, email, ghl_contact_id, ${UCC_ENRICH_COLS}`)
         .like("phone", `%${digits}`)
         .order("score", { ascending: false, nullsFirst: false })
         .limit(5);
@@ -133,6 +160,16 @@ Deno.serve(async (req) => {
       if (lead) {
         matchedUcc = true;
         uccLeadId = lead.id as string;
+        uccLead = {
+          id: lead.id as string,
+          debtor_address: (lead.debtor_address as string | null) ?? null,
+          debtor_city: (lead.debtor_city as string | null) ?? null,
+          debtor_state: (lead.debtor_state as string | null) ?? null,
+          debtor_zip: (lead.debtor_zip as string | null) ?? null,
+          stack_depth: (lead.stack_depth as number | null) ?? null,
+          matched_funders: (lead.matched_funders as string[] | null) ?? null,
+          mca_score: (lead.mca_score as number | string | null) ?? null,
+        };
         const nm = splitName(str(lead.person_name));
         seed = {
           first: nm.first,
@@ -155,6 +192,7 @@ Deno.serve(async (req) => {
           companyName: seed.business,
           email: seed.email,
           phone: seed.phone,
+          address1: lead ? str(lead.debtor_address) : null,
           city: lead ? str(lead.debtor_city) : null,
           state: lead ? str(lead.debtor_state) : null,
           postalCode: lead ? str(lead.debtor_zip) : null,
@@ -185,6 +223,147 @@ Deno.serve(async (req) => {
     if (!ghlContactId) return json({ ok: false, error: "ghl_contact_id is required" }, 400);
     const contactId: string = ghlContactId;
 
+    // ── DEEP-LINK PATH: recover the backing UCC lead by ghl_contact_id. The phone
+    // path already set uccLead; this is what makes a DEEP-LINKED UCC merchant
+    // auto-populate (address + existing positions) exactly like the phone path.
+    if (!uccLead) {
+      const { data: byContact, error: ulErr } = await db
+        .from("ph_ucc_leads")
+        .select(UCC_ENRICH_COLS)
+        .eq("ghl_contact_id", contactId)
+        .order("score", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle();
+      if (ulErr) console.error("[playbook-open-contact] ucc lead by-contact lookup failed:", ulErr.message);
+      if (byContact) {
+        uccLead = byContact as unknown as UccLeadRow;
+        uccLeadId = uccLead.id;
+      }
+    }
+
+    // GHL custom-field IDs are read from get_ghl_config() (decoupled handshake —
+    // another agent persists the three ids into the config JSON). Absent keys are
+    // skipped silently; nothing is ever hardcoded.
+    let ghlFieldIds: { positions: string | null; funders: string | null; score: string | null } =
+      { positions: null, funders: null, score: null };
+    try {
+      const { data: rawCfg } = await db.rpc("get_ghl_config");
+      const c = (rawCfg ?? {}) as Record<string, unknown>;
+      ghlFieldIds = {
+        positions: str(c.cf_existing_positions),
+        funders: str(c.cf_current_funders),
+        score: str(c.cf_mca_score),
+      };
+    } catch (e) {
+      console.warn("[playbook-open-contact] ghl config read for field ids failed:", e instanceof Error ? e.message : String(e));
+    }
+
+    // Real (non-agent-sentinel) funder names on the lead.
+    const uccFunders = (uccLead?.matched_funders ?? []).filter((f) => f && f !== AGENT_FILED_SENTINEL);
+
+    // Per-lien detail from the ph_ucc_lead_filings RPC (normalized debtor-key
+    // join; one row per UCC position). Cheap to memoize — used by every write.
+    let positionsDetailCache: Array<Record<string, unknown>> | undefined;
+    async function positionsDetail(): Promise<Array<Record<string, unknown>>> {
+      if (positionsDetailCache !== undefined) return positionsDetailCache;
+      if (!uccLead) { positionsDetailCache = []; return positionsDetailCache; }
+      const { data, error } = await db.rpc("ph_ucc_lead_filings", { p_lead_id: uccLead.id });
+      if (error) {
+        console.error("[playbook-open-contact] ph_ucc_lead_filings failed:", error.message);
+        positionsDetailCache = [];
+        return positionsDetailCache;
+      }
+      positionsDetailCache = ((data ?? []) as Array<Record<string, unknown>>).map((f) => ({
+        funder: str(f.secured_party_raw),
+        filed_date: (f.filed_date as string | null) ?? null,
+        state: str(f.state),
+        filing_no: str(f.filing_no),
+      }));
+      return positionsDetailCache;
+    }
+
+    // The deal patch for existing MCA positions — null when the lead carries no
+    // positions signal at all (so we never stamp source='ucc' onto nothing).
+    let positionsPatchCache: Record<string, unknown> | null | undefined;
+    async function positionsPatch(): Promise<Record<string, unknown> | null> {
+      if (positionsPatchCache !== undefined) return positionsPatchCache;
+      if (!uccLead) { positionsPatchCache = null; return null; }
+      const detail = await positionsDetail();
+      const hasSignal = uccLead.stack_depth != null || uccFunders.length > 0 || detail.length > 0;
+      if (!hasSignal) { positionsPatchCache = null; return null; }
+      positionsPatchCache = {
+        existing_positions: uccLead.stack_depth ?? null,
+        existing_funders: uccFunders.length ? uccFunders : null,
+        existing_positions_detail: detail,
+        existing_positions_source: "ucc",
+        existing_positions_synced_at: new Date().toISOString(),
+      };
+      return positionsPatchCache;
+    }
+
+    // Backfill existing_positions onto a deal ONLY when it is currently null — a
+    // human or the application may have refined it, and that must never be lost.
+    async function backfillDealPositions(dealId: string): Promise<void> {
+      const patch = await positionsPatch();
+      if (!patch) return;
+      const { error } = await db.from("deals")
+        .update(patch)
+        .eq("id", dealId)
+        .is("existing_positions", null);   // race-safe no-overwrite guard
+      if (error) console.error("[playbook-open-contact] deal positions backfill failed:", error.message);
+    }
+
+    // Backfill the merchant address onto a customer — only columns that are
+    // currently NULL/empty; never overwrite a value a human already entered.
+    async function backfillCustomerAddress(custId: string): Promise<void> {
+      if (!uccLead) return;
+      const st = str(uccLead.debtor_address), ci = str(uccLead.debtor_city),
+        stt = str(uccLead.debtor_state), z = str(uccLead.debtor_zip);
+      if (!st && !ci && !stt && !z) return;
+      const { data: cur, error } = await db.from("customers")
+        .select("address_street, address_city, address_state, address_zip")
+        .eq("id", custId).maybeSingle();
+      if (error || !cur) { if (error) console.error("[playbook-open-contact] customer addr read failed:", error.message); return; }
+      const empty = (v: unknown) => v === null || v === undefined || String(v).trim() === "";
+      const patch: Record<string, string> = {};
+      if (empty(cur.address_street) && st) patch.address_street = st;
+      if (empty(cur.address_city) && ci) patch.address_city = ci;
+      if (empty(cur.address_state) && stt) patch.address_state = stt;
+      if (empty(cur.address_zip) && z) patch.address_zip = z;
+      if (Object.keys(patch).length === 0) return;
+      const { error: uErr } = await db.from("customers").update(patch).eq("id", custId);
+      if (uErr) console.error("[playbook-open-contact] customer addr backfill failed:", uErr.message);
+    }
+
+    // Push existing-positions / current-funders / mca-score onto the GHL contact
+    // as custom fields — best-effort, never blocks the deal open. Skips silently
+    // when the field ids aren't configured (decoupled handshake).
+    async function pushGhlUccFields(): Promise<void> {
+      if (!uccLead) return;
+      const fields: Array<{ id: string; value: string | number }> = [];
+      if (ghlFieldIds.positions && uccLead.stack_depth != null) {
+        fields.push({ id: ghlFieldIds.positions, value: uccLead.stack_depth });
+      }
+      if (ghlFieldIds.funders && uccFunders.length) {
+        fields.push({ id: ghlFieldIds.funders, value: uccFunders.join(", ") });
+      }
+      const mca = uccLead.mca_score == null ? null : Number(uccLead.mca_score);
+      if (ghlFieldIds.score && mca != null && Number.isFinite(mca)) {
+        fields.push({ id: ghlFieldIds.score, value: mca });
+      }
+      if (!fields.length) return;
+      try {
+        const cfg = await getGhlConfig(db);
+        const res = await updateContactCustomFields(cfg, contactId, fields);
+        if (!res.ok) console.warn("[playbook-open-contact] ghl custom-field push failed:", ghlErrorMessage(res.error));
+      } catch (e) {
+        console.warn("[playbook-open-contact] ghl custom-field push threw:", e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // Sync the UCC intel to GHL now (best-effort; both paths, once we have a lead).
+    await pushGhlUccFields();
+
     // Claim an unassigned deal for the calling closer so RLS lets them read it.
     // Admins/super_admins already read every deal, so we never reassign for them.
     async function claimIfNeeded(dealId: string, assignedCloserId: string | null): Promise<boolean> {
@@ -209,7 +388,11 @@ Deno.serve(async (req) => {
     if (findErr) return json({ ok: false, error: `deal lookup failed: ${findErr.message}` }, 500);
 
     if (existingDeals && existingDeals.length > 0) {
-      const d = existingDeals[0] as { id: string; assigned_closer_id: string | null };
+      const d = existingDeals[0] as { id: string; assigned_closer_id: string | null; customer_id: string | null };
+      // Resume: backfill the auto-populated fields onto the existing deal + its
+      // customer (nulls only — never overwrite refined values).
+      await backfillDealPositions(d.id);
+      if (d.customer_id) await backfillCustomerAddress(d.customer_id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc });
     }
@@ -271,6 +454,7 @@ Deno.serve(async (req) => {
       }
     }
 
+    let customerCreated = false;
     if (!customerId) {
       const { data: newCust, error: custErr } = await db
         .from("customers")
@@ -285,12 +469,24 @@ Deno.serve(async (req) => {
           status: "lead",
           source: "other",
           ghl_contact_id: contactId,
+          // Auto-populate the merchant address from the backing UCC lead.
+          ...(uccLead ? {
+            address_street: str(uccLead.debtor_address),
+            address_city: str(uccLead.debtor_city),
+            address_state: str(uccLead.debtor_state),
+            address_zip: str(uccLead.debtor_zip),
+          } : {}),
         })
         .select("id")
         .single();
       if (custErr || !newCust) return json({ ok: false, error: `Couldn't create the lead: ${custErr?.message ?? "unknown"}` }, 500);
       customerId = newCust.id;
+      customerCreated = true;
     }
+
+    // Existing customer (linked or deduped): backfill any NULL address columns
+    // from the UCC lead — never overwrite a value a human already entered.
+    if (!customerCreated && customerId) await backfillCustomerAddress(customerId);
 
     // ── 2b) Second idempotency guard: the customer may already carry an OPEN
     // mca deal that predates the ghl link (common on the phone path, where the
@@ -310,11 +506,17 @@ Deno.serve(async (req) => {
         const { error: linkErr } = await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", d.id);
         if (linkErr) console.error("[playbook-open-contact] deal ghl link backfill failed:", linkErr.message);
       }
+      // Resume: backfill existing positions onto this pre-existing open deal
+      // (nulls only — never overwrite a refined value).
+      await backfillDealPositions(d.id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc });
     }
 
     // ── 3) Create the DEAL, owned by the calling closer (if a closer). ────────
+    // Auto-populate existing MCA positions from the backing UCC lead (no
+    // overwrite risk — this is a brand-new deal).
+    const newDealPositions = await positionsPatch();
     const { data: newDeal, error: dealErr } = await db
       .from("deals")
       .insert({
@@ -330,6 +532,7 @@ Deno.serve(async (req) => {
           ghl_contact_id: contactId,
           ...(uccLeadId ? { ucc_lead_id: uccLeadId } : {}),
         },
+        ...(newDealPositions ?? {}),
       })
       .select("id")
       .single();
