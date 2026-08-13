@@ -342,23 +342,40 @@ const HARD_CALL_CAP = 100; // the edge fn traces at most 100 leads per call, and
 // completeness.
 const PUSH_CALL_CAP = 50;
 
-/* Stable CSV column order for the lead export. phone/email stay in the shape
-   even though they're null until skip-trace is live — keeps the file layout
-   constant across exports. */
+/* Stable CSV column order for the lead export. Keep this order STABLE — downstream
+   dialers/importers map columns positionally. Every column here is either fetched
+   in exportLeadsCsv's SELECT or derived client-side (confidence via leadConfidence,
+   which the confidence column may not yet exist for). phone, email, the apollo_
+   fields and email_verify_status stay in the shape even when null until
+   skip-trace/enrichment run — keeps the file
+   layout constant across exports. Order (23 cols):
+     debtor_name, person_name, debtor_address, debtor_city, state, debtor_zip,
+     lead_class, confidence, agent_name, matched_funders, stack_depth, mca_score,
+     score_reasons, latest_filing_date, freshness_days, score, email_verify_status,
+     status, phone, email, apollo_business_email, apollo_owner_title */
 const LEAD_CSV_COLUMNS = [
   "debtor_name",
+  "person_name",
+  "debtor_address",
+  "debtor_city",
   "state",
+  "debtor_zip",
   "lead_class",
   "confidence",
   "agent_name",
   "matched_funders",
   "stack_depth",
+  "mca_score",
+  "score_reasons",
   "latest_filing_date",
   "freshness_days",
   "score",
+  "email_verify_status",
   "status",
   "phone",
   "email",
+  "apollo_business_email",
+  "apollo_owner_title",
 ] as const;
 
 /* RFC-4180-ish escaping: wrap in quotes when the value contains a comma, quote,
@@ -1601,25 +1618,36 @@ export default function PhUccMachinePage() {
         setTimeout(() => setExportFlash(null), 5000);
         return;
       }
+      // Fetch every exported column (confidence is derived client-side and NOT
+      // selected — the column may not be live yet; leadConfidence() handles that).
       const res = await buildFilteredLeadQuery(
-        "debtor_name, state, lead_class, agent_name, matched_funders, stack_depth, latest_filing_date, freshness_days, score, status, phone, email",
+        "debtor_name, person_name, debtor_address, debtor_city, state, debtor_zip, lead_class, agent_name, matched_funders, stack_depth, mca_score, score_reasons, latest_filing_date, freshness_days, score, email_verify_status, status, phone, email, apollo_business_email, apollo_owner_title",
       );
       if (res.error) throw res.error;
       const data = (res.data as unknown as UccLead[]) ?? [];
       const rows = data.map((l) => [
         l.debtor_name,
+        l.person_name ?? "",
+        l.debtor_address ?? "",
+        l.debtor_city ?? "",
         l.state,
+        l.debtor_zip ?? "",
         l.lead_class ?? "",
         leadConfidence(l), // derived client-side (column may not be live yet)
         l.agent_name ?? "",
-        (l.matched_funders ?? []).join("|"), // pipe-joined so commas don't split columns
+        (l.matched_funders ?? []).join("; "), // semicolon-joined so commas don't split columns
         l.stack_depth,
+        l.mca_score ?? "",
+        reasonsFrom(l.score_reasons).join("; "), // flatten jsonb {reasons:[…]} to a readable string
         l.latest_filing_date,
         l.freshness_days,
         l.score,
+        l.email_verify_status ?? "",
         l.status,
         l.phone,
         l.email,
+        l.apollo_business_email ?? "",
+        l.apollo_owner_title ?? "",
       ]);
       downloadCsv(`ph-ucc-leads-${todayStamp()}.csv`, buildCsv(LEAD_CSV_COLUMNS, rows));
       setExportFlash(`exported ${rows.length} row${rows.length === 1 ? "" : "s"} ✓`);

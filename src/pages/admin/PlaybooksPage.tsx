@@ -30,6 +30,8 @@ import {
   PlusIcon,
   EnvelopeIcon,
   PhoneIcon,
+  MapPinIcon,
+  BanknotesIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
@@ -109,6 +111,12 @@ const STAGE_DONE_AT: Record<string, keyof Deal> = {
 const GHL_LOCATION = "t7NmVR4WCy927j4Zon4b";
 const fmtWhen = (iso: string) =>
   new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+// Date-only formatter for UCC filing dates (no time component). Falls back to the
+// raw string if it isn't parseable.
+const fmtDealDate = (d: string): string => {
+  const dt = new Date(d);
+  return isNaN(dt.getTime()) ? d : dt.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+};
 const pipelineOf = (dealType: string): "mca" | "vcf" => (dealType === "vcf" ? "vcf" : "mca");
 const dealName = (d: DealWithCustomer) =>
   d.customer?.business_name ||
@@ -2357,6 +2365,20 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
   const personName = [deal.customer?.first_name, deal.customer?.last_name].filter(Boolean).join(" ").trim();
   const showPerson = !!personName && personName !== dealName(deal);
 
+  // ── Merchant reference (prefilled from the UCC-sourced record) ──
+  // Full mailing address + the merchant's existing open MCA positions, so a setter
+  // opens the deal already seeing who they're calling and what stack they carry.
+  const addrLine1 = deal.customer?.address_street?.trim() || "";
+  const addrLine2 = [deal.customer?.address_city, deal.customer?.address_state, deal.customer?.address_zip]
+    .map((s) => s?.trim())
+    .filter(Boolean)
+    .join(", ");
+  const fullAddress = [addrLine1, addrLine2].filter(Boolean).join(", ");
+  const existingPositions = deal.existing_positions ?? null;
+  const existingFunders = (deal.existing_funders ?? []).filter(Boolean);
+  const existingDetail = deal.existing_positions_detail ?? [];
+  const hasPositionData = existingPositions != null || existingFunders.length > 0 || existingDetail.length > 0;
+
   return (
     <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2465,6 +2487,57 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                 <span className="text-amber-600 dark:text-amber-400">— add an email so you can send the application</span>
               )}
             </p>
+
+            {/* Address — prefilled from the UCC-sourced record. Subtle, read-only. */}
+            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+              <MapPinIcon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+              {fullAddress ? <span>{fullAddress}</span> : <span className="text-gray-400 dark:text-gray-500">No address on file</span>}
+            </p>
+
+            {/* Existing MCA positions — the merchant's current open advances, seeded
+                from UCC. Read-only reference the setter sees the moment they open the
+                deal: how many, who, and each lien's filing date. */}
+            <div className="mt-2 rounded-lg border border-emerald-200 dark:border-emerald-800/60 bg-white/60 dark:bg-gray-800/40 px-2.5 py-2">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  <BanknotesIcon className="w-3.5 h-3.5 text-gray-400" /> Existing MCA positions
+                </span>
+                {hasPositionData ? (
+                  <span className="text-sm font-bold text-gray-900 dark:text-white">
+                    {existingPositions != null ? existingPositions : existingDetail.length || existingFunders.length}
+                    {existingPositions === 1 || (existingPositions == null && (existingDetail.length || existingFunders.length) === 1)
+                      ? " open advance"
+                      : " open advances"}
+                  </span>
+                ) : (
+                  <span className="text-xs text-gray-400 dark:text-gray-500">not on file</span>
+                )}
+              </div>
+              {existingFunders.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {existingFunders.map((f, i) => (
+                    <span
+                      key={i}
+                      className="text-[11px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+                    >
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {existingDetail.length > 0 && (
+                <ul className="mt-1.5 space-y-0.5">
+                  {existingDetail.map((p, i) => (
+                    <li key={i} className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-gray-600 dark:text-gray-300">
+                      <span className="font-medium text-gray-800 dark:text-gray-100">{p.funder?.trim() || "Funder unknown"}</span>
+                      {p.filed_date && <span className="text-gray-400">· filed {fmtDealDate(p.filed_date)}</span>}
+                      {p.state && <span className="text-gray-400">· {p.state}</span>}
+                      {p.filing_no && <span className="text-gray-400">· #{p.filing_no}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
 
             {/* Who gets paid for this deal. Unassigned = nobody, so it's a red
                 chip with the fix RIGHT HERE — a closer never leaves this screen. */}

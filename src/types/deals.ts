@@ -201,6 +201,20 @@ export interface Deal {
   score_reasons?: { factor: string; points: number; max: number; note: string }[] | null;
   score_version?: number | null;
   scored_at?: string | null;
+  // ── Existing MCA positions (seeded from UCC) ──
+  // The merchant's CURRENT open advances at lead time: how many and who. Seeded
+  // from the UCC filing that sourced this lead, so a setter opens the deal already
+  // knowing the stack. Read-only reference — not the closer's live doc checklist.
+  /** How many open advances the merchant currently carries. */
+  existing_positions?: number | null;
+  /** The funders behind those advances (display names; may be partial/masked). */
+  existing_funders?: string[] | null;
+  /** Per-lien breakdown, one entry per open position. */
+  existing_positions_detail?: { funder?: string | null; filed_date?: string | null; state?: string | null; filing_no?: string | null }[] | null;
+  /** Where the position data came from (e.g. "ucc"). */
+  existing_positions_source?: string | null;
+  /** When the position snapshot was last synced. */
+  existing_positions_synced_at?: string | null;
   /** Persisted AI lender analysis (tokens cost money — survives reloads). */
   ai_lender_recommendations: { summary: string; recommendations: unknown[] } | null;
   ai_recommended_at: string | null;
@@ -225,6 +239,11 @@ export interface DealWithCustomer extends Deal {
     monthly_revenue: number | null;
     time_in_business: number | null;
     industry: string | null;
+    /** Merchant address — populated when a setter opens a UCC-sourced merchant. */
+    address_street: string | null;
+    address_city: string | null;
+    address_state: string | null;
+    address_zip: string | null;
   };
   closer?: {
     id: string;
