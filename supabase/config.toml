@@ -371,3 +371,19 @@ verify_jwt = true
 # message containing "loan" (an MCA is a purchase of future receivables).
 [functions.textmagic-send]
 verify_jwt = true
+
+# lead-file-ingest: LEAD MACHINE ingest. Streams a purchased lead CSV (UCC/AGED/TRIGGER,
+# ~85k rows) out of the private lead-uploads bucket into lead_records under a server-coded
+# lead_batches row. Byte-accurate Range streaming + self-reinvoke, so file size never
+# matters. verify_jwt = true PLUS an in-code admin/super_admin check; continuations use the
+# cron path (?secret + anon Bearer). INGEST ONLY — nothing is pushed anywhere here.
+[functions.lead-file-ingest]
+verify_jwt = true
+
+# lead-push-ghl: LEAD MACHINE push. Upserts a FILTERED selection of lead_records into GHL
+# as tagged contacts (auto tags: <lead_type>-lead + the lowercased batch code, plus the
+# caller's campaign tags), so HotProspector syncs by tag and campaigns dial by tag.
+# Upsert-only, ≤5 rps, resumable (only status='loaded' rows are ever selected, so a
+# re-invoke can't double-push). verify_jwt = true PLUS an in-code admin/super_admin check.
+[functions.lead-push-ghl]
+verify_jwt = true

@@ -1,0 +1,306 @@
+// lead-file-ingest — the INGEST half of the LEAD MACHINE.
+//
+// The owner buys lead files (UCC / AGED / TRIGGER, ~85k rows each), uploads the
+// raw CSV to the private `lead-uploads` bucket from the admin UI, and calls this
+// function. It streams the file out of storage and lands every row in
+// `lead_records` under a server-coded `lead_batches` row. NOTHING is pushed
+// anywhere here — the push to GoHighLevel is a separate, FILTERED decision made
+// later by lead-push-ghl. Supabase is the book of record; GHL only ever receives
+// the selection.
+//
+// 85k ROWS INSIDE AN EDGE FUNCTION (the honest part): edge functions have ~256MB
+// and a wall clock, so the file is NEVER buffered. It is streamed over HTTP Range
+// from a signed URL, byte-accurately; when the time budget is spent we persist the
+// exact byte offset on the batch row and SELF-REINVOKE (the proven
+// ph-ucc-file-ingest pattern). Memory is bounded by the 1,000-row insert chunk,
+// not by file size.
+//
+// EVERY ROW IS KEPT. A row with no dialable NANP number is still stored, with
+// status 'skipped' and the reason in push_error — purchased data is paid for, and
+// a bad phone is not a reason to lose a record. In-file duplicate phones are
+// dropped by the (batch_id, phone) unique index (ON CONFLICT DO NOTHING).
+//
+// AUTH: verify_jwt at the gateway PLUS an in-code role check — admin/super_admin
+// only (buying and loading lead files is an owner function; closers are denied).
+// Continuations use the cron path (?secret=<GHL webhook secret> + anon Bearer)
+// resolved from the vault. A service-role bearer deliberately fails the role check.
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
+import {
+  cell, filingDate, headerIndexNorm, headerNames, type LeadType, LEAD_TYPES,
+  normalizePhone, resolveColumns, splitDelimited, streamCsvRecords, toInt, toNum,
+  upperState, validEmail,
+} from "../_shared/leadCsv.ts";
+
+const BUDGET_MS = 50_000;   // stop consuming rows past this, then self-reinvoke
+const INSERT_BATCH = 1000;  // rows per insert round-trip
+const BUCKET = "lead-uploads";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status, headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+async function signedUrl(db: SupabaseClient, path: string): Promise<string> {
+  const { data, error } = await db.storage.from(BUCKET).createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) throw new Error(`sign url failed for ${path}: ${error?.message ?? "no url"}`);
+  return data.signedUrl.startsWith("http") ? data.signedUrl : `${SUPABASE_URL}${data.signedUrl}`;
+}
+
+async function objectSize(url: string): Promise<number | null> {
+  try {
+    const res = await fetch(url, { headers: { Range: "bytes=0-0" } });
+    const m = res.headers.get("content-range")?.match(/\/(\d+)\s*$/);
+    if (m) return Number(m[1]);
+    const len = res.headers.get("content-length");
+    return len ? Number(len) : null;
+  } catch { return null; }
+}
+
+async function webhookSecret(db: SupabaseClient): Promise<string> {
+  const { data: gc } = await db.rpc("get_ghl_config");
+  return (gc?.webhook_secret as string | undefined) ?? Deno.env.get("GHL_WEBHOOK_SECRET") ?? "";
+}
+
+function reinvoke(secret: string, batchId: string, budgetMs?: number): void {
+  const url = `${SUPABASE_URL}/functions/v1/lead-file-ingest?secret=${encodeURIComponent(secret)}`;
+  const body: Record<string, unknown> = { action: "continue", batch_id: batchId };
+  if (budgetMs) body.budget_ms = budgetMs;
+  const p = fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANON_KEY}` },
+    body: JSON.stringify(body),
+  }).then(() => {}).catch((e) => console.error("[lead-file-ingest] reinvoke failed:", e));
+  try { (globalThis as { EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil(p); } catch { /* dev */ }
+}
+
+type Batch = {
+  id: string; batch_code: string; lead_type: LeadType; status: string;
+  storage_path: string | null; byte_offset: number; total_rows: number;
+};
+const BATCH_COLS = "id,batch_code,lead_type,status,storage_path,byte_offset,total_rows";
+
+async function loadBatch(db: SupabaseClient, id: string): Promise<Batch | null> {
+  const { data } = await db.from("lead_batches").select(BATCH_COLS).eq("id", id).maybeSingle();
+  return (data as Batch | null) ?? null;
+}
+async function patchBatch(db: SupabaseClient, id: string, patch: Record<string, unknown>) {
+  const { error } = await db.from("lead_batches").update(patch).eq("id", id);
+  if (error) console.error("[lead-file-ingest] batch patch failed:", error.message);
+}
+
+/** Read the header line (one small Range request) and resolve the column map. */
+async function readHeader(url: string): Promise<{ cols: Record<string, number>; names: string[]; dataStart: number }> {
+  for await (const { line, byteEnd } of streamCsvRecords(url, 0)) {
+    return { cols: resolveColumns(headerIndexNorm(line)), names: headerNames(line), dataStart: byteEnd };
+  }
+  return { cols: {}, names: [], dataStart: 0 };
+}
+
+type RecordRow = Record<string, unknown>;
+
+/** Map one CSV record to a lead_records row. Never throws on bad data. */
+function mapRow(batch: Batch, fields: string[], cols: Record<string, number>, names: string[]): RecordRow {
+  const raw: Record<string, string> = {};
+  for (let i = 0; i < names.length && i < fields.length; i++) {
+    const v = (fields[i] ?? "").trim();
+    if (v) raw[names[i] || `col${i}`] = v;
+  }
+  const phone = normalizePhone(cell(fields, cols, "phone"));
+  return {
+    batch_id: batch.id,
+    lead_type: batch.lead_type,
+    phone,
+    line_type: cell(fields, cols, "line_type"),
+    first_name: cell(fields, cols, "first_name"),
+    last_name: cell(fields, cols, "last_name"),
+    email: validEmail(cell(fields, cols, "email")),
+    company: cell(fields, cols, "company"),
+    title: cell(fields, cols, "title"),
+    address: cell(fields, cols, "address"),
+    city: cell(fields, cols, "city"),
+    state: upperState(cell(fields, cols, "state")),
+    zip: cell(fields, cols, "zip"),
+    employees: toInt(cell(fields, cols, "employees")),
+    revenue: toNum(cell(fields, cols, "revenue")),
+    sic_code: cell(fields, cols, "sic_code"),
+    sic_description: cell(fields, cols, "sic_description"),
+    filing_date: filingDate(
+      cell(fields, cols, "filing_day"), cell(fields, cols, "filing_month"),
+      cell(fields, cols, "filing_year"), cell(fields, cols, "filing_date"),
+    ),
+    secured_party: cell(fields, cols, "secured_party"),
+    raw,
+    status: phone ? "loaded" : "skipped",
+    push_error: phone ? null : "no dialable 10-digit phone in source row",
+  };
+}
+
+/** One budget window of streaming. Returns done=true at EOF. */
+async function processChunk(db: SupabaseClient, batch: Batch, budgetMs: number): Promise<{ done: boolean; scanned: number }> {
+  if (!batch.storage_path) throw new Error("batch has no storage_path");
+  const url = await signedUrl(db, batch.storage_path);
+  const { cols, names, dataStart } = await readHeader(url);
+  if (cols.phone == null) {
+    throw new Error(`no phone column found in header (saw: ${names.slice(0, 20).join(", ")})`);
+  }
+  const totalBytes = await objectSize(url);
+  const startByte = batch.byte_offset > 0 ? batch.byte_offset : dataStart;
+  await patchBatch(db, batch.id, { bytes_total: totalBytes, status: "ingesting" });
+
+  const pending: RecordRow[] = [];
+  const flush = async () => {
+    if (!pending.length) return;
+    const rows = pending.splice(0);
+    // In-file duplicate phones are dropped by the (batch_id, phone) unique index.
+    const { error } = await db.from("lead_records")
+      .upsert(rows, { onConflict: "batch_id,phone", ignoreDuplicates: true });
+    if (error) throw new Error(`insert failed: ${error.message}`);
+  };
+
+  const started = Date.now();
+  let scanned = 0, lastByteEnd = startByte, hitBudget = false;
+
+  for await (const { line, byteEnd } of streamCsvRecords(url, startByte)) {
+    if (line.trim()) {
+      pending.push(mapRow(batch, splitDelimited(line, ","), cols, names));
+      scanned++;
+      if (pending.length >= INSERT_BATCH) {
+        await flush();
+        lastByteEnd = byteEnd;
+        if (Date.now() - started > budgetMs) { hitBudget = true; break; }
+        continue;
+      }
+    }
+    lastByteEnd = byteEnd;
+  }
+  await flush();
+
+  const total = (batch.total_rows ?? 0) + scanned;
+  if (hitBudget) {
+    await patchBatch(db, batch.id, {
+      total_rows: total, byte_offset: lastByteEnd,
+      message: `ingesting — ${total} rows read${totalBytes ? ` (${Math.floor((lastByteEnd / totalBytes) * 100)}%)` : ""}`,
+    });
+    return { done: false, scanned };
+  }
+
+  // ── EOF: finalize ──
+  await patchBatch(db, batch.id, { total_rows: total, byte_offset: lastByteEnd });
+  const { data: dupData, error: dupErr } = await db.rpc("lead_batch_mark_dups", { p_batch_id: batch.id });
+  if (dupErr) console.error("[lead-file-ingest] mark_dups failed:", dupErr.message);
+  const { data: counts, error: cErr } = await db.rpc("lead_batch_refresh_counts", { p_batch_id: batch.id });
+  if (cErr) throw new Error(`count refresh failed: ${cErr.message}`);
+  const c = (Array.isArray(counts) ? counts[0] : counts) as
+    { ingested_rows: number; dup_rows: number } | null;
+  await patchBatch(db, batch.id, {
+    status: "ready", finished_at: new Date().toISOString(),
+    message: `Ready — ${c?.ingested_rows ?? 0} records from ${total} rows`
+      + `${(c?.dup_rows ?? 0) ? `, ${c!.dup_rows} in-file duplicate phone(s) dropped` : ""}`
+      + `${dupData != null ? `, ${Number(dupData)} flagged as prior-source duplicates` : ""}.`,
+  });
+  return { done: true, scanned };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+
+  const db = serviceClient();
+  const url = new URL(req.url);
+  const providedSecret = url.searchParams.get("secret") ?? req.headers.get("x-ghl-secret") ?? "";
+
+  let callerId: string | null = null;
+  if (providedSecret) {
+    const expected = await webhookSecret(db);
+    if (!expected || providedSecret !== expected) return json({ error: "forbidden" }, 403);
+  } else {
+    const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+    if (!token) return json({ error: "Missing authorization" }, 401);
+    const { data: userData, error: userErr } = await db.auth.getUser(token);
+    const caller = userData?.user;
+    if (userErr || !caller) return json({ error: "Invalid session" }, 401);
+    const { data: prof } = await db.from("profiles").select("role").eq("id", caller.id).single();
+    const role = prof?.role as string | undefined;
+    if (!role || !["admin", "super_admin"].includes(role)) {
+      return json({ error: "Forbidden — admin only" }, 403);
+    }
+    callerId = caller.id;
+  }
+
+  let payload: Record<string, unknown> = {};
+  try { payload = (await req.json()) as Record<string, unknown>; } catch { /* none */ }
+  const action = String(payload.action ?? "start");
+
+  try {
+    // ── start: create the batch row (server-coded) and kick off the chain ──
+    if (action === "start") {
+      const leadType = String(payload.lead_type ?? "").toLowerCase() as LeadType;
+      const storagePath = String(payload.storage_path ?? "");
+      if (!LEAD_TYPES.includes(leadType)) {
+        return json({ error: `lead_type must be one of ${LEAD_TYPES.join(", ")}` }, 400);
+      }
+      if (!storagePath) return json({ error: "storage_path required" }, 400);
+
+      const { data: exists, error: exErr } = await db.storage.from(BUCKET)
+        .createSignedUrl(storagePath, 60);
+      if (exErr || !exists?.signedUrl) {
+        return json({ error: `object not found in ${BUCKET}: ${storagePath}` }, 400);
+      }
+
+      const { data: code, error: codeErr } = await db.rpc("next_lead_batch_code", { p_lead_type: leadType });
+      if (codeErr || !code) return json({ error: `batch code failed: ${codeErr?.message ?? "none"}` }, 500);
+
+      const { data: created, error: cErr } = await db.from("lead_batches").insert({
+        batch_code: code,
+        lead_type: leadType,
+        label: (payload.label as string | undefined) ?? null,
+        file_name: (payload.file_name as string | undefined) ?? storagePath.split("/").pop() ?? null,
+        file_size: Number(payload.file_size) > 0 ? Number(payload.file_size) : null,
+        storage_path: storagePath,
+        status: "ingesting",
+        started_at: new Date().toISOString(),
+        message: "queued",
+        created_by: callerId,
+      }).select("id,batch_code").single();
+      if (cErr) throw new Error(`batch create failed: ${cErr.message}`);
+
+      const secret = await webhookSecret(db);
+      if (secret) reinvoke(secret, created.id as string);
+      else console.error("[lead-file-ingest] no webhook secret — batch will not self-continue");
+      return json({ ok: true, batch_id: created.id, batch_code: created.batch_code, lead_type: leadType });
+    }
+
+    // ── continue: one budget window, then reinvoke or finish ──
+    if (action === "continue") {
+      const batchId = String(payload.batch_id ?? "");
+      if (!batchId) return json({ error: "batch_id required" }, 400);
+      const batch = await loadBatch(db, batchId);
+      if (!batch) return json({ error: "batch not found" }, 404);
+      if (batch.status !== "ingesting") return json({ ok: true, skipped: true, status: batch.status });
+
+      const budgetMs = Number(payload.budget_ms) > 0 ? Number(payload.budget_ms) : BUDGET_MS;
+      const { done, scanned } = await processChunk(db, batch, budgetMs);
+      if (!done) {
+        const secret = providedSecret || (await webhookSecret(db));
+        if (secret) reinvoke(secret, batchId, budgetMs === BUDGET_MS ? undefined : budgetMs);
+        else await patchBatch(db, batchId, { status: "failed", error: "no webhook secret — cannot self-continue" });
+      }
+      return json({ ok: true, batch_id: batchId, done, scanned });
+    }
+
+    return json({ error: `unknown action ${action}` }, 400);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[lead-file-ingest] FAILED", msg);
+    const batchId = String(payload.batch_id ?? "");
+    if (batchId) await patchBatch(db, batchId, { status: "failed", error: msg, finished_at: new Date().toISOString() });
+    return json({ ok: false, error: msg }, 500);
+  }
+});
