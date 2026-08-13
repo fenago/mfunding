@@ -20,6 +20,14 @@ export const corsHeaders = {
 export interface GhlConfig {
   apiKey: string;
   locationId: string;
+  /** UCC/MCA structured contact custom-field ids, surfaced by get_ghl_config()
+   * from platform_settings.ghl_custom_field_map. The SINGLE SOURCE of these ids —
+   * every push path (ph-ucc-push-ghl, push-application-to-ghl) and the
+   * playbook-open-contact upsert read them here so the ids never drift. Undefined
+   * only if the map row is missing (then the caller simply skips those fields). */
+  cfExistingPositions?: string;
+  cfCurrentFunders?: string;
+  cfMcaScore?: string;
 }
 
 /** Service-role Supabase client (full DB access, bypasses RLS). */
@@ -38,7 +46,14 @@ export async function getGhlConfig(db: SupabaseClient): Promise<GhlConfig> {
   if (!apiKey || !locationId) {
     throw new Error("GHL credentials missing from vault (GHL_API_KEY / GHL_LOCATION_ID)");
   }
-  return { apiKey, locationId };
+  return {
+    apiKey,
+    locationId,
+    // Custom-field id map (may be absent on an un-seeded env — leave undefined).
+    cfExistingPositions: (data?.cf_existing_positions as string | undefined) || undefined,
+    cfCurrentFunders: (data?.cf_current_funders as string | undefined) || undefined,
+    cfMcaScore: (data?.cf_mca_score as string | undefined) || undefined,
+  };
 }
 
 export interface GhlResponse<T = unknown> {

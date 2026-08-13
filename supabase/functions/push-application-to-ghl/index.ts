@@ -357,7 +357,7 @@ Deno.serve(async (req) => {
   // stage move can be trusted to fire MCA 04, or whether we must enroll directly.
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, customer_id, ghl_contact_id, ghl_opportunity_id, lead_qual, amount_requested, use_of_funds")
+    .select("id, customer_id, ghl_contact_id, ghl_opportunity_id, lead_qual, amount_requested, use_of_funds, existing_positions, existing_funders")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
@@ -403,7 +403,7 @@ Deno.serve(async (req) => {
 
   const { data: customer } = await db
     .from("customers")
-    .select("id, first_name, last_name, business_name, email, phone, ghl_contact_id, industry, monthly_revenue")
+    .select("id, first_name, last_name, business_name, email, phone, ghl_contact_id, industry, monthly_revenue, address_street, address_city, address_state, address_zip")
     .eq("id", deal.customer_id).maybeSingle();
   if (!customer) return json({ error: "This deal has no merchant on file." }, 404);
 
@@ -435,6 +435,12 @@ Deno.serve(async (req) => {
     lastName: (customer.last_name as string | null) ?? undefined,
     companyName: (customer.business_name as string | null) ?? undefined,
     phone: (customer.phone as string | null) ?? undefined,
+    // Merchant mailing address → standard GHL contact fields (present-only; a null
+    // column is omitted so we never blank an address GHL already holds).
+    address1: (customer.address_street as string | null) ?? undefined,
+    city: (customer.address_city as string | null) ?? undefined,
+    state: (customer.address_state as string | null) ?? undefined,
+    postalCode: (customer.address_zip as string | null) ?? undefined,
     tags: ["merchant"],
     source: "MCA Application",
   });
@@ -555,6 +561,25 @@ Deno.serve(async (req) => {
       fields_available: fields.length,
     }, 422);
   }
+  // ── UCC-sourced structured data → the same three custom fields the UCC push and
+  // the playbook use (ids resolved from get_ghl_config, so they never drift). A
+  // deal carries existing_positions / existing_funders when it came from a UCC lead.
+  // Fill GAPS ONLY — never overwrite a value the application already provided (app
+  // wins): buildFields already sets active_mca_positions in prefill/partial, so on
+  // those paths the deal value only fills when absent; on a blank send it lands here.
+  // (No MCA-score column exists on deals, so score is intentionally skipped.)
+  const hasFieldId = (id: string) => fields.some((f) => f.id === id);
+  if (cfg.cfExistingPositions && deal.existing_positions != null && !hasFieldId(cfg.cfExistingPositions)) {
+    const n = Number(deal.existing_positions);
+    if (Number.isFinite(n)) fields.push({ id: cfg.cfExistingPositions, value: n });
+  }
+  if (cfg.cfCurrentFunders && !hasFieldId(cfg.cfCurrentFunders)) {
+    const funders = Array.isArray(deal.existing_funders)
+      ? (deal.existing_funders as unknown[]).map((x) => String(x ?? "").trim()).filter((x) => x && !/agent-filed/i.test(x))
+      : [];
+    if (funders.length) fields.push({ id: cfg.cfCurrentFunders, value: funders.join(", ") });
+  }
+
   if (fields.length > 0) {
     const res = await updateContactCustomFields(cfg, contactId, fields);
     if (!res.ok) return json({ error: `GHL custom-field update failed: ${res.error}` }, 502);

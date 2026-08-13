@@ -36,7 +36,10 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
+import {
+  corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields,
+  type GhlConfig,
+} from "../_shared/ghl.ts";
 import {
   getHotProspectorConfig, hotProspectorToken,
   addMultipleLeads, ensureHpGroup, ensureHpTags, type HpLeadRow,
@@ -82,7 +85,10 @@ interface Lead {
   id: string;
   state: string | null;
   debtor_name: string | null;
+  debtor_address: string | null;
+  debtor_city: string | null;
   debtor_state: string | null;
+  debtor_zip: string | null;
   matched_funders: string[] | null;
   stack_depth: number | null;
   latest_filing_date: string | null;
@@ -101,7 +107,8 @@ interface Lead {
 }
 
 const LEAD_COLS =
-  "id,state,debtor_name,debtor_state,matched_funders,stack_depth,latest_filing_date," +
+  "id,state,debtor_name,debtor_address,debtor_city,debtor_state,debtor_zip," +
+  "matched_funders,stack_depth,latest_filing_date," +
   "freshness_days,mca_score,score,status,person_name,phone,email,apollo_business_email," +
   "lead_class,agent_name,confidence,pushed_to_hp_at";
 
@@ -130,6 +137,7 @@ function hpRowFor(l: Lead, email: string | null, phone: string | null, batchTag:
   const nameParts = (clean(l.person_name) ?? "").split(/\s+/).filter(Boolean);
   const row: HpLeadRow = {
     company: clean(l.debtor_name) ?? undefined,
+    city: clean(l.debtor_city) ?? undefined,
     state: clean(l.state) ?? clean(l.debtor_state) ?? undefined,
     source: "UCC Machine",
     additional_Info: additionalInfo(l, batchTag),
@@ -139,6 +147,77 @@ function hpRowFor(l: Lead, email: string | null, phone: string | null, batchTag:
   if (phone) row.phone = phone;
   if (email) row.email = email;
   return row;
+}
+
+/** Real (non-sentinel) funder names for a lead, comma-joined, or null. */
+function funderCsv(l: Lead): string | null {
+  const fs = (l.matched_funders ?? []).filter((f) => f && f !== AGENT_FILED_SENTINEL);
+  return fs.length ? fs.join(", ") : null;
+}
+
+/** Structured custom-field array for a lead using the config-driven field ids.
+ * Only pushes a field when we HAVE both the id (from get_ghl_config) and a value. */
+function uccCustomFields(cfg: GhlConfig, l: Lead): Array<{ id: string; value: string | number }> {
+  const out: Array<{ id: string; value: string | number }> = [];
+  if (cfg.cfExistingPositions && l.stack_depth != null) {
+    out.push({ id: cfg.cfExistingPositions, value: l.stack_depth });
+  }
+  if (cfg.cfCurrentFunders) {
+    const csv = funderCsv(l);
+    if (csv) out.push({ id: cfg.cfCurrentFunders, value: csv });
+  }
+  if (cfg.cfMcaScore && l.mca_score != null) {
+    const n = Number(l.mca_score);
+    if (Number.isFinite(n)) out.push({ id: cfg.cfMcaScore, value: n });
+  }
+  return out;
+}
+
+/**
+ * BEST-EFFORT GHL ENRICHMENT (does NOT change the HP-first dialer load above).
+ *
+ * The dialer leads are loaded HP-first (the reliable direction). This adds the
+ * STRUCTURED data GHL needs — the debtor address + the three UCC custom fields
+ * (existing positions / current funders / MCA score) — via a code-controlled GHL
+ * write instead of trusting HP↔GHL field mapping to carry them. Upsert dedupes by
+ * email/phone, so it lands on the SAME contact HP's sync creates (one contact per
+ * merchant). Never throws — a GHL hiccup on one lead leaves it loaded in HP and
+ * simply un-enriched (the caller reports the count).
+ *
+ * Returns the GHL contact id (so we can stamp ph_ucc_leads.ghl_contact_id), or null.
+ */
+async function enrichGhlContact(
+  cfg: GhlConfig,
+  l: Lead,
+  email: string | null,
+  phone: string | null,
+  batchTag: string,
+): Promise<string | null> {
+  try {
+    const nameParts = (clean(l.person_name) ?? "").split(/\s+/).filter(Boolean);
+    const up = await upsertContact(cfg, {
+      firstName: nameParts.length ? nameParts[0] : undefined,
+      lastName: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
+      companyName: clean(l.debtor_name),
+      email: email ?? undefined,
+      phone: phone ?? undefined,
+      address1: clean(l.debtor_address),
+      city: clean(l.debtor_city),
+      state: clean(l.state) ?? clean(l.debtor_state),
+      postalCode: clean(l.debtor_zip),
+      tags: ["ucc-lead", batchTag],
+      source: "UCC Machine",
+    });
+    const contactId = up.data?.contact?.id ?? null;
+    if (!contactId) return null;
+    const fields = uccCustomFields(cfg, l);
+    if (fields.length) await updateContactCustomFields(cfg, contactId, fields);
+    return contactId;
+  } catch (e) {
+    console.warn("[ph-ucc-push-ghl] GHL enrichment failed (lead stays HP-loaded):",
+      JSON.stringify({ lead_id: l.id, error: e instanceof Error ? e.message : String(e) }));
+    return null;
+  }
 }
 
 Deno.serve(async (req) => {
@@ -208,7 +287,7 @@ Deno.serve(async (req) => {
   const tagIds = await ensureHpTags(hpToken, ["ucc-lead", batchTag]);
 
   // Partition the requested leads.
-  let pushed = 0, updated = 0, skipped_no_contact = 0, errored = 0;
+  let pushed = 0, updated = 0, skipped_no_contact = 0, errored = 0, ghlEnriched = 0;
   const perLead: Record<string, unknown>[] = [];
   const toSubmit: Array<{ lead: Lead; row: HpLeadRow }> = [];
   const seen = new Set<string>(); // dedupe within this call by phone/email
@@ -283,6 +362,38 @@ Deno.serve(async (req) => {
       errored += toSubmit.length;
       for (const t of toSubmit) perLead.push({ lead_id: t.lead.id, debtor: t.lead.debtor_name, error: String(msg).slice(0, 200) });
     }
+
+    // ── BEST-EFFORT GHL STRUCTURED ENRICHMENT (independent of the HP load). ──
+    // Only when HP accepted the leads. Writes the debtor address + the three UCC
+    // custom fields onto each merchant's GHL contact via a code-controlled upsert,
+    // then stamps ph_ucc_leads.ghl_contact_id so the playbook resolves instantly.
+    // Bounded concurrency (GHL rate limits) + a soft time budget so this can never
+    // push the function past its wall-clock (the HP load already succeeded above).
+    if (ok) {
+      let cfg: GhlConfig | null = null;
+      try { cfg = await getGhlConfig(db); }
+      catch (e) { console.warn("[ph-ucc-push-ghl] GHL config unavailable — skipping enrichment:", e instanceof Error ? e.message : String(e)); }
+      if (cfg) {
+        const DEADLINE = started + 90_000; // leave headroom under the edge wall-clock
+        const CONCURRENCY = 4;
+        const queue = [...toSubmit];
+        const worker = async () => {
+          while (queue.length && Date.now() < DEADLINE) {
+            const t = queue.shift();
+            if (!t) break;
+            const cid = await enrichGhlContact(cfg!, t.lead, t.row.email ?? null, t.row.phone ?? null, batchTag);
+            if (cid) {
+              ghlEnriched++;
+              const { error: gErr } = await db.from("ph_ucc_leads")
+                .update({ ghl_contact_id: cid, pushed_to_ghl_at: new Date().toISOString() })
+                .eq("id", t.lead.id);
+              if (gErr) console.warn("[ph-ucc-push-ghl] ghl_contact_id stamp failed:", JSON.stringify({ lead_id: t.lead.id, error: gErr.message }));
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toSubmit.length) }, () => worker()));
+      }
+    }
   }
 
   return json({
@@ -296,6 +407,7 @@ Deno.serve(async (req) => {
     pushed,
     updated,
     skipped_no_contact,
+    ghl_enriched: ghlEnriched, // contacts we wrote address + UCC custom fields onto
     errors: errored,
     unprocessed_ids: [], // one bulk call — nothing is left mid-run
     elapsed_ms: Date.now() - started,
