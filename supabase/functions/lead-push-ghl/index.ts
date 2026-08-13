@@ -56,27 +56,27 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 /**
- * ── STAGED, NOT ACTIVE — awaiting the owner's decision ────────────────────────
+ * ── ACTIVE: "lm" (owner-approved 2026-08-13) ──────────────────────────────────
  *
- * The automatic type tag is `<lead_type>-lead`, which means a Lead Machine push
- * writes `ucc-lead` — a tag ALREADY carried by 1,092 contacts and already wired
- * into the live PH UCC dialing population. A Lead Machine test or a mis-filtered
- * push can therefore drop purchased leads straight into a real dial list.
+ * WHY THIS IS NOT `<lead_type>-lead`. That naming made a Lead Machine push write
+ * `ucc-lead` — a tag already carried by 1,092 contacts and already wired into the
+ * LIVE PH UCC dialing population. Any Lead Machine test or mis-filtered push
+ * therefore dropped purchased leads straight into a real dial list. It did, once:
+ * a 24-lead UI test on 2026-08-13 put 24 real Texas businesses into that tag
+ * before being cleaned up.
  *
- * `lm-<lead_type>` (lm-ucc / lm-aged / lm-trigger) is namespaced to this machine
- * and cannot collide with anything.
+ * `lm-<lead_type>` is namespaced to this machine and cannot collide with
+ * ph-ucc-push-ghl's `ucc-lead`, which is separate and intentional and stays as is.
  *
- * To activate: change this ONE constant to "lm" and deploy. It is deliberately
- * left on "legacy" so that deploying this function for any OTHER reason cannot
- * silently change tagging behaviour.
+ * Flipped with zero history to unify: at the time of the change every one of the
+ * 249,923 lead_records was status='loaded' with push_tags NULL, so no contact
+ * anywhere carried a Lead Machine `<type>-lead` tag. If that ever stops being
+ * true, a retag:true push is how history gets unified — the tag set is forward-
+ * only per row.
  *
- * When it flips, two things must move WITH it or the tags will disagree:
- *   • the UI's fixed auto-tag chips (lead-machine-ui renders them),
- *   • any HP group / GHL workflow / campaign keyed on the old `<type>-lead` tag.
- * Rows pushed before the flip keep their old push_tags — the change is
- * forward-only, and a re-tag push (retag:true) is how you'd unify history.
+ * "legacy" is kept as a one-constant escape hatch, not as a supported mode.
  */
-const TYPE_TAG_MODE: "legacy" | "lm" = "legacy";
+const TYPE_TAG_MODE: "legacy" | "lm" = "lm";
 
 /** The automatic per-lead type tag. See TYPE_TAG_MODE. */
 function typeTag(leadType: string): string {
@@ -559,7 +559,9 @@ Deno.serve(async (req) => {
       return json({
         ok: true, job_id: job.id, target_count: target, pushed, errored, done,
         mode: isCursorMode(job) ? "retag" : "push",
-        auto_tags_note: "each contact also gets <lead_type>-lead and its lowercased batch code",
+        // Derived from typeTag() rather than written out, so this note can never
+        // drift from what the push actually applied.
+        auto_tags_note: `each contact also gets ${typeTag("<lead_type>")} and its lowercased batch code`,
       });
     }
 
