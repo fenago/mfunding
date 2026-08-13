@@ -1269,15 +1269,27 @@ export default function LeadMachinePage() {
         const body: Record<string, unknown> = { action: "count", filters: serverFilters };
         if (fBatch) body.batch_id = fBatch;
         if (retagMode) body.retag = true;
-        const { data, error } = await supabase.functions.invoke("lead-push-ghl", { body });
+        /* Broad counts (e.g. two line types = 237k rows) scan without an index
+           and land near the server's limit, so they fail intermittently — seen
+           live: one failure, then three identical successes. One retry turns
+           that blip into a non-event. Rows are unaffected either way. */
+        const ask = async () => {
+          const { data, error } = await supabase.functions.invoke("lead-push-ghl", { body });
+          const res = (data as { ok?: boolean; count?: number } | null) ?? null;
+          return error || !res || typeof res.count !== "number" ? null : res.count;
+        };
+        let n = await ask();
+        if (n == null && !cancelled) {
+          await new Promise((r) => setTimeout(r, 1200));
+          if (!cancelled) n = await ask();
+        }
         if (cancelled) return;
         setCountingPush(false);
-        const res = (data as { ok?: boolean; count?: number } | null) ?? null;
-        if (error || !res || typeof res.count !== "number") {
+        if (n == null) {
           setCountError(true);
           return;
         }
-        setFilteredCount(res.count);
+        setFilteredCount(n);
       })();
     }, 400);
     return () => {
