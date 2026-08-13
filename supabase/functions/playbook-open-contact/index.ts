@@ -261,6 +261,15 @@ Deno.serve(async (req) => {
     // Real (non-agent-sentinel) funder names on the lead.
     const uccFunders = (uccLead?.matched_funders ?? []).filter((f) => f && f !== AGENT_FILED_SENTINEL);
 
+    // The lead's MCA quality score as a finite number (or null when absent/unparsable).
+    // Written onto the deal (create + null-only backfill) so the score follows the
+    // merchant into the pipeline and on to GHL's "MCA Score" custom field.
+    const uccMcaScore: number | null = (() => {
+      if (uccLead?.mca_score == null) return null;
+      const n = Number(uccLead.mca_score);
+      return Number.isFinite(n) ? n : null;
+    })();
+
     // Per-lien detail from the ph_ucc_lead_filings RPC (normalized debtor-key
     // join; one row per UCC position). Cheap to memoize — used by every write.
     let positionsDetailCache: Array<Record<string, unknown>> | undefined;
@@ -311,6 +320,18 @@ Deno.serve(async (req) => {
         .eq("id", dealId)
         .is("existing_positions", null);   // race-safe no-overwrite guard
       if (error) console.error("[playbook-open-contact] deal positions backfill failed:", error.message);
+    }
+
+    // Backfill the UCC MCA score onto a deal ONLY when it is currently null — never
+    // overwrite a value the application or a human already refined. Independent of
+    // the positions backfill (a lead may carry a score but no positions signal).
+    async function backfillDealScore(dealId: string): Promise<void> {
+      if (uccMcaScore == null) return;
+      const { error } = await db.from("deals")
+        .update({ mca_score: uccMcaScore })
+        .eq("id", dealId)
+        .is("mca_score", null);   // race-safe no-overwrite guard
+      if (error) console.error("[playbook-open-contact] deal mca_score backfill failed:", error.message);
     }
 
     // Backfill the merchant address onto a customer — only columns that are
@@ -392,6 +413,7 @@ Deno.serve(async (req) => {
       // Resume: backfill the auto-populated fields onto the existing deal + its
       // customer (nulls only — never overwrite refined values).
       await backfillDealPositions(d.id);
+      await backfillDealScore(d.id);
       if (d.customer_id) await backfillCustomerAddress(d.customer_id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc });
@@ -509,6 +531,7 @@ Deno.serve(async (req) => {
       // Resume: backfill existing positions onto this pre-existing open deal
       // (nulls only — never overwrite a refined value).
       await backfillDealPositions(d.id);
+      await backfillDealScore(d.id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc });
     }
@@ -533,6 +556,8 @@ Deno.serve(async (req) => {
           ...(uccLeadId ? { ucc_lead_id: uccLeadId } : {}),
         },
         ...(newDealPositions ?? {}),
+        // Seed the UCC MCA quality score onto the brand-new deal (no overwrite risk).
+        ...(uccMcaScore != null ? { mca_score: uccMcaScore } : {}),
       })
       .select("id")
       .single();

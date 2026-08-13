@@ -357,7 +357,7 @@ Deno.serve(async (req) => {
   // stage move can be trusted to fire MCA 04, or whether we must enroll directly.
   const { data: deal, error: dErr } = await db
     .from("deals")
-    .select("id, customer_id, ghl_contact_id, ghl_opportunity_id, lead_qual, amount_requested, use_of_funds, existing_positions, existing_funders")
+    .select("id, customer_id, ghl_contact_id, ghl_opportunity_id, lead_qual, amount_requested, use_of_funds, existing_positions, existing_funders, mca_score")
     .eq("id", dealId).maybeSingle();
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
@@ -567,7 +567,6 @@ Deno.serve(async (req) => {
   // Fill GAPS ONLY — never overwrite a value the application already provided (app
   // wins): buildFields already sets active_mca_positions in prefill/partial, so on
   // those paths the deal value only fills when absent; on a blank send it lands here.
-  // (No MCA-score column exists on deals, so score is intentionally skipped.)
   const hasFieldId = (id: string) => fields.some((f) => f.id === id);
   if (cfg.cfExistingPositions && deal.existing_positions != null && !hasFieldId(cfg.cfExistingPositions)) {
     const n = Number(deal.existing_positions);
@@ -578,6 +577,12 @@ Deno.serve(async (req) => {
       ? (deal.existing_funders as unknown[]).map((x) => String(x ?? "").trim()).filter((x) => x && !/agent-filed/i.test(x))
       : [];
     if (funders.length) fields.push({ id: cfg.cfCurrentFunders, value: funders.join(", ") });
+  }
+  // The UCC MCA quality score → GHL "MCA Score" custom field (present-only; skip null,
+  // gap-fill only). deals.mca_score is seeded from ph_ucc_leads by playbook-open-contact.
+  if (cfg.cfMcaScore && deal.mca_score != null && !hasFieldId(cfg.cfMcaScore)) {
+    const n = Number(deal.mca_score);
+    if (Number.isFinite(n)) fields.push({ id: cfg.cfMcaScore, value: n });
   }
 
   if (fields.length > 0) {
