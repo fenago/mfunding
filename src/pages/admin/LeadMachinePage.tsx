@@ -197,9 +197,12 @@ const FIELD_ONLY_ON: Record<string, { types: LeadType[]; label: string }> = {
 };
 
 /* Hardcoded so no DISTINCT ever runs over 250k rows (house law: aggregates come
-   from counters, never from scans). Line types are stored VERBATIM as the vendor
-   wrote them — capitalised — so these values must match exactly; only the label
-   is prettified. */
+   from counters, never from scans). Line types are matched VERBATIM against the
+   stored spelling, so these values have to track it exactly: the backend folded
+   "Voip"→"VoIP" and "Toll-free"→"Toll-Free" after this list was written, which
+   silently made the VoIP option match 0 of 11,434 rows. Verified against the
+   live column: Mobile 127,560 · Landline 109,671 · VoIP 11,434 · Toll-Free
+   1,148. If the spelling is ever folded again, this list must move with it. */
 const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI",
   "MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
@@ -208,7 +211,7 @@ const US_STATES = [
 const LINE_TYPES: { value: string; label: string }[] = [
   { value: "Mobile", label: "Mobile" },
   { value: "Landline", label: "Landline" },
-  { value: "Voip", label: "VoIP" },
+  { value: "VoIP", label: "VoIP" },
   { value: "Toll-Free", label: "Toll-Free" },
 ];
 
