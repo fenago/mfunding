@@ -105,6 +105,16 @@ const CSS = `
 .dmw tbody td:nth-child(2){font-weight:700;color:var(--sys-hp)}
 .dmw .callout{margin-top:14px;border-left:3px solid var(--gold);background:var(--panel);border-radius:0 10px 10px 0;padding:13px 16px;font-size:13.5px;color:var(--ink-soft);box-shadow:var(--shadow)}
 .dmw .callout b{color:var(--ink)}
+/* cadence table — plain first/second columns, badge in col 2 */
+.dmw .tbl-cad tbody td:first-child{color:var(--ink);font-weight:700}
+.dmw .tbl-cad tbody td:nth-child(2){color:var(--ink-soft);font-weight:600;white-space:nowrap}
+.dmw .cad{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:6px;white-space:nowrap}
+.dmw .cad-once{background:color-mix(in srgb,var(--sys-ghl) 16%,transparent);color:var(--sys-ghl)}
+.dmw .cad-batch{background:color-mix(in srgb,var(--gold) 22%,transparent);color:var(--gold)}
+/* option headings inside a SOP box */
+.dmw .opt{font-size:12.8px;font-weight:800;color:var(--ink);margin:2px 0 9px}
+.dmw .opt.second{margin-top:18px;padding-top:15px;border-top:1px solid var(--line-soft)}
+.dmw .cadline{font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;margin-left:auto;padding:3px 9px;border-radius:6px}
 /* status */
 .dmw .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media (max-width:640px){
@@ -217,9 +227,10 @@ const STEPS = [
     cls: "w-ghl",
     body: (
       <>
-        <b>Load the list into GoHighLevel FIRST</b> — API upsert by phone/email (never blind-create)
-        or GHL's own CSV import, into the <b>MFunding.net</b> location. This is also what puts the
-        merchants in VibeReach where the rest of the business lives.
+        <b>Load the list into GoHighLevel FIRST</b> — the <b>VibeReach Contacts → Import</b> flow, or
+        an API upsert by phone/email, into the <b>MFunding.net</b> location.{" "}
+        <b>Exact clicks are in Part B below.</b> This is also what puts the merchants in VibeReach
+        where the rest of the business lives.
       </>
     ),
   },
@@ -333,6 +344,158 @@ const VOCAB: [string, string, string][] = [
   ["—", "Disposition", "the outcome the setter records on a call — see below"],
 ];
 
+// What is already built and never touched again, vs. what you redo for every
+// single batch. `once` = set up once and left alone; `batch` = a fresh one for
+// each list you run.
+const SETUP_MATRIX: { thing: React.ReactNode; cadence: "once" | "batch"; note: React.ReactNode }[] =
+  [
+    {
+      thing: (
+        <>
+          HotProspector ↔ GoHighLevel <b>integration connection</b>
+        </>
+      ),
+      cadence: "once",
+      note: (
+        <>
+          <b>Already connected</b> to the <b>MFunding.net</b> location and shows as a row under
+          HP <b>Settings → INTEGRATIONS → Go High Level Integration</b>.{" "}
+          <b>Never disconnect or re-add it</b> — you only ever change Step 2 / Step 3 on that row.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          HP <b>Custom URL</b> = <b>https://mfunding.net/admin/playbooks?x=</b>
+        </>
+      ),
+      cadence: "once",
+      note: (
+        <>
+          <b>Already set.</b> This is the setting that makes the setter's{" "}
+          <b>"Gohighlevel Custom Link"</b> button open the Revenue Playbook on the right merchant.
+          Don't edit it.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          <b>Setter Team seats</b> in HotProspector + their <b>mfunding.net logins</b>
+        </>
+      ),
+      cadence: "once",
+      note: (
+        <>
+          <b>One-time per setter</b>, not per batch. New setter = create the HP team user{" "}
+          <b>and</b> the mfunding.net login once; after that they just get assigned to each new
+          campaign.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          The <b>call script</b> template
+        </>
+      ),
+      cadence: "once",
+      note: (
+        <>
+          <b>"UCC Setter Script — Momentum"</b> is built once and <b>reused on every campaign</b>.
+          Edit the wording whenever you want — you do not create a new script per batch.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          The <b>batch TAG</b> in GoHighLevel
+        </>
+      ),
+      cadence: "batch",
+      note: (
+        <>
+          <b>A NEW dated tag for every list</b> — e.g. <b>ucc-2026-08-20</b>. This is the key the
+          HotProspector sync reads. <b>Never reuse an old batch tag.</b>
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          <b>GoHighLevel import</b> of the list (with that tag on it)
+        </>
+      ),
+      cadence: "batch",
+      note: (
+        <>
+          Every batch gets loaded into the <b>MFunding.net</b> location first, tagged during the
+          import. See <b>Part B</b> for the exact clicks.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          HP <b>group</b>
+        </>
+      ),
+      cadence: "batch",
+      note: (
+        <>
+          <b>Create one group per batch</b> — e.g. <b>"UCC 2026-08-20"</b> — so counts, campaigns
+          and reporting stay clean per list.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          HP integration row: <b>Step 2 tag + Step 3 group + Sync Leads</b>
+        </>
+      ),
+      cadence: "batch",
+      note: (
+        <>
+          You <b>re-point the same existing row</b> at this batch's tag and this batch's group, then
+          hit <b>Sync Leads</b>. See <b>Part C</b>.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          <b>Dialer campaign</b>
+        </>
+      ),
+      cadence: "batch",
+      note: (
+        <>
+          <b>A new campaign per batch</b> — the <b>mode LOCKS at creation</b>, so campaigns aren't
+          re-editable into a different shape. Name it after the batch, point it at this batch's
+          group, and <b>assign the setters on it</b>. See <b>Part D</b>.
+        </>
+      ),
+    },
+    {
+      thing: (
+        <>
+          <b>Validation clicks</b>
+        </>
+      ),
+      cadence: "batch",
+      note: (
+        <>
+          <b>Every single batch</b>, before setters dial: the Custom Link opens the Playbook, the
+          Dialer LIST view shows the real count, and the owner makes one test call.{" "}
+          <b>Parts C-5 and E.</b>
+        </>
+      ),
+    },
+  ];
+
 export default function DialingMachinePage() {
   return (
     <div className="dmw">
@@ -380,6 +543,42 @@ export default function DialingMachinePage() {
                 <div className="ds">{s.body}</div>
               </div>
             ))}
+          </div>
+        </section>
+
+        {/* ONE-TIME VS PER-BATCH */}
+        <section>
+          <div className="sec-h">One-time setup vs. every batch — read this first</div>
+          <div className="tablewrap">
+            <table className="tbl-cad">
+              <thead>
+                <tr>
+                  <th>Thing</th>
+                  <th>How often</th>
+                  <th>What that means in practice</th>
+                </tr>
+              </thead>
+              <tbody>
+                {SETUP_MATRIX.map((r, i) => (
+                  <tr key={i}>
+                    <td>{r.thing}</td>
+                    <td>
+                      <span className={`cad ${r.cadence === "once" ? "cad-once" : "cad-batch"}`}>
+                        {r.cadence === "once" ? "One-time" : "Every batch"}
+                      </span>
+                    </td>
+                    <td>{r.note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="callout">
+            <b>The short version:</b> the <b>plumbing is already built</b> — the HP↔GHL connection,
+            the Custom URL, the setter seats and the script. <b>What you redo for every list</b> is:
+            a <b>new dated tag</b>, a <b>GHL import carrying that tag</b>, a <b>new HP group</b>,{" "}
+            <b>re-point the integration row and Sync</b>, a <b>new campaign</b>, and the{" "}
+            <b>validation clicks</b>. Six things. Nothing else gets touched.
           </div>
         </section>
 
@@ -571,18 +770,27 @@ export default function DialingMachinePage() {
                 <b>Dialing Leads = 3</b>, and the <b>mode locks at creation</b> — pick it up front or
                 build a new campaign.
               </li>
+              <li className="no">
+                <b>Reusing an old batch tag.</b> A <b>batch tag is per-batch</b> — dated, one list,
+                never recycled. Point Step 2 at an old tag and the <b>re-sync re-pulls that whole old
+                batch</b> into this batch's group, and your setters spend the day re-dialing people
+                you already called.
+              </li>
             </ul>
           </div>
         </section>
 
         {/* SOP */}
         <section>
-          <div className="sec-h">How to run a batch, start to finish (do this every time)</div>
+          <div className="sec-h">
+            How to run a batch, start to finish — every part below is per-batch
+          </div>
 
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">A</span>
               <h3>Get the list</h3>
+              <span className="cadline cad cad-batch">Every batch</span>
             </div>
             <ol>
               <li>
@@ -602,53 +810,111 @@ export default function DialingMachinePage() {
             <div className="sop-h">
               <span className="badge">B</span>
               <h3>Load into GoHighLevel / VibeReach — and TAG it</h3>
+              <span className="cadline cad cad-batch">Every batch</span>
+            </div>
+
+            <div className="opt">
+              Option 1 — the VibeReach UI import (the standard way, no engineer needed)
             </div>
             <ol>
               <li>
-                Push the list into the GHL <b>MFunding.net</b> location — <b>API upsert by
-                phone/email</b> (never blind-create, or you duplicate merchants) or GHL's own{" "}
-                <b>CSV import</b>.
+                Go to <b>app.vibereach.io</b> and make sure you are in the <b>MFunding.net</b>{" "}
+                location — use the <b>location switcher at the top</b>. If you're in the wrong
+                location the contacts land somewhere the dialer can't see them.
               </li>
               <li>
-                <b>Give every lead in the batch a tag</b> — <b>ucc-lead</b>, or a dated tag like{" "}
-                <b>ucc-2026-08-12</b>. <b>The tag is not optional</b> — the HotProspector sync keys on
-                it.
+                Left menu → <b>Contacts</b> → on the top toolbar click the <b>Import</b> icon (the{" "}
+                <b>cloud-with-an-arrow</b>) → <b>Import Contacts</b>.
               </li>
               <li>
-                This step is also what puts the merchants in <b>VibeReach</b>, where the rest of the
-                business (workflows, conversations, pipeline) lives.
+                <b>Upload the CSV.</b> Columns: <b>First Name, Last Name, Business Name, Phone,
+                Email, City, State, Postal Code</b>. → <b>Next</b>.
+              </li>
+              <li>
+                <b>Map the columns</b> to GoHighLevel fields — First Name → <b>First Name</b>, Last
+                Name → <b>Last Name</b>, Company → <b>Business Name</b>, Phone → <b>Phone</b>, Email
+                → <b>Email</b>, City / State / Postal Code to their matching fields. → <b>Next</b>.
+              </li>
+              <li>
+                On the import-options screen, <b>add a TAG to all imported contacts</b> — type the{" "}
+                <b>NEW batch tag</b>, e.g. <b>ucc-2026-08-20</b> (<b>dated, one per batch</b> — this
+                is the exact tag HotProspector will sync on). Set the <b>dedupe preference</b> to{" "}
+                <b>update existing contacts by email/phone</b> so you don't create duplicate
+                merchants.
+              </li>
+              <li>
+                <b>Start Import</b> → wait for it to finish. Then <b>verify</b>: Contacts →{" "}
+                <b>filter by that tag</b> → the count must match your list. If the tag shows{" "}
+                <b>0 contacts</b>, the tag didn't apply — <b>redo the import; do not go to Part C.</b>
               </li>
             </ol>
+
+            <div className="opt second">
+              Option 2 — ask Claude / engineering to push it by API (what we do for UCC Machine
+              batches)
+            </div>
+            <ol>
+              <li>
+                Say: <b>"push batch X to GHL with tag Y."</b> The UCC Machine's skip-traced leads get{" "}
+                <b>upserted into the MFunding.net location by phone/email</b> with the batch tag
+                applied — <b>no CSV handling, no manual mapping, no duplicate merchants</b>.
+              </li>
+              <li>
+                You still <b>verify the same way</b>: Contacts → filter by the tag → the count
+                matches.
+              </li>
+            </ol>
+
+            <div className="callout">
+              <b>Why the tag matters — this is the whole ballgame.</b> HotProspector's sync pulls{" "}
+              <b>ONLY the contacts carrying the tag you pick in Step 2</b> of the integration row.{" "}
+              <b>No tag on the contacts = nothing to sync</b>, and the sync will look like it ran and
+              did nothing. The tag is also what puts the merchants in <b>VibeReach</b>, where the
+              workflows, conversations and pipeline live.
+            </div>
           </div>
 
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">C</span>
               <h3>Sync GoHighLevel → HotProspector (the linchpin)</h3>
+              <span className="cadline cad cad-batch">Every batch</span>
             </div>
             <ol>
               <li>
-                HotProspector → <b>Settings</b> → <b>INTEGRATIONS</b> tab →{" "}
-                <b>Go High Level Integration</b> → find the <b>MFunding.net</b> row.
+                Go to <b>app.hotprospector.com</b> → <b>top-right avatar</b> → <b>Settings</b> → the{" "}
+                <b>INTEGRATIONS</b> tab → the card titled <b>"Go High Level Integration"</b> → click{" "}
+                <b>"Go High Level Integration"</b>. That opens the <b>Integration wizard page</b>,
+                which lists the connected locations as rows. <b>The connection already exists — you
+                are only changing two dropdowns on the MFunding.net row.</b>
               </li>
               <li>
-                <b>Step 2 · Select Your Tag = the batch tag.</b> <b>REQUIRED.</b> With no tag the
-                sync silently does nothing.
+                On the <b>MFunding.net</b> row, <b>Step 2 "Select Your Tag"</b> → click the box → a
+                dropdown opens with a <b>tiny search box</b> at the top → type this batch's tag (e.g.{" "}
+                <b>ucc-2026-08-20</b>) → <b>click the tag</b> to select it. ⚠️ <b>If the tag doesn't
+                appear</b>, HotProspector's copy of the tag list is stale: <b>avatar menu → Quick
+                Links → "Refresh Meta"</b>, then come back and retry.
               </li>
               <li>
-                <b>Step 3 · Group to Sync With</b> = the HotProspector group your dialer campaign
-                dials (e.g. <b>"UCC 2026-08-10"</b>).
+                <b>Step 3 "Group to Sync With"</b> → pick <b>this batch's HP group</b>. If it doesn't
+                exist yet, create it first: <b>Contacts → "Create Group"</b> → name it after the
+                batch, e.g. <b>"UCC 2026-08-20"</b> — then come back to this row.
               </li>
               <li>
-                <b>Step 4 · click Sync Leads</b> → a red <b>"InProgress N%"</b> appears on the row.
-                When it finishes, the tagged GoHighLevel contacts exist in HotProspector{" "}
-                <b>linked</b> — carrying their GoHighLevel id.
+                <b>Step 4</b> → click <b>"Sync Leads"</b>. The row shows a red{" "}
+                <b>"InProgress N%"</b> — <b>wait for it to finish.</b> ⚠️ <b>The toasts lie here:</b>{" "}
+                you may see <b>"No Leads Found"</b> while it is in fact syncing. <b>Judge by the
+                CONTACT COUNT instead</b> — the Contacts page header (<b>"Showing 0-25 of N"</b>)
+                should grow by roughly your batch size.
               </li>
               <li>
-                <b>VALIDATE NOW, before anything else:</b> open one synced contact → click{" "}
-                <b>"Gohighlevel Custom Link"</b> (bottom of the right sidebar) → the Revenue Playbook
-                must open <b>that merchant with no "not synced" error</b>. If it errors, the lead
-                didn't come through GoHighLevel — <b>stop and fix it.</b>
+                <b>VALIDATE — mandatory, before anything else.</b> Go to <b>Contacts</b> → open one
+                of the <b>new arrivals</b> (sort/spot by <b>Last Updated = minutes ago</b>) → the
+                contact card must show <b>"Location Name : MFunding.net"</b> underneath the email →
+                then click <b>"Gohighlevel Custom Link"</b> at the <b>bottom of the right
+                sidebar</b> (it has an ↗ icon) → the <b>MFunding Revenue Playbook must open that
+                merchant</b>. If it errors <b>"Lead data not Synced"</b>, that lead did NOT come
+                through GoHighLevel — <b>stop and re-check Parts B and C.</b>
               </li>
             </ol>
           </div>
@@ -656,13 +922,24 @@ export default function DialingMachinePage() {
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">D</span>
-              <h3>Build the 3-line campaign</h3>
+              <h3>Build the 3-line campaign — a NEW one for this batch</h3>
+              <span className="cadline cad cad-batch">Every batch</span>
+            </div>
+            <div className="warn">
+              <b>You build a NEW campaign for every batch.</b> You do not reuse or re-point an old
+              one, because <b>the dialing mode LOCKS at creation</b> and the lead set is tied to the
+              group. So each batch: <b>Dialer → New Campaign</b> → <b>name it after the batch</b>{" "}
+              (e.g. "UCC 2026-08-20") → <b>Group = this batch's group</b> →{" "}
+              <b>Mode = Progressive(M)</b> → <b>Dialing Leads = 3</b> → <b>assign the setters on
+              it</b>. The details are below.
             </div>
             <ol>
               <li>
-                <b>Dialer → New Campaign.</b> Advance with the green <b>Next</b> button (clicking tab
-                names doesn't switch tabs), and note HP <b>creates the campaign as you click
-                Next</b> — it exists before you reach the final screen.
+                <b>Dialer → New Campaign</b> → <b>name it after the batch</b> (e.g.{" "}
+                <b>"UCC 2026-08-20"</b> — matching the group name keeps the floor from dialing last
+                week's list). Advance with the green <b>Next</b> button (clicking tab names doesn't
+                switch tabs), and note HP <b>creates the campaign as you click Next</b> — it exists
+                before you reach the final screen.
               </li>
               <li>
                 <b>Mode = Progressive(M)</b> — this is the 3-at-once mode. Selecting it reveals{" "}
@@ -671,7 +948,8 @@ export default function DialingMachinePage() {
                 ⚠️ <b>The mode LOCKS after creation.</b>
               </li>
               <li>
-                <b>Group</b> = the group you just synced into. <b>Caller ID = +1 954-860-7138.</b>{" "}
+                <b>Group = this batch's group</b> — the one you just synced into in Part C, not last
+                batch's. <b>Caller ID = +1 954-860-7138.</b>{" "}
                 <b>Dialer Access Hours = 8:00am–9:00pm</b> in the <b>lead's timezone</b> (that's
                 TCPA).
               </li>
@@ -706,6 +984,7 @@ export default function DialingMachinePage() {
             <div className="sop-h">
               <span className="badge">E</span>
               <h3>Validate end to end — never skip this</h3>
+              <span className="cadline cad cad-batch">Every batch</span>
             </div>
             <ol>
               <li>
@@ -724,12 +1003,21 @@ export default function DialingMachinePage() {
                 minutes of checking beats a lost day.
               </li>
             </ol>
+            <div className="callout">
+              <b>Ignore HotProspector's "Pipeline Status: Unassigned" column.</b> On the HP Contacts
+              list every synced lead shows <b>Pipeline Status: Unassigned</b>. That is{" "}
+              <b>HotProspector's own internal pipeline feature, which our flow does not use</b> —{" "}
+              <b>"Unassigned" there is normal and is not a broken sync</b>. The real pipeline is the{" "}
+              <b>12 stages inside the MFunding Revenue Playbook</b> (and the GoHighLevel pipeline
+              behind it). Never troubleshoot against that column.
+            </div>
           </div>
 
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">F</span>
               <h3>The setter's daily flow</h3>
+              <span className="cadline cad cad-once">Every day, no setup</span>
             </div>
             <ol>
               <li>
