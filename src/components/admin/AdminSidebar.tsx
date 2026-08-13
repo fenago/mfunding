@@ -38,6 +38,7 @@ import {
   TableCellsIcon,
   RocketLaunchIcon,
   ArrowUpTrayIcon,
+  DocumentArrowUpIcon,
   AdjustmentsHorizontalIcon,
   AcademicCapIcon,
   CalendarDaysIcon,
@@ -113,6 +114,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/rnd", // R&D game plan (roles: ADMIN) — Carlos manages the build-out too; pure closers excluded via roles
   "/admin/ph-setters", // PH Setter Playbook (roles: ADMIN) — same lens treatment as R&D; pure closers excluded via roles
   "/admin/ph-ucc", // PH UCC Machine (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
+  "/admin/lead-machine", // Lead Machine (roles: ADMIN) — purchased-list upload → tag → VibeReach push; pure closers excluded via roles
   "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — onboarding reference, every staff role
   "/admin/ucc-machine-guide", // 🔗 How the UCC Machine Works — the sibling one-pager, every staff role
@@ -137,6 +139,10 @@ const navGroups: NavGroup[] = [
       // UCC Machine — outbound UCC lead engine dashboard. Directly after PH
       // Setters (owner-specified order); same ADMIN gating + closer lens.
       { name: "UCC Machine", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
+      // Lead Machine — the purchased-list pipeline (upload a bought CSV, filter
+      // it, tag it, push it into VibeReach for the dialer). Sits next to the UCC
+      // Machine because both feed the same dial floor; same ADMIN gating + lens.
+      { name: "Lead Machine", path: "/admin/lead-machine", icon: DocumentArrowUpIcon, roles: ADMIN },
       // Dialer Metrics — per-rep HotProspector scorecard for running the setter
       // floor. Sits with the other PH consoles; same ADMIN gating + closer lens.
       { name: "Dialer Metrics", path: "/admin/dialer", icon: PhoneIcon, roles: ADMIN },

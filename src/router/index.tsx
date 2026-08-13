@@ -98,6 +98,7 @@ const PipelinePlaybookPage = lazyWithReload(() => import("../pages/admin/Pipelin
 const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.tsx"));
 const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSetterPlaybookPage.tsx"));
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
+const LeadMachinePage = lazyWithReload(() => import("../pages/admin/LeadMachinePage.tsx"));
 const DialerPage = lazyWithReload(() => import("../pages/admin/DialerPage.tsx"));
 const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
 const UccMachineGuidePage = lazyWithReload(() => import("../pages/admin/UccMachineGuidePage.tsx"));
@@ -733,6 +734,14 @@ export const routes: RouteObject[] = [
                 path: "ph-ucc",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <PhUccMachinePage /> }],
+              },
+              // Lead Machine — purchased-list pipeline (upload CSV → Supabase →
+              // filter/tag → push into VibeReach for the dialer). Same admin-only
+              // guard + closer-lens treatment as the UCC Machine it sits beside.
+              {
+                path: "lead-machine",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <LeadMachinePage /> }],
               },
               // Dialer Metrics — the HotProspector (PowerDialer) per-rep scorecard.
               // A management surface for running the setter floor, so it carries the
