@@ -22,6 +22,7 @@ import { SUPABASE_ANON_KEY, SUPABASE_URL } from "@/config";
 import { exportToCsv } from "@/lib/csv";
 import {
   listDialCampaigns,
+  openDialCampaigns,
   createDialCampaign,
   validateDialTag,
   normalizeDialTag,
@@ -1436,24 +1437,34 @@ export default function LeadMachinePage() {
     void loadDialCampaigns();
   }, [loadDialCampaigns]);
 
-  /* Only a campaign that HAS a dial tag can be pushed into — the tag is the whole
-     mechanism. Tag-less ones are counted separately and named on screen rather
-     than dropped, so an owner looking at PH-UCC-2026-001 on the Campaigns page
-     isn't left wondering why it's missing here. */
-  const taggedCampaigns = useMemo(() => dialCampaigns.filter((c) => !!c.dial_tag), [dialCampaigns]);
+  /* PUSH TARGETS vs ATTRIBUTION are two different sets, and conflating them hides
+     history. `dialCampaigns` is every dial campaign at any status:
+       · you may only push into an OPEN one that HAS a tag (below);
+       · but a lead already pushed must still resolve to its campaign even after
+         that campaign is paused or completed — see campaignByTag.
+     Tag-less campaigns are named on screen rather than dropped, so an owner
+     looking at PH-UCC-2026-001 isn't left wondering why it's missing here. */
+  const openCampaigns = useMemo(() => openDialCampaigns(dialCampaigns), [dialCampaigns]);
+  const taggedCampaigns = useMemo(() => openCampaigns.filter((c) => !!c.dial_tag), [openCampaigns]);
+  const untaggedCampaigns = useMemo(() => openCampaigns.filter((c) => !c.dial_tag), [openCampaigns]);
 
   /* dial_tag → campaign, for showing which campaign a pushed lead went out under.
      Reuses the list the push panel already fetched — no extra round trip — and
      keys on the TAG rather than lead_push_jobs.campaign_id because the tag lives
-     on the lead itself and survives the job row (the backend's own guidance). */
+     on the lead itself and survives the job row (the backend's own guidance).
+
+     Built over ALL dial campaigns, NOT just the open ones: a lead pushed under a
+     campaign that has since been completed was still pushed under it, and scoping
+     this to open campaigns made that attribution vanish into an anonymous grey tag
+     the moment the campaign was closed out. */
   const campaignByTag = useMemo(() => {
     const m = new Map<string, Campaign>();
-    taggedCampaigns.forEach((c) => {
+    dialCampaigns.forEach((c) => {
       if (c.dial_tag) m.set(c.dial_tag.toLowerCase(), c);
     });
     return m;
-  }, [taggedCampaigns]);
-  const untaggedCampaigns = useMemo(() => dialCampaigns.filter((c) => !c.dial_tag), [dialCampaigns]);
+  }, [dialCampaigns]);
+
   const pickedCampaign = useMemo(
     () => taggedCampaigns.find((c) => c.id === campaignId) ?? null,
     [taggedCampaigns, campaignId],

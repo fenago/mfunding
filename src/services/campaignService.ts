@@ -703,24 +703,37 @@ async function callDialFn<T>(body: Record<string, unknown>): Promise<T> {
 }
 
 /**
- * Dial campaigns available to push into. Reads `campaigns` directly (SELECT is
- * open to staff) — this table has single-digit rows, so it is nothing like the
- * lead_records reads that have to go through the counting function.
+ * EVERY dial campaign, at any status, tagged or not. Reads `campaigns` directly
+ * (SELECT is open to staff) — this table has single-digit rows, so it is nothing
+ * like the lead_records reads that have to go through the counting function.
  *
- * Returns EVERY open dial campaign, including ones with no dial_tag, and lets the
- * caller split them. Filtering the tag-less ones out here would silently hide
- * PH-UCC-2026-001 from an owner who is looking straight at it on the Campaigns
- * page and wondering why it isn't in the list.
+ * Deliberately UNFILTERED, because its two consumers need different subsets and
+ * only one of them is about "what can I push into":
+ *   · the push picker wants the OPEN ones — see openDialCampaigns();
+ *   · resolving a lead's push_tag back to the campaign it went out under wants
+ *     ALL of them. A lead pushed under a campaign since paused or completed was
+ *     still pushed under it, and filtering by status here made that lead's tag
+ *     render as an anonymous grey chip — the attribution silently disappearing
+ *     the moment a campaign was closed out.
+ *
+ * Tag-less campaigns are included too, so the picker can NAME them as ineligible
+ * rather than drop them: hiding PH-UCC-2026-001 from an owner looking straight at
+ * it on the Campaigns page is how you get "why isn't my campaign in the list?".
  */
 export async function listDialCampaigns(): Promise<Campaign[]> {
   const { data, error } = await supabase
     .from("campaigns")
     .select("*")
     .eq("channel", DIAL_CHANNEL)
-    .in("status", OPEN_DIAL_STATUSES)
     .order("created_at", { ascending: false });
   if (error) throw error;
   return (data ?? []).map(normalizeCampaign);
+}
+
+/** The subset a push may target. Pushing fresh leads into a paused or completed
+ *  campaign is always a mistake, so those are offered nowhere. */
+export function openDialCampaigns(campaigns: Campaign[]): Campaign[] {
+  return campaigns.filter((c) => OPEN_DIAL_STATUSES.includes(c.status));
 }
 
 /** Live tag check — reserved prefixes, length, and collisions with other

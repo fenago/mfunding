@@ -393,11 +393,33 @@ function CampaignDetail({
   campaign: Campaign; metrics?: CampaignMetrics; onBack: () => void; onEdit: () => void; onChanged: () => void;
 }) {
   const meta = CHANNEL_META[c.channel] ?? CHANNEL_META.other;
+
+  /* Two-step inline confirm — NO browser popups (house rule; canonical
+     implementation is AdHocSendMenu's armOrFire). This was a `confirm()`. The
+     armed state disarms itself after 5s so a delete can't sit primed under the
+     cursor waiting for a stray click. */
+  const [armed, setArmed] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeErr, setRemoveErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 5000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
   async function remove() {
-    if (!confirm("Delete this campaign? Deals stay but lose their campaign tag.")) return;
-    await deleteCampaign(c.id);
-    onBack();
-    onChanged();
+    setRemoving(true);
+    setRemoveErr(null);
+    try {
+      await deleteCampaign(c.id);
+      onBack();
+      onChanged();
+    } catch (e) {
+      // A failed delete used to vanish into an unhandled rejection — the row
+      // stayed and the page said nothing.
+      setRemoveErr(e instanceof Error ? e.message : String(e));
+      setRemoving(false);
+    }
   }
 
   return (
@@ -419,11 +441,25 @@ function CampaignDetail({
           <button onClick={onEdit} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
             <PencilSquareIcon className="w-4 h-4" /> Edit
           </button>
-          <button onClick={remove} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20">
-            <TrashIcon className="w-4 h-4" /> Delete
+          <button
+            onClick={() => {
+              if (armed) void remove();
+              else setArmed(true);
+            }}
+            disabled={removing}
+            title="Deals keep their history but lose this campaign"
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm hover:bg-red-50 dark:hover:bg-red-900/20 ${
+              armed
+                ? "border-red-500 text-red-700 dark:text-red-300 ring-2 ring-red-300"
+                : "border-red-200 dark:border-red-800 text-red-600"
+            }`}
+          >
+            <TrashIcon className="w-4 h-4" />
+            {removing ? "Deleting…" : armed ? "⚠️ Tap again — deals lose this campaign" : "Delete"}
           </button>
         </div>
       </div>
+      {removeErr && <p className="text-sm text-rose-600 dark:text-rose-400">Couldn't delete: {removeErr}</p>}
 
       <PurchaseSummary campaign={c} />
 
