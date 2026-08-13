@@ -53,11 +53,13 @@ function toE164(raw: string): string | null {
 }
 
 // A 2xx from POST /messages means ACCEPTED, not SENT. TextMagic can still reject
-// the message a beat later — and does today: the account's toll-free sender is
-// not yet carrier-verified, so US carriers drop everything from it (status "j",
-// $0.00 charged, never delivered). A closer who is told "sent" on a text that
-// never left is worse than an error, so we read the message back before
-// answering. These are the codes that mean "still on its way or arrived".
+// the message a beat later — and does today: the account is under review (trial
+// tier, toll-free sender not yet carrier-verified), so every send comes back
+// status "j" / rejectReason "t", $0.00 charged, never delivered. A closer who is
+// told "sent" on a text that never left is worse than an error, so we read the
+// message back before answering. These are the codes that mean "on its way or
+// arrived"; anything else is surfaced as a failure with the raw code, since
+// TextMagic does not publish the meaning of every single-letter status.
 const OK_STATUSES = new Set(["q", "a", "d", "b"]); // queued / sent / delivered / buffered
 
 /** Read the message back until it settles, so a rejection is caught rather than
@@ -199,9 +201,10 @@ Deno.serve(async (req) => {
       id: tmId,
       error:
         `TextMagic accepted the message then REJECTED it (status "${settled.status}"` +
-        `${settled.rejectReason ? `, reason "${settled.rejectReason}"` : ""}) — it was not delivered. ` +
-        `The usual cause is the sending number not being carrier-verified yet, or a trial account. ` +
-        `Check the TextMagic account before retrying; a retry will be rejected the same way.`,
+        `${settled.rejectReason ? `, reason "${settled.rejectReason}"` : ""}) — it was not delivered, ` +
+        `and nothing was charged. This is an ACCOUNT-level block, not a problem with your message: ` +
+        `the account is under review, still on trial, or the sending number isn't carrier-verified yet. ` +
+        `A retry will be rejected identically — check the TextMagic account first.`,
     }, 502);
   }
 
