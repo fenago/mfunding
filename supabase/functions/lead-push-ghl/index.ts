@@ -22,6 +22,15 @@
 // contact. A per-lead failure stamps status='error' + push_error and the run
 // continues; those rows are visible in the UI and can be retried by resetting them.
 //
+// RE-TAG (retag:true) is the deliberate exception: it revisits rows that are
+// already 'pushed' (and 'error' rows, which is how you retry them) to add a NEW
+// tag to an already-pushed slice. GHL's upsert MERGES tags rather than replacing
+// them, so the push sends — and push_tags stores — the UNION of the lead's
+// existing tags and the new ones. That keeps lead_records.push_tags an exact
+// mirror of the contact's tags in GHL, which the UI's tag filter and CSV export
+// depend on. Because those rows never leave the selection, a retag job paginates
+// on a stable id cursor (lead_push_jobs.cursor_id) instead of draining.
+//
 // RATE: ≤5 requests/sec by default (configurable up to 10), with the shared GHL
 // client's 429/5xx retry + backoff. Long pushes run in self-reinvoking windows
 // with live progress on lead_push_jobs.
@@ -74,22 +83,55 @@ function reinvoke(secret: string, jobId: string): void {
 }
 
 // ── Filters ───────────────────────────────────────────────────────────────────
+// Both naming forms are accepted for the revenue bounds (min_revenue /
+// revenue_min) because the UI and this function were specced independently — a
+// silent mismatch there would push the wrong population, so neither name loses.
 export interface LeadFilters {
   state?: string | string[];
   lead_type?: string | string[];
   line_type?: string | string[];
+  status?: string | string[];          // explicit → cursor mode (see selectionMode)
   min_revenue?: number;
   max_revenue?: number;
+  revenue_min?: number;
+  revenue_max?: number;
   secured_party_ilike?: string;
+  secured_party?: string;
+  has_email?: boolean;
+  push_tags_contains?: string | string[];
+  search?: string;                     // name / company / phone / email
   exclude_dups?: boolean;
 }
 
 type Job = {
   id: string; batch_id: string | null; lead_ids: string[] | null;
-  filters: LeadFilters; tags: string[]; limit_n: number | null;
+  filters: LeadFilters; tags: string[]; limit_n: number | null; retag: boolean;
+  cursor_id: string | null;
   status: string; target_count: number; pushed: number; errored: number; skipped: number;
 };
-const JOB_COLS = "id,batch_id,lead_ids,filters,tags,limit_n,status,target_count,pushed,errored,skipped";
+const JOB_COLS = "id,batch_id,lead_ids,filters,tags,limit_n,retag,cursor_id,status,"
+  + "target_count,pushed,errored,skipped";
+
+/**
+ * DRAIN vs CURSOR — the one thing to understand about this function.
+ *
+ * DRAIN (the default): select status='loaded', push, stamp 'pushed'. The row
+ * leaves the selection, which is exactly what makes a resume or a re-run
+ * incapable of double-pushing. No cursor needed.
+ *
+ * CURSOR (retag:true, or an explicit filters.status): the job deliberately
+ * revisits rows that are ALREADY 'pushed' (to add a tag) or 'error' (to retry).
+ * Those rows never leave the selection, so progress is tracked by a stable id
+ * cursor persisted on the job instead.
+ */
+function isCursorMode(job: Job): boolean {
+  return !!job.retag || job.filters?.status != null;
+}
+function statusesFor(job: Job): string[] {
+  const explicit = asArray(job.filters?.status as string | string[] | undefined);
+  if (explicit) return explicit.map((s) => s.toLowerCase());
+  return job.retag ? ["loaded", "pushed", "error"] : ["loaded"];
+}
 
 const asArray = (v: string | string[] | undefined): string[] | null => {
   if (v == null) return null;
@@ -101,7 +143,8 @@ const asArray = (v: string | string[] | undefined): string[] | null => {
  * so "how many will go" and "what actually goes" can never disagree. */
 // deno-lint-ignore no-explicit-any
 function applyFilters(q: any, job: Job) {
-  q = q.eq("status", "loaded").not("phone", "is", null);
+  // A lead with no phone is not dialable and is never pushed, whatever the mode.
+  q = q.in("status", statusesFor(job)).not("phone", "is", null);
   if (job.batch_id) q = q.eq("batch_id", job.batch_id);
   const f = job.filters ?? {};
   const st = asArray(f.state);
@@ -110,22 +153,48 @@ function applyFilters(q: any, job: Job) {
   if (lt) q = q.in("lead_type", lt.map((s) => s.toLowerCase()));
   const ln = asArray(f.line_type);
   if (ln) q = q.in("line_type", ln);
-  if (typeof f.min_revenue === "number") q = q.gte("revenue", f.min_revenue);
-  if (typeof f.max_revenue === "number") q = q.lte("revenue", f.max_revenue);
-  if (f.secured_party_ilike) q = q.ilike("secured_party", `%${f.secured_party_ilike}%`);
+
+  const minRev = f.min_revenue ?? f.revenue_min;
+  const maxRev = f.max_revenue ?? f.revenue_max;
+  if (typeof minRev === "number") q = q.gte("revenue", minRev);
+  if (typeof maxRev === "number") q = q.lte("revenue", maxRev);
+
+  const sp = f.secured_party_ilike ?? f.secured_party;
+  if (sp) q = q.ilike("secured_party", `%${sp}%`);
+
+  if (typeof f.has_email === "boolean") {
+    q = f.has_email ? q.not("email", "is", null) : q.is("email", null);
+  }
+  // Tag filter — hits the push_tags GIN index (array containment, ALL of them).
+  const tagsIn = asArray(f.push_tags_contains);
+  if (tagsIn) q = q.contains("push_tags", tagsIn.map((t) => t.toLowerCase()));
+
+  if (f.search) {
+    const s = f.search.replace(/[%,()]/g, " ").trim();
+    if (s) {
+      q = q.or(
+        `first_name.ilike.%${s}%,last_name.ilike.%${s}%,company.ilike.%${s}%,` +
+        `phone.ilike.%${s}%,email.ilike.%${s}%`,
+      );
+    }
+  }
   if (f.exclude_dups) q = q.eq("is_dup_of_prior", false);
   return q;
 }
 
 interface LeadRow {
-  id: string; batch_id: string; lead_type: string;
+  id: string; batch_id: string; lead_type: string; status: string;
   phone: string | null; email: string | null;
   first_name: string | null; last_name: string | null; company: string | null;
   address: string | null; city: string | null; state: string | null; zip: string | null;
+  push_tags: string[] | null;
 }
-const LEAD_COLS = "id,batch_id,lead_type,phone,email,first_name,last_name,company,address,city,state,zip";
+const LEAD_COLS = "id,batch_id,lead_type,status,phone,email,first_name,last_name,"
+  + "company,address,city,state,zip,push_tags";
 
-/** Count the rows a job will touch (respecting its limit). */
+/** Count the rows a job will touch (respecting its limit). This is the SAME
+ * filter code the push itself runs, which is why `action:'count'` is exposed to
+ * the UI — "N leads" on screen and "N leads pushed" can never disagree. */
 async function countTarget(db: SupabaseClient, job: Job): Promise<number> {
   if (job.lead_ids?.length) {
     let n = 0;
@@ -146,23 +215,36 @@ async function countTarget(db: SupabaseClient, job: Job): Promise<number> {
   return job.limit_n ? Math.min(n, job.limit_n) : n;
 }
 
-/** Next slice of unpushed rows for a job. */
-async function nextRows(db: SupabaseClient, job: Job, want: number): Promise<LeadRow[]> {
+/**
+ * Next slice for a job. DRAIN mode just takes the next `want` matching rows (the
+ * ones it pushes leave the selection). CURSOR mode orders by id and walks past
+ * `cursor`, because in that mode the rows it touches stay selectable.
+ */
+async function nextRows(
+  db: SupabaseClient, job: Job, want: number, cursor: string | null,
+): Promise<LeadRow[]> {
+  const cursorMode = isCursorMode(job);
+  // deno-lint-ignore no-explicit-any
+  const shape = (q: any) => {
+    q = cursorMode ? q.order("id", { ascending: true }) : q.order("created_at", { ascending: true });
+    if (cursorMode && cursor) q = q.gt("id", cursor);
+    return q;
+  };
+
   if (job.lead_ids?.length) {
     const out: LeadRow[] = [];
     for (let i = 0; i < job.lead_ids.length && out.length < want; i += ID_WINDOW) {
-      const { data, error } = await applyFilters(db.from("lead_records").select(LEAD_COLS), job)
-        .in("id", job.lead_ids.slice(i, i + ID_WINDOW))
-        .order("created_at", { ascending: true })
-        .limit(want - out.length);
+      const { data, error } = await shape(
+        applyFilters(db.from("lead_records").select(LEAD_COLS), job),
+      ).in("id", job.lead_ids.slice(i, i + ID_WINDOW)).limit(want - out.length);
       if (error) throw new Error(`fetch failed: ${error.message}`);
       out.push(...((data as unknown as LeadRow[]) ?? []));
     }
     return out;
   }
-  const { data, error } = await applyFilters(db.from("lead_records").select(LEAD_COLS), job)
-    .order("created_at", { ascending: true })
-    .limit(want);
+  const { data, error } = await shape(
+    applyFilters(db.from("lead_records").select(LEAD_COLS), job),
+  ).limit(want);
   if (error) throw new Error(`fetch failed: ${error.message}`);
   return (data as unknown as LeadRow[]) ?? [];
 }
@@ -179,10 +261,23 @@ async function batchTagMap(db: SupabaseClient, ids: string[]): Promise<Record<st
   return map;
 }
 
+/**
+ * The FULL final tag set for a contact: the automatic type tag + the batch tag +
+ * the caller's tags, UNIONED with whatever this lead was already pushed with.
+ *
+ * The union is what makes a re-tag push honest. GHL's upsert merges tags rather
+ * than replacing them, so a re-push that sent only the new tag would leave the
+ * contact holding old+new while lead_records.push_tags held only new — and the
+ * UI's tag filter/export would then disagree with GHL. Sending and storing the
+ * union keeps both sides identical.
+ */
 function tagsFor(lead: LeadRow, batchTag: string | undefined, userTags: string[]): string[] {
-  const out = [`${lead.lead_type}-lead`, ...(batchTag ? [batchTag] : []), ...userTags]
-    .map((t) => t.trim().toLowerCase())
-    .filter(Boolean);
+  const out = [
+    `${lead.lead_type}-lead`,
+    ...(batchTag ? [batchTag] : []),
+    ...userTags,
+    ...(lead.push_tags ?? []),
+  ].map((t) => t.trim().toLowerCase()).filter(Boolean);
   return Array.from(new Set(out));
 }
 
@@ -234,10 +329,13 @@ async function runWindow(
   db: SupabaseClient, cfg: GhlConfig, job: Job, rps: number, budgetMs: number,
 ): Promise<{ done: boolean; pushed: number; errored: number }> {
   const started = Date.now();
+  const cursorMode = isCursorMode(job);
   let pushed = 0, errored = 0, wavesSinceReport = 0;
+  let cursor = job.cursor_id;
   const touchedBatches = new Set<string>();
-  // Leads already attempted in THIS window. A lead whose stamp write failed stays
-  // status='loaded' and would otherwise be re-selected forever inside this loop.
+  // DRAIN mode only: leads already attempted in THIS window. A lead whose stamp
+  // write failed stays 'loaded' and would otherwise be re-selected forever here.
+  // CURSOR mode doesn't need this — the id cursor always moves forward.
   const attempted = new Set<string>();
 
   for (;;) {
@@ -247,15 +345,15 @@ async function runWindow(
     if (remaining <= 0) return { done: true, pushed, errored };
 
     const want = Math.min(SELECT_CHUNK, remaining);
-    const fetched = await nextRows(db, job, want + attempted.size);
-    const rows = fetched.filter((r) => !attempted.has(r.id)).slice(0, want);
+    const fetched = await nextRows(db, job, cursorMode ? want : want + attempted.size, cursor);
+    const rows = cursorMode ? fetched : fetched.filter((r) => !attempted.has(r.id)).slice(0, want);
     if (!fetched.length) return { done: true, pushed, errored };
     if (!rows.length) {
       // Everything still selectable failed to stamp — hand off to a fresh invocation.
       console.error("[lead-push-ghl] all selectable rows already attempted this window", job.id);
       return { done: false, pushed, errored };
     }
-    for (const r of rows) attempted.add(r.id);
+    if (!cursorMode) for (const r of rows) attempted.add(r.id);
 
     const tagMap = await batchTagMap(db, Array.from(new Set(rows.map((r) => r.batch_id))));
 
@@ -291,21 +389,25 @@ async function runWindow(
         else { errored++; touchedBatches.add(lead.batch_id); }
       }
 
+      // Advance the cursor PER WAVE, not per chunk: bailing on the budget
+      // mid-chunk with a chunk-end cursor would silently skip the untouched tail.
+      if (cursorMode) cursor = wave[wave.length - 1].id;
+
+      const progress = () => ({
+        pushed: job.pushed + pushed, errored: job.errored + errored,
+        ...(cursorMode ? { cursor_id: cursor } : {}),
+        message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`,
+      });
+
       // Progress every ~10 waves (~50 contacts / ~10s) — live enough for the UI
       // without a DB write per contact.
       if (++wavesSinceReport >= 10) {
         wavesSinceReport = 0;
-        await patchJob(db, job.id, {
-          pushed: job.pushed + pushed, errored: job.errored + errored,
-          message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`,
-        });
+        await patchJob(db, job.id, progress());
       }
 
       if (Date.now() - started > budgetMs) {
-        await patchJob(db, job.id, {
-          pushed: job.pushed + pushed, errored: job.errored + errored,
-          message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`,
-        });
+        await patchJob(db, job.id, progress());
         for (const b of touchedBatches) await db.rpc("lead_batch_refresh_counts", { p_batch_id: b });
         return { done: false, pushed, errored };
       }
@@ -316,6 +418,7 @@ async function runWindow(
     for (const b of touchedBatches) await db.rpc("lead_batch_refresh_counts", { p_batch_id: b });
     await patchJob(db, job.id, {
       pushed: job.pushed + pushed, errored: job.errored + errored,
+      ...(cursorMode ? { cursor_id: cursor } : {}),
       message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`,
     });
     if (Date.now() - started > budgetMs) return { done: false, pushed, errored };
@@ -385,6 +488,7 @@ Deno.serve(async (req) => {
         filters: (payload.filters as Record<string, unknown>) ?? {},
         tags,
         limit_n: Number(payload.limit) > 0 ? Number(payload.limit) : null,
+        retag: payload.retag === true,
         status: "running",
         message: "counting",
         created_by: callerId,
@@ -419,8 +523,24 @@ Deno.serve(async (req) => {
       }
       return json({
         ok: true, job_id: job.id, target_count: target, pushed, errored, done,
+        mode: isCursorMode(job) ? "retag" : "push",
         auto_tags_note: "each contact also gets <lead_type>-lead and its lowercased batch code",
       });
+    }
+
+    // ── count: the SAME filter code the push runs, so the UI's "N leads" and the
+    // push's target_count are the same number by construction. No writes. ──
+    if (action === "count") {
+      const job = {
+        id: "", batch_id: clean(payload.batch_id), lead_ids: Array.isArray(payload.lead_ids)
+          ? (payload.lead_ids as string[]).slice(0, MAX_LEAD_IDS) : null,
+        filters: (payload.filters as LeadFilters) ?? {}, tags: [],
+        limit_n: Number(payload.limit) > 0 ? Number(payload.limit) : null,
+        retag: payload.retag === true, cursor_id: null,
+        status: "", target_count: 0, pushed: 0, errored: 0, skipped: 0,
+      } as Job;
+      const count = await countTarget(db, job);
+      return json({ ok: true, count, mode: isCursorMode(job) ? "retag" : "push" });
     }
 
     if (action === "continue") {
