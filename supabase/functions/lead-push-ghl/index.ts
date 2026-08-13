@@ -55,6 +55,34 @@ const ID_WINDOW = 500;       // .in() window when an explicit id list is used
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
+/**
+ * ── STAGED, NOT ACTIVE — awaiting the owner's decision ────────────────────────
+ *
+ * The automatic type tag is `<lead_type>-lead`, which means a Lead Machine push
+ * writes `ucc-lead` — a tag ALREADY carried by 1,092 contacts and already wired
+ * into the live PH UCC dialing population. A Lead Machine test or a mis-filtered
+ * push can therefore drop purchased leads straight into a real dial list.
+ *
+ * `lm-<lead_type>` (lm-ucc / lm-aged / lm-trigger) is namespaced to this machine
+ * and cannot collide with anything.
+ *
+ * To activate: change this ONE constant to "lm" and deploy. It is deliberately
+ * left on "legacy" so that deploying this function for any OTHER reason cannot
+ * silently change tagging behaviour.
+ *
+ * When it flips, two things must move WITH it or the tags will disagree:
+ *   • the UI's fixed auto-tag chips (lead-machine-ui renders them),
+ *   • any HP group / GHL workflow / campaign keyed on the old `<type>-lead` tag.
+ * Rows pushed before the flip keep their old push_tags — the change is
+ * forward-only, and a re-tag push (retag:true) is how you'd unify history.
+ */
+const TYPE_TAG_MODE: "legacy" | "lm" = "legacy";
+
+/** The automatic per-lead type tag. See TYPE_TAG_MODE. */
+function typeTag(leadType: string): string {
+  return TYPE_TAG_MODE === "lm" ? `lm-${leadType}` : `${leadType}-lead`;
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status, headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -273,7 +301,7 @@ async function batchTagMap(db: SupabaseClient, ids: string[]): Promise<Record<st
  */
 function tagsFor(lead: LeadRow, batchTag: string | undefined, userTags: string[]): string[] {
   const out = [
-    `${lead.lead_type}-lead`,
+    typeTag(lead.lead_type),
     ...(batchTag ? [batchTag] : []),
     ...userTags,
     ...(lead.push_tags ?? []),
@@ -307,9 +335,16 @@ async function pushOne(
       push_tags: tags,
     };
   }
+  // Did we CREATE this contact, or attach to one that already existed? GHL's
+  // upsert dedupes on phone OR email, so a purchased lead can silently land on a
+  // real merchant's existing record. Recording it is what lets a cleanup path
+  // delete only what it created. `new === undefined` stays NULL — unknown, which
+  // blocks deletion too (see the column comment).
+  const isNew = res.data?.new;
   return {
     status: "pushed",
     ghl_contact_id: contactId,
+    matched_existing: typeof isNew === "boolean" ? !isNew : null,
     pushed_at: new Date().toISOString(),
     push_tags: tags,
     push_error: null,

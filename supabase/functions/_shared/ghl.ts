@@ -256,7 +256,14 @@ export async function upsertContact(cfg: GhlConfig, input: ContactInput) {
   for (const [k, v] of Object.entries(input)) {
     if (v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0)) payload[k] = v;
   }
-  return await ghlFetch<{ contact: { id: string } }>(cfg, "POST", "/contacts/upsert", payload);
+  // `new` tells you which of the two things just happened: true = a contact was
+  // CREATED, false = this attached to one that ALREADY EXISTED. Verified against
+  // the live API — upserting the same contact twice returns new:true then
+  // new:false with the same contact id. Any caller whose cleanup path deletes
+  // contacts MUST check it, or it will delete real records it never created.
+  return await ghlFetch<{ contact: { id: string }; new?: boolean }>(
+    cfg, "POST", "/contacts/upsert", payload,
+  );
 }
 
 export async function getContact(cfg: GhlConfig, contactId: string) {
