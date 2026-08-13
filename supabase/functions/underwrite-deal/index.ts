@@ -3670,6 +3670,50 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (insErr) return json({ error: `could not save underwriting run: ${insErr.message}` }, 502);
 
+    // ── Verified existing-MCA positions → deal (ground-truth upgrade) ──
+    // The run just persisted (every empty/degraded case returned above), so the
+    // bank statements gave us the merchant's ACTUAL open advances — latest-month
+    // anchored `activePositions` (count = `positionsCount`, each with its funder).
+    // Stamp them onto the deal, upgrading a null / UCC estimate to verified truth.
+    //
+    // SHARED PRECEDENCE (mirror supabase-backend's canWrite — replicated here,
+    // no shared helper exists in _shared yet):
+    //   manual / application = 3, bank_statements = 2, ucc = 1, null = 0.
+    // The underwriter is rank 2: it MAY overwrite null / 'ucc' and refresh its own
+    // 'bank_statements', but must NEVER clobber a human's 'manual' / 'application'
+    // entry. The `.or(...)` below is the RACE-SAFE guard — enforced in the DB, so a
+    // human write that lands between other statements and this UPDATE cannot be
+    // overwritten (the WHERE simply matches zero rows). Best-effort: a failure here
+    // never sinks a run that already saved its version.
+    try {
+      const detectedFunders = activePositions.map((p) => p.funder).filter((f) => !!f);
+      const posPatch: Record<string, unknown> = {
+        existing_positions: positionsCount,
+        existing_positions_source: "bank_statements",
+        existing_positions_synced_at: new Date().toISOString(),
+      };
+      // Only set funders when statements actually named some — never BLANK an
+      // existing array (a prior UCC / manual funder list stays if we found none).
+      if (detectedFunders.length) posPatch.existing_funders = detectedFunders;
+      // Do NOT touch existing_positions_detail — that is UCC per-lien data; there is
+      // no statement-derived equivalent, so leave whatever is there.
+      const { error: posErr } = await db
+        .from("deals")
+        .update(posPatch)
+        .eq("id", dealId)
+        // Precedence guard: write only when the CURRENT source rank <= 2
+        // (null / 'ucc' / 'bank_statements'); never over rank-3 'manual'/'application'.
+        .or("existing_positions_source.is.null,existing_positions_source.in.(ucc,bank_statements)");
+      if (posErr) {
+        console.error(`[underwrite-deal] verified-positions write failed for deal ${dealId}: ${posErr.message}`);
+      }
+    } catch (e) {
+      console.error(
+        `[underwrite-deal] verified-positions write threw for deal ${dealId}: ` +
+        String(e instanceof Error ? e.message : e),
+      );
+    }
+
     // ── Lead-score re-rank (fire-and-forget — never blocks the underwriting
     // response). Bank-statement truth just landed: the score must move NOW —
     // this is what demotes a stated-$19k/true-$10.9k merchant automatically.
