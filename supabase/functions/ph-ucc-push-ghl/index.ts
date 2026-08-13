@@ -1,34 +1,41 @@
-// ph-ucc-push-ghl — the LOAD stage of the PH UCC List Machine: the missing link
-// between skip-trace and the dialer.
+// ph-ucc-push-ghl — the LOAD stage of the PH UCC List Machine: the link between
+// skip-trace and the dialer.
 //
-// DIRECTION (this is the important part): leads are loaded DIRECTLY into
-// HotProspector's dialer store via the HP API (AddMultipleLeads) — the RELIABLE
-// direction — and HP's own HP→GHL sync carries them UP to GHL. The old approach
-// (upsert a GHL contact and rely on GHL→HP sync) did NOT reliably land leads in
-// HP: a pushed GHL contact stayed invisible to the dialer even after HP's "Sync
-// Leads" ran. So we stopped depending on GHL→HP and load HP-first. The function
-// name is kept ("push-ghl") only to avoid breaking the client's invoke() call.
+// DIRECTION — GHL FIRST. THIS IS THE WHOLE POINT OF THE FUNCTION.
 //
-// WHAT IT DOES per call (the UI chunks the filtered lead book and calls this per
-// chunk):
-//   • Ensures a PER-BATCH HP GROUP exists ("UCC <date>") — an HP dialer campaign
-//     targets a GROUP, so the per-batch group is the reliable batch target.
-//   • Resolves batch-common TAGS (ucc-lead, ucc-batch-<date>) to numeric HP tag
-//     ids (AddMultipleLeads takes numeric tagId, not names).
-//   • Bulk-adds the chunk's DIALABLE leads (phone OR email) to that group in ONE
-//     AddMultipleLeads call, carrying per-lead UCC context in additional_Info.
-//   • Stamps ph_ucc_leads: pushed_to_hp_at + hp_group_id + loaded_at +
-//     status='loaded'. That stamp makes a re-push IDEMPOTENT — an already-loaded
-//     lead is skipped, never re-queued as a duplicate.
+//   ph_ucc_leads → UPSERT as a TAGGED GoHighLevel contact → HotProspector's
+//   integration "Sync Leads" pulls by tag → HP campaigns dial by tag.
 //
-// RESILIENCE: the HP client retries BOTH HTTP transients (429/5xx/network) AND
-// HP's app-level transient — HTTP 200 with {"response":"false","message":"…Redis
-// is unavailable…"} (the lead queue being briefly down) — with exponential
-// backoff. One chunk's failure never aborts the run (the client loops all chunks
-// continue-on-error).
+// It is written this way because the other direction is BROKEN and cost us a
+// 1,047-lead incident: loading HP-first via the HP API (AddMultipleLeads) puts
+// leads in an intake queue that silently drops them, and an HP-first lead carries
+// no GHL contact id, so the dialer's "Gohighlevel Custom Link" errors with "Lead
+// data not Synced" and the setter has no playbook. Do NOT reintroduce a direct-to-HP
+// path here. HP is a CONSUMER of GHL tags, never the entry point.
 //
-// PUSHING IS FREE. No BatchData / no spend. NO outbound comms — this only
-// creates HP leads/group/tags and stamps the DB.
+// TAGS ARE THE PROTOCOL. Every contact this pushes gets:
+//   • ucc-lead                — the type tag; the live UCC dialing pool.
+//   • ucc-batch-<YYYY-MM-DD>  — the batch tag; what HP's Step 2 sync targets and
+//                               what a dialer campaign filters on.
+//
+// UPSERT ONLY. POST /contacts/upsert dedupes on phone/email inside the location,
+// so a merchant already in GHL is enriched and re-tagged, never duplicated. On top
+// of the contact we write the three structured UCC custom fields (existing
+// positions / current funders / MCA score) so the setter's playbook opens with the
+// stacking picture already on screen.
+//
+// IDEMPOTENT: a lead already stamped with ghl_contact_id is skipped unless the
+// caller passes re_push:true. Combined with GHL's upsert-dedupe, a re-run, a
+// resumed chunk, or a double-click can never create a second contact.
+//
+// RESUMABLE: the UI chunks the filtered book and calls this per chunk. Each call
+// runs a wall-clock budget and returns whatever it did not reach in
+// `unprocessed_ids`, which the client re-invokes with. Nothing is silently dropped.
+//
+// RATE: ≤5 GHL requests/sec (shared client already retries 429/5xx with backoff).
+//
+// PUSHING IS FREE. No BatchData / no HP spend. NO outbound comms — this creates and
+// tags GHL contacts and stamps the DB, nothing else.
 //
 // AUTH (mirrors ph-ucc-skiptrace): trusted cron via ?secret=<GHL webhook secret> +
 // anon-key Bearer, OR a signed-in staff user (closer/admin/super_admin). A
@@ -38,14 +45,13 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, updateContactCustomFields,
-  type GhlConfig,
+  ghlErrorMessage, type GhlConfig,
 } from "../_shared/ghl.ts";
-import {
-  getHotProspectorConfig, hotProspectorToken,
-  addMultipleLeads, ensureHpGroup, ensureHpTags, type HpLeadRow,
-} from "../_shared/hotprospector.ts";
 
-const HARD_MAX = 100;  // never process more than this many ids per call (UI chunks below this)
+const HARD_MAX = 100;        // never process more than this many ids per call (UI chunks below this)
+const DEFAULT_RPS = 5;       // GHL requests per second ceiling
+const MAX_RPS = 10;
+const BUDGET_MS = 60_000;    // wall-clock window; the rest comes back as unprocessed_ids
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -54,32 +60,28 @@ function json(body: unknown, status = 200) {
   });
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 const clean = (s: unknown): string | null => {
   const v = (s ?? "").toString().trim();
   return v.length ? v : null;
 };
 
 const VALID_EMAIL = (e: unknown): e is string =>
-  typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
+  typeof e === "string" && /^[^\s@,;]+@[^\s@,;]+\.[A-Za-z]{2,}$/.test(e.trim());
+
+/** GHL matches contacts on the E.164 phone, so every push must send the SAME shape
+ * the rest of the app sends (+1 + last 10 digits) or the upsert dedupe misses and
+ * we create a second contact for a merchant we already have. */
+function e164(raw: unknown): string | null {
+  const digits = (raw ?? "").toString().replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  return `+1${digits.slice(-10)}`;
+}
 
 /** The sentinel matched_funders value the ingest writes for agent-filed leads. It
  * is NOT a real funder name. */
 const AGENT_FILED_SENTINEL = "— agent-filed (funder unknown) —";
-
-type ConfTier = "confirmed" | "high" | "medium" | "low";
-
-/** Resolve a lead's confidence tier — same contract as the UI's leadConfidence(). */
-function confidenceTier(l: Lead): ConfTier {
-  const c = l.confidence;
-  if (c === "confirmed" || c === "high" || c === "medium" || c === "low") return c;
-  if (l.lead_class === "agent_masked") {
-    const d = l.stack_depth ?? 0;
-    if (d >= 3) return "high";
-    if (d === 2) return "medium";
-    return "low";
-  }
-  return "confirmed";
-}
 
 interface Lead {
   id: string;
@@ -91,63 +93,20 @@ interface Lead {
   debtor_zip: string | null;
   matched_funders: string[] | null;
   stack_depth: number | null;
-  latest_filing_date: string | null;
-  freshness_days: number | null;
   mca_score: number | string | null;
-  score: number | string | null;
   status: string;
   person_name: string | null;
   phone: string | null;
   email: string | null;
   apollo_business_email: string | null;
   lead_class: string | null;
-  agent_name: string | null;
-  confidence: string | null;
-  pushed_to_hp_at: string | null;
+  ghl_contact_id: string | null;
 }
 
 const LEAD_COLS =
   "id,state,debtor_name,debtor_address,debtor_city,debtor_state,debtor_zip," +
-  "matched_funders,stack_depth,latest_filing_date," +
-  "freshness_days,mca_score,score,status,person_name,phone,email,apollo_business_email," +
-  "lead_class,agent_name,confidence,pushed_to_hp_at";
-
-/** One human-readable context line for HP's additional_Info field. */
-function additionalInfo(l: Lead, batchTag: string): string {
-  const funders = (l.matched_funders ?? []).filter((f) => f && f !== AGENT_FILED_SENTINEL);
-  const st = clean(l.state) ?? clean(l.debtor_state);
-  const mca = l.mca_score == null ? null : Number(l.mca_score);
-  const parts = [
-    `UCC lead (${confidenceTier(l)})`,
-    st ? `state ${st.toUpperCase()}` : null,
-    l.stack_depth != null ? `${l.stack_depth} position(s)` : null,
-    mca != null && Number.isFinite(mca) ? `MCA score ${mca.toFixed(2)}` : null,
-    l.latest_filing_date ? `latest filing ${l.latest_filing_date}` : null,
-    l.freshness_days != null ? `${l.freshness_days}d old` : null,
-    l.lead_class === "agent_masked"
-      ? (l.agent_name ? `agent-filed via ${l.agent_name} (funder unknown)` : "agent-filed (funder unknown)")
-      : (funders.length ? `funders: ${funders.join(", ")}` : null),
-    `batch ${batchTag}`,
-  ].filter(Boolean);
-  return parts.join(" · ");
-}
-
-/** Build the AddMultipleLeads row for one lead. */
-function hpRowFor(l: Lead, email: string | null, phone: string | null, batchTag: string): HpLeadRow {
-  const nameParts = (clean(l.person_name) ?? "").split(/\s+/).filter(Boolean);
-  const row: HpLeadRow = {
-    company: clean(l.debtor_name) ?? undefined,
-    city: clean(l.debtor_city) ?? undefined,
-    state: clean(l.state) ?? clean(l.debtor_state) ?? undefined,
-    source: "UCC Machine",
-    additional_Info: additionalInfo(l, batchTag),
-  };
-  if (nameParts.length) row.first_name = nameParts[0];
-  if (nameParts.length > 1) row.last_name = nameParts.slice(1).join(" ");
-  if (phone) row.phone = phone;
-  if (email) row.email = email;
-  return row;
-}
+  "matched_funders,stack_depth,mca_score,status,person_name,phone,email," +
+  "apollo_business_email,lead_class,ghl_contact_id";
 
 /** Real (non-sentinel) funder names for a lead, comma-joined, or null. */
 function funderCsv(l: Lead): string | null {
@@ -173,51 +132,57 @@ function uccCustomFields(cfg: GhlConfig, l: Lead): Array<{ id: string; value: st
   return out;
 }
 
+type PushOutcome =
+  | { ok: true; contactId: string; customFields: boolean }
+  | { ok: false; error: string };
+
 /**
- * BEST-EFFORT GHL ENRICHMENT (does NOT change the HP-first dialer load above).
+ * Push ONE lead into GHL as a tagged contact, then write its UCC custom fields.
  *
- * The dialer leads are loaded HP-first (the reliable direction). This adds the
- * STRUCTURED data GHL needs — the debtor address + the three UCC custom fields
- * (existing positions / current funders / MCA score) — via a code-controlled GHL
- * write instead of trusting HP↔GHL field mapping to carry them. Upsert dedupes by
- * email/phone, so it lands on the SAME contact HP's sync creates (one contact per
- * merchant). Never throws — a GHL hiccup on one lead leaves it loaded in HP and
- * simply un-enriched (the caller reports the count).
- *
- * Returns the GHL contact id (so we can stamp ph_ucc_leads.ghl_contact_id), or null.
+ * The custom-field write is a separate PUT on purpose: a bad field id must not
+ * take down the contact upsert itself, so a field failure is logged and the lead
+ * still counts as pushed (the contact exists and is tagged — HP can sync it).
  */
-async function enrichGhlContact(
-  cfg: GhlConfig,
-  l: Lead,
-  email: string | null,
-  phone: string | null,
-  batchTag: string,
-): Promise<string | null> {
-  try {
-    const nameParts = (clean(l.person_name) ?? "").split(/\s+/).filter(Boolean);
-    const up = await upsertContact(cfg, {
-      firstName: nameParts.length ? nameParts[0] : undefined,
-      lastName: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
-      companyName: clean(l.debtor_name),
-      email: email ?? undefined,
-      phone: phone ?? undefined,
-      address1: clean(l.debtor_address),
-      city: clean(l.debtor_city),
-      state: clean(l.state) ?? clean(l.debtor_state),
-      postalCode: clean(l.debtor_zip),
-      tags: ["ucc-lead", batchTag],
-      source: "UCC Machine",
-    });
-    const contactId = up.data?.contact?.id ?? null;
-    if (!contactId) return null;
-    const fields = uccCustomFields(cfg, l);
-    if (fields.length) await updateContactCustomFields(cfg, contactId, fields);
-    return contactId;
-  } catch (e) {
-    console.warn("[ph-ucc-push-ghl] GHL enrichment failed (lead stays HP-loaded):",
-      JSON.stringify({ lead_id: l.id, error: e instanceof Error ? e.message : String(e) }));
-    return null;
+async function pushOne(
+  cfg: GhlConfig, l: Lead, email: string | null, phone: string | null, tags: string[],
+): Promise<PushOutcome> {
+  const nameParts = (clean(l.person_name) ?? "").split(/\s+/).filter(Boolean);
+  const res = await upsertContact(cfg, {
+    firstName: nameParts.length ? nameParts[0] : undefined,
+    lastName: nameParts.length > 1 ? nameParts.slice(1).join(" ") : undefined,
+    companyName: clean(l.debtor_name),
+    email: email ?? undefined,
+    phone: phone ?? undefined,
+    address1: clean(l.debtor_address),
+    city: clean(l.debtor_city),
+    // debtor_state FIRST — `state` is the state the UCC was FILED in, which is often
+    // not where the merchant is. Preferring it wrote addresses like
+    // "MOUNT HOLLY, CT 08060" (that ZIP is NJ) onto real contacts. The address block
+    // has to come from one source: the debtor's own address.
+    state: clean(l.debtor_state) ?? clean(l.state),
+    postalCode: clean(l.debtor_zip),
+    tags,
+    source: "UCC Machine",
+  });
+  const contactId = res.data?.contact?.id ?? null;
+  if (!res.ok || !contactId) {
+    return {
+      ok: false,
+      error: (res.ok ? "upsert returned no contact id" : ghlErrorMessage(res.error)).slice(0, 300),
+    };
   }
+
+  let customFields = false;
+  const fields = uccCustomFields(cfg, l);
+  if (fields.length) {
+    const cf = await updateContactCustomFields(cfg, contactId, fields);
+    customFields = cf.ok;
+    if (!cf.ok) {
+      console.warn("[ph-ucc-push-ghl] custom-field write failed (contact still pushed)",
+        JSON.stringify({ lead_id: l.id, contact_id: contactId, error: ghlErrorMessage(cf.error) }));
+    }
+  }
+  return { ok: true, contactId, customFields };
 }
 
 Deno.serve(async (req) => {
@@ -256,12 +221,18 @@ Deno.serve(async (req) => {
     : [];
   if (leadIds.length === 0) return json({ error: "lead_ids[] is required" }, 400);
 
-  // Batch tag / date → per-batch HP group title "UCC <date>".
+  // Re-push revisits leads that already carry a ghl_contact_id (upsert makes that
+  // safe — it re-tags and re-enriches the SAME contact, never a duplicate).
+  const rePush = (payload as { re_push?: unknown }).re_push === true;
+
+  const rps = Math.min(Math.max(Number((payload as { rps?: unknown }).rps) || DEFAULT_RPS, 1), MAX_RPS);
+
+  // Batch tag — today's convention, kept: ucc-batch-<YYYY-MM-DD>.
   const batchTagRaw = clean((payload as { batch_tag?: unknown }).batch_tag);
   const batchDate = clean((payload as { batch_date?: unknown }).batch_date);
   const stamp = (batchDate ?? new Date().toISOString().slice(0, 10)).replace(/[^0-9-]/g, "");
-  const batchTag = batchTagRaw ?? `ucc-batch-${stamp}`;
-  const groupTitle = `UCC ${stamp}`;
+  const batchTag = (batchTagRaw ?? `ucc-batch-${stamp}`).toLowerCase();
+  const tags = Array.from(new Set(["ucc-lead", batchTag]));
 
   const started = Date.now();
 
@@ -271,145 +242,110 @@ Deno.serve(async (req) => {
   if (leadErr) return json({ error: `lead load failed: ${leadErr.message}` }, 500);
   const leads = (leadRows as unknown as Lead[]) ?? [];
 
-  // ── HotProspector auth ──
-  let hpCfg;
-  try { hpCfg = await getHotProspectorConfig(db); }
-  catch (e) { return json({ error: `HP not configured: ${e instanceof Error ? e.message : String(e)}` }, 502); }
-  const auth = await hotProspectorToken(hpCfg);
-  if (!auth.ok || !auth.token) {
-    return json({ error: `HP auth failed: ${auth.error ?? "no token"}`, status: auth.status }, 502);
-  }
-  const hpToken = auth.token;
+  let cfg: GhlConfig;
+  try { cfg = await getGhlConfig(db); }
+  catch (e) { return json({ error: `GHL not configured: ${e instanceof Error ? e.message : String(e)}` }, 502); }
 
-  // Ensure the per-batch group + batch-common tags exist.
-  const groupId = await ensureHpGroup(hpToken, groupTitle);
-  if (!groupId) return json({ error: `could not resolve/create HP group "${groupTitle}"` }, 502);
-  const tagIds = await ensureHpTags(hpToken, ["ucc-lead", batchTag]);
-
-  // Partition the requested leads.
-  let pushed = 0, updated = 0, skipped_no_contact = 0, errored = 0, ghlEnriched = 0;
+  // ── Partition ──────────────────────────────────────────────────────────────
+  let pushed = 0, updated = 0, skipped_no_contact = 0, errored = 0, enriched = 0;
   const perLead: Record<string, unknown>[] = [];
-  const toSubmit: Array<{ lead: Lead; row: HpLeadRow }> = [];
-  const seen = new Set<string>(); // dedupe within this call by phone/email
+  const toPush: Array<{ lead: Lead; email: string | null; phone: string | null }> = [];
 
   for (const l of leads) {
-    const email = VALID_EMAIL(l.email) ? l.email!.trim()
-      : VALID_EMAIL(l.apollo_business_email) ? l.apollo_business_email!.trim()
+    const email = VALID_EMAIL(l.email) ? l.email!.trim().toLowerCase()
+      : VALID_EMAIL(l.apollo_business_email) ? l.apollo_business_email!.trim().toLowerCase()
       : null;
-    const phone = clean(l.phone);
+    const phone = e164(l.phone);
 
+    // Not dialable and not emailable — GHL has nothing to dedupe on either.
     if (!email && !phone) {
       skipped_no_contact++;
       perLead.push({ lead_id: l.id, debtor: l.debtor_name, result: "skipped_no_contact" });
       continue;
     }
-    // Idempotent: already loaded into HP — skip (never re-queue a duplicate).
-    if (l.pushed_to_hp_at) {
+    if (l.ghl_contact_id && !rePush) {
       updated++;
-      perLead.push({ lead_id: l.id, debtor: l.debtor_name, result: "already_loaded" });
+      perLead.push({ lead_id: l.id, debtor: l.debtor_name, result: "already_loaded", ghl_contact_id: l.ghl_contact_id });
       continue;
     }
-    const dedupeKey = (phone ?? "") + "|" + (email ?? "");
-    const row = hpRowFor(l, email, phone, batchTag);
-    if (!seen.has(dedupeKey)) { seen.add(dedupeKey); toSubmit.push({ lead: l, row }); }
-    else { toSubmit.push({ lead: l, row: { ...row, additional_Info: (row.additional_Info ?? "") } }); }
+    toPush.push({ lead: l, email, phone });
   }
 
-  // ── Bulk-add to HP (ONE queued call), dedupe the wire payload by contact ──
-  const nowIso = new Date().toISOString();
-  if (toSubmit.length > 0) {
-    // Unique wire rows (collapse leads that share a phone/email).
-    const wireSeen = new Set<string>();
-    const wireRows: HpLeadRow[] = [];
-    for (const { row } of toSubmit) {
-      const k = (row.phone ?? "") + "|" + (row.email ?? "");
-      if (wireSeen.has(k)) continue;
-      wireSeen.add(k);
-      wireRows.push(row);
-    }
+  // ── Push in waves of `rps`, each wave taking ≥1s per GHL call it makes ──────
+  // Each lead costs at most 2 GHL requests (upsert + custom fields), so a wave of
+  // `rps` leads is held to 2s when we're writing custom fields — that keeps the
+  // real request rate at or under `rps`/sec either way.
+  const callsPerLead = (cfg.cfExistingPositions || cfg.cfCurrentFunders || cfg.cfMcaScore) ? 2 : 1;
+  const waveFloorMs = 1000 * callsPerLead;
+  let reached = 0;
 
-    const res = await addMultipleLeads(hpToken, wireRows, groupId, tagIds);
-    const ok = res.ok && ((): boolean => {
-      const o = Array.isArray(res.data) ? res.data[0] : res.data;
-      const r = (o as Record<string, unknown> | null)?.response;
-      return r === "true" || r === true;
-    })();
+  for (let i = 0; i < toPush.length; i += rps) {
+    if (Date.now() - started > BUDGET_MS) break;
+    const waveStart = Date.now();
+    const wave = toPush.slice(i, i + rps);
 
-    if (ok) {
-      // Stamp every requested lead (including our-side duplicates) as loaded.
-      const ids = toSubmit.map((t) => t.lead.id);
+    const results = await Promise.all(wave.map(async (t) => {
+      try {
+        return { t, out: await pushOne(cfg, t.lead, t.email, t.phone, tags) };
+      } catch (e) {
+        return { t, out: { ok: false as const, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) } };
+      }
+    }));
+
+    const nowIso = new Date().toISOString();
+    for (const { t, out } of results) {
+      reached++;
+      if (!out.ok) {
+        errored++;
+        perLead.push({ lead_id: t.lead.id, debtor: t.lead.debtor_name, error: out.error });
+        continue;
+      }
+      if (out.customFields) enriched++;
+      // Stamp: the contact id is what makes the setter playbook resolve instantly,
+      // pushed_to_ghl_at is what the UI's "already loaded" count reads, and
+      // status='loaded' is the funnel stage.
       const { error: uErr } = await db.from("ph_ucc_leads").update({
-        pushed_to_hp_at: nowIso,
+        ghl_contact_id: out.contactId,
+        pushed_to_ghl_at: nowIso,
         loaded_at: nowIso,
-        hp_group_id: groupId,
         status: "loaded",
-      }).in("id", ids);
+      }).eq("id", t.lead.id);
       if (uErr) {
-        // HP got the leads but we failed to stamp — report as errored so a re-run
-        // reconciles (idempotent: HP dedupe + our stamp guard prevent a double).
-        errored += toSubmit.length;
-        for (const t of toSubmit) perLead.push({ lead_id: t.lead.id, debtor: t.lead.debtor_name, error: `db stamp: ${uErr.message}` });
-      } else {
-        pushed += toSubmit.length;
-        for (const t of toSubmit) perLead.push({
-          lead_id: t.lead.id, debtor: t.lead.debtor_name, result: "pushed",
-          channel: t.row.phone ? "phone" : "email_only",
-        });
+        // GHL has the contact but we failed to record it — LOUD, and counted as an
+        // error so a re-run reconciles the row (upsert makes that safe).
+        console.error("[ph-ucc-push-ghl] stamp failed",
+          JSON.stringify({ lead_id: t.lead.id, contact_id: out.contactId, error: uErr.message }));
+        errored++;
+        perLead.push({ lead_id: t.lead.id, debtor: t.lead.debtor_name, error: `db stamp: ${uErr.message}` });
+        continue;
       }
-    } else {
-      const o = Array.isArray(res.data) ? res.data[0] : res.data;
-      const msg = (o as Record<string, unknown> | null)?.message ?? res.error ?? "AddMultipleLeads failed";
-      errored += toSubmit.length;
-      for (const t of toSubmit) perLead.push({ lead_id: t.lead.id, debtor: t.lead.debtor_name, error: String(msg).slice(0, 200) });
+      pushed++;
+      perLead.push({
+        lead_id: t.lead.id, debtor: t.lead.debtor_name, result: "pushed",
+        ghl_contact_id: out.contactId,
+        channel: t.phone ? "phone" : "email_only",
+      });
     }
 
-    // ── BEST-EFFORT GHL STRUCTURED ENRICHMENT (independent of the HP load). ──
-    // Only when HP accepted the leads. Writes the debtor address + the three UCC
-    // custom fields onto each merchant's GHL contact via a code-controlled upsert,
-    // then stamps ph_ucc_leads.ghl_contact_id so the playbook resolves instantly.
-    // Bounded concurrency (GHL rate limits) + a soft time budget so this can never
-    // push the function past its wall-clock (the HP load already succeeded above).
-    if (ok) {
-      let cfg: GhlConfig | null = null;
-      try { cfg = await getGhlConfig(db); }
-      catch (e) { console.warn("[ph-ucc-push-ghl] GHL config unavailable — skipping enrichment:", e instanceof Error ? e.message : String(e)); }
-      if (cfg) {
-        const DEADLINE = started + 90_000; // leave headroom under the edge wall-clock
-        const CONCURRENCY = 4;
-        const queue = [...toSubmit];
-        const worker = async () => {
-          while (queue.length && Date.now() < DEADLINE) {
-            const t = queue.shift();
-            if (!t) break;
-            const cid = await enrichGhlContact(cfg!, t.lead, t.row.email ?? null, t.row.phone ?? null, batchTag);
-            if (cid) {
-              ghlEnriched++;
-              const { error: gErr } = await db.from("ph_ucc_leads")
-                .update({ ghl_contact_id: cid, pushed_to_ghl_at: new Date().toISOString() })
-                .eq("id", t.lead.id);
-              if (gErr) console.warn("[ph-ucc-push-ghl] ghl_contact_id stamp failed:", JSON.stringify({ lead_id: t.lead.id, error: gErr.message }));
-            }
-          }
-        };
-        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toSubmit.length) }, () => worker()));
-      }
-    }
+    const elapsed = Date.now() - waveStart;
+    if (elapsed < waveFloorMs && i + rps < toPush.length) await sleep(waveFloorMs - elapsed);
   }
+
+  // Anything the budget cut short comes back for the client to re-invoke with.
+  const unprocessed_ids = toPush.slice(reached).map((t) => t.lead.id);
 
   return json({
     ok: true,
     batch_tag: batchTag,
-    hp_group_title: groupTitle,
-    hp_group_id: groupId,
-    hp_tag_ids: tagIds,
+    tags,
     requested: leadIds.length,
-    eligible: toSubmit.length + updated, // dialable leads (to-submit + already-loaded)
+    eligible: toPush.length + updated, // contactable leads (to-push + already-loaded)
     pushed,
     updated,
     skipped_no_contact,
-    ghl_enriched: ghlEnriched, // contacts we wrote address + UCC custom fields onto
+    ghl_enriched: enriched, // contacts we also wrote the UCC custom fields onto
     errors: errored,
-    unprocessed_ids: [], // one bulk call — nothing is left mid-run
+    unprocessed_ids,
     elapsed_ms: Date.now() - started,
     per_lead: perLead,
   });
