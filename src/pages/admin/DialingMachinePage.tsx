@@ -276,9 +276,10 @@ const STEPS = [
     body: (
       <>
         Build the <b>3-line campaign</b> on that group — <b>Mode = Progressive(M)</b> with{" "}
-        <b>Dialing Leads = 3</b>, caller ID <b>+1 954-860-7138</b>, hours <b>8:00am–9:00pm in the
-        lead's timezone</b> (TCPA), the setter script attached with <b>Autoload</b>. Assign setters
-        on the <b>"Assign To"</b> field in Campaign Settings.
+        <b>Dialing Leads = 3</b>, <b>"TAGS TO DIAL WITHOUT SORTING" ON with the batch tag</b> (this
+        is what the dialer actually resolves leads by), caller ID <b>+1 954-860-7138</b>, hours{" "}
+        <b>8:00am–9:00pm in the lead's timezone</b> (TCPA), the setter script attached with{" "}
+        <b>Autoload</b>. Assign setters on the <b>"Assign To"</b> field in Campaign Settings.
       </>
     ),
   },
@@ -475,7 +476,8 @@ const SETUP_MATRIX: { thing: React.ReactNode; cadence: "once" | "batch"; note: R
         <>
           <b>A new campaign per batch</b> — the <b>mode LOCKS at creation</b>, so campaigns aren't
           re-editable into a different shape. Name it after the batch, point it at this batch's
-          group, and <b>assign the setters on it</b>. See <b>Part D</b>.
+          group, <b>set this batch's tag under "TAGS TO DIAL WITHOUT SORTING"</b>, and{" "}
+          <b>assign the setters on it</b>. See <b>Part D</b>.
         </>
       ),
     },
@@ -759,11 +761,18 @@ export default function DialingMachinePage() {
               </li>
               <li className="no">
                 <b>HotProspector's contact SEARCH box is broken</b> — verify a batch with the{" "}
-                <b>Group filter</b>, never by searching a name.
+                <b>Tags filter</b> (Contacts → Search Filter → Tags), never by searching a name.
               </li>
               <li className="no">
-                <b>Campaign Edit showing "Leads Found: 0" is a display bug</b> — the true count is in
-                the <b>Dialer LIST view</b>. Don't rebuild a campaign over it.
+                <b>Campaign shows "Leads Found: 0" even though the group is full.</b> The campaign
+                must <b>ALSO have the batch tag set under "TAGS TO DIAL WITHOUT SORTING"</b> — a
+                group-only campaign reads HotProspector's <b>broken group index</b> and finds
+                nothing. Set the tag; the count appears.
+              </li>
+              <li className="no">
+                <b>HotProspector silently reverts some campaign edits after Save and Close.</b>{" "}
+                <b>Always REOPEN the campaign after saving</b> and confirm your change actually
+                stuck.
               </li>
               <li className="no">
                 <b>"Power" mode is ONE line.</b> The 3-line mode is <b>Progressive(M)</b> with{" "}
@@ -916,6 +925,13 @@ export default function DialingMachinePage() {
                 merchant</b>. If it errors <b>"Lead data not Synced"</b>, that lead did NOT come
                 through GoHighLevel — <b>stop and re-check Parts B and C.</b>
               </li>
+              <li>
+                <b>Count the batch by its TAG, not by the group.</b> In HotProspector go to{" "}
+                <b>Contacts → Search Filter → Tags</b> → pick this batch's tag — that count is the{" "}
+                <b>authoritative lead count</b> for the batch.{" "}
+                <b>Group counts are not reliable</b> (HP's group index is broken account-wide), so
+                never validate a batch off a group number.
+              </li>
             </ol>
           </div>
 
@@ -954,6 +970,16 @@ export default function DialingMachinePage() {
                 TCPA).
               </li>
               <li>
+                ⚠️ <b>Then toggle ON "TAGS TO DIAL WITHOUT SORTING" and select this batch's tag</b>{" "}
+                (the same dated tag from Part B, e.g. <b>ucc-2026-08-20</b>).{" "}
+                <u>
+                  The tag is what the dialer actually resolves leads by — the group alone cannot be
+                  trusted, because HotProspector's group counters are broken account-wide.
+                </u>{" "}
+                The <b>"Leads Found"</b> count should jump to your batch size the moment you pick the
+                tag. <b>If it still reads 0, the tag isn't set — do not proceed.</b>
+              </li>
+              <li>
                 <b>Call Statuses:</b> turn on <b>"Send Application"</b>.
               </li>
               <li>
@@ -969,8 +995,15 @@ export default function DialingMachinePage() {
                 ⚠️ <b>Check Maximum Dial Attempts</b> — it can save as <b>1</b>. Set it to <b>20</b>.
               </li>
               <li>
-                ⚠️ The Edit screen may show <b>"0 Leads Found"</b> even when the group is loaded —{" "}
-                <b>the true count is in the Dialer LIST view.</b>
+                ⚠️ <b>REOPEN the campaign after "Save and Close" and confirm every setting stuck</b>{" "}
+                — HotProspector <b>silently reverts some edits on save</b>. Re-check the tag, the
+                mode, Dialing Leads and Maximum Dial Attempts.
+              </li>
+              <li>
+                ⚠️ If the Edit screen shows <b>"0 Leads Found"</b> while the group is loaded, treat it
+                as a <b>missing tag, not a display bug</b> — set the batch tag under{" "}
+                <b>"TAGS TO DIAL WITHOUT SORTING"</b>. Cross-check the real number against the{" "}
+                <b>batch-tag count in GoHighLevel</b> and the <b>Dialer LIST view</b>.
               </li>
               <li>
                 <b>Call recording</b> requires the <b>owner</b> to accept HotProspector's consent
@@ -992,7 +1025,9 @@ export default function DialingMachinePage() {
                 merchant.
               </li>
               <li>
-                The <b>Dialer LIST view</b> shows the <b>real lead count</b> on the campaign.
+                The campaign's <b>"Leads Found"</b> is non-zero (i.e. the batch tag is set on it) and
+                the <b>Dialer LIST view</b> shows the <b>real lead count</b>, matching the{" "}
+                <b>batch-tag count in Contacts</b>.
               </li>
               <li>
                 <b>The owner makes ONE test call:</b> the script auto-loads → the button opens the
@@ -1126,8 +1161,12 @@ export default function DialingMachinePage() {
                   think the batch loaded.
                 </li>
                 <li className="no">
-                  <b>Never trust HP's search box or Campaign Edit's "0 Leads Found"</b> — use the
-                  Group filter and the Dialer LIST view.
+                  <b>Never build a campaign on the group alone</b> — it must also carry the batch tag
+                  under <b>"TAGS TO DIAL WITHOUT SORTING"</b>, or it dials nothing.
+                </li>
+                <li className="no">
+                  <b>Never trust HP's search box or any group count</b> — the authoritative count is
+                  the <b>batch tag</b> (Contacts → Search Filter → Tags).
                 </li>
                 <li className="no">
                   <b>Never let setters start before the three end-to-end checks pass</b> (SOP E).
