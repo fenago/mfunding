@@ -111,9 +111,16 @@ function pick(o: Record<string, unknown>, ...keys: string[]): unknown {
   return null;
 }
 
-/** The array of result rows, whatever HP called it this time. */
+/** The array of result rows, whatever HP called it this time.
+ *
+ * "result" (SINGULAR) was missing, and FetchAllCampaigns uses exactly that key.
+ * The effect was silent and total: the campaign list always came back empty, so
+ * campaigns_pulled and disposition_rows were always 0 and
+ * hotprospector_disposition_daily never received a single row — while the sync
+ * reported ok:true with no warnings, because an empty list is not an error.
+ * Appended LAST so no existing key precedence changes. */
 function results(o: Record<string, unknown>): Record<string, unknown>[] {
-  for (const k of ["Results", "results", "data", "message"]) {
+  for (const k of ["Results", "results", "data", "message", "result"]) {
     const v = o[k];
     if (Array.isArray(v)) return v as Record<string, unknown>[];
   }
