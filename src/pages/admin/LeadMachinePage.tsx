@@ -857,6 +857,18 @@ export default function LeadMachinePage() {
     void loadBatches();
   }, [loadBatches]);
 
+  /* A batch that's still ingesting keeps changing, so poll the list until every
+     batch is terminal, then stop. No timer at all in the steady state. */
+  const anyIngesting = useMemo(
+    () => batches.some((b) => ["uploaded", "ingesting"].includes((b.status || "").toLowerCase())),
+    [batches],
+  );
+  useEffect(() => {
+    if (!anyIngesting) return;
+    const t = setInterval(() => void loadBatches(), 5000);
+    return () => clearInterval(t);
+  }, [anyIngesting, loadBatches]);
+
   /* ── Lead browser filters ── */
   const [fType, setFType] = useState<"" | LeadType>("");
   const [fBatch, setFBatch] = useState("");
@@ -928,11 +940,18 @@ export default function LeadMachinePage() {
      count, and the push id-gather all build from this, so "N leads" on screen is
      exactly what gets pushed. Callers add .range() for pagination. */
   const buildFilteredQuery = useCallback(
-    (select: string, opts: { count?: "exact"; head?: boolean } = {}) => {
+    (select: string, opts: { count?: "exact" | "planned" | "estimated"; head?: boolean } = {}) => {
       let q = supabase
         .from("lead_records")
         .select(select, opts)
-        .order(sortKey, { ascending: sortAsc, nullsFirst: false });
+        .order(sortKey, { ascending: sortAsc, nullsFirst: false })
+        // TIEBREAKER, and it is not optional. The ingester inserts in windows, so
+        // a THOUSAND rows share one created_at (verified on the live book) and
+        // revenue/state tie even harder. Without a unique final sort key, Postgres
+        // is free to return ties in any order, and every paged read — the table's
+        // Next button, the export walk, the push id-gather — would silently
+        // duplicate some rows and skip others. The PK makes the order total.
+        .order("id", { ascending: true });
       if (fType) q = q.eq("lead_type", fType);
       if (fBatch) q = q.eq("batch_id", fBatch);
       if (fState) q = q.eq("state", fState);
@@ -979,7 +998,12 @@ export default function LeadMachinePage() {
 
   const loadLeads = useCallback(async () => {
     setLeadsLoading(true);
-    const { data, error, count } = await buildFilteredQuery(LEAD_SELECT, { count: "exact" }).range(
+    // ESTIMATED, not exact. An exact count is a full scan of every matching row —
+    // measured at 3.8s on the live 193k-row book, on top of the page fetch. The
+    // planner's estimate is instant and is only ever used to size the pager and
+    // label the browse; the number the PUSH promises comes from lead-push-ghl's
+    // own count action, which is exact by construction.
+    const { data, error, count } = await buildFilteredQuery(LEAD_SELECT, { count: "estimated" }).range(
       page * PAGE_SIZE,
       page * PAGE_SIZE + PAGE_SIZE - 1,
     );
@@ -1025,7 +1049,12 @@ export default function LeadMachinePage() {
     sortAsc,
   ]);
 
+  /* The count is an ESTIMATE (see loadLeads), so pagination can't be derived from
+     it alone — an over-estimate would offer a page that doesn't exist, an
+     under-estimate would hide the tail. "Next" therefore keys off whether THIS
+     page came back full, which is always true. */
   const totalPages = Math.max(1, Math.ceil(leadCount / PAGE_SIZE));
+  const hasNextPage = leads.length === PAGE_SIZE;
 
   const toggleRow = (id: string) =>
     setSelectedIds((prev) => {
@@ -1212,20 +1241,25 @@ export default function LeadMachinePage() {
             setExportProgress({ done: Math.min(i + ID_WINDOW, ids.length), total: ids.length });
           }
         } else {
-          // Count first so the progress bar is a real fraction, not a spinner.
-          let countQ = buildFilteredQuery("id", { count: "exact", head: true });
+          // Sizes the progress bar only — an estimate is plenty, and it keeps the
+          // export from paying a full-scan count before it fetches a single row.
+          let countQ = buildFilteredQuery("id", { count: "estimated", head: true });
           if (emailOnly) countQ = countQ.not("email", "is", null);
           const { count } = await countQ;
           const total = count ?? 0;
           setExportProgress({ done: 0, total });
-          for (let offset = 0; offset < total; offset += EXPORT_WINDOW) {
+          // Page over the deterministic sort. (A keyset walk on the PK was tried
+          // and is WORSE here: the PK is a random uuid, so ordering by it makes
+          // the planner abandon the selective filter index and scan the heap in
+          // random order — measured 16s for one page vs 2.3s this way.)
+          for (let offset = 0; ; offset += EXPORT_WINDOW) {
             let q = buildFilteredQuery(LEAD_SELECT).range(offset, offset + EXPORT_WINDOW - 1);
             if (emailOnly) q = q.not("email", "is", null);
             const { data, error } = await q;
             if (error) throw error;
             const page = (data as unknown as LeadRecord[]) ?? [];
             rows.push(...page);
-            setExportProgress({ done: Math.min(offset + EXPORT_WINDOW, total), total });
+            setExportProgress({ done: rows.length, total: Math.max(total, rows.length) });
             if (page.length < EXPORT_WINDOW) break; // drained
           }
         }
@@ -1569,6 +1603,12 @@ export default function LeadMachinePage() {
                       };
                       const active = fBatch === b.id;
                       const st = (b.status || "").toLowerCase();
+                      /* Mid-ingest, total_rows is a lagging checkpoint and the
+                         finalize-only counters (ingested_rows / dup_rows) are
+                         still 0 — so the stored/dialable/skipped columns only
+                         mean anything once the batch is terminal. Seen live:
+                         a running batch read "20,000 read / 28,000 stored". */
+                      const settled = !["uploaded", "ingesting"].includes(st);
                       return (
                         <tr
                           key={b.id}
@@ -1586,7 +1626,8 @@ export default function LeadMachinePage() {
                           <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300">{b.label || "—"}</td>
                           <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300">
                             {n0(b.total_rows).toLocaleString()}
-                            {n0(b.dup_rows) > 0 && (
+                            {!settled && <span className="text-gray-400"> so far</span>}
+                            {settled && n0(b.dup_rows) > 0 && (
                               <span
                                 className="block text-[10px] text-gray-400"
                                 title="Rows dropped because the same phone appeared earlier in this same file"
@@ -1596,13 +1637,13 @@ export default function LeadMachinePage() {
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold">
-                            {n0(b.records).toLocaleString()}
+                            {settled ? n0(b.records).toLocaleString() : <span className="text-gray-400">—</span>}
                           </td>
                           <td
                             className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold"
                             title="Has a phone number — the only rows the push can send"
                           >
-                            {n0(b.dialable).toLocaleString()}
+                            {settled ? n0(b.dialable).toLocaleString() : <span className="text-gray-400">—</span>}
                           </td>
                           <td className="py-2.5 px-4 text-emerald-600 dark:text-emerald-400 font-semibold">
                             {n0(b.pushed).toLocaleString()}
@@ -1613,7 +1654,7 @@ export default function LeadMachinePage() {
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400">
-                            {n0(b.skipped).toLocaleString()}
+                            {settled ? n0(b.skipped).toLocaleString() : <span className="text-gray-400">—</span>}
                           </td>
                           <td
                             className="py-2.5 px-4 text-gray-500 dark:text-gray-400"
@@ -1622,6 +1663,11 @@ export default function LeadMachinePage() {
                             {n0(b.dup_of_prior).toLocaleString()}
                           </td>
                           <td className="py-2.5 px-4">
+                            {!settled && n0(b.bytes_total) > 0 && (
+                              <span className="block text-[10px] text-gray-400">
+                                {Math.min(100, Math.round((n0(b.byte_offset) / n0(b.bytes_total)) * 100))}% of the file
+                              </span>
+                            )}
                             <span
                               className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
                                 FAIL_STATES.has(st)
@@ -1649,8 +1695,11 @@ export default function LeadMachinePage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400 flex items-center gap-2">
                 3 · Lead browser
-                <span className="normal-case font-normal text-gray-400">
-                  · <strong className="text-gray-700 dark:text-gray-200">{leadCount.toLocaleString()}</strong> leads
+                <span
+                  className="normal-case font-normal text-gray-400"
+                  title="Estimated for speed — an exact count is a full scan of the whole book. The number the push promises is exact."
+                >
+                  · ≈<strong className="text-gray-700 dark:text-gray-200">{leadCount.toLocaleString()}</strong> leads
                   match
                 </span>
                 {activeFilterCount > 0 && (
@@ -2197,10 +2246,10 @@ export default function LeadMachinePage() {
               </table>
             </div>
 
-            {leadCount > PAGE_SIZE && (
+            {(hasNextPage || page > 0) && (
               <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
                 <span>
-                  {leadCount.toLocaleString()} leads · page {page + 1} of {totalPages}
+                  ≈{leadCount.toLocaleString()} leads · page {page + 1} of ≈{totalPages}
                 </span>
                 <div className="flex gap-2">
                   <button
@@ -2210,11 +2259,7 @@ export default function LeadMachinePage() {
                   >
                     Prev
                   </button>
-                  <button
-                    className="btn-ghost btn-sm"
-                    disabled={page + 1 >= totalPages}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
+                  <button className="btn-ghost btn-sm" disabled={!hasNextPage} onClick={() => setPage((p) => p + 1)}>
                     Next
                   </button>
                 </div>
