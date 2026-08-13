@@ -1117,6 +1117,16 @@ export default function LeadMachinePage() {
     return () => clearTimeout(t);
   }, [pushArmed]);
 
+  /* A tag typed into the box but not yet committed (no Enter / comma / blur)
+     still counts. Without this, typing a tag and clicking Push does NOTHING the
+     first time: the blur that commits the tag happens on the same mouse press
+     that lands on a still-disabled button, so the click is swallowed. */
+  const effectiveTags = useMemo(() => {
+    if (tags.length > 0) return tags;
+    const pending = kebab(tagDraft);
+    return pending ? [pending] : [];
+  }, [tags, tagDraft]);
+
   const addTag = (raw: string) => {
     const k = kebab(raw);
     if (!k) return;
@@ -1344,14 +1354,14 @@ export default function LeadMachinePage() {
     try {
       // The fn REQUIRES a non-empty tags[] — the auto tags it adds server-side
       // don't satisfy it, so the UI blocks the button until there's at least one.
-      if (tags.length === 0) throw new Error("Add at least one tag before pushing.");
+      if (effectiveTags.length === 0) throw new Error("Add at least one tag before pushing.");
 
       // How the set is expressed to the server:
       //   · a checkbox selection, or any set that fits, goes as explicit ids —
       //     that honours EVERY on-screen filter, search included;
       //   · a bigger set goes as server-side filters, which the fn re-runs and
       //     self-continues through — every filter here has a server equivalent.
-      const body: Record<string, unknown> = { action: "start", tags };
+      const body: Record<string, unknown> = { action: "start", tags: effectiveTags };
       if (retagMode) body.retag = true;
       // ALWAYS forward the status filter, even on the id path. The fn resolves
       // status as: filters.status → exactly that set; else retag → widens to
@@ -1444,7 +1454,7 @@ export default function LeadMachinePage() {
             : "Nothing eligible — every lead in this set was already pushed, or has no phone number.",
         );
       } else {
-        const tagList = [autoTypeTag, autoBatchTag, ...tags].filter(Boolean).join(", ");
+        const tagList = [autoTypeTag, autoBatchTag, ...effectiveTags].filter(Boolean).join(", ");
         setPushResult(
           (retagMode
             ? `Tagged ${pushed.toLocaleString()} of ${eligible.toLocaleString()} contacts already in VibeReach`
@@ -1471,9 +1481,9 @@ export default function LeadMachinePage() {
     loadLeads,
     plannedPush,
     selectedIds,
+    effectiveTags,
     retagMode,
     serverFilters,
-    tags,
     tooBigForIds,
     usingSelection,
   ]);
@@ -2023,9 +2033,9 @@ export default function LeadMachinePage() {
                       if (pushArmed) void runPush();
                       else setPushArmed(true);
                     }}
-                    disabled={pushRunning || plannedPush === 0 || tags.length === 0}
+                    disabled={pushRunning || plannedPush === 0 || effectiveTags.length === 0}
                     title={
-                      tags.length === 0
+                      effectiveTags.length === 0
                         ? "Add at least one campaign tag first — the push requires one"
                         : retagMode
                           ? "Add these tags to the contacts already in VibeReach"
@@ -2046,7 +2056,7 @@ export default function LeadMachinePage() {
                           ? `Tag ${plannedPush.toLocaleString()} already-pushed contacts`
                           : `Push ${plannedPush.toLocaleString()} to VibeReach`}
                   </button>
-                  {tags.length === 0 && (
+                  {effectiveTags.length === 0 && (
                     <span className="text-xs text-amber-600 dark:text-amber-400">
                       Add a campaign tag first — that tag is what the dialer targets.
                     </span>
