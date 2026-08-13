@@ -13,6 +13,7 @@ export type CampaignChannel =
   | "seo"
   | "social"
   | "trigger"
+  | "outbound_dial"
   | "other"
   // Legacy channel slugs kept so pre-existing rows keep rendering.
   | "real_time"
@@ -85,6 +86,9 @@ export const CHANNEL_META: Record<CampaignChannel, ChannelMeta> = {
   seo: { label: "SEO / Organic", short: "SEO", chip: "bg-lime-100 text-lime-700 dark:bg-lime-900/40 dark:text-lime-300" },
   social: { label: "Social", short: "SOC", chip: "bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300" },
   trigger: { label: "Trigger Leads", short: "TRG", chip: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" },
+  // Outbound dialing (the Lead Machine / PH setter floor). Already in use by
+  // PH-UCC-2026-001, which rendered as "Other" until this entry existed.
+  outbound_dial: { label: "Outbound Dial", short: "DIAL", chip: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300" },
   other: { label: "Other", short: "OTH", chip: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300" },
   // Legacy slugs → sensible labels/colors so old rows still render.
   real_time: { label: "Real-Time / Appointment", short: "RT", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" },
