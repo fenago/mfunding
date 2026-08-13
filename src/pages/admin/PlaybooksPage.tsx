@@ -2687,10 +2687,11 @@ function ExistingPositionsCard({ deal, onRefresh }: { deal: DealWithCustomer; on
 
    Dial campaigns also show their tag: for a setter working a lead the dialer just
    handed them, "which list did this come from" is the useful half, and the tag is
-   the only thing that answers it. The link is super-admin only because
-   /admin/campaigns is — a setter sees the chip, just not a door they can't open. */
+   the only thing that answers it. The link gates on the SAME flag the
+   /admin/campaigns route does (isAdmin) — a setter sees the chip, just not a door
+   they can't open. If that route's guard ever changes, this must move with it. */
 function CampaignChip({ campaign }: { campaign: Campaign }) {
-  const { isSuperAdmin } = useUserProfile();
+  const { isAdmin } = useUserProfile();
   const isDial = campaign.channel === "outbound_dial";
   const body = (
     <>
@@ -2707,7 +2708,7 @@ function CampaignChip({ campaign }: { campaign: Campaign }) {
       : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300");
   const title = `Attributed to ${campaign.name}${isDial && campaign.dial_tag ? ` — dialed on ${campaign.dial_tag}` : ""}`;
 
-  return isSuperAdmin ? (
+  return isAdmin ? (
     <Link to="/admin/campaigns" className={`${cls} hover:underline`} title={title}>
       {body}
     </Link>

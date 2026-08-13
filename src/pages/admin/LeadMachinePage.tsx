@@ -119,6 +119,20 @@ interface LeadRecord {
   pushed_at: string | null;
   push_tags: string[] | null;
   push_error: string | null;
+  /* EXTRAS — and the two are NOT the same shape. extra_phones holds OBJECTS
+     ({phone, label, line_type?}, label being the source CSV header like
+     "CELL PHONE"); extra_emails holds plain strings. Anything that treats them
+     symmetrically writes "[object Object]" into a CSV the owner mails out.
+     Both are strictly ADDITIONAL: the ingester seeds its dedupe set with the
+     primary, so the primary never appears here and "+2" means two more. */
+  extra_phones: ExtraPhone[] | null;
+  extra_emails: string[] | null;
+}
+
+interface ExtraPhone {
+  phone: string;
+  label?: string;
+  line_type?: string;
 }
 
 /* lead_push_jobs — one row per Supabase→GHL push run. The worker is resumable
@@ -138,7 +152,7 @@ const JOB_TERMINAL = new Set(["complete", "error", "canceled"]);
 const LEAD_SELECT =
   "id,batch_id,lead_type,first_name,last_name,company,phone,email,line_type,state,city,zip," +
   "revenue,employees,sic_description,filing_date,secured_party,is_dup_of_prior,status," +
-  "ghl_contact_id,pushed_at,push_tags,push_error";
+  "ghl_contact_id,pushed_at,push_tags,push_error,extra_phones,extra_emails";
 
 /* The three list types. `columns` is what the buyer's file is expected to carry —
    the ingester matches header names case/space-insensitively. */
@@ -297,6 +311,17 @@ function fmtPhone(p: string | null): string {
   const d = p.replace(/\D/g, "").slice(-10);
   if (d.length !== 10) return p;
   return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}
+
+/** The extra phone numbers, as bare strings. `extra_phones` holds OBJECTS, so
+ *  every consumer must come through here — joining the raw array writes
+ *  "[object Object]" into whatever it touches. */
+function extraPhoneList(l: LeadRecord): string[] {
+  return (l.extra_phones ?? []).map((p) => p?.phone).filter((p): p is string => !!p);
+}
+/** The extra emails. Already plain strings; wrapped for symmetry at call sites. */
+function extraEmailList(l: LeadRecord): string[] {
+  return (l.extra_emails ?? []).filter((e): e is string => !!e);
 }
 
 function fullName(l: LeadRecord): string {
@@ -1416,6 +1441,18 @@ export default function LeadMachinePage() {
      than dropped, so an owner looking at PH-UCC-2026-001 on the Campaigns page
      isn't left wondering why it's missing here. */
   const taggedCampaigns = useMemo(() => dialCampaigns.filter((c) => !!c.dial_tag), [dialCampaigns]);
+
+  /* dial_tag → campaign, for showing which campaign a pushed lead went out under.
+     Reuses the list the push panel already fetched — no extra round trip — and
+     keys on the TAG rather than lead_push_jobs.campaign_id because the tag lives
+     on the lead itself and survives the job row (the backend's own guidance). */
+  const campaignByTag = useMemo(() => {
+    const m = new Map<string, Campaign>();
+    taggedCampaigns.forEach((c) => {
+      if (c.dial_tag) m.set(c.dial_tag.toLowerCase(), c);
+    });
+    return m;
+  }, [taggedCampaigns]);
   const untaggedCampaigns = useMemo(() => dialCampaigns.filter((c) => !c.dial_tag), [dialCampaigns]);
   const pickedCampaign = useMemo(
     () => taggedCampaigns.find((c) => c.id === campaignId) ?? null,
@@ -1766,6 +1803,7 @@ export default function LeadMachinePage() {
               state: l.state ?? "",
               lead_type: l.lead_type ?? "",
               batch_code: batchOf(l),
+              extra_emails: extraEmailList(l).join(";"),
               tags: tagsOf(l),
             }))
           : rows.map((l) => ({
@@ -1785,6 +1823,8 @@ export default function LeadMachinePage() {
               sic_description: l.sic_description ?? "",
               filing_date: l.filing_date ?? "",
               secured_party: l.secured_party ?? "",
+              extra_phones: extraPhoneList(l).join(";"),
+              extra_emails: extraEmailList(l).join(";"),
               is_dup_of_prior: l.is_dup_of_prior ? "yes" : "no",
               status: l.status ?? "",
               pushed_at: l.pushed_at ?? "",
@@ -2433,7 +2473,7 @@ export default function LeadMachinePage() {
                   />
                   Has email
                 </label>
-                <span className="text-[10px] text-gray-400">Email + phone = two channels</span>
+                <span className="text-[10px] text-gray-400">Primary address only — not extras</span>
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Tag</label>
@@ -2885,6 +2925,16 @@ export default function LeadMachinePage() {
                           <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300">{fullName(l)}</td>
                           <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300 whitespace-nowrap">
                             {fmtPhone(l.phone)}
+                            {extraPhoneList(l).length > 0 && (
+                              <span
+                                className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-semibold bg-ocean-blue/10 text-ocean-blue"
+                                title={`${extraPhoneList(l).length} more number(s) on this lead: ${(l.extra_phones ?? [])
+                                  .map((p) => `${fmtPhone(p.phone)}${p.label ? ` (${p.label})` : ""}${p.line_type ? ` · ${p.line_type}` : ""}`)
+                                  .join(" · ")}`}
+                              >
+                                +{extraPhoneList(l).length}
+                              </span>
+                            )}
                             {l.line_type && (
                               <span
                                 className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
@@ -2900,6 +2950,14 @@ export default function LeadMachinePage() {
                           </td>
                           <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400 max-w-[14rem] truncate">
                             {l.email || "—"}
+                            {extraEmailList(l).length > 0 && (
+                              <span
+                                className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full font-semibold bg-ocean-blue/10 text-ocean-blue"
+                                title={`${extraEmailList(l).length} more address(es): ${extraEmailList(l).join(" · ")}`}
+                              >
+                                +{extraEmailList(l).length}
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-600 dark:text-gray-300">
                             {l.state || "—"}
@@ -2941,14 +2999,26 @@ export default function LeadMachinePage() {
                               <span className="text-gray-300 dark:text-gray-600">—</span>
                             ) : (
                               <div className="flex flex-wrap gap-1 max-w-[14rem]">
-                                {(l.push_tags ?? []).map((t) => (
-                                  <span
-                                    key={t}
-                                    className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-                                  >
-                                    {t}
-                                  </span>
-                                ))}
+                                {(l.push_tags ?? []).map((t) => {
+                                  // A tag that IS a campaign's dial_tag says so.
+                                  const camp = campaignByTag.get(t.toLowerCase());
+                                  return camp ? (
+                                    <span
+                                      key={t}
+                                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-200 font-semibold"
+                                      title={`Pushed under the dial campaign ${camp.name}${camp.code ? ` (${camp.code})` : ""} — tag ${t}`}
+                                    >
+                                      📣 {camp.code || camp.name}
+                                    </span>
+                                  ) : (
+                                    <span
+                                      key={t}
+                                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+                                    >
+                                      {t}
+                                    </span>
+                                  );
+                                })}
                               </div>
                             )}
                           </td>

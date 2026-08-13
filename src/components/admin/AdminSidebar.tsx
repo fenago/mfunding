@@ -207,7 +207,7 @@ const navGroups: NavGroup[] = [
       { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
       { name: "Lead Import", path: "/admin/lead-import", icon: ArrowUpTrayIcon, roles: ADMIN },
       { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
-      { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: SUPER },
+      { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: ADMIN },
       { name: "Budget Planner", path: "/admin/lead-budget", icon: CalculatorIcon, roles: SUPER },
       { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
       { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },

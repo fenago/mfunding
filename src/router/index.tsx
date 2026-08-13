@@ -495,10 +495,14 @@ export const routes: RouteObject[] = [
                   },
                 ],
               },
-              // Campaigns — spend & ROI tracking (super_admin only)
+              // Campaigns — spend & ROI tracking (admin + super_admin).
+              // Admins were locked out while the dial-campaign function and the
+              // campaigns RLS SELECT policy both admit them, so an admin could
+              // mint a dial campaign from the Lead Machine and then had nowhere to
+              // work its HotProspector setup checklist.
               {
                 path: "campaigns",
-                element: <SuperAdminProtectedRoute />,
+                element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <CampaignsPage /> }],
               },
               // Lead-buying budget calculator (super_admin only)
