@@ -1098,22 +1098,27 @@ export default function LeadMachinePage() {
 
     setLeads(rows);
 
-    /* The count is an ESTIMATE (planner stats) so the browse never pays for a
-       full scan. But an estimate that contradicts what we just fetched must
-       never reach the screen — "≈0 leads match" above 25 visible rows is worse
-       than slow. When it's absent, zero, or smaller than what this page already
-       proves exists, fall back to an exact count; if THAT fails too, floor it at
-       what we can prove and mark it as a minimum. */
+    /* THE COUNT, without ever running an expensive one.
+
+       House rule for this table: `authenticated` has statement_timeout=8s AND
+       RLS evaluates is_admin_or_super() per row, so any count whose plan touches
+       the whole book blows the limit no matter what indexes exist. An exact
+       count is therefore never worth attempting here.
+
+       Two cases cover everything:
+       · a SHORT page is the last page, so the total is already known exactly —
+         everything before it, plus what we just got. No query, and exact.
+       · a FULL page means there is more, so use the planner's estimate — but
+         only if it doesn't contradict what this page already proves exists.
+         Otherwise fall back to that provable floor.
+       Either way the number can never read ≈0 above a screen of rows. */
     const floor = page * PAGE_SIZE + rows.length;
-    if (count != null && count >= floor) {
+    if (rows.length < PAGE_SIZE) {
+      setLeadCount(floor);
+      setCountIsExact(true);
+    } else if (count != null && count > floor) {
       setLeadCount(count);
       setCountIsExact(false);
-      return;
-    }
-    const exact = await buildFilteredQuery("id", { count: "exact", head: true });
-    if (!exact.error && exact.count != null) {
-      setLeadCount(exact.count);
-      setCountIsExact(true);
     } else {
       setLeadCount(floor);
       setCountIsExact(false);
