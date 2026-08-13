@@ -43,9 +43,20 @@ export function canWrite(currentSource: string | null | undefined, incomingRank:
 /** Rank of a UCC writer. Convenience constant so UCC callers read clearly. */
 export const UCC_RANK = POSITIONS_SOURCE_RANK.ucc; // 1
 
+/** Rank of a bank-statements (underwriter) writer. */
+export const BANK_STATEMENTS_RANK = POSITIONS_SOURCE_RANK.bank_statements; // 2
+
 /** The set of existing_positions_source values a UCC writer (rank 1) is allowed to
  * overwrite: null (unset) or 'ucc'. Use for the race-safe DB UPDATE guard, e.g.
  *   .or("existing_positions_source.is.null,existing_positions_source.eq.ucc")
  * The string form is exported so the filter and the in-code check never drift. */
 export const UCC_OVERWRITABLE_OR_FILTER =
   "existing_positions_source.is.null,existing_positions_source.eq.ucc";
+
+/** The set of existing_positions_source values a bank-statements writer (rank 2, the
+ * underwriter) is allowed to overwrite: null (unset), 'ucc' (rank 1), or its own
+ * 'bank_statements' (rank 2) — but NEVER a human's rank-3 'manual'/'application'.
+ * Use for the race-safe DB UPDATE guard, mirroring canWrite(current, BANK_STATEMENTS_RANK)
+ * atomically. Exported so the filter and the in-code rank never drift. */
+export const BANK_STATEMENTS_OVERWRITABLE_OR_FILTER =
+  "existing_positions_source.is.null,existing_positions_source.in.(ucc,bank_statements)";

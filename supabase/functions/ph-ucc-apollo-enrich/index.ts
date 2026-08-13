@@ -100,7 +100,18 @@ Deno.serve(async (req) => {
     return json({ ok: true, skipped: true, reason: "ph_settings.apollo_enrich_enabled is false (secondary enrichment is opt-in)" });
   }
 
-  const rawLimit = num(payload.limit ?? url.searchParams.get("limit")) ?? DEFAULT_LIMIT;
+  // TARGETED SET (mirrors ph-ucc-skiptrace): pass `lead_ids: string[]` to enrich an
+  // EXACT set (the UI's filtered lead book passes the ids it shows, in batches). Hard-
+  // capped to HARD_MAX_LIMIT here too, so no caller can push more than the ceiling into
+  // a single call. The eligibility safety (traced_at + status + no double-spend) still
+  // applies to every id below, so an ineligible/already-checked id is silently dropped.
+  const leadIdsRaw = (payload as { lead_ids?: unknown }).lead_ids;
+  const leadIds = Array.isArray(leadIdsRaw)
+    ? leadIdsRaw.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, HARD_MAX_LIMIT)
+    : null;
+
+  // When lead_ids is present the default cap is the set size; otherwise DEFAULT_LIMIT.
+  const rawLimit = num(payload.limit ?? url.searchParams.get("limit")) ?? (leadIds ? leadIds.length : DEFAULT_LIMIT);
   const limit = Math.max(1, Math.min(HARD_MAX_LIMIT, Math.floor(rawLimit)));
   const force = payload.force === true || url.searchParams.get("force") === "true";
 
@@ -117,6 +128,10 @@ Deno.serve(async (req) => {
     .not("debtor_name", "is", null)
     .order("freshness_days", { ascending: true, nullsFirst: false })
     .limit(limit);
+  // Explicit set from the UI's filtered lead book — enrich exactly these ids (the
+  // status/traced_at/debtor_name safety above and the idempotent apollo_checked_at
+  // guard below still hold, so an ineligible or already-checked id is never charged).
+  if (leadIds && leadIds.length) q = q.in("id", leadIds);
   if (!force) q = q.is("apollo_checked_at", null);
   const { data: leads, error: leadErr } = await q;
   if (leadErr) return json({ error: `lead select failed: ${leadErr.message}` }, 500);
@@ -172,7 +187,9 @@ Deno.serve(async (req) => {
   }
 
   return json({
-    ok: true, provider: "apollo", checked, with_business_email: withEmail, with_owner_title: withTitle,
+    ok: true, provider: "apollo",
+    requested_limit: limit, requested_ids: leadIds ? leadIds.length : null,
+    checked, enriched: withEmail, with_business_email: withEmail, with_owner_title: withTitle,
     errored, elapsed_ms: Date.now() - started, per_lead: perLead,
   });
 });

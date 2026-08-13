@@ -32,6 +32,7 @@ import { reconcileDocumentType } from "../_shared/docClassify.ts";
 import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 import { getPlaidSettings } from "../_shared/plaid.ts";
+import { BANK_STATEMENTS_OVERWRITABLE_OR_FILTER } from "../_shared/positionsSource.ts";
 
 // ── PROVIDER-FAILURE PREDICATE ───────────────────────────────────────────────
 // Distinguishes "the AI provider is down / out of credit / misconfigured" from
@@ -3676,15 +3677,14 @@ Deno.serve(async (req) => {
     // anchored `activePositions` (count = `positionsCount`, each with its funder).
     // Stamp them onto the deal, upgrading a null / UCC estimate to verified truth.
     //
-    // SHARED PRECEDENCE (mirror supabase-backend's canWrite — replicated here,
-    // no shared helper exists in _shared yet):
+    // SHARED PRECEDENCE (_shared/positionsSource.ts — the single source of the rule):
     //   manual / application = 3, bank_statements = 2, ucc = 1, null = 0.
     // The underwriter is rank 2: it MAY overwrite null / 'ucc' and refresh its own
     // 'bank_statements', but must NEVER clobber a human's 'manual' / 'application'
-    // entry. The `.or(...)` below is the RACE-SAFE guard — enforced in the DB, so a
-    // human write that lands between other statements and this UPDATE cannot be
-    // overwritten (the WHERE simply matches zero rows). Best-effort: a failure here
-    // never sinks a run that already saved its version.
+    // entry. BANK_STATEMENTS_OVERWRITABLE_OR_FILTER is the RACE-SAFE guard — enforced
+    // in the DB, so a human write that lands between other statements and this UPDATE
+    // cannot be overwritten (the WHERE simply matches zero rows). Best-effort: a
+    // failure here never sinks a run that already saved its version.
     try {
       const detectedFunders = activePositions.map((p) => p.funder).filter((f) => !!f);
       const posPatch: Record<string, unknown> = {
@@ -3703,7 +3703,7 @@ Deno.serve(async (req) => {
         .eq("id", dealId)
         // Precedence guard: write only when the CURRENT source rank <= 2
         // (null / 'ucc' / 'bank_statements'); never over rank-3 'manual'/'application'.
-        .or("existing_positions_source.is.null,existing_positions_source.in.(ucc,bank_statements)");
+        .or(BANK_STATEMENTS_OVERWRITABLE_OR_FILTER);
       if (posErr) {
         console.error(`[underwrite-deal] verified-positions write failed for deal ${dealId}: ${posErr.message}`);
       }
