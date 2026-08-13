@@ -307,6 +307,21 @@ export default function PlaybooksPage() {
   // remains as a backstop for bookmarklets/automation.)
 
   const dealCampaign = deal ? campaigns.find((c) => c.id === deal.campaign_id) ?? null : null;
+
+  /* The campaigns list is loaded once at mount, but a deal can carry a campaign
+     that list has never seen: dial campaigns are minted from the Lead Machine
+     mid-session, and playbook-open-contact STAMPS one onto the deal at the moment
+     a setter opens it from the dialer. Without this refetch the header would show
+     the loud "No campaign — attach one" prompt over a deal that is, in fact,
+     attributed — telling a setter to fix something that isn't broken. Guarded per
+     campaign id so a genuinely deleted campaign can't spin a refetch loop. */
+  const refetchedCampaigns = useRef(new Set<string>());
+  useEffect(() => {
+    const id = deal?.campaign_id;
+    if (!id || dealCampaign || refetchedCampaigns.current.has(id)) return;
+    refetchedCampaigns.current.add(id);
+    listCampaigns().then(setCampaigns).catch(() => {});
+  }, [deal?.campaign_id, dealCampaign]);
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
   const { isSuperAdmin, profile, effectiveUserId } = useUserProfile();
   // Renewals are gated per closer: super_admin always, a closer by their flag,
@@ -2666,6 +2681,43 @@ function ExistingPositionsCard({ deal, onRefresh }: { deal: DealWithCustomer; on
   );
 }
 
+/* The campaign this deal is attributed to. Always the STAMPED one — it reads
+   deal.campaign_id, which is what every KPI join uses, so the chip can never
+   claim an attribution the deal doesn't actually carry.
+
+   Dial campaigns also show their tag: for a setter working a lead the dialer just
+   handed them, "which list did this come from" is the useful half, and the tag is
+   the only thing that answers it. The link is super-admin only because
+   /admin/campaigns is — a setter sees the chip, just not a door they can't open. */
+function CampaignChip({ campaign }: { campaign: Campaign }) {
+  const { isSuperAdmin } = useUserProfile();
+  const isDial = campaign.channel === "outbound_dial";
+  const body = (
+    <>
+      <MegaphoneIcon className="w-3 h-3" /> {campaignLabel(campaign)}
+      {isDial && campaign.dial_tag && (
+        <span className="font-mono text-[10px] opacity-70">{campaign.dial_tag}</span>
+      )}
+    </>
+  );
+  const cls =
+    "inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full " +
+    (isDial
+      ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300"
+      : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300");
+  const title = `Attributed to ${campaign.name}${isDial && campaign.dial_tag ? ` — dialed on ${campaign.dial_tag}` : ""}`;
+
+  return isSuperAdmin ? (
+    <Link to="/admin/campaigns" className={`${cls} hover:underline`} title={title}>
+      {body}
+    </Link>
+  ) : (
+    <span className={cls} title={title}>
+      {body}
+    </span>
+  );
+}
+
 function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
@@ -2978,12 +3030,7 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                   attached, a loud amber prompt (opens Edit lead → campaign picker)
                   when it isn't, so no deal quietly goes untracked. */}
               {campaign ? (
-                <span
-                  className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-                  title={`Attributed to ${campaign.name}`}
-                >
-                  <MegaphoneIcon className="w-3 h-3" /> {campaignLabel(campaign)}
-                </span>
+                <CampaignChip campaign={campaign} />
               ) : (
                 <button
                   onClick={openEditLead}
