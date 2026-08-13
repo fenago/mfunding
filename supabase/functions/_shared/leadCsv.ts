@@ -152,10 +152,49 @@ export function filingDate(
   return null;
 }
 
+/** USPS 2-letter codes: 50 states + DC + the territories that appear in lead files. */
+const USPS = new Set([
+  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS",
+  "KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY",
+  "NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV",
+  "WI","WY","DC","PR","VI","GU","AS","MP",
+]);
+
+const STATE_NAMES: Record<string, string> = {
+  "ALABAMA":"AL","ALASKA":"AK","ARIZONA":"AZ","ARKANSAS":"AR","CALIFORNIA":"CA",
+  "COLORADO":"CO","CONNECTICUT":"CT","DELAWARE":"DE","FLORIDA":"FL","GEORGIA":"GA",
+  "HAWAII":"HI","IDAHO":"ID","ILLINOIS":"IL","INDIANA":"IN","IOWA":"IA","KANSAS":"KS",
+  "KENTUCKY":"KY","LOUISIANA":"LA","MAINE":"ME","MARYLAND":"MD","MASSACHUSETTS":"MA",
+  "MICHIGAN":"MI","MINNESOTA":"MN","MISSISSIPPI":"MS","MISSOURI":"MO","MONTANA":"MT",
+  "NEBRASKA":"NE","NEVADA":"NV","NEW HAMPSHIRE":"NH","NEW JERSEY":"NJ","NEW MEXICO":"NM",
+  "NEW YORK":"NY","NORTH CAROLINA":"NC","NORTH DAKOTA":"ND","OHIO":"OH","OKLAHOMA":"OK",
+  "OREGON":"OR","PENNSYLVANIA":"PA","RHODE ISLAND":"RI","SOUTH CAROLINA":"SC",
+  "SOUTH DAKOTA":"SD","TENNESSEE":"TN","TEXAS":"TX","UTAH":"UT","VERMONT":"VT",
+  "VIRGINIA":"VA","WASHINGTON":"WA","WEST VIRGINIA":"WV","WISCONSIN":"WI","WYOMING":"WY",
+  "DISTRICT OF COLUMBIA":"DC","WASHINGTON DC":"DC","WASHINGTON D C":"DC",
+  "PUERTO RICO":"PR","US VIRGIN ISLANDS":"VI","VIRGIN ISLANDS":"VI","GUAM":"GU",
+  "AMERICAN SAMOA":"AS","NORTHERN MARIANA ISLANDS":"MP",
+};
+
+/**
+ * Normalize to a USPS 2-letter code, or NULL.
+ *
+ * Purchased files are dirty in this column: full names ("TEXAS"), trailing commas
+ * ("TX,"), the literal string "NULL", city names, bare numbers, and non-US values
+ * ("CANADA"). Storing those verbatim is worse than storing nothing, because a user
+ * filtering state=TX then silently MISSES the rows spelled "TEXAS" — a wrong answer
+ * that looks like a right one.
+ *
+ * So: recognized name or code → the code; anything else → NULL. Nothing is lost by
+ * nulling, because lead_records.raw keeps the original row verbatim.
+ */
 export function upperState(raw: string | null): string | null {
   if (!raw) return null;
-  const s = raw.trim().toUpperCase();
-  return /^[A-Z]{2}$/.test(s) ? s : s.slice(0, 32) || null;
+  // strip punctuation/whitespace noise, collapse inner runs ("N. CAROLINA" etc.)
+  const s = raw.toUpperCase().replace(/[^A-Z ]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!s || s === "NULL" || s === "NA" || s === "N A") return null;
+  if (s.length === 2) return USPS.has(s) ? s : null;
+  return STATE_NAMES[s] ?? null;
 }
 
 // ── Byte-accurate, quote-aware, UTF-8 record streamer ─────────────────────────
