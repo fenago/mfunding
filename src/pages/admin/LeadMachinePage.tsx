@@ -73,6 +73,10 @@ interface LeadBatch {
   errored?: number | null;
   skipped?: number | null;
   dup_of_prior?: number | null;
+  /* When the maintained counters were last recomputed. They're kept current by
+     the ingest/push functions; this only drifts if something else writes
+     lead_records, so it's shown as a quiet note, not a warning. */
+  counts_refreshed_at?: string | null;
 }
 
 type LeadRecordStatus = "loaded" | "pushed" | "skipped" | "error";
@@ -201,11 +205,6 @@ const EXPORT_WINDOW = 1000;
 /* PostgREST puts filters in the URL, so an `in.(...)` list has to stay short. */
 const ID_WINDOW = 300;
 
-/* A HEAD count scoped to one batch — served by the (batch_id, status) index. */
-function buildBatchCount(batchId: string) {
-  return supabase.from("lead_records").select("id", { count: "exact", head: true }).eq("batch_id", batchId);
-}
-
 /* ── Small helpers ── */
 
 /** YYYYMMDD in local time — the batch-code stamp. */
@@ -244,6 +243,14 @@ function fmtDate(d: string | null): string {
   const dt = new Date(d);
   if (isNaN(dt.getTime())) return "—";
   return dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" });
+}
+
+/** Date + time, for the "counts as of …" stamp. */
+function fmtDateTime(d: string | null): string {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return "—";
+  return dt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function fmtMoney(v: number | string | null): string {
@@ -853,16 +860,20 @@ export default function LeadMachinePage() {
 
   const [batchesError, setBatchesError] = useState<string | null>(null);
 
-  /* Read lead_batches DIRECTLY — three rows, instant.
-     NOT lead_batch_overview: that view runs a correlated aggregate over every
-     lead_records row (measured 10.3s on the live 250k book) and `authenticated`
-     carries statement_timeout=8s, so it fails 100% of the time at this size. It
-     failing is what rendered "No lists uploaded yet" over three healthy batches.
-     The per-batch live aggregates are fetched separately below, cheaply. */
+  /* Read the VIEW. It used to aggregate lead_records live per batch — 10.3s
+     against an 8s statement_timeout, so it failed 100% of the time and rendered
+     as "No lists uploaded yet". It now serves maintained counters off the 3-row
+     lead_batches table and never touches lead_records: measured 7.2ms.
+
+     Do NOT go back to counting per batch in the client: `count(*) where
+     batch_id=… and phone is not null` measured 4.5s PER BATCH even as superuser,
+     because it walks 80k rows — and under RLS each of those rows additionally
+     costs an is_admin_or_super() call. A selective predicate with a LIMIT is
+     cheap here; anything that touches the whole book is not. */
   const loadBatches = useCallback(async () => {
     setBatchesLoading(true);
     const { data, error } = await supabase
-      .from("lead_batches")
+      .from("lead_batch_overview")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(100);
@@ -874,7 +885,11 @@ export default function LeadMachinePage() {
       }
       // An error is NOT an empty list. Keep whatever we last had on screen and
       // say what went wrong — never fall through to the empty state.
-      setBatchesError(error.message || "could not load the batch list");
+      setBatchesError(
+        /timeout|57014|canceling statement/i.test(error.message || "")
+          ? "the batch list took too long and the server cut it off — try again"
+          : error.message || "could not load the batch list",
+      );
       return;
     }
     setBackendMissing(false);
@@ -882,37 +897,24 @@ export default function LeadMachinePage() {
     setBatches((data as LeadBatch[]) ?? []);
   }, []);
 
-  /* The live per-batch numbers the view used to supply (dialable / no-phone /
-     errored). Each is a counting query on the (batch_id, status) index, so it's
-     a few ms — and it's best-effort: if one fails the batch row just shows "—"
-     for that column instead of the whole table disappearing. */
-  const [batchStats, setBatchStats] = useState<Record<string, { dialable: number; skipped: number; errored: number }>>(
-    {},
-  );
-  useEffect(() => {
-    if (batches.length === 0) return;
-    let cancelled = false;
-    void (async () => {
-      const out: Record<string, { dialable: number; skipped: number; errored: number }> = {};
-      for (const b of batches) {
-        const countFor = async (build: (q: ReturnType<typeof buildBatchCount>) => typeof q) => {
-          const { count, error } = await build(buildBatchCount(b.id));
-          return error ? null : (count ?? 0);
-        };
-        const [dialable, skipped, errored] = await Promise.all([
-          countFor((q) => q.not("phone", "is", null)),
-          countFor((q) => q.eq("status", "skipped")),
-          countFor((q) => q.eq("status", "error")),
-        ]);
-        if (cancelled) return;
-        out[b.id] = { dialable: dialable ?? -1, skipped: skipped ?? -1, errored: errored ?? -1 };
+  /* The counters are maintained by the ingest/push functions, so anything that
+     writes lead_records outside them (a manual fix, a reset) leaves them stale.
+     This recalculates ONE batch on demand — it scans that batch (~3s on 85k),
+     which is why it's an explicit action and never on a timer. */
+  const [refreshingBatch, setRefreshingBatch] = useState<string | null>(null);
+  const recountBatch = useCallback(
+    async (batchId: string) => {
+      setRefreshingBatch(batchId);
+      const { error } = await supabase.rpc("lead_batch_refresh_counts", { p_batch_id: batchId });
+      setRefreshingBatch(null);
+      if (error) {
+        setBatchesError(`recount failed: ${error.message}`);
+        return;
       }
-      if (!cancelled) setBatchStats(out);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [batches]);
+      await loadBatches();
+    },
+    [loadBatches],
+  );
 
   useEffect(() => {
     void loadBatches();
@@ -1692,6 +1694,7 @@ export default function LeadMachinePage() {
                     <th className={th}>Dialable</th>
                     <th className={th}>Pushed</th>
                     <th className={th}>No phone</th>
+                    <th className={th}>Seen before</th>
                     <th className={th}>Status</th>
                     <th className={th}>Uploaded</th>
                   </tr>
@@ -1699,7 +1702,7 @@ export default function LeadMachinePage() {
                 <tbody>
                   {batchesLoading && batches.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="py-8 text-center text-gray-400">
+                      <td colSpan={11} className="py-8 text-center text-gray-400">
                         Loading…
                       </td>
                     </tr>
@@ -1708,7 +1711,7 @@ export default function LeadMachinePage() {
                        as "no lists uploaded" — that wording is reserved for a
                        result the server actually confirmed was empty. */
                     <tr>
-                      <td colSpan={10} className="py-6 px-4">
+                      <td colSpan={11} className="py-6 px-4">
                         <div className="flex flex-wrap items-center gap-2 text-sm text-rose-700 dark:text-rose-300">
                           <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
                           <span>
@@ -1723,7 +1726,7 @@ export default function LeadMachinePage() {
                     </tr>
                   ) : batches.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="py-8 text-center text-gray-400">
+                      <td colSpan={11} className="py-8 text-center text-gray-400">
                         No lists uploaded yet — start with the upload panel above.
                       </td>
                     </tr>
@@ -1742,7 +1745,7 @@ export default function LeadMachinePage() {
                          mean anything once the batch is terminal. Seen live:
                          a running batch read "20,000 read / 28,000 stored". */
                       const settled = !["uploaded", "ingesting"].includes(st);
-                      const stat = batchStats[b.id];
+
                       return (
                         <tr
                           key={b.id}
@@ -1771,32 +1774,30 @@ export default function LeadMachinePage() {
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold">
-                            {settled ? n0(b.ingested_rows).toLocaleString() : <span className="text-gray-400">—</span>}
+                            {settled ? n0(b.records).toLocaleString() : <span className="text-gray-400">—</span>}
                           </td>
                           <td
                             className="py-2.5 px-4 text-gray-900 dark:text-white font-semibold"
                             title="Has a phone number — the only rows the push can send"
                           >
-                            {stat && stat.dialable >= 0 ? (
-                              stat.dialable.toLocaleString()
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
+                            {settled ? n0(b.dialable).toLocaleString() : <span className="text-gray-400">—</span>}
                           </td>
                           <td className="py-2.5 px-4 text-emerald-600 dark:text-emerald-400 font-semibold">
-                            {n0(b.pushed_rows).toLocaleString()}
-                            {stat && stat.errored > 0 && (
+                            {n0(b.pushed).toLocaleString()}
+                            {n0(b.errored) > 0 && (
                               <span className="block text-[10px] text-rose-500">
-                                {stat.errored.toLocaleString()} errored
+                                {n0(b.errored).toLocaleString()} errored
                               </span>
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-gray-500 dark:text-gray-400">
-                            {stat && stat.skipped >= 0 ? (
-                              stat.skipped.toLocaleString()
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
+                            {settled ? n0(b.skipped).toLocaleString() : <span className="text-gray-400">—</span>}
+                          </td>
+                          <td
+                            className="py-2.5 px-4 text-gray-500 dark:text-gray-400"
+                            title="Phone already seen in an earlier batch (or in the UCC pool) — these DID load; it's a filter, not a rejection"
+                          >
+                            {settled ? n0(b.dup_of_prior).toLocaleString() : <span className="text-gray-400">—</span>}
                           </td>
                           <td className="py-2.5 px-4">
                             {!settled && n0(b.bytes_total) > 0 && (
@@ -1824,6 +1825,26 @@ export default function LeadMachinePage() {
                 </tbody>
               </table>
             </div>
+
+            {batches.length > 0 && batches[0].counts_refreshed_at && (
+              <p className="text-[11px] text-gray-400 flex flex-wrap items-center gap-2">
+                <span>Counts as of {fmtDateTime(batches[0].counts_refreshed_at)}.</span>
+                <span>
+                  Kept current by the ingest and push; recalculate one if something changed it outside them.
+                </span>
+                {batches.map((b) => (
+                  <button
+                    key={b.id}
+                    onClick={() => void recountBatch(b.id)}
+                    disabled={refreshingBatch != null}
+                    className="text-ocean-blue hover:underline disabled:opacity-50"
+                    title={`Recount ${b.batch_code} — scans that batch, a few seconds`}
+                  >
+                    {refreshingBatch === b.id ? `Recounting ${b.batch_code}…` : `Recount ${b.batch_code}`}
+                  </button>
+                ))}
+              </p>
+            )}
           </section>
 
           {/* ── 3. Lead browser ── */}
