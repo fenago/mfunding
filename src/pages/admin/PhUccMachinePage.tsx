@@ -1152,6 +1152,84 @@ function RadarCandidateRow({
   );
 }
 
+/* ── Raw purchased-lead files ──────────────────────────────────────────────
+   The three raw CSVs we bought, straight off the vendor — kept verbatim in the
+   private `lead-uploads` bucket under raw/ so anyone can pull the untouched
+   source. Bucket stays private: each download mints a short-lived signed URL,
+   which the storage RLS SELECT policy grants to admin/super_admin only. */
+const RAW_LEAD_FILES: { path: string; label: string; note: string; bytes: number }[] = [
+  {
+    path: "raw/aged-leads-2026-08-13.csv",
+    label: "Aged Leads 2026",
+    note: "Agentic Voice · 8.13.26",
+    bytes: 6799084,
+  },
+  {
+    path: "raw/trigger-leads-2026-03.csv",
+    label: "Trigger Leads — March 2026",
+    note: "Agentic Voice · 8.13.26",
+    bytes: 7851158,
+  },
+  {
+    path: "raw/ucc-leads-2026-03-04.csv",
+    label: "UCC Leads — March–April 2026",
+    note: "Agentic Voice · 8.13.26",
+    bytes: 17789587,
+  },
+];
+
+function fmtBytes(n: number): string {
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+}
+
+function RawLeadFiles() {
+  const [busyPath, setBusyPath] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const download = useCallback(async (path: string) => {
+    setBusyPath(path);
+    setErr(null);
+    const filename = path.split("/").pop() || "leads.csv";
+    const { data, error } = await supabase.storage
+      .from("lead-uploads")
+      .createSignedUrl(path, 3600, { download: filename });
+    setBusyPath(null);
+    if (error || !data?.signedUrl) {
+      setErr(error?.message || "Could not generate a download link for that file.");
+      return;
+    }
+    window.open(data.signedUrl, "_blank", "noopener");
+  }, []);
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Raw lead files</h2>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 divide-y divide-gray-100 dark:divide-gray-700">
+        {RAW_LEAD_FILES.map((f) => (
+          <div key={f.path} className="flex items-center justify-between gap-3 px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{f.label}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                {f.note} · {fmtBytes(f.bytes)} · CSV
+              </p>
+            </div>
+            <button
+              onClick={() => void download(f.path)}
+              disabled={busyPath === f.path}
+              className="btn-ghost btn-sm inline-flex items-center gap-1.5 shrink-0"
+              title="Download the raw CSV as purchased"
+            >
+              <ArrowDownTrayIcon className="w-4 h-4" />
+              {busyPath === f.path ? "Preparing…" : "Download"}
+            </button>
+          </div>
+        ))}
+      </div>
+      {err && <p className="text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+    </section>
+  );
+}
+
 export default function PhUccMachinePage() {
   const { isSuperAdmin } = useUserProfile();
   const [loading, setLoading] = useState(true);
@@ -2580,6 +2658,9 @@ export default function PhUccMachinePage() {
               </div>
             )}
           </section>
+
+          {/* ── 1b. Raw purchased-lead CSVs (untouched vendor files) ── */}
+          <RawLeadFiles />
 
           {/* ── 2. Machine funnel strip + honest gating banners ── */}
           <section className="space-y-3">
