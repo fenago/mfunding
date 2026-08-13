@@ -34,10 +34,18 @@ import {
   upperState, validEmail,
 } from "../_shared/leadCsv.ts";
 
-const BUDGET_MS = 50_000;   // stop consuming rows past this, then self-reinvoke
-const INSERT_BATCH = 1000;  // rows per insert round-trip
+// Window size is a RELIABILITY setting, not a speed one. At 50s/1000 rows the
+// real trigger file killed a worker with HTTP 546 (WORKER_LIMIT — the runtime
+// terminates the isolate for exceeding its memory/CPU budget). A killed worker
+// never runs our catch block, so the batch stayed 'ingesting' forever with no
+// reinvoke: alive-looking and actually dead. Smaller windows hand off long before
+// the isolate accumulates enough to be killed.
+const BUDGET_MS = 25_000;   // stop consuming rows past this, then self-reinvoke
+const INSERT_BATCH = 500;   // rows per insert round-trip
 const MIN_SPLIT = 50;       // stop halving a failing insert below this
 const CHECKPOINT_EVERY = 10; // flushes between byte_offset checkpoints
+/** A batch 'ingesting' with no progress for this long has lost its chain. */
+const STALL_MS = 150_000;
 const BUCKET = "lead-uploads";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -346,6 +354,34 @@ Deno.serve(async (req) => {
       if (!secret) return json({ error: "no webhook secret — cannot self-continue" }, 500);
       reinvoke(secret, batchId);
       return json({ ok: true, batch_id: batchId, resumed_from_byte: batch.byte_offset });
+    }
+
+    // ── sweep: the WATCHDOG that makes the reinvoke chain self-healing ──
+    // A self-reinvoke chain has one fatal weakness: if the runtime KILLS a worker
+    // (HTTP 546 WORKER_LIMIT, an OOM, a deploy mid-flight) no catch block runs, so
+    // nothing marks the batch failed and nothing schedules the next window — the
+    // batch sits in 'ingesting' forever. This finds those and restarts them from
+    // their last checkpoint. Wire it to a cron every few minutes; it is a no-op
+    // when every batch is healthy.
+    if (action === "sweep") {
+      const cutoff = new Date(Date.now() - STALL_MS).toISOString();
+      const { data: stalled, error: sErr } = await db.from("lead_batches")
+        .select("id,batch_code,byte_offset,updated_at")
+        .eq("status", "ingesting").lt("updated_at", cutoff);
+      if (sErr) throw new Error(`sweep query failed: ${sErr.message}`);
+      const rows = (stalled as { id: string; batch_code: string; byte_offset: number }[]) ?? [];
+      const secret = await webhookSecret(db);
+      if (!secret && rows.length) return json({ error: "no webhook secret — cannot restart" }, 500);
+      for (const b of rows) {
+        console.warn("[lead-file-ingest] sweep restarting stalled batch",
+          JSON.stringify({ batch_code: b.batch_code, byte_offset: b.byte_offset }));
+        await patchBatch(db, b.id, { message: `watchdog restart from byte ${b.byte_offset}` });
+        reinvoke(secret, b.id);
+      }
+      return json({
+        ok: true, restarted: rows.length,
+        batches: rows.map((b) => ({ batch_code: b.batch_code, byte_offset: b.byte_offset })),
+      });
     }
 
     // ── continue: one budget window, then reinvoke or finish ──
