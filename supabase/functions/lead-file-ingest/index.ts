@@ -30,8 +30,8 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 import {
   cell, filingDate, headerIndexNorm, headerNames, type LeadType, LEAD_TYPES,
-  normalizeLineType, normalizePhone, resolveColumns, splitDelimited, streamCsvRecords,
-  toInt, toNum, upperState, validEmail,
+  extraEmailsFor, extraPhonesFor, normalizeLineType, normalizePhone, resolveColumns,
+  resolveExtraColumns, splitDelimited, streamCsvRecords, toInt, toNum, upperState, validEmail,
 } from "../_shared/leadCsv.ts";
 
 // Window size is a RELIABILITY setting, not a speed one. At 50s/1000 rows the
@@ -106,11 +106,16 @@ async function patchBatch(db: SupabaseClient, id: string, patch: Record<string, 
 }
 
 /** Read the header line (one small Range request) and resolve the column map. */
-async function readHeader(url: string): Promise<{ cols: Record<string, number>; names: string[]; dataStart: number }> {
+async function readHeader(url: string): Promise<{
+  cols: Record<string, number>; names: string[]; dataStart: number;
+  extraCols: ReturnType<typeof resolveExtraColumns>;
+}> {
   for await (const { line, byteEnd } of streamCsvRecords(url, 0)) {
-    return { cols: resolveColumns(headerIndexNorm(line)), names: headerNames(line), dataStart: byteEnd };
+      const hdr = headerIndexNorm(line);
+      const cols = resolveColumns(hdr);
+      return { cols, names: headerNames(line), dataStart: byteEnd, extraCols: resolveExtraColumns(hdr, cols) };
   }
-  return { cols: {}, names: [], dataStart: 0 };
+  return { cols: {}, names: [], dataStart: 0, extraCols: { phones: [], emails: [] } };
 }
 
 type RecordRow = Record<string, unknown>;
@@ -156,21 +161,28 @@ async function insertChunk(db: SupabaseClient, rows: RecordRow[], depth = 0): Pr
 }
 
 /** Map one CSV record to a lead_records row. Never throws on bad data. */
-function mapRow(batch: Batch, fields: string[], cols: Record<string, number>, names: string[]): RecordRow {
+function mapRow(
+  batch: Batch, fields: string[], cols: Record<string, number>, names: string[],
+  extraCols: ReturnType<typeof resolveExtraColumns>,
+): RecordRow {
   const raw: Record<string, string> = {};
   for (let i = 0; i < names.length && i < fields.length; i++) {
     const v = (fields[i] ?? "").trim();
     if (v) raw[names[i] || `col${i}`] = v;
   }
   const phone = normalizePhone(cell(fields, cols, "phone"));
+  const email = validEmail(cell(fields, cols, "email"));
   return {
     batch_id: batch.id,
     lead_type: batch.lead_type,
     phone,
+    // Strictly ADDITIONAL — the primary is never repeated in these.
+    extra_phones: extraPhonesFor(fields, extraCols.phones, phone, cols.line_type),
+    extra_emails: extraEmailsFor(fields, extraCols.emails, email),
     line_type: normalizeLineType(cell(fields, cols, "line_type")),
     first_name: cell(fields, cols, "first_name"),
     last_name: cell(fields, cols, "last_name"),
-    email: validEmail(cell(fields, cols, "email")),
+    email,
     company: cell(fields, cols, "company"),
     title: cell(fields, cols, "title"),
     address: cell(fields, cols, "address"),
@@ -196,7 +208,7 @@ function mapRow(batch: Batch, fields: string[], cols: Record<string, number>, na
 async function processChunk(db: SupabaseClient, batch: Batch, budgetMs: number): Promise<{ done: boolean; scanned: number }> {
   if (!batch.storage_path) throw new Error("batch has no storage_path");
   const url = await signedUrl(db, batch.storage_path);
-  const { cols, names, dataStart } = await readHeader(url);
+  const { cols, names, dataStart, extraCols } = await readHeader(url);
   if (cols.phone == null) {
     throw new Error(`no phone column found in header (saw: ${names.slice(0, 20).join(", ")})`);
   }
@@ -227,7 +239,7 @@ async function processChunk(db: SupabaseClient, batch: Batch, budgetMs: number):
 
   for await (const { line, byteEnd } of streamCsvRecords(url, startByte)) {
     if (line.trim()) {
-      pending.push(mapRow(batch, splitDelimited(line, ","), cols, names));
+      pending.push(mapRow(batch, splitDelimited(line, ","), cols, names, extraCols));
       scanned++;
       if (pending.length >= INSERT_BATCH) {
         await flush();

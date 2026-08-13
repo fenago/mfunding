@@ -32,6 +32,7 @@
 // Compliance: an MCA is a purchase of future receivables, NEVER a loan.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, getContact, upsertContact, ghlErrorMessage,
   updateContactCustomFields,
@@ -81,6 +82,92 @@ interface Identity {
 // mcaScoreNum / buildPositionsPatch are shared with resync-deal-positions via
 // _shared/uccPositions.ts (single source of truth for how existing MCA positions
 // are resolved + computed).
+
+
+// ── Dial-campaign attribution ────────────────────────────────────────────────
+//
+// This closes the loop: lead-push-ghl stamps the campaign's dial_tag onto the GHL
+// contact, HP dials by that tag, the setter opens the Playbook, and the deal
+// becomes campaign-attributed — so the existing deals.campaign_id KPI model
+// (funded x 8 points) reports per-campaign revenue with no manual step.
+//
+// RULES (owner's, verbatim intent):
+//   • never overwrite a non-null campaign_id — FIRST ATTRIBUTION WINS.
+//   • if several dial tags match several campaigns, take the MOST RECENTLY
+//     CREATED — that is the one currently dialing them — and say it was ambiguous.
+//   • the response reports the STAMPED campaign (what deals.campaign_id actually
+//     holds), never the tag match, so the UI can never show an attribution the
+//     deal does not carry. When they differ, tag_matched_campaign_id says so.
+//
+// Best-effort throughout: attribution is analytics and must never break opening a
+// deal for a setter who is mid-call.
+interface DialCampaign { id: string; name: string; code: string | null; dial_tag: string }
+
+async function attributeCampaign(
+  db: SupabaseClient,
+  dealId: string,
+  contactId: string,
+  tags: string[],
+): Promise<Record<string, unknown>> {
+  try {
+    // What the deal already carries wins outright.
+    const { data: deal } = await db.from("deals").select("campaign_id").eq("id", dealId).maybeSingle();
+    const existing = (deal?.campaign_id as string | null) ?? null;
+
+    // Candidate tags: the contact's own tags, plus — when the contact wasn't
+    // re-read (phone/seed path) — whatever we pushed for this contact.
+    let candidates = tags.map((t) => t.trim().toLowerCase()).filter(Boolean);
+    if (!candidates.length) {
+      const { data: pushed } = await db.from("lead_records")
+        .select("push_tags").eq("ghl_contact_id", contactId)
+        .order("pushed_at", { ascending: false }).limit(1).maybeSingle();
+      candidates = ((pushed?.push_tags as string[] | null) ?? []).map((t) => t.toLowerCase());
+    }
+
+    let matched: DialCampaign | null = null;
+    let ambiguous = false;
+    if (candidates.length) {
+      const { data: camps } = await db.from("campaigns")
+        .select("id,name,code,dial_tag,created_at")
+        .not("dial_tag", "is", null).in("dial_tag", candidates)
+        .order("created_at", { ascending: false });
+      const rows = (camps ?? []) as unknown as (DialCampaign & { created_at: string })[];
+      if (rows.length) { matched = rows[0]; ambiguous = rows.length > 1; }
+    }
+
+    // Stamp only into a gap.
+    let stampedId = existing;
+    if (!existing && matched) {
+      const { error } = await db.from("deals").update({ campaign_id: matched.id }).eq("id", dealId);
+      if (!error) stampedId = matched.id;
+      else console.error("[playbook-open-contact] campaign stamp failed:", error.message);
+    }
+    if (!stampedId) {
+      return { campaign_attribution: { source: "none", ambiguous, matched_tags: candidates.filter((c) => matched?.dial_tag === c) } };
+    }
+
+    // Report what the deal ACTUALLY carries.
+    const { data: stamped } = await db.from("campaigns")
+      .select("id,name,code,dial_tag").eq("id", stampedId).maybeSingle();
+    if (!stamped) return { campaign_attribution: { source: "none", ambiguous, matched_tags: [] } };
+
+    const source = existing ? (matched && matched.id !== existing ? "preexisting_differs" : "preexisting") : "tag_match";
+    return {
+      campaign: stamped,
+      campaign_attribution: {
+        source,
+        ambiguous,
+        matched_tags: matched ? [matched.dial_tag] : [],
+        // Only present when the tag match is NOT what the deal carries, so the UI
+        // never has to reconcile two campaigns silently.
+        ...(matched && matched.id !== stampedId ? { tag_matched_campaign_id: matched.id, tag_matched_campaign_name: matched.name } : {}),
+      },
+    };
+  } catch (e) {
+    console.error("[playbook-open-contact] campaign attribution failed:", e instanceof Error ? e.message : String(e));
+    return {};
+  }
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -250,6 +337,12 @@ Deno.serve(async (req) => {
     // on resume. A human/underwriter value (manual/application/bank_statements,
     // rank >= 2) is NEVER touched — the .or() filter is the race-safe DB guard that
     // mirrors the shared canWrite() precedence in _shared/positionsSource.ts.
+    // The GHL contact's tags — how a dial campaign claims this merchant. Declared
+    // here because the EXISTING-DEAL path returns before the contact is ever
+    // re-read, so it stays empty there and attributeCampaign() falls back to what
+    // we pushed for this contact.
+    let contactTags: string[] = [];
+
     async function refreshDealPositions(dealId: string): Promise<void> {
       const patch = await positionsPatch();
       if (!patch) return;
@@ -357,7 +450,8 @@ Deno.serve(async (req) => {
       await refreshDealScore(d.id);
       if (d.customer_id) await backfillCustomerAddress(d.customer_id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
-      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc });
+      const attr1 = await attributeCampaign(db, d.id, contactId, contactTags);
+      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1 });
     }
 
     // ── 2) Resolve/create the CUSTOMER for this GHL contact. ──────────────────
@@ -385,6 +479,8 @@ Deno.serve(async (req) => {
         business = str(c.companyName);
         email = str(c.email);
         phone = str(c.phone);
+        // The contact's TAGS are how a dial campaign claims this merchant.
+        if (Array.isArray(c.tags)) contactTags = (c.tags as unknown[]).map((t) => String(t));
       } catch (e) {
         // GHL is best-effort for identity; if the contact can't be fetched and we
         // have no linked customer, we cannot build a usable lead.
@@ -474,7 +570,8 @@ Deno.serve(async (req) => {
       await refreshDealPositions(d.id);
       await refreshDealScore(d.id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
-      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc });
+      const attr1 = await attributeCampaign(db, d.id, contactId, contactTags);
+      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1 });
     }
 
     // ── 3) Create the DEAL, owned by the calling closer (if a closer). ────────
@@ -504,7 +601,8 @@ Deno.serve(async (req) => {
       .single();
     if (dealErr || !newDeal) return json({ ok: false, error: `Couldn't create the deal: ${dealErr?.message ?? "unknown"}` }, 500);
 
-    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, matched_ucc: matchedUcc });
+    const attr2 = await attributeCampaign(db, newDeal.id, contactId, contactTags);
+    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr2 });
   } catch (e) {
     console.error("[playbook-open-contact] fatal:", e);
     return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);

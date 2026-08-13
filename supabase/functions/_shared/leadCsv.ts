@@ -306,3 +306,89 @@ export async function* streamCsvRecords(
 }
 
 export { splitDelimited };
+
+// ── Additional phones / emails ────────────────────────────────────────────────
+//
+// Vendor files ship Phone 1 / Phone 2 / Cell, and the setter's first question
+// captures a cell + email that are almost always different from the list data.
+// Keeping only the first number throws away data the owner paid for.
+//
+// The PRIMARY is unchanged: the first phone-bearing column that yields a valid
+// NANP number is still the primary, exactly as before, so the batch dedupe key
+// and every existing row behave identically. Everything after it is an extra.
+//
+// Extra columns are found by HEADER, so a file with a single phone column
+// produces zero extras and is byte-for-byte the same ingest it was before.
+const EXTRA_PHONE_HEADERS = [
+  "PHONE 2", "PHONE2", "PHONE NUMBER 2", "SECONDARY PHONE", "ALT PHONE",
+  "ALTERNATE PHONE", "OTHER PHONE", "PHONE 3", "PHONE3",
+  "CELL", "CELL PHONE", "MOBILE", "MOBILE PHONE", "HOME PHONE", "WORK PHONE",
+  "BUSINESS PHONE", "DIRECT PHONE", "CONTACT PHONE",
+];
+const EXTRA_EMAIL_HEADERS = [
+  "EMAIL 2", "EMAIL2", "SECONDARY EMAIL", "ALT EMAIL", "ALTERNATE EMAIL",
+  "OTHER EMAIL", "EMAIL 3", "EMAIL3", "PERSONAL EMAIL", "WORK EMAIL",
+  "BUSINESS EMAIL", "CONTACT EMAIL",
+];
+
+export interface ExtraPhone { phone: string; line_type?: string; label?: string }
+
+/** Column indexes for every extra phone/email header present in this file.
+ * Resolved ONCE per file, not per row. Excludes whatever the primary uses. */
+export function resolveExtraColumns(
+  hdr: Record<string, number>, cols: Record<string, number>,
+): { phones: { idx: number; label: string }[]; emails: { idx: number; label: string }[] } {
+  const used = new Set<number>([cols.phone, cols.email].filter((i) => i != null) as number[]);
+  const phones: { idx: number; label: string }[] = [];
+  const emails: { idx: number; label: string }[] = [];
+  for (const h of EXTRA_PHONE_HEADERS) {
+    const idx = hdr[h];
+    if (idx != null && !used.has(idx)) { used.add(idx); phones.push({ idx, label: h }); }
+  }
+  for (const h of EXTRA_EMAIL_HEADERS) {
+    const idx = hdr[h];
+    if (idx != null && !used.has(idx)) { used.add(idx); emails.push({ idx, label: h }); }
+  }
+  return { phones, emails };
+}
+
+/** Extra phones for one row: normalized, de-duped against the primary and each
+ * other, order preserved. Returns [] when the file has no extra phone columns. */
+export function extraPhonesFor(
+  fields: string[], extras: { idx: number; label: string }[],
+  primary: string | null, lineTypeCol?: number,
+): ExtraPhone[] {
+  if (!extras.length) return [];
+  const seen = new Set<string>(primary ? [primary] : []);
+  const out: ExtraPhone[] = [];
+  for (const { idx, label } of extras) {
+    const raw = idx < fields.length ? fields[idx] : null;
+    const p = normalizePhone(raw ?? null);
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    const row: ExtraPhone = { phone: p, label };
+    // A column literally named CELL/MOBILE tells us the line type for free.
+    const fromHeader = label.includes("CELL") || label.includes("MOBILE") ? "Mobile" : null;
+    const lt = fromHeader
+      ?? (lineTypeCol != null && lineTypeCol < fields.length ? normalizeLineType(fields[lineTypeCol]) : null);
+    if (lt) row.line_type = lt;
+    out.push(row);
+  }
+  return out;
+}
+
+/** Extra emails for one row: validated, lowercased, de-duped against the primary. */
+export function extraEmailsFor(
+  fields: string[], extras: { idx: number; label: string }[], primary: string | null,
+): string[] {
+  if (!extras.length) return [];
+  const seen = new Set<string>(primary ? [primary] : []);
+  const out: string[] = [];
+  for (const { idx } of extras) {
+    const e = validEmail(idx < fields.length ? fields[idx] : null);
+    if (!e || seen.has(e)) continue;
+    seen.add(e);
+    out.push(e);
+  }
+  return out;
+}
