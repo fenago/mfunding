@@ -169,6 +169,92 @@ async function attributeCampaign(
   }
 }
 
+
+// ── Carry a lead's extra contact points onto the customer ────────────────────
+//
+// The Revenue Playbook reads additional emails/cells from customers.additional_emails
+// / additional_phones — NOT from GHL (GHL's upsert rejects additionalEmails
+// outright). So this is where list-supplied extras and setter-typed extras have
+// to meet, or they live in two parallel stores and the setter sees only half.
+//
+// MERGE, NEVER OVERWRITE. Values are only ever APPENDED, and only when absent:
+// existing entries are never deleted and never reordered, so a value a setter
+// typed always survives, and it stays where they expect it in the list. The
+// lead's PRIMARY phone/email is a candidate too — the number on the list is
+// frequently not the one the customer row already carries.
+//
+// Comparison is normalized (phones to last-10, emails lowercased) so the same
+// number stored in two formats doesn't get appended as a "new" one. Values are
+// APPENDED in normalized form, matching how lead_records stores them.
+//
+// Best-effort: enrichment must never break a setter opening a deal mid-call.
+async function mergeCustomerExtras(
+  db: SupabaseClient, customerId: string, contactId: string,
+): Promise<{ phones_added: number; emails_added: number } | null> {
+  try {
+    const { data: lead } = await db.from("lead_records")
+      .select("phone,email,extra_phones,extra_emails")
+      .eq("ghl_contact_id", contactId)
+      .order("pushed_at", { ascending: false }).limit(1).maybeSingle();
+    if (!lead) return null;
+
+    const { data: cust } = await db.from("customers")
+      .select("phone,email,additional_phones,additional_emails")
+      .eq("id", customerId).maybeSingle();
+    if (!cust) return null;
+
+    const last10 = (v: unknown): string | null => {
+      const d = String(v ?? "").replace(/\D+/g, "");
+      const t = d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+      return t.length === 10 ? t : null;
+    };
+    const lower = (v: unknown): string | null => {
+      const e = String(v ?? "").trim().toLowerCase();
+      return e.includes("@") ? e : null;
+    };
+
+    // Existing entries define what is already "known" — including the customer's
+    // OWN primary, so we never duplicate it into the additional list.
+    const existingPhones = (cust.additional_phones as string[] | null) ?? [];
+    const knownPhones = new Set(
+      [cust.phone, ...existingPhones].map(last10).filter(Boolean) as string[],
+    );
+    const existingEmails = (cust.additional_emails as string[] | null) ?? [];
+    const knownEmails = new Set(
+      [cust.email, ...existingEmails].map(lower).filter(Boolean) as string[],
+    );
+
+    const leadExtraPhones = ((lead.extra_phones as { phone?: string }[] | null) ?? [])
+      .map((p) => p?.phone);
+    const addPhones: string[] = [];
+    for (const cand of [lead.phone, ...leadExtraPhones]) {
+      const n = last10(cand);
+      if (n && !knownPhones.has(n)) { knownPhones.add(n); addPhones.push(n); }
+    }
+    const leadExtraEmails = ((lead.extra_emails as string[] | null) ?? []);
+    const addEmails: string[] = [];
+    for (const cand of [lead.email, ...leadExtraEmails]) {
+      const n = lower(cand);
+      if (n && !knownEmails.has(n)) { knownEmails.add(n); addEmails.push(n); }
+    }
+    if (!addPhones.length && !addEmails.length) return { phones_added: 0, emails_added: 0 };
+
+    // Append only — existing array order is preserved exactly.
+    const patch: Record<string, unknown> = {};
+    if (addPhones.length) patch.additional_phones = [...existingPhones, ...addPhones];
+    if (addEmails.length) patch.additional_emails = [...existingEmails, ...addEmails];
+    const { error } = await db.from("customers").update(patch).eq("id", customerId);
+    if (error) {
+      console.error("[playbook-open-contact] customer extras merge failed:", error.message);
+      return null;
+    }
+    return { phones_added: addPhones.length, emails_added: addEmails.length };
+  } catch (e) {
+    console.error("[playbook-open-contact] customer extras merge threw:", e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -451,7 +537,10 @@ Deno.serve(async (req) => {
       if (d.customer_id) await backfillCustomerAddress(d.customer_id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       const attr1 = await attributeCampaign(db, d.id, contactId, contactTags);
-      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1 });
+      // Enrichment, not creation — runs on an EXISTING deal too, because the
+      // value is having every number in front of the setter on this call.
+      const extras1 = d.customer_id ? await mergeCustomerExtras(db, d.customer_id, contactId) : null;
+      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1, ...(extras1 ? { customer_extras: extras1 } : {}) });
     }
 
     // ── 2) Resolve/create the CUSTOMER for this GHL contact. ──────────────────
@@ -571,7 +660,10 @@ Deno.serve(async (req) => {
       await refreshDealScore(d.id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       const attr1 = await attributeCampaign(db, d.id, contactId, contactTags);
-      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1 });
+      // Enrichment, not creation — runs on an EXISTING deal too, because the
+      // value is having every number in front of the setter on this call.
+      const extras1 = customerId ? await mergeCustomerExtras(db, customerId, contactId) : null;
+      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1, ...(extras1 ? { customer_extras: extras1 } : {}) });
     }
 
     // ── 3) Create the DEAL, owned by the calling closer (if a closer). ────────
@@ -602,7 +694,8 @@ Deno.serve(async (req) => {
     if (dealErr || !newDeal) return json({ ok: false, error: `Couldn't create the deal: ${dealErr?.message ?? "unknown"}` }, 500);
 
     const attr2 = await attributeCampaign(db, newDeal.id, contactId, contactTags);
-    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr2 });
+    const extras2 = customerId ? await mergeCustomerExtras(db, customerId, contactId) : null;
+    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr2, ...(extras2 ? { customer_extras: extras2 } : {}) });
   } catch (e) {
     console.error("[playbook-open-contact] fatal:", e);
     return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
