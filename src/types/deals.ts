@@ -211,10 +211,14 @@ export interface Deal {
   existing_funders?: string[] | null;
   /** Per-lien breakdown, one entry per open position. */
   existing_positions_detail?: { funder?: string | null; filed_date?: string | null; state?: string | null; filing_no?: string | null }[] | null;
-  /** Where the position data came from (e.g. "ucc"). */
+  /** Where the position data came from. Source precedence (highest → lowest):
+   *  'manual'/'application' (human) > 'bank_statements' (verified) > 'ucc' (estimate). */
   existing_positions_source?: string | null;
   /** When the position snapshot was last synced. */
   existing_positions_synced_at?: string | null;
+  /** 0–1 likelihood this merchant is a live MCA prospect (stacking + noise-guarded),
+   *  scored on the backing UCC lead. Reference only. */
+  mca_score?: number | null;
   /** Persisted AI lender analysis (tokens cost money — survives reloads). */
   ai_lender_recommendations: { summary: string; recommendations: unknown[] } | null;
   ai_recommended_at: string | null;

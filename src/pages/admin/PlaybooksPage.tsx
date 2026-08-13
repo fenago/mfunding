@@ -60,7 +60,7 @@ import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, type CloserOption } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, updateExistingPositions, resyncDealPositions, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
 import supabase from "../../supabase";
@@ -2326,6 +2326,346 @@ function ConnectBankBarChip({ dealId, customerId }: { dealId: string; customerId
   );
 }
 
+// ─────────────────── Existing MCA positions (display + manual edit + re-sync) ───────────────────
+// The merchant's current open advances. Seeded from UCC for UCC-sourced leads, but
+// non-UCC leads (Google Ads, live transfers) arrive with nothing — so staff can enter
+// them by hand here, and re-pull from UCC where a backing lead exists. A manual edit is
+// the HUMAN override: highest source precedence (manual/application > bank_statements >
+// ucc), stamped by updateExistingPositions. Read-only until you press Edit; never a
+// browser popup (inline editor only).
+
+const POSITION_SOURCE_META: Record<string, { label: string; cls: string; title: string }> = {
+  manual: {
+    label: "entered manually",
+    cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+    title: "A human entered these positions — the highest-trust source.",
+  },
+  application: {
+    label: "from application",
+    cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+    title: "Captured from the merchant's application — a human-stated source.",
+  },
+  bank_statements: {
+    label: "verified (bank statements)",
+    cls: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+    title: "Verified from the merchant's bank statements.",
+  },
+  ucc: {
+    label: "from UCC",
+    cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+    title: "Estimated from the UCC filing that sourced this lead — a starting point, not verified.",
+  },
+};
+
+interface LienRowDraft { funder: string; filed_date: string }
+
+function ExistingPositionsCard({ deal, onRefresh }: { deal: DealWithCustomer; onRefresh: () => void }) {
+  const existingPositions = deal.existing_positions ?? null;
+  const existingFunders = (deal.existing_funders ?? []).filter(Boolean);
+  const existingDetail = deal.existing_positions_detail ?? [];
+  const hasPositionData = existingPositions != null || existingFunders.length > 0 || existingDetail.length > 0;
+  const source = deal.existing_positions_source ?? null;
+  const sourceMeta = source ? POSITION_SOURCE_META[source] ?? null : null;
+  const syncedAt = deal.existing_positions_synced_at ?? null;
+  const mcaScore = deal.mca_score ?? null;
+
+  const [editing, setEditing] = useState(false);
+  const [count, setCount] = useState("");
+  const [fundersInput, setFundersInput] = useState("");
+  const [liens, setLiens] = useState<LienRowDraft[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncMsg, setResyncMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const openEditor = () => {
+    setCount(existingPositions != null ? String(existingPositions) : "");
+    setFundersInput(existingFunders.join(", "));
+    setLiens(existingDetail.map((p) => ({ funder: p.funder?.trim() || "", filed_date: (p.filed_date ?? "").slice(0, 10) })));
+    setError(null);
+    setResyncMsg(null);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    const funders = fundersInput.split(",").map((s) => s.trim()).filter(Boolean);
+    const detail = liens
+      .map((l) => ({ funder: l.funder.trim(), filed_date: l.filed_date.trim() }))
+      .filter((l) => l.funder || l.filed_date)
+      .map((l) => ({ funder: l.funder || null, filed_date: l.filed_date || null }));
+    const countTrim = count.trim();
+    let positions: number | null;
+    if (countTrim === "") {
+      // Left blank → infer from the detail rows / funder chips, else "unknown".
+      positions = detail.length || funders.length || null;
+    } else {
+      const n = Number(countTrim);
+      if (!Number.isFinite(n) || n < 0) { setError("Count must be a number (0 or more)."); return; }
+      positions = Math.round(n);
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await updateExistingPositions(deal.id, {
+        existing_positions: positions,
+        existing_funders: funders,
+        existing_positions_detail: detail,
+      });
+      setEditing(false);
+      onRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resync = async () => {
+    if (resyncing) return;
+    setResyncing(true);
+    setResyncMsg(null);
+    try {
+      const r = await resyncDealPositions(deal.id);
+      if (r.updated) {
+        const n = r.existing_positions ?? 0;
+        setResyncMsg({ ok: true, text: `Pulled ${n} position${n === 1 ? "" : "s"} from UCC.` });
+        onRefresh();
+      } else {
+        setResyncMsg({ ok: false, text: r.reason || "No change — nothing to pull." });
+      }
+    } finally {
+      setResyncing(false);
+    }
+  };
+
+  const addLien = () => setLiens((rows) => [...rows, { funder: "", filed_date: "" }]);
+  const setLien = (i: number, patch: Partial<LienRowDraft>) =>
+    setLiens((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const removeLien = (i: number) => setLiens((rows) => rows.filter((_, idx) => idx !== i));
+
+  const inputCls =
+    "text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 px-2 py-1";
+
+  return (
+    <div className="mt-2 rounded-lg border border-emerald-200 dark:border-emerald-800/60 bg-white/60 dark:bg-gray-800/40 px-2.5 py-2">
+      {/* Header row: label + count + source/freshness/score badges + actions */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          <BanknotesIcon className="w-3.5 h-3.5 text-gray-400" /> Existing MCA positions
+        </span>
+        {hasPositionData ? (
+          <span className="text-sm font-bold text-gray-900 dark:text-white">
+            {existingPositions != null ? existingPositions : existingDetail.length || existingFunders.length}
+            {existingPositions === 1 || (existingPositions == null && (existingDetail.length || existingFunders.length) === 1)
+              ? " open advance"
+              : " open advances"}
+          </span>
+        ) : (
+          <span className="text-xs text-gray-400 dark:text-gray-500">not on file</span>
+        )}
+
+        {/* Source + freshness — where these numbers came from, and how fresh. */}
+        {sourceMeta && (
+          <span
+            className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${sourceMeta.cls}`}
+            title={sourceMeta.title}
+          >
+            {sourceMeta.label}
+          </span>
+        )}
+        {syncedAt && (
+          <span className="text-[10px] text-gray-400 dark:text-gray-500" title="When this position snapshot was last set or synced">
+            as of {fmtDealDate(syncedAt)}
+          </span>
+        )}
+        {mcaScore != null && (
+          <span
+            className="text-[10px] text-gray-500 dark:text-gray-400"
+            title="Likelihood this merchant is a live MCA prospect (0–1), scored on the backing UCC lead"
+          >
+            MCA score {Number(mcaScore).toFixed(2)}
+          </span>
+        )}
+
+        {/* Actions — stay inline, no navigation. */}
+        {!editing && (
+          <span className="ml-auto inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={openEditor}
+              title="Enter or correct the merchant's existing positions by hand (your entry overrides UCC)"
+              className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-white dark:hover:bg-gray-700"
+            >
+              <PencilSquareIcon className="w-3 h-3" /> {hasPositionData ? "Edit positions" : "Add positions"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void resync()}
+              disabled={resyncing}
+              title="Re-pull positions from the backing UCC lead. Won't overwrite a manual or bank-statement entry."
+              className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-60"
+            >
+              <ArrowPathIcon className={`w-3 h-3 ${resyncing ? "animate-spin" : ""}`} /> {resyncing ? "Syncing…" : "Re-sync from UCC"}
+            </button>
+          </span>
+        )}
+      </div>
+
+      {/* Re-sync result — inline, no popup. */}
+      {resyncMsg && !editing && (
+        <p
+          className={`mt-1 text-[11px] ${
+            resyncMsg.ok ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"
+          }`}
+        >
+          {resyncMsg.ok ? "✓ " : "· "}
+          {resyncMsg.text}
+        </p>
+      )}
+
+      {/* Read-only display of funders + per-lien rows (when not editing). */}
+      {!editing && (
+        <>
+          {existingFunders.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {existingFunders.map((f, i) => (
+                <span
+                  key={i}
+                  className="text-[11px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+                >
+                  {f}
+                </span>
+              ))}
+            </div>
+          )}
+          {existingDetail.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {existingDetail.map((p, i) => (
+                <li key={i} className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-gray-600 dark:text-gray-300">
+                  <span className="font-medium text-gray-800 dark:text-gray-100">{p.funder?.trim() || "Funder unknown"}</span>
+                  {p.filed_date && <span className="text-gray-400">· filed {fmtDealDate(p.filed_date)}</span>}
+                  {p.state && <span className="text-gray-400">· {p.state}</span>}
+                  {p.filing_no && <span className="text-gray-400">· #{p.filing_no}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* Inviting empty state for a non-UCC lead with nothing on file. */}
+          {!hasPositionData && (
+            <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+              No positions on file —{" "}
+              <button type="button" onClick={openEditor} className="font-medium text-emerald-700 dark:text-emerald-300 hover:underline">
+                add them
+              </button>{" "}
+              so the funder shortlist knows the merchant's stack.
+            </p>
+          )}
+        </>
+      )}
+
+      {/* Inline editor. */}
+      {editing && (
+        <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
+              Open advances
+              <input
+                type="number"
+                min={0}
+                value={count}
+                onChange={(e) => { setCount(e.target.value); setError(null); }}
+                placeholder="e.g. 2"
+                className={`${inputCls} ml-1.5 w-16`}
+              />
+            </label>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-gray-600 dark:text-gray-300 mb-0.5">
+              Funders <span className="text-gray-400">(comma-separated)</span>
+            </label>
+            <input
+              type="text"
+              value={fundersInput}
+              onChange={(e) => setFundersInput(e.target.value)}
+              placeholder="Rapid Finance, Kapitus"
+              className={`${inputCls} w-full`}
+            />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                Per-lien detail <span className="text-gray-400">(optional)</span>
+              </span>
+              <button
+                type="button"
+                onClick={addLien}
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300 hover:underline"
+              >
+                <PlusIcon className="w-3 h-3" /> add lien
+              </button>
+            </div>
+            {liens.length > 0 && (
+              <div className="space-y-1">
+                {liens.map((l, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={l.funder}
+                      onChange={(e) => setLien(i, { funder: e.target.value })}
+                      placeholder="Funder"
+                      className={`${inputCls} flex-1 min-w-[8rem]`}
+                    />
+                    <input
+                      type="date"
+                      value={l.filed_date}
+                      onChange={(e) => setLien(i, { filed_date: e.target.value })}
+                      title="Filing date (optional)"
+                      className={inputCls}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeLien(i)}
+                      title="Remove this lien"
+                      className="text-gray-400 hover:text-red-600"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {error && <p className="text-[11px] text-red-600 dark:text-red-400">{error}</p>}
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={busy}
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {busy ? "Saving…" : "Save positions"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setEditing(false); setError(null); }}
+              disabled={busy}
+              className="text-[11px] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            >
+              cancel
+            </button>
+            <span className="text-[10px] text-gray-400 dark:text-gray-500">Saving marks these as manually entered.</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
@@ -2374,10 +2714,6 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
     .filter(Boolean)
     .join(", ");
   const fullAddress = [addrLine1, addrLine2].filter(Boolean).join(", ");
-  const existingPositions = deal.existing_positions ?? null;
-  const existingFunders = (deal.existing_funders ?? []).filter(Boolean);
-  const existingDetail = deal.existing_positions_detail ?? [];
-  const hasPositionData = existingPositions != null || existingFunders.length > 0 || existingDetail.length > 0;
 
   return (
     <div className="mb-6 rounded-xl border-2 border-emerald-400 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-900/15 p-4">
@@ -2494,50 +2830,11 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {fullAddress ? <span>{fullAddress}</span> : <span className="text-gray-400 dark:text-gray-500">No address on file</span>}
             </p>
 
-            {/* Existing MCA positions — the merchant's current open advances, seeded
-                from UCC. Read-only reference the setter sees the moment they open the
-                deal: how many, who, and each lien's filing date. */}
-            <div className="mt-2 rounded-lg border border-emerald-200 dark:border-emerald-800/60 bg-white/60 dark:bg-gray-800/40 px-2.5 py-2">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  <BanknotesIcon className="w-3.5 h-3.5 text-gray-400" /> Existing MCA positions
-                </span>
-                {hasPositionData ? (
-                  <span className="text-sm font-bold text-gray-900 dark:text-white">
-                    {existingPositions != null ? existingPositions : existingDetail.length || existingFunders.length}
-                    {existingPositions === 1 || (existingPositions == null && (existingDetail.length || existingFunders.length) === 1)
-                      ? " open advance"
-                      : " open advances"}
-                  </span>
-                ) : (
-                  <span className="text-xs text-gray-400 dark:text-gray-500">not on file</span>
-                )}
-              </div>
-              {existingFunders.length > 0 && (
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {existingFunders.map((f, i) => (
-                    <span
-                      key={i}
-                      className="text-[11px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
-                    >
-                      {f}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {existingDetail.length > 0 && (
-                <ul className="mt-1.5 space-y-0.5">
-                  {existingDetail.map((p, i) => (
-                    <li key={i} className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-gray-600 dark:text-gray-300">
-                      <span className="font-medium text-gray-800 dark:text-gray-100">{p.funder?.trim() || "Funder unknown"}</span>
-                      {p.filed_date && <span className="text-gray-400">· filed {fmtDealDate(p.filed_date)}</span>}
-                      {p.state && <span className="text-gray-400">· {p.state}</span>}
-                      {p.filing_no && <span className="text-gray-400">· #{p.filing_no}</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+            {/* Existing MCA positions — the merchant's current open advances. Seeded
+                from UCC for UCC-sourced leads; non-UCC leads (Google Ads, live
+                transfers) start empty. Staff can enter/correct by hand or re-pull
+                from UCC right here. */}
+            <ExistingPositionsCard deal={deal} onRefresh={onRefresh} />
 
             {/* Who gets paid for this deal. Unassigned = nobody, so it's a red
                 chip with the fix RIGHT HERE — a closer never leaves this screen. */}

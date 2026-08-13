@@ -851,6 +851,91 @@ export async function reassignDealCloser(
   return rows[0];
 }
 
+// ───────────────────── Existing MCA positions (manual + re-sync) ─────────────────────
+// A deal's "existing positions" (open advances the merchant carries) is seeded from
+// the UCC filing that sourced the lead — but non-UCC leads (Google Ads, live transfers)
+// arrive with nothing. Staff can enter or correct them by hand here, or re-pull from
+// UCC where a backing lead exists.
+
+export interface ExistingPositionsUpdate {
+  /** How many open advances the merchant carries (null = unknown). */
+  existing_positions: number | null;
+  /** Funder display names behind those advances. */
+  existing_funders: string[];
+  /** Optional per-lien breakdown. */
+  existing_positions_detail: { funder?: string | null; filed_date?: string | null; state?: string | null; filing_no?: string | null }[];
+}
+
+/**
+ * Manually set a merchant's existing MCA positions on a deal — the HUMAN override.
+ * Per the source-precedence rule (manual/application > bank_statements > ucc), a
+ * hand edit is the highest-trust source, so it stamps existing_positions_source =
+ * 'manual' and refreshes existing_positions_synced_at. Focused single-column update
+ * (deliberately NOT routed through updateDeal, which would also re-run the
+ * funded-deal commission hook). RLS on deals already fences who can write — staff on
+ * deals they can access, a closer on their own-book deal — the same policy every
+ * other deal write in this service relies on.
+ */
+export async function updateExistingPositions(
+  dealId: string,
+  input: ExistingPositionsUpdate,
+): Promise<Deal> {
+  const rows = await mustWrite<Deal>(
+    "update existing positions",
+    supabase
+      .from("deals")
+      .update({
+        existing_positions: input.existing_positions,
+        existing_funders: input.existing_funders,
+        existing_positions_detail: input.existing_positions_detail,
+        existing_positions_source: "manual",
+        existing_positions_synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", dealId),
+  );
+  return rows[0];
+}
+
+export interface ResyncPositionsResult {
+  ok: boolean;
+  /** True when the re-sync actually wrote fresh positions from UCC. */
+  updated: boolean;
+  existing_positions?: number | null;
+  /** Human explanation when nothing changed (e.g. "Kept your manual entry …",
+   *  "No UCC record for this merchant") or an error message. */
+  reason?: string;
+}
+
+/**
+ * Re-pull a deal's existing positions from its backing UCC lead via the
+ * resync-deal-positions edge function. The function is precedence-aware: it only
+ * overwrites when the deal's source is ucc/empty — never a manual or bank-statement
+ * entry — so a "kept your manual entry" result is expected, not an error. Never
+ * throws: a transport/edge failure comes back as ok:false with a reason to show.
+ */
+export async function resyncDealPositions(dealId: string): Promise<ResyncPositionsResult> {
+  try {
+    const { data, error } = await supabase.functions.invoke("resync-deal-positions", {
+      body: { deal_id: dealId },
+    });
+    if (error) {
+      const { message } = await parseEdgeError(error, "Re-sync failed");
+      return { ok: false, updated: false, reason: message };
+    }
+    const d = (data ?? {}) as Partial<ResyncPositionsResult>;
+    return {
+      ok: d.ok ?? true,
+      updated: !!d.updated,
+      existing_positions: d.existing_positions ?? null,
+      reason: d.reason,
+    };
+  } catch (e) {
+    const { message } = await parseEdgeError(e, "Re-sync failed");
+    return { ok: false, updated: false, reason: message };
+  }
+}
+
 /** True when a commission row already exists for this deal — reassigning after
  *  this point leaves the payout pointed at the PREVIOUS closer. */
 export async function dealHasCommission(dealId: string): Promise<boolean> {
