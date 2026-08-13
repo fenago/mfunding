@@ -1257,10 +1257,76 @@ export default function LeadMachinePage() {
      VibeReach. So that filter selects re-tag mode, and the panel says so. */
   const retagMode = fStatus === "pushed" || fStatus === "error";
 
+  /* ZERO-LATENCY EXACT COUNT for the common case — the default view and "one
+     list type" — read straight off the batch counters already on screen.
+
+     It has to equal what {action:'count'} returns, which is
+        status='loaded' AND phone IS NOT NULL [AND NOT is_dup_of_prior]
+     per batch. From the counters that is `dialable - pushed - errored`, and it
+     is only sound because of an invariant I checked on the live book: a row has
+     no phone if and only if its status is 'skipped' (0 exceptions in either
+     direction across all 249,923 rows). So every phone-bearing row is loaded,
+     pushed or errored, and subtracting the latter two leaves the loaded ones.
+
+     THREE THINGS FORCE A FALLBACK to the function, rather than a guess:
+     · any filter beyond list type / batch — the counters can't express those;
+     · a batch that isn't finished — its counters are written at finalize;
+     · exclude_dups against a batch with dup_of_prior > 0 — that counter covers
+       the whole batch regardless of status or phone, so it cannot be decomposed
+       into "dups that are also loaded and dialable". It reads 0 for every batch
+       today, and this deliberately does NOT lean on that staying true. */
+  const derivedCount = useMemo(() => {
+    const hasOtherFilters =
+      Boolean(searchTerm(dSearch)) ||
+      fStates.length > 0 ||
+      fLines.length > 0 ||
+      Boolean(dRevMin.trim()) ||
+      Boolean(dRevMax.trim()) ||
+      Boolean(dSecured.trim()) ||
+      Boolean(dTag.trim()) ||
+      fHasEmail ||
+      Boolean(fStatus);
+    if (hasOtherFilters || batches.length === 0) return null;
+
+    const chosen = fBatch
+      ? batches.filter((b) => b.id === fBatch)
+      : fTypes.length
+        ? batches.filter((b) => fTypes.includes(b.lead_type as LeadType))
+        : batches;
+    if (chosen.length === 0) return 0;
+    if (chosen.some((b) => !["ready", "failed"].includes((b.status || "").toLowerCase()))) return null;
+    if (fExcludeDups && chosen.some((b) => n0(b.dup_of_prior) > 0)) return null;
+
+    return chosen.reduce((sum, b) => sum + Math.max(0, n0(b.dialable) - n0(b.pushed) - n0(b.errored)), 0);
+  }, [
+    batches,
+    fBatch,
+    fTypes,
+    fExcludeDups,
+    fHasEmail,
+    fStatus,
+    fStates,
+    fLines,
+    dSearch,
+    dRevMin,
+    dRevMax,
+    dSecured,
+    dTag,
+  ]);
+
   /* Ask the function for the count whenever the filter set changes. Debounced,
      cancelled on change, and completely decoupled from the row fetch. */
   useEffect(() => {
     if (backendMissing || pushRunning) return;
+    // Derivable from counters already loaded: instant, exact, and it cannot fail
+    // — which is what makes the default view and a plain list-type pick reliable
+    // even when a whole-table count would time out.
+    if (derivedCount != null) {
+      setFilteredCount(derivedCount);
+      setCountingPush(false);
+      setCountError(false);
+      return;
+    }
     let cancelled = false;
     setCountingPush(true);
     setCountError(false);
@@ -1296,7 +1362,7 @@ export default function LeadMachinePage() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [serverFilters, fBatch, retagMode, backendMissing, pushRunning]);
+  }, [serverFilters, fBatch, retagMode, backendMissing, pushRunning, derivedCount]);
 
   /* The count the button promises. In re-tag mode already-pushed rows ARE the
      target, so the "still loaded" eligibility count doesn't apply. */
