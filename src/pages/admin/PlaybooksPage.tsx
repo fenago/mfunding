@@ -49,7 +49,7 @@ import PipelineFlow from "../../components/shared/PipelineFlow";
 import PortalAccessChip from "../../components/admin/PortalAccessChip";
 import PortalInviteButton from "../../components/admin/PortalInviteButton";
 import { DealDocumentsButton } from "../../components/admin/DealDocumentsModal";
-import CompanyVoiceChip from "../../components/admin/CompanyVoiceChip";
+import TextMerchantPanel from "../../components/admin/TextMerchantPanel";
 import AdHocSendMenu from "../../components/admin/AdHocSendMenu";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import { dateTimeET } from "../../utils/time";
@@ -2537,9 +2537,21 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                   application? Fed by the bar's single ghl-docs-status fetch above. */}
               {deal.ghl_contact_id && <DocsBackChips groups={docGroups} />}
 
-              {/* The shared company Google Voice line — call/text on the company
-                  number, with the staff-only login one reveal away. */}
-              <CompanyVoiceChip />
+              {/* TEXT the merchant without leaving the deal — inline compose that
+                  sends through TextMagic, with the connect-bank / upload / signing
+                  links one tap from the message body (same builders the email and
+                  copy paths use). The shared Google Voice sign-in — still how we
+                  CALL on the company number — lives in the panel's footer. */}
+              <TextMerchantPanel
+                dealId={deal.id}
+                merchantPhone={deal.customer?.phone}
+                additionalPhones={deal.customer?.additional_phones ?? []}
+                merchantEmail={deal.customer?.email}
+                merchantFirstName={deal.customer?.first_name}
+                businessName={deal.customer?.business_name}
+                ghlContactId={deal.ghl_contact_id}
+                onSent={onRefresh}
+              />
               {/* Every note on the deal — full history + add box, and new notes
                   post to the GHL contact. Notes used to log invisibly and never
                   reach GHL; this is where they live now. */}

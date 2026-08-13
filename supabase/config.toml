@@ -355,3 +355,10 @@ verify_jwt = true
 # verify_jwt = true; caller must own the closer row OR be admin (enforced in code).
 [functions.materialize-closer-doc]
 verify_jwt = true
+
+# textmagic-send: the Playbook's inline SMS compose — sends a closer's text to the
+# merchant through TextMagic (REST v2). verify_jwt = true PLUS an in-code staff role
+# check; closers are limited to deals they own or that are unassigned. Refuses any
+# message containing "loan" (an MCA is a purchase of future receivables).
+[functions.textmagic-send]
+verify_jwt = true

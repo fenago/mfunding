@@ -11,12 +11,12 @@ import supabase from "../supabase";
 import { parseEdgeError } from "./edgeError";
 
 /**
- * Mints a Connect-Bank link for the deal and writes it to the clipboard.
- * Returns the URL on success; throws an Error whose message is the server's real
+ * Mints a Connect-Bank link for the deal and RETURNS it — no clipboard.
+ * The SMS compose panel inserts the URL straight into the message body, so it
+ * needs the link, not a copy. Throws an Error whose message is the server's real
  * message (dug out by parseEdgeError) on failure.
  */
-export async function mintAndCopyConnectBankLink(dealId: string): Promise<string> {
-  let url: string;
+export async function mintConnectBankLink(dealId: string): Promise<string> {
   try {
     const { data, error } = await supabase.functions.invoke("plaid-mint-link", {
       body: { dealId },
@@ -25,11 +25,19 @@ export async function mintAndCopyConnectBankLink(dealId: string): Promise<string
     const d = data as { ok?: boolean; url?: string; error?: string } | null;
     if (d?.error) throw new Error(d.error);
     if (!d?.url) throw new Error("No Connect-Bank link was returned.");
-    url = d.url;
+    return d.url;
   } catch (e) {
     const { message } = await parseEdgeError(e, "Could not create a Connect-Bank link.");
     throw new Error(message);
   }
+}
+
+/**
+ * Mints a Connect-Bank link for the deal and writes it to the clipboard.
+ * Returns the URL on success; throws on failure (same errors as mintConnectBankLink).
+ */
+export async function mintAndCopyConnectBankLink(dealId: string): Promise<string> {
+  const url = await mintConnectBankLink(dealId);
   await navigator.clipboard.writeText(url);
   return url;
 }
