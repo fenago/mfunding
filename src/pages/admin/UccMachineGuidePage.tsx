@@ -1,9 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// How the UCC Lead Machine Works
+// How the UCC Harvester Works
 //
 // A faithful in-app port of the one-pager: Source → Match → Build & Score →
 // Skip-Trace → Activate. Static reference page — no data fetching. This is the
-// EXPLAINER; the operational console lives at /admin/ph-ucc ("UCC Machine").
+// EXPLAINER; the operational console lives at /admin/ph-ucc ("UCC Harvester").
 //
 // The design (Momentum navy/mint/gold tokens, the inline-SVG 5-stage pipeline,
 // the per-stage cards, the outside-services grid, the cost/gates strip) is
@@ -239,7 +239,7 @@ export default function UccMachineGuidePage() {
           <p className="eyebrow" style={{ marginTop: 14 }}>
             Internal · How the Machine Works, End to End
           </p>
-          <h1>The UCC Lead Machine</h1>
+          <h1>The UCC Harvester</h1>
           <p>
             Instead of buying stale, resold lead lists, this manufactures fresh MCA leads from free
             government records — finds businesses that already carry advances, figures out who funded
@@ -412,7 +412,7 @@ export default function UccMachineGuidePage() {
 
         <footer>
           Internal reference for Momentum Funding · the operational console lives at{" "}
-          <b>/admin/ph-ucc</b> ("UCC Machine") · current pool ~11,200 active MCA leads across
+          <b>/admin/ph-ucc</b> ("UCC Harvester") · current pool ~11,200 active MCA leads across
           FL/CA/CO/CT/OR, moving as weekly pulls run · MCA compliance: it's an advance / working
           capital, never a "loan" · not a merchant-facing document.
         </footer>

@@ -137,21 +137,21 @@ const LEAD_TYPES: {
     type: "ucc",
     label: "UCC Leads",
     blurb: "Merchants with an existing advance on file — the stacked-position list.",
-    tag: "ucc-lead",
+    tag: "lm-ucc",
     columns: "business name, owner first/last, phone, email, address, city, state, zip, filing date, secured party",
   },
   {
     type: "aged",
     label: "Aged Leads",
     blurb: "Older applications resold at a discount — volume dialing, low cost per lead.",
-    tag: "aged-lead",
+    tag: "lm-aged",
     columns: "business name, owner first/last, phone, email, city, state, zip, monthly revenue, lead date",
   },
   {
     type: "trigger",
     label: "Trigger Leads",
     blurb: "Businesses that just took an action signalling a capital need — dial these first.",
-    tag: "trigger-lead",
+    tag: "lm-trigger",
     columns: "business name, owner first/last, phone, email, city, state, zip, revenue, employees, SIC description",
   },
 ];
@@ -159,17 +159,17 @@ const LEAD_TYPES: {
 const TYPE_META: Record<string, { label: string; tag: string; chip: string }> = {
   ucc: {
     label: "UCC",
-    tag: "ucc-lead",
+    tag: "lm-ucc",
     chip: "bg-ocean-blue/10 text-ocean-blue",
   },
   aged: {
     label: "Aged",
-    tag: "aged-lead",
+    tag: "lm-aged",
     chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
   },
   trigger: {
     label: "Trigger",
-    tag: "trigger-lead",
+    tag: "lm-trigger",
     chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
   },
 };
@@ -762,7 +762,7 @@ function ProcessStrip() {
     {
       key: "push",
       title: "Tag + Push",
-      sub: "auto type tag + batch tag, plus your campaign tag",
+      sub: "lm-<type> + batch tag (inert), plus your campaign tag — that one dials",
       chip: "⬅ tags are applied HERE",
       chipClass: "bg-amber-500 text-white",
       tone: "border-amber-400 dark:border-amber-500 bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-400",
@@ -822,8 +822,8 @@ function ProcessStrip() {
           different campaigns with different tags.
         </li>
         <li>
-          • Every pushed lead always carries its <strong>type tag + batch tag</strong> automatically, plus your campaign
-          tag — so everything stays traceable.
+          • Every pushed lead always carries its <strong>lm-type tag + batch tag</strong> automatically — those are
+          provenance and dial nothing — plus your campaign tag, which is the one a dialer campaign targets.
         </li>
       </ul>
     </section>
@@ -1549,9 +1549,13 @@ export default function LeadMachinePage() {
           <code className="px-1 rounded bg-white/70 dark:bg-gray-800">UCC-{todayCode()}</code>,{" "}
           <code className="px-1 rounded bg-white/70 dark:bg-gray-800">AGED-{todayCode()}</code>,{" "}
           <code className="px-1 rounded bg-white/70 dark:bg-gray-800">TRIG-{todayCode()}</code>. Every pushed contact
-          gets the <strong>type tag</strong> (<code>ucc-lead</code> / <code>aged-lead</code> / <code>trigger-lead</code>
-          ), the <strong>batch tag</strong>, plus <strong>your campaign tags</strong>. HotProspector campaigns dial by
-          tag, so the tags you add here are how a list becomes a dial session.
+          gets the <strong>type tag</strong> (<code>lm-ucc</code> / <code>lm-aged</code> / <code>lm-trigger</code>),
+          the <strong>batch tag</strong>, plus <strong>your campaign tags</strong>.
+        </p>
+        <p>
+          The <code>lm-*</code> tags are <strong>provenance only — they are inert and dial nothing</strong>. Dialing is
+          driven <strong>only by the campaign tag you type</strong>, so a list sits harmlessly in VibeReach until you
+          point a HotProspector campaign at your own tag.
         </p>
         <p>
           <strong className="text-gray-800 dark:text-gray-100">Exports</strong> follow the same filters as the push, and
@@ -2014,9 +2018,10 @@ export default function LeadMachinePage() {
                   />
                 </div>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                  These tags drive HotProspector: campaigns dial by tag. Tags are forced to lowercase-kebab. The type tag
-                  and batch tag are added automatically — <strong>at least one tag of your own is required</strong>, so
-                  every push is traceable to a campaign.
+                  These tags drive HotProspector: campaigns dial by tag. Tags are forced to lowercase-kebab. The
+                  <code>lm-*</code> type tag and the batch tag are added automatically and are{" "}
+                  <strong>provenance only — neither one dials anything</strong>. Dialing happens only against a tag you
+                  point a campaign at, which is why <strong>at least one tag of your own is required</strong>.
                 </p>
                 {retagMode && (
                   <p className="text-[11px] text-amber-700 dark:text-amber-300">

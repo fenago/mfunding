@@ -211,7 +211,7 @@ const STEPS = [
     ),
   },
   {
-    where: "UCC Machine",
+    where: "UCC Harvester",
     cls: "w-list",
     body: (
       <>
@@ -803,7 +803,7 @@ export default function DialingMachinePage() {
             </div>
             <ol>
               <li>
-                <b>UCC Machine (/admin/ph-ucc)</b> — <b>filter</b> the leads you want (Lead heat,
+                <b>UCC Harvester (/admin/ph-ucc)</b> — <b>filter</b> the leads you want (Lead heat,
                 Confidence = Confirmed / High, state), <b>skip-trace</b> the filtered set (BatchData{" "}
                 <b>~$0.06/lead</b> — fills phone + email; <b>DNC and TCPA-litigator numbers are
                 suppressed automatically</b>), then <b>export</b>.
@@ -859,12 +859,12 @@ export default function DialingMachinePage() {
             </ol>
 
             <div className="opt second">
-              Option 2 — ask Claude / engineering to push it by API (what we do for UCC Machine
+              Option 2 — ask Claude / engineering to push it by API (what we do for UCC Harvester
               batches)
             </div>
             <ol>
               <li>
-                Say: <b>"push batch X to GHL with tag Y."</b> The UCC Machine's skip-traced leads get{" "}
+                Say: <b>"push batch X to GHL with tag Y."</b> The UCC Harvester's skip-traced leads get{" "}
                 <b>upserted into the MFunding.net location by phone/email</b> with the batch tag
                 applied — <b>no CSV handling, no manual mapping, no duplicate merchants</b>.
               </li>

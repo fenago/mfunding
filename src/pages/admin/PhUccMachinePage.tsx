@@ -26,7 +26,7 @@ import { getSetting, saveSetting } from "@/services/platformService";
 import { useUserProfile } from "@/context/UserProfileContext";
 
 /* ------------------------------------------------------------------ */
-/* PH — UCC Machine                                                    */
+/* PH — UCC Harvester                                                  */
 /* Internal dashboard for the outbound UCC lead engine: per-state      */
 /* source health, the ingest→ready→loaded funnel, a ranked lead        */
 /* browser, the funder-alias matcher dictionary, and freshness SLA.    */
@@ -2541,7 +2541,7 @@ export default function PhUccMachinePage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <RectangleStackIcon className="w-6 h-6 text-ocean-blue" /> PH — UCC Machine
+            <RectangleStackIcon className="w-6 h-6 text-ocean-blue" /> PH — UCC Harvester
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">
             State UCC filings → debtors → MCA-matched leads → ready to load. Source health, the ingest funnel, and the
@@ -2568,7 +2568,7 @@ export default function PhUccMachinePage() {
           <RectangleStackIcon className="w-10 h-10 mx-auto text-gray-300 dark:text-gray-600" />
           <h2 className="mt-3 font-semibold text-gray-900 dark:text-white">Backend not deployed yet</h2>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400 max-w-md mx-auto">
-            The UCC Machine tables (<code>ph_ucc_sources</code>, <code>ph_ucc_leads</code>) aren't live yet. This
+            The UCC Harvester tables (<code>ph_ucc_sources</code>, <code>ph_ucc_leads</code>) aren't live yet. This
             dashboard will populate automatically once the ingest backend is deployed.
           </p>
         </div>

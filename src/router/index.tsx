@@ -546,7 +546,7 @@ export const routes: RouteObject[] = [
                 path: "dialing-machine",
                 element: <DialingMachinePage />,
               },
-              // How the UCC Lead Machine Works — the Source → Match → Build →
+              // How the UCC Harvester Works — the Source → Match → Build →
               // Skip-Trace → Activate one-pager. This is the EXPLAINER; the
               // operational console is "ph-ucc" above. Same no-extra-guard
               // treatment as the dialing-machine page: every staff role reads it,
@@ -728,7 +728,7 @@ export const routes: RouteObject[] = [
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <PhSetterPlaybookPage /> }],
               },
-              // PH — UCC Machine — the outbound UCC lead engine dashboard. Same
+              // PH — UCC Harvester — the outbound UCC lead engine dashboard. Same
               // admin-only guard + closer-lens treatment as PH Setters.
               {
                 path: "ph-ucc",
@@ -737,7 +737,7 @@ export const routes: RouteObject[] = [
               },
               // Lead Machine — purchased-list pipeline (upload CSV → Supabase →
               // filter/tag → push into VibeReach for the dialer). Same admin-only
-              // guard + closer-lens treatment as the UCC Machine it sits beside.
+              // guard + closer-lens treatment as the UCC Harvester it sits beside.
               {
                 path: "lead-machine",
                 element: <AdminOnlyProtectedRoute />,

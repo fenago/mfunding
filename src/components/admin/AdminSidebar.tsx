@@ -113,11 +113,11 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/lender-catalog", // ADMIN-roled below, so pure closers still never see it
   "/admin/rnd", // R&D game plan (roles: ADMIN) — Carlos manages the build-out too; pure closers excluded via roles
   "/admin/ph-setters", // PH Setter Playbook (roles: ADMIN) — same lens treatment as R&D; pure closers excluded via roles
-  "/admin/ph-ucc", // PH UCC Machine (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
+  "/admin/ph-ucc", // PH UCC Harvester (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
   "/admin/lead-machine", // Lead Machine (roles: ADMIN) — purchased-list upload → tag → VibeReach push; pure closers excluded via roles
   "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — onboarding reference, every staff role
-  "/admin/ucc-machine-guide", // 🔗 How the UCC Machine Works — the sibling one-pager, every staff role
+  "/admin/ucc-machine-guide", // 🔗 How the UCC Harvester Works — the sibling one-pager, every staff role
   "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
 ]);
 
@@ -136,9 +136,9 @@ const navGroups: NavGroup[] = [
       // PH Setter Playbook — the outbound-setter console. Admin + super_admin
       // (matches R&D); admins with a closer row see it through the lens.
       { name: "PH Setters", path: "/admin/ph-setters", icon: PhoneArrowUpRightIcon, roles: ADMIN },
-      // UCC Machine — outbound UCC lead engine dashboard. Directly after PH
+      // UCC Harvester — outbound UCC lead engine dashboard. Directly after PH
       // Setters (owner-specified order); same ADMIN gating + closer lens.
-      { name: "UCC Machine", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
+      { name: "UCC Harvester", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
       // Lead Machine — the purchased-list pipeline (upload a bought CSV, filter
       // it, tag it, push it into VibeReach for the dialer). Sits next to the UCC
       // Machine because both feed the same dial floor; same ADMIN gating + lens.
@@ -151,13 +151,13 @@ const navGroups: NavGroup[] = [
       // OPS (every staff role) + in the closer lens, same as the Funder Cheat
       // Sheet: it's reference material, not a management surface.
       { name: "Dialing Machine", path: "/admin/dialing-machine", icon: ShareIcon, roles: OPS },
-      // How the UCC Machine Works — the sibling one-pager (Source → Match →
+      // How the UCC Harvester Works — the sibling one-pager (Source → Match →
       // Build → Skip-Trace → Activate). The owner wants the two explainers
       // adjacent, so it sits immediately after Dialing Machine. Same OPS gating:
       // it's reference material every staff role reads, and it's the EXPLAINER —
-      // the operational console is "UCC Machine" (/admin/ph-ucc) above.
+      // the operational console is "UCC Harvester" (/admin/ph-ucc) above.
       {
-        name: "UCC Machine — Guide",
+        name: "UCC Harvester — Guide",
         path: "/admin/ucc-machine-guide",
         icon: CircleStackIcon,
         roles: OPS,
