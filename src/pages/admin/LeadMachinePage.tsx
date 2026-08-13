@@ -949,7 +949,7 @@ export default function LeadMachinePage() {
   }, [anyIngesting, loadBatches]);
 
   /* ── Lead browser filters ── */
-  const [fType, setFType] = useState<"" | LeadType>("");
+  const [fTypes, setFTypes] = useState<LeadType[]>([]);
   const [fBatch, setFBatch] = useState("");
   const [fSearch, setFSearch] = useState("");
   const [fStates, setFStates] = useState<string[]>([]);
@@ -986,7 +986,7 @@ export default function LeadMachinePage() {
 
   const activeFilterCount = useMemo(() => {
     let n = 0;
-    if (fType) n++;
+    if (fTypes.length) n++;
     if (fBatch) n++;
     if (dSearch.trim()) n++;
     if (fStates.length) n++;
@@ -999,10 +999,10 @@ export default function LeadMachinePage() {
     if (dTag.trim()) n++;
     if (!fExcludeDups) n++; // "include duplicates" is the deviation from default
     return n;
-  }, [fType, fBatch, dSearch, fStates, fLines, dRevMin, dRevMax, fStatus, fHasEmail, dSecured, dTag, fExcludeDups]);
+  }, [fTypes, fBatch, dSearch, fStates, fLines, dRevMin, dRevMax, fStatus, fHasEmail, dSecured, dTag, fExcludeDups]);
 
   const clearFilters = useCallback(() => {
-    setFType("");
+    setFTypes([]);
     setFBatch("");
     setFSearch("");
     setFStates([]);
@@ -1032,7 +1032,7 @@ export default function LeadMachinePage() {
         // Next button, the export walk, the push id-gather — would silently
         // duplicate some rows and skip others. The PK makes the order total.
         .order("id", { ascending: true });
-      if (fType) q = q.eq("lead_type", fType);
+      if (fTypes.length) q = q.in("lead_type", fTypes);
       if (fBatch) q = q.eq("batch_id", fBatch);
       if (fStates.length) q = q.in("state", fStates);
       if (fLines.length) q = q.in("line_type", fLines);
@@ -1054,7 +1054,7 @@ export default function LeadMachinePage() {
       return q;
     },
     [
-      fType,
+      fTypes,
       fBatch,
       fStates,
       fLines,
@@ -1125,7 +1125,7 @@ export default function LeadMachinePage() {
     setPage(0);
     setSelectedIds(new Set());
   }, [
-    fType,
+    fTypes,
     fBatch,
     dSearch,
     fStates,
@@ -1236,7 +1236,7 @@ export default function LeadMachinePage() {
      explicit id list still pushes as exactly what's on screen. */
   const serverFilters = useMemo(() => {
     const f: Record<string, unknown> = {};
-    if (fType) f.lead_type = fType;
+    if (fTypes.length) f.lead_type = fTypes; // the fn accepts string | string[]
     if (fStates.length) f.state = fStates; // the fn accepts string | string[]
     if (fLines.length) f.line_type = fLines;
     if (fStatus) f.status = fStatus;
@@ -1248,7 +1248,7 @@ export default function LeadMachinePage() {
     if (searchTerm(dSearch)) f.search = searchTerm(dSearch);
     if (fExcludeDups) f.exclude_dups = true;
     return f;
-  }, [fType, fStates, fLines, fStatus, fHasEmail, dRevMin, dRevMax, dSecured, dTag, dSearch, fExcludeDups]);
+  }, [fTypes, fStates, fLines, fStatus, fHasEmail, dRevMin, dRevMax, dSecured, dTag, dSearch, fExcludeDups]);
 
   /* RE-TAG. A normal push drains rows still marked `loaded` — which is exactly
      what makes it un-double-pushable, and also means it would find nothing in a
@@ -1305,7 +1305,7 @@ export default function LeadMachinePage() {
 
   /* The auto tags the edge fn adds server-side, shown as fixed chips so the
      closer/owner sees the full tag set before firing. */
-  const autoTypeTag = fType ? TYPE_META[fType]?.tag : null;
+  const autoTypeTag = fTypes.length === 1 ? TYPE_META[fTypes[0]]?.tag : null;
   const autoBatchTag = pinnedBatch?.batch_code ? kebab(pinnedBatch.batch_code) : null;
 
   /* ── CSV export ─────────────────────────────────────────────────────────────
@@ -1332,9 +1332,10 @@ export default function LeadMachinePage() {
      pinned, else the type, else "leads". */
   const exportSlug = useMemo(() => {
     if (pinnedBatch?.batch_code) return kebab(pinnedBatch.batch_code);
-    if (fType) return fType;
+    if (fTypes.length === 1) return fTypes[0];
+    if (fTypes.length > 1) return fTypes.join("-");
     return "leads";
-  }, [pinnedBatch, fType]);
+  }, [pinnedBatch, fTypes]);
 
   const runExport = useCallback(
     async (preset: "email" | "full") => {
@@ -1595,10 +1596,12 @@ export default function LeadMachinePage() {
     if (fStates.length) active.push("state");
     if (dRevMin.trim() || dRevMax.trim()) active.push("revenue");
     if (dSecured.trim()) active.push("secured_party");
+    // Types actually in play: the selection, or all three when nothing is picked.
+    const inPlay: LeadType[] = fTypes.length ? fTypes : ["ucc", "aged", "trigger"];
     return active
       .map((f) => ({ field: f, ...FIELD_ONLY_ON[f] }))
-      .filter((f) => f.types && !(fType && f.types.includes(fType as LeadType)));
-  }, [fStates, dRevMin, dRevMax, dSecured, fType]);
+      .filter((f) => f.types && !inPlay.every((t) => f.types.includes(t)));
+  }, [fStates, dRevMin, dRevMax, dSecured, fTypes]);
 
   const th = "py-3 px-4 text-left";
   const thSortable = `${th} cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200`;
@@ -1851,7 +1854,7 @@ export default function LeadMachinePage() {
                 3 · Lead browser
                 <span
                   className="normal-case font-normal text-gray-400"
-                  title="Estimated for speed — an exact count is a full scan of the whole book. The number the push promises is exact."
+                  title="The exact count for these filters, from the same code the push runs — so this number and the push button always agree. Counts leads with a phone that haven't been pushed yet."
                 >
                   ·{" "}
                   <strong className="text-gray-700 dark:text-gray-200">
@@ -1892,15 +1895,35 @@ export default function LeadMachinePage() {
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">List type</label>
-                <select className={input} value={fType} onChange={(e) => setFType(e.target.value as "" | LeadType)}>
-                  <option value="">All types</option>
-                  {LEAD_TYPES.map((t) => (
-                    <option key={t.type} value={t.type}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-                <span className="text-[10px] text-gray-400">Drives the auto type tag</span>
+                {/* Multi-select: UCC + Trigger together, excluding Aged, etc.
+                    Each pushed lead still gets the lm- tag for ITS OWN list, so a
+                    mixed set tags correctly per lead. */}
+                <div className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 flex flex-wrap gap-x-2 gap-y-0.5 w-40">
+                  {LEAD_TYPES.map((t) => {
+                    const on = fTypes.includes(t.type);
+                    return (
+                      <label
+                        key={t.type}
+                        className="flex items-center gap-1 text-xs text-gray-700 dark:text-gray-200 cursor-pointer whitespace-nowrap"
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 accent-ocean-blue"
+                          checked={on}
+                          onChange={(e) =>
+                            setFTypes((prev) =>
+                              e.target.checked ? [...prev, t.type] : prev.filter((x) => x !== t.type),
+                            )
+                          }
+                        />
+                        {TYPE_META[t.type].label}
+                      </label>
+                    );
+                  })}
+                </div>
+                <span className="text-[10px] text-gray-400">
+                  {fTypes.length === 0 ? "All lists" : `${fTypes.length} selected`}
+                </span>
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Batch</label>
@@ -2065,7 +2088,7 @@ export default function LeadMachinePage() {
                 <span className="text-[10px] text-gray-400">Phone already on an earlier list</span>
               </div>
               {/* UCC-only funder filter — meaningless on aged/trigger lists. */}
-              {fType === "ucc" && (
+              {fTypes.includes("ucc") && (
                 <div className="flex flex-col gap-0.5">
                   <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
                     Secured party
@@ -2138,9 +2161,15 @@ export default function LeadMachinePage() {
                 {/* Tags — auto chips are fixed; the free-text ones are yours. */}
                 <div className="flex flex-wrap items-center gap-2">
                   <TagIcon className="w-4 h-4 text-gray-400 shrink-0" />
-                  {autoTypeTag && (
+                  {autoTypeTag ? (
                     <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300 font-semibold">
                       {autoTypeTag} <span className="text-gray-400">· auto</span>
+                    </span>
+                  ) : (
+                    /* Mixed or unfiltered set: the type tag still lands, resolved
+                       per lead from its own list, so it can't be named up front. */
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                      lm-&lt;list&gt; tag · auto, per lead
                     </span>
                   )}
                   {autoBatchTag ? (
