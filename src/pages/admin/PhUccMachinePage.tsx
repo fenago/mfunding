@@ -290,6 +290,15 @@ function reasonsFrom(sr: unknown): string[] {
   return [];
 }
 
+/* Skip-trace eligibility — mirrors the ph-ucc-skiptrace edge fn's server-side
+   guard so the UI only offers the control on rows the backend would actually
+   charge for: status='needs_skiptrace' AND a street address present. (Already-
+   traced leads move off needs_skiptrace, so the status is a safe proxy for
+   traced_at IS NULL.) Drives both the row checkbox and the per-row button. */
+function traceEligible(l: UccLead): boolean {
+  return l.status === "needs_skiptrace" && !!(l.debtor_address && l.debtor_address.trim());
+}
+
 /* The confidence badge shown on every lead row and in the drawer. Confirmed =
    green "✓ Confirmed funder"; agent-masked = amber "⚠ Agent-filed · funder
    unknown" plus a weighted tier chip. */
@@ -1170,6 +1179,21 @@ export default function PhUccMachinePage() {
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchResult, setBatchResult] = useState<string | null>(null);
   const [batchErr, setBatchErr] = useState<string | null>(null);
+  // ── Granular skip-trace: per-row + multi-select ──
+  // selectedIds survives paging (keyed by id); cleared after a successful trace
+  // and on any filter change. rowTracingId shows the inline spinner on ONE row.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [rowTracingId, setRowTracingId] = useState<string | null>(null);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false); // in-app confirm for the bulk (selected) trace
+  // ── Apollo enrichment (optional, toggle-gated; spends Apollo credits) ──
+  const [apolloRunning, setApolloRunning] = useState(false);
+  const [apolloProgress, setApolloProgress] = useState<{ done: number; total: number } | null>(null);
+  const [apolloResult, setApolloResult] = useState<string | null>(null);
+  const [apolloErr, setApolloErr] = useState<string | null>(null);
+  // Generic in-app confirm for Apollo — carries the count + the run to fire, so one
+  // modal serves both the selected-ids run and the filtered run.
+  const [apolloConfirm, setApolloConfirm] = useState<{ count: number; run: () => Promise<void> } | null>(null);
+  const [apolloCap, setApolloCap] = useState(""); // "" = enrich all filtered; else partial ("top N")
 
   // ── Filter-driven "Push to GHL/HP" (FREE — no spend) ──
   // Loads the CURRENT filtered, skip-traced set into GHL contacts (which HP mirrors
@@ -1184,6 +1208,9 @@ export default function PhUccMachinePage() {
   const [pushProgress, setPushProgress] = useState<{ done: number; total: number } | null>(null);
   const [pushResult, setPushResult] = useState<string | null>(null);
   const [pushErr, setPushErr] = useState<string | null>(null);
+  // Skip already-pushed leads by DEFAULT (idempotent server-side, but re-pushing is
+  // wasted work). Checking this removes the pushed_to_ghl_at IS NULL filter.
+  const [rePushAll, setRePushAll] = useState(false);
 
   // Lead browser state.
   const [leads, setLeads] = useState<UccLead[]>([]);
@@ -1566,13 +1593,18 @@ export default function PhUccMachinePage() {
       return;
     }
     // Dialable = a usable phone OR email OR apollo email (mirrors the edge fn's
-    // eligibility). needs_skiptrace rows have neither and are excluded here + skipped there.
-    const dRes = await buildFilteredLeadQuery("id", { count: "exact", head: true })
-      .or("phone.not.is.null,email.not.is.null,apollo_business_email.not.is.null");
+    // eligibility). needs_skiptrace rows have neither and are excluded here + skipped
+    // there. By DEFAULT we also exclude already-pushed leads (pushed_to_ghl_at set) so
+    // the "pushable" count reflects the NEW work; "Re-push already-pushed" drops that.
+    let dQuery = buildFilteredLeadQuery("id", { count: "exact", head: true }).or(
+      "phone.not.is.null,email.not.is.null,apollo_business_email.not.is.null",
+    );
+    if (!rePushAll) dQuery = dQuery.is("pushed_to_ghl_at", null);
+    const dRes = await dQuery;
     if (!isMissingRelation(dRes.error)) setPushDialable(dRes.error ? null : dRes.count ?? 0);
     const pRes = await buildFilteredLeadQuery("id", { count: "exact", head: true }).not("pushed_to_ghl_at", "is", null);
     if (!isMissingRelation(pRes.error)) setPushAlready(pRes.error ? null : pRes.count ?? 0);
-  }, [buildFilteredLeadQuery, funderForcesEmpty]);
+  }, [buildFilteredLeadQuery, funderForcesEmpty, rePushAll]);
 
   /* ── Lead browser (paginated, filtered, ranked by score) ── */
   const loadLeads = useCallback(async () => {
@@ -1698,9 +1730,12 @@ export default function PhUccMachinePage() {
   useEffect(() => {
     if (!backendMissing) loadLeads();
   }, [loadLeads, backendMissing]);
-  // Reset to first page whenever any filter changes (debounced values for text).
+  // Reset to first page + clear the row selection whenever any filter changes
+  // (debounced values for text) — the visible set changed, so a stale selection
+  // would be misleading.
   useEffect(() => {
     setPage(0);
+    setSelectedIds(new Set());
   }, [fState, fStatus, fMinStack, dFunder, dDebtor, dCity, fFreshness, fHeat, fContact, fLeadClass, fConfidence]);
   // Auto-disarm a primed alias delete after 5s.
   useEffect(() => {
@@ -1757,47 +1792,28 @@ export default function PhUccMachinePage() {
     [loadOverview],
   );
 
-  /* Skip-trace the CURRENT filtered lead set, up to `cap` leads. Spends the wallet,
-     so it only runs after the explicit in-app confirm modal. It:
-       1) pulls up to `cap` eligible ids (needs_skiptrace, untraced, has address)
-          from the SAME filtered query, highest-score first,
-       2) loops them in batches of 100 (the edge fn's hard ceiling), showing live
-          progress and updating the wallet from each call's authoritative balance,
-       3) reports the ACTUAL totals (phones / email-only / no-match / $ spent).
-     Every guard stays server-side too: the edge fn re-reads the wallet and aborts
-     below $5, never re-charges an already-traced lead, and caps at 100/call. */
-  const runFilteredTrace = useCallback(
-    async (cap: number) => {
-      setConfirmOpen(false);
+  /* ── Shared skip-trace engine ──
+     Traces an EXACT set of lead ids — the single code path behind the filtered run,
+     the per-row button, and the bulk "Skip-trace selected" action. Spends the wallet,
+     so every caller gates it behind the in-app confirm. It loops the ids in batches
+     of 100 (the edge fn's hard ceiling), shows live progress, updates the wallet from
+     each call's authoritative balance, and reports the ACTUAL totals (phones /
+     email-only / no-match / $ spent). Guards stay server-side too: the edge fn
+     re-reads the wallet and aborts below $5, only traces status='needs_skiptrace'
+     rows with an address and traced_at IS NULL, and never re-charges — so an
+     ineligible id passed in is harmlessly skipped. Returns true on a clean run. */
+  const runTraceForIds = useCallback(
+    async (ids: string[]): Promise<boolean> => {
       setBatchRunning(true);
       setBatchErr(null);
       setBatchResult(null);
-      setTraceProgress({ done: 0, total: cap });
+      setTraceProgress({ done: 0, total: ids.length });
+      let ok = false;
       try {
-        // 1) Gather up to `cap` eligible ids from the filtered set (score desc).
-        const ids: string[] = [];
-        const WINDOW = 1000;
-        let offset = 0;
-        while (ids.length < cap) {
-          const want = Math.min(WINDOW, cap - ids.length);
-          const res = await buildFilteredLeadQuery("id")
-            .eq("status", "needs_skiptrace")
-            .is("traced_at", null)
-            .not("debtor_address", "is", null)
-            .range(offset, offset + want - 1);
-          if (res.error) throw res.error;
-          const rows = (res.data as unknown as { id: string }[]) ?? [];
-          ids.push(...rows.map((r) => r.id));
-          if (rows.length < want) break; // drained
-          offset += rows.length;
-        }
         if (ids.length === 0) {
-          setBatchResult("Nothing to trace — no eligible leads in the current filter.");
-          return;
+          setBatchResult("Nothing to trace — no eligible leads in the current selection.");
+          return false;
         }
-        setTraceProgress({ done: 0, total: ids.length });
-
-        // 2) Loop in batches of 100.
         let traced = 0,
           ready = 0,
           emailOnly = 0,
@@ -1842,17 +1858,168 @@ export default function PhUccMachinePage() {
               `${emailOnly.toLocaleString()} email-only · ${noMatch.toLocaleString()} no-match · ` +
               `$${spent.toFixed(2)} spent${nowStr}${errStr}`,
           );
+          ok = !paused;
         }
-        // Refresh funnel / lead table / summary / wallet to reflect the traced rows.
-        await Promise.all([loadFunnel(), loadLeads(), loadTraceSummary(), loadWallet()]);
+        // Refresh funnel / lead table / trace + push summaries / wallet.
+        await Promise.all([loadFunnel(), loadLeads(), loadTraceSummary(), loadPushSummary(), loadWallet()]);
       } catch (e) {
         setBatchErr(e instanceof Error ? e.message : String(e));
+        ok = false;
       } finally {
         setBatchRunning(false);
         setTraceProgress(null);
       }
+      return ok;
     },
-    [buildFilteredLeadQuery, wallet, loadFunnel, loadLeads, loadTraceSummary, loadWallet],
+    [wallet, loadFunnel, loadLeads, loadTraceSummary, loadPushSummary, loadWallet],
+  );
+
+  /* Gather up to `cap` eligible ids from the CURRENT filtered set (score desc),
+     mirroring the edge fn's eligibility (needs_skiptrace, untraced, has address). */
+  const gatherFilteredTraceIds = useCallback(
+    async (cap: number): Promise<string[]> => {
+      const ids: string[] = [];
+      const WINDOW = 1000;
+      let offset = 0;
+      while (ids.length < cap) {
+        const want = Math.min(WINDOW, cap - ids.length);
+        const res = await buildFilteredLeadQuery("id")
+          .eq("status", "needs_skiptrace")
+          .is("traced_at", null)
+          .not("debtor_address", "is", null)
+          .range(offset, offset + want - 1);
+        if (res.error) throw res.error;
+        const rows = (res.data as unknown as { id: string }[]) ?? [];
+        ids.push(...rows.map((r) => r.id));
+        if (rows.length < want) break; // drained
+        offset += rows.length;
+      }
+      return ids;
+    },
+    [buildFilteredLeadQuery],
+  );
+
+  /* Filter-driven run: trace the CURRENT filtered lead set, up to `cap` leads.
+     Gathers the eligible ids, then hands off to the shared engine. */
+  const runFilteredTrace = useCallback(
+    async (cap: number) => {
+      setConfirmOpen(false);
+      setBatchRunning(true);
+      setBatchErr(null);
+      setBatchResult(null);
+      setTraceProgress({ done: 0, total: cap });
+      let ids: string[];
+      try {
+        ids = await gatherFilteredTraceIds(cap);
+      } catch (e) {
+        setBatchErr(e instanceof Error ? e.message : String(e));
+        setBatchRunning(false);
+        setTraceProgress(null);
+        return;
+      }
+      await runTraceForIds(ids);
+    },
+    [gatherFilteredTraceIds, runTraceForIds],
+  );
+
+  /* Per-row run: trace exactly one lead. Shows an inline spinner on that row. */
+  const runRowTrace = useCallback(
+    async (lead: UccLead) => {
+      setRowTracingId(lead.id);
+      try {
+        await runTraceForIds([lead.id]);
+      } finally {
+        setRowTracingId(null);
+      }
+    },
+    [runTraceForIds],
+  );
+
+  /* Bulk run: trace exactly the selected ids. Clears the selection on a clean run. */
+  const runBulkTrace = useCallback(async () => {
+    setBulkConfirmOpen(false);
+    const ok = await runTraceForIds(Array.from(selectedIds));
+    if (ok) setSelectedIds(new Set());
+  }, [selectedIds, runTraceForIds]);
+
+  /* ── Apollo enrichment engine (optional; spends Apollo credits) ──
+     Mirrors the skip-trace engine: loops an explicit id set in batches, confirm-
+     gated by callers, gated server-side by apollo_enrich_enabled (a `skipped:true`
+     response means the toggle is OFF). Contract: { lead_ids } → { ok, enriched,
+     checked, errored? }. Refreshes the lead table + push summary on completion.
+     Returns true on a clean (non-paused, non-error) run. */
+  const runApolloForIds = useCallback(
+    async (ids: string[]): Promise<boolean> => {
+      setApolloRunning(true);
+      setApolloErr(null);
+      setApolloResult(null);
+      setApolloProgress({ done: 0, total: ids.length });
+      let ok = false;
+      try {
+        if (ids.length === 0) {
+          setApolloResult("Nothing to enrich — no leads in this selection.");
+          return false;
+        }
+        let enriched = 0,
+          checked = 0,
+          errored = 0;
+        let paused = false;
+        for (let i = 0; i < ids.length; i += HARD_CALL_CAP) {
+          const chunk = ids.slice(i, i + HARD_CALL_CAP);
+          const { data, error } = await supabase.functions.invoke("ph-ucc-apollo-enrich", {
+            body: { lead_ids: chunk },
+          });
+          if (error) throw new Error(await fnErrorMessage(error));
+          const r = (data as Record<string, unknown>) ?? {};
+          if (r.ok === false) throw new Error(String(r.error || "Apollo enrichment failed"));
+          if (r.skipped === true) {
+            paused = true;
+            break;
+          }
+          enriched += Number(r.enriched ?? 0) || 0;
+          checked += Number(r.checked ?? 0) || 0;
+          errored += Number(r.errored ?? r.errors ?? 0) || 0;
+          setApolloProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length });
+        }
+        if (paused) {
+          setApolloErr("Apollo enrichment is disabled in Settings (apollo_enrich_enabled = OFF). Turn it on to run.");
+        } else {
+          const errStr = errored > 0 ? ` · ${errored} errored` : "";
+          setApolloResult(`Enriched ${enriched.toLocaleString()} of ${checked.toLocaleString()} checked${errStr}.`);
+          ok = true;
+        }
+        await Promise.all([loadLeads(), loadPushSummary()]);
+      } catch (e) {
+        setApolloErr(e instanceof Error ? e.message : String(e));
+        ok = false;
+      } finally {
+        setApolloRunning(false);
+        setApolloProgress(null);
+      }
+      return ok;
+    },
+    [loadLeads, loadPushSummary],
+  );
+
+  /* Gather up to `cap` ids from the CURRENT filtered set (score desc) for a filtered
+     Apollo run — no extra eligibility (the fn decides server-side). */
+  const gatherFilteredApolloIds = useCallback(
+    async (cap: number): Promise<string[]> => {
+      const ids: string[] = [];
+      const WINDOW = 1000;
+      let offset = 0;
+      while (ids.length < cap) {
+        const want = Math.min(WINDOW, cap - ids.length);
+        const res = await buildFilteredLeadQuery("id").range(offset, offset + want - 1);
+        if (res.error) throw res.error;
+        const rows = (res.data as unknown as { id: string }[]) ?? [];
+        ids.push(...rows.map((r) => r.id));
+        if (rows.length < want) break; // drained
+        offset += rows.length;
+      }
+      return ids;
+    },
+    [buildFilteredLeadQuery],
   );
 
   /* Push the CURRENT filtered set into GHL contacts (which HotProspector mirrors),
@@ -1879,9 +2046,13 @@ export default function PhUccMachinePage() {
         let offset = 0;
         while (ids.length < cap) {
           const want = Math.min(WINDOW, cap - ids.length);
-          const res = await buildFilteredLeadQuery("id")
-            .or("phone.not.is.null,email.not.is.null,apollo_business_email.not.is.null")
-            .range(offset, offset + want - 1);
+          let q = buildFilteredLeadQuery("id").or(
+            "phone.not.is.null,email.not.is.null,apollo_business_email.not.is.null",
+          );
+          // By default skip leads already pushed to GHL (idempotent, but wasteful);
+          // "Re-push already-pushed" drops this filter.
+          if (!rePushAll) q = q.is("pushed_to_ghl_at", null);
+          const res = await q.range(offset, offset + want - 1);
           if (res.error) throw res.error;
           const rows = (res.data as unknown as { id: string }[]) ?? [];
           ids.push(...rows.map((r) => r.id));
@@ -1889,7 +2060,11 @@ export default function PhUccMachinePage() {
           offset += rows.length;
         }
         if (ids.length === 0) {
-          setPushResult("Nothing to push — no dialable (traced) leads in the current filter.");
+          setPushResult(
+            rePushAll
+              ? "Nothing to push — no dialable (traced) leads in the current filter."
+              : "Nothing to push — every dialable lead in this filter is already loaded. Tick “Re-push already-pushed” to re-send.",
+          );
           return;
         }
         setPushProgress({ done: 0, total: ids.length });
@@ -1969,7 +2144,7 @@ export default function PhUccMachinePage() {
         setPushProgress(null);
       }
     },
-    [buildFilteredLeadQuery, loadFunnel, loadLeads, loadPushSummary, loadTraceSummary],
+    [buildFilteredLeadQuery, loadFunnel, loadLeads, loadPushSummary, loadTraceSummary, rePushAll],
   );
 
   const reloadAliases = useCallback(async () => {
@@ -2129,6 +2304,29 @@ export default function PhUccMachinePage() {
     [loadLeads],
   );
 
+  /* Toggle one row into/out of the selection Set (only eligible rows expose a
+     live checkbox, so ids here are always trace-eligible). */
+  const toggleSelectOne = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  /* Select-all / clear-all for the eligible rows on the CURRENT page. */
+  const toggleSelectAllOnPage = useCallback(() => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const eligible = leads.filter(traceEligible);
+      const allSel = eligible.length > 0 && eligible.every((l) => next.has(l.id));
+      if (allSel) eligible.forEach((l) => next.delete(l.id));
+      else eligible.forEach((l) => next.add(l.id));
+      return next;
+    });
+  }, [leads]);
+
   const input =
     "px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
 
@@ -2185,6 +2383,31 @@ export default function PhUccMachinePage() {
   const plannedPush =
     pushDialable == null ? 0 : pushCapNum != null ? Math.min(pushDialable, pushCapNum) : pushDialable;
   const canPush = plannedPush > 0 && !pushRunning;
+
+  // ── Bulk (selected-rows) skip-trace math ──
+  const bulkCount = selectedIds.size;
+  const bulkEstCost = bulkCount * perLeadCost;
+  const bulkEstGuard = bulkCount * TRACE_COST_GUARD;
+  const bulkOverBudget = walletKnown && bulkEstGuard > wallet.balance;
+  const bulkWalletAfter = walletKnown ? wallet.balance - bulkEstCost : null;
+  const canBulkTrace =
+    settings.skiptrace_provider_configured &&
+    bulkCount > 0 &&
+    walletKnown &&
+    !bulkOverBudget &&
+    !batchRunning &&
+    !apolloRunning;
+  // Eligible rows on the current page — drives the header select-all checkbox.
+  const eligibleOnPage = useMemo(() => leads.filter(traceEligible), [leads]);
+  const allEligibleSelected =
+    eligibleOnPage.length > 0 && eligibleOnPage.every((l) => selectedIds.has(l.id));
+  const someEligibleSelected = eligibleOnPage.some((l) => selectedIds.has(l.id));
+
+  // ── Apollo enrichment: toggle-gated (apollo_enrich_enabled lives in ph_settings). ──
+  const apolloEnabled = sBool("apollo_enrich_enabled");
+  const apolloCapNum = apolloCap.trim() ? Math.max(0, Math.floor(Number(apolloCap) || 0)) : null;
+  const plannedApollo = apolloCapNum != null ? Math.min(leadCount, apolloCapNum) : leadCount;
+  const apolloBusy = apolloRunning || batchRunning;
 
   /* ── Render ── */
   return (
@@ -2492,10 +2715,10 @@ export default function PhUccMachinePage() {
                   onClick={exportLeadsCsv}
                   disabled={exporting}
                   className="btn-ghost inline-flex items-center gap-1.5 text-sm"
-                  title="Export the current filtered view to CSV"
+                  title="Offline analysis only. For dialing, use Push to GHL — do NOT import this CSV into HotProspector."
                 >
                   <ArrowDownTrayIcon className="w-4 h-4" />
-                  {exporting ? "Exporting…" : "Export CSV"}
+                  {exporting ? "Exporting…" : "Export CSV (offline analysis)"}
                 </button>
                 {exportFlash && (
                   <span
@@ -2506,6 +2729,15 @@ export default function PhUccMachinePage() {
                 )}
               </div>
             </div>
+
+            {/* CSV is for offline analysis, NOT dialing — importing it into HotProspector
+                by hand causes duplicates/mismaps. The Push to GHL action below is the
+                dialing path (HP mirrors GHL cleanly). */}
+            <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+              <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" />
+              For dialing, use <strong>Push to GHL</strong> — do NOT import the CSV into HotProspector (it causes
+              duplicates / mismaps). The CSV is for offline analysis only.
+            </p>
 
             {/* Filter bar — every control maps to a real ph_ucc_leads column and
                 filters the query server-side; the CSV export honors it too. */}
@@ -2796,6 +3028,9 @@ export default function PhUccMachinePage() {
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-semibold">
                   free · no spend
                 </span>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-600 text-white font-semibold">
+                  recommended for dialing
+                </span>
               </div>
 
               {/* Live summary — tied EXACTLY to the filters above. */}
@@ -2807,7 +3042,8 @@ export default function PhUccMachinePage() {
                   <strong className="text-emerald-700 dark:text-emerald-300">
                     {pushDialable == null ? "—" : pushDialable.toLocaleString()}
                   </strong>{" "}
-                  dialable (traced) <span className="text-gray-400">— pushable</span>
+                  {rePushAll ? "dialable (traced)" : "to push (not yet loaded)"}{" "}
+                  <span className="text-gray-400">— pushable</span>
                 </span>
                 <span className="text-gray-600 dark:text-gray-300">
                   <strong className="text-gray-900 dark:text-white">
@@ -2841,6 +3077,16 @@ export default function PhUccMachinePage() {
                     Blank = push all {pushDialable == null ? "" : pushDialable.toLocaleString()}. Highest-score first.
                   </span>
                 </div>
+                <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300 pb-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={rePushAll}
+                    onChange={(e) => setRePushAll(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 accent-emerald-600"
+                  />
+                  Re-push already-pushed
+                  <span className="text-gray-400">(default skips leads already loaded)</span>
+                </label>
                 <button
                   onClick={() => setPushConfirmOpen(true)}
                   disabled={!canPush}
@@ -2888,10 +3134,164 @@ export default function PhUccMachinePage() {
               </p>
             </div>
 
+            {/* ── Apollo enrichment (optional; toggle-gated in Settings). Runs over the
+                CURRENT filtered set. Low hit rate on these merchants — BatchData
+                skip-trace is primary — so it's off by default. ── */}
+            <div className="rounded-xl border border-violet-300 dark:border-violet-800 bg-violet-50/60 dark:bg-violet-900/10 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <MagnifyingGlassIcon className="w-4 h-4 text-violet-600 dark:text-violet-400 shrink-0" />
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white">Apollo enrichment</h3>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 font-semibold">
+                  spends Apollo credits
+                </span>
+                {!apolloEnabled && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400 font-semibold">
+                    disabled in Settings
+                  </span>
+                )}
+              </div>
+
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Adds owner business email + title where Apollo has a match. Enriches the current filtered set (or use the
+                per-selection <strong>Enrich (Apollo)</strong> button in the bulk bar). Idempotent — already-enriched
+                leads are skipped server-side.
+              </p>
+
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="flex flex-col gap-0.5">
+                  <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                    Enrich up to (optional)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    placeholder={`all ${leadCount.toLocaleString()}`}
+                    className={`${input} w-40`}
+                    value={apolloCap}
+                    onChange={(e) => setApolloCap(e.target.value)}
+                  />
+                  <span className="text-[10px] text-gray-400">
+                    Blank = enrich all {leadCount.toLocaleString()} matching. Highest-score first.
+                  </span>
+                </div>
+                <button
+                  onClick={() =>
+                    setApolloConfirm({
+                      count: plannedApollo,
+                      run: async () => {
+                        const ids = await gatherFilteredApolloIds(plannedApollo);
+                        await runApolloForIds(ids);
+                      },
+                    })
+                  }
+                  disabled={!apolloEnabled || apolloBusy || plannedApollo <= 0}
+                  className="btn-primary inline-flex items-center gap-1.5"
+                  title={apolloEnabled ? "Apollo-enrich this filtered set" : "Enable Apollo enrichment in settings."}
+                >
+                  <MagnifyingGlassIcon className="w-4 h-4" />
+                  {apolloRunning
+                    ? "Enriching…"
+                    : plannedApollo > 0
+                      ? `Enrich these ${plannedApollo.toLocaleString()} leads`
+                      : "Enrich this set"}
+                </button>
+              </div>
+
+              {apolloProgress && (
+                <div className="space-y-1">
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-violet-200/60 dark:bg-violet-900/40">
+                    <div
+                      className="h-full rounded-full bg-violet-500 transition-all"
+                      style={{ width: `${apolloProgress.total > 0 ? Math.round((apolloProgress.done / apolloProgress.total) * 100) : 0}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-600 dark:text-gray-300">
+                    enriched {apolloProgress.done.toLocaleString()} / {apolloProgress.total.toLocaleString()}…
+                  </p>
+                </div>
+              )}
+              {apolloResult && <p className="text-sm text-violet-700 dark:text-violet-300">{apolloResult}</p>}
+              {apolloErr && <p className="text-sm text-rose-600 dark:text-rose-400">Apollo run failed: {apolloErr}</p>}
+            </div>
+
+            {/* ── Bulk action bar — sticky when ≥1 row is selected. Skip-trace spends
+                real money, so it routes through the same in-app confirm as the
+                filtered run. Apollo enrich is toggle-gated + confirm-gated too. ── */}
+            {selectedIds.size > 0 && (
+              <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-ocean-blue/40 bg-ocean-blue/10 dark:bg-ocean-blue/20 px-4 py-3 shadow-sm backdrop-blur">
+                <div className="text-sm text-gray-700 dark:text-gray-200">
+                  <strong className="text-gray-900 dark:text-white">{selectedIds.size.toLocaleString()}</strong> selected
+                  {bulkOverBudget && (
+                    <span className="ml-2 text-xs text-rose-600 dark:text-rose-400">
+                      · over wallet at the ${TRACE_COST_GUARD.toFixed(2)} guard — select fewer or top up
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={() => setSelectedIds(new Set())} className="btn-ghost btn-sm">
+                    Clear
+                  </button>
+                  {apolloEnabled && (
+                    <button
+                      onClick={() =>
+                        setApolloConfirm({
+                          count: selectedIds.size,
+                          run: async () => {
+                            const ok = await runApolloForIds(Array.from(selectedIds));
+                            if (ok) setSelectedIds(new Set());
+                          },
+                        })
+                      }
+                      disabled={apolloBusy}
+                      className="btn-ghost btn-sm inline-flex items-center gap-1.5 text-violet-700 dark:text-violet-300"
+                      title="Apollo-enrich the selected leads (spends Apollo credits)"
+                    >
+                      <MagnifyingGlassIcon className="w-4 h-4" />
+                      Enrich (Apollo)
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setBulkConfirmOpen(true)}
+                    disabled={!canBulkTrace}
+                    className="btn-primary btn-sm inline-flex items-center gap-1.5"
+                    title={
+                      !settings.skiptrace_provider_configured
+                        ? "Skip-trace provider not configured"
+                        : !walletKnown
+                          ? "Wallet balance unavailable — refresh the wallet tile"
+                          : bulkOverBudget
+                            ? "Over wallet — select fewer or top up"
+                            : "Skip-trace the selected leads"
+                    }
+                  >
+                    <BoltIcon className="w-4 h-4" />
+                    {batchRunning ? "Tracing…" : `Skip-trace selected (~$${bulkEstCost.toFixed(2)})`}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="overflow-x-auto bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-400 border-b border-gray-100 dark:border-gray-700">
+                    <th className="py-3 px-4 w-8">
+                      <input
+                        type="checkbox"
+                        ref={(el) => {
+                          if (el) el.indeterminate = someEligibleSelected && !allEligibleSelected;
+                        }}
+                        checked={allEligibleSelected}
+                        onChange={toggleSelectAllOnPage}
+                        disabled={eligibleOnPage.length === 0}
+                        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 accent-ocean-blue disabled:opacity-30 disabled:cursor-not-allowed"
+                        title={
+                          eligibleOnPage.length === 0
+                            ? "No skip-trace-eligible leads on this page"
+                            : "Select all eligible leads on this page"
+                        }
+                      />
+                    </th>
                     <th className="py-3 px-4">Score</th>
                     <th className="py-3 px-4">Debtor</th>
                     <th className="py-3 px-4">State</th>
@@ -2908,13 +3308,13 @@ export default function PhUccMachinePage() {
                 <tbody>
                   {leadsLoading ? (
                     <tr>
-                      <td colSpan={11} className="py-8 text-center text-gray-400">
+                      <td colSpan={12} className="py-8 text-center text-gray-400">
                         Loading…
                       </td>
                     </tr>
                   ) : leads.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="py-8 text-center text-gray-400">
+                      <td colSpan={12} className="py-8 text-center text-gray-400">
                         <MagnifyingGlassIcon className="w-6 h-6 mx-auto mb-1 text-gray-300 dark:text-gray-600" />
                         No leads match these filters yet.
                       </td>
@@ -2924,6 +3324,8 @@ export default function PhUccMachinePage() {
                       const sm = LEAD_STATUS_META[l.status] ?? LEAD_STATUS_META.matched;
                       const funders = l.matched_funders ?? [];
                       const isMasked = l.lead_class === "agent_masked";
+                      const eligible = traceEligible(l);
+                      const rowTracing = rowTracingId === l.id;
                       // Row tooltip for masked leads: agent + score + why.
                       const whyReasons = reasonsFrom(l.score_reasons);
                       const whyTitle = isMasked
@@ -2938,8 +3340,22 @@ export default function PhUccMachinePage() {
                       return (
                         <tr
                           key={l.id}
-                          className={`border-b border-gray-50 dark:border-gray-700/50 ${l.status === "suppressed" ? "opacity-50" : ""}`}
+                          className={`border-b border-gray-50 dark:border-gray-700/50 ${l.status === "suppressed" ? "opacity-50" : ""} ${selectedIds.has(l.id) ? "bg-ocean-blue/5 dark:bg-ocean-blue/10" : ""}`}
                         >
+                          <td className="py-3 px-4">
+                            <input
+                              type="checkbox"
+                              checked={eligible && selectedIds.has(l.id)}
+                              onChange={() => eligible && toggleSelectOne(l.id)}
+                              disabled={!eligible}
+                              className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 accent-ocean-blue disabled:opacity-30 disabled:cursor-not-allowed"
+                              title={
+                                eligible
+                                  ? "Select for bulk skip-trace"
+                                  : "Not skip-trace-eligible (needs status = needs skip-trace + a street address)"
+                              }
+                            />
+                          </td>
                           <td className="py-3 px-4 font-semibold text-gray-900 dark:text-white">
                             {l.score == null ? "—" : Math.round(l.score)}
                           </td>
@@ -3043,14 +3459,42 @@ export default function PhUccMachinePage() {
                             </span>
                           </td>
                           <td className="py-3 px-4 text-right">
-                            <button
-                              onClick={() => toggleSuppress(l)}
-                              className="text-xs text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 inline-flex items-center gap-1"
-                              title={l.status === "suppressed" ? "Un-suppress" : "Suppress junk row"}
-                            >
-                              <NoSymbolIcon className="w-4 h-4" />
-                              {l.status === "suppressed" ? "Restore" : "Suppress"}
-                            </button>
+                            <div className="inline-flex items-center justify-end gap-3">
+                              {eligible && (
+                                <button
+                                  onClick={() => runRowTrace(l)}
+                                  disabled={
+                                    batchRunning ||
+                                    rowTracingId != null ||
+                                    !settings.skiptrace_provider_configured ||
+                                    !walletKnown
+                                  }
+                                  className="text-xs text-ocean-blue hover:underline inline-flex items-center gap-1 disabled:opacity-50 disabled:no-underline"
+                                  title={
+                                    !settings.skiptrace_provider_configured
+                                      ? "Skip-trace provider not configured"
+                                      : !walletKnown
+                                        ? "Wallet balance unavailable — refresh the wallet tile"
+                                        : "Skip-trace just this lead (spends the wallet)"
+                                  }
+                                >
+                                  {rowTracing ? (
+                                    <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <BoltIcon className="w-4 h-4" />
+                                  )}
+                                  {rowTracing ? "Tracing…" : "Skip-trace"}
+                                </button>
+                              )}
+                              <button
+                                onClick={() => toggleSuppress(l)}
+                                className="text-xs text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 inline-flex items-center gap-1"
+                                title={l.status === "suppressed" ? "Un-suppress" : "Suppress junk row"}
+                              >
+                                <NoSymbolIcon className="w-4 h-4" />
+                                {l.status === "suppressed" ? "Restore" : "Suppress"}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -3512,6 +3956,107 @@ export default function PhUccMachinePage() {
               >
                 <BoltIcon className="w-4 h-4" />
                 Yes — trace {plannedCount.toLocaleString()} leads (~${estCost.toFixed(2)})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk (selected-rows) skip-trace confirm modal — same money-guard pattern as
+          the filtered run, bound to the current selection. */}
+      {bulkConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button className="absolute inset-0 bg-black/50" onClick={() => setBulkConfirmOpen(false)} aria-label="Cancel" />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <ExclamationTriangleIcon className="w-6 h-6 text-amber-500 shrink-0" />
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">
+                Skip-trace {bulkCount.toLocaleString()} selected — this spends real money
+              </h2>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-4 space-y-2 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Leads to trace</span>
+                <span className="font-bold text-gray-900 dark:text-white">{bulkCount.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Estimated cost</span>
+                <span className="font-bold text-gray-900 dark:text-white">
+                  ~${bulkEstCost.toFixed(2)}{" "}
+                  <span className="font-normal text-gray-400">
+                    ({bulkCount.toLocaleString()} × ${perLeadCost.toFixed(2)})
+                  </span>
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Wallet now</span>
+                <span className="font-semibold text-gray-900 dark:text-white">
+                  {wallet ? `$${wallet.balance.toFixed(2)}` : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Wallet after (est.)</span>
+                <span className="font-semibold text-gray-900 dark:text-white">
+                  {bulkWalletAfter == null ? "—" : `~$${bulkWalletAfter.toFixed(2)}`}
+                </span>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              You're charged only for leads actually traced; already-traced leads are never re-charged. The run loops in
+              batches of 100 and stops automatically if the wallet drops below $5.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setBulkConfirmOpen(false)} className="btn-ghost">
+                Cancel
+              </button>
+              <button onClick={runBulkTrace} disabled={!canBulkTrace} className="btn-primary inline-flex items-center gap-1.5">
+                <BoltIcon className="w-4 h-4" />
+                Yes — trace {bulkCount.toLocaleString()} selected (~${bulkEstCost.toFixed(2)})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Apollo enrichment confirm modal (in-app; serves both the selected-ids and
+          filtered runs). Spends Apollo credits, so it's confirm-gated. */}
+      {apolloConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button className="absolute inset-0 bg-black/50" onClick={() => setApolloConfirm(null)} aria-label="Cancel" />
+          <div className="relative w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-xl border border-gray-200 dark:border-gray-700 p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <MagnifyingGlassIcon className="w-6 h-6 text-violet-500 shrink-0" />
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">Confirm Apollo enrichment</h2>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-4 space-y-2 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Leads to enrich</span>
+                <span className="font-bold text-gray-900 dark:text-white">{apolloConfirm.count.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500 dark:text-gray-400">Cost</span>
+                <span className="font-semibold text-rose-600 dark:text-rose-400">Spends Apollo credits</span>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Apollo has a low hit rate on these merchants — most leads won't get an email. Already-enriched leads are
+              skipped server-side (idempotent). Runs in batches of 100 with a live count.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setApolloConfirm(null)} className="btn-ghost">
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const c = apolloConfirm;
+                  setApolloConfirm(null);
+                  if (c) void c.run();
+                }}
+                disabled={apolloConfirm.count <= 0}
+                className="btn-primary inline-flex items-center gap-1.5"
+              >
+                <MagnifyingGlassIcon className="w-4 h-4" />
+                Yes — enrich {apolloConfirm.count.toLocaleString()} leads
               </button>
             </div>
           </div>
