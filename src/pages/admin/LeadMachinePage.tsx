@@ -170,8 +170,9 @@ const STATUS_META: Record<string, { label: string; chip: string }> = {
 };
 
 const PAGE_SIZE = 25;
-/* Hard ceiling on how many ids the browser will gather for one push run. */
-const MAX_PUSH_SET = 20000;
+/* lead-push-ghl caps an explicit lead_ids[] at 5,000 — bigger sets have to go as
+   server-side `filters`, which the fn re-runs itself. */
+const MAX_LEAD_IDS = 5000;
 
 /* ── Small helpers ── */
 
@@ -597,6 +598,7 @@ export default function LeadMachinePage() {
   const [fStatus, setFStatus] = useState("");
   const [fHasEmail, setFHasEmail] = useState(false);
   const [fSecured, setFSecured] = useState("");
+  const [fTag, setFTag] = useState("");
   /* Duplicates are excluded by DEFAULT — a phone that already came in on an
      earlier list is a second dial to the same merchant. Unticking it is the
      deliberate deviation, so that's what counts as an active filter. */
@@ -606,6 +608,7 @@ export default function LeadMachinePage() {
 
   const dSearch = useDebounced(fSearch);
   const dSecured = useDebounced(fSecured);
+  const dTag = useDebounced(fTag);
   const dRevMin = useDebounced(fRevMin);
   const dRevMax = useDebounced(fRevMax);
 
@@ -631,9 +634,10 @@ export default function LeadMachinePage() {
     if (fStatus) n++;
     if (fHasEmail) n++;
     if (dSecured.trim()) n++;
+    if (dTag.trim()) n++;
     if (!fExcludeDups) n++; // "include duplicates" is the deviation from default
     return n;
-  }, [fType, fBatch, dSearch, fState, fLine, dRevMin, dRevMax, fStatus, fHasEmail, dSecured, fExcludeDups]);
+  }, [fType, fBatch, dSearch, fState, fLine, dRevMin, dRevMax, fStatus, fHasEmail, dSecured, dTag, fExcludeDups]);
 
   const clearFilters = useCallback(() => {
     setFType("");
@@ -646,6 +650,7 @@ export default function LeadMachinePage() {
     setFStatus("");
     setFHasEmail(false);
     setFSecured("");
+    setFTag("");
     setFExcludeDups(true);
   }, []);
 
@@ -668,6 +673,8 @@ export default function LeadMachinePage() {
       if (dRevMin.trim() && !isNaN(Number(dRevMin))) q = q.gte("revenue", Number(dRevMin));
       if (dRevMax.trim() && !isNaN(Number(dRevMax))) q = q.lte("revenue", Number(dRevMax));
       if (dSecured.trim()) q = q.ilike("secured_party", `%${dSecured.trim()}%`);
+      // Tag containment hits the push_tags GIN index — the same filter the push fn runs.
+      if (dTag.trim()) q = q.contains("push_tags", [kebab(dTag)]);
       const t = safeTerm(dSearch);
       if (t) {
         q = q.or(
@@ -693,6 +700,7 @@ export default function LeadMachinePage() {
       dRevMin,
       dRevMax,
       dSecured,
+      dTag,
       dSearch,
       sortKey,
       sortAsc,
@@ -742,6 +750,7 @@ export default function LeadMachinePage() {
     fHasEmail,
     fExcludeDups,
     dSecured,
+    dTag,
     sortKey,
     sortAsc,
   ]);
@@ -810,6 +819,55 @@ export default function LeadMachinePage() {
   const usingSelection = selectedIds.size > 0;
   const pushCount = usingSelection ? selectedIds.size : leadCount;
 
+  /* The server only pushes rows still marked `loaded` that HAVE a phone, so the
+     filtered count can overstate the run. This is the honest number, computed off
+     the same filtered query, and it's what the button promises. */
+  const [pushEligible, setPushEligible] = useState<number | null>(null);
+  useEffect(() => {
+    if (backendMissing) return;
+    let cancelled = false;
+    void (async () => {
+      const { count, error } = await buildFilteredQuery("id", { count: "exact", head: true })
+        .eq("status", "loaded")
+        .not("phone", "is", null);
+      if (!cancelled) setPushEligible(error ? null : (count ?? 0));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [buildFilteredQuery, backendMissing]);
+
+  /* The same filter set, in the shape lead-push-ghl runs server-side. Every
+     control on the filter bar has a server equivalent, so a set too big for an
+     explicit id list still pushes as exactly what's on screen. */
+  const serverFilters = useMemo(() => {
+    const f: Record<string, unknown> = {};
+    if (fType) f.lead_type = fType;
+    if (fState) f.state = fState;
+    if (fLine) f.line_type = fLine;
+    if (fStatus) f.status = fStatus;
+    if (fHasEmail) f.has_email = true;
+    if (dRevMin.trim() && !isNaN(Number(dRevMin))) f.min_revenue = Number(dRevMin);
+    if (dRevMax.trim() && !isNaN(Number(dRevMax))) f.max_revenue = Number(dRevMax);
+    if (dSecured.trim()) f.secured_party_ilike = dSecured.trim();
+    if (dTag.trim()) f.push_tags_contains = kebab(dTag);
+    if (safeTerm(dSearch)) f.search = safeTerm(dSearch);
+    if (fExcludeDups) f.exclude_dups = true;
+    return f;
+  }, [fType, fState, fLine, fStatus, fHasEmail, dRevMin, dRevMax, dSecured, dTag, dSearch, fExcludeDups]);
+
+  /* RE-TAG. A normal push drains rows still marked `loaded` — which is exactly
+     what makes it un-double-pushable, and also means it would find nothing in a
+     slice that's already been pushed. Filtering to pushed/errored leads is only
+     ever asking for the other thing: add these tags to contacts already in
+     VibeReach. So that filter selects re-tag mode, and the panel says so. */
+  const retagMode = fStatus === "pushed" || fStatus === "error";
+
+  /* The count the button promises. In re-tag mode already-pushed rows ARE the
+     target, so the "still loaded" eligibility count doesn't apply. */
+  const plannedPush = usingSelection ? selectedIds.size : retagMode ? leadCount : (pushEligible ?? leadCount);
+  const tooBigForIds = !usingSelection && plannedPush > MAX_LEAD_IDS;
+
   /* The auto tags the edge fn adds server-side, shown as fixed chips so the
      closer/owner sees the full tag set before firing. */
   const autoTypeTag = fType ? TYPE_META[fType]?.tag : null;
@@ -820,48 +878,64 @@ export default function LeadMachinePage() {
     setPushRunning(true);
     setPushErr(null);
     setPushResult(null);
-    setPushProgress({ done: 0, total: pushCount });
+    setPushProgress({ done: 0, total: plannedPush });
     try {
-      // 1) Gather the id set — the checkbox subset as-is, or page the filtered
-      //    query so the ids are EXACTLY the rows the count on screen describes.
-      let ids: string[] = [];
-      if (usingSelection) {
-        ids = Array.from(selectedIds);
-      } else {
-        const WINDOW = 1000;
-        let offset = 0;
-        while (ids.length < Math.min(leadCount, MAX_PUSH_SET)) {
-          const want = Math.min(WINDOW, MAX_PUSH_SET - ids.length);
-          const res = await buildFilteredQuery("id").range(offset, offset + want - 1);
-          if (res.error) throw res.error;
-          const rows = (res.data as unknown as { id: string }[]) ?? [];
-          ids.push(...rows.map((r) => r.id));
-          if (rows.length < want) break; // drained
-          offset += rows.length;
-        }
-      }
-      if (ids.length === 0) {
-        setPushResult("Nothing to push — no leads match the current filter.");
-        return;
-      }
-      setPushProgress({ done: 0, total: ids.length });
+      // The fn REQUIRES a non-empty tags[] — the auto tags it adds server-side
+      // don't satisfy it, so the UI blocks the button until there's at least one.
+      if (tags.length === 0) throw new Error("Add at least one tag before pushing.");
 
-      // 2) Queue the push job. The worker only ever selects lead_records with
-      //    status='loaded', so a re-invoke can never double-push a contact — the
-      //    run is idempotent by construction, and a re-push updates the GHL
-      //    contact rather than duplicating it.
-      const { data, error } = await supabase.functions.invoke("lead-push-ghl", {
-        body: { lead_ids: ids, tags },
-      });
+      // How the set is expressed to the server:
+      //   · a checkbox selection, or any set that fits, goes as explicit ids —
+      //     that honours EVERY on-screen filter, search included;
+      //   · a bigger set goes as server-side filters, which the fn re-runs and
+      //     self-continues through — every filter here has a server equivalent.
+      const body: Record<string, unknown> = { action: "start", tags };
+      if (retagMode) body.retag = true;
+      if (!tooBigForIds) {
+        let ids: string[] = [];
+        if (usingSelection) {
+          ids = Array.from(selectedIds);
+        } else {
+          const WINDOW = 1000;
+          let offset = 0;
+          while (ids.length < MAX_LEAD_IDS) {
+            const want = Math.min(WINDOW, MAX_LEAD_IDS - ids.length);
+            const res = await buildFilteredQuery("id").range(offset, offset + want - 1);
+            if (res.error) throw res.error;
+            const rows = (res.data as unknown as { id: string }[]) ?? [];
+            ids.push(...rows.map((r) => r.id));
+            if (rows.length < want) break; // drained
+            offset += rows.length;
+          }
+        }
+        if (ids.length === 0) {
+          setPushResult("Nothing to push — no leads match the current filter.");
+          return;
+        }
+        body.lead_ids = ids;
+        setPushProgress({ done: 0, total: ids.length });
+      } else {
+        // Too big for an explicit id list — hand the fn the same filters instead;
+        // it re-runs them server-side and self-continues until the set is done.
+        body.filters = serverFilters;
+        if (fBatch) body.batch_id = fBatch;
+      }
+
+      // Queue the job. The worker only ever selects lead_records still marked
+      // `loaded`, so a re-push can never create a second contact for a merchant.
+      const { data, error } = await supabase.functions.invoke("lead-push-ghl", { body });
       if (error) throw new Error(await fnErrorMessage(error));
       const res = (data as Record<string, unknown>) ?? {};
       if (res.ok === false) throw new Error(String(res.error || "push failed"));
 
       const jobId = typeof res.job_id === "string" ? res.job_id : null;
+      const target = Number(res.target_count ?? 0) || 0;
+      setPushProgress({ done: Number(res.pushed ?? 0) || 0, total: target || plannedPush });
+
+      // A small push finishes inline (done: true); a big one self-reinvokes, so
+      // poll the job row until it reaches a terminal state.
       let final: PushJob | null = null;
-      if (jobId) {
-        // 3) Poll the job row until it finishes. The worker self-reinvokes to get
-        //    through a big set, so this can outlive a single function call.
+      if (jobId && res.done !== true) {
         final = await new Promise<PushJob | null>((resolve) => {
           const tick = async () => {
             const { data: jd } = await supabase
@@ -871,37 +945,46 @@ export default function LeadMachinePage() {
               .maybeSingle();
             const j = (jd as PushJob | null) ?? null;
             if (!j) return;
-            setPushProgress({ done: n0(j.pushed) + n0(j.errored) + n0(j.skipped), total: n0(j.target_count) || ids.length });
+            setPushProgress({
+              done: n0(j.pushed) + n0(j.errored),
+              total: n0(j.target_count) || target || plannedPush,
+            });
             if (JOB_TERMINAL.has(j.status)) {
-              clearInterval(timer);
+              if (pushPollRef.current) clearInterval(pushPollRef.current);
               pushPollRef.current = null;
               resolve(j);
             }
           };
-          const timer = setInterval(() => void tick(), 2000);
-          pushPollRef.current = timer;
+          pushPollRef.current = setInterval(() => void tick(), 2000);
           void tick();
         });
       }
 
-      // A job that ended in error surfaces its own message; anything else reports
-      // the real counts (from the job row, or from a synchronous response).
-      if (final && final.status === "error") {
-        throw new Error(final.message || "push job failed");
+      if (final && final.status === "error") throw new Error(final.message || "push job failed");
+      if (final && final.status === "canceled") {
+        setPushResult(final.message || "Push canceled.");
+        return;
       }
       const pushed = final ? n0(final.pushed) : Number(res.pushed ?? 0) || 0;
-      const errored = final ? n0(final.errored) : Number(res.errored ?? res.errors ?? 0) || 0;
-      const skipped = final ? n0(final.skipped) : Number(res.skipped ?? 0) || 0;
+      const errored = final ? n0(final.errored) : Number(res.errored ?? 0) || 0;
+      const eligible = final ? n0(final.target_count) : target;
 
-      const parts = [
-        `Pushed ${pushed.toLocaleString()} into VibeReach`,
-        `${skipped.toLocaleString()} skipped (already pushed or no contact)`,
-      ];
-      if (errored > 0) parts.push(`${errored.toLocaleString()} errored`);
-      const tagList = [autoTypeTag, autoBatchTag, ...tags].filter(Boolean).join(", ");
-      setPushResult(
-        `${parts.join(" · ")}. Tags applied: ${tagList || "(auto tags only)"} — target those tags in a HotProspector campaign to dial them.`,
-      );
+      if (eligible === 0) {
+        setPushResult(
+          retagMode
+            ? "Nothing eligible — no contact in this set is in VibeReach yet, or none has a phone number."
+            : "Nothing eligible — every lead in this set was already pushed, or has no phone number.",
+        );
+      } else {
+        const tagList = [autoTypeTag, autoBatchTag, ...tags].filter(Boolean).join(", ");
+        setPushResult(
+          (retagMode
+            ? `Tagged ${pushed.toLocaleString()} of ${eligible.toLocaleString()} contacts already in VibeReach`
+            : `Pushed ${pushed.toLocaleString()} of ${eligible.toLocaleString()} into VibeReach`) +
+            (errored > 0 ? ` · ${errored.toLocaleString()} errored` : "") +
+            `. Tags: ${tagList} — target those tags in a HotProspector campaign to dial them.`,
+        );
+      }
       setSelectedIds(new Set());
       await Promise.all([loadLeads(), loadBatches()]);
     } catch (e) {
@@ -914,12 +997,15 @@ export default function LeadMachinePage() {
     autoBatchTag,
     autoTypeTag,
     buildFilteredQuery,
-    leadCount,
+    fBatch,
     loadBatches,
     loadLeads,
-    pushCount,
+    plannedPush,
     selectedIds,
+    retagMode,
+    serverFilters,
     tags,
+    tooBigForIds,
     usingSelection,
   ]);
 
@@ -1228,6 +1314,16 @@ export default function LeadMachinePage() {
                 </label>
                 <span className="text-[10px] text-gray-400">Email + phone = two channels</span>
               </div>
+              <div className="flex flex-col gap-0.5">
+                <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Tag</label>
+                <input
+                  className={`${input} w-40`}
+                  placeholder="pushed with tag…"
+                  value={fTag}
+                  onChange={(e) => setFTag(e.target.value)}
+                />
+                <span className="text-[10px] text-gray-400">Find a slice you already pushed</span>
+              </div>
               <div className="flex flex-col gap-0.5 justify-end pb-1">
                 <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
                   <input
@@ -1262,7 +1358,9 @@ export default function LeadMachinePage() {
               <div className="sticky top-0 z-20 rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/90 dark:bg-emerald-900/30 backdrop-blur p-4 space-y-3 shadow-sm">
                 <div className="flex flex-wrap items-center gap-2">
                   <ArrowUpTrayIcon className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                  <h3 className="text-sm font-bold text-gray-900 dark:text-white">Push to VibeReach</h3>
+                  <h3 className="text-sm font-bold text-gray-900 dark:text-white">
+                    {retagMode ? "Re-tag in VibeReach" : "Push to VibeReach"}
+                  </h3>
                   <span className="text-sm text-gray-700 dark:text-gray-200">
                     <strong className="text-gray-900 dark:text-white">{pushCount.toLocaleString()}</strong> leads
                     selected
@@ -1271,6 +1369,18 @@ export default function LeadMachinePage() {
                       ({usingSelection ? "checked rows" : "the current filtered set"})
                     </span>
                   </span>
+                  {/* What will ACTUALLY go: the server pushes only rows still marked
+                      `loaded` that have a phone, so this is the honest number. */}
+                  {!retagMode && !usingSelection && pushEligible != null && pushEligible !== leadCount && (
+                    <span className="text-sm text-gray-700 dark:text-gray-200">
+                      ·{" "}
+                      <strong className="text-emerald-700 dark:text-emerald-300">
+                        {pushEligible.toLocaleString()}
+                      </strong>{" "}
+                      pushable
+                      <span className="text-gray-500 dark:text-gray-400"> (not yet pushed, has a phone)</span>
+                    </span>
+                  )}
                   {usingSelection && (
                     <button onClick={() => setSelectedIds(new Set())} className="btn-ghost btn-sm">
                       Clear selection
@@ -1322,8 +1432,16 @@ export default function LeadMachinePage() {
                 </div>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400">
                   These tags drive HotProspector: campaigns dial by tag. Tags are forced to lowercase-kebab. The type tag
-                  and batch tag are added automatically — yours are extra.
+                  and batch tag are added automatically — <strong>at least one tag of your own is required</strong>, so
+                  every push is traceable to a campaign.
                 </p>
+                {retagMode && (
+                  <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                    You've filtered to leads that are <strong>already in VibeReach</strong>, so this run adds the tags
+                    above to those existing contacts instead of creating anything — nothing is pushed twice. Their tag
+                    list becomes the union of what they had and what you add here.
+                  </p>
+                )}
 
                 {/* Two-step inline confirm — NO browser popups (house rule). */}
                 <div className="flex flex-wrap items-center gap-3">
@@ -1332,20 +1450,38 @@ export default function LeadMachinePage() {
                       if (pushArmed) void runPush();
                       else setPushArmed(true);
                     }}
-                    disabled={pushRunning || pushCount === 0}
+                    disabled={pushRunning || plannedPush === 0 || tags.length === 0}
+                    title={
+                      tags.length === 0
+                        ? "Add at least one campaign tag first — the push requires one"
+                        : retagMode
+                          ? "Add these tags to the contacts already in VibeReach"
+                          : "Push this set into VibeReach"
+                    }
                     className={`btn-primary inline-flex items-center gap-1.5 ${pushArmed ? "ring-2 ring-amber-400" : ""}`}
                   >
                     <BoltIcon className="w-4 h-4" />
                     {pushRunning
-                      ? "Pushing…"
+                      ? retagMode
+                        ? "Tagging…"
+                        : "Pushing…"
                       : pushArmed
-                        ? `⚠️ Tap again — push ${pushCount.toLocaleString()} into VibeReach →`
-                        : `Push ${pushCount.toLocaleString()} to VibeReach`}
+                        ? retagMode
+                          ? `⚠️ Tap again — tag ${plannedPush.toLocaleString()} contacts in VibeReach →`
+                          : `⚠️ Tap again — push ${plannedPush.toLocaleString()} into VibeReach →`
+                        : retagMode
+                          ? `Tag ${plannedPush.toLocaleString()} already-pushed contacts`
+                          : `Push ${plannedPush.toLocaleString()} to VibeReach`}
                   </button>
-                  {pushCount > MAX_PUSH_SET && !usingSelection && (
+                  {tags.length === 0 && (
                     <span className="text-xs text-amber-600 dark:text-amber-400">
-                      Only the first {MAX_PUSH_SET.toLocaleString()} will go in this run — narrow the filter or push
-                      again.
+                      Add a campaign tag first — that tag is what the dialer targets.
+                    </span>
+                  )}
+                  {tooBigForIds && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      Over {MAX_LEAD_IDS.toLocaleString()} — this run goes from the filters, server-side, and continues
+                      in the background.
                     </span>
                   )}
                 </div>
