@@ -190,9 +190,11 @@ function applyFilters(q: any, job: Job) {
   const sp = f.secured_party_ilike ?? f.secured_party;
   if (sp) q = q.ilike("secured_party", `%${sp}%`);
 
-  if (typeof f.has_email === "boolean") {
-    q = f.has_email ? q.not("email", "is", null) : q.is("email", null);
-  }
+  // has_email means PRIMARY **OR** ANY EXTRA — an email campaign can mail any of
+  // them, so "has an email" must mean "is reachable by email". The predicate lives
+  // in the generated column has_any_email so this fn, the search RPC and the
+  // export cannot drift apart: there is exactly one definition, in the schema.
+  if (typeof f.has_email === "boolean") q = q.eq("has_any_email", f.has_email);
   // Tag filter — hits the push_tags GIN index (array containment, ALL of them).
   const tagsIn = asArray(f.push_tags_contains);
   if (tagsIn) q = q.contains("push_tags", tagsIn.map((t) => t.toLowerCase()));
@@ -224,23 +226,50 @@ const LEAD_COLS = "id,batch_id,lead_type,status,phone,email,first_name,last_name
 /** Count the rows a job will touch (respecting its limit). This is the SAME
  * filter code the push itself runs, which is why `action:'count'` is exposed to
  * the UI — "N leads" on screen and "N leads pushed" can never disagree. */
+/** PostgREST sometimes returns an error object with an EMPTY message (an aborted
+ * count reads as `count failed: ` and tells nobody anything). Build something
+ * actionable out of whatever fields are present. */
+// deno-lint-ignore no-explicit-any
+function errText(e: any): string {
+  const parts = [e?.message, e?.details, e?.hint, e?.code].filter((x) => x && String(x).trim());
+  return parts.length ? parts.map(String).join(" | ") : "no message from PostgREST (usually an aborted/timed-out count)";
+}
+
+/**
+ * A broad count is expensive here by nature: "has an email" matches 249,411 of
+ * 249,923 rows, so counting it reads essentially the whole table (~6s measured).
+ * On this shared instance that occasionally aborts, which surfaced as an empty
+ * error and a failed push. One retry turns an intermittent failure into a slower
+ * success; a genuine error still fails, now with a readable message.
+ */
+// deno-lint-ignore no-explicit-any
+async function countWithRetry(build: () => any, what: string): Promise<number> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const { count, error } = await build();
+    if (!error) return count ?? 0;
+    if (attempt === 2) throw new Error(`count failed (${what}): ${errText(error)}`);
+    console.warn("[lead-push-ghl] count aborted, retrying:", errText(error));
+    await sleep(750);
+  }
+  return 0;
+}
+
 async function countTarget(db: SupabaseClient, job: Job): Promise<number> {
   if (job.lead_ids?.length) {
     let n = 0;
     for (let i = 0; i < job.lead_ids.length; i += ID_WINDOW) {
-      const { count, error } = await applyFilters(
-        db.from("lead_records").select("id", { count: "exact", head: true }), job,
-      ).in("id", job.lead_ids.slice(i, i + ID_WINDOW));
-      if (error) throw new Error(`count failed: ${error.message}`);
-      n += count ?? 0;
+      const slice = job.lead_ids.slice(i, i + ID_WINDOW);
+      n += await countWithRetry(
+        () => applyFilters(db.from("lead_records").select("id", { count: "exact", head: true }), job).in("id", slice),
+        "ids",
+      );
     }
     return job.limit_n ? Math.min(n, job.limit_n) : n;
   }
-  const { count, error } = await applyFilters(
-    db.from("lead_records").select("id", { count: "exact", head: true }), job,
+  const n = await countWithRetry(
+    () => applyFilters(db.from("lead_records").select("id", { count: "exact", head: true }), job),
+    "filters",
   );
-  if (error) throw new Error(`count failed: ${error.message}`);
-  const n = count ?? 0;
   return job.limit_n ? Math.min(n, job.limit_n) : n;
 }
 

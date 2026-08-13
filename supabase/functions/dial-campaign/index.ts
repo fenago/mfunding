@@ -182,6 +182,87 @@ Deno.serve(async (req) => {
       return json({ ok: true, campaign: data });
     }
 
+    // ── set_tag: give an EXISTING campaign a dial tag (or change it) ──────────
+    //
+    // Needed because a campaign created before dial tags existed can never be
+    // pushed into: no tag means nothing to push and nothing for the dialer to
+    // target, and `campaigns` writes are super_admin-only so the UI cannot fix it
+    // directly. PH-UCC-2026-001 is exactly this case.
+    //
+    // CHANGING a tag that already has leads pushed under it is REFUSED, not
+    // warned about. The old tag stays on those lead_records.push_tags forever, so
+    // the campaign's attribution would silently split across two tags and every
+    // per-campaign number would quietly under-count. The remedy already exists and
+    // is named in the error: re-push the slice with retag:true to carry the new
+    // tag onto those leads, then set it here.
+    if (action === "set_tag") {
+      const campaignId = clean(payload.campaign_id);
+      if (!campaignId) return json({ error: "campaign_id required" }, 400);
+      const rawTag = clean(payload.tag);
+      if (!rawTag) return json({ error: "tag required", field: "tag" }, 400);
+
+      const { data: camp, error: cErr } = await db.from("campaigns")
+        .select("id,code,name,dial_tag,setup_checklist").eq("id", campaignId).maybeSingle();
+      if (cErr || !camp) return json({ error: "campaign not found" }, 404);
+
+      const { data: normTag } = await db.rpc("normalize_dial_tag", { p_raw: rawTag });
+      const tag = normTag as string | null;
+      // p_campaign_id excludes THIS campaign, so re-saving its own tag is fine.
+      const { data: problem } = await db.rpc("dial_tag_problem", {
+        p_tag: rawTag, p_campaign_id: campaignId,
+      });
+      if (problem) return json({ error: problem, tag, field: "tag" }, 400);
+      if (tag === camp.dial_tag) {
+        return json({ ok: true, unchanged: true, campaign: camp });
+      }
+
+      // Refuse a CHANGE that would split existing attribution.
+      if (camp.dial_tag) {
+        const { count } = await db.from("lead_records")
+          .select("id", { count: "exact", head: true })
+          .contains("push_tags", [camp.dial_tag]);
+        if ((count ?? 0) > 0) {
+          return json({
+            error: `${count} lead(s) were already pushed under "${camp.dial_tag}". `
+              + `Changing the tag now would split this campaign's attribution across two tags. `
+              + `Re-push that slice with retag:true carrying "${tag}" first, then change it here.`,
+            field: "tag", leads_under_old_tag: count, old_tag: camp.dial_tag,
+          }, 409);
+        }
+      }
+
+      // Create the tag in GHL BEFORE writing the column, same order as create: a
+      // GHL refusal must not leave a campaign pointing at a tag that doesn't exist.
+      let cfg;
+      try { cfg = await getGhlConfig(db); }
+      catch (e) { return json({ error: `GHL not configured: ${e instanceof Error ? e.message : String(e)}` }, 502); }
+      const tagRes = await createLocationTag(cfg, tag!);
+      if (!tagRes.ok) return json({ error: `GHL tag create failed: ${tagRes.error}`, tag }, 502);
+
+      // The checklist labels EMBED the tag, and a tag change invalidates the HP
+      // wiring (HP is still pointed at the old tag), so the HP steps are re-seeded
+      // as not-done rather than left claiming work that no longer applies.
+      const { data: updated, error: uErr } = await db.from("campaigns").update({
+        dial_tag: tag,
+        setup_checklist: dialChecklist(tag!, tagRes.created),
+      }).eq("id", campaignId)
+        .select("id,code,name,channel,status,dial_tag,setup_checklist").single();
+      if (uErr) {
+        if (uErr.message.includes("campaigns_dial_tag_uidx")) {
+          return json({ error: `${tag} was claimed by another campaign moments ago`, tag, field: "tag" }, 409);
+        }
+        return json({ error: `tag update failed: ${uErr.message}` }, 500);
+      }
+      return json({
+        ok: true,
+        campaign: updated,
+        ghl_tag: { name: tag, created: tagRes.created },
+        previous_tag: camp.dial_tag,
+        checklist_reseeded: true,
+        next: "The HP checklist was reset — the dialer is still pointed at the old tag until you rework it.",
+      });
+    }
+
     // ── create ──
     if (action === "create") {
       const name = clean(payload.name);

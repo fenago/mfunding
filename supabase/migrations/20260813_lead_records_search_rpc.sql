@@ -28,6 +28,11 @@
 -- Scoped to the lead browser's CURRENT deployed filter surface. Every ordering
 -- ends in the PK: OFFSET pagination over a non-unique sort key silently drops and
 -- duplicates rows, which would corrupt an export.
+-- Dropped first because the return type changed (has_any_email added): Postgres
+-- refuses CREATE OR REPLACE when the OUT-parameter row type differs.
+drop function if exists public.lead_records_search(
+  text, text[], uuid[], text[], text[], numeric, numeric, text[], boolean, text, boolean, text, integer, integer);
+
 create or replace function public.lead_records_search(
   p_q             text    default null,
   p_lead_types    text[]  default null,
@@ -50,7 +55,7 @@ returns table (
   address text, city text, state text, zip text,
   employees integer, revenue numeric, sic_code text, sic_description text,
   filing_date date, secured_party text,
-  extra_phones jsonb, extra_emails jsonb,
+  extra_phones jsonb, extra_emails jsonb, has_any_email boolean,
   is_dup_of_prior boolean, status text, ghl_contact_id text,
   pushed_at timestamptz, push_tags text[], push_error text,
   matched_existing boolean, created_at timestamptz,
@@ -80,11 +85,11 @@ begin
        and (p_revenue_min is null or r.revenue >= p_revenue_min)
        and (p_revenue_max is null or r.revenue <= p_revenue_max)
        and (p_statuses    is null or r.status    = any(p_statuses))
-       -- has_email is PRIMARY-ONLY here on purpose, matching the UI's current
-       -- filter label. Extras are searchable via p_q, not via this flag.
-       and (p_has_email is null
-            or (p_has_email and r.email is not null)
-            or (not p_has_email and r.email is null))
+       -- ONE definition of has_email, shared with lead-push-ghl {action:count}
+       -- and the export: the generated has_any_email column (primary OR any
+       -- extra). An email campaign can mail any address on the record, so "has
+       -- an email" must mean "is reachable by email".
+       and (p_has_email is null or r.has_any_email = p_has_email)
        and (p_tag is null or r.push_tags @> array[lower(p_tag)])
        and (not p_exclude_dups or r.is_dup_of_prior = false)
   ), counted as (
@@ -95,7 +100,7 @@ begin
          f.address, f.city, f.state, f.zip,
          f.employees, f.revenue, f.sic_code, f.sic_description,
          f.filing_date, f.secured_party,
-         f.extra_phones, f.extra_emails,
+         f.extra_phones, f.extra_emails, f.has_any_email,
          f.is_dup_of_prior, f.status, f.ghl_contact_id,
          f.pushed_at, f.push_tags, f.push_error,
          f.matched_existing, f.created_at,
