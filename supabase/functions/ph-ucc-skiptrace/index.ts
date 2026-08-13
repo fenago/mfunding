@@ -201,15 +201,29 @@ function aggregate(persons: Person[]) {
   const status: "ready" | "email_only" | "no_match" =
     usablePhones.length > 0 ? "ready" : allEmails.length > 0 ? "email_only" : "no_match";
 
-  const tcpaNote = tcpaPhones.length ? ` ${tcpaPhones.length} suppressed as TCPA-litigator.` : "";
+  // "What the scrub removed" fragment. Names a category ONLY when a number in it was
+  // actually pulled — DNC only when dncPhones.length>0, litigator only when
+  // tcpaPhones.length>0. It counts NUMBERS removed; it never labels the PERSON a
+  // litigator (that person-level flag would only matter on a lead with zero usable
+  // numbers, and even then we don't imply the human is a litigator on a ready lead).
+  const removedParts: string[] = [];
+  if (dncPhones.length) removedParts.push(`${dncPhones.length} DNC`);
+  if (tcpaPhones.length) removedParts.push(`${tcpaPhones.length} litigator`);
+  const removedList = removedParts.join(" + ");
+
   const statusReason =
     status === "ready"
-      ? `${usablePhones.length} dialable number(s) found; ${dncPhones.length} DNC-suppressed.${tcpaNote} DNC + TCPA-litigator suppressed (BatchData); ready to load.`
+      // OUTCOME first. Suppression clause appended ONLY when something was removed,
+      // so a clean ready lead reads simply "Ready to dial — N usable number(s)."
+      ? `Ready to dial — ${usablePhones.length} usable number(s).` +
+        (removedList ? ` ${removedList} number(s) removed by BatchData scrub.` : "")
     : status === "email_only"
-      ? `${allEmails.length} email(s) found; ${dncPhones.length} DNC + ${tcpaPhones.length} TCPA-litigator number(s) suppressed. Routed to cold-email.`
+      ? `No dialable number (${removedList ? `${removedList} number(s) removed` : "none found"}); ` +
+        `${allEmails.length} email(s) found — routed to cold email.`
     : anyPerson
-      ? `Person matched but no dialable number and no email (${dncPhones.length} DNC, ${tcpaPhones.length} TCPA-litigator).`
-      : "No skip-trace match for this address.";
+      ? `Person matched but no usable number or email.` +
+        (removedList ? ` ${removedList} number(s) removed by BatchData scrub.` : "")
+      : `No skip-trace match for this address.`;
 
   return { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones, bestPhone, bestEmail, primaryName, status, statusReason };
 }
@@ -358,6 +372,46 @@ Deno.serve(async (req) => {
       ok: true, action: "reparse", scanned, changed,
       phone_cleared: phoneCleared, status_changed: statusChanged, litigator_leads: litigatorLeads, errored,
       elapsed_ms: Date.now() - started, details,
+    });
+  }
+
+  // ── Reword mode: rewrite ONLY status_reason from STORED ph_ucc_contacts.raw, with NO
+  // BatchData call, NO spend, and — unlike reparse — NO status/phone/email/phones change.
+  // It exists to refresh the human-readable copy on leads traced before the reason wording
+  // was fixed, INCLUDING ready/loaded/suppressed leads that reparse deliberately skips.
+  // It recomputes the reason via the SAME aggregate() the trace uses, then writes only that
+  // one string. offset+limit let the caller page through the whole traced book across calls.
+  if (action === "reword") {
+    const rwLimit = Math.max(1, Math.min(2000, Math.floor(num(payload.limit ?? url.searchParams.get("limit")) ?? 500)));
+    const rwOffset = Math.max(0, Math.floor(num(payload.offset ?? url.searchParams.get("offset")) ?? 0));
+    const { data: rwLeads, error: rwErr } = await db.from("ph_ucc_leads")
+      .select("id,status,status_reason")
+      .not("traced_at", "is", null)                 // only already-traced leads (no spend, nothing to trace)
+      .order("traced_at", { ascending: true, nullsFirst: false })
+      .range(rwOffset, rwOffset + rwLimit - 1);
+    if (rwErr) return json({ ok: false, error: `reword select failed: ${rwErr.message}` }, 500);
+
+    let scanned = 0, updated = 0, noContacts = 0, errored = 0;
+    for (const lead of (rwLeads ?? []) as Array<{ id: string; status: string; status_reason: string | null }>) {
+      if (Date.now() - started > BUDGET_MS) break;
+      const { data: crows } = await db.from("ph_ucc_contacts").select("raw").eq("lead_id", lead.id);
+      const rows = (crows ?? []) as Array<{ raw: any }>;
+      if (rows.length === 0) { noContacts++; continue; }
+      scanned++;
+      const persons: Person[] = rows.map((cr) => personViewFromRaw(cr.raw));
+      const agg = aggregate(persons);                // recompute — but we ONLY read agg.statusReason
+      if (agg.statusReason === lead.status_reason) continue;   // already correct — skip write
+      // SAFETY: update ONLY status_reason. Never status/phone/email/phones — this is copy-only.
+      const { error: uErr } = await db.from("ph_ucc_leads").update({ status_reason: agg.statusReason }).eq("id", lead.id);
+      if (uErr) { errored++; continue; }
+      updated++;
+    }
+    const returned = (rwLeads ?? []).length;
+    return json({
+      ok: true, action: "reword", offset: rwOffset, limit: rwLimit,
+      returned, scanned, updated, no_contacts: noContacts, errored,
+      next_offset: returned === rwLimit ? rwOffset + rwLimit : null,   // null = end of the book
+      elapsed_ms: Date.now() - started,
     });
   }
 
