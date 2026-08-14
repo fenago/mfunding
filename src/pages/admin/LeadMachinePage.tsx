@@ -29,6 +29,7 @@ import {
   normalizeDialTag,
   suggestDialTag,
   campaignLabel,
+  checklistProgress,
   type Campaign,
   type DialSource,
   type DialTagCheck,
@@ -924,7 +925,15 @@ function ProcessStrip() {
    No war stories, no justification, no history in the step flow — every "why"
    lives in the folded traps block instead. Anything that isn't needed to execute
    does not belong between the numbers. */
-function HotProspectorHandoff({ tag }: { tag: string | null }) {
+function HotProspectorHandoff({
+  tag, campaign, batchCode, tagIsNewInGhl, lastPush,
+}: {
+  tag: string | null;
+  campaign: Campaign | null;
+  batchCode: string | null;
+  tagIsNewInGhl: boolean;
+  lastPush: { pushed: number; tags: string[]; batchCode: string | null } | null;
+}) {
   // The tag actually on screen, so the steps name the real thing rather than a
   // placeholder the owner has to mentally substitute.
   const T = tag ? (
@@ -936,6 +945,12 @@ function HotProspectorHandoff({ tag }: { tag: string | null }) {
   // The secondary line: smaller, grey, never bold — so the eye lands on the
   // action first and only drops down here when it needs the detail.
   const sub = "mt-0.5 text-[11px] font-normal text-gray-500 dark:text-gray-400";
+
+  /* A concrete group name beats "this batch's group" — it's what he types into
+     HP's Create Group box. HP's own convention is the batch code spaced out
+     (UCC-20260813 → "UCC 20260813"), per the SOP's "name it after the batch". */
+  const groupName = batchCode ? batchCode.replace(/-/g, " ") : null;
+  const checklist = campaign ? checklistProgress(campaign) : null;
 
   return (
     <section className="rounded-xl border border-cyan-300 dark:border-cyan-800 bg-cyan-50/60 dark:bg-cyan-900/20 p-4 space-y-3">
@@ -949,7 +964,29 @@ function HotProspectorHandoff({ tag }: { tag: string | null }) {
             {tag}
           </span>
         )}
+        {checklist && checklist.total > 0 && (
+          <Link
+            to="/admin/campaigns"
+            className={`text-[11px] px-2 py-0.5 rounded-full font-semibold hover:underline ${
+              checklist.complete
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+            }`}
+          >
+            checklist {checklist.done} of {checklist.total}
+          </Link>
+        )}
       </div>
+
+      {/* Bound to the push that RAN, not the panel's live draft — he's about to
+          change that draft setting up the next slice. */}
+      {lastPush && lastPush.pushed > 0 && (
+        <p className="text-[11px] text-emerald-800 dark:text-emerald-300">
+          <strong>You just pushed {lastPush.pushed.toLocaleString()} leads</strong> tagged{" "}
+          <code className="font-mono">{lastPush.tags.join(", ")}</code>
+          {lastPush.batchCode && <> from {lastPush.batchCode}</>}. Now put them in front of the dialer:
+        </p>
+      )}
 
       <p className="text-[11px] text-gray-600 dark:text-gray-300">
         <strong>One tag, three places:</strong> the push above · HP <strong>Step 2 "Select Your Tag"</strong> · the
@@ -965,23 +1002,60 @@ function HotProspectorHandoff({ tag }: { tag: string | null }) {
           <strong>Push the slice from the panel above, tagged {T}.</strong>
           <div className={sub}>The tagged GoHighLevel sync is the only way leads may enter HotProspector.</div>
         </li>
-        <li>
-          <strong>New tag? HP → avatar menu → Quick Links → "Refresh Meta".</strong>
-          <div className={sub}>Skip it if {T} already appears in Step 2.</div>
-        </li>
+        {/* Required or skippable — knowable from whether GHL actually minted the
+            tag, so it says one thing instead of hedging both. */}
+        {tagIsNewInGhl ? (
+          <li>
+            <strong>Run HP → avatar menu → Quick Links → "Refresh Meta" — required.</strong>
+            <div className={sub}>{tag} was just created in VibeReach, so HP can't see it yet.</div>
+          </li>
+        ) : (
+          <li>
+            <strong>Check {T} appears in Step 2 below — if not, Quick Links → "Refresh Meta".</strong>
+            <div className={sub}>Usually already there; this tag wasn't created just now.</div>
+          </li>
+        )}
         <li>
           <strong>
             HP → Settings → INTEGRATIONS → "Go High Level Integration" → the MFunding.net row.
           </strong>{" "}
-          Step 2 tag = {T} · Step 3 group = this batch's HP group · Step 4 <strong>"Sync Leads"</strong>.
+          Step 2 tag = {T} · Step 3 group ={" "}
+          {groupName ? <strong>"{groupName}"</strong> : <>this batch's HP group</>} · Step 4{" "}
+          <strong>"Sync Leads"</strong>.
           <div className={sub}>
-            The tag dropdown has a tiny search box. Make the group first under Contacts → "Create Group" if it's
-            missing. Wait for the row's red "InProgress N%".
+            The tag dropdown has a tiny search box.{" "}
+            {groupName ? (
+              <>Make "{groupName}" first under Contacts → "Create Group" if it's missing.</>
+            ) : (
+              <>Make the group first under Contacts → "Create Group" if it's missing.</>
+            )}{" "}
+            Wait for the row's red "InProgress N%".
           </div>
         </li>
         <li>
-          <strong>In the HP dialer campaign, toggle "TAGS TO DIAL WITHOUT SORTING" ON and pick {T}.</strong>
-          <div className={sub}>"Leads Found" must show your number. If it reads 0 the tag isn't set — stop.</div>
+          <strong>
+            In{" "}
+            {campaign?.hp_campaign_name ? (
+              <>your linked HP campaign "{campaign.hp_campaign_name}"</>
+            ) : (
+              <>the HP dialer campaign</>
+            )}
+            , toggle "TAGS TO DIAL WITHOUT SORTING" ON and pick {T}.
+          </strong>
+          <div className={sub}>
+            "Leads Found" must show{" "}
+            {lastPush && lastPush.pushed > 0 ? <strong>{lastPush.pushed.toLocaleString()}</strong> : <>your number</>}.
+            If it reads 0 the tag isn't set — stop.
+            {campaign && !campaign.hp_campaign_id && (
+              <>
+                {" "}
+                <Link to="/admin/campaigns" className="text-ocean-blue hover:underline">
+                  Link the HP campaign
+                </Link>{" "}
+                so its dial stats attribute here.
+              </>
+            )}
+          </div>
         </li>
         <li>
           <strong>Reopen the campaign — confirm the settings stuck.</strong>
@@ -1883,6 +1957,23 @@ export default function LeadMachinePage() {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [createdNote, setCreatedNote] = useState<string | null>(null);
 
+  /* Tags this session actually CREATED in GHL. HotProspector caches GHL's tag
+     list, so "Refresh Meta" is genuinely required for these and genuinely
+     unnecessary for a tag that already existed — the difference is knowable, so
+     the HP steps state it instead of hedging both ways every time.
+     `ghl_tag.created` from the create response is the authority: the tag may
+     already have existed in GHL even when the campaign is brand new. */
+  const [tagsNewInGhl, setTagsNewInGhl] = useState<Set<string>>(new Set());
+
+  /* The push that actually ran, so the HP steps describe THAT rather than
+     whatever the panel's draft says now. Set only on a completed push. */
+  const [lastPush, setLastPush] = useState<{
+    pushed: number;
+    tags: string[];
+    batchCode: string | null;
+    campaignId: string | null;
+  } | null>(null);
+
   /* What the campaign is provisionally called and tagged, from the slice you're
      looking at. Both are editable in the creator — these are a head start, not a
      decision. */
@@ -1929,6 +2020,8 @@ export default function LeadMachinePage() {
         const t = c.dial_tag;
         setTags((prev) => (prev.includes(t) ? prev : [...prev, t]));
         setAttributionTag(t);
+        // Only when GHL actually minted it — an existing tag needs no Refresh Meta.
+        if (ghlTagCreated) setTagsNewInGhl((prev) => new Set(prev).add(t));
       }
       setCreatorOpen(false);
       setCreatedNote(
@@ -2195,6 +2288,15 @@ export default function LeadMachinePage() {
               ? ` — metrics attribute to ${campaignLabel(attributionCampaign)}. HotProspector dials it once that campaign's "Tags to Dial" includes ${attributionCampaign.dial_tag}.`
               : " — target those tags in a HotProspector campaign to dial them."),
         );
+        /* Freeze what this run actually did, so the HP steps below describe the
+           push that happened rather than the panel's live draft — which the owner
+           is about to change as he sets up the next slice. */
+        setLastPush({
+          pushed,
+          tags: effectiveTags,
+          batchCode: pinnedBatch?.batch_code ?? null,
+          campaignId: attributionCampaign?.id ?? null,
+        });
       }
       setSelectedIds(new Set());
       await Promise.all([loadLeads(), loadBatches()]);
@@ -2208,6 +2310,7 @@ export default function LeadMachinePage() {
     autoBatchTag,
     autoTypeTag,
     fetchLeadPage,
+    pinnedBatch?.batch_code,
     fBatch,
     fStatus,
     loadBatches,
@@ -3093,7 +3196,18 @@ export default function LeadMachinePage() {
             )}
 
             {/* ── 5. Into HotProspector ── */}
-            <HotProspectorHandoff tag={attributionCampaign?.dial_tag ?? effectiveTags[0] ?? null} />
+            {/* After a push, describe THAT push; before one, the live draft. */}
+            <HotProspectorHandoff
+              tag={lastPush?.tags[0] ?? attributionCampaign?.dial_tag ?? effectiveTags[0] ?? null}
+              campaign={
+                lastPush?.campaignId
+                  ? (dialCampaigns.find((c) => c.id === lastPush.campaignId) ?? null)
+                  : attributionCampaign
+              }
+              batchCode={lastPush?.batchCode ?? pinnedBatch?.batch_code ?? null}
+              tagIsNewInGhl={tagsNewInGhl.has(lastPush?.tags[0] ?? attributionCampaign?.dial_tag ?? "")}
+              lastPush={lastPush}
+            />
 
             {/* The table still shows the last good page, so the failure needs to
                 be visible on its own rather than implied by stale rows. */}
