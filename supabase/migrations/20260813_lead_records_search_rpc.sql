@@ -76,7 +76,8 @@ create or replace function public.lead_records_search(
   p_statuses text[] default null, p_has_email boolean default null,
   p_tag text default null, p_exclude_dups boolean default false,
   p_order text default 'created_at_desc', p_limit integer default 50, p_offset integer default 0,
-  p_with_count boolean default true
+  -- COUNT IS OPT-IN. NULL total_count means NOT REQUESTED, never zero.
+  p_with_count boolean default false
 )
 returns table (
   id uuid, batch_id uuid, lead_type text, phone text, line_type text,
@@ -158,3 +159,25 @@ end;
 $fn$;
 revoke all on function public.lead_records_search from public, anon;
 grant execute on function public.lead_records_search to authenticated;
+
+-- ── CONTRACT CHANGE (deliberate hardening, team-lead approved) ────────────────
+-- p_with_count now defaults to FALSE. Counting is opt-in.
+--
+-- Three separate production bugs on this table had the same shape: the expensive
+-- thing was the DEFAULT and nobody chose it — PostgREST exact counts, the
+-- lead_batch_overview live aggregate, and this RPC's own unconditional count,
+-- which took the owner's landing view to 6,002 ms and intermittent 57014s.
+-- Defaults should be the cheap, safe path.
+--
+-- The mirror-image risk is a caller who omits the flag and wanted a total. That
+-- fails LOUD AND CHEAP — they get a NULL they must handle — rather than silent
+-- and expensive. total_count is NULL for "not requested" and is never 0, so an
+-- omitted flag can never be mistaken for "zero matches" and rendered as an empty
+-- book.
+--
+-- Verified as `authenticated` after the flip:
+--   omitted        -> total_count NULL, 131 ms
+--   explicit false -> total_count NULL,  99 ms
+--   explicit true  -> total_count 249,923 (the expensive path, now chosen)
+comment on function public.lead_records_search is
+  'Lead-browser search/fetch. SECURITY DEFINER with its own admin check, so it queries WITHOUT RLS and the trigram indexes become usable — under RLS no trigram index can serve ILIKE, because texticlike is not leakproof. COUNT IS OPT-IN (p_with_count, default FALSE): total_count NULL means NOT REQUESTED, never zero. Counting an unfiltered set scans all 249,923 rows, and three separate bugs on this table came from an expensive count being the default nobody chose. Ordering comes from a fixed whitelist injected as a literal so it can match an index; a CASE-chain ORDER BY cannot. Every ordering ends in the PK so OFFSET pagination cannot drop or duplicate rows.';
