@@ -917,7 +917,13 @@ function ProcessStrip() {
 
    The five steps stay expanded: this is the next action after a push, not
    reference material, and the owner asked for it to be visible without hunting.
-   The traps fold, because they're read once. */
+   The traps fold, because they're read once.
+
+   COPY RULE, and it is the whole point of this section: a step is ONE imperative
+   line naming the exact UI, with the fiddly bits on a single grey line under it.
+   No war stories, no justification, no history in the step flow — every "why"
+   lives in the folded traps block instead. Anything that isn't needed to execute
+   does not belong between the numbers. */
 function HotProspectorHandoff({ tag }: { tag: string | null }) {
   // The tag actually on screen, so the steps name the real thing rather than a
   // placeholder the owner has to mentally substitute.
@@ -926,6 +932,10 @@ function HotProspectorHandoff({ tag }: { tag: string | null }) {
   ) : (
     <span className="italic">your campaign tag</span>
   );
+
+  // The secondary line: smaller, grey, never bold — so the eye lands on the
+  // action first and only drops down here when it needs the detail.
+  const sub = "mt-0.5 text-[11px] font-normal text-gray-500 dark:text-gray-400";
 
   return (
     <section className="rounded-xl border border-cyan-300 dark:border-cyan-800 bg-cyan-50/60 dark:bg-cyan-900/20 p-4 space-y-3">
@@ -942,45 +952,57 @@ function HotProspectorHandoff({ tag }: { tag: string | null }) {
       </div>
 
       <p className="text-[11px] text-gray-600 dark:text-gray-300">
-        <strong>One tag, three places:</strong> the push panel above, HP's <strong>Step 2 "Select Your Tag"</strong>,
-        and the campaign's <strong>"Tags to Dial"</strong>. All three must be {T} or the floor dials nothing.
+        <strong>One tag, three places:</strong> the push above · HP <strong>Step 2 "Select Your Tag"</strong> · the
+        campaign's <strong>"Tags to Dial"</strong>. All three must be {T}.
+      </p>
+
+      <p className="text-[11px] font-semibold text-red-700 dark:text-red-400">
+        Never import a CSV straight into HotProspector — the setter's merchant link breaks on every lead.
       </p>
 
       <ol className="space-y-2 text-xs text-gray-700 dark:text-gray-200 list-decimal pl-5 marker:font-bold marker:text-cyan-700 dark:marker:text-cyan-400">
         <li>
-          <strong>Push from here first.</strong> Leads must reach HotProspector through VibeReach, tagged.{" "}
-          <u>Never import a list straight into HotProspector</u> — those leads carry no GoHighLevel id, so the
-          setter's <strong>"Gohighlevel Custom Link"</strong> errors <strong>"Lead data not Synced"</strong> on
-          every one and they have no cockpit. That already cost a dead floor and a lost day on 1,047 leads.
+          <strong>Push the slice from the panel above, tagged {T}.</strong>
+          <div className={sub}>The tagged GoHighLevel sync is the only way leads may enter HotProspector.</div>
         </li>
         <li>
-          <strong>If the tag is brand-new:</strong> HP <strong>avatar menu → Quick Links → "Refresh Meta"</strong>.
-          HotProspector caches GoHighLevel's tag list, so a tag it has never seen won't be selectable until this
-          runs. Skip it if {T} already appears in Step 2.
+          <strong>New tag? HP → avatar menu → Quick Links → "Refresh Meta".</strong>
+          <div className={sub}>Skip it if {T} already appears in Step 2.</div>
         </li>
         <li>
-          <strong>HP → Settings → INTEGRATIONS → "Go High Level Integration"</strong> → the{" "}
-          <strong>MFunding.net</strong> row. <strong>Step 2 "Select Your Tag"</strong> = {T} (a dropdown with a tiny
-          search box at the top — type it, then click it). <strong>Step 3 "Group to Sync With"</strong> = this
-          batch's HP group (create it under <strong>Contacts → "Create Group"</strong> if it doesn't exist).{" "}
-          <strong>Step 4 → "Sync Leads"</strong>, then wait for the red <strong>"InProgress N%"</strong> on the row.
+          <strong>
+            HP → Settings → INTEGRATIONS → "Go High Level Integration" → the MFunding.net row.
+          </strong>{" "}
+          Step 2 tag = {T} · Step 3 group = this batch's HP group · Step 4 <strong>"Sync Leads"</strong>.
+          <div className={sub}>
+            The tag dropdown has a tiny search box. Make the group first under Contacts → "Create Group" if it's
+            missing. Wait for the row's red "InProgress N%".
+          </div>
         </li>
         <li>
-          <strong>HP dialer campaign → toggle "TAGS TO DIAL WITHOUT SORTING" ON</strong> → select {T} →{" "}
-          <strong>"Leads Found" must show your number.</strong> If it still reads 0, the tag isn't set — do not
-          proceed.
+          <strong>In the HP dialer campaign, toggle "TAGS TO DIAL WITHOUT SORTING" ON and pick {T}.</strong>
+          <div className={sub}>"Leads Found" must show your number. If it reads 0 the tag isn't set — stop.</div>
         </li>
         <li>
-          <strong>Reopen the campaign after saving and confirm the settings stuck.</strong> HotProspector silently
-          reverts some edits on save, so a campaign that looked right when you closed it may not be.
+          <strong>Reopen the campaign — confirm the settings stuck.</strong>
+          <div className={sub}>HotProspector silently reverts some edits on save.</div>
         </li>
       </ol>
 
       <details className="group">
         <summary className="cursor-pointer text-[11px] font-semibold text-cyan-800 dark:text-cyan-300 hover:underline">
-          Why these exact clicks — the four traps ▾
+          Why these exact clicks — the traps ▾
         </summary>
         <ul className="mt-2 space-y-1.5 text-[11px] text-gray-600 dark:text-gray-300 list-disc pl-5">
+          <li>
+            <strong>Why a CSV import is fatal.</strong> Leads that skipped GoHighLevel carry no GoHighLevel id, so
+            the setter's <strong>"Gohighlevel Custom Link"</strong> errors <strong>"Lead data not Synced"</strong>{" "}
+            on every one and they have no cockpit. That already cost a dead floor and a lost day on 1,047 leads.
+          </li>
+          <li>
+            <strong>Why "Refresh Meta".</strong> HotProspector caches GoHighLevel's tag list, so a tag it has never
+            seen isn't selectable in Step 2 until that runs.
+          </li>
           <li>
             <strong>Step 2's tag is mandatory.</strong> With no tag selected, <strong>Sync Leads is a silent
             no-op</strong> — it reports nothing useful and moves zero leads.
