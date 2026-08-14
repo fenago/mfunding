@@ -16,6 +16,7 @@ import {
   BoltIcon,
   MegaphoneIcon,
   PhoneArrowUpRightIcon,
+  PlusIcon,
 } from "@heroicons/react/24/outline";
 import * as tus from "tus-js-client";
 import supabase from "@/supabase";
@@ -2778,16 +2779,30 @@ export default function LeadMachinePage() {
                     onChange={(e) => pickCampaign(e.target.value)}
                     disabled={pushRunning}
                   >
-                    <option value="">— none (ad-hoc tag below) —</option>
+                    <option value="">
+                      {taggedCampaigns.length === 0 ? "— no campaigns yet —" : "— none (just use tags below) —"}
+                    </option>
                     {taggedCampaigns.map((c) => (
                       <option key={c.id} value={c.id}>
                         {campaignLabel(c)} · {c.dial_tag} · {c.status}
                       </option>
                     ))}
                   </select>
+                  {/* The create path is a real button, not a quiet link. An empty
+                      dropdown next to a ghost link read as "the feature is broken"
+                      rather than "make one" — the owner bounced off exactly that. */}
                   {!creatorOpen && (
-                    <button onClick={() => setCreatorOpen(true)} disabled={pushRunning} className="btn-ghost btn-sm">
-                      + New dial campaign
+                    <button
+                      onClick={() => setCreatorOpen(true)}
+                      disabled={pushRunning}
+                      className={
+                        taggedCampaigns.length === 0
+                          ? "btn-primary btn-sm inline-flex items-center gap-1"
+                          : "btn-ghost btn-sm inline-flex items-center gap-1"
+                      }
+                    >
+                      <PlusIcon className="w-3.5 h-3.5" />
+                      New dial campaign
                     </button>
                   )}
                   {pickedCampaign && (
@@ -2805,8 +2820,14 @@ export default function LeadMachinePage() {
                   </p>
                 )}
                 {!campaignsErr && taggedCampaigns.length === 0 && (
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    No dial campaigns yet. Create one to make this push attributable, or just type a tag below.
+                  <p className="text-[11px] text-gray-600 dark:text-gray-300">
+                    <strong>No campaigns yet — that's expected, not an error.</strong> Hit{" "}
+                    <strong>New dial campaign</strong> above to make one; it appears here and on{" "}
+                    <Link to="/admin/campaigns" className="text-ocean-blue hover:underline">
+                      Campaigns
+                    </Link>{" "}
+                    with its own metrics. Or skip it entirely and just type tags below — an untracked push still
+                    works.
                   </p>
                 )}
                 {untaggedCampaigns.length > 0 && (
@@ -2876,7 +2897,7 @@ export default function LeadMachinePage() {
                   })}
                   <input
                     className={`${input} w-52`}
-                    placeholder="add a campaign tag…"
+                    placeholder="add tags — Enter after each…"
                     value={tagDraft}
                     onChange={(e) => setTagDraft(e.target.value)}
                     onKeyDown={(e) => {
@@ -2888,6 +2909,20 @@ export default function LeadMachinePage() {
                     onBlur={() => addTag(tagDraft)}
                   />
                 </div>
+                {/* Multi-tag has always worked; nothing said so, and the singular
+                    placeholder implied a limit of one. Say it plainly at the input. */}
+                <p className="text-[11px] text-gray-600 dark:text-gray-300">
+                  <strong>Add as many tags as you want</strong> — every one lands on every pushed lead.{" "}
+                  <strong>Enter</strong> or a <strong>comma</strong> adds each; click the × on a chip to drop it.
+                  {pickedCampaign && (
+                    <>
+                      {" "}
+                      Extra tags sit happily alongside the campaign's{" "}
+                      <code className="font-mono">{pickedCampaign.dial_tag}</code> — that one drives attribution,
+                      the rest are yours to use however you like.
+                    </>
+                  )}
+                </p>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400">
                   These tags drive HotProspector: campaigns dial by tag. Tags are forced to lowercase-kebab. The
                   <code>lm-*</code> type tag and the batch tag are added automatically and are{" "}
