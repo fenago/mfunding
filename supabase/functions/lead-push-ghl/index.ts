@@ -136,6 +136,8 @@ export interface LeadFilters {
   secured_party?: string;
   has_email?: boolean;
   push_tags_contains?: string | string[];
+  /** Rows whose push_tags do NOT contain this tag — the backfill selector. */
+  push_tags_missing?: string;
   search?: string;                     // name / company / phone / email
   exclude_dups?: boolean;
 }
@@ -207,6 +209,11 @@ function applyFilters(q: any, job: Job) {
   // Tag filter — hits the push_tags GIN index (array containment, ALL of them).
   const tagsIn = asArray(f.push_tags_contains);
   if (tagsIn) q = q.contains("push_tags", tagsIn.map((t) => t.toLowerCase()));
+  // "missing this tag" — lets a backfill touch ONLY the rows that still need it,
+  // instead of re-pushing every contact to add one attribute.
+  if (f.push_tags_missing) {
+    q = q.not("push_tags", "cs", `{${f.push_tags_missing.trim().toLowerCase()}}`);
+  }
 
   if (f.search) {
     const s = f.search.replace(/[%,()]/g, " ").trim();
@@ -223,13 +230,14 @@ function applyFilters(q: any, job: Job) {
 
 interface LeadRow {
   id: string; batch_id: string; lead_type: string; status: string;
+  line_type: string | null;
   phone: string | null; email: string | null;
   first_name: string | null; last_name: string | null; company: string | null;
   address: string | null; city: string | null; state: string | null; zip: string | null;
   push_tags: string[] | null;
   extra_phones: { phone: string }[] | null;
 }
-const LEAD_COLS = "id,batch_id,lead_type,status,phone,email,first_name,last_name,"
+const LEAD_COLS = "id,batch_id,lead_type,status,line_type,phone,email,first_name,last_name,"
   + "company,address,city,state,zip,push_tags,extra_phones";
 
 /** Count the rows a job will touch (respecting its limit). This is the SAME
@@ -338,9 +346,25 @@ async function batchTagMap(db: SupabaseClient, ids: string[]): Promise<Record<st
  * UI's tag filter/export would then disagree with GHL. Sending and storing the
  * union keeps both sides identical.
  */
+/** The line-type attribute tag, so the owner can slice mobile/landline INSIDE
+ * VibeReach instead of only pre-push. Same class as lm-* — provenance/attribute,
+ * dials nothing. Unknown/null line types get no tag rather than a junk one. */
+const LINE_TYPE_TAG: Record<string, string> = {
+  "mobile": "lt-mobile",
+  "landline": "lt-landline",
+  "voip": "lt-voip",
+  "toll-free": "lt-tollfree",
+};
+function lineTypeTag(lineType: string | null): string | null {
+  if (!lineType) return null;
+  return LINE_TYPE_TAG[lineType.trim().toLowerCase()] ?? null;
+}
+
 function tagsFor(lead: LeadRow, batchTag: string | undefined, userTags: string[]): string[] {
+  const lt = lineTypeTag(lead.line_type);
   const out = [
     typeTag(lead.lead_type),
+    ...(lt ? [lt] : []),
     ...(batchTag ? [batchTag] : []),
     ...userTags,
     ...(lead.push_tags ?? []),
@@ -375,7 +399,43 @@ async function pushOne(
     tags,
     source: `Lead Machine${batchCode ? ` ${batchCode.toUpperCase()}` : ""}`,
   }, onRateLimit);
-  const contactId = res.data?.contact?.id ?? null;
+  let contactId = res.data?.contact?.id ?? null;
+  let isNew = res.data?.new;
+
+  // GHL is stricter about email syntax than our validator: addresses like
+  // "george@gs/interprises.info" pass ours and are rejected by theirs. Losing the
+  // whole lead over a bad email throws away a perfectly dialable PHONE, so retry
+  // once WITHOUT the address. The lead lands; only the email is dropped.
+  if (!res.ok && email && /email must be an email/i.test(ghlErrorMessage(res.error))) {
+    const retry = await upsertContact(cfg, {
+      firstName: clean(lead.first_name),
+      lastName: clean(lead.last_name),
+      companyName: clean(lead.company),
+      phone: lead.phone ? `+1${lead.phone}` : undefined,
+      address1: clean(lead.address),
+      city: clean(lead.city),
+      state: clean(lead.state),
+      postalCode: clean(lead.zip),
+      ...((lead.extra_phones ?? []).length
+        ? { additionalPhones: (lead.extra_phones ?? []).map((p) => ({ phone: `+1${p.phone}` })) }
+        : {}),
+      tags,
+      source: `Lead Machine${batchCode ? ` ${batchCode.toUpperCase()}` : ""}`,
+    }, onRateLimit);
+    if (retry.ok && retry.data?.contact?.id) {
+      contactId = retry.data.contact.id;
+      isNew = retry.data.new;
+      return {
+        status: "pushed",
+        ghl_contact_id: contactId,
+        matched_existing: typeof isNew === "boolean" ? !isNew : null,
+        pushed_at: new Date().toISOString(),
+        push_tags: tags,
+        push_error: "pushed without email — GHL rejected the address as invalid",
+      };
+    }
+  }
+
   if (!res.ok || !contactId) {
     return {
       status: "error",
@@ -388,7 +448,6 @@ async function pushOne(
   // real merchant's existing record. Recording it is what lets a cleanup path
   // delete only what it created. `new === undefined` stays NULL — unknown, which
   // blocks deletion too (see the column comment).
-  const isNew = res.data?.new;
   return {
     status: "pushed",
     ghl_contact_id: contactId,
