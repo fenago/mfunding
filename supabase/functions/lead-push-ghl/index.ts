@@ -152,6 +152,16 @@ export interface LeadFilters {
   push_tags_contains?: string | string[];
   /** Rows whose push_tags do NOT contain this tag — the backfill selector. */
   push_tags_missing?: string;
+  /** Rows whose contact does not yet carry the Playbook deep link. Deliberately
+   * a COLUMN and not a marker tag: push_tags is mirrored to GHL, so a synthetic
+   * tag would clutter 85k contacts in the owner's CRM forever. Self-draining. */
+  playbook_link_missing?: boolean;
+  /** Only rows last pushed BEFORE this timestamp. Exists so a one-off backfill
+   * can express "everything from before the feature shipped" as a FILTER instead
+   * of a mass UPDATE: rewriting 22k rows of this table cost 77 seconds per 2,000
+   * (two GIN indexes and a wide row make HOT updates rare), while the same
+   * boundary read at query time is free. */
+  pushed_before?: string;
   search?: string;                     // name / company / phone / email
   exclude_dups?: boolean;
 }
@@ -190,6 +200,10 @@ function isCursorMode(job: Job): boolean {
   // Unordered, the identical fetch is 23ms on lead_records_status_idx. This is
   // the O(n^2) drain bug from the 85k push wearing a different hat.
   if (job.filters?.push_tags_missing) return false;
+  // Same argument for the Playbook-link backfill: a row is selected because
+  // playbook_link_at IS NULL, and a successful push sets it. Self-draining, so
+  // no cursor — and no ORDER BY to drag the planner onto the PK index.
+  if (job.filters?.playbook_link_missing === true) return false;
   return !!job.retag || job.filters?.status != null;
 }
 function statusesFor(job: Job): string[] {
@@ -232,6 +246,11 @@ function applyFilters(q: any, job: Job) {
   // in the generated column has_any_email so this fn, the search RPC and the
   // export cannot drift apart: there is exactly one definition, in the schema.
   if (typeof f.has_email === "boolean") q = q.eq("has_any_email", f.has_email);
+  // Served by lead_records_playbook_link_pending_idx, a working-set index whose
+  // predicate matches the rows still TO DO — so it shrinks as the pass completes
+  // instead of getting slower the closer it gets to done.
+  if (f.playbook_link_missing === true) q = q.is("playbook_link_at", null);
+  if (f.pushed_before) q = q.lt("pushed_at", f.pushed_before);
   // Tag filter — hits the push_tags GIN index (array containment, ALL of them).
   const tagsIn = asArray(f.push_tags_contains);
   if (tagsIn) q = q.contains("push_tags", tagsIn.map((t) => t.toLowerCase()));
@@ -493,6 +512,7 @@ async function pushOne(
         matched_existing: typeof isNew === "boolean" ? !isNew : null,
         pushed_at: new Date().toISOString(),
         push_tags: tags,
+        ...(link ? { playbook_link_at: new Date().toISOString() } : {}),
         push_error: "pushed without email — GHL rejected the address as invalid",
       };
     }
@@ -516,6 +536,10 @@ async function pushOne(
     matched_existing: typeof isNew === "boolean" ? !isNew : null,
     pushed_at: new Date().toISOString(),
     push_tags: tags,
+    // Only on SUCCESS. A failed push leaves this NULL so the row stays eligible —
+    // and cannot livelock, because the error path flips status to 'error', which
+    // drops it out of the status='pushed' selection anyway.
+    ...(link ? { playbook_link_at: new Date().toISOString() } : {}),
     push_error: null,
   };
 }
