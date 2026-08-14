@@ -174,6 +174,17 @@ const JOB_COLS = "id,batch_id,lead_ids,filters,tags,limit_n,retag,cursor_id,stat
  * cursor persisted on the job instead.
  */
 function isCursorMode(job: Job): boolean {
+  // ...EXCEPT when the filter is push_tags_missing, which makes the selection
+  // self-draining again: a row is selected precisely because it LACKS the tag we
+  // are about to give it, and every terminal path stamps push_tags (the error
+  // return writes them too), so a processed row can never be selected twice.
+  // Ordering is then pure cost, and not a small one — ORDER BY id forces the PK
+  // index, which walked 17,987 rows to find 250 Landline rows still missing
+  // lt-landline: 7,386ms per chunk and climbing as the run tags more of the
+  // book, until every window times out and the job sits at pushed=0 forever.
+  // Unordered, the identical fetch is 23ms on lead_records_status_idx. This is
+  // the O(n^2) drain bug from the 85k push wearing a different hat.
+  if (job.filters?.push_tags_missing) return false;
   return !!job.retag || job.filters?.status != null;
 }
 function statusesFor(job: Job): string[] {
