@@ -382,6 +382,26 @@ function lineTypeTag(lineType: string | null): string | null {
   return LINE_TYPE_TAG[lineType.trim().toLowerCase()] ?? null;
 }
 
+/** Where the app lives, for the one-click deep link stamped on every contact. */
+const APP_URL = (Deno.env.get("APP_PUBLIC_URL") ?? "https://mfunding.net").replace(/\/$/, "");
+
+/**
+ * The "open this merchant in the Revenue Playbook" link, stamped into a GHL
+ * custom field so a setter can jump straight from the VibeReach contact panel
+ * into the playbook with the deal already loaded.
+ *
+ * Deliberately the PHONE form (?phone=<last10>), not the contact-id form (?x=):
+ * the phone is already on the row, so the link is computable BEFORE the upsert
+ * and rides along in the same request. The id form would need a second API call
+ * per contact to learn the id GHL just assigned — doubling this push's
+ * rate-limited cost for no gain, since PlaybooksPage resolves both through the
+ * same playbook-open-contact fn. lead_records.phone is stored as normalized
+ * NANP last-10, which is exactly what dialDigits/the resolver match on.
+ */
+function playbookLink(lead: LeadRow): string | null {
+  return lead.phone ? `${APP_URL}/admin/playbooks?phone=${lead.phone}` : null;
+}
+
 function tagsFor(lead: LeadRow, batchTag: string | undefined, userTags: string[]): string[] {
   const lt = lineTypeTag(lead.line_type);
   const out = [
@@ -400,6 +420,8 @@ async function pushOne(
   onRateLimit?: (retryAfterMs: number | null) => void,
 ): Promise<Record<string, unknown>> {
   const email = lead.email && EMAIL_RE.test(lead.email.trim()) ? lead.email.trim().toLowerCase() : null;
+  const link = playbookLink(lead);
+  const customFields = link ? [{ key: "playbook_link", field_value: link }] : [];
   const res = await upsertContact(cfg, {
     firstName: clean(lead.first_name),
     lastName: clean(lead.last_name),
@@ -419,6 +441,7 @@ async function pushOne(
       ? { additionalPhones: (lead.extra_phones ?? []).map((p) => ({ phone: `+1${p.phone}` })) }
       : {}),
     tags,
+    customFields,
     source: `Lead Machine${batchCode ? ` ${batchCode.toUpperCase()}` : ""}`,
   }, onRateLimit);
   let contactId = res.data?.contact?.id ?? null;
@@ -442,6 +465,7 @@ async function pushOne(
         ? { additionalPhones: (lead.extra_phones ?? []).map((p) => ({ phone: `+1${p.phone}` })) }
         : {}),
       tags,
+      customFields,
       source: `Lead Machine${batchCode ? ` ${batchCode.toUpperCase()}` : ""}`,
     }, onRateLimit);
     if (retry.ok && retry.data?.contact?.id) {
