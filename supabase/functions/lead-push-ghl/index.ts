@@ -55,7 +55,16 @@ const SELECT_CHUNK = 250;    // rows fetched per DB round-trip
 const DEFAULT_RPS = 9;
 const MAX_RPS = 10;
 const MIN_RPS = 2;          // floor when backing off under sustained 429s
-const CONCURRENCY = 12;     // in-flight requests; the LIMITER sets the rate, not this
+// CONCURRENCY IS A CONNECTION BUDGET, NOT JUST A SPEED KNOB. Each worker holds a
+// DB connection for the whole of its push+stamp. Twelve of them, window after
+// window, is what exhausted this instance's connection slots overnight and left
+// GoTrue unable to get one — the owner was locked out of the app for 7 hours while
+// the database itself sat nearly idle. Concurrency is therefore DERIVED from the
+// requested rate: a deliberately slow background job also holds few connections.
+const MAX_CONCURRENCY = 12;
+function concurrencyFor(rps: number): number {
+  return Math.max(2, Math.min(MAX_CONCURRENCY, Math.ceil(rps * 1.4)));
+}
 const MAX_LEAD_IDS = 5000;   // explicit selections are hand-picked, not whole files
 const ID_WINDOW = 500;       // .in() window when an explicit id list is used
 
@@ -621,7 +630,7 @@ async function runWindow(
       }
     };
     await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, rows.length) }, () => worker()),
+      Array.from({ length: Math.min(concurrencyFor(rps), rows.length) }, () => worker()),
     );
 
     // CURSOR MODE: only advance once the WHOLE chunk finished. Workers complete
@@ -652,8 +661,28 @@ async function runWindow(
   }
 }
 
+/**
+ * EMERGENCY KILL SWITCH — set true to stop every push chain dead.
+ *
+ * The self-reinvoke chain cannot be stopped from the database once the database
+ * itself is saturated: cancelling the job row requires a connection, and there are
+ * none left. This flag is the out-of-band brake — it returns before ANY DB or GHL
+ * work, so the chain starves itself within one window and connections drain.
+ *
+ * Flip to false and redeploy to resume normal operation.
+ */
+const PUSH_KILL_SWITCH = false;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (PUSH_KILL_SWITCH) {
+    return json({
+      ok: false,
+      killed: true,
+      error: "lead-push-ghl is disabled by PUSH_KILL_SWITCH (emergency brake). "
+        + "No DB or GHL work was performed. Redeploy with the flag false to resume.",
+    }, 503);
+  }
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   const db = serviceClient();
