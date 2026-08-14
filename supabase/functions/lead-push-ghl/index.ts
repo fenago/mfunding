@@ -147,9 +147,10 @@ type Job = {
   filters: LeadFilters; tags: string[]; limit_n: number | null; retag: boolean;
   cursor_id: string | null; campaign_id: string | null;
   status: string; target_count: number; pushed: number; errored: number; skipped: number;
+  stamp_retries: number;
 };
 const JOB_COLS = "id,batch_id,lead_ids,filters,tags,limit_n,retag,cursor_id,status,"
-  + "target_count,pushed,errored,skipped,campaign_id";
+  + "target_count,pushed,errored,skipped,stamp_retries,campaign_id";
 
 /**
  * DRAIN vs CURSOR — the one thing to understand about this function.
@@ -525,7 +526,7 @@ async function runWindow(
   const started = Date.now();
   const cursorMode = isCursorMode(job);
   const limiter = new RateLimiter(rps);
-  let pushed = 0, errored = 0, sinceReport = 0;
+  let pushed = 0, errored = 0, stampRetries = 0, sinceReport = 0;
   let cursor = job.cursor_id;
   const touchedBatches = new Set<string>();
   // DRAIN mode only: leads already attempted in THIS window. A lead whose stamp
@@ -582,10 +583,14 @@ async function runWindow(
 
         const { error } = await db.from("lead_records").update(patch).eq("id", lead.id);
         if (error) {
-          // GHL took the contact but we failed to stamp: report loudly. The row
-          // stays 'loaded' so the next run reconciles it (upsert makes that safe).
-          console.error("[lead-push-ghl] stamp failed", JSON.stringify({ lead_id: lead.id, error: error.message }));
-          errored++;
+          // GHL took the contact but our stamp did not land. This is NOT a failed
+          // lead: the row stays 'loaded', so the drain re-selects and re-pushes it,
+          // and the upsert matches the contact that already exists. Counting these
+          // as `errored` overstated real failures to the owner — 11 of the first
+          // 12 "errors" on the 85k push were this, and every one self-healed.
+          console.error("[lead-push-ghl] stamp failed (row stays loaded, will retry)",
+            JSON.stringify({ lead_id: lead.id, error: error.message }));
+          stampRetries++;
         } else if (patch.status === "pushed") { pushed++; touchedBatches.add(lead.batch_id); }
         else { errored++; touchedBatches.add(lead.batch_id); }
 
@@ -595,6 +600,7 @@ async function runWindow(
           sinceReport = 0;
           await patchJob(db, job.id, {
             pushed: job.pushed + pushed, errored: job.errored + errored,
+            stamp_retries: (job.stamp_retries ?? 0) + stampRetries,
             message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`
               + (limiter.backoffCount ? ` (rate ${limiter.currentRate.toFixed(1)}/s after ${limiter.backoffCount} backoff(s))` : ""),
           });
@@ -615,6 +621,7 @@ async function runWindow(
     if (bailed) {
       await patchJob(db, job.id, {
         pushed: job.pushed + pushed, errored: job.errored + errored,
+        stamp_retries: (job.stamp_retries ?? 0) + stampRetries,
         ...(cursorMode ? { cursor_id: cursor } : {}),
         message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`,
       });
@@ -625,6 +632,7 @@ async function runWindow(
     for (const b of touchedBatches) await db.rpc("lead_batch_refresh_counts", { p_batch_id: b });
     await patchJob(db, job.id, {
       pushed: job.pushed + pushed, errored: job.errored + errored,
+      stamp_retries: (job.stamp_retries ?? 0) + stampRetries,
       ...(cursorMode ? { cursor_id: cursor } : {}),
       message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`,
     });
@@ -750,7 +758,7 @@ Deno.serve(async (req) => {
         filters: (payload.filters as LeadFilters) ?? {}, tags: [],
         limit_n: Number(payload.limit) > 0 ? Number(payload.limit) : null,
         retag: payload.retag === true, cursor_id: null, campaign_id: null,
-        status: "", target_count: 0, pushed: 0, errored: 0, skipped: 0,
+        status: "", target_count: 0, pushed: 0, errored: 0, skipped: 0, stamp_retries: 0,
       } as Job;
       const count = await countTarget(db, job);
       return json({ ok: true, count, mode: isCursorMode(job) ? "retag" : "push" });
