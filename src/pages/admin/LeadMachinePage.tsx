@@ -985,6 +985,17 @@ function HotProspectorHandoff({
             checklist {checklist.done} of {checklist.total}
           </Link>
         )}
+        {/* Lives here rather than inside step 4, so that step stays one clause.
+            Linking only affects whether dial stats attribute back — it is not on
+            the path to getting the floor dialing. */}
+        {campaign && !campaign.hp_campaign_id && (
+          <Link
+            to="/admin/campaigns"
+            className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 hover:underline"
+          >
+            link HP campaign →
+          </Link>
+        )}
       </div>
 
       {/* Bound to the push that RAN, not the panel's live draft — he's about to
@@ -1020,7 +1031,10 @@ function HotProspectorHandoff({
           </li>
         ) : (
           <li>
-            <strong>Check {T} appears in Step 2 below — if not, Quick Links → "Refresh Meta".</strong>
+            {/* "HP's Step 2", not "Step 2 below" — "below" pointed at OUR numbered
+                list while "Step 2" means HP's wizard row, so the two numbering
+                systems collided for a beat. */}
+            <strong>Check {T} appears in HP's Step 2 — if not, Quick Links → "Refresh Meta".</strong>
             <div className={sub}>Usually already there; this tag wasn't created just now.</div>
           </li>
         )}
@@ -1051,19 +1065,15 @@ function HotProspectorHandoff({
             )}
             , toggle "TAGS TO DIAL WITHOUT SORTING" ON and pick {T}.
           </strong>
+          {/* One clause, and it's the stop condition. The "link the HP campaign"
+              offer used to ride along here and pushed this to three clauses on
+              the one step where stopping is the point; it lives in the header
+              chip now — it's an attribution nicety, not something needed to get
+              the floor dialing. */}
           <div className={sub}>
             "Leads Found" must show{" "}
             {lastPush && lastPush.pushed > 0 ? <strong>{lastPush.pushed.toLocaleString()}</strong> : <>your number</>}.
             If it reads 0 the tag isn't set — stop.
-            {campaign && !campaign.hp_campaign_id && (
-              <>
-                {" "}
-                <Link to="/admin/campaigns" className="text-ocean-blue hover:underline">
-                  Link the HP campaign
-                </Link>{" "}
-                so its dial stats attribute here.
-              </>
-            )}
           </div>
         </li>
         <li>
