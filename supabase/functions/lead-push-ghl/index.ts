@@ -756,11 +756,21 @@ Deno.serve(async (req) => {
       if (cErr) throw new Error(`job create failed: ${cErr.message}`);
       const job = created as unknown as Job;
 
-      const target = await countTarget(db, job);
-      await patchJob(db, job.id, { target_count: target, message: `queued — ${target} eligible` });
+      // COUNTING AT START IS OPT-OUT, for the same reason it is on the search RPC.
+      // A retag count over ~25k rows carries a NOT-containment that no index can
+      // serve, so `start` sat there counting until the CALLER timed out — while the
+      // job it had already created ran on happily. The caller then believed the
+      // pass never started, moved to the next one, and two live passes fought.
+      // A background runner that already knows its target passes with_count:false.
+      const wantCount = payload.with_count !== false;
+      const target = wantCount ? await countTarget(db, job) : 0;
+      await patchJob(db, job.id, {
+        target_count: target,
+        message: wantCount ? `queued — ${target} eligible` : "queued — target not counted (with_count:false)",
+      });
       job.target_count = target;
 
-      if (target === 0) {
+      if (wantCount && target === 0) {
         await patchJob(db, job.id, {
           status: "complete", finished_at: new Date().toISOString(),
           message: "nothing eligible — 0 rows matched (already pushed, or filtered out)",
