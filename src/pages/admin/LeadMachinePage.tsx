@@ -14,7 +14,6 @@ import {
   CheckCircleIcon,
   DocumentArrowUpIcon,
   BoltIcon,
-  MegaphoneIcon,
   PhoneArrowUpRightIcon,
   PlusIcon,
 } from "@heroicons/react/24/outline";
@@ -1572,19 +1571,25 @@ export default function LeadMachinePage() {
   };
   const sortArrow = (key: typeof sortKey) => (sortKey === key ? (sortAsc ? " ↑" : " ↓") : "");
 
-  /* ── Dial campaign ────────────────────────────────────────────────────────
-     A dial campaign is ONE TAG bound to one campaigns row, and that tag is the
-     join key across three systems: we write it into lead_records.push_tags, it
-     lands on the GHL contact, and the HotProspector campaign's "Tags to Dial"
-     targets it. Picking one here fills the tag in for you and stamps
-     lead_push_jobs.campaign_id, so the push is attributable later.
+  /* ── Tags, and campaigns as a property OF a tag ───────────────────────────
+     THE MODEL, which the UI now states outright: there is only ONE kind of tag.
+     Every tag behaves identically — it lands on every pushed lead and HP can dial
+     by any of them. A CAMPAIGN IS A TAG WITH A SCOREBOARD: the same string, bound
+     to a campaigns row so its leads, calls, deals and revenue roll up.
 
-     Picking a campaign is the DEFAULT path, not a cage: the free-text tag box
-     below still works exactly as it did, and an ad-hoc push with no campaign is
-     still a legitimate thing to do. */
+     So "tracked" is DERIVED from the tag matching a campaign's dial_tag, never
+     stored alongside it. That's what makes the single tag row honest, and it
+     falls out for free: type a campaign's tag by hand and the chip becomes
+     tracked, because it IS that campaign's tag. The previous design kept a
+     separate `campaignId` selection next to the tags, which presented one system
+     as two and is what the owner bounced off. */
   const [dialCampaigns, setDialCampaigns] = useState<Campaign[]>([]);
   const [campaignsErr, setCampaignsErr] = useState<string | null>(null);
-  const [campaignId, setCampaignId] = useState<string>("");
+  /* Which campaign's tag owns ATTRIBUTION when several tracked tags are on the
+     push. Every tracked tag still LANDS (they're all just tags in GHL), but
+     deals.campaign_id is singular, so exactly one of them can own the metrics.
+     Empty = "use the first tracked chip", which is right almost always. */
+  const [attributionTag, setAttributionTag] = useState<string>("");
 
   /* ── Tags + push ── */
   const [tags, setTags] = useState<string[]>([]);
@@ -1671,41 +1676,40 @@ export default function LeadMachinePage() {
     return m;
   }, [dialCampaigns]);
 
-  const pickedCampaign = useMemo(
-    () => taggedCampaigns.find((c) => c.id === campaignId) ?? null,
-    [taggedCampaigns, campaignId],
+  /* The chips that ARE campaigns, in the order they were added. Derived from the
+     tags themselves, so a hand-typed campaign tag is tracked exactly like a picked
+     one — there is no hidden second piece of state to fall out of sync with. */
+  const trackedTags = useMemo(
+    () => tags.filter((t) => campaignByTag.has(t.toLowerCase())),
+    [tags, campaignByTag],
   );
 
-  /* Selecting a campaign swaps its tag in; deselecting takes it back out. The two
-     stay in lockstep in BOTH directions — removing the campaign's tag chip by hand
-     also clears the selection (see the chip's remove handler), because a campaign
-     selected without its tag attached would stamp campaign_id on a push the dialer
-     will never call. */
-  const pickCampaign = useCallback(
+  /* Which campaign the metrics attribute to. Every tracked tag still lands on
+     every lead — they're all just tags in GHL — but deals.campaign_id is singular,
+     so exactly one owns the scoreboard. The explicit choice when it's still on the
+     push, otherwise the first tracked chip. */
+  const attributionCampaign = useMemo(() => {
+    const chosen = attributionTag && trackedTags.includes(attributionTag) ? attributionTag : trackedTags[0];
+    return chosen ? (campaignByTag.get(chosen.toLowerCase()) ?? null) : null;
+  }, [attributionTag, trackedTags, campaignByTag]);
+
+  /* Adding an existing campaign's tag is just... adding its tag. No separate
+     selection to keep in lockstep, which is what the old design got wrong. */
+  const addCampaignTag = useCallback(
     (id: string) => {
-      const prevTag = dialCampaigns.find((c) => c.id === campaignId)?.dial_tag ?? null;
-      const nextTag = dialCampaigns.find((c) => c.id === id)?.dial_tag ?? null;
-      setCampaignId(id);
-      setTags((prev) => {
-        const kept = prevTag ? prev.filter((t) => t !== prevTag) : prev;
-        return nextTag && !kept.includes(nextTag) ? [...kept, nextTag] : kept;
-      });
-    },
-    [dialCampaigns, campaignId],
-  );
-
-  /* Dropping a tag chip. When it's the selected campaign's tag, the selection goes
-     with it — never leave campaign_id pointing at a tag that isn't being applied. */
-  const removeTag = useCallback(
-    (t: string) => {
-      setTags((prev) => prev.filter((x) => x !== t));
-      setCampaignId((cur) => {
-        const curTag = dialCampaigns.find((c) => c.id === cur)?.dial_tag ?? null;
-        return curTag === t ? "" : cur;
-      });
+      const t = dialCampaigns.find((c) => c.id === id)?.dial_tag;
+      if (!t) return;
+      setTags((prev) => (prev.includes(t) ? prev : [...prev, t]));
     },
     [dialCampaigns],
   );
+
+  const removeTag = useCallback((t: string) => {
+    setTags((prev) => prev.filter((x) => x !== t));
+    // Drop a stale attribution choice rather than leave it pointing at a tag that
+    // is no longer on the push; the memo falls back to the first tracked chip.
+    setAttributionTag((cur) => (cur === t ? "" : cur));
+  }, []);
 
   /* What the push will actually touch: the checkbox subset when one exists,
      otherwise the whole filtered set. */
@@ -1893,15 +1897,16 @@ export default function LeadMachinePage() {
     [fTypes, fBatch, pinnedBatch, fStates, fLines, serverFilters, plannedPush],
   );
 
-  /* A freshly created campaign goes straight into the list AND gets selected, so
-     its tag is already attached and the push is one click away. */
+  /* A freshly created campaign lands as a tracked CHIP — creating a campaign and
+     adding its tag are the same act, which is the whole point of the model. It
+     also takes attribution, since you almost certainly made it for this push. */
   const onCampaignCreated = useCallback(
     (c: Campaign, ghlTagCreated: boolean) => {
       setDialCampaigns((prev) => [c, ...prev]);
-      setCampaignId(c.id);
       if (c.dial_tag) {
         const t = c.dial_tag;
         setTags((prev) => (prev.includes(t) ? prev : [...prev, t]));
+        setAttributionTag(t);
       }
       setCreatorOpen(false);
       setCreatedNote(
@@ -2058,7 +2063,7 @@ export default function LeadMachinePage() {
       /* Which dial campaign this run feeds. The fn does NOT derive the tag from
          this — tags[] is still what actually lands on the contact — so the two are
          sent together and the picker keeps them in sync. */
-      if (pickedCampaign) body.campaign_id = pickedCampaign.id;
+      if (attributionCampaign) body.campaign_id = attributionCampaign.id;
       if (retagMode) body.retag = true;
       // ALWAYS forward the status filter, even on the id path. The fn resolves
       // status as: filters.status → exactly that set; else retag → widens to
@@ -2164,8 +2169,8 @@ export default function LeadMachinePage() {
             : `Pushed ${pushed.toLocaleString()} of ${eligible.toLocaleString()} into VibeReach`) +
             (errored > 0 ? ` · ${errored.toLocaleString()} errored` : "") +
             `. Tags: ${tagList}` +
-            (pickedCampaign
-              ? ` — attributed to ${campaignLabel(pickedCampaign)}. HotProspector dials it once that campaign's "Tags to Dial" includes ${pickedCampaign.dial_tag}.`
+            (attributionCampaign
+              ? ` — metrics attribute to ${campaignLabel(attributionCampaign)}. HotProspector dials it once that campaign's "Tags to Dial" includes ${attributionCampaign.dial_tag}.`
               : " — target those tags in a HotProspector campaign to dial them."),
         );
       }
@@ -2188,7 +2193,7 @@ export default function LeadMachinePage() {
     plannedPush,
     selectedIds,
     effectiveTags,
-    pickedCampaign,
+    attributionCampaign,
     retagMode,
     serverFilters,
     tooBigForIds,
@@ -2767,168 +2772,187 @@ export default function LeadMachinePage() {
                   )}
                 </div>
 
-                {/* Dial campaign — pick one and its tag fills in below, and the
-                    push gets stamped with campaign_id so the deals it produces
-                    roll up on the Campaigns page. Optional by design. */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <MegaphoneIcon className="w-4 h-4 text-gray-400 shrink-0" />
-                  <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">Dial campaign</span>
-                  <select
-                    className={`${input} py-1 text-sm`}
-                    value={campaignId}
-                    onChange={(e) => pickCampaign(e.target.value)}
-                    disabled={pushRunning}
-                  >
-                    <option value="">
-                      {taggedCampaigns.length === 0 ? "— no campaigns yet —" : "— none (just use tags below) —"}
-                    </option>
-                    {taggedCampaigns.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {campaignLabel(c)} · {c.dial_tag} · {c.status}
-                      </option>
-                    ))}
-                  </select>
-                  {/* The create path is a real button, not a quiet link. An empty
-                      dropdown next to a ghost link read as "the feature is broken"
-                      rather than "make one" — the owner bounced off exactly that. */}
-                  {!creatorOpen && (
-                    <button
-                      onClick={() => setCreatorOpen(true)}
-                      disabled={pushRunning}
-                      className={
-                        taggedCampaigns.length === 0
-                          ? "btn-primary btn-sm inline-flex items-center gap-1"
-                          : "btn-ghost btn-sm inline-flex items-center gap-1"
-                      }
-                    >
-                      <PlusIcon className="w-3.5 h-3.5" />
-                      New dial campaign
-                    </button>
-                  )}
-                  {pickedCampaign && (
-                    <Link to="/admin/campaigns" className="text-xs text-ocean-blue hover:underline">
-                      open campaign →
-                    </Link>
-                  )}
-                </div>
+                {/* ── Tags for this push ────────────────────────────────────
+                    ONE section, because there is one system. Every tag here
+                    behaves identically; a campaign is a tag with a scoreboard.
+                    The old panel split "campaign" and "tags" into two rows and
+                    read as two mechanisms, which is what the owner bounced off. */}
+                <div className="space-y-2 rounded-lg border border-emerald-200 dark:border-emerald-800/70 bg-white/60 dark:bg-gray-900/40 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <TagIcon className="w-4 h-4 text-gray-400 shrink-0" />
+                    <span className="text-xs font-bold text-gray-900 dark:text-white">Tags for this push</span>
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                      Enter after each — add as many as you want. Every tag lands on every pushed lead, and
+                      HotProspector can dial by any of them.
+                    </span>
+                  </div>
 
-                {/* A campaigns read that failed is NOT "no campaigns" — say which
-                    one it was, and leave the ad-hoc tag path fully working. */}
-                {campaignsErr && (
-                  <p className="text-[11px] text-amber-700 dark:text-amber-300">
-                    Couldn't load dial campaigns ({campaignsErr}) — you can still push with a tag typed below.
-                  </p>
-                )}
-                {!campaignsErr && taggedCampaigns.length === 0 && (
-                  <p className="text-[11px] text-gray-600 dark:text-gray-300">
-                    <strong>No campaigns yet — that's expected, not an error.</strong> Hit{" "}
-                    <strong>New dial campaign</strong> above to make one; it appears here and on{" "}
-                    <Link to="/admin/campaigns" className="text-ocean-blue hover:underline">
-                      Campaigns
-                    </Link>{" "}
-                    with its own metrics. Or skip it entirely and just type tags below — an untracked push still
-                    works.
-                  </p>
-                )}
-                {untaggedCampaigns.length > 0 && (
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    Not listed: {untaggedCampaigns.map((c) => campaignLabel(c)).join(", ")} —{" "}
-                    {untaggedCampaigns.length === 1 ? "it has" : "they have"} no dial tag, so nothing can be pushed into{" "}
-                    {untaggedCampaigns.length === 1 ? "it" : "them"} yet.
-                  </p>
-                )}
-                {creatorOpen && (
-                  <NewDialCampaign
-                    suggestedName={suggestedName}
-                    suggestedTag={suggestedTag}
-                    listLabel={campaignSlug}
-                    dialSource={buildDialSource}
-                    onCreated={onCampaignCreated}
-                    onCancel={() => setCreatorOpen(false)}
-                  />
-                )}
-                {createdNote && <p className="text-[11px] text-emerald-700 dark:text-emerald-300">{createdNote}</p>}
-
-                {/* Tags — auto chips are fixed; the free-text ones are yours. */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <TagIcon className="w-4 h-4 text-gray-400 shrink-0" />
-                  {autoTypeTag ? (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300 font-semibold">
-                      {autoTypeTag} <span className="text-gray-400">· auto</span>
-                    </span>
-                  ) : (
-                    /* Mixed or unfiltered set: the type tag still lands, resolved
-                       per lead from its own list, so it can't be named up front. */
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-                      lm-&lt;list&gt; tag · auto, per lead
-                    </span>
-                  )}
-                  {autoBatchTag ? (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300 font-semibold">
-                      {autoBatchTag} <span className="text-gray-400">· auto</span>
-                    </span>
-                  ) : (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-                      batch tag · auto, per lead
-                    </span>
-                  )}
-                  {tags.map((t) => {
-                    /* The selected campaign's tag is marked so it's obvious which
-                       chip the picker put there — and removing it deselects the
-                       campaign rather than leaving a stamp with no tag. */
-                    const isCampaignTag = pickedCampaign?.dial_tag === t;
-                    return (
-                      <span
-                        key={t}
-                        className={`text-[11px] px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${
-                          isCampaignTag ? "bg-cyan-600 text-white" : "bg-emerald-600 text-white"
-                        }`}
-                      >
-                        {t}
-                        {isCampaignTag && <span className="text-cyan-100">· campaign</span>}
-                        <button
-                          onClick={() => removeTag(t)}
-                          title={isCampaignTag ? `Remove ${t} and deselect the campaign` : `Remove ${t}`}
-                        >
-                          <XMarkIcon className="w-3 h-3" />
-                        </button>
+                  {/* The chip row: automatic bookkeeping first, then yours. */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {autoTypeTag ? (
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300 font-semibold">
+                        {autoTypeTag} <span className="font-normal text-gray-400">· auto · bookkeeping, never dialed</span>
                       </span>
-                    );
-                  })}
-                  <input
-                    className={`${input} w-52`}
-                    placeholder="add tags — Enter after each…"
-                    value={tagDraft}
-                    onChange={(e) => setTagDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === ",") {
-                        e.preventDefault();
-                        addTag(tagDraft);
-                      }
-                    }}
-                    onBlur={() => addTag(tagDraft)}
-                  />
-                </div>
-                {/* Multi-tag has always worked; nothing said so, and the singular
-                    placeholder implied a limit of one. Say it plainly at the input. */}
-                <p className="text-[11px] text-gray-600 dark:text-gray-300">
-                  <strong>Add as many tags as you want</strong> — every one lands on every pushed lead.{" "}
-                  <strong>Enter</strong> or a <strong>comma</strong> adds each; click the × on a chip to drop it.
-                  {pickedCampaign && (
-                    <>
-                      {" "}
-                      Extra tags sit happily alongside the campaign's{" "}
-                      <code className="font-mono">{pickedCampaign.dial_tag}</code> — that one drives attribution,
-                      the rest are yours to use however you like.
-                    </>
+                    ) : (
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                        lm-&lt;list&gt; <span className="text-gray-400">· auto, per lead · bookkeeping</span>
+                      </span>
+                    )}
+                    {autoBatchTag ? (
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300 font-semibold">
+                        {autoBatchTag} <span className="font-normal text-gray-400">· auto · bookkeeping, never dialed</span>
+                      </span>
+                    ) : (
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                        batch tag <span className="text-gray-400">· auto, per lead · bookkeeping</span>
+                      </span>
+                    )}
+
+                    {tags.map((t) => {
+                      /* Tracked-ness is DERIVED: this chip is a campaign because
+                         its tag IS a campaign's dial_tag. Nothing stored on the
+                         side, so a hand-typed campaign tag looks and behaves
+                         exactly like a picked one. */
+                      const camp = campaignByTag.get(t.toLowerCase()) ?? null;
+                      const owns = camp != null && attributionCampaign?.id === camp.id;
+                      return (
+                        <span
+                          key={t}
+                          title={
+                            camp
+                              ? `${camp.name}${camp.code ? ` (${camp.code})` : ""} — a tag with a scoreboard${owns ? "; metrics attribute here" : ""}`
+                              : "A plain tag — it dials exactly like a campaign tag, it just has no scoreboard"
+                          }
+                          className={`text-[11px] px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${
+                            camp
+                              ? "bg-cyan-600 text-white ring-1 ring-cyan-300 dark:ring-cyan-700"
+                              : "bg-emerald-600 text-white"
+                          }`}
+                        >
+                          {camp && <span aria-hidden>📣</span>}
+                          {t}
+                          {camp && <span className="font-normal text-cyan-100">· {campaignLabel(camp)}</span>}
+                          <button onClick={() => removeTag(t)} title={`Remove ${t}`}>
+                            <XMarkIcon className="w-3 h-3" />
+                          </button>
+                        </span>
+                      );
+                    })}
+
+                    <input
+                      className={`${input} py-1 w-56`}
+                      placeholder="add tags — Enter after each…"
+                      value={tagDraft}
+                      onChange={(e) => setTagDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === ",") {
+                          e.preventDefault();
+                          addTag(tagDraft);
+                        }
+                      }}
+                      onBlur={() => addTag(tagDraft)}
+                    />
+                  </div>
+
+                  {/* The two campaign controls: create one, or use an existing
+                      one's tag. Both only ever result in a chip above. */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    {!creatorOpen && (
+                      <button
+                        onClick={() => setCreatorOpen(true)}
+                        disabled={pushRunning}
+                        className="btn-primary btn-sm inline-flex items-center gap-1"
+                      >
+                        <PlusIcon className="w-3.5 h-3.5" />
+                        Create a campaign
+                      </button>
+                    )}
+                    {taggedCampaigns.length > 0 && (
+                      <select
+                        className={`${input} py-1 text-sm`}
+                        value=""
+                        onChange={(e) => e.target.value && addCampaignTag(e.target.value)}
+                        disabled={pushRunning}
+                      >
+                        <option value="">use an existing campaign…</option>
+                        {taggedCampaigns
+                          .filter((c) => !!c.dial_tag && !tags.includes(c.dial_tag))
+                          .map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {campaignLabel(c)} · {c.dial_tag} · {c.status}
+                            </option>
+                          ))}
+                      </select>
+                    )}
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                      A campaign is a tag with a scoreboard — its leads, calls, deals and revenue show on{" "}
+                      <Link to="/admin/campaigns" className="text-ocean-blue hover:underline">
+                        Campaigns
+                      </Link>
+                      .
+                    </span>
+                  </div>
+
+                  {campaignsErr && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                      Couldn't load campaigns ({campaignsErr}) — tags still work; only the scoreboard is unavailable.
+                    </p>
                   )}
-                </p>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                  These tags drive HotProspector: campaigns dial by tag. Tags are forced to lowercase-kebab. The
-                  <code>lm-*</code> type tag and the batch tag are added automatically and are{" "}
-                  <strong>provenance only — neither one dials anything</strong>. Dialing happens only against a tag you
-                  point a campaign at, which is why <strong>at least one tag of your own is required</strong>.
-                </p>
+                  {untaggedCampaigns.length > 0 && (
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                      Not offered: {untaggedCampaigns.map((c) => campaignLabel(c)).join(", ")} — no dial tag yet. Give
+                      one a tag on{" "}
+                      <Link to="/admin/campaigns" className="text-ocean-blue hover:underline">
+                        Campaigns
+                      </Link>
+                      .
+                    </p>
+                  )}
+
+                  {creatorOpen && (
+                    <NewDialCampaign
+                      suggestedName={suggestedName}
+                      suggestedTag={suggestedTag}
+                      listLabel={campaignSlug}
+                      dialSource={buildDialSource}
+                      onCreated={onCampaignCreated}
+                      onCancel={() => setCreatorOpen(false)}
+                    />
+                  )}
+                  {createdNote && <p className="text-[11px] text-emerald-700 dark:text-emerald-300">{createdNote}</p>}
+
+                  {/* Which campaign owns the metrics. Only worth saying once more
+                      than one tracked tag is on the push — deals.campaign_id is
+                      singular, so the others land as tags but score nothing. */}
+                  {trackedTags.length > 1 && attributionCampaign && (
+                    <div className="flex flex-wrap items-center gap-1.5 rounded-md bg-cyan-50 dark:bg-cyan-900/30 px-2 py-1.5">
+                      <span className="text-[11px] text-gray-700 dark:text-gray-200">
+                        <strong>Metrics attribute to:</strong>
+                      </span>
+                      {trackedTags.map((t) => {
+                        const c = campaignByTag.get(t.toLowerCase());
+                        if (!c) return null;
+                        const owns = attributionCampaign.id === c.id;
+                        return (
+                          <button
+                            key={t}
+                            onClick={() => setAttributionTag(t)}
+                            className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
+                              owns
+                                ? "bg-cyan-600 text-white"
+                                : "bg-white dark:bg-gray-800 text-cyan-700 dark:text-cyan-300 border border-cyan-300 dark:border-cyan-700 hover:bg-cyan-50"
+                            }`}
+                          >
+                            {campaignLabel(c)}
+                          </button>
+                        );
+                      })}
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                        — all {trackedTags.length} tags still land on every lead; only this one scores the deals.
+                      </span>
+                    </div>
+                  )}
+                </div>
                 {retagMode && (
                   <p className="text-[11px] text-amber-700 dark:text-amber-300">
                     You've filtered to leads that are <strong>already in VibeReach</strong>, so this run adds the tags
@@ -2947,7 +2971,7 @@ export default function LeadMachinePage() {
                     disabled={pushRunning || plannedPush === 0 || effectiveTags.length === 0}
                     title={
                       effectiveTags.length === 0
-                        ? "Add at least one campaign tag first — the push requires one"
+                        ? "Add at least one tag first — the push requires one"
                         : retagMode
                           ? "Add these tags to the contacts already in VibeReach"
                           : "Push this set into VibeReach"
@@ -2969,7 +2993,7 @@ export default function LeadMachinePage() {
                   </button>
                   {effectiveTags.length === 0 && (
                     <span className="text-xs text-amber-600 dark:text-amber-400">
-                      Add a campaign tag first — that tag is what the dialer targets.
+                      Add at least one tag above — a tag is what the dialer targets.
                     </span>
                   )}
                   {tooBigForIds && (
@@ -3047,7 +3071,7 @@ export default function LeadMachinePage() {
             )}
 
             {/* ── 5. Into HotProspector ── */}
-            <HotProspectorHandoff tag={pickedCampaign?.dial_tag ?? effectiveTags[0] ?? null} />
+            <HotProspectorHandoff tag={attributionCampaign?.dial_tag ?? effectiveTags[0] ?? null} />
 
             {/* The table still shows the last good page, so the failure needs to
                 be visible on its own rather than implied by stale rows. */}
