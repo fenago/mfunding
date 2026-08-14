@@ -116,6 +116,11 @@ async function webhookSecret(db: SupabaseClient): Promise<string> {
   return (gc?.webhook_secret as string | undefined) ?? Deno.env.get("GHL_WEBHOOK_SECRET") ?? "";
 }
 
+/** How quiet a 'running' job must be before the watchdog assumes its chain died.
+ * A healthy window checkpoints well inside this; 3 minutes is long enough that a
+ * slow window is never mistaken for a dead one. */
+const PUSH_STALL_MS = 180_000;
+
 function reinvoke(secret: string, jobId: string, rps?: number): void {
   const url = `${SUPABASE_URL}/functions/v1/lead-push-ghl?secret=${encodeURIComponent(secret)}`;
   const p = fetch(url, {
@@ -724,6 +729,15 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const providedSecret = url.searchParams.get("secret") ?? req.headers.get("x-ghl-secret") ?? "";
 
+  // A job created DURING this request, so the error handler can still find it.
+  // `start` has no job_id in its payload, so a timeout inside its inline window
+  // used to fall through the timeout branch below and return a bare error — while
+  // the job row it had just inserted sat at status='running' with no continuation
+  // ever scheduled. The caller reasonably concluded nothing had started and
+  // retried, and each retry stranded another orphan. Three of them accumulated on
+  // 2026-08-14 before the fourth happened to survive.
+  let createdJobId: string | null = null;
+
   let callerId: string | null = null;
   if (providedSecret) {
     const expected = await webhookSecret(db);
@@ -790,6 +804,7 @@ Deno.serve(async (req) => {
       }).select(JOB_COLS).single();
       if (cErr) throw new Error(`job create failed: ${cErr.message}`);
       const job = created as unknown as Job;
+      createdJobId = job.id;
 
       // COUNTING AT START IS OPT-OUT, for the same reason it is on the search RPC.
       // A retag count over ~25k rows carries a NOT-containment that no index can
@@ -880,10 +895,42 @@ Deno.serve(async (req) => {
       return json({ ok: true, job_id: jobId, status: "canceled" });
     }
 
+    // ── sweep: the WATCHDOG that makes the reinvoke chain self-healing ──
+    // A self-reinvoke chain has one fatal weakness, and lead-file-ingest already
+    // learned it the hard way: when the runtime KILLS a worker (HTTP 546
+    // WORKER_LIMIT, an OOM, a deploy mid-flight) NO catch block runs, so nothing
+    // marks the job failed and nothing schedules the next window. The job sits at
+    // status='running' with a frozen updated_at, looking perfectly alive, and only
+    // a human notices. That is exactly how the lt-landline pass died at 18,613 of
+    // 24,437 on 2026-08-14 with the DB, GHL and the drain query all healthy.
+    //
+    // This finds those and hands them a fresh window. It is a no-op when every job
+    // is healthy, and it deliberately only touches status='running' — a CANCEL
+    // still wins, because a canceled job is no longer running and this never
+    // resurrects it. rps is not persisted on the job, so a resumed window uses the
+    // default; that is the safe direction (slower, not faster).
+    if (action === "sweep") {
+      const cutoff = new Date(Date.now() - PUSH_STALL_MS).toISOString();
+      const { data: stalled, error: sErr } = await db.from("lead_push_jobs")
+        .select("id,pushed,updated_at")
+        .eq("status", "running").lt("updated_at", cutoff);
+      if (sErr) throw new Error(`sweep query failed: ${sErr.message}`);
+      const rows = (stalled as { id: string; pushed: number }[]) ?? [];
+      const secret = providedSecret || (await webhookSecret(db));
+      if (!secret && rows.length) return json({ error: "no webhook secret — cannot restart" }, 500);
+      for (const j of rows) {
+        console.warn("[lead-push-ghl] sweep restarting stalled job",
+          JSON.stringify({ job_id: j.id, pushed: j.pushed }));
+        await patchJob(db, j.id, { message: `watchdog restart at ${j.pushed} pushed` });
+        reinvoke(secret, j.id);
+      }
+      return json({ ok: true, restarted: rows.length, jobs: rows.map((j) => ({ id: j.id, pushed: j.pushed })) });
+    }
+
     return json({ error: `unknown action ${action}` }, 400);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const jobId = String(payload.job_id ?? "");
+    const jobId = String(payload.job_id ?? createdJobId ?? "");
 
     // A STATEMENT TIMEOUT IS A SLOW WINDOW, NOT A BROKEN JOB. Killing the job on
     // one is how a 50,677-of-85,600 push ended up dead needing a manual resume.
