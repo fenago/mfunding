@@ -238,9 +238,9 @@ export default function PlaybooksPage() {
   const deepLinkRan = useRef(false);
   const [deepLink, setDeepLink] = useState<{ phase: "loading" | "error"; message?: string } | null>(null);
 
-  // Resolve → load a merchant into the playbook. ONE path for the deep link and
-  // for the manual "open by phone" box below, so both get the same spinner, the
-  // same error banner, and the same "lands on the right flow tab" behavior.
+  // Resolve → load a merchant into the playbook. ONE path for both deep links
+  // (?x= contact id and ?phone=), so they get the same spinner, the same error
+  // banner, and the same "lands on the right flow tab" behavior.
   // Never throws — it reports through setDeepLink/notify and returns ok/not-ok.
   async function openMerchant(
     lookup: { dealId?: string; ghlContactId?: string; phone?: string },
