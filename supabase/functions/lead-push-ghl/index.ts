@@ -302,8 +302,20 @@ async function nextRows(
   const cursorMode = isCursorMode(job);
   // deno-lint-ignore no-explicit-any
   const shape = (q: any) => {
-    q = cursorMode ? q.order("id", { ascending: true }) : q.order("created_at", { ascending: true });
-    if (cursorMode && cursor) q = q.gt("id", cursor);
+    // DRAIN MODE IS DELIBERATELY UNORDERED. Ordering by created_at forced the
+    // planner onto the (batch_id, created_at) index, where finding the next 250
+    // un-pushed rows meant scanning past EVERY already-pushed row — O(pushed) per
+    // chunk, O(n^2) over a run. That is what killed the 85k job at 59% (4.3s per
+    // fetch and climbing, until it crossed the 8s statement timeout).
+    //
+    // Unordered, the partial index lead_records_drain_idx (batch_id WHERE
+    // status='loaded' AND phone IS NOT NULL) answers it in ~2ms and SHRINKS as the
+    // push progresses. Order is meaningless here anyway: a drained row leaves the
+    // selection, so every row is visited exactly once whatever the sequence.
+    if (cursorMode) {
+      q = q.order("id", { ascending: true });
+      if (cursor) q = q.gt("id", cursor);
+    }
     return q;
   };
 
@@ -797,8 +809,34 @@ Deno.serve(async (req) => {
     return json({ error: `unknown action ${action}` }, 400);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[lead-push-ghl] FAILED", msg);
     const jobId = String(payload.job_id ?? "");
+
+    // A STATEMENT TIMEOUT IS A SLOW WINDOW, NOT A BROKEN JOB. Killing the job on
+    // one is how a 50,677-of-85,600 push ended up dead needing a manual resume.
+    // The design is already resumable — only status='loaded' rows send — so the
+    // right response is to hand off to a fresh window with a smaller budget and
+    // let the chain carry on.
+    const isTimeout = /57014|canceling statement|statement timeout/i.test(msg);
+    if (isTimeout && jobId) {
+      console.warn("[lead-push-ghl] window timed out — retrying in a fresh window", jobId);
+      await patchJob(db, jobId, {
+        message: `window timed out, retrying (${msg.slice(0, 80)})`,
+      });
+      const secret = providedSecret || (await webhookSecret(db));
+      if (secret) {
+        reinvoke(secret, jobId, rps);
+        return json({ ok: true, job_id: jobId, retried_after_timeout: true }, 200);
+      }
+      // No secret: nothing can pick the job back up, so this IS terminal.
+      await patchJob(db, jobId, {
+        status: "error",
+        error: `${msg} (and no webhook secret to self-continue)`,
+        finished_at: new Date().toISOString(),
+      });
+      return json({ ok: false, error: msg }, 500);
+    }
+
+    console.error("[lead-push-ghl] FAILED", msg);
     if (jobId) await patchJob(db, jobId, { status: "error", error: msg, finished_at: new Date().toISOString() });
     return json({ ok: false, error: msg }, 500);
   }
