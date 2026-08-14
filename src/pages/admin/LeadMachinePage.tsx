@@ -1207,6 +1207,66 @@ export default function LeadMachinePage() {
     setFExcludeDups(true);
   }, []);
 
+  /* The batches a counter-derived number may be computed from, or null when the
+     filters can't be expressed by the counters. Shared by BOTH derived numbers
+     below so their preconditions can never drift apart. Empty array = the filters
+     select no batch at all, which is a real, exact zero. */
+  const counterBatches = useMemo((): LeadBatch[] | null => {
+    const hasOtherFilters =
+      Boolean(searchTerm(dSearch)) ||
+      fStates.length > 0 ||
+      fLines.length > 0 ||
+      Boolean(dRevMin.trim()) ||
+      Boolean(dRevMax.trim()) ||
+      Boolean(dSecured.trim()) ||
+      Boolean(dTag.trim()) ||
+      fHasEmail ||
+      Boolean(fStatus);
+    if (hasOtherFilters || batches.length === 0) return null;
+
+    const chosen = fBatch
+      ? batches.filter((b) => b.id === fBatch)
+      : fTypes.length
+        ? batches.filter((b) => fTypes.includes(b.lead_type as LeadType))
+        : batches;
+    if (chosen.length === 0) return [];
+    // Counters are written at finalize, so an in-flight batch has none worth reading.
+    if (chosen.some((b) => !["ready", "failed"].includes((b.status || "").toLowerCase()))) return null;
+    // dup_of_prior spans the whole batch regardless of status or phone, so it can't
+    // be decomposed into "dups that are also loaded and dialable". It reads 0 for
+    // every batch today and this deliberately does NOT lean on that staying true.
+    if (fExcludeDups && chosen.some((b) => n0(b.dup_of_prior) > 0)) return null;
+    return chosen;
+  }, [
+    batches, fBatch, fTypes, fExcludeDups, fHasEmail, fStatus,
+    fStates, fLines, dSearch, dRevMin, dRevMax, dSecured, dTag,
+  ]);
+
+  /* What the PUSH would move: still `loaded` and holding a phone. */
+  const derivedCount = useMemo(() => {
+    if (counterBatches == null) return null;
+    return counterBatches.reduce(
+      (sum, b) => sum + Math.max(0, n0(b.dialable) - n0(b.pushed) - n0(b.errored)),
+      0,
+    );
+  }, [counterBatches]);
+
+  /* How many rows MATCH — every row of those batches at any status. A DIFFERENT
+     number from derivedCount, and the pager needs this one: sizing the pager from
+     the push-eligible count would hide the pushed, errored and skipped rows the
+     table still displays, leaving pages that exist but can't be reached.
+
+     Its real job is to let the landing view ask the RPC for NO COUNT AT ALL.
+     total_count is `count(*)` over the filtered set, so on an unfiltered read it
+     scans all 249,923 rows before LIMIT and blows the 8s ceiling — the same
+     exact-count trap this page's house law exists to prevent, which I reintroduced
+     by making the count unconditional. When this is non-null the fetch sends
+     p_with_count:false and the count is never computed. */
+  const derivedBrowseTotal = useMemo(() => {
+    if (counterBatches == null) return null;
+    return counterBatches.reduce((sum, b) => sum + n0(b.records), 0);
+  }, [counterBatches]);
+
   /* SINGLE SOURCE OF TRUTH for the filtered read — the table, the export walk and
      the push's id-gather all send these exact arguments, so what's on screen, what
      downloads and what gets pushed are the same set by construction.
@@ -1267,20 +1327,29 @@ export default function LeadMachinePage() {
       /* The email export FORCES has-email in the query itself rather than trusting
          a setState to land first — the state update it also fires only reaches the
          filter bar on the next render, long after this walk has started. */
-      override?: { p_has_email?: boolean },
-    ): Promise<{ rows: LeadRecord[]; total: number }> => {
+      override?: { p_has_email?: boolean; p_with_count?: boolean },
+    ): Promise<{ rows: LeadRecord[]; total: number | null }> => {
+      /* THE COUNT IS OPT-OUT, and opting out is the common case.
+         total_count is count(*) over the filtered set, so on an unfiltered read it
+         scans all 249,923 rows before LIMIT and exceeds the 8s ceiling — the exact
+         trap this page's house law exists to prevent. Ask for it ONLY when the
+         batch counters can't already answer the question. */
+      const withCount = override?.p_with_count ?? derivedBrowseTotal == null;
       const { data, error } = await supabase.rpc("lead_records_search", {
         ...searchArgs,
         ...override,
+        p_with_count: withCount,
         p_limit: limit,
         p_offset: offset,
       });
       if (error) throw error;
-      const rows = (data ?? []) as (LeadRecord & { total_count: number | string })[];
-      // Zero rows carries no total_count — a successful empty call is a genuine 0.
-      return { rows, total: rows.length ? Number(rows[0].total_count) || 0 : 0 };
+      const rows = (data ?? []) as (LeadRecord & { total_count: number | string | null })[];
+      // null total means "not asked for" — distinct from a genuine zero, which is
+      // what a successful call returning no rows means.
+      const raw = rows.length ? rows[0].total_count : 0;
+      return { rows, total: withCount ? (raw == null ? null : Number(raw) || 0) : null };
     },
-    [searchArgs],
+    [searchArgs, derivedBrowseTotal],
   );
 
   const loadLeads = useCallback(async () => {
@@ -1289,7 +1358,9 @@ export default function LeadMachinePage() {
       const { rows, total } = await fetchLeadPage(page * PAGE_SIZE, PAGE_SIZE);
       setLeadsLoading(false);
       setLeadsError(null);
-      setBrowseTotal(total);
+      // The counter-derived total when we have one (and then no count was asked
+      // for at all), otherwise the count that rode back with the page.
+      setBrowseTotal(derivedBrowseTotal ?? total);
       // An empty page PAST the end is a paging artifact, not a result.
       if (rows.length === 0 && page > 0) {
         setPage((p) => Math.max(0, p - 1));
@@ -1314,7 +1385,7 @@ export default function LeadMachinePage() {
             : err.message || "could not load leads",
       );
     }
-  }, [fetchLeadPage, page]);
+  }, [fetchLeadPage, page, derivedBrowseTotal]);
 
   useEffect(() => {
     if (!backendMissing) void loadLeads();
@@ -1578,44 +1649,6 @@ export default function LeadMachinePage() {
        the whole batch regardless of status or phone, so it cannot be decomposed
        into "dups that are also loaded and dialable". It reads 0 for every batch
        today, and this deliberately does NOT lean on that staying true. */
-  const derivedCount = useMemo(() => {
-    const hasOtherFilters =
-      Boolean(searchTerm(dSearch)) ||
-      fStates.length > 0 ||
-      fLines.length > 0 ||
-      Boolean(dRevMin.trim()) ||
-      Boolean(dRevMax.trim()) ||
-      Boolean(dSecured.trim()) ||
-      Boolean(dTag.trim()) ||
-      fHasEmail ||
-      Boolean(fStatus);
-    if (hasOtherFilters || batches.length === 0) return null;
-
-    const chosen = fBatch
-      ? batches.filter((b) => b.id === fBatch)
-      : fTypes.length
-        ? batches.filter((b) => fTypes.includes(b.lead_type as LeadType))
-        : batches;
-    if (chosen.length === 0) return 0;
-    if (chosen.some((b) => !["ready", "failed"].includes((b.status || "").toLowerCase()))) return null;
-    if (fExcludeDups && chosen.some((b) => n0(b.dup_of_prior) > 0)) return null;
-
-    return chosen.reduce((sum, b) => sum + Math.max(0, n0(b.dialable) - n0(b.pushed) - n0(b.errored)), 0);
-  }, [
-    batches,
-    fBatch,
-    fTypes,
-    fExcludeDups,
-    fHasEmail,
-    fStatus,
-    fStates,
-    fLines,
-    dSearch,
-    dRevMin,
-    dRevMax,
-    dSecured,
-    dTag,
-  ]);
 
   /* Ask the function for the count whenever the filter set changes. Debounced,
      cancelled on change, and completely decoupled from the row fetch. */
@@ -1801,14 +1834,17 @@ export default function LeadMachinePage() {
              would produce a CSV the owner mails out believing it complete.
              The first page's total_count sizes the progress bar exactly, instead
              of the bar growing against itself. */
-          let total = 0;
+          /* NEVER asks for a count. An unfiltered "Export full" would otherwise pay
+             a full-book count on its very first page and time out — and a failed
+             export reads as a broken download rather than a banner. The bar is
+             seeded from the counters when they can answer, and otherwise grows
+             against what has actually been fetched. */
+          const total = derivedBrowseTotal ?? 0;
           for (let offset = 0; ; offset += EXPORT_WINDOW) {
-            const { rows: page, total: n } = await fetchLeadPage(
-              offset,
-              EXPORT_WINDOW,
-              emailOnly ? { p_has_email: true } : undefined,
-            );
-            if (offset === 0) total = n;
+            const { rows: page } = await fetchLeadPage(offset, EXPORT_WINDOW, {
+              p_with_count: false,
+              ...(emailOnly ? { p_has_email: true } : {}),
+            });
             rows.push(...page);
             setExportProgress({ done: rows.length, total: Math.max(total, rows.length) });
             if (page.length < EXPORT_WINDOW) break; // drained
@@ -1885,7 +1921,7 @@ export default function LeadMachinePage() {
         setExportProgress(null);
       }
     },
-    [batchCodeById, fetchLeadPage, exportSlug, fHasEmail, selectedIds, usingSelection],
+    [batchCodeById, fetchLeadPage, derivedBrowseTotal, exportSlug, fHasEmail, selectedIds, usingSelection],
   );
 
   const runPush = useCallback(async () => {
@@ -1929,7 +1965,10 @@ export default function LeadMachinePage() {
           let offset = 0;
           while (ids.length < MAX_LEAD_IDS) {
             const want = Math.min(WINDOW, MAX_LEAD_IDS - ids.length);
-            const { rows } = await fetchLeadPage(offset, want);
+            /* Never asks for a count: this loop reads nothing but `id`, so every
+               count it computed would be thrown away — and it runs up to five
+               times, so the push was paying five full-book scans it never used. */
+            const { rows } = await fetchLeadPage(offset, want, { p_with_count: false });
             ids.push(...rows.map((r) => r.id));
             if (rows.length < want) break; // drained
             offset += rows.length;
