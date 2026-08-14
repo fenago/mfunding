@@ -317,10 +317,13 @@ export default function SetterGuidePage() {
               <div>
                 <div className="st-t">Open the merchant in MFunding — one click</div>
                 <div className="st-d">
-                  On the contact card, look at the <b>bottom of the right-hand sidebar</b> and click{" "}
-                  <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> (it has a ↗ icon). Because you're
-                  signed into MFunding in the same Chrome window, the <b>Revenue Playbook</b> opens
-                  with this merchant's file preloaded.
+                  In the dialer: <b>Script</b> tab &rarr; click{" "}
+                  <b>&ldquo;Open this merchant's Playbook.&rdquo;</b> If the link isn't clickable,
+                  copy the URL printed on that line into a new tab. Because you're signed into
+                  MFunding in the same Chrome window, the <b>Revenue Playbook</b> opens with this
+                  merchant's file preloaded. The{" "}
+                  <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> button (↗) at the bottom of the
+                  contact card's right-hand sidebar does the same thing.
                 </div>
               </div>
             </li>
@@ -348,8 +351,10 @@ export default function SetterGuidePage() {
           <div className="note warn">
             <div className="h">Two things to know</div>
             The <b>&ldquo;Playbook&rdquo;</b> tab on the HotProspector call screen is <b>not ours</b>{" "}
-            &mdash; the button that opens MFunding is <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> on
-            the contact card. And if that button ever errors (&ldquo;Lead data not Synced&rdquo;),
+            &mdash; what opens MFunding is the <b>Script</b> tab's{" "}
+            <b>&ldquo;Open this merchant's Playbook&rdquo;</b> link, or{" "}
+            <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> on the contact card. And if that button ever
+            errors (&ldquo;Lead data not Synced&rdquo;),
             tell your manager &mdash; it means the lead wasn't loaded correctly; meanwhile you can
             find the merchant with the <b>search bar</b> in MFunding (name, business, or phone).
           </div>

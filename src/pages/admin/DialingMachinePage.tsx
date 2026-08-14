@@ -1144,8 +1144,8 @@ export default function DialingMachinePage() {
                 </li>
                 <li className="ok">
                   <b>Revenue Playbook cockpit</b> — send-app + Connect-Bank + upload links, tokenized
-                  (send.mfunding.net). <b>/admin/dialer</b> for per-setter KPIs, and{" "}
-                  <b>/admin/playbooks</b> "open by phone" as the backstop.
+                  (send.mfunding.net). <b>/admin/dialer</b> for per-setter KPIs, and the script's{" "}
+                  <b>"Open this merchant's Playbook"</b> link as the one-click way in.
                 </li>
               </ul>
             </div>
