@@ -1225,7 +1225,14 @@ export default function LeadMachinePage() {
       if (fStates.length) q = q.in("state", fStates);
       if (fLines.length) q = q.in("line_type", fLines);
       if (fStatus) q = q.eq("status", fStatus);
-      if (fHasEmail) q = q.not("email", "is", null);
+      /* has_any_email, NOT `email is not null`. The filter means "reachable by
+         email" — primary OR any extra — because an email campaign can mail any
+         address on the record. It is a GENERATED column, so this query, the push's
+         count, the push itself and the export all filter the identical expression
+         and cannot drift. Filtering the primary column here instead would show the
+         owner one set and push a different one the moment a file ships extra email
+         columns, which is precisely the disagreement this page exists to prevent. */
+      if (fHasEmail) q = q.eq("has_any_email", true);
       if (fExcludeDups) q = q.eq("is_dup_of_prior", false);
       if (dRevMin.trim() && !isNaN(Number(dRevMin))) q = q.gte("revenue", Number(dRevMin));
       if (dRevMax.trim() && !isNaN(Number(dRevMax))) q = q.lte("revenue", Number(dRevMax));
@@ -1766,7 +1773,7 @@ export default function LeadMachinePage() {
           setExportProgress({ done: 0, total: ids.length });
           for (let i = 0; i < ids.length; i += ID_WINDOW) {
             let q = supabase.from("lead_records").select(LEAD_SELECT).in("id", ids.slice(i, i + ID_WINDOW));
-            if (emailOnly) q = q.not("email", "is", null);
+            if (emailOnly) q = q.eq("has_any_email", true);
             const { data, error } = await q;
             if (error) throw error;
             rows.push(...((data as unknown as LeadRecord[]) ?? []));
@@ -1783,7 +1790,7 @@ export default function LeadMachinePage() {
           // random order — measured 16s for one page vs 2.3s this way.)
           for (let offset = 0; ; offset += EXPORT_WINDOW) {
             let q = buildFilteredQuery(LEAD_SELECT).range(offset, offset + EXPORT_WINDOW - 1);
-            if (emailOnly) q = q.not("email", "is", null);
+            if (emailOnly) q = q.eq("has_any_email", true);
             const { data, error } = await q;
             if (error) throw error;
             const page = (data as unknown as LeadRecord[]) ?? [];
@@ -1806,17 +1813,27 @@ export default function LeadMachinePage() {
         const batchOf = (l: LeadRecord) => (l.batch_id ? (batchCodeById.get(l.batch_id) ?? "") : "");
 
         const flat: Record<string, unknown>[] = emailOnly
-          ? rows.map((l) => ({
-              email: l.email ?? "",
-              first_name: l.first_name ?? "",
-              last_name: l.last_name ?? "",
-              company: l.company ?? "",
-              state: l.state ?? "",
-              lead_type: l.lead_type ?? "",
-              batch_code: batchOf(l),
-              extra_emails: extraEmailList(l).join(";"),
-              tags: tagsOf(l),
-            }))
+          ? rows.map((l) => {
+              /* A lead can now qualify for this export on an EXTRA address alone
+                 (has_any_email is primary OR extra). Writing l.email straight out
+                 would hand the email tool a row with a blank Email cell that it
+                 can't mail — the one thing this preset exists to avoid. So an
+                 extras-only lead promotes its first extra into the Email column,
+                 and only the REST go to extra_emails; no address is duplicated
+                 across the two columns. */
+              const extras = extraEmailList(l);
+              return {
+                email: l.email ?? extras[0] ?? "",
+                first_name: l.first_name ?? "",
+                last_name: l.last_name ?? "",
+                company: l.company ?? "",
+                state: l.state ?? "",
+                lead_type: l.lead_type ?? "",
+                batch_code: batchOf(l),
+                extra_emails: (l.email ? extras : extras.slice(1)).join(";"),
+                tags: tagsOf(l),
+              };
+            })
           : rows.map((l) => ({
               batch_code: batchOf(l),
               lead_type: l.lead_type ?? "",
@@ -2484,7 +2501,7 @@ export default function LeadMachinePage() {
                   />
                   Has email
                 </label>
-                <span className="text-[10px] text-gray-400">Primary address only — not extras</span>
+                <span className="text-[10px] text-gray-400">Primary or any additional address</span>
               </div>
               <div className="flex flex-col gap-0.5">
                 <label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Tag</label>

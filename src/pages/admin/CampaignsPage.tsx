@@ -37,6 +37,10 @@ import {
   DIAL_CHANNEL,
   listHpCampaigns,
   linkHpCampaign,
+  setDialTag,
+  validateDialTag,
+  suggestDialTag,
+  type DialTagCheck,
   type HpCampaignOption,
   type Campaign,
   type CampaignStatus,
@@ -601,10 +605,13 @@ function DialCampaignPanel({
       </div>
 
       {!tag ? (
-        <p className="text-sm text-gray-700 dark:text-gray-200">
-          This campaign has <strong>no dial tag</strong>, so nothing can be pushed into it and the dialer has nothing to
-          target. Dial campaigns created from the Lead Machine get one automatically.
-        </p>
+        <div className="space-y-2">
+          <p className="text-sm text-gray-700 dark:text-gray-200">
+            This campaign has <strong>no dial tag</strong>, so nothing can be pushed into it and the dialer has nothing
+            to target. Give it one and it becomes selectable in the Lead Machine's push panel.
+          </p>
+          <SetDialTag campaign={c} onDone={onChanged} />
+        </div>
       ) : (
         <p className="text-[11px] text-gray-600 dark:text-gray-300">
           <strong>The tag is the join key.</strong> The Lead Machine writes <code className="font-mono">{tag}</code> onto
@@ -723,6 +730,100 @@ function DialCampaignPanel({
           }}
         />
       )}
+    </div>
+  );
+}
+
+/* Give a campaign its dial tag — the one thing that makes it pushable. Validation
+   is the server's (reserved prefixes, batch-code collisions, tags another campaign
+   already claims); the local normalizer only drives the preview. */
+function SetDialTag({ campaign: c, onDone }: { campaign: Campaign; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [tag, setTag] = useState(() => suggestDialTag(c.code || c.name));
+  const [check, setCheck] = useState<DialTagCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !tag.trim()) {
+      setCheck(null);
+      return;
+    }
+    let stale = false;
+    setChecking(true);
+    const t = setTimeout(() => {
+      // campaign_id is passed so the campaign never collides with its OWN tag.
+      validateDialTag(tag, c.id)
+        .then((r) => !stale && setCheck(r))
+        .catch((e) => !stale && setCheck({ normalized: null, problem: `couldn't check: ${e instanceof Error ? e.message : String(e)}`, valid: false }))
+        .finally(() => !stale && setChecking(false));
+    }, 400);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
+  }, [tag, open, c.id]);
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="btn-primary btn-sm">
+        Give it a dial tag
+      </button>
+    );
+  }
+
+  const save = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await setDialTag(c.id, tag);
+      setNote(
+        res.unchanged
+          ? "Already set to that tag — nothing changed."
+          : `Tag set to ${res.campaign.dial_tag}.` +
+            (res.ghlTagCreated ? " Created in VibeReach, so run Refresh Meta in HotProspector before it can be selected there." : "") +
+            (res.checklistReseeded ? " The HotProspector checklist was reset, because the old wiring pointed at a different tag." : ""),
+      );
+      onDone();
+    } catch (e) {
+      // The server's refusal message already names the remedy — show it verbatim
+      // rather than replacing it with something vaguer.
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const settled = check != null && !checking;
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="px-2 py-1 text-sm font-mono rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white w-64"
+          value={tag}
+          onChange={(e) => setTag(e.target.value)}
+          placeholder="dial-ucc-0813"
+        />
+        <button onClick={() => void save()} disabled={saving || !settled || !check.valid} className="btn-primary btn-sm">
+          {saving ? "Saving…" : "Save tag"}
+        </button>
+        <button onClick={() => setOpen(false)} disabled={saving} className="btn-ghost btn-sm">
+          Cancel
+        </button>
+      </div>
+      <div className="text-[11px]">
+        {checking ? (
+          <span className="text-gray-400">checking…</span>
+        ) : check?.problem ? (
+          <span className="text-rose-600 dark:text-rose-400">{check.problem}</span>
+        ) : check?.valid ? (
+          <span className="text-emerald-700 dark:text-emerald-300">✓ <code className="font-mono">{check.normalized}</code> is free</span>
+        ) : null}
+      </div>
+      {err && <p className="text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+      {note && <p className="text-xs text-emerald-700 dark:text-emerald-300">{note}</p>}
     </div>
   );
 }

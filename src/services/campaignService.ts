@@ -780,6 +780,47 @@ export async function createDialCampaign(input: {
   };
 }
 
+export interface SetDialTagResult {
+  campaign: Campaign;
+  ghlTagCreated: boolean;
+  previousTag: string | null;
+  /** The server always re-seeds the HP checklist on a real change: the item
+   *  labels embed the tag, and a tag change invalidates the HP wiring (HP is
+   *  still pointed at the old tag), so previously-ticked steps would be claiming
+   *  work that no longer applies. */
+  checklistReseeded: boolean;
+  /** True when the tag was already exactly this — nothing was written. */
+  unchanged: boolean;
+}
+
+/**
+ * Set or change a campaign's dial tag. This is how a campaign created before dial
+ * tags existed — or one created outside the Lead Machine — becomes pushable.
+ *
+ * REFUSES (409) once leads have been pushed under the old tag, and that refusal is
+ * correct rather than conservative: the old tag stays on those
+ * `lead_records.push_tags` forever, so changing it would split the campaign's
+ * attribution across two tags and every per-campaign number would silently
+ * under-count. The error names the way out (re-push that slice with the new tag
+ * first) and carries `leads_under_old_tag`, so surface its message verbatim.
+ */
+export async function setDialTag(campaignId: string, tag: string): Promise<SetDialTagResult> {
+  const res = await callDialFn<{
+    campaign: Record<string, unknown>;
+    ghl_tag?: { name: string; created: boolean };
+    previous_tag?: string | null;
+    checklist_reseeded?: boolean;
+    unchanged?: boolean;
+  }>({ action: "set_tag", campaign_id: campaignId, tag });
+  return {
+    campaign: normalizeCampaign(res.campaign ?? {}),
+    ghlTagCreated: res.ghl_tag?.created === true,
+    previousTag: res.previous_tag ?? null,
+    checklistReseeded: res.checklist_reseeded === true,
+    unchanged: res.unchanged === true,
+  };
+}
+
 /** Read-only list of HotProspector campaigns for the manual link picker. */
 export async function listHpCampaigns(): Promise<HpCampaignOption[]> {
   const res = await callDialFn<{ campaigns: HpCampaignOption[] }>({ action: "hp_campaigns" });
