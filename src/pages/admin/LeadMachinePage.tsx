@@ -1165,6 +1165,9 @@ export default function LeadMachinePage() {
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   const [leadsLoading, setLeadsLoading] = useState(true);
   const [leadsError, setLeadsError] = useState<string | null>(null);
+  /* Exact count of the rows MATCHING the filters, returned alongside the page by
+     lead_records_search. Sizes the pager only — the push's number is separate. */
+  const [browseTotal, setBrowseTotal] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -1204,111 +1207,114 @@ export default function LeadMachinePage() {
     setFExcludeDups(true);
   }, []);
 
-  /* Single source of truth for the filtered lead_records query — the table, the
-     count, and the push id-gather all build from this, so "N leads" on screen is
-     exactly what gets pushed. Callers add .range() for pagination. */
-  const buildFilteredQuery = useCallback(
-    (select: string, opts: { count?: "exact" | "planned" | "estimated"; head?: boolean } = {}) => {
-      let q = supabase
-        .from("lead_records")
-        .select(select, opts)
-        .order(sortKey, { ascending: sortAsc, nullsFirst: false })
-        // TIEBREAKER, and it is not optional. The ingester inserts in windows, so
-        // a THOUSAND rows share one created_at (verified on the live book) and
-        // revenue/state tie even harder. Without a unique final sort key, Postgres
-        // is free to return ties in any order, and every paged read — the table's
-        // Next button, the export walk, the push id-gather — would silently
-        // duplicate some rows and skip others. The PK makes the order total.
-        .order("id", { ascending: true });
-      if (fTypes.length) q = q.in("lead_type", fTypes);
-      if (fBatch) q = q.eq("batch_id", fBatch);
-      if (fStates.length) q = q.in("state", fStates);
-      if (fLines.length) q = q.in("line_type", fLines);
-      if (fStatus) q = q.eq("status", fStatus);
-      /* has_any_email, NOT `email is not null`. The filter means "reachable by
-         email" — primary OR any extra — because an email campaign can mail any
-         address on the record. It is a GENERATED column, so this query, the push's
-         count, the push itself and the export all filter the identical expression
-         and cannot drift. Filtering the primary column here instead would show the
-         owner one set and push a different one the moment a file ships extra email
-         columns, which is precisely the disagreement this page exists to prevent. */
-      if (fHasEmail) q = q.eq("has_any_email", true);
-      if (fExcludeDups) q = q.eq("is_dup_of_prior", false);
-      if (dRevMin.trim() && !isNaN(Number(dRevMin))) q = q.gte("revenue", Number(dRevMin));
-      if (dRevMax.trim() && !isNaN(Number(dRevMax))) q = q.lte("revenue", Number(dRevMax));
-      if (dSecured.trim()) q = q.ilike("secured_party", `%${dSecured.trim()}%`);
-      // Tag containment hits the push_tags GIN index — the same filter the push fn runs.
-      if (dTag.trim()) q = q.contains("push_tags", [kebab(dTag)]);
-      // ONE predicate against the generated `search_text` column (first/last/
-      // company/email/phone concatenated), which carries a GIN trigram index.
-      // The old 5-column OR could use no index at all — measured 2,474ms against
-      // 358ms — and on a loaded server that was enough to blow the 8s statement
-      // timeout and surface as "no leads match".
-      const t = searchTerm(dSearch);
-      if (t) q = q.ilike("search_text", `%${t}%`);
-      return q;
-    },
+  /* SINGLE SOURCE OF TRUTH for the filtered read — the table, the export walk and
+     the push's id-gather all send these exact arguments, so what's on screen, what
+     downloads and what gets pushed are the same set by construction.
+
+     WHY AN RPC AND NOT PostgREST. On an RLS table no trigram index can serve an
+     ILIKE search: `texticlike` is not leakproof, so Postgres may not evaluate it
+     before the row-security qual and cannot push it into the index — confirmed with
+     enable_seqscan=off still choosing a seq scan under the disable penalty. Adding
+     indexes cannot fix it. Measured as a signed-in admin on the real 249,923 rows,
+     a term with ZERO matches (the worst case, because LIMIT can't stop early — the
+     scan must read everything to prove there are no more matches):
+         PostgREST  3,163 ms quiet / 16,903 ms under load, Rows Removed 249,923
+         this RPC      65 ms
+     `authenticated` carries an 8s statement_timeout, so the old path did not merely
+     run slowly for a rare term — under load it EXCEEDED THE TIMEOUT AND FAILED, and
+     common terms hid it completely by matching early. lead_records_search is
+     SECURITY DEFINER with its own admin check, so it queries without RLS and the
+     index becomes usable. Cost now scales with MATCHES rather than table size, so it
+     keeps working as the book grows. */
+  const searchArgs = useMemo(
+    () => ({
+      p_q: searchTerm(dSearch) || null,
+      p_lead_types: fTypes.length ? fTypes : null,
+      p_batch_ids: fBatch ? [fBatch] : null,
+      p_states: fStates.length ? fStates : null,
+      p_line_types: fLines.length ? fLines : null,
+      p_secured_party: dSecured.trim() || null,
+      p_revenue_min: dRevMin.trim() && !isNaN(Number(dRevMin)) ? Number(dRevMin) : null,
+      p_revenue_max: dRevMax.trim() && !isNaN(Number(dRevMax)) ? Number(dRevMax) : null,
+      p_statuses: fStatus ? [fStatus] : null,
+      // has_any_email is a GENERATED column (primary OR any extra), so this, the
+      // push's count and the push itself filter the identical expression. null
+      // means "don't filter" — only `true` is ever sent, never `false`.
+      p_has_email: fHasEmail ? true : null,
+      p_tag: dTag.trim() ? kebab(dTag) : null,
+      p_exclude_dups: fExcludeDups,
+      // Every RPC ordering ends in the PK and places NULLS LAST, matching what this
+      // page has always asked PostgREST for. An unrecognised value RAISES rather
+      // than silently degrading to PK order, so a sort that looks plausible but
+      // isn't can't reach the owner.
+      p_order: `${sortKey}_${sortAsc ? "asc" : "desc"}`,
+    }),
     [
-      fTypes,
-      fBatch,
-      fStates,
-      fLines,
-      fStatus,
-      fHasEmail,
-      fExcludeDups,
-      dRevMin,
-      dRevMax,
-      dSecured,
-      dTag,
-      dSearch,
-      sortKey,
-      sortAsc,
+      dSearch, fTypes, fBatch, fStates, fLines, dSecured,
+      dRevMin, dRevMax, fStatus, fHasEmail, dTag, fExcludeDups, sortKey, sortAsc,
     ],
+  );
+
+  /* One page of the filtered set, plus the EXACT total of that set. `total_count`
+     rides on every row (computed in the same pass), so the browse count needs no
+     second query — but it is deliberately NOT the push's number: the push counts
+     only rows still `loaded` WITH a phone, which is a different question and stays
+     with lead-push-ghl {action:'count'}. */
+  const fetchLeadPage = useCallback(
+    async (
+      offset: number,
+      limit: number,
+      /* The email export FORCES has-email in the query itself rather than trusting
+         a setState to land first — the state update it also fires only reaches the
+         filter bar on the next render, long after this walk has started. */
+      override?: { p_has_email?: boolean },
+    ): Promise<{ rows: LeadRecord[]; total: number }> => {
+      const { data, error } = await supabase.rpc("lead_records_search", {
+        ...searchArgs,
+        ...override,
+        p_limit: limit,
+        p_offset: offset,
+      });
+      if (error) throw error;
+      const rows = (data ?? []) as (LeadRecord & { total_count: number | string })[];
+      // Zero rows carries no total_count — a successful empty call is a genuine 0.
+      return { rows, total: rows.length ? Number(rows[0].total_count) || 0 : 0 };
+    },
+    [searchArgs],
   );
 
   const loadLeads = useCallback(async () => {
     setLeadsLoading(true);
-    // ESTIMATED, not exact. An exact count is a full scan of every matching row —
-    // measured at 3.8s on the live 193k-row book, on top of the page fetch. The
-    // planner's estimate is instant and is only ever used to size the pager and
-    // label the browse; the number the PUSH promises comes from lead-push-ghl's
-    // own count action, which is exact by construction.
-    /* NO count option on this request — not even "estimated". PostgREST's
-       estimated count silently falls back to an EXACT count when the planner's
-       estimate is small, and an exact count here scans the whole book with the
-       RLS predicate evaluated per row (~250k is_admin_or_super() calls). That
-       blows the 8s statement timeout and takes the ROWS DOWN WITH IT, because
-       it's the same request — which is how a healthy 48ms page turned into an
-       error banner. Rows are fetched alone; the number arrives separately. */
-    const { data, error } = await buildFilteredQuery(LEAD_SELECT).range(
-      page * PAGE_SIZE,
-      page * PAGE_SIZE + PAGE_SIZE - 1,
-    );
-    setLeadsLoading(false);
-    if (error) {
-      if (isMissingRelation(error)) {
+    try {
+      const { rows, total } = await fetchLeadPage(page * PAGE_SIZE, PAGE_SIZE);
+      setLeadsLoading(false);
+      setLeadsError(null);
+      setBrowseTotal(total);
+      // An empty page PAST the end is a paging artifact, not a result.
+      if (rows.length === 0 && page > 0) {
+        setPage((p) => Math.max(0, p - 1));
+        return;
+      }
+      setLeads(rows);
+    } catch (e) {
+      setLeadsLoading(false);
+      const err = e as { code?: string; message?: string };
+      if (isMissingRelation(err)) {
         setBackendMissing(true);
         return;
       }
-      // A failed fetch is NOT "no leads match". Keep the last good page on
-      // screen and say what happened.
+      // A failed fetch is NOT "no leads match". Keep the last good page on screen
+      // and say what happened. 42501 is the RPC's own admin check refusing — a
+      // permission problem, which must never read as an empty book.
       setLeadsError(
-        /timeout|57014|canceling statement/i.test(error.message || "")
-          ? "that query took too long and the server cut it off — narrow the filters, or try again"
-          : error.message || "could not load leads",
+        err.code === "42501" || /Forbidden/i.test(err.message || "")
+          ? "you don't have permission to read leads (admin only)"
+          : /timeout|57014|canceling statement/i.test(err.message || "")
+            ? "that query took too long and the server cut it off — narrow the filters, or try again"
+            : err.message || "could not load leads",
       );
-      return;
     }
-    setLeadsError(null);
-    const rows = (data as unknown as LeadRecord[]) ?? [];
-
-    // An empty page PAST the end is a paging artifact, not a result.
-    if (rows.length === 0 && page > 0) {
-      setPage((p) => Math.max(0, p - 1));
-      return;
-    }
-    setLeads(rows);
-  }, [buildFilteredQuery, page]);
+  }, [fetchLeadPage, page]);
 
   useEffect(() => {
     if (!backendMissing) void loadLeads();
@@ -1344,7 +1350,15 @@ export default function LeadMachinePage() {
   const [countingPush, setCountingPush] = useState(false);
   const [countError, setCountError] = useState(false);
 
-  const totalPages = filteredCount == null ? null : Math.max(1, Math.ceil(filteredCount / PAGE_SIZE));
+  /* TWO DIFFERENT NUMBERS, deliberately, and they must not be merged:
+       · browseTotal  — how many rows MATCH the filters. Comes free with the page
+                        (total_count rides on every row), and it is what the pager
+                        is sized by, because it counts exactly the rows being paged.
+       · filteredCount — how many rows the PUSH would actually move: still `loaded`
+                        AND holding a phone. That is a different question, and it
+                        keeps coming from lead-push-ghl {action:'count'} so the
+                        button's promise is computed by the code that fulfils it. */
+  const totalPages = browseTotal == null ? null : Math.max(1, Math.ceil(browseTotal / PAGE_SIZE));
   const hasNextPage = leads.length === PAGE_SIZE;
 
   const toggleRow = (id: string) =>
@@ -1780,20 +1794,21 @@ export default function LeadMachinePage() {
             setExportProgress({ done: Math.min(i + ID_WINDOW, ids.length), total: ids.length });
           }
         } else {
-          // No count query at all — see loadLeads. The bar grows against what
-          // has actually been fetched, and the total firms up as pages arrive.
-          const total = 0;
-          setExportProgress({ done: 0, total });
-          // Page over the deterministic sort. (A keyset walk on the PK was tried
-          // and is WORSE here: the PK is a random uuid, so ordering by it makes
-          // the planner abandon the selective filter index and scan the heap in
-          // random order — measured 16s for one page vs 2.3s this way.)
+          setExportProgress({ done: 0, total: 0 });
+          /* Page over the RPC's deterministic sort — every ordering ends in the PK,
+             so OFFSET paging can't duplicate or drop rows between pages. That
+             matters more here than anywhere: a walk that silently skipped rows
+             would produce a CSV the owner mails out believing it complete.
+             The first page's total_count sizes the progress bar exactly, instead
+             of the bar growing against itself. */
+          let total = 0;
           for (let offset = 0; ; offset += EXPORT_WINDOW) {
-            let q = buildFilteredQuery(LEAD_SELECT).range(offset, offset + EXPORT_WINDOW - 1);
-            if (emailOnly) q = q.eq("has_any_email", true);
-            const { data, error } = await q;
-            if (error) throw error;
-            const page = (data as unknown as LeadRecord[]) ?? [];
+            const { rows: page, total: n } = await fetchLeadPage(
+              offset,
+              EXPORT_WINDOW,
+              emailOnly ? { p_has_email: true } : undefined,
+            );
+            if (offset === 0) total = n;
             rows.push(...page);
             setExportProgress({ done: rows.length, total: Math.max(total, rows.length) });
             if (page.length < EXPORT_WINDOW) break; // drained
@@ -1870,7 +1885,7 @@ export default function LeadMachinePage() {
         setExportProgress(null);
       }
     },
-    [batchCodeById, buildFilteredQuery, exportSlug, fHasEmail, selectedIds, usingSelection],
+    [batchCodeById, fetchLeadPage, exportSlug, fHasEmail, selectedIds, usingSelection],
   );
 
   const runPush = useCallback(async () => {
@@ -1905,13 +1920,16 @@ export default function LeadMachinePage() {
         if (usingSelection) {
           ids = Array.from(selectedIds);
         } else {
+          /* The id-gather runs through the SAME arguments the table does, so the
+             set pushed is the set on screen. This is the most safety-critical of
+             the three consumers: a filter that silently failed to apply here
+             wouldn't just render extra rows, it would PUSH leads the owner
+             deliberately filtered out. */
           const WINDOW = 1000;
           let offset = 0;
           while (ids.length < MAX_LEAD_IDS) {
             const want = Math.min(WINDOW, MAX_LEAD_IDS - ids.length);
-            const res = await buildFilteredQuery("id").range(offset, offset + want - 1);
-            if (res.error) throw res.error;
-            const rows = (res.data as unknown as { id: string }[]) ?? [];
+            const { rows } = await fetchLeadPage(offset, want);
             ids.push(...rows.map((r) => r.id));
             if (rows.length < want) break; // drained
             offset += rows.length;
@@ -2009,7 +2027,7 @@ export default function LeadMachinePage() {
   }, [
     autoBatchTag,
     autoTypeTag,
-    buildFilteredQuery,
+    fetchLeadPage,
     fBatch,
     fStatus,
     loadBatches,
@@ -3060,8 +3078,12 @@ export default function LeadMachinePage() {
 
             {(hasNextPage || page > 0) && (
               <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
+                {/* browseTotal, not filteredCount: this line counts the rows being
+                    PAGED, and the two are different questions (see their
+                    declarations). Pairing "N leads" with a page count derived from
+                    a different N would put two disagreeing numbers in one sentence. */}
                 <span>
-                  {filteredCount == null ? "…" : filteredCount.toLocaleString()} leads · page {page + 1}
+                  {browseTotal == null ? "…" : browseTotal.toLocaleString()} matching · page {page + 1}
                   {totalPages != null && <> of {totalPages}</>}
                 </span>
                 <div className="flex gap-2">
