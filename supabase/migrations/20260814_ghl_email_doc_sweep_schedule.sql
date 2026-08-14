@@ -15,6 +15,15 @@
 -- exhaustively for 223 calls (0.1% of the daily cap), which is a cheap price
 -- for closing a permanent-loss hole. Off-peak (06:50 UTC = 02:50 ET).
 --
+--
+-- pg_net's DEFAULT TIMEOUT IS 5 SECONDS, and it does not warn you. Fired the
+-- nightly command once by hand to check: net._http_response.error_msg came back
+-- "Timeout of 5000 ms reached" with a NULL status_code, because a full sweep
+-- takes ~60s. Left alone, this cron would have "run" every night forever while
+-- the DB recorded nothing about whether it worked. Both jobs get an explicit
+-- timeout: the gated run is ~1s today but falls back to an exhaustive cycle
+-- whenever the activity window exceeds one page, so it needs the headroom too.
+--
 -- The secrets are resolved from the vault INSIDE the command, so nothing
 -- sensitive is ever written into cron.job by this migration.
 
@@ -39,7 +48,8 @@ select cron.schedule(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'SUPABASE_ANON_KEY')
     ),
-    body := '{}'::jsonb
+    body := '{}'::jsonb,
+    timeout_milliseconds := 180000
   );
   $cron$
 );
@@ -55,7 +65,8 @@ select cron.schedule(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'SUPABASE_ANON_KEY')
     ),
-    body := '{}'::jsonb
+    body := '{}'::jsonb,
+    timeout_milliseconds := 180000
   );
   $cron$
 );
