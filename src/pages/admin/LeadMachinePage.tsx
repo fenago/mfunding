@@ -308,6 +308,15 @@ function fmtMoney(v: number | string | null): string {
   return `$${Math.round(n).toLocaleString()}`;
 }
 
+/** A rough remaining-time, in the units someone glancing at a progress bar wants. */
+function fmtEta(secs: number): string {
+  if (secs < 90) return `${Math.max(1, Math.round(secs))}s`;
+  const m = Math.round(secs / 60);
+  if (m < 90) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 /** (305) 555-1212 from a stored last-10. */
 function fmtPhone(p: string | null): string {
   if (!p) return "—";
@@ -1693,6 +1702,14 @@ export default function LeadMachinePage() {
   const [pushArmed, setPushArmed] = useState(false);
   const [pushRunning, setPushRunning] = useState(false);
   const [pushProgress, setPushProgress] = useState<{ done: number; total: number } | null>(null);
+  /* Live throughput, so a long run reads as working rather than stuck. `rate` is
+     null until there's a real measurement — an ETA guessed off one sample is
+     worse than no ETA. */
+  const [pushStats, setPushStats] = useState<{
+    status: string;
+    rate: number | null;
+    etaSec: number | null;
+  } | null>(null);
   const [pushResult, setPushResult] = useState<string | null>(null);
   const [pushErr, setPushErr] = useState<string | null>(null);
   // The job poller — cleared on unmount so leaving the page doesn't leak an interval.
@@ -1754,6 +1771,16 @@ export default function LeadMachinePage() {
   const openCampaigns = useMemo(() => openDialCampaigns(dialCampaigns), [dialCampaigns]);
   const taggedCampaigns = useMemo(() => openCampaigns.filter((c) => !!c.dial_tag), [openCampaigns]);
   const untaggedCampaigns = useMemo(() => openCampaigns.filter((c) => !c.dial_tag), [openCampaigns]);
+
+  /* Split for the picker: what it can still add, and what is already a chip. */
+  const offerableCampaigns = useMemo(
+    () => taggedCampaigns.filter((c) => c.dial_tag && !tags.includes(c.dial_tag)),
+    [taggedCampaigns, tags],
+  );
+  const appliedCampaigns = useMemo(
+    () => taggedCampaigns.filter((c) => c.dial_tag && tags.includes(c.dial_tag)),
+    [taggedCampaigns, tags],
+  );
 
   /* dial_tag → campaign, for showing which campaign a pushed lead went out under.
      Reuses the list the push panel already fetched — no extra round trip — and
@@ -2222,43 +2249,92 @@ export default function LeadMachinePage() {
         if (fBatch) body.batch_id = fBatch;
       }
 
-      // Queue the job. The worker only ever selects lead_records still marked
-      // `loaded`, so a re-push can never create a second contact for a merchant.
-      const { data, error } = await supabase.functions.invoke("lead-push-ghl", { body });
-      if (error) throw new Error(await fnErrorMessage(error));
+      /* THE INVOKE BLOCKS FOR UP TO 50 SECONDS. `action:'start'` runs a window of
+         the push INLINE (BUDGET_MS = 50s server-side) before returning and
+         self-reinvoking. Polling used to begin only after it resolved, so on a
+         big run the panel sat at "0 / 85,600" for the better part of a minute
+         while the job was in fact pushing ~4/sec — the owner watched exactly
+         that and reasonably concluded it was stuck.
+
+         So: fire the invoke WITHOUT awaiting, and start polling immediately. The
+         job row exists from the first moment of the fn, we just don't know its id
+         yet — so until the invoke hands one back, find it as the newest job
+         created since we clicked. */
+      const startedAt = new Date().toISOString();
+      const invoked = supabase.functions.invoke("lead-push-ghl", { body });
+
+      let jobId: string | null = null;
+      const seen: { t: number; done: number }[] = [];
+      const readJob = async (): Promise<PushJob | null> => {
+        const cols = "id,status,target_count,pushed,errored,skipped,message";
+        const q = jobId
+          ? supabase.from("lead_push_jobs").select(cols).eq("id", jobId).maybeSingle()
+          : supabase
+              .from("lead_push_jobs")
+              .select(cols)
+              .gte("created_at", startedAt)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+        const { data: jd } = await q;
+        const j = (jd as PushJob | null) ?? null;
+        if (!j) return null;
+        jobId = j.id;
+        const done = n0(j.pushed) + n0(j.errored);
+        const total = n0(j.target_count) || plannedPush;
+        setPushProgress({ done, total });
+        /* Rate from a moving window rather than the whole run, so a slow start
+           (the count, then the first GHL calls) stops dragging the ETA down. */
+        const now = Date.now();
+        seen.push({ t: now, done });
+        while (seen.length > 8) seen.shift();
+        const first = seen[0];
+        const secs = (now - first.t) / 1000;
+        const rate = secs >= 4 && done > first.done ? (done - first.done) / secs : null;
+        setPushStats({
+          status: j.status,
+          rate,
+          etaSec: rate && rate > 0 && total > done ? Math.round((total - done) / rate) : null,
+        });
+        return j;
+      };
+
+      // Poll from the very first second, not after the invoke returns.
+      const polling = new Promise<PushJob | null>((resolve) => {
+        const tick = async () => {
+          const j = await readJob();
+          if (j && JOB_TERMINAL.has(j.status)) {
+            if (pushPollRef.current) clearInterval(pushPollRef.current);
+            pushPollRef.current = null;
+            resolve(j);
+          }
+        };
+        pushPollRef.current = setInterval(() => void tick(), 3000);
+        void tick();
+      });
+
+      const { data, error } = await invoked;
+      if (error) {
+        if (pushPollRef.current) clearInterval(pushPollRef.current);
+        pushPollRef.current = null;
+        throw new Error(await fnErrorMessage(error));
+      }
       const res = (data as Record<string, unknown>) ?? {};
-      if (res.ok === false) throw new Error(String(res.error || "push failed"));
+      if (res.ok === false) {
+        if (pushPollRef.current) clearInterval(pushPollRef.current);
+        pushPollRef.current = null;
+        throw new Error(String(res.error || "push failed"));
+      }
 
-      const jobId = typeof res.job_id === "string" ? res.job_id : null;
+      if (typeof res.job_id === "string") jobId = res.job_id;
       const target = Number(res.target_count ?? 0) || 0;
-      setPushProgress({ done: Number(res.pushed ?? 0) || 0, total: target || plannedPush });
 
-      // A small push finishes inline (done: true); a big one self-reinvokes, so
-      // poll the job row until it reaches a terminal state.
       let final: PushJob | null = null;
       if (jobId && res.done !== true) {
-        final = await new Promise<PushJob | null>((resolve) => {
-          const tick = async () => {
-            const { data: jd } = await supabase
-              .from("lead_push_jobs")
-              .select("id,status,target_count,pushed,errored,skipped,message")
-              .eq("id", jobId)
-              .maybeSingle();
-            const j = (jd as PushJob | null) ?? null;
-            if (!j) return;
-            setPushProgress({
-              done: n0(j.pushed) + n0(j.errored),
-              total: n0(j.target_count) || target || plannedPush,
-            });
-            if (JOB_TERMINAL.has(j.status)) {
-              if (pushPollRef.current) clearInterval(pushPollRef.current);
-              pushPollRef.current = null;
-              resolve(j);
-            }
-          };
-          pushPollRef.current = setInterval(() => void tick(), 2000);
-          void tick();
-        });
+        final = await polling;
+      } else {
+        if (pushPollRef.current) clearInterval(pushPollRef.current);
+        pushPollRef.current = null;
       }
 
       if (final && final.status === "error") throw new Error(final.message || "push job failed");
@@ -2305,6 +2381,7 @@ export default function LeadMachinePage() {
     } finally {
       setPushRunning(false);
       setPushProgress(null);
+      setPushStats(null);
     }
   }, [
     autoBatchTag,
@@ -2992,7 +3069,13 @@ export default function LeadMachinePage() {
                         Create a campaign
                       </button>
                     )}
-                    {taggedCampaigns.length > 0 && (
+                    {/* Only when it has something to offer. A dropdown whose only
+                        campaign is already applied renders empty, and an empty
+                        control reads as broken — the same failure shape as the old
+                        "— none —". Zero offerable, no dropdown; Create stands alone.
+                        Applied ones are shown disabled rather than silently
+                        dropped, so the list never looks like it lost a campaign. */}
+                    {offerableCampaigns.length > 0 && (
                       <select
                         className={`${input} py-1 text-sm`}
                         value=""
@@ -3000,13 +3083,16 @@ export default function LeadMachinePage() {
                         disabled={pushRunning}
                       >
                         <option value="">use an existing campaign…</option>
-                        {taggedCampaigns
-                          .filter((c) => !!c.dial_tag && !tags.includes(c.dial_tag))
-                          .map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {campaignLabel(c)} · {c.dial_tag} · {c.status}
-                            </option>
-                          ))}
+                        {offerableCampaigns.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {campaignLabel(c)} · {c.dial_tag} · {c.status}
+                          </option>
+                        ))}
+                        {appliedCampaigns.map((c) => (
+                          <option key={c.id} value="" disabled>
+                            ✓ {campaignLabel(c)} — already on this push
+                          </option>
+                        ))}
                       </select>
                     )}
                     <span className="text-[11px] text-gray-500 dark:text-gray-400">
@@ -3180,8 +3266,24 @@ export default function LeadMachinePage() {
                         }}
                       />
                     </div>
-                    <p className="text-xs text-gray-600 dark:text-gray-300">
-                      pushed {pushProgress.done.toLocaleString()} / {pushProgress.total.toLocaleString()}…
+                    <p className="text-xs text-gray-700 dark:text-gray-200">
+                      <strong>
+                        {pushProgress.done.toLocaleString()} / {pushProgress.total.toLocaleString()}
+                      </strong>{" "}
+                      pushed
+                      {pushProgress.total > 0 && (
+                        <> · {Math.round((pushProgress.done / pushProgress.total) * 100)}%</>
+                      )}
+                      {pushStats?.rate != null && <> · ≈{pushStats.rate.toFixed(1)}/sec</>}
+                      {pushStats?.etaSec != null && <> · at this rate: ~{fmtEta(pushStats.etaSec)} left</>}
+                      {pushStats?.rate == null && <> · starting…</>}
+                    </p>
+                    {/* The load-bearing sentence. It was a footnote below the
+                        panel, which whispers; someone watching a 5-hour run needs
+                        it here, next to the bar they're staring at. */}
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                      <strong>This runs on the server — safe to close this page; it keeps going.</strong> Track it
+                      here or on the campaign.
                     </p>
                   </div>
                 )}
