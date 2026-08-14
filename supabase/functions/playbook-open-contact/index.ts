@@ -562,6 +562,14 @@ Deno.serve(async (req) => {
       try {
         const cfg = await getGhlConfig(db);
         const got = await getContact(cfg, contactId);
+        // ghlFetch REPORTS api errors on the envelope, it does not throw (same
+        // note as the upsert path above). Without this check a 429 or 5xx sailed
+        // past the catch below with `contact` undefined, every identity field
+        // fell to null, and the insert further down minted a customer with no
+        // name, no phone and no email — failing OPEN into garbage instead of
+        // closed. Rethrow so a failed fetch takes exactly the path the catch was
+        // written for: keep going on the customer we already have, or 502.
+        if (!got.ok) throw new Error(`${ghlErrorMessage(got.error)} (HTTP ${got.status})`);
         const c = (got.data?.contact ?? {}) as Record<string, unknown>;
         first = str(c.firstName) ?? (str(c.contactName)?.split(/\s+/)[0] ?? null);
         last = str(c.lastName);
