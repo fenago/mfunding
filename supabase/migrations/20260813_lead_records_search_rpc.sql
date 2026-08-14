@@ -28,127 +28,133 @@
 -- Scoped to the lead browser's CURRENT deployed filter surface. Every ordering
 -- ends in the PK: OFFSET pagination over a non-unique sort key silently drops and
 -- duplicates rows, which would corrupt an export.
--- Dropped first because the return type changed (has_any_email added): Postgres
--- refuses CREATE OR REPLACE when the OUT-parameter row type differs.
--- Dropped first because both the parameter list (p_secured_party) and the return
--- type (has_any_email) changed; Postgres refuses CREATE OR REPLACE for either, and
--- a new default-arg overload would make calls ambiguous rather than fail.
+-- ── REGRESSION FIX (same day): the count re-created the bug it replaced ───────
+--
+-- total_count rode EVERY call as a count over the filtered set. With no filters
+-- that counts all 249,923 rows before the LIMIT — re-creating INSIDE the RPC the
+-- exact count-kills-the-rows failure we had just removed from PostgREST. The
+-- owner's landing view (no filters, created_at desc) began intermittently 500ing
+-- with 57014.
+--
+-- TWO costs were hiding in one symptom, and fixing only the count would not work:
+--
+--   1. THE COUNT. Now opt-out: p_with_count boolean default true. When false the
+--      count never runs and total_count comes back NULL. The UI passes false
+--      exactly where it can derive the total from batch counters instead
+--      (no-filter / type-only / batch-only) — precisely the heavy cases.
+--
+--   2. THE ORDER BY. The old CASE-chain ordering CANNOT match an index, so even
+--      with the count gone the default view still sorted all 249,923 rows. The
+--      order is now chosen from a fixed whitelist and injected as a literal, so
+--      `created_at desc nulls last, id` matches
+--      lead_records_created_nullslast_id_idx exactly. p_order is validated against
+--      that whitelist BEFORE it is used, so nothing user-supplied reaches the SQL
+--      text; every other value is a bound parameter.
+--
+-- Measured as `authenticated`, landing view, 25 rows:
+--      p_with_count := false   ->     97-142 ms
+--      p_with_count := true    ->      4,679 ms   (the regression path)
+--
+-- Also added: a trigram index on secured_party. The browser's secured-party ILIKE
+-- filter had no index, so COUNTING it full-scanned and timed out (57014). That
+-- index is usable only from here — this function is SECURITY DEFINER and runs
+-- without RLS; under RLS an ILIKE can never use a trigram index because
+-- texticlike is not leakproof. Measured: RAPID 1,075 rows, timeout -> 0.24s warm.
+create index if not exists lead_records_secured_party_trgm
+  on public.lead_records using gin (secured_party gin_trgm_ops);
+
 drop function if exists public.lead_records_search(
   text, text[], uuid[], text[], text[], numeric, numeric, text[], boolean, text, boolean, text, integer, integer);
 drop function if exists public.lead_records_search(
   text, text[], uuid[], text[], text[], text, numeric, numeric, text[], boolean, text, boolean, text, integer, integer);
 
 create or replace function public.lead_records_search(
-  p_q             text    default null,
-  p_lead_types    text[]  default null,
-  p_batch_ids     uuid[]  default null,
-  p_states        text[]  default null,
-  p_line_types    text[]  default null,
-  p_secured_party text    default null,
-  p_revenue_min   numeric default null,
-  p_revenue_max   numeric default null,
-  p_statuses      text[]  default null,
-  p_has_email     boolean default null,
-  p_tag           text    default null,
-  p_exclude_dups  boolean default false,
-  p_order         text    default 'created_at_desc',
-  p_limit         integer default 50,
-  p_offset        integer default 0
+  p_q text default null, p_lead_types text[] default null, p_batch_ids uuid[] default null,
+  p_states text[] default null, p_line_types text[] default null,
+  p_secured_party text default null,
+  p_revenue_min numeric default null, p_revenue_max numeric default null,
+  p_statuses text[] default null, p_has_email boolean default null,
+  p_tag text default null, p_exclude_dups boolean default false,
+  p_order text default 'created_at_desc', p_limit integer default 50, p_offset integer default 0,
+  p_with_count boolean default true
 )
 returns table (
   id uuid, batch_id uuid, lead_type text, phone text, line_type text,
   first_name text, last_name text, email text, company text, title text,
   address text, city text, state text, zip text,
   employees integer, revenue numeric, sic_code text, sic_description text,
-  filing_date date, secured_party text,
-  extra_phones jsonb, extra_emails jsonb, has_any_email boolean,
-  is_dup_of_prior boolean, status text, ghl_contact_id text,
+  filing_date date, secured_party text, extra_phones jsonb, extra_emails jsonb,
+  has_any_email boolean, is_dup_of_prior boolean, status text, ghl_contact_id text,
   pushed_at timestamptz, push_tags text[], push_error text,
-  matched_existing boolean, created_at timestamptz,
-  total_count bigint
+  matched_existing boolean, created_at timestamptz, total_count bigint
 )
-language plpgsql
-security definer
-set search_path = public
+language plpgsql security definer set search_path = public
 as $fn$
-declare v_lim integer := least(greatest(coalesce(p_limit, 50), 1), 1000);
+declare
+  v_lim   integer := least(greatest(coalesce(p_limit, 50), 1), 1000);
+  v_off   integer := greatest(coalesce(p_offset, 0), 0);
+  v_total bigint  := null;
+  v_order text;
+  -- ONE copy of the predicate, shared by the count and the row fetch, so the two
+  -- can never disagree about which rows match.
+  v_where constant text :=
+    ' where ($1 is null or $1 = '''' or r.search_text ilike ''%'' || $1 || ''%'')'
+    ' and ($2 is null or r.lead_type = any($2))'
+    ' and ($3 is null or r.batch_id  = any($3))'
+    ' and ($4 is null or r.state     = any($4))'
+    ' and ($5 is null or r.line_type = any($5))'
+    ' and ($6 is null or $6 = '''' or r.secured_party ilike ''%'' || $6 || ''%'')'
+    ' and ($7 is null or r.revenue >= $7)'
+    ' and ($8 is null or r.revenue <= $8)'
+    ' and ($9 is null or r.status = any($9))'
+    ' and ($10 is null or r.has_any_email = $10)'
+    ' and ($11 is null or r.push_tags @> array[lower($11)])'
+    ' and (not $12 or r.is_dup_of_prior = false)';
 begin
-  -- The access control. Everything below runs WITHOUT RLS, so this check is the
-  -- boundary: it must mirror the table's policy exactly.
   if not public.is_admin_or_super(auth.uid()) then
     raise exception 'Forbidden — admin only' using errcode = '42501';
   end if;
 
-  -- An unrecognized sort FAILS LOUDLY. It used to fall through every CASE to bare
-  -- PK order, so a user sorting by State got arbitrary rows under a header showing
-  -- a sort arrow — a wrong answer that looks right, the same class as
-  -- count=estimated and line_type='Voip'.
-  if coalesce(p_order,'') not in (
-    'created_at_asc','created_at_desc','company_asc','company_desc',
-    'revenue_asc','revenue_desc','state_asc','state_desc',
-    'filing_date_asc','filing_date_desc'
-  ) then
+  v_order := case p_order
+    when 'created_at_desc'  then 'r.created_at desc nulls last, r.id'
+    when 'created_at_asc'   then 'r.created_at asc  nulls last, r.id'
+    when 'company_asc'      then 'r.company asc  nulls last, r.id'
+    when 'company_desc'     then 'r.company desc nulls last, r.id'
+    when 'revenue_asc'      then 'r.revenue asc  nulls last, r.id'
+    when 'revenue_desc'     then 'r.revenue desc nulls last, r.id'
+    when 'state_asc'        then 'r.state asc  nulls last, r.id'
+    when 'state_desc'       then 'r.state desc nulls last, r.id'
+    when 'filing_date_asc'  then 'r.filing_date asc  nulls last, r.id'
+    when 'filing_date_desc' then 'r.filing_date desc nulls last, r.id'
+  end;
+  -- An unrecognized sort FAILS LOUDLY, and this is also the whitelist that keeps
+  -- p_order out of the SQL text: only these ten literals can ever reach it.
+  if v_order is null then
     raise exception 'unknown p_order %', p_order using errcode = '22023';
   end if;
 
-  return query
-  with filtered as (
-    select r.*
-      from public.lead_records r
-     where (p_q is null or p_q = '' or r.search_text ilike '%' || p_q || '%')
-       and (p_lead_types  is null or r.lead_type = any(p_lead_types))
-       and (p_batch_ids   is null or r.batch_id  = any(p_batch_ids))
-       and (p_states      is null or r.state     = any(p_states))
-       and (p_line_types  is null or r.line_type = any(p_line_types))
-       -- Dropping this filter returns MORE rows, not fewer, and buildFilteredQuery
-       -- also feeds the PUSH id-gather — so a missing secured_party could push
-       -- leads the owner had filtered OUT. It is not optional.
-       and (p_secured_party is null or p_secured_party = ''
-            or r.secured_party ilike '%' || p_secured_party || '%')
-       and (p_revenue_min is null or r.revenue >= p_revenue_min)
-       and (p_revenue_max is null or r.revenue <= p_revenue_max)
-       and (p_statuses    is null or r.status    = any(p_statuses))
-       -- ONE definition of has_email, shared with lead-push-ghl {action:count}
-       -- and the export: the generated has_any_email column (primary OR any
-       -- extra). An email campaign can mail any address on the record, so "has
-       -- an email" must mean "is reachable by email".
-       and (p_has_email is null or r.has_any_email = p_has_email)
-       and (p_tag is null or r.push_tags @> array[lower(p_tag)])
-       and (not p_exclude_dups or r.is_dup_of_prior = false)
-  ), counted as (
-    select count(*) as n from filtered
-  )
-  select f.id, f.batch_id, f.lead_type, f.phone, f.line_type,
-         f.first_name, f.last_name, f.email, f.company, f.title,
-         f.address, f.city, f.state, f.zip,
-         f.employees, f.revenue, f.sic_code, f.sic_description,
-         f.filing_date, f.secured_party,
-         f.extra_phones, f.extra_emails, f.has_any_email,
-         f.is_dup_of_prior, f.status, f.ghl_contact_id,
-         f.pushed_at, f.push_tags, f.push_error,
-         f.matched_existing, f.created_at,
-         c.n
-    from filtered f cross join counted c
-   -- NULLS LAST everywhere, matching the UI's nullsFirst:false on every sort.
-   -- state and filing_date are frequently NULL (aged files carry no state, only
-   -- UCC rows have a filing date), so nulls-first would open those sorts on a wall
-   -- of blank rows — and look broken on exactly the lists that use them.
-   order by
-     case when p_order = 'created_at_asc'   then f.created_at  end asc  nulls last,
-     case when p_order = 'created_at_desc'  then f.created_at  end desc nulls last,
-     case when p_order = 'company_asc'      then f.company     end asc  nulls last,
-     case when p_order = 'company_desc'     then f.company     end desc nulls last,
-     case when p_order = 'revenue_asc'      then f.revenue     end asc  nulls last,
-     case when p_order = 'revenue_desc'     then f.revenue     end desc nulls last,
-     case when p_order = 'state_asc'        then f.state       end asc  nulls last,
-     case when p_order = 'state_desc'       then f.state       end desc nulls last,
-     case when p_order = 'filing_date_asc'  then f.filing_date end asc  nulls last,
-     case when p_order = 'filing_date_desc' then f.filing_date end desc nulls last,
-     f.id  -- every ordering ends in the PK: OFFSET over a non-unique key drops rows
-   limit v_lim offset greatest(coalesce(p_offset, 0), 0);
+  if p_with_count then
+    execute 'select count(*) from public.lead_records r' || v_where
+      into v_total
+      using p_q, p_lead_types, p_batch_ids, p_states, p_line_types, p_secured_party,
+            p_revenue_min, p_revenue_max, p_statuses, p_has_email, p_tag, p_exclude_dups;
+  end if;
+
+  return query execute
+    'select r.id, r.batch_id, r.lead_type, r.phone, r.line_type,'
+    ' r.first_name, r.last_name, r.email, r.company, r.title,'
+    ' r.address, r.city, r.state, r.zip, r.employees, r.revenue,'
+    ' r.sic_code, r.sic_description, r.filing_date, r.secured_party,'
+    ' r.extra_phones, r.extra_emails, r.has_any_email,'
+    ' r.is_dup_of_prior, r.status, r.ghl_contact_id,'
+    ' r.pushed_at, r.push_tags, r.push_error, r.matched_existing, r.created_at,'
+    ' $13::bigint'
+    ' from public.lead_records r' || v_where ||
+    ' order by ' || v_order || ' limit $14 offset $15'
+    using p_q, p_lead_types, p_batch_ids, p_states, p_line_types, p_secured_party,
+          p_revenue_min, p_revenue_max, p_statuses, p_has_email, p_tag, p_exclude_dups,
+          v_total, v_lim, v_off;
 end;
 $fn$;
-comment on function public.lead_records_search is
-  'Lead-browser search/fetch. SECURITY DEFINER with its own admin check, so it queries WITHOUT RLS and the search_text GIN index becomes usable — under RLS no trigram index can serve ILIKE, because texticlike is not leakproof. A rare term via PostgREST measured 16,903ms (over the 8s authenticated timeout — it FAILED); via this RPC, 22ms. Returns total_count on every row (one pass, no second count query). Every ordering ends in the PK so OFFSET pagination cannot drop or duplicate rows.';
 revoke all on function public.lead_records_search from public, anon;
 grant execute on function public.lead_records_search to authenticated;
