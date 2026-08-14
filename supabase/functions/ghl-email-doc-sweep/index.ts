@@ -41,6 +41,12 @@ function json(body: unknown, status = 200) {
 // Deals we still collect docs for. Mirrors ghl-call-history's open filter.
 const CLOSED_STATUSES = ["nurture", "declined", "dead", "funded", "renewal_eligible", "restructure_executed", "servicing"];
 
+/**
+ * Is this failure GHL refusing us for rate reasons? (The scraper reports it as
+ * "conversations search failed (429)".)
+ */
+const isRateLimited = (msg: string): boolean => /\b429\b/.test(msg) || /rate.?limit|too many requests/i.test(msg);
+
 // Fire-and-forget underwrite re-run when new bank statements arrive (auto mode,
 // deduped server-side by docs_hash). Mirrors ghl-webhook's triggerUnderwriting.
 async function triggerUnderwriting(dealId: string): Promise<void> {
@@ -94,6 +100,16 @@ Deno.serve(async (req) => {
     if (dErr) return json({ error: dErr.message }, 500);
 
     const summary = { swept: 0, emailsScraped: 0, docsSynced: 0, bankStatementsAdded: 0, underwritten: 0, failed: [] as string[] };
+    // ABORT-ON-RATE-LIMIT. ghlFetch already backs off exponentially (5 attempts,
+    // Retry-After honored), so a rate-limited deal costs ~7.5s and 5 calls before
+    // it gives up. Continuing to the next deal after that multiplies a wall we
+    // already know about: on 2026-08-14 the location hit its 200k/day cap and
+    // this loop spent ~585 doomed calls and 15 MINUTES per run — long enough that
+    // the 5-minute cron stacked three concurrent sweeps, each re-burning the
+    // budget the moment it came back. A sweep is periodic and idempotent, so
+    // skipping a cycle costs nothing: the next run picks up exactly the same
+    // unseen emails. Bail on the first rate-limit and let the schedule retry.
+    let rateLimited = false;
     for (const d of deals ?? []) {
       const row = d as Record<string, unknown>;
       const cust = (row.customers ?? {}) as { email?: string | null; additional_emails?: string[] | null };
@@ -113,13 +129,21 @@ Deno.serve(async (req) => {
         summary.emailsScraped += r.emailsScraped;
         summary.docsSynced += r.docsSynced;
         summary.bankStatementsAdded += r.bankStatementsAdded;
-        if (r.error) summary.failed.push(`${deal.id}: ${r.error}`);
+        if (r.error) {
+          summary.failed.push(`${deal.id}: ${r.error}`);
+          if (isRateLimited(r.error)) { rateLimited = true; break; }
+        }
         if (r.bankStatementsAdded > 0) { await triggerUnderwriting(deal.id); summary.underwritten++; }
       } catch (e) {
-        summary.failed.push(`${deal.id}: ${e instanceof Error ? e.message : String(e)}`);
+        const msg = e instanceof Error ? e.message : String(e);
+        summary.failed.push(`${deal.id}: ${msg}`);
+        if (isRateLimited(msg)) { rateLimited = true; break; }
       }
     }
-    return json({ ok: true, mode: "sweep", ...summary });
+    if (rateLimited) {
+      console.warn(`[ghl-email-doc-sweep] aborted on rate limit after ${summary.swept} deal(s) — next cycle will resume`);
+    }
+    return json({ ok: true, mode: "sweep", ...summary, ...(rateLimited ? { aborted: "rate_limited" } : {}) });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);
   }
