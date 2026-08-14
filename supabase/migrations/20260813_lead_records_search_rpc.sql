@@ -30,8 +30,13 @@
 -- duplicates rows, which would corrupt an export.
 -- Dropped first because the return type changed (has_any_email added): Postgres
 -- refuses CREATE OR REPLACE when the OUT-parameter row type differs.
+-- Dropped first because both the parameter list (p_secured_party) and the return
+-- type (has_any_email) changed; Postgres refuses CREATE OR REPLACE for either, and
+-- a new default-arg overload would make calls ambiguous rather than fail.
 drop function if exists public.lead_records_search(
   text, text[], uuid[], text[], text[], numeric, numeric, text[], boolean, text, boolean, text, integer, integer);
+drop function if exists public.lead_records_search(
+  text, text[], uuid[], text[], text[], text, numeric, numeric, text[], boolean, text, boolean, text, integer, integer);
 
 create or replace function public.lead_records_search(
   p_q             text    default null,
@@ -39,6 +44,7 @@ create or replace function public.lead_records_search(
   p_batch_ids     uuid[]  default null,
   p_states        text[]  default null,
   p_line_types    text[]  default null,
+  p_secured_party text    default null,
   p_revenue_min   numeric default null,
   p_revenue_max   numeric default null,
   p_statuses      text[]  default null,
@@ -73,6 +79,18 @@ begin
     raise exception 'Forbidden — admin only' using errcode = '42501';
   end if;
 
+  -- An unrecognized sort FAILS LOUDLY. It used to fall through every CASE to bare
+  -- PK order, so a user sorting by State got arbitrary rows under a header showing
+  -- a sort arrow — a wrong answer that looks right, the same class as
+  -- count=estimated and line_type='Voip'.
+  if coalesce(p_order,'') not in (
+    'created_at_asc','created_at_desc','company_asc','company_desc',
+    'revenue_asc','revenue_desc','state_asc','state_desc',
+    'filing_date_asc','filing_date_desc'
+  ) then
+    raise exception 'unknown p_order %', p_order using errcode = '22023';
+  end if;
+
   return query
   with filtered as (
     select r.*
@@ -82,6 +100,11 @@ begin
        and (p_batch_ids   is null or r.batch_id  = any(p_batch_ids))
        and (p_states      is null or r.state     = any(p_states))
        and (p_line_types  is null or r.line_type = any(p_line_types))
+       -- Dropping this filter returns MORE rows, not fewer, and buildFilteredQuery
+       -- also feeds the PUSH id-gather — so a missing secured_party could push
+       -- leads the owner had filtered OUT. It is not optional.
+       and (p_secured_party is null or p_secured_party = ''
+            or r.secured_party ilike '%' || p_secured_party || '%')
        and (p_revenue_min is null or r.revenue >= p_revenue_min)
        and (p_revenue_max is null or r.revenue <= p_revenue_max)
        and (p_statuses    is null or r.status    = any(p_statuses))
@@ -106,12 +129,21 @@ begin
          f.matched_existing, f.created_at,
          c.n
     from filtered f cross join counted c
+   -- NULLS LAST everywhere, matching the UI's nullsFirst:false on every sort.
+   -- state and filing_date are frequently NULL (aged files carry no state, only
+   -- UCC rows have a filing date), so nulls-first would open those sorts on a wall
+   -- of blank rows — and look broken on exactly the lists that use them.
    order by
-     case when p_order = 'created_at_asc'  then f.created_at end asc,
-     case when p_order = 'created_at_desc' then f.created_at end desc,
-     case when p_order = 'company_asc'     then f.company    end asc,
-     case when p_order = 'revenue_desc'    then f.revenue    end desc,
-     case when p_order = 'revenue_asc'     then f.revenue    end asc,
+     case when p_order = 'created_at_asc'   then f.created_at  end asc  nulls last,
+     case when p_order = 'created_at_desc'  then f.created_at  end desc nulls last,
+     case when p_order = 'company_asc'      then f.company     end asc  nulls last,
+     case when p_order = 'company_desc'     then f.company     end desc nulls last,
+     case when p_order = 'revenue_asc'      then f.revenue     end asc  nulls last,
+     case when p_order = 'revenue_desc'     then f.revenue     end desc nulls last,
+     case when p_order = 'state_asc'        then f.state       end asc  nulls last,
+     case when p_order = 'state_desc'       then f.state       end desc nulls last,
+     case when p_order = 'filing_date_asc'  then f.filing_date end asc  nulls last,
+     case when p_order = 'filing_date_desc' then f.filing_date end desc nulls last,
      f.id  -- every ordering ends in the PK: OFFSET over a non-unique key drops rows
    limit v_lim offset greatest(coalesce(p_offset, 0), 0);
 end;
