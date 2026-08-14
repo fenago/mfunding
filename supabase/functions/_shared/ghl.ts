@@ -138,6 +138,10 @@ export async function ghlFetch<T = unknown>(
   method: string,
   path: string,
   body?: unknown,
+  /** Fired the moment a 429 is SEEN, before this function's own backoff. A bulk
+   * caller needs that signal to slow its own pacing — without it the retries are
+   * invisible and the caller keeps pushing at a rate GHL is already refusing. */
+  onRateLimit?: (retryAfterMs: number | null) => void,
 ): Promise<GhlResponse<T>> {
   const endpoint = `${method} ${path}`;
   const init: RequestInit = {
@@ -185,6 +189,7 @@ export async function ghlFetch<T = unknown>(
     // ── transient HTTP failure: back off and retry ──
     if (isRetryableStatus(res.status) && attempt < MAX_RETRIES) {
       const ra = res.status === 429 ? retryAfterMs(res) : null;
+      if (res.status === 429) { try { onRateLimit?.(ra); } catch { /* never break the retry */ } }
       const wait = Math.max(ra ?? 0, withJitter(BASE_BACKOFF_MS * 2 ** attempt));
       console.warn("[ghl] transient failure — backing off", JSON.stringify({
         endpoint, status: res.status, attempt: attempt + 1, wait_ms: wait, retry_after_ms: ra,
@@ -257,7 +262,10 @@ export interface ContactInput {
  * Upsert a contact. GHL's /contacts/upsert dedupes by email/phone within the
  * location and returns the contact (new or existing) with its id.
  */
-export async function upsertContact(cfg: GhlConfig, input: ContactInput) {
+export async function upsertContact(
+  cfg: GhlConfig, input: ContactInput,
+  onRateLimit?: (retryAfterMs: number | null) => void,
+) {
   const payload: Record<string, unknown> = { locationId: cfg.locationId };
   for (const [k, v] of Object.entries(input)) {
     if (v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0)) payload[k] = v;
@@ -268,7 +276,7 @@ export async function upsertContact(cfg: GhlConfig, input: ContactInput) {
   // new:false with the same contact id. Any caller whose cleanup path deletes
   // contacts MUST check it, or it will delete real records it never created.
   return await ghlFetch<{ contact: { id: string }; new?: boolean }>(
-    cfg, "POST", "/contacts/upsert", payload,
+    cfg, "POST", "/contacts/upsert", payload, onRateLimit,
   );
 }
 

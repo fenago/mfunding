@@ -47,8 +47,15 @@ import {
 
 const BUDGET_MS = 50_000;    // wall-clock window before self-reinvoke
 const SELECT_CHUNK = 250;    // rows fetched per DB round-trip
-const DEFAULT_RPS = 5;
+// GHL LeadConnector v2 allows ~100 requests / 10s per location (10/s). We target
+// 9/s so setter-facing traffic — webhooks, HP sync, workflow calls — always has
+// headroom and never starves behind a bulk load. The old default of 5 came from
+// the original brief's "throttle <=5 rps", NOT from observed 429s: across today's
+// pushes GHL has returned zero 429s and zero leads errored.
+const DEFAULT_RPS = 9;
 const MAX_RPS = 10;
+const MIN_RPS = 2;          // floor when backing off under sustained 429s
+const CONCURRENCY = 12;     // in-flight requests; the LIMITER sets the rate, not this
 const MAX_LEAD_IDS = 5000;   // explicit selections are hand-picked, not whole files
 const ID_WINDOW = 500;       // .in() window when an explicit id list is used
 
@@ -100,12 +107,14 @@ async function webhookSecret(db: SupabaseClient): Promise<string> {
   return (gc?.webhook_secret as string | undefined) ?? Deno.env.get("GHL_WEBHOOK_SECRET") ?? "";
 }
 
-function reinvoke(secret: string, jobId: string): void {
+function reinvoke(secret: string, jobId: string, rps?: number): void {
   const url = `${SUPABASE_URL}/functions/v1/lead-push-ghl?secret=${encodeURIComponent(secret)}`;
   const p = fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANON_KEY}` },
-    body: JSON.stringify({ action: "continue", job_id: jobId }),
+    // rps MUST ride the chain. Without it every continuation reset to the default,
+    // so a job started at 10/s silently ran the rest of its life at the default.
+    body: JSON.stringify({ action: "continue", job_id: jobId, ...(rps ? { rps } : {}) }),
   }).then(() => {}).catch((e) => console.error("[lead-push-ghl] reinvoke failed:", e));
   try { (globalThis as { EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil(p); } catch { /* dev */ }
 }
@@ -342,6 +351,7 @@ function tagsFor(lead: LeadRow, batchTag: string | undefined, userTags: string[]
 /** Push one lead. Returns the stamp patch for lead_records. */
 async function pushOne(
   cfg: GhlConfig, lead: LeadRow, tags: string[], batchCode: string | undefined,
+  onRateLimit?: (retryAfterMs: number | null) => void,
 ): Promise<Record<string, unknown>> {
   const email = lead.email && EMAIL_RE.test(lead.email.trim()) ? lead.email.trim().toLowerCase() : null;
   const res = await upsertContact(cfg, {
@@ -364,7 +374,7 @@ async function pushOne(
       : {}),
     tags,
     source: `Lead Machine${batchCode ? ` ${batchCode.toUpperCase()}` : ""}`,
-  });
+  }, onRateLimit);
   const contactId = res.data?.contact?.id ?? null;
   if (!res.ok || !contactId) {
     return {
@@ -389,6 +399,58 @@ async function pushOne(
   };
 }
 
+
+/**
+ * Token-bucket pacing with 429 feedback.
+ *
+ * The old shape was "waves of N requests, each wave padded to >=1 second". That
+ * caps throughput at N/s even when everything is fast, AND it made the DB stamps
+ * serial inside each wave, so slow stamps pushed the observed rate BELOW the cap
+ * (measured 4.29/s against a nominal 5). A bucket decouples the two: requests are
+ * paced by tokens, work runs concurrently, and stamps overlap instead of queueing.
+ *
+ * ADAPTIVE: a 429 halves the rate immediately (floor MIN_RPS) and honours
+ * Retry-After by pausing the bucket; success ramps it back toward target slowly.
+ * So a rate limit slows the push down rather than erroring leads out.
+ */
+class RateLimiter {
+  private tokens: number;
+  private lastRefill = Date.now();
+  private rate: number;
+  private pausedUntil = 0;
+  private backoffs = 0;
+  constructor(private readonly target: number) {
+    this.rate = target;
+    this.tokens = target;
+  }
+  get currentRate(): number { return this.rate; }
+  get backoffCount(): number { return this.backoffs; }
+  note429(retryAfter: number | null): void {
+    this.backoffs++;
+    this.rate = Math.max(MIN_RPS, this.rate / 2);
+    if (retryAfter && retryAfter > 0) {
+      this.pausedUntil = Math.max(this.pausedUntil, Date.now() + retryAfter);
+    }
+    console.warn("[lead-push-ghl] 429 — rate halved", JSON.stringify({
+      new_rate: Number(this.rate.toFixed(2)), retry_after_ms: retryAfter,
+    }));
+  }
+  /** Slow recovery: ~1 token/sec of sustained success to climb back to target. */
+  noteSuccess(): void {
+    if (this.rate < this.target) this.rate = Math.min(this.target, this.rate + 0.02);
+  }
+  async acquire(): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+      if (now < this.pausedUntil) { await sleep(this.pausedUntil - now); continue; }
+      this.tokens = Math.min(this.rate, this.tokens + ((now - this.lastRefill) / 1000) * this.rate);
+      this.lastRefill = now;
+      if (this.tokens >= 1) { this.tokens -= 1; return; }
+      await sleep(Math.max(20, Math.ceil(((1 - this.tokens) / this.rate) * 1000)));
+    }
+  }
+}
+
 async function patchJob(db: SupabaseClient, id: string, patch: Record<string, unknown>) {
   const { error } = await db.from("lead_push_jobs").update(patch).eq("id", id);
   if (error) console.error("[lead-push-ghl] job patch failed:", error.message);
@@ -403,7 +465,8 @@ async function runWindow(
 ): Promise<{ done: boolean; pushed: number; errored: number }> {
   const started = Date.now();
   const cursorMode = isCursorMode(job);
-  let pushed = 0, errored = 0, wavesSinceReport = 0;
+  const limiter = new RateLimiter(rps);
+  let pushed = 0, errored = 0, sinceReport = 0;
   let cursor = job.cursor_id;
   const touchedBatches = new Set<string>();
   // DRAIN mode only: leads already attempted in THIS window. A lead whose stamp
@@ -430,28 +493,34 @@ async function runWindow(
 
     const tagMap = await batchTagMap(db, Array.from(new Set(rows.map((r) => r.batch_id))));
 
-    // Waves of `rps` requests, each wave taking at least a second → ≤ rps req/sec.
-    for (let i = 0; i < rows.length; i += rps) {
-      const waveStart = Date.now();
-      const wave = rows.slice(i, i + rps);
-      const results = await Promise.all(wave.map(async (lead) => {
+    // ── Concurrent workers, paced by the shared token bucket ────────────────
+    // Each worker takes the next lead, waits for a token, pushes, then stamps its
+    // OWN row — so the DB writes overlap instead of serialising behind the wave
+    // as they used to. The limiter (not CONCURRENCY) sets the rate.
+    let nextIdx = 0;
+    let bailed = false;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (bailed) return;
+        const i = nextIdx++;
+        if (i >= rows.length) return;
+        const lead = rows[i];
         const batchTag = tagMap[lead.batch_id];
         const tags = tagsFor(lead, batchTag, job.tags);
+
+        await limiter.acquire();
+        let patch: Record<string, unknown>;
         try {
-          return { lead, patch: await pushOne(cfg, lead, tags, batchTag) };
+          patch = await pushOne(cfg, lead, tags, batchTag, (ra) => limiter.note429(ra));
+          if (patch.status === "pushed") limiter.noteSuccess();
         } catch (e) {
-          return {
-            lead,
-            patch: {
-              status: "error",
-              push_error: (e instanceof Error ? e.message : String(e)).slice(0, 500),
-              push_tags: tags,
-            },
+          patch = {
+            status: "error",
+            push_error: (e instanceof Error ? e.message : String(e)).slice(0, 500),
+            push_tags: tags,
           };
         }
-      }));
 
-      for (const { lead, patch } of results) {
         const { error } = await db.from("lead_records").update(patch).eq("id", lead.id);
         if (error) {
           // GHL took the contact but we failed to stamp: report loudly. The row
@@ -460,32 +529,38 @@ async function runWindow(
           errored++;
         } else if (patch.status === "pushed") { pushed++; touchedBatches.add(lead.batch_id); }
         else { errored++; touchedBatches.add(lead.batch_id); }
+
+        // Progress every ~50 completions — live enough for the UI without a DB
+        // write per contact.
+        if (++sinceReport >= 50) {
+          sinceReport = 0;
+          await patchJob(db, job.id, {
+            pushed: job.pushed + pushed, errored: job.errored + errored,
+            message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`
+              + (limiter.backoffCount ? ` (rate ${limiter.currentRate.toFixed(1)}/s after ${limiter.backoffCount} backoff(s))` : ""),
+          });
+        }
+        if (Date.now() - started > budgetMs) { bailed = true; return; }
       }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, rows.length) }, () => worker()),
+    );
 
-      // Advance the cursor PER WAVE, not per chunk: bailing on the budget
-      // mid-chunk with a chunk-end cursor would silently skip the untouched tail.
-      if (cursorMode) cursor = wave[wave.length - 1].id;
+    // CURSOR MODE: only advance once the WHOLE chunk finished. Workers complete
+    // out of order, so there is no safe "highest id done" mid-chunk — and
+    // re-processing a chunk is harmless anyway (upsert + tag union are idempotent,
+    // and drain mode has already left those rows non-selectable).
+    if (cursorMode && !bailed && rows.length) cursor = rows[rows.length - 1].id;
 
-      const progress = () => ({
+    if (bailed) {
+      await patchJob(db, job.id, {
         pushed: job.pushed + pushed, errored: job.errored + errored,
         ...(cursorMode ? { cursor_id: cursor } : {}),
         message: `pushed ${job.pushed + pushed}${job.target_count ? ` of ${job.target_count}` : ""}`,
       });
-
-      // Progress every ~10 waves (~50 contacts / ~10s) — live enough for the UI
-      // without a DB write per contact.
-      if (++wavesSinceReport >= 10) {
-        wavesSinceReport = 0;
-        await patchJob(db, job.id, progress());
-      }
-
-      if (Date.now() - started > budgetMs) {
-        await patchJob(db, job.id, progress());
-        for (const b of touchedBatches) await db.rpc("lead_batch_refresh_counts", { p_batch_id: b });
-        return { done: false, pushed, errored };
-      }
-      const elapsed = Date.now() - waveStart;
-      if (elapsed < 1000 && i + rps < rows.length) await sleep(1000 - elapsed);
+      for (const b of touchedBatches) await db.rpc("lead_batch_refresh_counts", { p_batch_id: b });
+      return { done: false, pushed, errored };
     }
 
     for (const b of touchedBatches) await db.rpc("lead_batch_refresh_counts", { p_batch_id: b });
@@ -595,7 +670,7 @@ Deno.serve(async (req) => {
         });
       } else {
         const secret = await webhookSecret(db);
-        if (secret) reinvoke(secret, job.id);
+        if (secret) reinvoke(secret, job.id, rps);
         else await patchJob(db, job.id, { status: "error", error: "no webhook secret — cannot self-continue" });
       }
       return json({
@@ -639,7 +714,7 @@ Deno.serve(async (req) => {
         });
       } else {
         const secret = providedSecret || (await webhookSecret(db));
-        if (secret) reinvoke(secret, jobId);
+        if (secret) reinvoke(secret, jobId, rps);
         else await patchJob(db, jobId, { status: "error", error: "no webhook secret — cannot self-continue" });
       }
       return json({ ok: true, job_id: jobId, pushed, errored, done });
