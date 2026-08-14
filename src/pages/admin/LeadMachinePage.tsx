@@ -15,6 +15,7 @@ import {
   DocumentArrowUpIcon,
   BoltIcon,
   MegaphoneIcon,
+  PhoneArrowUpRightIcon,
 } from "@heroicons/react/24/outline";
 import * as tus from "tus-js-client";
 import supabase from "@/supabase";
@@ -901,6 +902,118 @@ function ProcessStrip() {
           provenance and dial nothing — plus your campaign tag, which is the one a dialer campaign targets.
         </li>
       </ul>
+    </section>
+  );
+}
+
+/* ================================================================== */
+/* Section 5 — the HotProspector handoff                               */
+/* ================================================================== */
+/* The exact clicks that get a pushed slice dialing. EVERY FACT HERE IS COPIED
+   FROM DialingMachinePage (Parts C and D), which is the source of truth — those
+   steps took two days and a dead setter floor to establish, so nothing here is
+   re-derived, reworded into a guess, or "tidied up". If HP's UI changes, fix it
+   THERE first and mirror it here.
+
+   The five steps stay expanded: this is the next action after a push, not
+   reference material, and the owner asked for it to be visible without hunting.
+   The traps fold, because they're read once. */
+function HotProspectorHandoff({ tag }: { tag: string | null }) {
+  // The tag actually on screen, so the steps name the real thing rather than a
+  // placeholder the owner has to mentally substitute.
+  const T = tag ? (
+    <code className="font-mono font-bold text-cyan-700 dark:text-cyan-300">{tag}</code>
+  ) : (
+    <span className="italic">your campaign tag</span>
+  );
+
+  return (
+    <section className="rounded-xl border border-cyan-300 dark:border-cyan-800 bg-cyan-50/60 dark:bg-cyan-900/20 p-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <PhoneArrowUpRightIcon className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0" />
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white">
+          After the push — into HotProspector, step by step
+        </h3>
+        {tag && (
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-600 text-white font-mono font-semibold">
+            {tag}
+          </span>
+        )}
+      </div>
+
+      <p className="text-[11px] text-gray-600 dark:text-gray-300">
+        <strong>One tag, three places:</strong> the push panel above, HP's <strong>Step 2 "Select Your Tag"</strong>,
+        and the campaign's <strong>"Tags to Dial"</strong>. All three must be {T} or the floor dials nothing.
+      </p>
+
+      <ol className="space-y-2 text-xs text-gray-700 dark:text-gray-200 list-decimal pl-5 marker:font-bold marker:text-cyan-700 dark:marker:text-cyan-400">
+        <li>
+          <strong>Push from here first.</strong> Leads must reach HotProspector through VibeReach, tagged.{" "}
+          <u>Never import a list straight into HotProspector</u> — those leads carry no GoHighLevel id, so the
+          setter's <strong>"Gohighlevel Custom Link"</strong> errors <strong>"Lead data not Synced"</strong> on
+          every one and they have no cockpit. That already cost a dead floor and a lost day on 1,047 leads.
+        </li>
+        <li>
+          <strong>If the tag is brand-new:</strong> HP <strong>avatar menu → Quick Links → "Refresh Meta"</strong>.
+          HotProspector caches GoHighLevel's tag list, so a tag it has never seen won't be selectable until this
+          runs. Skip it if {T} already appears in Step 2.
+        </li>
+        <li>
+          <strong>HP → Settings → INTEGRATIONS → "Go High Level Integration"</strong> → the{" "}
+          <strong>MFunding.net</strong> row. <strong>Step 2 "Select Your Tag"</strong> = {T} (a dropdown with a tiny
+          search box at the top — type it, then click it). <strong>Step 3 "Group to Sync With"</strong> = this
+          batch's HP group (create it under <strong>Contacts → "Create Group"</strong> if it doesn't exist).{" "}
+          <strong>Step 4 → "Sync Leads"</strong>, then wait for the red <strong>"InProgress N%"</strong> on the row.
+        </li>
+        <li>
+          <strong>HP dialer campaign → toggle "TAGS TO DIAL WITHOUT SORTING" ON</strong> → select {T} →{" "}
+          <strong>"Leads Found" must show your number.</strong> If it still reads 0, the tag isn't set — do not
+          proceed.
+        </li>
+        <li>
+          <strong>Reopen the campaign after saving and confirm the settings stuck.</strong> HotProspector silently
+          reverts some edits on save, so a campaign that looked right when you closed it may not be.
+        </li>
+      </ol>
+
+      <details className="group">
+        <summary className="cursor-pointer text-[11px] font-semibold text-cyan-800 dark:text-cyan-300 hover:underline">
+          Why these exact clicks — the four traps ▾
+        </summary>
+        <ul className="mt-2 space-y-1.5 text-[11px] text-gray-600 dark:text-gray-300 list-disc pl-5">
+          <li>
+            <strong>Step 2's tag is mandatory.</strong> With no tag selected, <strong>Sync Leads is a silent
+            no-op</strong> — it reports nothing useful and moves zero leads.
+          </li>
+          <li>
+            <strong>The toasts lie during the sync.</strong> You may see <strong>"No Leads Found"</strong> while it
+            is in fact syncing. Judge by the <strong>contact count</strong> instead — the Contacts header
+            ("Showing 0-25 of N") should grow by roughly your push size.
+          </li>
+          <li>
+            <strong>Never target by group.</strong> HotProspector's group counters are broken account-wide, so a
+            group number can't validate a batch. Count by tag: <strong>Contacts → Search Filter → Tags</strong>.
+            The tag index is the one that's correct.
+          </li>
+          <li>
+            <strong>The "Sync Leads" button on the CONTACTS toolbar is a decoy</strong> — it syncs field
+            definitions, not leads. The one that moves leads is on the{" "}
+            <strong>Settings → Integrations → MFunding.net</strong> row.
+          </li>
+        </ul>
+      </details>
+
+      <p className="text-[11px] text-gray-500 dark:text-gray-400">
+        Full SOP — groups, campaign build, Progressive(M), setter assignment, TCPA hours:{" "}
+        <Link to="/admin/dialing-machine" className="text-ocean-blue hover:underline font-medium">
+          Dialing Machine
+        </Link>
+        . Per-campaign progress lives on the campaign's own setup checklist in{" "}
+        <Link to="/admin/campaigns" className="text-ocean-blue hover:underline font-medium">
+          Campaigns
+        </Link>
+        .
+      </p>
     </section>
   );
 }
@@ -2897,6 +3010,9 @@ export default function LeadMachinePage() {
                 </p>
               </div>
             )}
+
+            {/* ── 5. Into HotProspector ── */}
+            <HotProspectorHandoff tag={pickedCampaign?.dial_tag ?? effectiveTags[0] ?? null} />
 
             {/* The table still shows the last good page, so the failure needs to
                 be visible on its own rather than implied by stale rows. */}
