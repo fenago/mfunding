@@ -748,7 +748,7 @@ async function runWindow(
  *
  * Flip to false and redeploy to resume normal operation.
  */
-const PUSH_KILL_SWITCH = true;   // EMERGENCY 2026-08-15 00:2xZ — drain cliff + 3-min watchdog was resurrecting a job whose every window timed out, wedging the DB and taking auth down. Flip back to false only after the partial index exists.
+const PUSH_KILL_SWITCH = false;  // released 2026-08-15 on ci_small after the index landed and the drain measured 34.6ms (was catastrophic on NANO)
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
