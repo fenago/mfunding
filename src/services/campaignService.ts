@@ -162,20 +162,33 @@ export function campaignLabel(c: Pick<Campaign, "code" | "name">): string {
 }
 
 /**
- * The campaign to auto-attach for a given lead source: the newest ACTIVE
- * campaign whose channel matches the source, else the newest active campaign
- * (so a manual entry is never left untracked when a live campaign exists).
- * `campaigns` is assumed newest-first (listCampaigns order). Returns "" when no
- * active campaign exists — the caller then shows the "no campaigns" warning.
+ * OPEN = a campaign a lead may still be attached to. `planned` counts, and that
+ * is not a nicety: it is the status every dial campaign is created with, and
+ * nothing server-side ever flips it. Filtering attach lists on `active` alone
+ * therefore omits exactly the campaigns the Lead Machine mints — which is how a
+ * freshly created campaign became invisible on both the intake and the edit
+ * modal while the deal was, in fact, attributed to it.
+ *
+ * ONE definition, used by every attach surface, so they cannot drift apart again.
+ */
+export const OPEN_STATUSES: CampaignStatus[] = ["planned", "active"];
+export const isOpenCampaign = (c: Pick<Campaign, "status">): boolean => OPEN_STATUSES.includes(c.status);
+
+/**
+ * The campaign to auto-attach for a given lead source: the newest OPEN campaign
+ * whose channel matches the source, else the newest open one (so a manual entry
+ * is never left untracked when a live campaign exists). `campaigns` is assumed
+ * newest-first (listCampaigns order). Returns "" when none is open — the caller
+ * then shows the "no campaigns" warning.
  */
 export function defaultCampaignIdForSource(campaigns: Campaign[], leadSource: string): string {
-  const active = campaigns.filter((c) => c.status === "active");
-  if (active.length === 0) return "";
+  const open = campaigns.filter(isOpenCampaign);
+  if (open.length === 0) return "";
   for (const ch of channelsForLeadSource(leadSource)) {
-    const match = active.find((c) => c.channel === ch);
+    const match = open.find((c) => c.channel === ch);
     if (match) return match.id;
   }
-  return active[0].id;
+  return open[0].id;
 }
 
 // Channels offered in the "New campaign" picker (canonical set, no legacy dupes).

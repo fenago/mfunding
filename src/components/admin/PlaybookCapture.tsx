@@ -13,7 +13,7 @@ import {
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
 import { createDeal } from "../../services/dealService";
-import { listCampaigns, defaultCampaignIdForSource, type Campaign } from "../../services/campaignService";
+import { listCampaigns, defaultCampaignIdForSource, isOpenCampaign, type Campaign } from "../../services/campaignService";
 import { MARKET_CONFIG } from "../../types/deals";
 import type { Deal, Market, DealStatus, CreateDealData } from "../../types/deals";
 import type { Playbook } from "../../data/playbooks";
@@ -116,9 +116,11 @@ export default function PlaybookCapture({
   // closer picks one it stays put (no surprise re-selection).
   const [campaignDirty, setCampaignDirty] = useState(false);
 
-  // Only ACTIVE campaigns can be attached / drive the smart default. When there
-  // are none, we don't hard-block the closer — we warn and let the save through.
-  const activeCampaigns = useMemo(() => campaigns.filter((c) => c.status === "active"), [campaigns]);
+  // OPEN campaigns (active OR planned) can be attached / drive the smart default.
+  // `planned` is what every dial campaign is created as and nothing flips it, so
+  // an active-only list hides exactly the campaigns the Lead Machine mints. When
+  // there are none we don't hard-block the closer — we warn and let the save through.
+  const activeCampaigns = useMemo(() => campaigns.filter(isOpenCampaign), [campaigns]);
 
   // Whether this flow ever creates a lead by hand. Import/email/pool paths never
   // do — the lead already exists, so the closer only ever loads an existing one.

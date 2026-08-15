@@ -3188,12 +3188,33 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
       .then(({ data }) => setClosers(data || []));
   }, []);
 
-  // Attachable campaigns are the active ones. Editing keeps whatever campaign is
-  // already on the deal (no smart re-derive here — we don't want to silently swap
-  // an intentional attribution), but a deal with none must get one when active
-  // campaigns exist — same required-with-sanity rule as the intake.
-  const activeCampaigns = useMemo(() => campaigns.filter((cp) => cp.status === "active"), [campaigns]);
-  const campaignRequired = activeCampaigns.length > 0;
+  /* Attachable = OPEN, which is `active` OR `planned` — not `active` alone.
+     `planned` is what every dial campaign is created as and nothing server-side
+     ever flips it, so an active-only list omits exactly the campaigns the Lead
+     Machine is minting. That's the bug the owner hit: the deal WAS attributed and
+     campaignId below held the right id, but the <select> had no <option> matching
+     it, so the browser fell back to "Select a campaign…" and the screen claimed
+     the lead was untracked. */
+  const attachableCampaigns = useMemo(
+    () => campaigns.filter((cp) => cp.status === "active" || cp.status === "planned"),
+    [campaigns],
+  );
+
+  /* Whatever this deal ALREADY carries must be renderable regardless of status —
+     a campaign since paused or completed is still the deal's truth, and a select
+     that can't show its own value is how attribution gets silently re-pointed. */
+  const currentCampaign = useMemo(
+    () => (campaignId ? (campaigns.find((cp) => cp.id === campaignId) ?? null) : null),
+    [campaigns, campaignId],
+  );
+  const campaignOptions = useMemo(
+    () =>
+      currentCampaign && !attachableCampaigns.some((cp) => cp.id === currentCampaign.id)
+        ? [currentCampaign, ...attachableCampaigns]
+        : attachableCampaigns,
+    [currentCampaign, attachableCampaigns],
+  );
+  const campaignRequired = attachableCampaigns.length > 0;
 
   // Same required set as the intake — plus last name (confirmed required to save)
   // and the campaign when there's an active one to attach.
@@ -3334,18 +3355,23 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
                 Manage campaigns ↗
               </Link>
             </div>
-            {activeCampaigns.length > 0 ? (
+            {campaignOptions.length > 0 ? (
               <select className="input-field w-full" value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
                 <option value="">Select a campaign…</option>
-                {activeCampaigns.map((cp) => (
-                  <option key={cp.id} value={cp.id}>{cp.code ? `${cp.code} — ${cp.name}` : cp.name}</option>
+                {campaignOptions.map((cp) => (
+                  <option key={cp.id} value={cp.id}>
+                    {cp.code ? `${cp.code} — ${cp.name}` : cp.name}
+                    {/* Says why a closed campaign is in the list, so it reads as
+                        this deal's history rather than something newly pickable. */}
+                    {cp.status !== "active" && cp.status !== "planned" ? ` (current — ${cp.status})` : ""}
+                  </option>
                 ))}
               </select>
             ) : (
               <div className="flex items-start gap-1.5 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300">
                 <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>
-                  No active campaigns — this lead won't be tracked.{" "}
+                  No campaigns to attach — this lead won't be tracked.{" "}
                   <Link to="/admin/campaigns" className="underline font-medium">Create one in Campaigns</Link>.
                 </span>
               </div>
