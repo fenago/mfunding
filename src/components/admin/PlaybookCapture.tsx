@@ -654,7 +654,7 @@ export default function PlaybookCapture({
                   <div className="flex items-start gap-1.5 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300">
                     <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>
-                      No active campaigns — this lead won't be tracked.{" "}
+                      No campaigns to attach — this lead won't be tracked.{" "}
                       <Link to="/admin/campaigns" className="underline font-medium">Create one in Campaigns</Link> so cost-per-funded works.
                     </span>
                   </div>
