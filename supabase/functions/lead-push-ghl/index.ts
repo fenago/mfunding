@@ -224,6 +224,12 @@ function isCursorMode(job: Job): boolean {
   // Same self-draining argument: the row is selected because its name changed
   // after its last push, and a successful push moves pushed_at past it.
   if (job.filters?.resplit_pending === true) return false;
+  // A RETRY of errored rows is self-draining too: a successful push flips status
+  // from 'error' to 'pushed', so the row leaves the selection. Without this the
+  // retry would run in cursor mode and ORDER BY id would drag the planner onto a
+  // full PK scan to find 1,346 rows in 250k — the same cliff, a third time.
+  const st = asArray(job.filters?.status as string | string[] | undefined);
+  if (st && st.length === 1 && st[0].toLowerCase() === "error") return false;
   return !!job.retag || job.filters?.status != null;
 }
 function statusesFor(job: Job): string[] {
