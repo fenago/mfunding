@@ -952,6 +952,23 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     const dealType = pipelineId === VCF_PIPELINE_ID ? "vcf" : pipelineId === MCA_PIPELINE_ID ? "mca" : null;
     if (!dealType) return;
 
+    // COLD-POOL GUARD (MCA only): a ~145K cold-dial import lands every opportunity
+    // in the MCA pipeline's "New Lead" stage (mapped status "new"). Do NOT mint a
+    // deal for those — a deal is born only when a setter WORKS the lead: they open
+    // the Revenue Playbook (playbook-open-contact creates the deal directly in
+    // Supabase) or the opportunity advances past New Lead (mapped !== "new").
+    // Verified: every legit New-Lead deal is created DIRECTLY by its own edge
+    // function — playbook-open-contact (created:true, status "new"), mca-intake
+    // (the "MCA 00 - Web Form Intake" path, lead_source "mca_web"), and
+    // live-transfer-intake — never by this mirror. So skipping New-Lead auto-create
+    // here breaks nothing while stopping the mass cascade. VCF is unaffected.
+    // (mapped === null means an unrecognized stage → effective status defaults to
+    // "new" below, so it is treated as New Lead and skipped too.)
+    if (dealType === "mca" && (mapped === "new" || mapped === null)) {
+      await logEvent(db, evt, "OpportunityCreate", "skipped", "MCA New-Lead cold pool — no deal auto-created (deal is born when a setter works the lead)");
+      return;
+    }
+
     const contactId = String(
       o.contactId ?? evt.contactId ?? cd.contactId ?? evt.contact_id ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
     );
