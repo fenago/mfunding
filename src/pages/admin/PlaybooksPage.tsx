@@ -944,6 +944,11 @@ export default function PlaybooksPage() {
               myProfileId={effectiveUserId}
             />
           </div>
+          {/* Opening script — auto-selected from the merchant's lead type (Aged /
+              UCC / Trigger) so a setter reads the right cold-dial pitch the moment
+              the merchant answers. Renders only for cold-dial list leads; inbound /
+              live-transfer deals keep their own scripted step 1. */}
+          <OpeningScriptCard deal={deal} />
           {/* Deal-desk AI — scoped to THIS deal. The closer is often on the phone
               with a funder who's asking for things; this answers instantly from
               the deal's full record (stips, funders + what they said, pipeline). */}
@@ -2765,6 +2770,195 @@ function MerchantFirmographics({ customer }: { customer: DealWithCustomer["custo
         </span>
       ))}
     </p>
+  );
+}
+
+// ───────────────────────── Opening script (setter cold-dial) ─────────────────
+// Setters dial cold LIST leads (Aged / UCC / Trigger) from the New-Lead pipeline,
+// answer, then open the merchant here. Those lead sources are DELIBERATELY unmapped
+// to a playbook (see LEAD_SOURCE_TO_PLAYBOOK) because they're cold — nobody
+// contacted us — so no playbook step carries their opener. THIS card is that
+// opener: it reads the deal's lead_source, auto-selects the matching script, and
+// still lets the setter flip to another variant by hand.
+//
+// COMPLIANCE (owner will refine wording; run past the compliance agent before heavy
+// use): an MCA is a PURCHASE OF FUTURE RECEIVABLES, never a loan — the copy says
+// "funding / working capital / advance", never "loan". A cold dial never claims the
+// merchant contacted us, and the UCC opener never discloses a specific funder or
+// amount from the public filing.
+type LeadType = "aged" | "ucc" | "trigger";
+
+/** Which cold-dial script a deal's lead_source calls for — null for inbound /
+ * live-transfer / mapped sources that carry their OWN step-1 opener (we never
+ * double up, and never assert cold outreach on an inbound lead). */
+function coldDialLeadType(src: string | null | undefined): LeadType | null {
+  const s = (src ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (s.endsWith("_list")) {
+    if (s.startsWith("ucc")) return "ucc";
+    if (s.startsWith("aged")) return "aged";
+    if (s.startsWith("trigger")) return "trigger";
+  }
+  if (s === "ucc_lead") return "ucc";
+  if (s === "ph_setter" || s === "cold_call") return "ucc"; // generic cold dial → UCC opener
+  return null;
+}
+
+interface ScriptCopy { label: string; opener: string; qualify: string[]; transition: string; }
+
+/** STARTER copy — a starting point, not final. [YOU] = the setter's name. */
+function buildScripts(firstName: string, business: string): Record<LeadType, ScriptCopy> {
+  const you = "[YOU]";
+  return {
+    aged: {
+      label: "Aged",
+      opener:
+        `Hi, is this ${firstName}? This is ${you} with Momentum Funding. You reached out a little while `
+        + `back about working capital for ${business}, so I'm circling back — we've got some new funding `
+        + `programs that may be a better fit now. Do you have a quick minute?`,
+      qualify: [
+        `Is the business still looking for additional working capital?`,
+        `Roughly what are the monthly deposits running these days?`,
+        `And how much capital would actually move the needle for you?`,
+      ],
+      transition:
+        `Great — based on that, I think we can help. The next step is a quick application and your last few `
+        + `months of bank statements; it takes about ten minutes, and there's no impact to your credit just `
+        + `to see what you qualify for.`,
+    },
+    ucc: {
+      label: "UCC",
+      opener:
+        `Hi, is this ${firstName}? This is ${you} with Momentum Funding. We help business owners line up `
+        + `additional working capital, and it looks like ${business} may already have some funding in place — a `
+        + `lot of owners in that spot qualify for more. Do you have a quick minute?`,
+      qualify: [
+        `Are you open to additional working capital right now?`,
+        `About how many advances or positions are you carrying at the moment?`,
+        `What are the monthly deposits running — and how much are you looking for?`,
+      ],
+      transition:
+        `Based on that you may qualify for more, and in a lot of cases we can improve on the terms you already `
+        + `have. Next step is a short application and your recent bank statements — no impact to your credit just `
+        + `to see the offers.`,
+    },
+    trigger: {
+      label: "Trigger",
+      opener:
+        `Hi, is this ${firstName}? This is ${you} with Momentum Funding. You recently looked into financing `
+        + `options for ${business}, so I wanted to reach out directly — we help owners get working capital fast. `
+        + `Have a quick second?`,
+      qualify: [
+        `What would the capital be for — growth, equipment, payroll, covering a gap?`,
+        `What are the monthly deposits running right now?`,
+        `And how much are you looking to get?`,
+      ],
+      transition:
+        `Perfect — that's exactly what we do. The fastest path is a quick application plus your last few months `
+        + `of bank statements; most owners see options within 24–48 hours, and checking has no impact on your credit.`,
+    },
+  };
+}
+
+function OpeningScriptCard({ deal }: { deal: DealWithCustomer }) {
+  const auto = coldDialLeadType(deal.lead_source);
+  // Manual override — reset whenever the loaded deal changes so a new merchant
+  // never inherits the last one's toggle. Falls back to UCC (the generic opener).
+  const [pick, setPick] = useState<LeadType | null>(null);
+  useEffect(() => { setPick(null); }, [deal.id]);
+  const [open, setOpen] = useState(true);
+  useEffect(() => { setOpen(true); }, [deal.id]);
+
+  // Only for cold-dial list leads — inbound / live-transfer deals carry their own
+  // scripted step 1, so this card stays out of their way entirely.
+  if (!auto) return null;
+
+  const selected: LeadType = pick ?? auto;
+  const firstName = deal.customer?.first_name?.trim() || "there";
+  const business = deal.customer?.business_name?.trim() || "your business";
+  const scripts = buildScripts(firstName, business);
+  const s = scripts[selected];
+  const isAuto = pick === null || pick === auto;
+
+  return (
+    <div className="mt-3 rounded-xl border border-ocean-blue/40 bg-ocean-blue/5 dark:bg-ocean-blue/10 overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-ocean-blue/20 dark:border-ocean-blue/30">
+        <PhoneIcon className="w-4 h-4 text-ocean-blue shrink-0" />
+        <span className="font-semibold text-sm text-gray-900 dark:text-white">Opening script</span>
+        <span
+          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+          title="Auto-selected from this lead's type (deals.lead_source). Toggle below to override."
+        >
+          {isAuto ? `Auto: ${scripts[auto].label}` : `Manual: ${s.label}`}
+        </span>
+        {/* Variant toggle — auto-selected, but the setter always drives. */}
+        <div className="flex items-center gap-1 ml-auto">
+          {(Object.keys(scripts) as LeadType[]).map((t) => {
+            const on = t === selected;
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setPick(t)}
+                title={`Read the ${scripts[t].label} opener`}
+                className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-colors ${
+                  on
+                    ? "bg-ocean-blue text-white border-ocean-blue"
+                    : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-ocean-blue/10"
+                }`}
+              >
+                {t === auto && <span className="mr-0.5">★</span>}{scripts[t].label}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            title={open ? "Hide the script" : "Show the script"}
+            className="text-[11px] font-medium px-2 py-1 rounded-full text-gray-500 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-700"
+          >
+            {open ? "hide" : "show"}
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="px-4 py-3 space-y-3">
+          {/* OPENER */}
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-ocean-blue mb-1">Opener</div>
+            <div className="flex gap-2 rounded-md bg-white/70 dark:bg-gray-800/60 border-l-4 border-ocean-blue px-3 py-2">
+              <ChatBubbleLeftRightIcon className="w-4 h-4 text-ocean-blue shrink-0 mt-0.5" />
+              <p className="text-sm italic text-gray-800 dark:text-gray-100">"{s.opener}"</p>
+            </div>
+          </div>
+
+          {/* QUALIFY */}
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-ocean-blue mb-1">Qualify</div>
+            <ul className="space-y-1 text-sm text-gray-700 dark:text-gray-300 list-disc pl-5">
+              {s.qualify.map((q, i) => (
+                <li key={i} className="italic">"{q}"</li>
+              ))}
+            </ul>
+          </div>
+
+          {/* TRANSITION */}
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-ocean-blue mb-1">Transition to next step</div>
+            <div className="flex gap-2 rounded-md bg-white/70 dark:bg-gray-800/60 border-l-4 border-emerald-500 px-3 py-2">
+              <ChatBubbleLeftRightIcon className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <p className="text-sm italic text-gray-800 dark:text-gray-100">"{s.transition}"</p>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            Starting-point copy — read it your own way. <b>[YOU]</b> = your name. An MCA is a purchase of future
+            receivables, not a loan; never call it one on the call.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

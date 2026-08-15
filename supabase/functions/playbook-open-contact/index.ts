@@ -155,15 +155,29 @@ function sourceFor(lead: LeadEnrich | null): string {
   }
 }
 
-/** The playbook a setter should land on. Defaulting every open to 'ph_setter'
- * routed aged/UCC/trigger merchants into the wrong script. */
-function leadSourceFor(lead: LeadEnrich | null, tags: string[]): string | null {
+/** The merchant's LEAD TYPE — aged / ucc / trigger — for opening-script routing.
+ * Derived from the GHL contact's dial tags (lm-aged/lm-ucc/lm-trigger) first,
+ * then the Lead Machine row's own lead_type. A UCC signal that lives on the
+ * ph_ucc lead (not this row) is added by the caller (see derivedLeadType). */
+type LeadType = "aged" | "ucc" | "trigger";
+function leadTypeFor(lead: LeadEnrich | null, tags: string[]): LeadType | null {
   const t = tags.map((x) => x.toLowerCase());
-  if (lead?.lead_type === "ucc" || t.includes("lm-ucc")) return "ucc_list";
-  if (lead?.lead_type === "aged" || t.includes("lm-aged")) return "aged_list";
-  if (lead?.lead_type === "trigger" || t.includes("lm-trigger")) return "trigger_list";
+  if (lead?.lead_type === "ucc" || t.includes("lm-ucc")) return "ucc";
+  if (lead?.lead_type === "aged" || t.includes("lm-aged")) return "aged";
+  if (lead?.lead_type === "trigger" || t.includes("lm-trigger")) return "trigger";
   return null;
 }
+
+// The deal's lead_source encodes the lead type as `<type>_list` — the value the
+// Revenue Playbook reads to auto-pick the opening script. Built at the call sites
+// via derivedLeadType() (which also folds in the ph_ucc UCC signal); defaulting
+// every open to 'ph_setter' routed aged/UCC/trigger merchants onto the wrong one.
+
+/** Placeholder lead_source values that are NOT a chosen attribution — safe to
+ * backfill with the merchant's real lead type on resume. Anything else is a value
+ * a human/pipeline meaningfully set and is never overwritten (mirrors the
+ * 'other'/'Merchant' placeholder rule used elsewhere in this function). */
+const PLACEHOLDER_LEAD_SOURCES = new Set(["ph_setter", "other", "unknown"]);
 
 /** Everything from the lead that belongs on the customer row. */
 function customerFieldsFrom(lead: LeadEnrich): Record<string, unknown> {
@@ -728,6 +742,31 @@ Deno.serve(async (req) => {
       if (error) console.error("[playbook-open-contact] deal mca_score refresh failed:", error.message);
     }
 
+    // The merchant's lead TYPE for opening-script routing. Tags/Lead-Machine row
+    // decide it; a ph_ucc-harvested lead (no lead_records row) is a UCC signal on
+    // its own, so uccLead standing in means "ucc" when nothing richer is known.
+    function derivedLeadType(): LeadType | null {
+      return leadTypeFor(leadRow, contactTags) ?? (uccLead ? "ucc" : null);
+    }
+
+    // BACKFILL lead_source on RESUME so a deal opened before the setter had a
+    // script — or one that fell to the 'ph_setter' placeholder — gets its real
+    // `<type>_list` value, which is what the Playbook reads to auto-pick the
+    // opening script. Never touches a meaningful value (only null/placeholder),
+    // best-effort, and skips the caller-override case (that already won at create).
+    async function backfillDealLeadSource(dealId: string): Promise<void> {
+      if (leadSourceOverride) return;
+      const lt = derivedLeadType();
+      if (!lt) return;
+      const src = `${lt}_list`;
+      const { data: d } = await db.from("deals").select("lead_source").eq("id", dealId).maybeSingle();
+      const cur = str(d?.lead_source);
+      if (cur === src) return;
+      if (cur && !PLACEHOLDER_LEAD_SOURCES.has(cur.toLowerCase())) return; // meaningful — never overwrite
+      const { error } = await db.from("deals").update({ lead_source: src }).eq("id", dealId);
+      if (error) console.error("[playbook-open-contact] lead_source backfill failed:", error.message);
+    }
+
     // Backfill the merchant address onto a customer — only columns that are
     // currently NULL/empty; never overwrite a value a human already entered.
     async function backfillCustomerAddress(custId: string): Promise<void> {
@@ -810,6 +849,7 @@ Deno.serve(async (req) => {
       // never overwritten. Address stays null-only.
       await refreshDealPositions(d.id);
       await refreshDealScore(d.id);
+      await backfillDealLeadSource(d.id);
       if (d.customer_id) {
         await backfillCustomerAddress(d.customer_id);
         await backfillCustomerFromLead(db, d.customer_id, leadRow);
@@ -957,6 +997,7 @@ Deno.serve(async (req) => {
       // the latest UCC read (source rank <= 1 only — never overwrite a refined value).
       await refreshDealPositions(d.id);
       await refreshDealScore(d.id);
+      await backfillDealLeadSource(d.id);
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       const attr1 = await attributeCampaign(db, d.id, contactId, contactTags);
       // Enrichment, not creation — runs on an EXISTING deal too, because the
@@ -975,7 +1016,12 @@ Deno.serve(async (req) => {
         customer_id: customerId,
         deal_type: "mca",
         status: "new",
-        lead_source: leadSourceOverride ?? leadSourceFor(leadRow, contactTags) ?? "ph_setter",
+        // The caller wins; else the lead's own type as `<type>_list` — including a
+        // ph_ucc-harvested lead where the UCC signal, not a tag, names it 'ucc';
+        // 'ph_setter' is the last-resort fallback, not the default answer.
+        lead_source: leadSourceOverride
+          ?? (derivedLeadType() ? `${derivedLeadType()}_list` : null)
+          ?? "ph_setter",
         ghl_contact_id: contactId,
         created_by: caller.id,
         assigned_closer_id: isCloser ? caller.id : null,
