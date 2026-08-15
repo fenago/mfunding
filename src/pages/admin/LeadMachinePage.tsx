@@ -1383,6 +1383,17 @@ function stateCode(s: string): string {
   return s.trim().toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2);
 }
 
+/** The human Source label a type tag implies (lm-aged → "Aged"), so the
+ *  Source field auto-suggests from the tag being pushed. */
+function sourceFromTag(t: string): string | null {
+  const l = t.toLowerCase();
+  if (l.includes("aged")) return "Aged";
+  if (l.includes("ucc")) return "UCC";
+  if (l.includes("trigger") || l.includes("trig")) return "Trigger";
+  return null;
+}
+const OPP_SOURCE_PRESETS = ["Aged", "UCC", "Trigger"];
+
 function CreateOpportunitiesPanel() {
   const [tags, setTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState("");
@@ -1391,6 +1402,12 @@ function CreateOpportunitiesPanel() {
   const [excludeStates, setExcludeStates] = useState<string[]>(OPP_DEFAULT_EXCLUDE);
   const [stateDraft, setStateDraft] = useState("");
   const [value, setValue] = useState("0");
+  /* The Source stamped on each created opportunity — lets setters filter the
+     Opportunities page by lead type and run a different script per type. One
+     run = one source, so it auto-suggests from the tag being pushed until the
+     user overrides it. */
+  const [source, setSource] = useState("");
+  const sourceTouched = useRef(false);
 
   const [preview, setPreview] = useState<OppCount | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -1422,6 +1439,23 @@ function CreateOpportunitiesPanel() {
     setStateDraft("");
   };
   const removeState = (c: string) => setExcludeStates((prev) => prev.filter((x) => x !== c));
+  const setSourcePreset = (s: string) => {
+    sourceTouched.current = true;
+    setSource(s);
+  };
+
+  /* Auto-suggest the Source from the first type tag added, until the user
+     types their own — one run is one source, so the tag is the best guess. */
+  useEffect(() => {
+    if (sourceTouched.current) return;
+    for (const t of tags) {
+      const s = sourceFromTag(t);
+      if (s) {
+        setSource(s);
+        return;
+      }
+    }
+  }, [tags]);
 
   /* Any change to the inputs invalidates a stale preview — a create must
      always be preceded by a preview of the EXACT set being created. */
@@ -1453,6 +1487,7 @@ function CreateOpportunitiesPanel() {
         pipeline_id: pipelineId,
         stage_id: stageId,
         value: numericValue,
+        source: source.trim(),
         mode,
         ...(cursor ? { cursor } : {}),
       },
@@ -1611,6 +1646,40 @@ function CreateOpportunitiesPanel() {
           </div>
         </div>
 
+        {/* ── Source / lead type ── */}
+        <div className="space-y-1.5">
+          <span className={lbl}>Source / lead type</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className={`${input} w-48`}
+              placeholder="e.g. Aged"
+              value={source}
+              onChange={(e) => {
+                sourceTouched.current = true;
+                setSource(e.target.value);
+              }}
+            />
+            <span className="text-[10px] text-gray-400">quick:</span>
+            {OPP_SOURCE_PRESETS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setSourcePreset(s)}
+                className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${
+                  source.trim().toLowerCase() === s.toLowerCase()
+                    ? "border-emerald-500 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                    : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-emerald-400"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+          <span className="text-[10px] text-gray-400">
+            Sets the opportunity's Source so setters can filter the Opportunities page by lead type (Aged / UCC /
+            Trigger) and use a different script for each.
+          </span>
+        </div>
+
         {/* ── Pipeline / stage / value ── */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <label className="flex flex-col gap-1">
@@ -1752,7 +1821,14 @@ function CreateOpportunitiesPanel() {
                   Create <strong>{preview.to_create.toLocaleString()}</strong> opportunities in{" "}
                   <strong>{pipeline.name}</strong> →{" "}
                   <strong>{pipeline.stages.find((s) => s.id === stageId)?.label ?? "—"}</strong> at{" "}
-                  <strong>${numericValue.toLocaleString()}</strong>?
+                  <strong>${numericValue.toLocaleString()}</strong>
+                  {source.trim() && (
+                    <>
+                      {" "}
+                      · Source <strong>{source.trim()}</strong>
+                    </>
+                  )}
+                  ?
                 </span>
                 <button onClick={() => void runCreate()} className="btn-primary btn-sm">
                   Confirm — create
