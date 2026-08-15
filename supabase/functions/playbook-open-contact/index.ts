@@ -119,9 +119,29 @@ interface LeadEnrich {
  */
 function revenueFields(lead: LeadEnrich): Record<string, unknown> {
   if (lead.revenue == null) return {};
+  // THE VENDOR SHIPS REVENUE AS TEXT RANGES AND OUR PARSER FABRICATED NUMBERS
+  // FROM THEM. Verified against raw on 2026-08-15:
+  //     "$1 TO 2.5 MILLION"    -> 12.5        (6,481 rows)
+  //     "$2.5 TO 5 MILLION"    -> 2.55        (2,004)
+  //     "$5 TO 10 MILLION"     -> 510         (1,076)
+  //     "LESS THAN $500,000"   -> 500000      (24,487)
+  //     "$500,000 TO $1 MILLION" -> 5000001   (9,242)
+  //     "OVER $1 BILLION"      -> 1           (6)
+  // Those are not units to convert, they are digits concatenated out of a
+  // sentence. A figure like 5000001 is not five million dollars, it is the "1"
+  // of "$1 MILLION" glued to "500,000" — and writing it to annual_revenue would
+  // put a fictional number on an underwriting screen.
+  //
+  // So: only pass through a value that can be a REAL annual figure. The known
+  // artifacts are excluded outright and anything under $1,000/yr is refused —
+  // no business we fund grosses less than that, so such a value is evidence of a
+  // parse, not of a small merchant. Blank beats invented.
+  const v = Number(lead.revenue);
+  const ARTIFACTS = new Set([12.5, 2.55, 510, 5000001, 1]);
+  if (!Number.isFinite(v) || v < 1000 || ARTIFACTS.has(v)) return {};
   return lead.lead_type === "trigger"
-    ? { monthly_revenue: lead.revenue, annual_revenue: Math.round(lead.revenue * 12) }
-    : { annual_revenue: lead.revenue, monthly_revenue: Math.round(Number(lead.revenue) / 12) };
+    ? { monthly_revenue: v, annual_revenue: Math.round(v * 12) }
+    : { annual_revenue: v, monthly_revenue: Math.round(v / 12) };
 }
 
 /** customers.source from the list the lead came off — it was hardcoded 'other',
@@ -154,7 +174,11 @@ function customerFieldsFrom(lead: LeadEnrich): Record<string, unknown> {
     address_zip: str(lead.zip),
     industry: str(lead.sic_description),
     sic_code: str(lead.sic_code),
-    employees: lead.employees ?? null,
+    // The same file ships employee counts up to 99,997,704 against a median of
+    // 14 — another mis-parse, not a merchant with 100 million staff. Refuse the
+    // obviously impossible rather than put it on a contact record.
+    employees: lead.employees != null && lead.employees > 0 && lead.employees <= 10000
+      ? lead.employees : null,
     owner_title: str(lead.title),
     entity_type: str(lead.entity_type),
     website: lead.web_domain ? `https://${lead.web_domain}` : null,
