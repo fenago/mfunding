@@ -193,13 +193,13 @@ async function mergeCustomerExtras(
 ): Promise<{ phones_added: number; emails_added: number } | null> {
   try {
     const { data: lead } = await db.from("lead_records")
-      .select("phone,email,extra_phones,extra_emails")
+      .select("phone,email,first_name,last_name,company,extra_phones,extra_emails")
       .eq("ghl_contact_id", contactId)
       .order("pushed_at", { ascending: false }).limit(1).maybeSingle();
     if (!lead) return null;
 
     const { data: cust } = await db.from("customers")
-      .select("phone,email,additional_phones,additional_emails")
+      .select("phone,email,first_name,last_name,business_name,additional_phones,additional_emails")
       .eq("id", customerId).maybeSingle();
     if (!cust) return null;
 
@@ -237,12 +237,41 @@ async function mergeCustomerExtras(
       const n = lower(cand);
       if (n && !knownEmails.has(n)) { knownEmails.add(n); addEmails.push(n); }
     }
-    if (!addPhones.length && !addEmails.length) return { phones_added: 0, emails_added: 0 };
+    // FILL AN EMPTY PRIMARY — append is for CONFLICTS, not for gaps.
+    // "Merge, never overwrite" was the right rule and it was applied too
+    // broadly: a customer whose primary email was EMPTY got the lead's address
+    // appended to additional_emails, so the merchant had an email on file and
+    // the app still said "add an email so you can send the application". An
+    // empty slot is not a value worth protecting. A slot a human filled is, and
+    // that is still never touched.
+    const fill: Record<string, unknown> = {};
+    if (!str(cust.email) && lower(lead.email)) fill.email = lower(lead.email);
+    if (!str(cust.phone) && last10(lead.phone)) fill.phone = `+1${last10(lead.phone)}`;
+    // Names/business too: the same gap left customers reading "Merchant".
+    if (!str(cust.first_name) || str(cust.first_name) === "Merchant") {
+      if (str(lead.first_name)) fill.first_name = str(lead.first_name);
+    }
+    if (!str(cust.last_name) && str(lead.last_name)) fill.last_name = str(lead.last_name);
+    if (!str(cust.business_name) && str(lead.company)) fill.business_name = str(lead.company);
 
-    // Append only — existing array order is preserved exactly.
-    const patch: Record<string, unknown> = {};
-    if (addPhones.length) patch.additional_phones = [...existingPhones, ...addPhones];
-    if (addEmails.length) patch.additional_emails = [...existingEmails, ...addEmails];
+    if (!addPhones.length && !addEmails.length && !Object.keys(fill).length) {
+      return { phones_added: 0, emails_added: 0 };
+    }
+
+    // Append only — existing array order is preserved exactly. One exception:
+    // a value PROMOTED to the primary slot is removed from the additional list,
+    // or the merchant ends up carrying the same address twice.
+    const patch: Record<string, unknown> = { ...fill };
+    const promotedEmail = fill.email ? String(fill.email) : null;
+    const promotedPhone = fill.phone ? last10(fill.phone) : null;
+    const nextPhones = [...existingPhones, ...addPhones].filter((p) => !promotedPhone || last10(p) !== promotedPhone);
+    const nextEmails = [...existingEmails, ...addEmails].filter((e) => !promotedEmail || lower(e) !== promotedEmail);
+    if (addPhones.length || (promotedPhone && nextPhones.length !== existingPhones.length + addPhones.length)) {
+      patch.additional_phones = nextPhones;
+    }
+    if (addEmails.length || (promotedEmail && nextEmails.length !== existingEmails.length + addEmails.length)) {
+      patch.additional_emails = nextEmails;
+    }
     const { error } = await db.from("customers").update(patch).eq("id", customerId);
     if (error) {
       console.error("[playbook-open-contact] customer extras merge failed:", error.message);
@@ -321,15 +350,43 @@ Deno.serve(async (req) => {
           phone: `+1${digits}`,
         };
       } else {
-        seed = { first: null, last: null, business: null, email: null, phone: `+1${digits}` };
+        // NOT a UCC lead — try the Lead Machine book, which is where the aged /
+        // purchased lists live. This lookup was missing, and its absence is what
+        // renamed a real merchant to "Merchant" in the CRM: with no identity the
+        // upsert below sent the placeholder as firstName, and GHL's upsert
+        // happily overwrote "Leonor" with it. Every setter opening an aged
+        // contact by phone was corrupting that contact's name.
+        const { data: lr, error: lrErr } = await db
+          .from("lead_records")
+          .select("first_name,last_name,company,email,phone")
+          .like("phone", `%${digits}`)
+          .order("pushed_at", { ascending: false, nullsFirst: false })
+          .limit(5);
+        if (lrErr) console.error("[playbook-open-contact] lead_records lookup failed:", lrErr.message);
+        const lm = (lr ?? []).find((r) => last10(str(r.phone)) === digits) ?? null;
+        seed = lm
+          ? {
+            first: str(lm.first_name),
+            last: str(lm.last_name),
+            business: str(lm.company),
+            email: str(lm.email),
+            phone: `+1${digits}`,
+          }
+          : { first: null, last: null, business: null, email: null, phone: `+1${digits}` };
       }
 
       // UPSERT (never blind-create) so GHL dedupes on the phone/email and we
       // respect one-contact-per-merchant.
       try {
         const cfg = await getGhlConfig(db);
+        // ONLY SEND WHAT WE ACTUALLY KNOW. GHL's upsert overwrites every field
+        // it receives, so a placeholder is not a harmless default — sending
+        // firstName:"Merchant" for an unknown lead REPLACED a real merchant's
+        // first name in the CRM (verified live: "Leonor" -> "Merchant"). An
+        // absent field leaves whatever the contact already carries intact, which
+        // is always the safer answer when we are guessing.
         const up = await upsertContact(cfg, {
-          firstName: seed.first ?? "Merchant",
+          ...(seed.first ? { firstName: seed.first } : {}),
           lastName: seed.last,
           companyName: seed.business,
           email: seed.email,
@@ -558,7 +615,11 @@ Deno.serve(async (req) => {
     let first: string | null = seed?.first ?? null, last: string | null = seed?.last ?? null,
         business: string | null = seed?.business ?? null, email: string | null = seed?.email ?? null,
         phone: string | null = seed?.phone ?? null;
-    if (!seed) {
+    // Read identity back off the CRM whenever we don't already have a NAME —
+    // not merely when there is no seed at all. A phone-path open with no local
+    // match used to skip this entirely, so a contact that already carried a
+    // perfectly good name in GHL still produced a nameless customer.
+    if (!seed?.first) {
       try {
         const cfg = await getGhlConfig(db);
         const got = await getContact(cfg, contactId);
@@ -571,11 +632,13 @@ Deno.serve(async (req) => {
         // written for: keep going on the customer we already have, or 502.
         if (!got.ok) throw new Error(`${ghlErrorMessage(got.error)} (HTTP ${got.status})`);
         const c = (got.data?.contact ?? {}) as Record<string, unknown>;
-        first = str(c.firstName) ?? (str(c.contactName)?.split(/\s+/)[0] ?? null);
-        last = str(c.lastName);
-        business = str(c.companyName);
-        email = str(c.email);
-        phone = str(c.phone);
+        // FILL, never blank: the CRM wins where it has a value, but an empty
+        // field there must not erase what the lead row already told us.
+        first = str(c.firstName) ?? (str(c.contactName)?.split(/\s+/)[0] ?? null) ?? first;
+        last = str(c.lastName) ?? last;
+        business = str(c.companyName) ?? business;
+        email = str(c.email) ?? email;
+        phone = str(c.phone) ?? phone;
         // The contact's TAGS are how a dial campaign claims this merchant.
         if (Array.isArray(c.tags)) contactTags = (c.tags as unknown[]).map((t) => String(t));
       } catch (e) {
