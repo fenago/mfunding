@@ -16,6 +16,7 @@ import {
   BoltIcon,
   PhoneArrowUpRightIcon,
   PlusIcon,
+  BriefcaseIcon,
 } from "@heroicons/react/24/outline";
 import * as tus from "tus-js-client";
 import supabase from "@/supabase";
@@ -1277,6 +1278,561 @@ function NewDialCampaign({
       </div>
       {err && <p className="text-xs text-rose-600 dark:text-rose-400">{err}</p>}
     </div>
+  );
+}
+
+/* ================================================================== */
+/* Create GHL opportunities from a tagged list                         */
+/* ================================================================== */
+/* A reusable, standalone tool — separate from the CSV→dial flow above.
+   Point it at one or more CONTACT TAGS already in VibeReach (e.g.
+   lm-aged, lm-ucc) and it creates a GoHighLevel OPPORTUNITY for each
+   matching contact in the chosen pipeline/stage. The owner runs this
+   often, so it lives near the top of the page.
+
+   It talks to the `ghl-create-opportunities` edge function directly and
+   is fully decoupled from the batch/filter machinery — the invoke is a
+   drop-in the moment that function is deployed (it may not be merged
+   yet; the panel simply surfaces the error until then).
+
+   Contract:
+     count  → { matched, skipped_state, already_created, to_create, next_cursor }
+     create → { created, skipped_state, skipped_existing, processed, next_cursor, done }
+   The function is idempotent (never double-creates) and admin/super_admin
+   gated server-side. This page already sits behind AdminOnlyProtectedRoute,
+   so the panel inherits that guard — same as every other control here.
+
+   House rules honoured: a PREVIEW (count) is always required before a
+   create; the create confirm is an inline two-step (armOrFire), never a
+   browser popup; the create loop is resumable — Stop or a chunk error
+   both retain the cursor so it can pick up where it left off. */
+
+/* Known MFunding GHL pipelines + their stages. IDs are the same ones the
+   ghl-webhook stage map uses, so a dropdown pick maps to a real stage
+   with no live GHL fetch. Default is always MCA Pipeline → New Lead. */
+const OPP_PIPELINES: { id: string; name: string; stages: { id: string; label: string }[] }[] = [
+  {
+    id: "bG9ZEh4eP9x60E1CyaMx",
+    name: "MFunding MCA Pipeline",
+    stages: [
+      { id: "d60d563a-9904-423f-9a8e-0d0df0b12976", label: "New Lead" },
+      { id: "bc68ac6f-d45d-4d56-b1c8-c10a7ec4fdf7", label: "Contacted" },
+      { id: "27960f79-0b08-48ac-8fee-f4a9bf7748e3", label: "Qualifying" },
+      { id: "2071ceb6-b0cf-4700-b57b-f8a3ef4b15bf", label: "Application Sent" },
+      { id: "c49fa9f8-a155-4d14-a597-2b23fd937b32", label: "Docs Collected" },
+      { id: "72d926b3-ee88-4ee5-8ca2-ddb7071b2fc5", label: "Bank Statements" },
+      { id: "47d3f297-bf23-40a3-8e2b-48fa6c04e809", label: "Submitted to Funder" },
+      { id: "5881c6a8-a84a-4753-be7f-6b8cd3f7d5be", label: "Offer Received" },
+      { id: "718d76bc-58c9-4913-a68d-e0345ed0b515", label: "Offer Presented" },
+      { id: "7e3cfb93-8e6e-428c-be99-9dfc77f300e6", label: "Offer Accepted" },
+      { id: "69995f02-4f20-41b9-8206-bbaaf7060c10", label: "Funded" },
+      { id: "bfd0515e-7dfd-4527-8460-1edef442311a", label: "Renewal Eligible" },
+      { id: "d4c4ce2d-75af-4766-82cf-c3ff56f0137b", label: "Nurture / Re-engage" },
+    ],
+  },
+  {
+    id: "nsmH6jIeVA0SsZMMq4LC",
+    name: "MFunding VCF Pipeline",
+    stages: [
+      { id: "625e5afd-94a9-455c-b1bd-d712cad4cb17", label: "New Lead" },
+      { id: "bcdd76ef-f798-4d14-8606-4087edaa6d42", label: "Hardship Consult" },
+      { id: "a1c7e1c8-2404-4a81-bf70-0bd21837fd33", label: "Positions Analysis" },
+      { id: "36ccf48f-c0a4-4264-bc42-066803ec6b75", label: "Strategy Proposal" },
+      { id: "046a711e-2303-4aa1-84e5-c32dac68d72b", label: "Agreement Sent" },
+      { id: "6ad1513c-08e1-4e60-99c5-7809da5a6d99", label: "Submitted to VCF" },
+      { id: "a46a57f5-b75c-4ae7-8705-98979db4bb53", label: "Restructure Executed" },
+      { id: "5e684647-324c-4f31-90aa-59d9ca6a596c", label: "Servicing" },
+    ],
+  },
+];
+const OPP_DEFAULT_PIPELINE = "bG9ZEh4eP9x60E1CyaMx"; // MFunding MCA Pipeline
+const OPP_DEFAULT_STAGE = "d60d563a-9904-423f-9a8e-0d0df0b12976"; // New Lead
+/* Cold outbound states we don't create opportunities in by default (TCPA /
+   licensing posture). Editable per run. */
+const OPP_DEFAULT_EXCLUDE = ["TX", "CA", "VA"];
+/* The type tags a purchased list carries — offered as one-tap adds. */
+const OPP_TAG_SUGGESTIONS = ["lm-aged", "lm-ucc", "lm-trigger"];
+
+interface OppCount {
+  matched: number;
+  skipped_state: number;
+  already_created: number;
+  to_create: number;
+  next_cursor?: string | null;
+}
+interface OppCreate {
+  created: number;
+  skipped_state: number;
+  skipped_existing: number;
+  processed: number;
+  next_cursor?: string | null;
+  done?: boolean;
+}
+/* Running totals accumulated across the create chunks. Each create call
+   reports the counts FOR THAT CHUNK; the panel sums them so the bar reads
+   "created so far". */
+interface OppProgress {
+  created: number;
+  skipped_state: number;
+  skipped_existing: number;
+  processed: number;
+}
+
+/** Normalise a two-letter state code typed into the exclude box. */
+function stateCode(s: string): string {
+  return s.trim().toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2);
+}
+
+function CreateOpportunitiesPanel() {
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const [pipelineId, setPipelineId] = useState(OPP_DEFAULT_PIPELINE);
+  const [stageId, setStageId] = useState(OPP_DEFAULT_STAGE);
+  const [excludeStates, setExcludeStates] = useState<string[]>(OPP_DEFAULT_EXCLUDE);
+  const [stateDraft, setStateDraft] = useState("");
+  const [value, setValue] = useState("0");
+
+  const [preview, setPreview] = useState<OppCount | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+
+  const [armed, setArmed] = useState(false); // inline confirm, no browser popup
+  const [creating, setCreating] = useState(false);
+  const [prog, setProg] = useState<OppProgress | null>(null);
+  const [createErr, setCreateErr] = useState<string | null>(null);
+  const [stopped, setStopped] = useState(false);
+  const [done, setDone] = useState(false);
+  const stopRef = useRef(false);
+  const cursorRef = useRef<string | undefined>(undefined);
+
+  const pipeline = OPP_PIPELINES.find((p) => p.id === pipelineId) ?? OPP_PIPELINES[0];
+  const numericValue = Math.max(0, Math.round(Number(value) || 0));
+
+  const addTag = (raw: string) => {
+    const t = raw.trim();
+    if (!t) return;
+    setTags((prev) => (prev.some((x) => x.toLowerCase() === t.toLowerCase()) ? prev : [...prev, t]));
+    setTagDraft("");
+  };
+  const removeTag = (t: string) => setTags((prev) => prev.filter((x) => x !== t));
+  const addState = (raw: string) => {
+    const c = stateCode(raw);
+    if (c.length !== 2) return;
+    setExcludeStates((prev) => (prev.includes(c) ? prev : [...prev, c]));
+    setStateDraft("");
+  };
+  const removeState = (c: string) => setExcludeStates((prev) => prev.filter((x) => x !== c));
+
+  /* Any change to the inputs invalidates a stale preview — a create must
+     always be preceded by a preview of the EXACT set being created. */
+  const invalidate = useCallback(() => {
+    setPreview(null);
+    setArmed(false);
+    setPreviewErr(null);
+  }, []);
+  useEffect(() => {
+    invalidate();
+  }, [tags, pipelineId, stageId, excludeStates, numericValue, invalidate]);
+
+  // When the pipeline changes, drop to that pipeline's first stage if the
+  // current stage doesn't belong to it.
+  useEffect(() => {
+    if (!pipeline.stages.some((s) => s.id === stageId)) {
+      setStageId(pipeline.stages[0]?.id ?? "");
+    }
+  }, [pipeline, stageId]);
+
+  const invokeOpp = async (
+    mode: "count" | "create",
+    cursor?: string,
+  ): Promise<OppCount & OppCreate> => {
+    const { data, error } = await supabase.functions.invoke("ghl-create-opportunities", {
+      body: {
+        tags,
+        exclude_states: excludeStates,
+        pipeline_id: pipelineId,
+        stage_id: stageId,
+        value: numericValue,
+        mode,
+        ...(cursor ? { cursor } : {}),
+      },
+    });
+    if (error) throw new Error(await fnErrorMessage(error));
+    return (data ?? {}) as OppCount & OppCreate;
+  };
+
+  const runPreview = async () => {
+    if (tags.length === 0) return;
+    setPreviewing(true);
+    setPreviewErr(null);
+    setPreview(null);
+    setArmed(false);
+    setProg(null);
+    setDone(false);
+    setStopped(false);
+    setCreateErr(null);
+    cursorRef.current = undefined;
+    try {
+      const r = await invokeOpp("count");
+      setPreview({
+        matched: n0(r.matched),
+        skipped_state: n0(r.skipped_state),
+        already_created: n0(r.already_created),
+        to_create: n0(r.to_create),
+        next_cursor: r.next_cursor ?? null,
+      });
+    } catch (e) {
+      setPreviewErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  /* The create loop. Resumable by construction: cursorRef survives a Stop
+     and an errored chunk, so "Resume" continues from the last good cursor
+     rather than restarting (the function is idempotent, but resuming also
+     avoids re-scanning what's done). */
+  const runCreate = async () => {
+    setArmed(false);
+    setCreating(true);
+    setCreateErr(null);
+    setStopped(false);
+    setDone(false);
+    stopRef.current = false;
+    if (!prog) setProg({ created: 0, skipped_state: 0, skipped_existing: 0, processed: 0 });
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        if (stopRef.current) {
+          setStopped(true);
+          break;
+        }
+        const r = await invokeOpp("create", cursorRef.current);
+        setProg((p) => ({
+          created: n0(p?.created) + n0(r.created),
+          skipped_state: n0(p?.skipped_state) + n0(r.skipped_state),
+          skipped_existing: n0(p?.skipped_existing) + n0(r.skipped_existing),
+          processed: n0(p?.processed) + n0(r.processed),
+        }));
+        cursorRef.current = r.next_cursor ?? undefined;
+        if (r.done || !r.next_cursor) {
+          setDone(true);
+          break;
+        }
+      }
+    } catch (e) {
+      // Cursor retained — the run can be resumed from where it failed.
+      setCreateErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const stop = () => {
+    stopRef.current = true;
+  };
+
+  const canPreview = tags.length > 0 && !!stageId && !previewing && !creating;
+  // The create/resume path is live once a preview exists with something to do.
+  const hasWork = preview != null && preview.to_create > 0;
+  const target = preview?.to_create ?? 0;
+  const createdSoFar = n0(prog?.created);
+  const pct = target > 0 ? Math.min(100, Math.round((createdSoFar / target) * 100)) : 0;
+  const canResume = (stopped || createErr != null) && !done && cursorRef.current != null;
+
+  const input =
+    "px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
+  const lbl = "text-[11px] font-semibold uppercase tracking-wide text-gray-400";
+
+  return (
+    <section className="space-y-3">
+      <h2 className={lbl.replace("text-[11px]", "text-sm")}>
+        Create GHL opportunities from a tagged list
+        <span className="normal-case font-normal text-gray-400">
+          {" "}
+          · turn a contact tag into pipeline opportunities
+        </span>
+      </h2>
+
+      <div className="rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-900/15 p-4 space-y-4">
+        <div className="flex items-start gap-2">
+          <BriefcaseIcon className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-gray-600 dark:text-gray-300">
+            Pick one or more <strong>contact tags</strong> already in VibeReach and create a GoHighLevel{" "}
+            <strong>opportunity</strong> for each matching contact in the pipeline/stage below. Idempotent — a contact
+            that already has an opportunity is skipped, so re-running is safe. <strong>Preview first</strong>, always.
+          </p>
+        </div>
+
+        {/* ── Tags ── */}
+        <div className="space-y-1.5">
+          <span className={lbl}>Contact tags to pull (any of)</span>
+          <div className={`flex flex-wrap items-center gap-1.5 ${input} py-2`}>
+            {tags.map((t) => (
+              <span
+                key={t}
+                className="text-[11px] px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 bg-emerald-600 text-white"
+              >
+                {t}
+                <button onClick={() => removeTag(t)} title={`Remove ${t}`}>
+                  <XMarkIcon className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+            <input
+              className="grow min-w-[10rem] bg-transparent outline-none text-sm"
+              placeholder={tags.length === 0 ? "e.g. lm-aged — Enter after each…" : "add another…"}
+              value={tagDraft}
+              onChange={(e) => setTagDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") {
+                  e.preventDefault();
+                  addTag(tagDraft);
+                }
+              }}
+              onBlur={() => addTag(tagDraft)}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] text-gray-400">quick add:</span>
+            {OPP_TAG_SUGGESTIONS.map((t) => (
+              <button
+                key={t}
+                onClick={() => addTag(t)}
+                disabled={tags.some((x) => x.toLowerCase() === t.toLowerCase())}
+                className="text-[10px] px-1.5 py-0.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-emerald-400 disabled:opacity-40 font-mono"
+              >
+                + {t}
+              </button>
+            ))}
+            <span className="text-[10px] text-gray-400">
+              · a contact matches if it carries <strong>any</strong> of these tags
+            </span>
+          </div>
+        </div>
+
+        {/* ── Pipeline / stage / value ── */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className={lbl}>Target pipeline</span>
+            <select className={input} value={pipelineId} onChange={(e) => setPipelineId(e.target.value)}>
+              {OPP_PIPELINES.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={lbl}>Stage</span>
+            <select className={input} value={stageId} onChange={(e) => setStageId(e.target.value)}>
+              {pipeline.stages.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={lbl}>Opportunity value</span>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400">$</span>
+              <input
+                type="number"
+                min={0}
+                className={`${input} w-full pl-6`}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+              />
+            </div>
+            <span className="text-[10px] text-gray-400">
+              Keep <strong>$0</strong> so the cold list doesn't inflate pipeline value.
+            </span>
+          </label>
+        </div>
+
+        {/* ── Exclude states ── */}
+        <div className="space-y-1.5">
+          <span className={lbl}>Exclude states</span>
+          <div className={`flex flex-wrap items-center gap-1.5 ${input} py-2`}>
+            {excludeStates.length === 0 && (
+              <span className="text-[11px] text-gray-400">none — every state included</span>
+            )}
+            {excludeStates.map((c) => (
+              <span
+                key={c}
+                className="text-[11px] px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+              >
+                {c}
+                <button onClick={() => removeState(c)} title={`Include ${c} again`}>
+                  <XMarkIcon className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+            <input
+              className="grow min-w-[6rem] bg-transparent outline-none text-sm uppercase"
+              placeholder="add state…"
+              value={stateDraft}
+              maxLength={2}
+              onChange={(e) => setStateDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") {
+                  e.preventDefault();
+                  addState(stateDraft);
+                }
+              }}
+              onBlur={() => addState(stateDraft)}
+            />
+          </div>
+          <span className="text-[10px] text-gray-400">
+            Contacts in these states are skipped. Default TX · CA · VA.
+          </span>
+        </div>
+
+        {/* ── Preview ── */}
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <button
+            onClick={() => void runPreview()}
+            disabled={!canPreview}
+            className="btn-ghost btn-sm inline-flex items-center gap-1.5 border border-emerald-400 text-emerald-700 dark:text-emerald-300"
+          >
+            <MagnifyingGlassIcon className="w-4 h-4" />
+            {previewing ? "Counting…" : "Preview"}
+          </button>
+          {tags.length === 0 && (
+            <span className="text-[11px] text-gray-400">Add at least one tag to preview.</span>
+          )}
+          {previewErr && (
+            <span className="text-[11px] text-rose-600 dark:text-rose-400 inline-flex items-center gap-1">
+              <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> {previewErr}
+            </span>
+          )}
+        </div>
+
+        {preview && (
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span>
+              Matched <strong>{preview.matched.toLocaleString()}</strong>
+            </span>
+            <span className="text-gray-400">·</span>
+            <span>
+              Excluded ({excludeStates.join("/") || "none"}){" "}
+              <strong>{preview.skipped_state.toLocaleString()}</strong>
+            </span>
+            <span className="text-gray-400">·</span>
+            <span>
+              Already have opportunities <strong>{preview.already_created.toLocaleString()}</strong>
+            </span>
+            <span className="text-gray-400">·</span>
+            <span className="text-emerald-700 dark:text-emerald-300">
+              Will create <strong>{preview.to_create.toLocaleString()}</strong>
+            </span>
+          </div>
+        )}
+
+        {/* ── Create (inline two-step confirm — never a browser popup) ── */}
+        {preview && !creating && !done && (
+          <div className="space-y-2">
+            {!armed ? (
+              <button
+                onClick={() => setArmed(true)}
+                disabled={!hasWork}
+                className="btn-primary btn-sm inline-flex items-center gap-1.5"
+              >
+                <BriefcaseIcon className="w-4 h-4" />
+                {canResume
+                  ? `Resume — create the rest`
+                  : hasWork
+                    ? `Create ${preview.to_create.toLocaleString()} opportunities`
+                    : "Nothing to create"}
+              </button>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-900/20 px-3 py-2">
+                <span className="text-xs text-amber-800 dark:text-amber-200">
+                  Create <strong>{preview.to_create.toLocaleString()}</strong> opportunities in{" "}
+                  <strong>{pipeline.name}</strong> →{" "}
+                  <strong>{pipeline.stages.find((s) => s.id === stageId)?.label ?? "—"}</strong> at{" "}
+                  <strong>${numericValue.toLocaleString()}</strong>?
+                </span>
+                <button onClick={() => void runCreate()} className="btn-primary btn-sm">
+                  Confirm — create
+                </button>
+                <button onClick={() => setArmed(false)} className="btn-ghost btn-sm">
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Live progress ── */}
+        {(creating || prog) && (
+          <div className="space-y-1.5">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-all"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
+              <span>
+                <strong>{createdSoFar.toLocaleString()}</strong> / {target.toLocaleString()} created
+                {target > 0 && <> · {pct}%</>}
+              </span>
+              {n0(prog?.skipped_state) > 0 && (
+                <span className="text-gray-400">skipped (state) {n0(prog?.skipped_state).toLocaleString()}</span>
+              )}
+              {n0(prog?.skipped_existing) > 0 && (
+                <span className="text-gray-400">
+                  skipped (existing) {n0(prog?.skipped_existing).toLocaleString()}
+                </span>
+              )}
+              {creating && (
+                <button onClick={stop} className="btn-ghost btn-sm text-rose-600 dark:text-rose-400">
+                  Stop
+                </button>
+              )}
+            </div>
+            {creating && (
+              <p className="text-[11px] text-gray-400">
+                Runs in chunks against GoHighLevel — leaving this page stops the loop, but it's safe to re-run:
+                already-created opportunities are skipped.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* ── Resume after a stop / chunk error ── */}
+        {canResume && !creating && (
+          <div className="flex flex-wrap items-center gap-2">
+            {createErr ? (
+              <span className="text-[11px] text-rose-600 dark:text-rose-400 inline-flex items-center gap-1">
+                <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" /> A chunk failed: {createErr}
+              </span>
+            ) : (
+              <span className="text-[11px] text-amber-700 dark:text-amber-300">Stopped.</span>
+            )}
+            <button onClick={() => void runCreate()} className="btn-primary btn-sm">
+              Resume from where it stopped
+            </button>
+          </div>
+        )}
+
+        {/* ── Done summary ── */}
+        {done && prog && (
+          <div className="rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm">
+            <p className="font-semibold text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+              <CheckCircleIcon className="w-4 h-4 shrink-0" />
+              Done — created {prog.created.toLocaleString()} opportunities
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Skipped (state) {prog.skipped_state.toLocaleString()} · skipped (already existed){" "}
+              {prog.skipped_existing.toLocaleString()} · processed {prog.processed.toLocaleString()}.
+            </p>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -2672,6 +3228,12 @@ export default function LeadMachinePage() {
               </p>
             )}
           </section>
+
+          {/* ── Create GHL opportunities from a tagged list ──
+              Standalone tool — pushes an existing contact tag into a GHL
+              pipeline as opportunities. Independent of the batch/filter
+              flow, so it sits between the batches and the browser. */}
+          <CreateOpportunitiesPanel />
 
           {/* ── 3. Lead browser ── */}
           <section className="space-y-3">
