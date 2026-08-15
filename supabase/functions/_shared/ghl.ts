@@ -443,6 +443,10 @@ export interface OpportunityInput {
    * a view can be saved per lead type. Only send it when set (GHL treats it as a
    * free-text label). */
   source?: string | null;
+  /** Owner: the GHL USER id the opportunity is assigned to (top-level `assignedTo`
+   * on the opportunity — verified against the GHL v2 opportunity schema). Only send
+   * it when set; omitting leaves the opportunity unassigned. */
+  assignedTo?: string | null;
 }
 
 export async function createOpportunity(cfg: GhlConfig, input: OpportunityInput) {

@@ -35,6 +35,13 @@
 // ROBOTS. Contacts tagged `lt-source` (LT list-delivery / sender robots) are never
 // touched — excluded server-side and re-checked per contact.
 //
+// ── SPLIT LEVERS (create mode) ───────────────────────────────────────────────
+// OWNER: assign_user_id pins every opp to one GHL user; round_robin_user_ids
+// rotates the owner deterministically by creation index (round-robin wins if both
+// are given). Neither → opps are left unassigned. Set via the opp's `assignedTo`.
+// EXTRA TAGS: extra_tags are added to each contact alongside the marker on create,
+// so arbitrary split labels (heat / campaign / owner) can be stamped for filtering.
+//
 // ── MODES ────────────────────────────────────────────────────────────────────
 // mode:"count"  — DRY RUN. Returns GLOBAL bucket totals in a handful of cheap
 //                 total-only queries (no creates): { matched, skipped_state,
@@ -206,6 +213,26 @@ Deno.serve(async (req) => {
   // the Opportunities page can filter/save a view per lead type.
   const source = clean((payload as { source?: unknown }).source) || undefined;
 
+  // ── Owner assignment (optional) ─────────────────────────────────────────────
+  // assign_user_id pins every created opp to one GHL user. round_robin_user_ids
+  // rotates the owner deterministically by creation index across the given users.
+  // If both are given, round-robin wins (it's the more specific intent). If neither,
+  // opportunities are left UNASSIGNED.
+  const assignUserId = clean((payload as { assign_user_id?: unknown }).assign_user_id) || undefined;
+  const rrRaw = (payload as { round_robin_user_ids?: unknown }).round_robin_user_ids;
+  const roundRobin = Array.isArray(rrRaw)
+    ? rrRaw.map((u) => clean(u)).filter((u) => u.length > 0)
+    : [];
+
+  // ── Extra tags (optional) ───────────────────────────────────────────────────
+  // Added to each contact alongside the marker tag on create, so the owner can
+  // stamp arbitrary split labels (heat, campaign, etc.) for later filtering. Never
+  // includes the marker itself here — that's always added; extras are additive.
+  const etRaw = (payload as { extra_tags?: unknown }).extra_tags;
+  const extraTags = Array.isArray(etRaw)
+    ? Array.from(new Set(etRaw.map((t) => clean(t)).filter((t) => t.length > 0 && t !== markerTag)))
+    : [];
+
   const rawLimit = Number((payload as { limit?: unknown }).limit);
   const limit = Number.isFinite(rawLimit) && rawLimit > 0
     ? Math.min(Math.floor(rawLimit), MAX_LIMIT) : DEFAULT_LIMIT;
@@ -273,6 +300,17 @@ Deno.serve(async (req) => {
   let lastCursor: unknown[] | undefined = cursor;
   const errorSample: Array<{ contact_id: string; error: string }> = [];
 
+  // Tags stamped on every created contact: the marker (idempotency) + any extras.
+  const createTags = Array.from(new Set([markerTag, ...extraTags]));
+
+  // Deterministic round-robin owner assignment, advanced once per contact we
+  // actually attempt to create, preserved across pages within this call.
+  let rrIndex = 0;
+  const ownerFor = (): string | undefined => {
+    if (roundRobin.length) return roundRobin[rrIndex++ % roundRobin.length];
+    return assignUserId; // one fixed owner, or undefined = leave unassigned
+  };
+
   while (created < limit && Date.now() - started < BUDGET_MS) {
     const page = await searchPage(cfg, filters, PAGE_LIMIT, lastCursor);
     if (!page.ok) {
@@ -293,7 +331,8 @@ Deno.serve(async (req) => {
 
     // Partition this page (defensive re-checks — the server-side filter already
     // excludes these, but a contact whose tag change hasn't indexed yet can slip in).
-    const toCreate: GhlSearchContact[] = [];
+    // Owner is resolved HERE, in stable page order, so round-robin is deterministic.
+    const toCreate: Array<{ c: GhlSearchContact; owner?: string }> = [];
     for (const c of contacts) {
       processed++;
       const ctags = Array.isArray(c.tags) ? c.tags : [];
@@ -301,23 +340,24 @@ Deno.serve(async (req) => {
       if (ctags.includes(ROBOT_TAG)) { skipped_robot++; continue; }
       const st = normState(c.state);
       if (st && excludeStates.includes(st)) { skipped_state++; continue; }
-      toCreate.push(c);
+      toCreate.push({ c, owner: ownerFor() });
     }
 
     // Create in small concurrent waves (each contact = createOpportunity + tag add).
     for (let i = 0; i < toCreate.length; i += CONCURRENCY) {
       if (Date.now() - started > BUDGET_MS) break;
       const wave = toCreate.slice(i, i + CONCURRENCY);
-      const results = await Promise.all(wave.map(async (c) => {
+      const results = await Promise.all(wave.map(async ({ c, owner }) => {
         try {
           const opp = await createOpportunity(cfg, {
             pipelineId, pipelineStageId: stageId, contactId: c.id,
             name: opportunityName(c), monetaryValue: value, status: "open",
             ...(source ? { source } : {}),
+            ...(owner ? { assignedTo: owner } : {}),
           });
           if (!opp.ok) return { c, ok: false as const, error: ghlErrorMessage(opp.error) };
-          // Mark the contact so it can never receive a second opportunity from here.
-          const tag = await addContactTags(cfg, c.id, [markerTag]);
+          // Mark the contact (idempotency) + stamp any extra split tags, in one call.
+          const tag = await addContactTags(cfg, c.id, createTags);
           return { c, ok: true as const, markerOk: tag.ok, markerErr: tag.ok ? "" : ghlErrorMessage(tag.error) };
         } catch (e) {
           return { c, ok: false as const, error: (e instanceof Error ? e.message : String(e)) };
@@ -356,6 +396,9 @@ Deno.serve(async (req) => {
     stage_id: stageId,
     value,
     source: source ?? null,
+    assign_user_id: assignUserId ?? null,
+    round_robin_user_ids: roundRobin,
+    extra_tags: extraTags,
     created,
     skipped_state,
     skipped_existing,
