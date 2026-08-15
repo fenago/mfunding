@@ -121,6 +121,19 @@ async function webhookSecret(db: SupabaseClient): Promise<string> {
  * slow window is never mistaken for a dead one. */
 const PUSH_STALL_MS = 180_000;
 
+/** The watchdog's restart budget. Beyond this many restarts inside the window,
+ * the job is failed rather than resurrected again — see the sweep action. */
+const WATCHDOG_MAX_RESTARTS = 5;
+const WATCHDOG_BUDGET_MS = 30 * 60_000;
+
+type WatchdogRow = {
+  id: string;
+  pushed: number;
+  updated_at: string;
+  watchdog_restarts: number | null;
+  watchdog_window_started_at: string | null;
+};
+
 function reinvoke(secret: string, jobId: string, rps?: number): void {
   const url = `${SUPABASE_URL}/functions/v1/lead-push-ghl?secret=${encodeURIComponent(secret)}`;
   const p = fetch(url, {
@@ -735,7 +748,7 @@ async function runWindow(
  *
  * Flip to false and redeploy to resume normal operation.
  */
-const PUSH_KILL_SWITCH = false;
+const PUSH_KILL_SWITCH = true;   // EMERGENCY 2026-08-15 00:2xZ — drain cliff + 3-min watchdog was resurrecting a job whose every window timed out, wedging the DB and taking auth down. Flip back to false only after the partial index exists.
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -936,19 +949,51 @@ Deno.serve(async (req) => {
     if (action === "sweep") {
       const cutoff = new Date(Date.now() - PUSH_STALL_MS).toISOString();
       const { data: stalled, error: sErr } = await db.from("lead_push_jobs")
-        .select("id,pushed,updated_at")
+        .select("id,pushed,updated_at,watchdog_restarts,watchdog_window_started_at")
         .eq("status", "running").lt("updated_at", cutoff);
       if (sErr) throw new Error(`sweep query failed: ${sErr.message}`);
-      const rows = (stalled as { id: string; pushed: number }[]) ?? [];
+      const rows = (stalled as WatchdogRow[]) ?? [];
       const secret = providedSecret || (await webhookSecret(db));
       if (!secret && rows.length) return json({ error: "no webhook secret — cannot restart" }, 500);
+
+      const restarted: { id: string; pushed: number; attempt: number }[] = [];
+      const exhausted: { id: string; pushed: number }[] = [];
+      const now = Date.now();
       for (const j of rows) {
-        console.warn("[lead-push-ghl] sweep restarting stalled job",
-          JSON.stringify({ job_id: j.id, pushed: j.pushed }));
-        await patchJob(db, j.id, { message: `watchdog restart at ${j.pushed} pushed` });
+        // RESTART BUDGET. A stalled job is either dead (restart it) or dying of
+        // its own cost (restarting it is what wedged the database). The watchdog
+        // cannot tell those apart from the outside, so it gets a budget instead
+        // of judgement: N restarts per window, then it fails the job LOUDLY and
+        // leaves it alone for a human. Retrying forever is how a watchdog turns
+        // into an amplifier.
+        const winStart = j.watchdog_window_started_at ? Date.parse(j.watchdog_window_started_at) : 0;
+        const freshWindow = !winStart || (now - winStart) > WATCHDOG_BUDGET_MS;
+        const attempt = (freshWindow ? 0 : (j.watchdog_restarts ?? 0)) + 1;
+
+        if (attempt > WATCHDOG_MAX_RESTARTS) {
+          console.error("[lead-push-ghl] watchdog RESTART BUDGET EXHAUSTED — failing job",
+            JSON.stringify({ job_id: j.id, pushed: j.pushed, attempts: j.watchdog_restarts }));
+          await patchJob(db, j.id, {
+            status: "error",
+            finished_at: new Date().toISOString(),
+            error: `watchdog restart budget exhausted (${WATCHDOG_MAX_RESTARTS} restarts in `
+              + `${Math.round(WATCHDOG_BUDGET_MS / 60000)} min) — the windows are not dying, they are `
+              + `too expensive to finish. Fix the query cost before resuming.`,
+            message: `stopped by the watchdog at ${j.pushed} pushed — restart budget exhausted`,
+          });
+          exhausted.push({ id: j.id, pushed: j.pushed });
+          continue;
+        }
+
+        await patchJob(db, j.id, {
+          message: `watchdog restart ${attempt}/${WATCHDOG_MAX_RESTARTS} at ${j.pushed} pushed`,
+          watchdog_restarts: attempt,
+          ...(freshWindow ? { watchdog_window_started_at: new Date().toISOString() } : {}),
+        });
         reinvoke(secret, j.id);
+        restarted.push({ id: j.id, pushed: j.pushed, attempt });
       }
-      return json({ ok: true, restarted: rows.length, jobs: rows.map((j) => ({ id: j.id, pushed: j.pushed })) });
+      return json({ ok: true, restarted: restarted.length, jobs: restarted, exhausted });
     }
 
     return json({ error: `unknown action ${action}` }, 400);
