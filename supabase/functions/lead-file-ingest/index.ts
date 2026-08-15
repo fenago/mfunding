@@ -32,6 +32,7 @@ import {
   cell, filingDate, headerIndexNorm, headerNames, type LeadType, LEAD_TYPES,
   extraEmailsFor, extraPhonesFor, normalizeLineType, normalizePhone, resolveColumns,
   resolveExtraColumns, splitDelimited, streamCsvRecords, toInt, toNum, upperState, validEmail,
+  splitCombinedName,
 } from "../_shared/leadCsv.ts";
 
 // Window size is a RELIABILITY setting, not a speed one. At 50s/1000 rows the
@@ -172,6 +173,15 @@ function mapRow(
   }
   const phone = normalizePhone(cell(fields, cols, "phone"));
   const email = validEmail(cell(fields, cols, "email"));
+  // The vendor files cram the whole name into FIRST NAME with LAST NAME empty,
+  // and some rows invert it behind a comma ("MARTIN, DONALD RICHARD III"). Split
+  // at load time so every future purchase is clean at birth; the untouched
+  // original stays in `raw`, which is what made backfilling the 4,413 rows
+  // already in the book possible.
+  const splitName = splitCombinedName(
+    cell(fields, cols, "first_name"),
+    cell(fields, cols, "last_name"),
+  );
   return {
     batch_id: batch.id,
     lead_type: batch.lead_type,
@@ -180,8 +190,8 @@ function mapRow(
     extra_phones: extraPhonesFor(fields, extraCols.phones, phone, cols.line_type),
     extra_emails: extraEmailsFor(fields, extraCols.emails, email),
     line_type: normalizeLineType(cell(fields, cols, "line_type")),
-    first_name: cell(fields, cols, "first_name"),
-    last_name: cell(fields, cols, "last_name"),
+    first_name: splitName.first,
+    last_name: splitName.last,
     email,
     company: cell(fields, cols, "company"),
     title: cell(fields, cols, "title"),

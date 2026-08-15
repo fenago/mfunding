@@ -175,6 +175,10 @@ export interface LeadFilters {
    * (two GIN indexes and a wide row make HOT updates rare), while the same
    * boundary read at query time is free. */
   pushed_before?: string;
+  /** Rows whose first/last name was corrected AFTER they were last pushed, so
+   * the GHL contact still carries the combined vendor name. Self-draining: a
+   * successful re-push moves pushed_at past name_split_at. */
+  resplit_pending?: boolean;
   search?: string;                     // name / company / phone / email
   exclude_dups?: boolean;
 }
@@ -217,6 +221,9 @@ function isCursorMode(job: Job): boolean {
   // playbook_link_at IS NULL, and a successful push sets it. Self-draining, so
   // no cursor — and no ORDER BY to drag the planner onto the PK index.
   if (job.filters?.playbook_link_missing === true) return false;
+  // Same self-draining argument: the row is selected because its name changed
+  // after its last push, and a successful push moves pushed_at past it.
+  if (job.filters?.resplit_pending === true) return false;
   return !!job.retag || job.filters?.status != null;
 }
 function statusesFor(job: Job): string[] {
@@ -264,6 +271,10 @@ function applyFilters(q: any, job: Job) {
   // instead of getting slower the closer it gets to done.
   if (f.playbook_link_missing === true) q = q.is("playbook_link_at", null);
   if (f.pushed_before) q = q.lt("pushed_at", f.pushed_before);
+  // Served by the STORED generated column: PostgREST filters compare a column to
+  // a literal, never to another column, so "pushed_at < name_split_at" has to
+  // live in the schema rather than in the query.
+  if (f.resplit_pending === true) q = q.eq("needs_name_resync", true);
   // Tag filter — hits the push_tags GIN index (array containment, ALL of them).
   const tagsIn = asArray(f.push_tags_contains);
   if (tagsIn) q = q.contains("push_tags", tagsIn.map((t) => t.toLowerCase()));

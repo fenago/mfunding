@@ -392,3 +392,48 @@ export function extraEmailsFor(
   }
   return out;
 }
+
+/**
+ * Split a combined name into { first, last }.
+ *
+ * The vendor CSVs cram the whole name into FIRST NAME and leave LAST NAME empty
+ * — verified in the raw UCC file (row 2487705771: "COREY JENKINS" in FIRST NAME,
+ * nothing in LAST NAME). Ingest copied that faithfully, so 4,413 merchants had
+ * no surname and a setter's screen greeted "COREY JENKINS" as a first name.
+ *
+ * Two shapes appear in the same files and they need OPPOSITE handling:
+ *   "COREY JENKINS"              → first COREY, last JENKINS
+ *   "MARTIN, DONALD RICHARD III" → first DONALD, last MARTIN   (comma inverts!)
+ * A comma is the reliable signal that the surname comes FIRST. Getting that
+ * backwards is worse than not splitting at all: it addresses the merchant by
+ * their surname on a cold call.
+ *
+ * A job title is not a name, so a trailing ", PRESIDENT" / ", OWNER" / ", MGR"
+ * is dropped. Generational suffixes (JR/SR/II/III) are KEPT — those belong to
+ * the person. Single-token names are returned untouched: there is nothing to
+ * split and inventing a surname would be worse than leaving the field empty.
+ */
+const NAME_TITLE_RE =
+  /,\s*(PRESIDENT|OWNER|MGR|MANAGER|CEO|CFO|COO|MEMBER|PARTNER|DIRECTOR|VP|PRES|PRINCIPAL|ADMIN|OFFICER)\s*\.?\s*$/i;
+
+export function splitCombinedName(
+  first: string | null,
+  last: string | null,
+): { first: string | null; last: string | null } {
+  // Only ever act when the surname slot is EMPTY. A file that ships both fields
+  // populated is already correct and must not be second-guessed.
+  if (last && last.trim()) return { first, last };
+  const raw = (first ?? "").replace(NAME_TITLE_RE, "").replace(/\s+/g, " ").trim();
+  if (!raw) return { first, last };
+
+  if (raw.includes(",")) {
+    const surname = raw.split(",")[0].trim();
+    const given = (raw.split(",")[1] ?? "").trim().split(" ")[0] ?? "";
+    if (surname && given) return { first: given, last: surname };
+    return { first: raw.replace(/,/g, "").trim() || first, last: null };
+  }
+
+  const i = raw.indexOf(" ");
+  if (i < 0) return { first: raw, last: null };   // single token — nothing to split
+  return { first: raw.slice(0, i), last: raw.slice(i + 1).trim() || null };
+}
