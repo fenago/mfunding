@@ -248,6 +248,17 @@ export interface DealWithCustomer extends Deal {
     address_city: string | null;
     address_state: string | null;
     address_zip: string | null;
+    /* Firmographics from the purchased list (backend 976d688). Every one is
+       independently optional — on the live book only one customer has employees
+       or sic_code, and none has entity_type or website. `annual_revenue` is the
+       SOURCE figure on UCC records; `monthly_revenue` there is annual/12, so any
+       surface showing monthly off an annual must say it is an estimate. */
+    annual_revenue: number | null;
+    employees: number | null;
+    entity_type: string | null;
+    owner_title: string | null;
+    sic_code: string | null;
+    website: string | null;
   };
   closer?: {
     id: string;

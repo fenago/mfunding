@@ -559,16 +559,69 @@ export default function DealDetailPage() {
                     <span className="text-gray-900 dark:text-white">{deal.customer.industry}</span>
                   </div>
                 )}
+                {deal.customer.sic_code && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">SIC:</span>
+                    <span className="text-gray-900 dark:text-white">{deal.customer.sic_code}</span>
+                  </div>
+                )}
+                {deal.customer.entity_type && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Entity:</span>
+                    <span className="text-gray-900 dark:text-white">{deal.customer.entity_type}</span>
+                  </div>
+                )}
+                {deal.customer.employees != null && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Employees:</span>
+                    <span className="text-gray-900 dark:text-white">{deal.customer.employees.toLocaleString()}</span>
+                  </div>
+                )}
+                {deal.customer.annual_revenue != null && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Annual Revenue:</span>
+                    <span className="text-gray-900 dark:text-white">${Number(deal.customer.annual_revenue).toLocaleString()}</span>
+                  </div>
+                )}
                 {deal.customer.monthly_revenue && (
                   <div className="flex justify-between">
                     <span className="text-gray-500">Monthly Revenue:</span>
-                    <span className="text-gray-900 dark:text-white">${deal.customer.monthly_revenue.toLocaleString()}</span>
+                    <span className="text-gray-900 dark:text-white">
+                      ${deal.customer.monthly_revenue.toLocaleString()}
+                      {/* UCC records carry an ANNUAL figure and monthly is annual/12.
+                          Detected arithmetically, not by a flag, so the customers
+                          whose monthly came from a real qualification (the majority,
+                          and they have no annual at all) are never mislabelled. */}
+                      {deal.customer.annual_revenue != null &&
+                        Math.abs(deal.customer.monthly_revenue - Number(deal.customer.annual_revenue) / 12) < 1 && (
+                          <span className="ml-1 text-xs text-gray-500">est. — annual ÷ 12</span>
+                        )}
+                    </span>
                   </div>
                 )}
                 {deal.customer.time_in_business && (
                   <div className="flex justify-between">
                     <span className="text-gray-500">Time in Business:</span>
                     <span className="text-gray-900 dark:text-white">{deal.customer.time_in_business} months</span>
+                  </div>
+                )}
+                {deal.customer.owner_title && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Owner Title:</span>
+                    <span className="text-gray-900 dark:text-white capitalize">{deal.customer.owner_title.toLowerCase()}</span>
+                  </div>
+                )}
+                {deal.customer.website && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Website:</span>
+                    <a
+                      href={/^https?:\/\//i.test(deal.customer.website) ? deal.customer.website : `https://${deal.customer.website}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-ocean-blue hover:underline"
+                    >
+                      {deal.customer.website.replace(/^https?:\/\//i, "")}
+                    </a>
                   </div>
                 )}
                 <div className="pt-3 flex gap-3">

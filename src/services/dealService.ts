@@ -53,7 +53,8 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
       customer:customers!customer_id (
         id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry,
-        address_street, address_city, address_state, address_zip
+        address_street, address_city, address_state, address_zip,
+        annual_revenue, employees, entity_type, owner_title, sic_code, website
       ),
       closer:profiles!assigned_closer_id (
         id, first_name, last_name
@@ -152,7 +153,8 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
       customer:customers!customer_id (
         id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry,
-        address_street, address_city, address_state, address_zip
+        address_street, address_city, address_state, address_zip,
+        annual_revenue, employees, entity_type, owner_title, sic_code, website
       ),
       submissions:deal_submissions ( response_at, status )
     `)
@@ -320,7 +322,8 @@ export async function getDealById(id: string): Promise<{
       customer:customers!customer_id (
         id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry,
-        address_street, address_city, address_state, address_zip
+        address_street, address_city, address_state, address_zip,
+        annual_revenue, employees, entity_type, owner_title, sic_code, website
       ),
       closer:profiles!assigned_closer_id (
         id, first_name, last_name

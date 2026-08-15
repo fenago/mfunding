@@ -31,6 +31,7 @@ import {
   EnvelopeIcon,
   PhoneIcon,
   MapPinIcon,
+  BuildingOfficeIcon,
   BanknotesIcon,
 } from "@heroicons/react/24/outline";
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
@@ -2719,6 +2720,54 @@ function CampaignChip({ campaign }: { campaign: Campaign }) {
   );
 }
 
+/* What the purchased list already knew about the business. Read-only, one grey
+   line under the address, matching the address line's weight — this is context a
+   closer glances at, not something they act on.
+
+   Piecewise by necessity, not fastidiousness: measured on the live book, only ONE
+   customer has employees/owner_title/sic_code, and NOT ONE has entity_type or
+   website. A fixed grid would be a row of em-dashes on every deal. */
+function MerchantFirmographics({ customer }: { customer: DealWithCustomer["customer"] }) {
+  if (!customer) return null;
+  const bits: React.ReactNode[] = [];
+
+  // SIC descriptions arrive abbreviated from the list ("LCL TRCKG W/O STRGE") —
+  // shown as-is because inventing an expansion would be fabricating data.
+  if (customer.industry) bits.push(<span key="ind">{customer.industry}</span>);
+  if (customer.sic_code) bits.push(<span key="sic" className="text-gray-400">SIC {customer.sic_code}</span>);
+  if (customer.employees != null) bits.push(<span key="emp">{customer.employees.toLocaleString()} employees</span>);
+  if (customer.entity_type) bits.push(<span key="ent">{customer.entity_type}</span>);
+  if (customer.owner_title) bits.push(<span key="tit" className="capitalize">{customer.owner_title.toLowerCase()}</span>);
+  if (customer.annual_revenue != null && Number(customer.annual_revenue) > 0) {
+    bits.push(
+      <span key="ann">
+        ${Math.round(Number(customer.annual_revenue) / 1000).toLocaleString()}K/yr
+      </span>,
+    );
+  }
+  if (customer.website) {
+    const href = /^https?:\/\//i.test(customer.website) ? customer.website : `https://${customer.website}`;
+    bits.push(
+      <a key="web" href={href} target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline">
+        {customer.website.replace(/^https?:\/\//i, "")}
+      </a>,
+    );
+  }
+  if (bits.length === 0) return null;
+
+  return (
+    <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 flex flex-wrap items-center gap-1.5">
+      <BuildingOfficeIcon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+      {bits.map((b, i) => (
+        <span key={i} className="flex items-center gap-1.5">
+          {i > 0 && <span className="text-gray-300 dark:text-gray-600">·</span>}
+          {b}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
@@ -2891,6 +2940,14 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               <MapPinIcon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
               {fullAddress ? <span>{fullAddress}</span> : <span className="text-gray-400 dark:text-gray-500">No address on file</span>}
             </p>
+
+            {/* Firmographics — what the list already knew about the business, so the
+                closer isn't asking questions the record answers. Every field is
+                independently optional (entity_type and website are null on the whole
+                book today, industry/employees only on Lead Machine deals), so this
+                renders piecewise and disappears entirely when nothing is known
+                rather than showing a row of dashes. */}
+            <MerchantFirmographics customer={deal.customer} />
 
             {/* Existing MCA positions — the merchant's current open advances. Seeded
                 from UCC for UCC-sourced leads; non-UCC leads (Google Ads, live
@@ -3068,6 +3125,13 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
             const rev = Number(deal.customer?.monthly_revenue ?? 0);
             const ask = Number(deal.amount_requested ?? 0);
             if (!rev && !ask) return null;
+            /* DERIVED, not measured: UCC-sourced records carry an annual figure and
+               monthly is annual/12. Detected arithmetically rather than by a flag,
+               because the 158 customers who have monthly WITHOUT an annual got
+               theirs from a real qualification — labelling those "estimated" would
+               be its own lie. Only the both-present-and-consistent case is marked. */
+            const annual = Number(deal.customer?.annual_revenue ?? 0);
+            const derivedMonthly = annual > 0 && rev > 0 && Math.abs(rev - annual / 12) < 1;
             const mult = rev > 0 && ask > 0 ? ask / rev : null;
             const tone =
               mult === null ? "text-gray-500 dark:text-gray-400"
@@ -3079,7 +3143,16 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                 className="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-200"
                 title="Monthly revenue vs. the ask — an advance sizes off ~70-120% of monthly revenue"
               >
-                {rev > 0 && <><b>${Math.round(rev / 1000)}K</b>/mo</>}
+                {rev > 0 && (
+                  <>
+                    <b>${Math.round(rev / 1000)}K</b>/mo
+                    {/* When monthly is annual/12 rather than a measured figure, say
+                        so HERE — this chip is what a closer sizes the advance off,
+                        so an estimate presented as measured is the one place the
+                        distinction actually costs money. */}
+                    {derivedMonthly && <span className="ml-0.5 font-normal opacity-70">(est.)</span>}
+                  </>
+                )}
                 {rev > 0 && ask > 0 && " · "}
                 {ask > 0 && <>asking <b>${Math.round(ask / 1000)}K</b></>}
                 {mult !== null && (
