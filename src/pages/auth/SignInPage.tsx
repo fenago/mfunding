@@ -43,6 +43,10 @@ const SignInPage = () => {
   const { session } = useSession();
   const { isStaff, isLoading: profileLoading } = useUserProfile();
   const [status, setStatus] = useState("");
+  /* Inline, never a popup (owner's standing rule). Separate from `status` so a
+     failure persists on screen instead of being cleared with the spinner text. */
+  const [errorMsg, setErrorMsg] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
   const [formValues, setFormValues] = useState({ email: "", password: "" });
 
   // The merchant form leads ONLY on the portal subdomain.
@@ -64,15 +68,41 @@ const SignInPage = () => {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setStatus("Logging in...");
-    const { error } = await supabase.auth.signInWithPassword({
-      email: formValues.email,
-      password: formValues.password,
-    });
-    if (error) {
-      alert(error.message);
+    if (signingIn) return; // a second submit while one is in flight is how the alert stacked
+    setSigningIn(true);
+    setErrorMsg("");
+    setStatus("Logging in…");
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: formValues.email,
+        password: formValues.password,
+      });
+      /* This was `alert(error.message)`. Two problems, both hit live during the
+         DB outage: it's a browser popup (standing owner rule — never), and when
+         Supabase can't reach the server the message is empty or an object, so it
+         rendered literally as "{}" — a modal saying nothing, once per click.
+
+         Auth errors also can't be echoed raw: a network failure and a wrong
+         password are different problems needing different reactions, and neither
+         should leak whether the address exists. */
+      if (error) {
+        const raw = (error.message ?? "").toString().trim();
+        const offline = /fetch|network|failed to fetch|timeout|502|503|504/i.test(raw) || raw === "" || raw === "{}";
+        setErrorMsg(
+          offline
+            ? "Couldn't reach the server — check your connection and try again."
+            : /invalid|credentials|password/i.test(raw)
+              ? "That email and password don't match. Try again, or reset your password below."
+              : "Couldn't sign in — try again.",
+        );
+      }
+    } catch {
+      // A thrown (rather than returned) failure is still the offline case.
+      setErrorMsg("Couldn't reach the server — check your connection and try again.");
+    } finally {
+      setSigningIn(false);
+      setStatus("");
     }
-    setStatus("");
   };
 
   const valueProps = [
@@ -104,7 +134,9 @@ const SignInPage = () => {
           placeholder="Password"
           autoComplete="current-password"
         />
-        <button className="btn-primary w-full" type="submit">Login</button>
+        <button className="btn-primary w-full" type="submit" disabled={signingIn}>
+          {signingIn ? "Signing in…" : "Login"}
+        </button>
         <Link className="os-auth-smalllink" to="/auth/set-password">
           Forgot your password?
         </Link>
@@ -112,6 +144,11 @@ const SignInPage = () => {
           Need a team account? Sign up
         </Link>
         {status && <p className="os-auth-status">{status}</p>}
+        {errorMsg && (
+          <p className="os-auth-status" role="alert" style={{ color: "#dc2626" }}>
+            {errorMsg}
+          </p>
+        )}
       </div>
     </form>
   );

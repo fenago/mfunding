@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import {
   BuildingLibraryIcon,
@@ -10,6 +10,7 @@ import {
   SignalIcon,
   MapIcon,
   ArrowRightIcon,
+  ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import supabase from "../../supabase";
@@ -41,70 +42,67 @@ export default function AdminDashboardPage() {
     pendingTasks: 0,
   });
   const [isLoading, setIsLoading] = useState(true);
+  /* A FAILED COUNT IS NOT ZERO. Every query below destructured only `count` and
+     discarded `error`, so a failure handed back null, `|| 0` turned it into 0, and
+     the page rendered "0 Total Lenders / 0 Customers" with full confidence. The
+     owner saw exactly that during a DB restart and reasonably concluded his data
+     was gone. Same rule as the Lead Machine: a load failure says so, and never
+     borrows the shape of real data. */
+  const [statsError, setStatsError] = useState<string | null>(null);
+
+  const fetchStats = useCallback(async () => {
+    setIsLoading(true);
+    setStatsError(null);
+    try {
+      // Eight head-counts, issued together rather than in sequence.
+      const [
+        totalLenders, activeLenders,
+        totalCustomers, leadCustomers, fundedCustomers,
+        totalMarketingVendors, activeVendors, pendingTasks,
+      ] = await Promise.all([
+        supabase.from("lenders").select("*", { count: "exact", head: true }),
+        supabase.from("lenders").select("*", { count: "exact", head: true }).eq("status", "live_vendor"),
+        supabase.from("customers").select("*", { count: "exact", head: true }),
+        supabase.from("customers").select("*", { count: "exact", head: true }).eq("status", "lead"),
+        supabase.from("customers").select("*", { count: "exact", head: true }).eq("status", "funded"),
+        supabase.from("marketing_vendors").select("*", { count: "exact", head: true }),
+        supabase.from("marketing_vendors").select("*", { count: "exact", head: true }).eq("status", "active"),
+        supabase.from("kanban_tasks").select("*", { count: "exact", head: true }).in("status", ["backlog", "todo", "in_progress"]),
+      ]);
+
+      const results = [
+        totalLenders, activeLenders, totalCustomers, leadCustomers,
+        fundedCustomers, totalMarketingVendors, activeVendors, pendingTasks,
+      ];
+      const failed = results.find((r) => r.error);
+      if (failed?.error) {
+        // ANY failure poisons the whole board: a partial dashboard where some
+        // tiles are real and some are zero is worse than one that admits it.
+        setStatsError(failed.error.message || "the database didn't respond");
+        return;
+      }
+
+      setStats({
+        totalLenders: totalLenders.count ?? 0,
+        activeLenders: activeLenders.count ?? 0,
+        totalCustomers: totalCustomers.count ?? 0,
+        leadCustomers: leadCustomers.count ?? 0,
+        fundedCustomers: fundedCustomers.count ?? 0,
+        totalMarketingVendors: totalMarketingVendors.count ?? 0,
+        activeVendors: activeVendors.count ?? 0,
+        pendingTasks: pendingTasks.count ?? 0,
+      });
+    } catch (error) {
+      console.error("Error fetching stats:", error);
+      setStatsError(error instanceof Error ? error.message : "the database didn't respond");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const fetchStats = async () => {
-      setIsLoading(true);
-      try {
-        // Fetch lenders stats
-        const { count: totalLenders } = await supabase
-          .from("lenders")
-          .select("*", { count: "exact", head: true });
-
-        const { count: activeLenders } = await supabase
-          .from("lenders")
-          .select("*", { count: "exact", head: true })
-          .eq("status", "live_vendor");
-
-        // Fetch customers stats
-        const { count: totalCustomers } = await supabase
-          .from("customers")
-          .select("*", { count: "exact", head: true });
-
-        const { count: leadCustomers } = await supabase
-          .from("customers")
-          .select("*", { count: "exact", head: true })
-          .eq("status", "lead");
-
-        const { count: fundedCustomers } = await supabase
-          .from("customers")
-          .select("*", { count: "exact", head: true })
-          .eq("status", "funded");
-
-        // Fetch marketing vendors stats
-        const { count: totalMarketingVendors } = await supabase
-          .from("marketing_vendors")
-          .select("*", { count: "exact", head: true });
-
-        const { count: activeVendors } = await supabase
-          .from("marketing_vendors")
-          .select("*", { count: "exact", head: true })
-          .eq("status", "active");
-
-        // Fetch pending tasks
-        const { count: pendingTasks } = await supabase
-          .from("kanban_tasks")
-          .select("*", { count: "exact", head: true })
-          .in("status", ["backlog", "todo", "in_progress"]);
-
-        setStats({
-          totalLenders: totalLenders || 0,
-          activeLenders: activeLenders || 0,
-          totalCustomers: totalCustomers || 0,
-          leadCustomers: leadCustomers || 0,
-          fundedCustomers: fundedCustomers || 0,
-          totalMarketingVendors: totalMarketingVendors || 0,
-          activeVendors: activeVendors || 0,
-          pendingTasks: pendingTasks || 0,
-        });
-      } catch (error) {
-        console.error("Error fetching stats:", error);
-      }
-      setIsLoading(false);
-    };
-
-    fetchStats();
-  }, []);
+    void fetchStats();
+  }, [fetchStats]);
 
   const colorRgb: Record<string, string> = {
     "bg-blue-500": "59,130,246",
@@ -175,6 +173,22 @@ export default function AdminDashboardPage() {
         </p>
       </div>
 
+      {/* A failed load says so, in place of the numbers, rather than under them —
+          the whole point is that no zero appears anywhere it could be mistaken
+          for a real count. */}
+      {statsError && (
+        <div className="mb-6 flex flex-wrap items-center gap-2 rounded-xl border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 px-4 py-3">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0 text-rose-600 dark:text-rose-400" />
+          <span className="text-sm text-rose-800 dark:text-rose-200">
+            <strong>Couldn't load your dashboard numbers</strong> — this is a load failure, not an empty database.
+            Nothing has been lost. ({statsError})
+          </span>
+          <button onClick={() => void fetchStats()} className="btn-ghost btn-sm">
+            Try again
+          </button>
+        </div>
+      )}
+
       {/* Nudge staff to complete their profile so payroll has their details */}
       <CompleteProfileNudge />
 
@@ -222,14 +236,16 @@ export default function AdminDashboardPage() {
                 </div>
                 <ArrowTrendingUpIcon className="w-5 h-5 text-gray-400" />
               </div>
+              {/* An em-dash, not 0. A zero here is indistinguishable from a real
+                  count of zero, which is the whole bug. */}
               <h3 className="text-3xl font-bold text-gray-900 dark:text-white">
-                {card.value}
+                {statsError ? <span className="text-gray-300 dark:text-gray-600">—</span> : card.value}
               </h3>
               <p className="text-sm font-medium text-gray-600 dark:text-gray-300 mt-1">
                 {card.title}
               </p>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                {card.subtitle}
+                {statsError ? "unavailable" : card.subtitle}
               </p>
             </Link>
           );
