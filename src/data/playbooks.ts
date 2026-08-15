@@ -243,10 +243,23 @@ export const LEAD_SOURCE_TO_PLAYBOOK: Record<string, Playbook["id"]> = {
   live_transfer: "live-transfer",
   web_purchased: "web-lead",
   aged_transfer: "aged-transfer",
+  // Aged purchased leads WERE qualified once, so the aged-transfer opener
+  // ("we connected a little while back… circling back") is true of them.
+  aged_lead: "aged-transfer",
   realtime_appt: "realtime",
   cold_email: "cold-email",
   cold_email_landing: "cold-email",
   renewal: "renewal",
+  /* DELIBERATELY UNMAPPED: ph_setter, ucc_lead, cold_call.
+     These are COLD DIALS — nobody contacted us — and every playbook here opens by
+     asserting the merchant did: "you just requested" (website), "you requested
+     about [amount]" (web-lead), "thanks for replying" (cold-email), "we connected
+     a little while back" (aged-transfer). Pointing a cold dial at any of them
+     swaps the loud falsehood for a quieter one, and telling a merchant they asked
+     us to call when they didn't is a compliance problem, not just an awkward
+     opener. They need a cold-dial playbook that does not exist yet; that's an
+     owner content decision, not a mapping. Until it exists they fall through —
+     see the note in PlaybooksPage where the fallback is chosen. */
 };
 
 export function playbookIdForLeadSource(leadSource?: string | null): Playbook["id"] | undefined {

@@ -400,7 +400,20 @@ export default function MerchantApplicationModal({
           business_legal_name: pick(cust?.business_name, txt(q.company)),
           business_email: pick(cust?.email, txt(q.email)),
           business_phone: pick(cust?.phone, txt(q.phone)),
-          business_state: txt(q.state).toUpperCase().slice(0, 2),
+          /* Address was never seeded — not the street, city or ZIP — even when
+             customers.address_* was fully populated (it is, on every UCC-sourced
+             lead). All three are REQUIRED for 04B, so the closer was retyping an
+             address the record already held, mid-call, off a screen that was
+             showing it to them two lines up.
+
+             Street/city/ZIP come from the customer ONLY: lead_qual carries `state`
+             but has no address, city or zip key on any of the 154 rows that have
+             one, so a fallback there would be dead code implying a source that
+             does not exist. */
+          business_address: txt(cust?.address_street),
+          business_city: txt(cust?.address_city),
+          business_state: pick(cust?.address_state, txt(q.state)).toUpperCase().slice(0, 2),
+          business_zip: txt(cust?.address_zip),
           business_start_date: startEst,
           industry: pick(cust?.industry, txt(q.industry)),
           owner_first_name: pick(cust?.first_name, name.first),

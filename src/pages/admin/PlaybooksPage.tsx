@@ -2872,7 +2872,16 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {deal.customer?.phone && deal.customer?.email && <span>·</span>}
               {deal.customer?.email && <span>{deal.customer.email}</span>}
               {!deal.customer?.phone && !deal.customer?.email && <span>No contact info yet</span>}
-              {!deal.customer?.email && (
+              {/* PRIMARY **OR** ADDITIONAL. A merchant with an address only in
+                  additional_emails is reachable, and the banner used to tell the
+                  closer to go find an email that was already on the record. */}
+              {!deal.customer?.email && (deal.customer?.additional_emails?.length ?? 0) > 0 && (
+                <span className="text-gray-500 dark:text-gray-400">
+                  {deal.customer?.additional_emails?.[0]}{" "}
+                  <span className="text-[10px]">(additional — set a primary to send the application)</span>
+                </span>
+              )}
+              {!deal.customer?.email && (deal.customer?.additional_emails?.length ?? 0) === 0 && (
                 <span className="text-amber-600 dark:text-amber-400">— add an email so you can send the application</span>
               )}
             </p>
@@ -3164,6 +3173,10 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
   const [lastName, setLastName] = useState(c?.last_name ?? "");
   const [businessName, setBusinessName] = useState(c?.business_name ?? "");
   const [email, setEmail] = useState(c?.email ?? "");
+  /* The other addresses on the record. Editable only by promotion (below) — a
+     promoted address leaves this list and the displaced primary joins it, so no
+     address the merchant gave us is ever silently dropped. */
+  const [extraEmails, setExtraEmails] = useState<string[]>(c?.additional_emails ?? []);
   const [phone, setPhone] = useState(c?.phone ?? "");
   // Advanced (deal) fields — these live on the DEAL, not the customer.
   const [market, setMarket] = useState<Market | "">((deal.market as Market | null) ?? "");
@@ -3244,6 +3257,8 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
             last_name: lastName.trim(),
             business_name: businessName.trim() || null,
             email: email.trim(),
+            // Written so a promotion actually persists; unchanged when nobody promoted.
+            additional_emails: extraEmails.filter((a) => a && a !== email.trim()),
             phone: normalizePhoneForStorage(phone.trim()),
           })
           .eq("id", deal.customer_id),
@@ -3337,6 +3352,35 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
           <label className="block">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Business email <Req /></span>
             <input className="input-field w-full mt-1" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@acme.com" />
+            {/* The other addresses already on the record. The modal bound the
+                primary only, so a closer staring at "no email" had no way to see
+                — let alone use — an address the customer row already held. One
+                click promotes; the displaced primary is kept, never dropped. */}
+            {(c?.additional_emails ?? []).filter((a) => a && a !== email).length > 0 && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-gray-500 dark:text-gray-400">Also on file:</span>
+                {(c?.additional_emails ?? [])
+                  .filter((a) => a && a !== email)
+                  .map((a) => (
+                    <button
+                      key={a}
+                      type="button"
+                      onClick={() => {
+                        const displaced = email.trim();
+                        setEmail(a);
+                        setExtraEmails((prev) => {
+                          const next = prev.filter((x) => x !== a);
+                          return displaced && !next.includes(displaced) ? [...next, displaced] : next;
+                        });
+                      }}
+                      title={`Use ${a} as the primary email`}
+                      className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-ocean-blue/10 hover:text-ocean-blue"
+                    >
+                      {a} <span className="text-gray-400">· use</span>
+                    </button>
+                  ))}
+              </div>
+            )}
           </label>
           <label className="block">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Cell phone <Req /></span>
