@@ -1394,6 +1394,16 @@ function sourceFromTag(t: string): string | null {
 }
 const OPP_SOURCE_PRESETS = ["Aged", "UCC", "Trigger"];
 
+/* The GHL users an opportunity can be assigned to. Hardcoded — the app's
+   adminListUsers returns Supabase profiles, which don't carry a GHL user id,
+   so there's no clean live source for these. Add setters here as they're
+   onboarded (id = the GHL user id). */
+const OPP_SETTERS: { id: string; name: string }[] = [
+  { id: "oZ6lN9yy1SIVfKD4JNfw", name: "Paola Taruc" },
+  { id: "GDOQHaUcwfrQTVhpXI31", name: "Catherine Zaragosa" },
+];
+type AssignMode = "unassigned" | "single" | "round_robin";
+
 function CreateOpportunitiesPanel() {
   const [tags, setTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState("");
@@ -1408,6 +1418,15 @@ function CreateOpportunitiesPanel() {
      user overrides it. */
   const [source, setSource] = useState("");
   const sourceTouched = useRef(false);
+  /* Assign the created opportunities to a setter, so they can filter
+     Opportunities to "Owner = me" and only dial their lead type. */
+  const [assignMode, setAssignMode] = useState<AssignMode>("unassigned");
+  const [assignUserId, setAssignUserId] = useState<string>(OPP_SETTERS[0]?.id ?? "");
+  const [rrUserIds, setRrUserIds] = useState<string[]>([]);
+  /* Optional custom tags stamped on the pushed contacts (split labels like
+     heat-hot or a campaign name) — on top of the source tags. */
+  const [extraTags, setExtraTags] = useState<string[]>([]);
+  const [extraTagDraft, setExtraTagDraft] = useState("");
 
   const [preview, setPreview] = useState<OppCount | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -1443,6 +1462,15 @@ function CreateOpportunitiesPanel() {
     sourceTouched.current = true;
     setSource(s);
   };
+  const addExtraTag = (raw: string) => {
+    const t = raw.trim();
+    if (!t) return;
+    setExtraTags((prev) => (prev.some((x) => x.toLowerCase() === t.toLowerCase()) ? prev : [...prev, t]));
+    setExtraTagDraft("");
+  };
+  const removeExtraTag = (t: string) => setExtraTags((prev) => prev.filter((x) => x !== t));
+  const toggleRr = (id: string) =>
+    setRrUserIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
   /* Auto-suggest the Source from the first type tag added, until the user
      types their own — one run is one source, so the tag is the best guess. */
@@ -1488,6 +1516,9 @@ function CreateOpportunitiesPanel() {
         stage_id: stageId,
         value: numericValue,
         source: source.trim(),
+        ...(extraTags.length ? { extra_tags: extraTags } : {}),
+        ...(assignMode === "single" && assignUserId ? { assign_user_id: assignUserId } : {}),
+        ...(assignMode === "round_robin" && rrUserIds.length ? { round_robin_user_ids: rrUserIds } : {}),
         mode,
         ...(cursor ? { cursor } : {}),
       },
@@ -1646,6 +1677,40 @@ function CreateOpportunitiesPanel() {
           </div>
         </div>
 
+        {/* ── Extra tags (optional split labels) ── */}
+        <div className="space-y-1.5">
+          <span className={lbl}>Extra tags (optional)</span>
+          <div className={`flex flex-wrap items-center gap-1.5 ${input} py-2`}>
+            {extraTags.map((t) => (
+              <span
+                key={t}
+                className="text-[11px] px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 bg-ocean-blue/10 text-ocean-blue"
+              >
+                {t}
+                <button onClick={() => removeExtraTag(t)} title={`Remove ${t}`}>
+                  <XMarkIcon className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+            <input
+              className="grow min-w-[10rem] bg-transparent outline-none text-sm"
+              placeholder={extraTags.length === 0 ? "e.g. heat-hot, campaign name — Enter after each…" : "add another…"}
+              value={extraTagDraft}
+              onChange={(e) => setExtraTagDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") {
+                  e.preventDefault();
+                  addExtraTag(extraTagDraft);
+                }
+              }}
+              onBlur={() => addExtraTag(extraTagDraft)}
+            />
+          </div>
+          <span className="text-[10px] text-gray-400">
+            Stamped on the pushed contacts on top of the source tags — a custom split label (heat, campaign, …).
+          </span>
+        </div>
+
         {/* ── Source / lead type ── */}
         <div className="space-y-1.5">
           <span className={lbl}>Source / lead type</span>
@@ -1758,6 +1823,54 @@ function CreateOpportunitiesPanel() {
           </span>
         </div>
 
+        {/* ── Assign to (split by setter) ── */}
+        <div className="space-y-1.5">
+          <span className={lbl}>Assign to</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <select className={input} value={assignMode} onChange={(e) => setAssignMode(e.target.value as AssignMode)}>
+              <option value="unassigned">Unassigned</option>
+              <option value="single">A single setter</option>
+              <option value="round_robin">Round-robin among selected</option>
+            </select>
+            {assignMode === "single" && (
+              <select className={input} value={assignUserId} onChange={(e) => setAssignUserId(e.target.value)}>
+                {OPP_SETTERS.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {assignMode === "round_robin" && (
+              <div className="flex flex-wrap items-center gap-2">
+                {OPP_SETTERS.map((u) => (
+                  <label
+                    key={u.id}
+                    className="inline-flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-200 px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={rrUserIds.includes(u.id)}
+                      onChange={() => toggleRr(u.id)}
+                      className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 accent-ocean-blue"
+                    />
+                    {u.name}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          {assignMode === "round_robin" && rrUserIds.length === 0 && (
+            <span className="text-[11px] text-amber-700 dark:text-amber-300">
+              Pick at least one setter, or they'll be created unassigned.
+            </span>
+          )}
+          <span className="text-[10px] text-gray-400">
+            Assign this list to a setter so they filter Opportunities to "Owner = me" and never dial another type.
+            Setters are hardcoded for now.
+          </span>
+        </div>
+
         {/* ── Preview ── */}
         <div className="flex flex-wrap items-center gap-3 pt-1">
           <button
@@ -1826,6 +1939,28 @@ function CreateOpportunitiesPanel() {
                     <>
                       {" "}
                       · Source <strong>{source.trim()}</strong>
+                    </>
+                  )}
+                  {assignMode === "single" && (
+                    <>
+                      {" "}
+                      · assigned to{" "}
+                      <strong>{OPP_SETTERS.find((u) => u.id === assignUserId)?.name ?? "—"}</strong>
+                    </>
+                  )}
+                  {assignMode === "round_robin" && rrUserIds.length > 0 && (
+                    <>
+                      {" "}
+                      · round-robin to{" "}
+                      <strong>
+                        {rrUserIds.map((id) => OPP_SETTERS.find((u) => u.id === id)?.name ?? id).join(", ")}
+                      </strong>
+                    </>
+                  )}
+                  {extraTags.length > 0 && (
+                    <>
+                      {" "}
+                      · extra tags <strong>{extraTags.join(", ")}</strong>
                     </>
                   )}
                   ?
