@@ -39,7 +39,7 @@ import {
 } from "../_shared/ghl.ts";
 import { UCC_OVERWRITABLE_OR_FILTER } from "../_shared/positionsSource.ts";
 import {
-  type UccLeadRow, UCC_ENRICH_COLS, last10, toUccLeadRow,
+  type UccLeadRow, UCC_ENRICH_COLS, last10, last10 as uccLast10, toUccLeadRow,
   realFunders, mcaScoreNum, buildPositionsPatch,
 } from "../_shared/uccPositions.ts";
 
@@ -95,7 +95,7 @@ interface Identity {
 // waiting for a push wave.
 const LEAD_ENRICH_COLS =
   "first_name,last_name,company,email,phone,address,city,state,zip,revenue,"
-  + "sic_code,sic_description,employees,title,secured_party,filing_date,"
+  + "sic_code,sic_description,employees,title,secured_party,secured_party_canonical,filing_date,"
   + "lead_type,entity_type,web_domain,push_tags";
 
 interface LeadEnrich {
@@ -104,7 +104,7 @@ interface LeadEnrich {
   address: string | null; city: string | null; state: string | null; zip: string | null;
   revenue: number | null; sic_code: string | null; sic_description: string | null;
   employees: number | null; title: string | null;
-  secured_party: string | null; filing_date: string | null;
+  secured_party: string | null; secured_party_canonical: string | null; filing_date: string | null;
   lead_type: string | null; entity_type: string | null; web_domain: string | null;
   push_tags: string[] | null;
 }
@@ -232,6 +232,37 @@ async function backfillCustomerFromLead(
   }
 }
 
+/**
+ * #7 UCC LIEN INTEL from the LEAD MACHINE book.
+ *
+ * The purchased UCC file carries a secured party and a filing date per lead, and
+ * none of it reached the deal — so a Lead Machine UCC merchant opened with an
+ * empty Current Funders panel while a ph_ucc-harvested one (ACCULINE) showed its
+ * positions. Same intelligence, different table.
+ *
+ * ONE FILING IS A FLOOR, NOT A COUNT. The harvester derives real stack depth
+ * from every filing it can see; this file gives us exactly one row per lead, so
+ * "1" means "at least one, and this is who". That distinction is carried in
+ * existing_positions_source — 'lead_machine_ucc', never plain 'ucc' — so nobody
+ * reads a floor as a census, and it still sorts under the harvester's rank-1
+ * value, which the UCC_OVERWRITABLE_OR_FILTER guard already refuses to clobber
+ * with anything richer.
+ */
+function leadMachinePositionsPatch(lead: LeadEnrich | null): Record<string, unknown> | null {
+  if (!lead) return null;
+  const funder = str(lead.secured_party_canonical) ?? str(lead.secured_party);
+  if (!funder && !lead.filing_date) return null;
+  return {
+    existing_positions: funder ? 1 : null,
+    existing_funders: funder ? [funder] : null,
+    existing_positions_detail: funder
+      ? [{ funder, filing_date: lead.filing_date ?? null, source: "lead_machine_ucc" }]
+      : [],
+    existing_positions_source: "lead_machine_ucc",
+    existing_positions_synced_at: new Date().toISOString(),
+  };
+}
+
 // ── Dial-campaign attribution ────────────────────────────────────────────────
 //
 // This closes the loop: lead-push-ghl stamps the campaign's dial_tag onto the GHL
@@ -340,10 +371,26 @@ async function mergeCustomerExtras(
   db: SupabaseClient, customerId: string, contactId: string,
 ): Promise<{ phones_added: number; emails_added: number } | null> {
   try {
-    const { data: lead } = await db.from("lead_records")
+    // #10 PHONE FALLBACK. Keying only on ghl_contact_id missed every lead whose
+    // contact id we never recorded — a merchant pushed under one contact and
+    // later opened by phone has extras in lead_records that this would never
+    // find. The phone is the identifier that survives both paths.
+    let { data: lead } = await db.from("lead_records")
       .select("phone,email,first_name,last_name,company,extra_phones,extra_emails")
       .eq("ghl_contact_id", contactId)
       .order("pushed_at", { ascending: false }).limit(1).maybeSingle();
+    if (!lead) {
+      const { data: cust0 } = await db.from("customers")
+        .select("phone").eq("id", customerId).maybeSingle();
+      const digits = uccLast10(str(cust0?.phone));
+      if (digits) {
+        const { data: byPhone } = await db.from("lead_records")
+          .select("phone,email,first_name,last_name,company,extra_phones,extra_emails")
+          .like("phone", `%${digits}`)
+          .order("pushed_at", { ascending: false, nullsFirst: false }).limit(5);
+        lead = (byPhone ?? []).find((r) => uccLast10(str(r.phone)) === digits) ?? null;
+      }
+    }
     if (!lead) return null;
 
     const { data: cust } = await db.from("customers")
@@ -657,7 +704,9 @@ Deno.serve(async (req) => {
     let contactTags: string[] = [];
 
     async function refreshDealPositions(dealId: string): Promise<void> {
-      const patch = await positionsPatch();
+      // The harvester's richer signal wins; the Lead Machine file fills the gap
+      // it leaves for purchased UCC leads.
+      const patch = (await positionsPatch()) ?? leadMachinePositionsPatch(leadRow);
       if (!patch) return;
       const { error } = await db.from("deals")
         .update(patch)
