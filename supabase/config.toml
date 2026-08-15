@@ -388,6 +388,15 @@ verify_jwt = true
 [functions.lead-push-ghl]
 verify_jwt = true
 
+# ghl-create-opportunities: bulk-creates GHL opportunities from TAGGED contacts (the
+# ~145K MCA-pipeline backfill + a Lead Machine UI panel). Pages /contacts/search by
+# tag, skips excluded states (blank passes) + lt-source robots, and is idempotent via
+# a per-contact marker tag (mca-opp-created) excluded server-side on every search.
+# mode:"count" is a dry-run preview; mode:"create" creates + marks, resuming on a
+# cursor. verify_jwt = true PLUS an in-code admin/super_admin check (NOT closers).
+[functions.ghl-create-opportunities]
+verify_jwt = true
+
 # dial-campaign: creates DIAL CAMPAIGNS (rows in public.campaigns, channel outbound_dial)
 # where one lowercase-kebab dial_tag is the join key across our app, GHL and HotProspector.
 # Mints the campaign code via the existing trigger, validates the tag against reserved

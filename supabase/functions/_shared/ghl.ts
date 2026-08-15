@@ -438,6 +438,11 @@ export interface OpportunityInput {
   name: string;
   monetaryValue?: number | null;
   status?: "open" | "won" | "lost" | "abandoned";
+  /** Opportunity Source (top-level string on the opportunity — verified against the
+   * GHL v2 opportunity schema). Surfaces on the Opportunities page's Source column so
+   * a view can be saved per lead type. Only send it when set (GHL treats it as a
+   * free-text label). */
+  source?: string | null;
 }
 
 export async function createOpportunity(cfg: GhlConfig, input: OpportunityInput) {
