@@ -868,6 +868,19 @@ Deno.serve(async (req) => {
       });
       job.target_count = target;
 
+      // A campaign IS active once leads are flowing under it. Leaving it
+      // 'planned' created a recurring class of bug the UI has had to patch three
+      // separate times (status unions, picker filters, modal/intake defaults),
+      // each one teaching the frontend to treat a stale status as if it meant
+      // something. Fix the data instead. ONLY planned -> active: 'paused' and
+      // 'completed' are deliberate human decisions and are never overridden.
+      if (job.campaign_id) {
+        const { error: actErr } = await db.from("campaigns")
+          .update({ status: "active" })
+          .eq("id", job.campaign_id).eq("status", "planned");
+        if (actErr) console.error("[lead-push-ghl] campaign activate failed:", actErr.message);
+      }
+
       if (wantCount && target === 0) {
         await patchJob(db, job.id, {
           status: "complete", finished_at: new Date().toISOString(),

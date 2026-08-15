@@ -84,6 +84,130 @@ interface Identity {
 // are resolved + computed).
 
 
+// ── Lead Machine enrichment ──────────────────────────────────────────────────
+//
+// Everything the purchased file paid for, carried onto the merchant at OPEN.
+// The audit found four columns that never left Supabase (revenue,
+// sic_description, employees, title) plus the whole address block, so a deal
+// opened from an aged/UCC lead arrived blank and 04B sends were blocked on
+// industry_doc / avg_monthly_revenue_doc. Mapping here costs ZERO GHL calls and
+// covers every contact already pushed, which is why it runs at open rather than
+// waiting for a push wave.
+const LEAD_ENRICH_COLS =
+  "first_name,last_name,company,email,phone,address,city,state,zip,revenue,"
+  + "sic_code,sic_description,employees,title,secured_party,filing_date,"
+  + "lead_type,entity_type,web_domain,push_tags";
+
+interface LeadEnrich {
+  first_name: string | null; last_name: string | null; company: string | null;
+  email: string | null; phone: string | null;
+  address: string | null; city: string | null; state: string | null; zip: string | null;
+  revenue: number | null; sic_code: string | null; sic_description: string | null;
+  employees: number | null; title: string | null;
+  secured_party: string | null; filing_date: string | null;
+  lead_type: string | null; entity_type: string | null; web_domain: string | null;
+  push_tags: string[] | null;
+}
+
+/**
+ * REVENUE IS NOT ONE NUMBER. The trigger file ships "Monthly Revenue"; the UCC
+ * file ships "REVENUE" with values from 46,241 to 12,000,000 — annual, plainly.
+ * Writing an annual figure into monthly_revenue would understate a merchant's
+ * capacity by 12x on the very field underwriting reads. So the number lands in
+ * the column its FILE means, and a monthly figure is only ever derived by an
+ * explicit division that says so.
+ */
+function revenueFields(lead: LeadEnrich): Record<string, unknown> {
+  if (lead.revenue == null) return {};
+  return lead.lead_type === "trigger"
+    ? { monthly_revenue: lead.revenue, annual_revenue: Math.round(lead.revenue * 12) }
+    : { annual_revenue: lead.revenue, monthly_revenue: Math.round(Number(lead.revenue) / 12) };
+}
+
+/** customers.source from the list the lead came off — it was hardcoded 'other',
+ * which erased the one fact every purchased lead definitely has. */
+function sourceFor(lead: LeadEnrich | null): string {
+  switch (lead?.lead_type) {
+    case "ucc": return "ucc_list";
+    case "aged": return "aged_list";
+    case "trigger": return "trigger_list";
+    default: return "other";
+  }
+}
+
+/** The playbook a setter should land on. Defaulting every open to 'ph_setter'
+ * routed aged/UCC/trigger merchants into the wrong script. */
+function leadSourceFor(lead: LeadEnrich | null, tags: string[]): string | null {
+  const t = tags.map((x) => x.toLowerCase());
+  if (lead?.lead_type === "ucc" || t.includes("lm-ucc")) return "ucc_list";
+  if (lead?.lead_type === "aged" || t.includes("lm-aged")) return "aged_list";
+  if (lead?.lead_type === "trigger" || t.includes("lm-trigger")) return "trigger_list";
+  return null;
+}
+
+/** Everything from the lead that belongs on the customer row. */
+function customerFieldsFrom(lead: LeadEnrich): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    address_street: str(lead.address),
+    address_city: str(lead.city),
+    address_state: str(lead.state),
+    address_zip: str(lead.zip),
+    industry: str(lead.sic_description),
+    sic_code: str(lead.sic_code),
+    employees: lead.employees ?? null,
+    owner_title: str(lead.title),
+    entity_type: str(lead.entity_type),
+    website: lead.web_domain ? `https://${lead.web_domain}` : null,
+    ...revenueFields(lead),
+  };
+  for (const k of Object.keys(out)) if (out[k] === null) delete out[k];
+  return out;
+}
+
+/**
+ * Fill a customer's EMPTY columns from the Lead Machine row. #2/#3 in the audit:
+ * backfillCustomerAddress only ever read ph_ucc_leads, so a merchant whose data
+ * came off a purchased list resumed with a blank address and no industry or
+ * revenue — the exact fields 04B requires. Gaps only: a value a human typed is
+ * never touched, and only columns that are currently NULL are written.
+ */
+async function backfillCustomerFromLead(
+  db: SupabaseClient, customerId: string, lead: LeadEnrich | null,
+): Promise<string[]> {
+  if (!lead) return [];
+  try {
+    const fields = customerFieldsFrom(lead);
+    if (!Object.keys(fields).length) return [];
+    const { data: cur } = await db.from("customers")
+      .select("address_street,address_city,address_state,address_zip,industry,sic_code,"
+        + "employees,owner_title,entity_type,website,monthly_revenue,annual_revenue,source")
+      .eq("id", customerId).maybeSingle();
+    if (!cur) return [];
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(fields)) {
+      const existing = (cur as unknown as Record<string, unknown>)[k];
+      if (existing === null || existing === undefined || existing === "") patch[k] = v;
+    }
+    // 'other' is the old hardcoded placeholder, not a value someone chose — the
+    // same lesson as first_name 'Merchant'. Treat it as a gap.
+    const curSource = (cur as unknown as Record<string, unknown>).source;
+    if (!curSource || curSource === "other") {
+      const s2 = sourceFor(lead);
+      if (s2 !== "other") patch.source = s2;
+    }
+    if (!Object.keys(patch).length) return [];
+    const { error } = await db.from("customers").update(patch).eq("id", customerId);
+    if (error) {
+      console.error("[playbook-open-contact] lead backfill failed:", error.message);
+      return [];
+    }
+    return Object.keys(patch);
+  } catch (e) {
+    console.error("[playbook-open-contact] lead backfill threw:", e instanceof Error ? e.message : String(e));
+    return [];
+  }
+}
+
 // ── Dial-campaign attribution ────────────────────────────────────────────────
 //
 // This closes the loop: lead-push-ghl stamps the campaign's dial_tag onto the GHL
@@ -309,7 +433,11 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     let ghlContactId = str(body?.ghl_contact_id ?? body?.contactId ?? body?.contact);
     const rawPhone = str(body?.phone);
-    const leadSource = str(body?.lead_source) ?? "ph_setter";
+    // #5 SCRIPT ROUTING. This defaulted to "ph_setter" for EVERY open, so an
+    // aged/UCC/trigger merchant landed on the PH setter script. The caller still
+    // wins when it says so; otherwise the lead's own type decides, and
+    // "ph_setter" is the fallback rather than the answer.
+    const leadSourceOverride = str(body?.lead_source);
     if (!ghlContactId && !rawPhone) {
       return json({ ok: false, error: "ghl_contact_id or phone is required" }, 400);
     }
@@ -322,6 +450,10 @@ Deno.serve(async (req) => {
     // The backing UCC lead (address + existing positions). Set on the phone path
     // here; recovered by ghl_contact_id on the deep-link path further down.
     let uccLead: UccLeadRow | null = null;
+    // The Lead Machine row behind this contact — the purchased data the audit
+    // found was being dropped on the floor. Set on the phone path, recovered by
+    // ghl_contact_id on the deep-link path so BOTH entries enrich identically.
+    let leadRow: LeadEnrich | null = null;
     if (!ghlContactId) {
       const digits = last10(rawPhone);
       if (!digits) return json({ ok: false, error: `"${rawPhone}" isn't a usable 10-digit phone number.` }, 400);
@@ -358,12 +490,14 @@ Deno.serve(async (req) => {
         // contact by phone was corrupting that contact's name.
         const { data: lr, error: lrErr } = await db
           .from("lead_records")
-          .select("first_name,last_name,company,email,phone")
+          .select(LEAD_ENRICH_COLS)
           .like("phone", `%${digits}`)
           .order("pushed_at", { ascending: false, nullsFirst: false })
           .limit(5);
         if (lrErr) console.error("[playbook-open-contact] lead_records lookup failed:", lrErr.message);
-        const lm = (lr ?? []).find((r) => last10(str(r.phone)) === digits) ?? null;
+        const lmRows = (lr ?? []) as unknown as LeadEnrich[];
+        const lm = lmRows.find((r) => last10(str(r.phone)) === digits) ?? null;
+        if (lm) leadRow = lm;
         seed = lm
           ? {
             first: str(lm.first_name),
@@ -395,7 +529,12 @@ Deno.serve(async (req) => {
           city: lead ? str(lead.debtor_city) : null,
           state: lead ? str(lead.debtor_state) : null,
           postalCode: lead ? str(lead.debtor_zip) : null,
-          source: leadSource,
+          // #4 SOURCE OVERWRITE. GHL's upsert replaces every field it receives,
+          // so sending a source here stamped "ph_setter" over the
+          // "Lead Machine <BATCH>" provenance that the push had written. A
+          // contact we can match to a lead row already HAS its true source;
+          // only a genuinely unknown number gets one from us.
+          ...(leadRow ? {} : { source: leadSourceOverride ?? "ph_setter" }),
         });
         // ghlFetch never throws on an API error — it reports it on the envelope.
         if (!up.ok) {
@@ -425,6 +564,13 @@ Deno.serve(async (req) => {
     // ── DEEP-LINK PATH: recover the backing UCC lead by ghl_contact_id. The phone
     // path already set uccLead; this is what makes a DEEP-LINKED UCC merchant
     // auto-populate (address + existing positions) exactly like the phone path.
+    if (!leadRow) {
+      const { data: lrByContact } = await db
+        .from("lead_records").select(LEAD_ENRICH_COLS)
+        .eq("ghl_contact_id", contactId)
+        .order("pushed_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle();
+      if (lrByContact) leadRow = lrByContact as unknown as LeadEnrich;
+    }
     if (!uccLead) {
       const { data: byContact, error: ulErr } = await db
         .from("ph_ucc_leads")
@@ -591,7 +737,10 @@ Deno.serve(async (req) => {
       // never overwritten. Address stays null-only.
       await refreshDealPositions(d.id);
       await refreshDealScore(d.id);
-      if (d.customer_id) await backfillCustomerAddress(d.customer_id);
+      if (d.customer_id) {
+        await backfillCustomerAddress(d.customer_id);
+        await backfillCustomerFromLead(db, d.customer_id, leadRow);
+      }
       const claimed = await claimIfNeeded(d.id, d.assigned_closer_id);
       const attr1 = await attributeCampaign(db, d.id, contactId, contactTags);
       // Enrichment, not creation — runs on an EXISTING deal too, because the
@@ -686,8 +835,11 @@ Deno.serve(async (req) => {
           email,
           phone,
           status: "lead",
-          source: "other",
+          source: sourceFor(leadRow),
           ghl_contact_id: contactId,
+          // Everything the purchased file paid for. Listed BEFORE the UCC block
+          // so a ph_ucc_leads address still wins where one exists.
+          ...(leadRow ? customerFieldsFrom(leadRow) : {}),
           // Auto-populate the merchant address from the backing UCC lead.
           ...(uccLead ? {
             address_street: str(uccLead.debtor_address),
@@ -705,7 +857,10 @@ Deno.serve(async (req) => {
 
     // Existing customer (linked or deduped): backfill any NULL address columns
     // from the UCC lead — never overwrite a value a human already entered.
-    if (!customerCreated && customerId) await backfillCustomerAddress(customerId);
+    if (!customerCreated && customerId) {
+      await backfillCustomerAddress(customerId);
+      await backfillCustomerFromLead(db, customerId, leadRow);
+    }
 
     // ── 2b) Second idempotency guard: the customer may already carry an OPEN
     // mca deal that predates the ghl link (common on the phone path, where the
@@ -747,7 +902,7 @@ Deno.serve(async (req) => {
         customer_id: customerId,
         deal_type: "mca",
         status: "new",
-        lead_source: leadSource,
+        lead_source: leadSourceOverride ?? leadSourceFor(leadRow, contactTags) ?? "ph_setter",
         ghl_contact_id: contactId,
         created_by: caller.id,
         assigned_closer_id: isCloser ? caller.id : null,
