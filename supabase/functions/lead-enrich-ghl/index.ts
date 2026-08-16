@@ -71,10 +71,11 @@ type Row = {
   revenue_band_low: number | null; revenue_band_high: number | null;
   sic_code: string | null; sic_description: string | null;
   entity_type: string | null; web_domain: string | null; phone: string | null;
+  playbook_link_at: string | null; needs_name_resync: boolean | null;
 };
 const COLS = "id,ghl_contact_id,first_name,last_name,title,employees,revenue,"
   + "revenue_bucket,revenue_band_low,revenue_band_high,sic_code,sic_description,"
-  + "entity_type,web_domain,phone";
+  + "entity_type,web_domain,phone,playbook_link_at,needs_name_resync";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -248,6 +249,27 @@ Deno.serve(async (req) => {
           if (Date.now() - started >= BUDGET_MS) break;
           const t0 = Date.now();
           const body = payloadFor(r);
+          // DON'T PAY TO SEND NOTHING NEW. 28,723 of the pending rows carry no
+          // enrichment at all beyond a Playbook link they ALREADY have, and
+          // names GHL already holds — a PUT for those is ~2 API calls to change
+          // nothing. At the measured ~2.16 calls/contact that is ~62,000 calls,
+          // most of a day's usable budget, spent re-writing identical values.
+          // The cheapest call is the one you don't make.
+          // "Nothing new" means: no enrichment field beyond the Playbook link,
+          // the link is already on the contact, and the names GHL holds are
+          // already the corrected ones (needs_name_resync false). Re-sending an
+          // identical firstName is as wasteful as re-sending an identical link,
+          // so the name fields do NOT disqualify a skip — only a name that still
+          // needs syncing does.
+          const cfCount = Array.isArray(body?.customFields) ? body!.customFields.length : 0;
+          const nothingNew = cfCount <= 1 && !!r.playbook_link_at && !r.needs_name_resync;
+          if (body && nothingNew) {
+            skipped++;
+            const { error: se } = await db.from("lead_records")
+              .update({ enriched_at: new Date().toISOString() }).eq("id", r.id);
+            if (se) { stampFailures++; console.error("[lead-enrich-ghl] skip stamp failed:", r.id, se.message); }
+            continue;
+          }
           if (!body) {
             skipped++;
             await db.from("lead_records").update({ enriched_at: new Date().toISOString() }).eq("id", r.id);
