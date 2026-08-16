@@ -322,6 +322,38 @@ async function attachDispositions(
   }
 }
 
+// ── ACTIVITY GATE (shared shape with ghl-email-doc-sweep) ────────────────────
+//
+// This sweep used to ask GHL about EVERY open deal every five minutes: 122 deals
+// x ~2+ calls x 288 runs = roughly 70,000 calls/day against a 200,000/day
+// location cap, whether or not a single call had been placed. Cost scaled with
+// the size of the book rather than with the amount of new information, so every
+// deal we won made every future cycle more expensive.
+//
+// One location-wide query answers the same question. /conversations/search
+// sorted by last_message_date returns every conversation newest-first with its
+// contactId, so a single call names everyone with activity since the last run.
+// Verified on this account when the doc sweep was converted: the ordering is
+// monotonic desc, limit=100 reaches back weeks, and `startAfterDate` is accepted
+// then SILENTLY IGNORED — so paging by date is not available and the page
+// boundary is the real limit.
+const LOOKBACK_MS = 30 * 60 * 1000;   // 6x the */5 cadence — a missed cycle self-heals
+const CONV_PAGE = 100;
+
+async function contactsActiveSince(cfg: GhlConfig, sinceMs: number): Promise<Set<string> | null> {
+  const r = await ghlFetch<{ conversations?: Array<{ contactId?: string; lastMessageDate?: number }> }>(
+    cfg, "GET",
+    `/conversations/search?locationId=${cfg.locationId}&sortBy=last_message_date&sort=desc&limit=${CONV_PAGE}`,
+  );
+  if (!r.ok) throw new Error(`conversations search failed (${r.status})`);
+  const convs = r.data?.conversations ?? [];
+  const recent = convs.filter((c) => typeof c.lastMessageDate === "number" && c.lastMessageDate >= sinceMs);
+  // A full page entirely inside the window means it probably continues past the
+  // page. Fall back to the exhaustive sweep rather than silently skip deals.
+  if (convs.length >= CONV_PAGE && recent.length === convs.length) return null;
+  return new Set(recent.map((c) => String(c.contactId ?? "")).filter(Boolean));
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -349,8 +381,34 @@ Deno.serve(async (req) => {
         .select("id, ghl_contact_id")
         .not("ghl_contact_id", "is", null)
         .not("status", "in", "(nurture,declined,dead,funded,renewal_eligible,restructure_executed,servicing)");
-      const summary = { swept: 0, synced: 0, failed: [] as string[] };
+      // Which of those deals had ANY conversation activity recently? ?full=1
+      // forces the old exhaustive behavior for a backfill or a catch-up.
+      const full = url.searchParams.get("full") === "1";
+      const lookbackMin = Number(url.searchParams.get("lookback_minutes") ?? "");
+      const lookbackMs = Number.isFinite(lookbackMin) && lookbackMin > 0
+        ? lookbackMin * 60 * 1000 : LOOKBACK_MS;
+      let active: Set<string> | null = null;
+      let gate = "full (requested)";
+      if (!full) {
+        try {
+          active = await contactsActiveSince(cfg, Date.now() - lookbackMs);
+          gate = active === null
+            ? "full (activity window exceeded one page)"
+            : `active-only (${active.size} contact(s) in the last ${Math.round(lookbackMs / 60000)}min)`;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          // The gate is ONE call. If it is rate-limited, an exhaustive sweep can
+          // only make it worse — skip the cycle; the next one picks it up.
+          if (/\b429\b|rate.?limit|too many requests/i.test(msg)) {
+            return json({ ok: true, mode: "sweep", aborted: "rate_limited", stage: "activity_gate", swept: 0 });
+          }
+          gate = `full (activity gate failed: ${msg.slice(0, 120)})`;
+        }
+      }
+
+      const summary = { swept: 0, synced: 0, skippedQuiet: 0, gate, failed: [] as string[] };
       for (const d of open ?? []) {
+        if (active && !active.has(String(d.ghl_contact_id ?? ""))) { summary.skippedQuiet++; continue; }
         summary.swept++;
         try {
           const calls = await fetchContactCalls(cfg, d.ghl_contact_id as string);

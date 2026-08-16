@@ -225,7 +225,7 @@ Deno.serve(async (req) => {
       }
 
       const started = Date.now();
-      let updated = 0, errored = 0, skipped = 0;
+      let updated = 0, errored = 0, skipped = 0, stampFailures = 0;
       const interval = 1000 / rps;
       let lastMsg = "";
 
@@ -255,8 +255,18 @@ Deno.serve(async (req) => {
           }
           const res = await ghlFetch(cfg, "PUT", `/contacts/${r.ghl_contact_id}`, body);
           if (res.ok) {
-            updated++;
-            await db.from("lead_records").update({ enriched_at: new Date().toISOString() }).eq("id", r.id);
+            // CHECK THE WRITE. If this stamp fails silently the row stays
+            // eligible and the next window pays for the same contact again —
+            // an invisible multiplier on a 160k-row job, and a violation of the
+            // house rule that every edge-function write checks .error.
+            const { error: stampErr } = await db.from("lead_records")
+              .update({ enriched_at: new Date().toISOString() }).eq("id", r.id);
+            if (stampErr) {
+              stampFailures++;
+              console.error("[lead-enrich-ghl] enriched_at stamp failed:", r.id, stampErr.message);
+            } else {
+              updated++;
+            }
           } else {
             errored++;
             lastMsg = `${res.status}`;
@@ -280,12 +290,14 @@ Deno.serve(async (req) => {
 
         await patchJob(db, jobId, {
           updated: (job.updated ?? 0) + updated, errored: (job.errored ?? 0) + errored,
-          message: `enriched ${(job.updated ?? 0) + updated}${lastMsg ? ` (last error ${lastMsg})` : ""}`,
+          message: `enriched ${(job.updated ?? 0) + updated}`
+            + (stampFailures ? ` — ${stampFailures} stamp FAILURES (contact updated, row not marked; it will be redone)` : "")
+            + (lastMsg ? ` (last error ${lastMsg})` : ""),
         });
       }
 
       reinvoke(expected, jobId, rps);
-      return json({ ok: true, job_id: jobId, updated, errored, skipped, continued: true });
+      return json({ ok: true, job_id: jobId, updated, errored, skipped, stampFailures, continued: true });
     }
 
     return json({ error: `unknown action ${action}` }, 400);
