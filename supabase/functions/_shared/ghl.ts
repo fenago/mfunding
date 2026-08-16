@@ -477,6 +477,13 @@ export interface OpportunityInput {
    * on the opportunity — verified against the GHL v2 opportunity schema). Only send
    * it when set; omitting leaves the opportunity unassigned. */
   assignedTo?: string | null;
+  /** OPPORTUNITY-level custom fields, stamped at create so the Opportunities page's
+   * Advanced Filters can filter by them (contact-level State/tags/custom-fields are
+   * NOT available in that filter). Array of { id, field_value } per the GHL v2
+   * opportunity create schema (CreateDto.customFields — `id` OR `key` accepted; we
+   * use `id`). Rides the create POST for free — no extra GHL call. Only send when
+   * non-empty. */
+  customFields?: Array<{ id: string; field_value: string }>;
 }
 
 export async function createOpportunity(

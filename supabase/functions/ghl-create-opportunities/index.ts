@@ -209,7 +209,89 @@ interface GhlSearchContact {
   firstName?: string | null;
   lastName?: string | null;
   email?: string | null;
+  /** Contact custom fields as GHL returns them on /contacts/search: [{ id, value }]
+   * (value = string | string[]). Read to pull optional pass-through fields
+   * (positions/score/funders) onto the opportunity; absent on lists that never
+   * carried them, in which case those opp fields are simply skipped. */
+  customFields?: Array<{ id?: string; value?: unknown }>;
   searchAfter?: unknown[];
+}
+
+// ── Opportunity custom-field id map (config-driven; deploy-safe before fields exist)
+// Read at runtime from platform_settings key `ghl_opp_custom_field_map` (jsonb),
+// the SAME decoupled pattern as the contact cf_* map (which get_ghl_config surfaces).
+// Each logical name → a GHL OPPORTUNITY custom-field id. Any key that is absent/blank
+// means that field is simply NOT stamped — so deploying now, before the fields are
+// created in GHL and their ids persisted here, changes nothing (graceful skip). A
+// missing field id NEVER fails an opportunity create.
+interface OppFieldMap {
+  lead_state?: string;
+  lead_type?: string;
+  active_positions?: string;
+  mca_score?: string;
+  current_funders?: string;
+}
+
+/** Load the opportunity custom-field id map from platform_settings. Free (Supabase,
+ * not GHL). Absent/malformed row → {} → nothing gets stamped. */
+async function loadOppFieldMap(db: SupabaseClient): Promise<OppFieldMap> {
+  const { data } = await db.from("platform_settings")
+    .select("value").eq("key", "ghl_opp_custom_field_map").maybeSingle();
+  const v = (data?.value ?? null) as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return {};
+  const pick = (k: string): string | undefined => {
+    const s = clean(v[k]);
+    return s.length ? s : undefined;
+  };
+  return {
+    lead_state: pick("lead_state"),
+    lead_type: pick("lead_type"),
+    active_positions: pick("active_positions"),
+    mca_score: pick("mca_score"),
+    current_funders: pick("current_funders"),
+  };
+}
+
+/** Flatten a contact's custom fields into { cfId → string value } (arrays joined),
+ * so an opportunity field can pull its value by the CONTACT custom-field id. */
+function contactCfValues(c: GhlSearchContact): Record<string, string> {
+  const out: Record<string, string> = {};
+  const cf = Array.isArray(c.customFields) ? c.customFields : [];
+  for (const f of cf) {
+    if (!f || typeof f !== "object") continue;
+    const id = clean(f.id);
+    if (!id) continue;
+    const raw = f.value;
+    const val = Array.isArray(raw)
+      ? raw.map((x) => clean(x)).filter((s) => s.length > 0).join(", ")
+      : clean(raw);
+    if (val) out[id] = val;
+  }
+  return out;
+}
+
+/** Build the OPPORTUNITY customFields array for one contact from the config map.
+ * Only emits an entry when BOTH the opp field id (from the map) AND a value exist,
+ * so an unconfigured map or a blank value yields [] and nothing is stamped. */
+function buildOppCustomFields(
+  c: GhlSearchContact, source: string | undefined, oppMap: OppFieldMap, cfg: GhlConfig,
+): Array<{ id: string; field_value: string }> {
+  const out: Array<{ id: string; field_value: string }> = [];
+  const add = (id: string | undefined, val: string) => {
+    if (id && val) out.push({ id, field_value: val });
+  };
+  // Lead State — the contact's 2-letter state (normalized upper). Filterable in the
+  // Opportunities view once the field exists.
+  add(oppMap.lead_state, normState(c.state));
+  // Lead Type — the run's source label (Aged / UCC / Trigger). Unset if no source.
+  add(oppMap.lead_type, source ?? "");
+  // Optional pass-throughs, pulled from the contact's EXISTING custom fields by the
+  // contact cf ids from the vault map. Purchased lists usually lack these → skipped.
+  const cvals = contactCfValues(c);
+  add(oppMap.active_positions, cfg.cfExistingPositions ? (cvals[cfg.cfExistingPositions] ?? "") : "");
+  add(oppMap.mca_score, cfg.cfMcaScore ? (cvals[cfg.cfMcaScore] ?? "") : "");
+  add(oppMap.current_funders, cfg.cfCurrentFunders ? (cvals[cfg.cfCurrentFunders] ?? "") : "");
+  return out;
 }
 
 /** The opportunity name for a contact: company → business → contact name →
@@ -499,6 +581,11 @@ Deno.serve(async (req) => {
   }
 
   // ── CREATE: page the eligible set, create opps, mark each contact ─────────────
+  // Opportunity custom-field id map (config-driven). Loaded once per invocation from
+  // platform_settings — free, and empty until the fields are created + persisted, at
+  // which point stamping activates with NO code change. Never blocks a create.
+  const oppFieldMap = await loadOppFieldMap(db);
+
   const filters = buildFilters(tags, markerTag, excludeStates, true);
   let created = 0, skipped_state = 0, skipped_existing = 0, skipped_robot = 0;
   let errors = 0, processed = 0, marker_failed = 0;
@@ -623,11 +710,16 @@ Deno.serve(async (req) => {
       const wave = toCreate.slice(i, i + CONCURRENCY);
       const results = await Promise.all(wave.map(async ({ c, owner }) => {
         try {
+          // Opportunity-level custom fields (Lead State / Lead Type / optional
+          // pass-throughs) ride the create POST for free. Empty until the map is
+          // configured → omitted entirely, so behavior is unchanged pre-config.
+          const oppCustomFields = buildOppCustomFields(c, source, oppFieldMap, cfg);
           const opp = await createOpportunity(cfg, {
             pipelineId, pipelineStageId: stageId, contactId: c.id,
             name: opportunityName(c), monetaryValue: value, status: "open",
             ...(source ? { source } : {}),
             ...(owner ? { assignedTo: owner } : {}),
+            ...(oppCustomFields.length ? { customFields: oppCustomFields } : {}),
           }, onRL);
           noteRate(opp.rate);
           if (!opp.ok) return { c, ok: false as const, error: ghlErrorMessage(opp.error) };
