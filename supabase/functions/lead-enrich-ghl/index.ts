@@ -137,18 +137,33 @@ function reinvoke(secret: string, jobId: string, rps?: number) {
  * forever — the floor check would have silently never fired and this job would
  * have happily run the location dry. A guard that cannot read its own signal is
  * worse than no guard, because it reports safety it never checked. */
-async function quotaLeft(cfg: GhlConfig): Promise<number | null> {
-  try {
-    const res = await fetch(
-      `https://services.leadconnectorhq.com/locations/${cfg.locationId}/customFields`,
-      { headers: { Authorization: `Bearer ${cfg.apiKey}`, Version: "2021-07-28" } },
-    );
-    const h = res.headers.get("x-ratelimit-daily-remaining");
-    const n = h == null ? NaN : Number(h);
-    return Number.isFinite(n) ? n : null;
-  } catch {
-    return null;   // unreadable is not "plenty" — the caller treats null as unknown
+async function quotaLeft(cfg: GhlConfig): Promise<{ left: number | null; why: string }> {
+  // RETRY BEFORE CONCLUDING. "Unreadable is not plenty" is the right rule, but a
+  // SINGLE transient failure must not halt a 14-hour job: the first version had
+  // no timeout and no retry, so one hiccup at 23:29Z paused a healthy run at
+  // 7,128 while the endpoint was in fact answering with 136,951 remaining. Three
+  // tries, then pause — a guard should be hard to fool, not easy to trip.
+  let why = "no attempt";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 10_000);
+      const res = await fetch(
+        `https://services.leadconnectorhq.com/locations/${cfg.locationId}/customFields`,
+        { headers: { Authorization: `Bearer ${cfg.apiKey}`, Version: "2021-07-28" }, signal: ctl.signal },
+      );
+      clearTimeout(t);
+      // The header rides 200s AND 429s, so a rate-limited probe still answers.
+      const h = res.headers.get("x-ratelimit-daily-remaining");
+      const n = h == null ? NaN : Number(h);
+      if (Number.isFinite(n)) return { left: n, why: "ok" };
+      why = `HTTP ${res.status} without an x-ratelimit-daily-remaining header`;
+    } catch (e) {
+      why = `probe threw: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
   }
+  return { left: null, why };
 }
 
 Deno.serve(async (req) => {
@@ -195,7 +210,7 @@ Deno.serve(async (req) => {
       const cfg = await getGhlConfig(db);
       // The reserve floor is checked BEFORE any work, every window — a bulk job
       // must never be the reason a setter's playbook open fails.
-      const left = await quotaLeft(cfg);
+      const { left, why: quotaWhy } = await quotaLeft(cfg);
       // UNREADABLE IS NOT PLENTY. If the quota can't be read we pause rather
       // than assume headroom — the whole point of the floor is protecting the
       // floor's traffic, and a guess is not protection.
@@ -203,7 +218,7 @@ Deno.serve(async (req) => {
         await patchJob(db, jobId, {
           status: "paused", finished_at: new Date().toISOString(),
           message: left == null
-            ? "paused — could not READ the GHL daily quota; unreadable is not plenty. Resumable."
+            ? `paused — could not READ the GHL daily quota after 3 tries (${quotaWhy}); unreadable is not plenty. Resumable.`
             : `paused at the ${RESERVE_FLOOR} reserve floor (daily-remaining ${left}) — resumable`,
         });
         return json({ ok: true, job_id: jobId, paused: "reserve_floor", daily_remaining: left });
