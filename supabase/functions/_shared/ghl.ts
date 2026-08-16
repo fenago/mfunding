@@ -56,11 +56,40 @@ export async function getGhlConfig(db: SupabaseClient): Promise<GhlConfig> {
   };
 }
 
+/** GHL rate-limit headers (LeadConnector v2). Present on most responses; any field
+ * is null when the header was absent/unparseable. `dailyRemaining` is what a bulk
+ * job watches to PARK before it burns the daily cap (verified live:
+ * x-ratelimit-limit-daily / x-ratelimit-daily-remaining). */
+export interface GhlRateInfo {
+  dailyRemaining: number | null;
+  dailyLimit: number | null;
+  intervalRemaining: number | null;
+}
+
 export interface GhlResponse<T = unknown> {
   ok: boolean;
   status: number;
   data: T | null;
   error?: string;
+  /** Parsed rate-limit headers from the FINAL response (after any retries). */
+  rate?: GhlRateInfo;
+}
+
+/** Read the LeadConnector rate-limit headers off a response. Header names verified
+ * live 2026-08: x-ratelimit-limit-daily, x-ratelimit-daily-remaining, plus the
+ * burst window's x-ratelimit-remaining. All lower-cased by fetch's Headers. */
+function readRateInfo(res: Response): GhlRateInfo {
+  const num = (h: string): number | null => {
+    const v = res.headers.get(h);
+    if (v == null) return null;
+    const n = Number(v.trim());
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    dailyRemaining: num("x-ratelimit-daily-remaining"),
+    dailyLimit: num("x-ratelimit-limit-daily"),
+    intervalRemaining: num("x-ratelimit-remaining"),
+  };
 }
 
 /** PII / secret keys that must never reach a log line. */
@@ -183,7 +212,7 @@ export async function ghlFetch<T = unknown>(
     }
 
     if (res.ok) {
-      return { ok: true, status: res.status, data: parsed as T };
+      return { ok: true, status: res.status, data: parsed as T, rate: readRateInfo(res) };
     }
 
     // ── transient HTTP failure: back off and retry ──
@@ -211,6 +240,7 @@ export async function ghlFetch<T = unknown>(
       status: res.status,
       data: null,
       error: typeof parsed === "string" ? parsed : JSON.stringify(parsed),
+      rate: readRateInfo(res),
     };
   }
 
@@ -449,12 +479,15 @@ export interface OpportunityInput {
   assignedTo?: string | null;
 }
 
-export async function createOpportunity(cfg: GhlConfig, input: OpportunityInput) {
+export async function createOpportunity(
+  cfg: GhlConfig, input: OpportunityInput,
+  onRateLimit?: (retryAfterMs: number | null) => void,
+) {
   return await ghlFetch<{ opportunity: { id: string } }>(cfg, "POST", "/opportunities/", {
     locationId: cfg.locationId,
     status: "open",
     ...input,
-  });
+  }, onRateLimit);
 }
 
 export async function updateOpportunity(cfg: GhlConfig, opportunityId: string, patch: Partial<OpportunityInput>) {
@@ -535,9 +568,12 @@ export async function createLocationTag(cfg: GhlConfig, name: string) {
 }
 
 /** Add one or more tags to a contact (fires GHL "tag added" workflows). */
-export async function addContactTags(cfg: GhlConfig, contactId: string, tags: string[]) {
+export async function addContactTags(
+  cfg: GhlConfig, contactId: string, tags: string[],
+  onRateLimit?: (retryAfterMs: number | null) => void,
+) {
   return await ghlFetch<{ tags: string[] }>(
-    cfg, "POST", `/contacts/${contactId}/tags`, { tags },
+    cfg, "POST", `/contacts/${contactId}/tags`, { tags }, onRateLimit,
   );
 }
 

@@ -12,19 +12,34 @@
 // so a 62K backfill populates the pipeline without flooding the deals table. This
 // function is deliberately agnostic to that gate — it just creates at New Lead.
 //
-// ── IDEMPOTENCY (this WILL be re-run) — a MARKER TAG ──────────────────────────
-// On a successful create we attach `mca-opp-created` (configurable via marker_tag)
-// to the contact, and EVERY search excludes contacts that already carry it
-// (server-side `not_contains`). So a contact can only ever get one opportunity from
-// this path: once marked it drops out of the working set for good. This is cheaper
-// than an /opportunities/search-by-contact lookup per contact (one fewer GHL call
-// each across 145K contacts) and it doubles as an at-a-glance audit tag in GHL.
-// Belt-and-braces: each returned contact's own `tags` are re-checked before create,
-// so even a contact the index hasn't caught up on is skipped if it already shows the
-// marker. CAVEAT: GHL's search index is eventually consistent — a *fresh* re-run
-// started within a few seconds of a prior run (before the marker is indexed) could
-// in principle re-create for a contact. The caller-driven cursor (next_cursor) never
-// re-examines within a run, so this only matters for back-to-back cold restarts.
+// ── IDEMPOTENCY (this WILL be re-run) — THREE LAYERS, LOW-CALL ────────────────
+// 1) MARKER TAG (`mca-opp-created`, configurable). EVERY search excludes contacts
+//    that already carry it (server-side `not_contains`), so the ~53,808 opps a prior
+//    run already created — which carry the marker — drop out of the working set for
+//    FREE, no per-contact lookup. Each returned contact's own tags are re-checked too.
+// 2) FORWARD CURSOR. searchAfter is monotonic; within a run (and its auto_continue
+//    chain) a contact is never re-examined, so no duplicate can be created even
+//    WITHOUT writing a marker. This is what lets the bulk finish run write_marker:false
+//    (one GHL call per opp instead of two) — see WRITE_MARKER below.
+// 3) PERSISTED CURSOR. After every chunk the resume state (cursor + tallies) is saved
+//    to platform_settings key `ghl_opp_backfill`, keyed by a run fingerprint
+//    (tags+marker+pipeline). A fresh trigger with no cursor RESUMES from it instead of
+//    restarting from the top, so an accidental re-trigger can't duplicate. Pass
+//    restart:true to deliberately start the fingerprint over. (This is the cheap,
+//    edge-feasible substitute for enumerating the whole pipeline's opportunities:
+//    ~145K opps ≈ 1,450 GHL calls, which exceeds a single invocation's wall clock and
+//    would repeat per auto_continue chunk — so we never do it.)
+//
+// ── WRITE_MARKER (call-budget lever) ──────────────────────────────────────────
+// write_marker (default TRUE = classic UI behavior) attaches the marker on create,
+// costing a 2nd GHL call/opp. The bulk finish sets it FALSE: layers 2+3 make the
+// marker unnecessary for correctness, and halving the calls keeps a ~92K finish
+// (~92K calls) comfortably under GHL's 200K/day cap.
+//
+// ── DAILY-CAP PARKING ─────────────────────────────────────────────────────────
+// Every GHL response's x-ratelimit-daily-remaining is read; when it reaches
+// daily_floor (default 500) the run STOPS cleanly (persists cursor, does NOT
+// reinvoke) rather than spinning on 429s or blowing the cap. Resume after reset.
 //
 // ── STATE EXCLUSION ──────────────────────────────────────────────────────────
 // exclude_states (default TX/CA/VA) are dropped. A BLANK/unknown state PASSES
@@ -55,8 +70,20 @@
 //   N tags → [{ group:"OR", filters:[ {contains t1}, {contains t2}, … ] }]  (OR, deduped)
 // AND'd with not_contains<marker>, not_contains<lt-source>, and state not_eq<each>.
 //
-// AUTH: verify_jwt at the gateway PLUS an in-code role check — admin / super_admin
-// ONLY (NOT closers). A service-role bearer deliberately fails the role check.
+// ── AUTO-CONTINUE (headless, one-trigger completion) ──────────────────────────
+// mode:"create" with auto_continue:true runs a THROTTLED chunk (≤limit creates or
+// ~50s, whichever first) and then SELF-REINVOKES via the trusted-secret path with
+// the returned next_cursor, until done. So a single server-side trigger finishes
+// the whole ~92K backfill unattended — no open browser tab. Resumable + idempotent
+// (cursor + marker tag), safe to re-trigger. rr_offset/chunk_index are carried
+// across reinvokes so round-robin stays deterministic and progress is observable.
+//
+// AUTH: verify_jwt at the gateway PLUS one of two in-code paths:
+//   • TRUSTED SECRET (headless/cron/self-reinvoke): ?secret=<GHL webhook_secret>
+//     (or x-ghl-secret header) matched against get_ghl_config().webhook_secret /
+//     env GHL_WEBHOOK_SECRET, with an anon-key Bearer at the gateway. No user JWT.
+//   • USER JWT (the UI): admin / super_admin ONLY (NOT closers).
+// A service-role bearer deliberately fails the role check — use the secret path.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -72,17 +99,99 @@ const DEFAULT_EXCLUDE = ["TX", "CA", "VA"];
 const DEFAULT_MARKER = "mca-opp-created";
 const ROBOT_TAG = "lt-source";
 
-const DEFAULT_LIMIT = 200;      // creates per create-call before returning
+const DEFAULT_LIMIT = 100;      // creates per create-call before returning (modest — gentle chunks)
 const MAX_LIMIT = 1000;
 const PAGE_LIMIT = 100;         // GHL /contacts/search page size
-const CONCURRENCY = 6;          // parallel creates per wave (each = 2 GHL calls)
-const BUDGET_MS = 55_000;       // wall-clock window; the rest comes back as next_cursor
+const CONCURRENCY = 3;          // parallel creates per wave (each = 2 GHL calls) — kept LOW on purpose
+const BUDGET_MS = 50_000;       // wall-clock window; the rest comes back as next_cursor / a self-reinvoke
 const MAX_ERRORS_REPORTED = 50; // cap the per-error sample so the response stays small
+
+// ── THROTTLE ──────────────────────────────────────────────────────────────────
+// GHL rate-limits bulk work (LeadConnector v2 ~100 req / 10s per resource). An
+// UNthrottled browser-driven run created ~53.8K opps overnight, generated ~107.6K
+// webhook events, and is now getting HTTP 429. So creation here is PACED:
+//   • CONCURRENCY=3 (≤6 GHL calls/wave) with a per-wave FLOOR so the steady rate
+//     sits at ~3 calls/sec — well under the ceiling.
+//   • On ANY 429 seen (via ghlFetch's onRateLimit hook), a caller-side COOLDOWN is
+//     applied on TOP of ghlFetch's own per-call retry/backoff, so the whole run
+//     slows down instead of continuing to push at a rate GHL is already refusing.
+//     ghlFetch never DROPS a 429'd contact — it retries with backoff (Retry-After
+//     honored); the cooldown just makes the next wave gentler.
+const TARGET_RPS = 7;           // sustained GHL request ceiling we pace toward (well under 100/10s)
+const COOLDOWN_BASE_MS = 3_000; // first 429 → add this much before the next wave
+const COOLDOWN_MAX_MS = 30_000; // cap the escalating cooldown
+const COOLDOWN_DECAY = 0.5;     // each clean wave halves the standing cooldown
+const REINVOKE_ON_FAIL_MS = 45_000; // auto_continue: after a hard search failure, wait this long before resuming
+const DEFAULT_MAX_CHUNKS = 5_000;   // auto_continue safety net (~92K/100 ≈ 920 chunks needed)
+const DEFAULT_DAILY_FLOOR = 500;    // PARK (stop, don't reinvoke) when x-ratelimit-daily-remaining ≤ this
+
+const STATE_KEY = "ghl_opp_backfill"; // platform_settings row that persists the resumable cursor
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const SELF_FN = "ghl-create-opportunities";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status, headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+/** A stable fingerprint for a backfill run (tags + marker + pipeline). The
+ * persisted cursor is keyed by this so two different backfills don't clobber each
+ * other's resume point. */
+function runFingerprint(tags: string[], markerTag: string, pipelineId: string): string {
+  return `${[...tags].sort().join("|")}::${markerTag}::${pipelineId}`;
+}
+
+/** Load the persisted resume state for this run fingerprint (or null). Free — this
+ * is Supabase, not a GHL call. */
+async function loadState(
+  db: SupabaseClient, fp: string,
+): Promise<{ cursor: string | null; created_total: number; done: boolean } | null> {
+  const { data } = await db.from("platform_settings").select("value").eq("key", STATE_KEY).maybeSingle();
+  const v = (data?.value ?? null) as { fingerprint?: string; cursor?: string | null; created_total?: number; done?: boolean } | null;
+  if (!v || v.fingerprint !== fp) return null;
+  return { cursor: v.cursor ?? null, created_total: Number(v.created_total ?? 0), done: !!v.done };
+}
+
+/** Persist the resume state (cursor + tallies). Best-effort but LOUD on failure —
+ * a lost cursor is what forces a re-enumeration/duplicate risk we're avoiding. */
+async function saveState(db: SupabaseClient, fp: string, patch: Record<string, unknown>) {
+  const nowIso = new Date().toISOString();
+  const value = { fingerprint: fp, updated_at: nowIso, ...patch };
+  const { error } = await db.from("platform_settings")
+    .upsert({ key: STATE_KEY, value, updated_at: nowIso }, { onConflict: "key" });
+  if (error) console.error("[ghl-create-opportunities] saveState failed:", error.message);
+}
+
+/** Resolve the trusted webhook secret (vault via get_ghl_config, env fallback). */
+async function webhookSecret(db: SupabaseClient): Promise<string> {
+  const { data: gc } = await db.rpc("get_ghl_config");
+  return (gc?.webhook_secret as string | undefined) ?? Deno.env.get("GHL_WEBHOOK_SECRET") ?? "";
+}
+
+/** Fire-and-forget self-reinvoke via the trusted-secret path (anon Bearer at the
+ * gateway + ?secret in-code), mirroring ph-ucc-file-ingest. Optional delayMs lets
+ * a post-429 resume wait for GHL to recover WITHOUT hammering (the runtime keeps
+ * the promise alive via waitUntil). One trigger thus completes the whole list. */
+function reinvoke(secret: string, body: Record<string, unknown>, delayMs = 0): void {
+  const url = `${SUPABASE_URL}/functions/v1/${SELF_FN}?secret=${encodeURIComponent(secret)}`;
+  const p = (async () => {
+    try {
+      if (delayMs > 0) await sleep(delayMs);
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANON_KEY}` },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      console.error("[ghl-create-opportunities] reinvoke failed:", e instanceof Error ? e.message : String(e));
+    }
+  })();
+  try { (globalThis as { EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil(p); } catch { /* dev */ }
 }
 
 const clean = (v: unknown): string => (v ?? "").toString().trim();
@@ -168,17 +277,29 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   const db: SupabaseClient = serviceClient();
+  const reqUrl = new URL(req.url);
 
-  // ── Auth: signed-in staff, admin/super_admin ONLY (closers excluded) ──────────
-  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  if (!token) return json({ error: "Missing authorization" }, 401);
-  const { data: userData, error: userErr } = await db.auth.getUser(token);
-  const caller = userData?.user;
-  if (userErr || !caller) return json({ error: "Invalid session" }, 401);
-  const { data: prof } = await db.from("profiles").select("role").eq("id", caller.id).single();
-  const role = prof?.role as string | undefined;
-  if (!role || !["admin", "super_admin"].includes(role)) {
-    return json({ error: "Forbidden — admin only" }, 403);
+  // ── Auth: trusted secret (headless) OR signed-in admin/super_admin (the UI) ────
+  // The secret path mirrors ph-ucc-push-ghl: ?secret / x-ghl-secret matched against
+  // get_ghl_config().webhook_secret (env fallback). It carries NO user JWT, so it's
+  // what cron / manual curl / the self-reinvoke use. Closers are never allowed here.
+  const providedSecret = reqUrl.searchParams.get("secret") ?? req.headers.get("x-ghl-secret") ?? "";
+  let trusted = false;
+  if (providedSecret) {
+    const expected = await webhookSecret(db);
+    if (!expected || providedSecret !== expected) return json({ error: "forbidden" }, 403);
+    trusted = true;
+  } else {
+    const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+    if (!token) return json({ error: "Missing authorization" }, 401);
+    const { data: userData, error: userErr } = await db.auth.getUser(token);
+    const caller = userData?.user;
+    if (userErr || !caller) return json({ error: "Invalid session" }, 401);
+    const { data: prof } = await db.from("profiles").select("role").eq("id", caller.id).single();
+    const role = prof?.role as string | undefined;
+    if (!role || !["admin", "super_admin"].includes(role)) {
+      return json({ error: "Forbidden — admin only" }, 403);
+    }
   }
 
   let payload: Record<string, unknown> = {};
@@ -249,9 +370,94 @@ Deno.serve(async (req) => {
     }
   }
 
+  // ── Auto-continue (headless one-trigger completion) ─────────────────────────
+  // When true and mode:"create", the function re-invokes ITSELF with next_cursor
+  // (trusted-secret path) until done. chunk_index/max_chunks are a safety net;
+  // rr_offset carries round-robin position across reinvokes so it stays balanced.
+  const autoContinue = (payload as { auto_continue?: unknown }).auto_continue === true;
+  const chunkIndex = Math.max(0, Math.floor(Number((payload as { chunk_index?: unknown }).chunk_index) || 0));
+  const rawMaxChunks = Number((payload as { max_chunks?: unknown }).max_chunks);
+  const maxChunks = Number.isFinite(rawMaxChunks) && rawMaxChunks > 0 ? Math.floor(rawMaxChunks) : DEFAULT_MAX_CHUNKS;
+  const rrOffset = Math.max(0, Math.floor(Number((payload as { rr_offset?: unknown }).rr_offset) || 0));
+
+  // write_marker: attach the per-contact marker tag on create (idempotency belt).
+  // Default TRUE (the UI's classic 2-call behavior). The LOW-CALL bulk finish sets
+  // it FALSE — halving GHL usage — because within an auto_continue chain the FORWARD
+  // CURSOR already guarantees no contact is revisited, and the 53,808 already-created
+  // opps carry the marker so they stay excluded server-side regardless. Cross-run
+  // idempotency then rides on the persisted cursor (below), not a per-lead tag write.
+  const writeMarker = (payload as { write_marker?: unknown }).write_marker !== false;
+
+  // restart: ignore any persisted cursor and start this fingerprint from the top.
+  const restart = (payload as { restart?: unknown }).restart === true;
+
+  // Park the run when the GHL DAILY cap is nearly exhausted (read from response
+  // headers) so we never spin on 429s and never blow the cap.
+  const rawFloor = Number((payload as { daily_floor?: unknown }).daily_floor);
+  const dailyFloor = Number.isFinite(rawFloor) && rawFloor >= 0 ? Math.floor(rawFloor) : DEFAULT_DAILY_FLOOR;
+
   let cfg: GhlConfig;
   try { cfg = await getGhlConfig(db); }
   catch (e) { return json({ error: `GHL not configured: ${e instanceof Error ? e.message : String(e)}` }, 502); }
+
+  // Secret needed to self-reinvoke headlessly. If invoked WITH a secret, reuse it;
+  // if invoked via the UI's user JWT but auto_continue was asked for, resolve it.
+  const selfSecret = autoContinue ? (providedSecret || (await webhookSecret(db))) : "";
+
+  // ── Resume-by-persisted-cursor (create mode only) — SAFETY CRITICAL ─────────
+  // Because the low-call path writes NO marker on new creates, the persisted cursor
+  // is the SOLE dup-guard across triggers. So a bare re-trigger MUST resume from the
+  // saved cursor and MUST NEVER scan from the top (a top scan with no markers would
+  // re-create this run's opps). The ONLY way to start from zero is an explicit
+  // restart:true. If a non-restart trigger finds NO saved cursor, we PARK and report
+  // rather than guess — an operator then decides (restart:true to begin fresh).
+  //
+  // In-chain reinvokes always carry an explicit `cursor`, so they bypass this block.
+  //
+  // SCOPE: this persisted-cursor machinery is engaged ONLY when write_marker:false
+  // (the marker-less bulk path, where the cursor is the sole dup-guard). When the
+  // marker IS written (the UI's classic path), a top scan is safe — marked contacts
+  // are excluded server-side — so we leave that flow exactly as it was: no persisted
+  // state, no park guard, the client drives its own cursor loop.
+  const usePersistedCursor = !writeMarker;
+  const fingerprint = runFingerprint(tags, markerTag, pipelineId);
+  let resumedFromState = false;
+  let priorCreated = 0;
+  if (mode === "create" && usePersistedCursor && !cursor) {
+    const st = await loadState(db, fingerprint);
+    if (restart) {
+      // Explicit fresh start — begin from the top, overwriting any saved cursor as
+      // chunks progress. This is the intended first-run trigger.
+      priorCreated = 0;
+    } else if (st && st.done) {
+      return json({
+        ok: true, mode: "create", done: true, resumed_from_state: true, already_complete: true,
+        created: 0, next_cursor: null, fingerprint,
+        note: "This backfill fingerprint is already marked done. Pass restart:true to run it again.",
+      });
+    } else if (st?.cursor) {
+      try {
+        const parsed = JSON.parse(st.cursor);
+        if (Array.isArray(parsed) && parsed.length) { cursor = parsed; resumedFromState = true; }
+      } catch { /* fall through to the missing-cursor guard below */ }
+      if (!resumedFromState) {
+        return json({
+          ok: false, mode: "create", error: "saved cursor is corrupt — refusing to scan from the top",
+          parked: true, fingerprint,
+          note: "Pass restart:true to deliberately begin this fingerprint from the top.",
+        }, 409);
+      }
+      priorCreated = st.created_total ?? 0;
+    } else {
+      // No cursor supplied, no saved state (or saved state carries no cursor and
+      // isn't done). Refuse to scan from zero — require an explicit restart.
+      return json({
+        ok: false, mode: "create", error: "no saved cursor for this run — refusing to scan from the top",
+        parked: true, fingerprint, resumed_from_state: false,
+        note: "This is the SOLE dup-guard when write_marker:false. Pass restart:true to begin from the top on purpose.",
+      }, 409);
+    }
+  }
 
   const started = Date.now();
 
@@ -300,29 +506,94 @@ Deno.serve(async (req) => {
   let lastCursor: unknown[] | undefined = cursor;
   const errorSample: Array<{ contact_id: string; error: string }> = [];
 
-  // Tags stamped on every created contact: the marker (idempotency) + any extras.
-  const createTags = Array.from(new Set([markerTag, ...extraTags]));
+  // Tags stamped on every created contact. With write_marker, that's the marker
+  // (idempotency) + any extras; without it, ONLY the extras (often none), which lets
+  // us skip the tag call entirely and spend just ONE GHL call per created opp.
+  const createTags = Array.from(new Set([...(writeMarker ? [markerTag] : []), ...extraTags]));
+  const tagsPerCreate = createTags.length ? 1 : 0;      // 0 = no second call
+  const callsPerCreate = 1 + tagsPerCreate;             // createOpportunity (+ tag add)
+
+  // Dynamic wave floor: hold each wave of CONCURRENCY creates long enough that the
+  // sustained request rate stays at ~TARGET_RPS. (3 creates × 1 call ≈ 430ms;
+  // 3 creates × 2 calls ≈ 860ms.)
+  const waveFloorMs = Math.ceil((CONCURRENCY * callsPerCreate) / TARGET_RPS * 1000);
+
+  // Daily-cap parking: the smallest x-ratelimit-daily-remaining we've seen. When it
+  // drops to the floor we STOP and park (persist cursor, no reinvoke) rather than
+  // burn the cap or spin on 429s.
+  let dailyRemaining: number | null = null;
+  let parked = false;
+  const noteRate = (r?: { dailyRemaining: number | null } | undefined) => {
+    if (r && typeof r.dailyRemaining === "number") {
+      dailyRemaining = dailyRemaining == null ? r.dailyRemaining : Math.min(dailyRemaining, r.dailyRemaining);
+    }
+  };
 
   // Deterministic round-robin owner assignment, advanced once per contact we
-  // actually attempt to create, preserved across pages within this call.
-  let rrIndex = 0;
+  // actually attempt to create, preserved across pages within this call AND across
+  // reinvokes (seeded from rr_offset, handed back to the next chunk).
+  let rrIndex = rrOffset;
   const ownerFor = (): string | undefined => {
     if (roundRobin.length) return roundRobin[rrIndex++ % roundRobin.length];
     return assignUserId; // one fixed owner, or undefined = leave unassigned
   };
 
+  // ── Adaptive throttle state ─────────────────────────────────────────────────
+  // A standing cooldown that any 429 raises (added on top of ghlFetch's per-call
+  // backoff) and every clean wave decays, so the whole run eases off GHL then
+  // recovers its pace. saw429 flips whenever a 429 is observed this call.
+  let cooldownMs = 0;
+  let saw429 = false;
+  const onRL = (raMs: number | null) => {
+    saw429 = true;
+    const bump = Math.max(cooldownMs > 0 ? cooldownMs * 2 : COOLDOWN_BASE_MS, raMs ?? 0);
+    cooldownMs = Math.min(COOLDOWN_MAX_MS, bump);
+  };
+
+  // A resume body carrying every lever forward to the next chunk (auto_continue).
+  const resumeBody = (nextCursor: unknown[] | undefined): Record<string, unknown> => ({
+    tags, mode: "create", exclude_states: excludeStates, pipeline_id: pipelineId,
+    stage_id: stageId, marker_tag: markerTag, value,
+    ...(source ? { source } : {}),
+    ...(assignUserId ? { assign_user_id: assignUserId } : {}),
+    ...(roundRobin.length ? { round_robin_user_ids: roundRobin } : {}),
+    ...(extraTags.length ? { extra_tags: extraTags } : {}),
+    limit, auto_continue: true, chunk_index: chunkIndex + 1, max_chunks: maxChunks,
+    rr_offset: rrIndex, write_marker: writeMarker, daily_floor: dailyFloor,
+    cursor: nextCursor ? JSON.stringify(nextCursor) : undefined,
+  });
+
   while (created < limit && Date.now() - started < BUDGET_MS) {
     const page = await searchPage(cfg, filters, PAGE_LIMIT, lastCursor);
     if (!page.ok) {
-      // A search failure mid-run is terminal for this call; report what we did and
-      // hand back the cursor so the caller can resume from here.
+      // A search failure mid-run is terminal for THIS call; report what we did and
+      // hand back the cursor so it can resume. Under auto_continue, a 429/5xx here
+      // (ghlFetch already exhausted its retries) means GHL is hot — reinvoke AFTER
+      // a long delay so we resume gently rather than hammer.
+      noteRate(page.rate);
+      const is429 = page.status === 429;
+      // Persist the cursor BEFORE any reinvoke so a later manual/cron trigger resumes
+      // exactly here (safety-critical when write_marker:false).
+      if (usePersistedCursor) {
+        await saveState(db, fingerprint, {
+          cursor: lastCursor ? JSON.stringify(lastCursor) : null,
+          created_total: priorCreated + created, done: false,
+          last_status: `search ${page.status}`, chunk_index: chunkIndex,
+        });
+      }
+      const willReinvoke = autoContinue && !!selfSecret && (is429 || page.status >= 500 || page.status === 0);
+      if (willReinvoke) reinvoke(selfSecret, resumeBody(lastCursor), REINVOKE_ON_FAIL_MS);
       return json({
         ok: false, mode: "create", error: `contacts/search failed: ${ghlErrorMessage(page.error)}`,
+        status: page.status,
         created, skipped_state, skipped_existing, skipped_robot, marker_failed, errors, processed,
         next_cursor: lastCursor ? JSON.stringify(lastCursor) : null, done: false,
+        auto_continue: autoContinue, chunk_index: chunkIndex, reinvoked: willReinvoke,
+        daily_remaining: dailyRemaining, fingerprint,
         elapsed_ms: Date.now() - started,
       }, 502);
     }
+    noteRate(page.rate);
     const contacts = page.data?.contacts ?? [];
     if (contacts.length === 0) { done = true; break; }
     // Advance the cursor to the last contact of the page BEFORE creating, so a
@@ -343,9 +614,12 @@ Deno.serve(async (req) => {
       toCreate.push({ c, owner: ownerFor() });
     }
 
-    // Create in small concurrent waves (each contact = createOpportunity + tag add).
+    // Create in small concurrent waves (each contact = createOpportunity + tag add),
+    // PACED: every wave takes at least waveFloorMs, plus any standing 429 cooldown.
     for (let i = 0; i < toCreate.length; i += CONCURRENCY) {
-      if (Date.now() - started > BUDGET_MS) break;
+      if (created >= limit || Date.now() - started > BUDGET_MS) break;
+      const waveStart = Date.now();
+      saw429 = false;
       const wave = toCreate.slice(i, i + CONCURRENCY);
       const results = await Promise.all(wave.map(async ({ c, owner }) => {
         try {
@@ -354,15 +628,30 @@ Deno.serve(async (req) => {
             name: opportunityName(c), monetaryValue: value, status: "open",
             ...(source ? { source } : {}),
             ...(owner ? { assignedTo: owner } : {}),
-          });
+          }, onRL);
+          noteRate(opp.rate);
           if (!opp.ok) return { c, ok: false as const, error: ghlErrorMessage(opp.error) };
-          // Mark the contact (idempotency) + stamp any extra split tags, in one call.
-          const tag = await addContactTags(cfg, c.id, createTags);
+          // Second call ONLY when we have tags to write (marker and/or extras).
+          // write_marker:false with no extras = one GHL call total per opp.
+          if (!createTags.length) return { c, ok: true as const, markerOk: true, markerErr: "" };
+          const tag = await addContactTags(cfg, c.id, createTags, onRL);
+          noteRate(tag.rate);
           return { c, ok: true as const, markerOk: tag.ok, markerErr: tag.ok ? "" : ghlErrorMessage(tag.error) };
         } catch (e) {
           return { c, ok: false as const, error: (e instanceof Error ? e.message : String(e)) };
         }
       }));
+      // Pace: hold the wave to the floor, and add/decay the 429 cooldown so the run
+      // slows on rate-limits and eases back up when GHL is happy again.
+      if (saw429) {
+        console.warn("[ghl-create-opportunities] 429 seen — cooling down", JSON.stringify({ cooldown_ms: cooldownMs }));
+      } else if (cooldownMs > 0) {
+        cooldownMs = Math.floor(cooldownMs * COOLDOWN_DECAY);
+        if (cooldownMs < 250) cooldownMs = 0;
+      }
+      const elapsed = Date.now() - waveStart;
+      const pause = Math.max(waveFloorMs - elapsed, 0) + cooldownMs;
+      if (pause > 0) await sleep(pause);
       for (const r of results) {
         if (!r.ok) {
           errors++;
@@ -380,10 +669,56 @@ Deno.serve(async (req) => {
             JSON.stringify({ contact_id: r.c.id, marker_tag: markerTag, error: r.markerErr }));
         }
       }
+
+      // ── PARK on daily-cap exhaustion ──────────────────────────────────────────
+      // Read after the wave so `created` is current. Below the floor we stop cleanly
+      // WITH a resumable cursor and DON'T reinvoke — never spin on 429s, never blow
+      // the cap. Resume happens after the daily reset.
+      if (dailyRemaining != null && dailyRemaining <= dailyFloor) {
+        parked = true;
+        console.warn("[ghl-create-opportunities] PARKING — daily cap near-exhausted",
+          JSON.stringify({ daily_remaining: dailyRemaining, daily_floor: dailyFloor }));
+        break;
+      }
     }
 
+    if (parked) break;
     // A short final page means the eligible set is drained.
     if (contacts.length < PAGE_LIMIT) { done = true; break; }
+  }
+
+  const nextCursorStr = done ? null : (lastCursor ? JSON.stringify(lastCursor) : null);
+
+  // Persist the resume state (cursor + running total) BEFORE the reinvoke so a fresh
+  // trigger continues instead of restarting — the cheap, correct substitute for opp
+  // enumeration, and the sole dup-guard when write_marker:false.
+  if (usePersistedCursor) {
+    await saveState(db, fingerprint, {
+      cursor: nextCursorStr, created_total: priorCreated + created, done,
+      last_status: parked ? "parked_daily_cap" : done ? "done" : "chunk_ok",
+      chunk_index: chunkIndex, daily_remaining: dailyRemaining,
+    });
+  }
+
+  // ── AUTO-CONTINUE: chain the next chunk headlessly until done ────────────────
+  // Fire-and-forget self-reinvoke via the trusted secret so ONE trigger finishes
+  // the whole list. A brief inter-chunk delay keeps the pacing gentle across the
+  // hand-off; the persisted cursor makes it idempotent and safe to re-trigger.
+  // NOT when parked (daily cap) — we stop and wait for the reset.
+  let reinvoked = false;
+  let chunk_cap_hit = false;
+  if (autoContinue && !done && !parked && nextCursorStr) {
+    if (chunkIndex + 1 >= maxChunks) {
+      chunk_cap_hit = true;
+      console.error("[ghl-create-opportunities] auto_continue STOPPED — max_chunks reached",
+        JSON.stringify({ chunk_index: chunkIndex, max_chunks: maxChunks, next_cursor: nextCursorStr }));
+    } else if (selfSecret) {
+      // Delay the hand-off by the standing cooldown (min ~1s) so a hot GHL cools.
+      reinvoke(selfSecret, resumeBody(lastCursor), Math.max(cooldownMs, 1_000));
+      reinvoked = true;
+    } else {
+      console.error("[ghl-create-opportunities] auto_continue requested but NO webhook secret — cannot self-continue");
+    }
   }
 
   return json({
@@ -407,8 +742,23 @@ Deno.serve(async (req) => {
     errors,
     error_sample: errorSample,
     processed,
-    next_cursor: done ? null : (lastCursor ? JSON.stringify(lastCursor) : null),
+    next_cursor: nextCursorStr,
     done,
+    // Auto-continue / throttle / persistence observability.
+    auto_continue: autoContinue,
+    reinvoked,
+    parked,
+    chunk_index: chunkIndex,
+    chunk_cap_hit,
+    rr_offset_next: rrIndex,
+    cooldown_ms: cooldownMs,
+    daily_remaining: dailyRemaining,
+    write_marker: writeMarker,
+    calls_per_create: callsPerCreate,
+    resumed_from_state: resumedFromState,
+    created_total: priorCreated + created,
+    fingerprint,
+    trusted,
     elapsed_ms: Date.now() - started,
   });
 });
