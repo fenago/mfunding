@@ -64,6 +64,14 @@
 // mode:"create" — Creates opportunities for up to ~`limit` contacts this call, then
 //                 returns { created, skipped_state, skipped_existing, processed,
 //                 next_cursor, done }. Caller loops with next_cursor until done.
+// mode:"backfill_state" — RETRO-STAMP existing opps in a pipeline with Lead State
+//                 (FULL state name) + Lead Type. Walks GET /opportunities/search,
+//                 expands the opp's own Lead State cf for free where present, else
+//                 reads the linked contact for its state (ONE extra call — the search
+//                 does not embed contact.state). Idempotent (skips already-correct
+//                 opps), throttled, daily-cap parked, self-reinvoking. OWN cursor key
+//                 `ghl_opp_state_backfill` (never collides with `ghl_opp_backfill`).
+//                 dry_run:true reports the plan + contact-read rate with NO writes.
 //
 // TAG FILTER SHAPE (verified live against /contacts/search):
 //   1 tag  → [{ field:"tags", operator:"contains", value:"<tag>" }]
@@ -167,6 +175,29 @@ async function saveState(db: SupabaseClient, fp: string, patch: Record<string, u
   if (error) console.error("[ghl-create-opportunities] saveState failed:", error.message);
 }
 
+/** Generic persisted-state loader for an arbitrary platform_settings key, scoped by
+ * fingerprint. Returns the raw value object (or null if absent / different run). Free
+ * (Supabase). Used by the state/type backfill, which keeps its OWN key so it never
+ * collides with the create finisher's `ghl_opp_backfill`. */
+async function loadRawState(
+  db: SupabaseClient, key: string, fp: string,
+): Promise<Record<string, unknown> | null> {
+  const { data } = await db.from("platform_settings").select("value").eq("key", key).maybeSingle();
+  const v = (data?.value ?? null) as Record<string, unknown> | null;
+  if (!v || v.fingerprint !== fp) return null;
+  return v;
+}
+
+/** Persist arbitrary resume state under `key`, stamping fingerprint + updated_at.
+ * Best-effort but LOUD on failure. */
+async function saveRawState(db: SupabaseClient, key: string, fp: string, patch: Record<string, unknown>) {
+  const nowIso = new Date().toISOString();
+  const value = { fingerprint: fp, updated_at: nowIso, ...patch };
+  const { error } = await db.from("platform_settings")
+    .upsert({ key, value, updated_at: nowIso }, { onConflict: "key" });
+  if (error) console.error(`[ghl-create-opportunities] saveRawState(${key}) failed:`, error.message);
+}
+
 /** Resolve the trusted webhook secret (vault via get_ghl_config, env fallback). */
 async function webhookSecret(db: SupabaseClient): Promise<string> {
   const { data: gc } = await db.rpc("get_ghl_config");
@@ -198,6 +229,48 @@ const clean = (v: unknown): string => (v ?? "").toString().trim();
 
 /** Normalize a 2-letter state for comparison (upper, trimmed). */
 const normState = (v: unknown): string => clean(v).toUpperCase();
+
+// ── US state map (USPS 2-letter abbreviations → full name; 50 states + DC) ──────
+// Source: the canonical USPS state/territory abbreviation list (the same 2-letter
+// codes GHL stores on a contact's `state`). We keep the 50 states + District of
+// Columbia — the jurisdictions we operate in.
+//
+// WHY FULL NAMES. Verified LIVE against GHL: a text-type OPPORTUNITY custom-field
+// filter enforces a 3-character MINIMUM on the filter VALUE regardless of operator
+// (even "Is"), so a 2-letter state code (FL, MO) can NEVER be entered as a filter
+// value — but a ≥3-char value ("Florida") is accepted. So Lead State is stored as
+// the FULL state name to make the field actually filterable in the Opportunities view.
+const US_STATES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California",
+  CO: "Colorado", CT: "Connecticut", DE: "Delaware", DC: "District of Columbia",
+  FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois",
+  IN: "Indiana", IA: "Iowa", KS: "Kansas", KY: "Kentucky", LA: "Louisiana",
+  ME: "Maine", MD: "Maryland", MA: "Massachusetts", MI: "Michigan", MN: "Minnesota",
+  MS: "Mississippi", MO: "Missouri", MT: "Montana", NE: "Nebraska", NV: "Nevada",
+  NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York",
+  NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
+  OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina",
+  SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah", VT: "Vermont",
+  VA: "Virginia", WA: "Washington", WV: "West Virginia", WI: "Wisconsin",
+  WY: "Wyoming",
+};
+
+// Reverse lookup so an ALREADY-full name (however cased) maps back to the canonical
+// spelling — lets the backfill treat a pre-stamped full name as already-correct.
+const US_STATE_BY_NAME: Record<string, string> = Object.fromEntries(
+  Object.values(US_STATES).map((n) => [n.toLowerCase(), n]),
+);
+
+/** Map a contact's raw state to the FULL US state name for the Lead State opp field.
+ * Accepts a 2-letter code (FL→Florida) OR an already-full name (any casing →
+ * canonical). Blank/unknown → "" so the caller SKIPS stamping (never a bad value). */
+function fullStateName(raw: unknown): string {
+  const s = clean(raw);
+  if (!s) return "";
+  const up = s.toUpperCase();
+  if (US_STATES[up]) return US_STATES[up];            // 2-letter code
+  return US_STATE_BY_NAME[s.toLowerCase()] ?? "";     // already a full name, else unknown
+}
 
 interface GhlSearchContact {
   id: string;
@@ -280,9 +353,11 @@ function buildOppCustomFields(
   const add = (id: string | undefined, val: string) => {
     if (id && val) out.push({ id, field_value: val });
   };
-  // Lead State — the contact's 2-letter state (normalized upper). Filterable in the
-  // Opportunities view once the field exists.
-  add(oppMap.lead_state, normState(c.state));
+  // Lead State — the contact's state mapped to its FULL name (FL→Florida). A 2-letter
+  // code is UNFILTERABLE in GHL's opportunity CF filter (≥3-char minimum on the value,
+  // verified live); the full name is filterable. Blank/unknown state → skipped entirely
+  // (fullStateName returns "" → add() no-ops), never stamping a junk value.
+  add(oppMap.lead_state, fullStateName(c.state));
   // Lead Type — the run's source label (Aged / UCC / Trigger). Unset if no source.
   add(oppMap.lead_type, source ?? "");
   // Optional pass-throughs, pulled from the contact's EXISTING custom fields by the
@@ -354,6 +429,61 @@ async function totalFor(cfg: GhlConfig, filters: Record<string, unknown>[]): Pro
   return Number(res.data?.total ?? 0);
 }
 
+// ── Opportunity-side helpers (used only by mode:"backfill_state") ──────────────
+// One opportunity as GHL returns it on GET /opportunities/search. The embedded
+// `contact` carries tags (used to derive Lead Type) but NOT state (verified live) —
+// so the linked contact's STATE requires a separate GET /contacts/{id} whenever the
+// opp doesn't already carry a Lead State cf we can expand for free.
+interface OppRec {
+  id: string;
+  contactId?: string | null;
+  source?: string | null;
+  contact?: { tags?: string[]; state?: string | null } | null;
+  // GHL returns opp custom fields here as { id, type, fieldValueString } (verified live).
+  customFields?: Array<{ id?: string; fieldValueString?: unknown; type?: string }>;
+}
+
+interface OppSearchMeta { startAfter?: unknown; startAfterId?: string | null; total?: number }
+
+/** One page of GET /opportunities/search for a pipeline, forward-paged by the
+ * meta cursor (startAfter + startAfterId, verified live). onRL feeds the caller's
+ * adaptive 429 cooldown. */
+async function oppSearchPage(
+  cfg: GhlConfig, pipelineId: string, pageLimit: number,
+  startAfter: unknown, startAfterId: string | undefined,
+  onRL?: (retryAfterMs: number | null) => void,
+) {
+  const qs = new URLSearchParams({
+    location_id: cfg.locationId, pipeline_id: pipelineId, limit: String(pageLimit),
+  });
+  if (startAfterId) qs.set("startAfterId", startAfterId);
+  if (startAfter !== undefined && startAfter !== null && `${startAfter}`.length) {
+    qs.set("startAfter", String(startAfter));
+  }
+  return await ghlFetch<{ opportunities: OppRec[]; meta: OppSearchMeta }>(
+    cfg, "GET", `/opportunities/search?${qs.toString()}`, undefined, onRL,
+  );
+}
+
+/** Flatten an opp's custom fields into { cfId → string value } (reads fieldValueString). */
+function oppCfValues(o: OppRec): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of (Array.isArray(o.customFields) ? o.customFields : [])) {
+    const id = clean(f?.id);
+    if (id) out[id] = clean(f?.fieldValueString);
+  }
+  return out;
+}
+
+/** Derive a Lead Type label from a contact's list tags (fallback when the opp has no
+ * Source). lm-ucc → UCC, lm-aged → Aged; anything else → "" (leave unset). */
+function leadTypeFromTags(tags: unknown): string {
+  const t = (Array.isArray(tags) ? tags : []).map((x) => clean(x).toLowerCase());
+  if (t.includes("lm-ucc")) return "UCC";
+  if (t.includes("lm-aged")) return "Aged";
+  return "";
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -388,15 +518,19 @@ Deno.serve(async (req) => {
   try { payload = (await req.json()) as Record<string, unknown>; } catch { /* empty */ }
 
   // ── Inputs ────────────────────────────────────────────────────────────────
+  const mode = clean((payload as { mode?: unknown }).mode);
+  if (mode !== "count" && mode !== "create" && mode !== "backfill_state") {
+    return json({ error: 'mode must be "count", "create" or "backfill_state"' }, 400);
+  }
+
   const tagsRaw = (payload as { tags?: unknown }).tags;
   const tags = Array.isArray(tagsRaw)
     ? Array.from(new Set(tagsRaw.map((t) => clean(t)).filter((t) => t.length > 0)))
     : [];
-  if (tags.length === 0) return json({ error: "tags[] is required (at least one tag)" }, 400);
-
-  const mode = clean((payload as { mode?: unknown }).mode);
-  if (mode !== "count" && mode !== "create") {
-    return json({ error: 'mode must be "count" or "create"' }, 400);
+  // Tags select the working set for count/create. backfill_state walks an entire
+  // pipeline's opportunities, so it needs no tags.
+  if ((mode === "count" || mode === "create") && tags.length === 0) {
+    return json({ error: "tags[] is required (at least one tag)" }, 400);
   }
 
   const exRaw = (payload as { exclude_states?: unknown }).exclude_states;
@@ -578,6 +712,253 @@ Deno.serve(async (req) => {
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 502);
     }
+  }
+
+  // ── BACKFILL_STATE: retro-stamp Lead State (full name) + Lead Type on existing opps
+  // Walks the pipeline's opportunities and, per opp, sets:
+  //   • Lead State — the FULL US state name. Cheapest source first: if the opp already
+  //     carries a Lead State cf we can normalize/expand FOR FREE (a 2-letter "FL" →
+  //     "Florida", an already-full name → canonical). Only when there's no usable value
+  //     do we spend ONE extra GET /contacts/{id} to read the linked contact's state
+  //     (the opp search does NOT embed contact.state — verified live). Many such
+  //     contacts have no state either, in which case nothing is stamped.
+  //   • Lead Type — the opp's Source if set, else derived from the contact's list tags
+  //     (lm-ucc → UCC, lm-aged → Aged). Both are FREE (embedded in the opp search).
+  //
+  // IDEMPOTENT: an opp already carrying the correct full-name Lead State AND the right
+  // Lead Type is skipped with no write (and no contact read) — re-runs are cheap/safe.
+  // Safety machinery mirrors the create finisher: persisted forward cursor (its OWN
+  // key `ghl_opp_state_backfill`), ~TARGET_RPS throttle with 429 cooldown, daily-cap
+  // parking, and self-reinvoke to completion. dry_run:true reports the plan + the real
+  // contact-read rate WITHOUT any writes or state persistence.
+  if (mode === "backfill_state") {
+    const oppMap = await loadOppFieldMap(db);
+    const leadStateId = oppMap.lead_state;
+    const leadTypeId = oppMap.lead_type;
+    if (!leadStateId && !leadTypeId) {
+      return json({ error: "ghl_opp_custom_field_map has neither lead_state nor lead_type configured — nothing to backfill" }, 400);
+    }
+    const dryRun = (payload as { dry_run?: unknown }).dry_run === true;
+    // Opp-search page size (clamped 1..100). Default 100 for the real run; a small
+    // value makes a dry_run probe return quickly (and pairs with a small `limit` to
+    // stop after one page).
+    const rawPageSize = Number((payload as { page_size?: unknown }).page_size);
+    const OPP_PAGE = Number.isFinite(rawPageSize) && rawPageSize > 0 ? Math.min(Math.floor(rawPageSize), 100) : 100;
+    const bfKey = "ghl_opp_state_backfill";
+    const bfFp = `${pipelineId}::${leadStateId ?? ""}::${leadTypeId ?? ""}`;
+
+    // Opp-search cursor {startAfter, startAfterId}: from payload (in-chain reinvoke)
+    // or from persisted state (bare resume). restart:true / dry_run start from the top.
+    const readOc = (v: unknown): { sa: unknown; said: string } | null => {
+      if (!v || typeof v !== "object") return null;
+      const o = v as Record<string, unknown>;
+      const said = clean(o.startAfterId);
+      return said ? { sa: (o as { startAfter?: unknown }).startAfter ?? null, said } : null;
+    };
+    let oc = readOc((payload as { opp_cursor?: unknown }).opp_cursor);
+    let resumedBf = false;
+    let priorUpdated = 0;
+    let priorScanned = 0;
+    if (!oc && !dryRun) {
+      const st = await loadRawState(db, bfKey, bfFp);
+      if (restart) {
+        // explicit fresh start — begin from the top
+      } else if (st?.done) {
+        return json({
+          ok: true, mode: "backfill_state", done: true, already_complete: true,
+          resumed_from_state: true, updated: 0, next_opp_cursor: null, fingerprint: bfFp,
+          note: "This state-backfill fingerprint is already marked done. Pass restart:true to run it again.",
+        });
+      } else if (st?.cursor && typeof st.cursor === "object") {
+        oc = readOc(st.cursor);
+        if (oc) { resumedBf = true; priorUpdated = Number(st.updated_total ?? 0); priorScanned = Number(st.scanned_total ?? 0); }
+      }
+      // No cursor + no saved state → start from the top. SAFE here (unlike the
+      // marker-less create path): the skip-if-correct check makes a top scan idempotent.
+    }
+    let curSA: unknown = oc?.sa;
+    let curSAID: string | undefined = oc?.said;
+
+    // ── throttle / parking state (mirrors create) ──
+    let dailyRemaining: number | null = null;
+    const noteRate = (r?: { dailyRemaining: number | null } | undefined) => {
+      if (r && typeof r.dailyRemaining === "number") {
+        dailyRemaining = dailyRemaining == null ? r.dailyRemaining : Math.min(dailyRemaining, r.dailyRemaining);
+      }
+    };
+    let cooldownMs = 0, saw429 = false;
+    const onRL = (raMs: number | null) => {
+      saw429 = true;
+      cooldownMs = Math.min(COOLDOWN_MAX_MS, Math.max(cooldownMs > 0 ? cooldownMs * 2 : COOLDOWN_BASE_MS, raMs ?? 0));
+    };
+
+    let scanned = 0, updated = 0, skipped = 0, contactReads = 0, errors = 0, stateEmpty = 0;
+    let done = false, parked = false;
+    const errorSample: Array<{ opp_id: string; error: string }> = [];
+    const planSample: Array<{ opp_id: string; lead_state?: string; lead_type?: string; from_contact: boolean }> = [];
+
+    // Per-opp work: decide what (if anything) to write, then write it (unless dry_run).
+    const processOpp = async (o: OppRec): Promise<{ status: "updated" | "skipped" | "error"; contactRead: boolean; stateEmpty: boolean }> => {
+      const cf = oppCfValues(o);
+      const curState = leadStateId ? cf[leadStateId] : undefined;
+      const curType = leadTypeId ? cf[leadTypeId] : undefined;
+
+      // Desired Lead Type — Source first (free), then tags (free). "" = leave unset.
+      const desiredType = leadTypeId ? (clean(o.source) || leadTypeFromTags(o.contact?.tags)) : "";
+
+      // Desired Lead State — free-expand the opp's own value first; only read the
+      // contact when the opp carries nothing usable.
+      let desiredState = leadStateId ? fullStateName(curState) : "";
+      let contactRead = false, emptyState = false;
+      if (leadStateId && !desiredState) {
+        contactRead = true;
+        const gc = await ghlFetch<{ contact?: { state?: unknown } }>(cfg, "GET", `/contacts/${clean(o.contactId)}`, undefined, onRL);
+        noteRate(gc.rate);
+        if (gc.ok) {
+          desiredState = fullStateName(gc.data?.contact?.state);
+          if (!desiredState) emptyState = true;
+        } else {
+          return { status: "error", contactRead, stateEmpty: false };
+        }
+      }
+
+      // Only emit fields that actually change.
+      const patch: Array<{ id: string; field_value: string }> = [];
+      if (leadStateId && desiredState && desiredState !== curState) patch.push({ id: leadStateId, field_value: desiredState });
+      if (leadTypeId && desiredType && desiredType !== curType) patch.push({ id: leadTypeId, field_value: desiredType });
+      if (patch.length === 0) return { status: "skipped", contactRead, stateEmpty: emptyState };
+
+      if (planSample.length < 20) {
+        planSample.push({
+          opp_id: o.id,
+          ...(leadStateId && desiredState ? { lead_state: desiredState } : {}),
+          ...(leadTypeId && desiredType ? { lead_type: desiredType } : {}),
+          from_contact: contactRead,
+        });
+      }
+      if (dryRun) return { status: "updated", contactRead, stateEmpty: emptyState };
+
+      const up = await ghlFetch<{ opportunity?: { id: string } }>(cfg, "PUT", `/opportunities/${o.id}`, { customFields: patch }, onRL);
+      noteRate(up.rate);
+      if (!up.ok) {
+        if (errorSample.length < MAX_ERRORS_REPORTED) errorSample.push({ opp_id: o.id, error: ghlErrorMessage(up.error).slice(0, 300) });
+        return { status: "error", contactRead, stateEmpty: emptyState };
+      }
+      return { status: "updated", contactRead, stateEmpty: emptyState };
+    };
+
+    while (Date.now() - started < BUDGET_MS) {
+      const page = await oppSearchPage(cfg, pipelineId, OPP_PAGE, curSA, curSAID, onRL);
+      noteRate(page.rate);
+      if (!page.ok) {
+        // Persist the CURRENT (page-start) cursor so a resume redoes this page.
+        if (!dryRun) {
+          await saveRawState(db, bfKey, bfFp, {
+            cursor: curSAID ? { startAfter: curSA ?? null, startAfterId: curSAID } : null,
+            updated_total: priorUpdated + updated, scanned_total: priorScanned + scanned,
+            done: false, last_status: `search ${page.status}`, chunk_index: chunkIndex,
+          });
+        }
+        const is429 = page.status === 429;
+        const willReinvoke = autoContinue && !!selfSecret && (is429 || page.status >= 500 || page.status === 0);
+        if (willReinvoke) {
+          reinvoke(selfSecret, {
+            mode: "backfill_state", pipeline_id: pipelineId, limit, auto_continue: true,
+            chunk_index: chunkIndex + 1, max_chunks: maxChunks, daily_floor: dailyFloor,
+            ...(dryRun ? { dry_run: true } : {}),
+            opp_cursor: curSAID ? { startAfter: curSA ?? null, startAfterId: curSAID } : null,
+          }, REINVOKE_ON_FAIL_MS);
+        }
+        return json({
+          ok: false, mode: "backfill_state", error: `opportunities/search failed: ${ghlErrorMessage(page.error)}`,
+          status: page.status, scanned, updated, skipped, errors, contact_reads: contactReads,
+          next_opp_cursor: curSAID ? { startAfter: curSA ?? null, startAfterId: curSAID } : null,
+          done: false, auto_continue: autoContinue, reinvoked: willReinvoke,
+          daily_remaining: dailyRemaining, fingerprint: bfFp, elapsed_ms: Date.now() - started,
+        }, 502);
+      }
+      const opps = page.data?.opportunities ?? [];
+      if (opps.length === 0) { done = true; break; }
+      const nextSA = page.data?.meta?.startAfter;
+      const nextSAID = clean(page.data?.meta?.startAfterId) || undefined;
+
+      // Process the WHOLE page (never break mid-page — the cursor advances a full page
+      // at a time, so a mid-page stop would skip the remainder). Small concurrent waves,
+      // paced to ~TARGET_RPS with the same 429 cooldown as create.
+      for (let i = 0; i < opps.length; i += CONCURRENCY) {
+        if (parked) break;
+        const waveStart = Date.now();
+        saw429 = false;
+        const wave = opps.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(wave.map((o) => processOpp(o)));
+        // Pace: hold the wave; a wave is up to CONCURRENCY×2 calls (contact read + PUT).
+        const waveFloorMs = Math.ceil((CONCURRENCY * 2) / TARGET_RPS * 1000);
+        if (!saw429 && cooldownMs > 0) { cooldownMs = Math.floor(cooldownMs * COOLDOWN_DECAY); if (cooldownMs < 250) cooldownMs = 0; }
+        const pause = Math.max(waveFloorMs - (Date.now() - waveStart), 0) + cooldownMs;
+        if (pause > 0) await sleep(pause);
+        for (const r of results) {
+          scanned++;
+          if (r.contactRead) contactReads++;
+          if (r.stateEmpty) stateEmpty++;
+          if (r.status === "updated") updated++;
+          else if (r.status === "skipped") skipped++;
+          else errors++;
+        }
+        if (dailyRemaining != null && dailyRemaining <= dailyFloor) {
+          parked = true;
+          console.warn("[ghl-create-opportunities] backfill_state PARKING — daily cap near-exhausted",
+            JSON.stringify({ daily_remaining: dailyRemaining, daily_floor: dailyFloor }));
+          break;
+        }
+      }
+
+      if (parked) break;                       // leave curSA at page-start → resume redoes page (cheap, idempotent)
+      curSA = nextSA; curSAID = nextSAID;       // page fully processed — advance
+      if (opps.length < OPP_PAGE || !curSAID) { done = true; break; }
+      if (updated >= limit) break;              // soft cap, enforced only at a page boundary
+    }
+
+    const moreLeft = !done && !parked && !!curSAID;
+    if (!dryRun) {
+      await saveRawState(db, bfKey, bfFp, {
+        cursor: curSAID ? { startAfter: curSA ?? null, startAfterId: curSAID } : null,
+        updated_total: priorUpdated + updated, scanned_total: priorScanned + scanned,
+        done, last_status: parked ? "parked_daily_cap" : done ? "done" : "chunk_ok",
+        chunk_index: chunkIndex, daily_remaining: dailyRemaining,
+      });
+    }
+
+    // Auto-continue to completion (never when parked or dry_run).
+    let reinvoked = false, chunk_cap_hit = false;
+    if (autoContinue && !dryRun && moreLeft) {
+      if (chunkIndex + 1 >= maxChunks) {
+        chunk_cap_hit = true;
+        console.error("[ghl-create-opportunities] backfill_state auto_continue STOPPED — max_chunks reached",
+          JSON.stringify({ chunk_index: chunkIndex, max_chunks: maxChunks }));
+      } else if (selfSecret) {
+        reinvoke(selfSecret, {
+          mode: "backfill_state", pipeline_id: pipelineId, limit, auto_continue: true,
+          chunk_index: chunkIndex + 1, max_chunks: maxChunks, daily_floor: dailyFloor,
+          opp_cursor: { startAfter: curSA ?? null, startAfterId: curSAID },
+        }, Math.max(cooldownMs, 1_000));
+        reinvoked = true;
+      } else {
+        console.error("[ghl-create-opportunities] backfill_state auto_continue requested but NO webhook secret");
+      }
+    }
+
+    return json({
+      ok: true, mode: "backfill_state", dry_run: dryRun,
+      pipeline_id: pipelineId, lead_state_field: leadStateId ?? null, lead_type_field: leadTypeId ?? null,
+      scanned, updated, skipped, errors,
+      contact_reads: contactReads, state_empty_after_read: stateEmpty,
+      error_sample: errorSample, plan_sample: dryRun ? planSample : undefined,
+      next_opp_cursor: moreLeft ? { startAfter: curSA ?? null, startAfterId: curSAID } : null,
+      done, parked, auto_continue: autoContinue, reinvoked, chunk_index: chunkIndex, chunk_cap_hit,
+      cooldown_ms: cooldownMs, daily_remaining: dailyRemaining,
+      resumed_from_state: resumedBf, updated_total: priorUpdated + updated, scanned_total: priorScanned + scanned,
+      fingerprint: bfFp, trusted, elapsed_ms: Date.now() - started,
+    });
   }
 
   // ── CREATE: page the eligible set, create opps, mark each contact ─────────────
