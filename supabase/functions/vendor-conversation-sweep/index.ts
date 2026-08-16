@@ -294,6 +294,34 @@ function lenderContactIds(row: Record<string, unknown>): string[] {
   return [...ids];
 }
 
+// ── ACTIVITY GATE (third instance of the same class) ─────────────────────────
+//
+// This sweep asked GHL about every lender and vendor contact every 15 minutes —
+// 69 entities x ~2+ calls x 96 runs = roughly 13,000 calls/day against a
+// 200,000/day location cap, whether or not anyone had written to us. Same shape
+// as ghl-email-doc-sweep and ghl-call-history: cost scales with the size of the
+// book rather than with new information.
+//
+// ONE location-wide conversations/search names everyone with activity since the
+// last run; only those entities get walked. See the ghl-standing-consumers-ledger
+// memory — a new sweep must use this gate by default.
+const LOOKBACK_MS = 60 * 60 * 1000;   // 4x the */15 cadence — a missed cycle self-heals
+const CONV_PAGE = 100;
+
+async function contactsActiveSince(cfg: GhlConfig, sinceMs: number): Promise<Set<string> | null> {
+  const r = await ghlFetch<{ conversations?: Array<{ contactId?: string; lastMessageDate?: number }> }>(
+    cfg, "GET",
+    `/conversations/search?locationId=${cfg.locationId}&sortBy=last_message_date&sort=desc&limit=${CONV_PAGE}`,
+  );
+  if (!r.ok) throw new Error(`conversations search failed (${r.status})`);
+  const convs = r.data?.conversations ?? [];
+  const recent = convs.filter((c) => typeof c.lastMessageDate === "number" && c.lastMessageDate >= sinceMs);
+  // A full page inside the window may continue past it — sweep everything rather
+  // than silently skip the entities we could not see.
+  if (convs.length >= CONV_PAGE && recent.length === convs.length) return null;
+  return new Set(recent.map((c) => String(c.contactId ?? "")).filter(Boolean));
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -328,8 +356,32 @@ Deno.serve(async (req) => {
         if (cid) entities.push({ type: "marketing_vendor", id: (v as { id: string }).id, name: (v as { vendor_name?: string }).vendor_name ?? "vendor", contactIds: [cid] });
       }
 
-      const summary = { swept: 0, synced: 0, scanned: 0, perEntity: [] as Array<{ type: string; name: string; synced: number }>, failed: [] as string[] };
+      const full = url.searchParams.get("full") === "1";
+      const lookbackMin = Number(url.searchParams.get("lookback_minutes") ?? "");
+      const lookbackMs = Number.isFinite(lookbackMin) && lookbackMin > 0
+        ? lookbackMin * 60 * 1000 : LOOKBACK_MS;
+      let active: Set<string> | null = null;
+      let gate = "full (requested)";
+      if (!full) {
+        try {
+          active = await contactsActiveSince(cfg, Date.now() - lookbackMs);
+          gate = active === null
+            ? "full (activity window exceeded one page)"
+            : `active-only (${active.size} contact(s) in the last ${Math.round(lookbackMs / 60000)}min)`;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          // The gate is ONE call; if it is rate-limited an exhaustive sweep can
+          // only make things worse. Skip the cycle.
+          if (/\b429\b|rate.?limit|too many requests/i.test(msg)) {
+            return json({ ok: true, mode: "sweep", aborted: "rate_limited", stage: "activity_gate", swept: 0 });
+          }
+          gate = `full (activity gate failed: ${msg.slice(0, 120)})`;
+        }
+      }
+
+      const summary = { swept: 0, synced: 0, scanned: 0, skippedQuiet: 0, gate, perEntity: [] as Array<{ type: string; name: string; synced: number }>, failed: [] as string[] };
       for (const e of entities) {
+        if (active && !e.contactIds.some((c) => active!.has(c))) { summary.skippedQuiet++; continue; }
         summary.swept++;
         const r = await syncEntity(db, cfg, e);
         summary.synced += r.synced;
