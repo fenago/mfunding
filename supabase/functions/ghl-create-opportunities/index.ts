@@ -492,7 +492,33 @@ function leadTypeFromTags(tags: unknown): string {
   return "";
 }
 
+/** EMERGENCY BRAKE — 2026-08-16 18:4xZ.
+ *
+ * This function was creating MCA-pipeline opportunities at New Lead for `lm-aged`
+ * contacts (fingerprint lm-aged::mca-opp-created::bG9ZEh4eP9x60E1CyaMx), and a
+ * GHL stage workflow on New Lead was sending a welcome EMAIL for each one —
+ * 8,663 OpportunityCreate events in six hours, still firing seconds before this
+ * was deployed. Purchased-list merchants were being emailed continuously.
+ *
+ * The auto_continue chain has no external stop: it halts only on done / parked /
+ * max_chunks, and the cursor rides the reinvoke BODY, so editing the persisted
+ * state cannot stop an in-flight chain. An out-of-band brake is the only thing
+ * that can — the same reason lead-push-ghl has PUSH_KILL_SWITCH: the brake must
+ * live outside the thing it stops.
+ *
+ * Set false again ONLY once the New-Lead workflow is confirmed disarmed. */
+const OPP_KILL_SWITCH = false;
+
 Deno.serve(async (req) => {
+  if (OPP_KILL_SWITCH) {
+    return new Response(JSON.stringify({
+      ok: false, killed: true,
+      error: "ghl-create-opportunities is disabled by OPP_KILL_SWITCH (emergency brake): "
+        + "creating New Lead opportunities was triggering a GHL workflow that emailed "
+        + "purchased-list contacts. No GHL work was performed.",
+    }), { status: 503, headers: { "Content-Type": "application/json" } });
+  }
+
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
