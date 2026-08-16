@@ -110,7 +110,14 @@ const ROBOT_TAG = "lt-source";
 const DEFAULT_LIMIT = 100;      // creates per create-call before returning (modest — gentle chunks)
 const MAX_LIMIT = 1000;
 const PAGE_LIMIT = 100;         // GHL /contacts/search page size
-const CONCURRENCY = 3;          // parallel creates per wave (each = 2 GHL calls) — kept LOW on purpose
+const CONCURRENCY = 3;          // backfill_state wave size (each = up to 2 GHL calls) — kept LOW on purpose
+// CREATE-mode wave size is now per-request tunable (payload.concurrency), clamped to
+// [1..MAX_CONCURRENCY]. Default is 8: with write_marker:false each create is ~1 GHL
+// call, so ~8 in flight/wave stays under GHL's 100-req/10s (10/s) burst ceiling, and
+// the adaptive 429 cooldown auto-backs-off if GHL ever pushes back. Raised from the
+// old hardcoded 3 (which capped the Aged finish at ~1.7 creates/s).
+const DEFAULT_CONCURRENCY = 8;  // create-mode parallel creates per wave (up from 3)
+const MAX_CONCURRENCY = 10;     // hard clamp — never exceed GHL's 10/s burst headroom
 const BUDGET_MS = 50_000;       // wall-clock window; the rest comes back as next_cursor / a self-reinvoke
 const MAX_ERRORS_REPORTED = 50; // cap the per-error sample so the response stays small
 
@@ -118,8 +125,9 @@ const MAX_ERRORS_REPORTED = 50; // cap the per-error sample so the response stay
 // GHL rate-limits bulk work (LeadConnector v2 ~100 req / 10s per resource). An
 // UNthrottled browser-driven run created ~53.8K opps overnight, generated ~107.6K
 // webhook events, and is now getting HTTP 429. So creation here is PACED:
-//   • CONCURRENCY=3 (≤6 GHL calls/wave) with a per-wave FLOOR so the steady rate
-//     sits at ~3 calls/sec — well under the ceiling.
+//   • CREATE waves are `concurrency` wide (per-request, default 8, clamped ≤10) with
+//     a per-wave FLOOR so the steady rate stays at ~TARGET_RPS — well under GHL's
+//     10/s burst ceiling. (backfill_state waves stay at CONCURRENCY=3.)
 //   • On ANY 429 seen (via ghlFetch's onRateLimit hook), a caller-side COOLDOWN is
 //     applied on TOP of ghlFetch's own per-call retry/backoff, so the whole run
 //     slows down instead of continuing to push at a rate GHL is already refusing.
@@ -574,6 +582,14 @@ Deno.serve(async (req) => {
   const limit = Number.isFinite(rawLimit) && rawLimit > 0
     ? Math.min(Math.floor(rawLimit), MAX_LIMIT) : DEFAULT_LIMIT;
 
+  // Per-request CREATE-mode wave size. Clamp to [1..MAX_CONCURRENCY]; anything
+  // absent / non-finite / < 1 falls back to DEFAULT_CONCURRENCY (8). Never above 10,
+  // so a caller can't push past GHL's burst headroom; the 429 cooldown still governs
+  // the effective rate on top of this. Propagated across self-reinvokes (resumeBody).
+  const rawConcurrency = Number((payload as { concurrency?: unknown }).concurrency);
+  const concurrency = Number.isFinite(rawConcurrency) && rawConcurrency >= 1
+    ? Math.min(Math.floor(rawConcurrency), MAX_CONCURRENCY) : DEFAULT_CONCURRENCY;
+
   // Cursor: the JSON-encoded searchAfter array of the last contact from a prior call.
   let cursor: unknown[] | undefined;
   const cursorRaw = (payload as { cursor?: unknown }).cursor;
@@ -981,10 +997,11 @@ Deno.serve(async (req) => {
   const tagsPerCreate = createTags.length ? 1 : 0;      // 0 = no second call
   const callsPerCreate = 1 + tagsPerCreate;             // createOpportunity (+ tag add)
 
-  // Dynamic wave floor: hold each wave of CONCURRENCY creates long enough that the
-  // sustained request rate stays at ~TARGET_RPS. (3 creates × 1 call ≈ 430ms;
-  // 3 creates × 2 calls ≈ 860ms.)
-  const waveFloorMs = Math.ceil((CONCURRENCY * callsPerCreate) / TARGET_RPS * 1000);
+  // Dynamic wave floor: hold each wave of `concurrency` creates long enough that the
+  // sustained request rate stays at ~TARGET_RPS. (8 creates × 1 call ≈ 1.14s;
+  // 8 creates × 2 calls ≈ 2.3s.) So even at the higher wave size the pacing floor
+  // keeps sustained throughput at ~TARGET_RPS while allowing an ~8-wide burst.
+  const waveFloorMs = Math.ceil((concurrency * callsPerCreate) / TARGET_RPS * 1000);
 
   // Daily-cap parking: the smallest x-ratelimit-daily-remaining we've seen. When it
   // drops to the floor we STOP and park (persist cursor, no reinvoke) rather than
@@ -1026,7 +1043,7 @@ Deno.serve(async (req) => {
     ...(assignUserId ? { assign_user_id: assignUserId } : {}),
     ...(roundRobin.length ? { round_robin_user_ids: roundRobin } : {}),
     ...(extraTags.length ? { extra_tags: extraTags } : {}),
-    limit, auto_continue: true, chunk_index: chunkIndex + 1, max_chunks: maxChunks,
+    limit, concurrency, auto_continue: true, chunk_index: chunkIndex + 1, max_chunks: maxChunks,
     rr_offset: rrIndex, write_marker: writeMarker, daily_floor: dailyFloor,
     cursor: nextCursor ? JSON.stringify(nextCursor) : undefined,
   });
@@ -1084,11 +1101,11 @@ Deno.serve(async (req) => {
 
     // Create in small concurrent waves (each contact = createOpportunity + tag add),
     // PACED: every wave takes at least waveFloorMs, plus any standing 429 cooldown.
-    for (let i = 0; i < toCreate.length; i += CONCURRENCY) {
+    for (let i = 0; i < toCreate.length; i += concurrency) {
       if (created >= limit || Date.now() - started > BUDGET_MS) break;
       const waveStart = Date.now();
       saw429 = false;
-      const wave = toCreate.slice(i, i + CONCURRENCY);
+      const wave = toCreate.slice(i, i + concurrency);
       const results = await Promise.all(wave.map(async ({ c, owner }) => {
         try {
           // Opportunity-level custom fields (Lead State / Lead Type / optional
@@ -1218,6 +1235,7 @@ Deno.serve(async (req) => {
     next_cursor: nextCursorStr,
     done,
     // Auto-continue / throttle / persistence observability.
+    concurrency,
     auto_continue: autoContinue,
     reinvoked,
     parked,
