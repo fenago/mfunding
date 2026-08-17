@@ -1,9 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Setter Onboarding Guide — "Your day on the dialer, step by step"
 //
-// A faithful in-app port of docs/ph/setter_onboarding.html: the Chrome +
-// same-session-login rule, the two profile locations, the 3-line dialing steps,
-// the on-call flow, the compliance rules, and the troubleshooting table.
+// The setters' one onboarding doc, now teaching the VibeReach + WAVV flow
+// (HotProspector is fully retired): Chrome same-session rule, Opportunities →
+// MFunding MCA Pipeline → Source filter (UCC/Aged, exact case, APPLY) → Call on
+// the New Lead column → 3-line dialing, VM-drop + Resume, contact card →
+// Additional Info → Revenue Playbook (~30s load), dispositions, compliance,
+// WAVV voicemail setup + scripts, and the troubleshooting table.
 // Static reference page — no data fetching.
 //
 // Audience: brand-new setters (role `closer`). This is the ONE onboarding doc
@@ -113,28 +116,39 @@ const CSS = `
 // Troubleshooting table — symptom on the left, the fix on the right.
 const FIXES: { q: string; a: React.ReactNode }[] = [
   {
-    q: "The MFunding button shows a login screen, not the merchant",
+    q: "The Revenue Playbook link shows a login screen, not the merchant",
     a: (
       <>
         You're not signed into <b>mfunding.net</b> in this Chrome window. Open a tab, log in, then
-        click <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> again.
+        click the Playbook link again.
       </>
     ),
   },
   {
-    q: 'The button says "Lead data not Synced"',
+    q: "I applied the filter but the number of opportunities didn't change",
     a: (
       <>
-        Tell your manager &mdash; that lead wasn't loaded correctly. Meanwhile, find the merchant with
-        MFunding's <b>search bar</b> (name, business, or phone) and keep working.
+        You probably didn't press the blue <b>Apply</b> button, or the value isn't exact. It must be{" "}
+        <code>UCC</code> or <code>Aged</code> &mdash; <b>capital letters matter.</b> The count next
+        to the pipeline name changes when the filter is really on.
       </>
     ),
   },
   {
-    q: "“Out of leads” / nothing dials",
+    q: "The contact has no Revenue Playbook link under Additional Info",
     a: (
       <>
-        Tell your manager &mdash; your campaign needs leads loaded, or you're not assigned to it yet.
+        Tell your manager &mdash; that lead wasn't loaded correctly. Meanwhile, find the merchant
+        with MFunding's <b>search bar</b> (name, business, or phone) and keep working.
+      </>
+    ),
+  },
+  {
+    q: "Nothing dials when I press Call",
+    a: (
+      <>
+        Check you're on the <b>New Lead</b> column of <b>MFunding MCA Pipeline</b> with the Source
+        filter applied. Still nothing? Tell your manager.
       </>
     ),
   },
@@ -142,8 +156,8 @@ const FIXES: { q: string; a: React.ReactNode }[] = [
     q: "Can't log in",
     a: (
       <>
-        Use <b>&ldquo;Forgot your password?&rdquo;</b> on <code>mfunding.net</code>, or ask your
-        manager to resend your setup link.
+        Use <b>&ldquo;Forgot your password?&rdquo;</b> on <code>app.vibereach.io</code> or{" "}
+        <code>mfunding.net</code>, or ask your manager to resend your setup link.
       </>
     ),
   },
@@ -186,11 +200,11 @@ export default function SetterGuidePage() {
           </div>
           <div className="note key">
             <div className="h">The one rule that makes everything work</div>
-            Use <b>Google Chrome</b>, and sign into <b>both</b> HotProspector <b>and</b> MFunding in
-            the <b>same Chrome window</b>. You'll be logged into both at once, side by side. That
-            shared session is what lets the <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> button open
-            the merchant's file in MFunding instead of bouncing you to a login screen. Don't use two
-            different browsers, and don't use a private/incognito window.
+            Use <b>Google Chrome</b>, and sign into <b>both</b> VibeReach <b>and</b> MFunding in the{" "}
+            <b>same Chrome window</b>. You'll be logged into both at once, side by side. That shared
+            session is what lets the <b>Revenue Playbook</b> link open the merchant's file in
+            MFunding instead of bouncing you to a login screen. Don't use two different browsers,
+            and don't use a private/incognito window.
           </div>
           <ol className="steps">
             <li>
@@ -203,10 +217,10 @@ export default function SetterGuidePage() {
             </li>
             <li>
               <div>
-                <div className="st-t">Tab 1 — sign into HotProspector</div>
+                <div className="st-t">Tab 1 — sign into VibeReach</div>
                 <div className="st-d">
-                  Go to <code>app.hotprospector.com</code> and log in with your HotProspector email +
-                  password.
+                  Go to <code>app.vibereach.io</code> and log in with your VibeReach email +
+                  password. This is where you dial.
                 </div>
               </div>
             </li>
@@ -215,7 +229,8 @@ export default function SetterGuidePage() {
                 <div className="st-t">Tab 2 (same window) — sign into MFunding</div>
                 <div className="st-d">
                   Open a new tab in the <b>same</b> Chrome window, go to <code>mfunding.net</code>,
-                  and log in with your MFunding email + password. Leave both tabs open all day.
+                  and log in with your MFunding email + password. This is where the Revenue Playbook
+                  lives. Leave both tabs open all day.
                 </div>
               </div>
             </li>
@@ -223,9 +238,9 @@ export default function SetterGuidePage() {
           <div className="note tip">
             <div className="h">Forgot a password?</div>
             MFunding: <code>mfunding.net</code> &rarr; <b>&ldquo;Forgot your password?&rdquo;</b>{" "}
-            &middot; HotProspector: use <b>&ldquo;Forgot password?&rdquo;</b> on its login screen. If
-            you're brand new and haven't set a password yet, your manager sends you a one-time setup
-            link &mdash; open it and choose your password.
+            &middot; VibeReach: use <b>&ldquo;Forgot password?&rdquo;</b> on{" "}
+            <code>app.vibereach.io</code>. If you're brand new and haven't set a password yet, your
+            manager sends you a one-time setup link &mdash; open it and choose your password.
           </div>
         </section>
 
@@ -241,11 +256,11 @@ export default function SetterGuidePage() {
           <div className="cards">
             <div className="card">
               <div className="role">Profile 1 &mdash; the dialer</div>
-              <div className="nm">HotProspector</div>
+              <div className="nm">VibeReach</div>
               <div className="sub">
-                Top-right <b>avatar</b> &rarr; <b>Settings</b> &rarr; <b>Profile</b> tab &rarr;{" "}
-                <b>Basic Information</b>. Set your <b>First / Last name</b> and <b>phone</b>, then{" "}
-                <b>Submit</b>. Change your password under the <b>Update Password</b> sub-tab.
+                In <code>app.vibereach.io</code>: your <b>avatar</b> (top right) &rarr;{" "}
+                <b>My Profile</b>. Set your <b>name</b> and check your details, then save. Your
+                voicemail recording lives in the WAVV dialer settings (section 07).
               </div>
             </div>
             <div className="card mf">
@@ -269,31 +284,37 @@ export default function SetterGuidePage() {
           <ol className="steps">
             <li>
               <div>
-                <div className="st-t">In HotProspector, open the Dialer</div>
+                <div className="st-t">In VibeReach, open Opportunities</div>
                 <div className="st-d">
-                  Top blue menu &rarr; <b>Dialer</b>. Find the campaign assigned to you:{" "}
-                  <b>&ldquo;UCC Parallel-3b.&rdquo;</b>
+                  Left sidebar &rarr; <b>Opportunities</b>. In the pipeline dropdown (top left),
+                  choose <b>&ldquo;MFunding MCA Pipeline.&rdquo;</b>
                 </div>
               </div>
             </li>
             <li>
               <div>
-                <div className="st-t">Press the green ▶ (Start Calling)</div>
+                <div className="st-t">Filter to your book — one filter only</div>
                 <div className="st-d">
-                  A <b>Session Settings</b> box appears &rarr; tick your <b>time zone</b> &rarr;{" "}
-                  <b>Start Dialing</b>.
+                  <b>Advanced Filters</b> &rarr; <b>Add filter</b> &rarr; <b>Source</b> &rarr;{" "}
+                  <b>Is</b> &rarr; type <code>UCC</code> or <code>Aged</code> (whichever list your
+                  manager assigned you). <b>Capital letters matter</b> &mdash; type it exactly. Then
+                  press the blue <b>Apply</b> button; nothing happens until you do. Confirm it took:
+                  the count next to the pipeline name drops. Use <b>only</b> this one Source filter
+                  &mdash; don't stack anything else.
                 </div>
               </div>
             </li>
             <li>
               <div>
                 <div className="st-t">
-                  It dials 3 at once <span className="pill">3-line</span>
+                  Press &ldquo;Call&rdquo; on the New Lead column{" "}
+                  <span className="pill">3-line</span>
                 </div>
                 <div className="st-d">
-                  The dialer rings <b>three numbers at the same time</b> and connects you the instant
-                  one person answers &mdash; the other two drop. You talk; it lines up the next set
-                  when you hang up.
+                  On the <b>New Lead</b> column header, press the <b>Call</b> button &mdash; that's
+                  the <b>WAVV dialer</b>. It rings <b>three numbers at the same time</b>; the moment
+                  one person answers, the other two drop. You talk; it lines up the next 3 when
+                  you're done.
                 </div>
               </div>
             </li>
@@ -309,10 +330,20 @@ export default function SetterGuidePage() {
           <ol className="steps">
             <li>
               <div>
-                <div className="st-t">Read the script</div>
+                <div className="st-t">Voicemail? Drop it and keep moving</div>
                 <div className="st-d">
-                  It <b>auto-loads</b> on the <b>Script</b> tab of your call screen. Follow it &mdash;
-                  it keeps you compliant. Remember: it's an{" "}
+                  If a line hits an answering machine, press the <b>Voicemail</b> button, then{" "}
+                  <b>Resume</b>. WAVV sends your <b>pre-recorded voicemail</b> (section 07) and
+                  dials the next 3. That's the whole move &mdash; Voicemail, Resume, next.
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Live answer — WAVV opens the contact</div>
+                <div className="st-d">
+                  When a real person picks up, WAVV opens their <b>contact card</b>. Talk first,
+                  click second. Remember: it's an{" "}
                   <span className="say">advance / working capital</span>,{" "}
                   <span className="dont">a loan</span>.
                 </div>
@@ -320,15 +351,12 @@ export default function SetterGuidePage() {
             </li>
             <li>
               <div>
-                <div className="st-t">Open the merchant in MFunding — one click</div>
+                <div className="st-t">Open the Revenue Playbook</div>
                 <div className="st-d">
-                  In the dialer: <b>Script</b> tab &rarr; click{" "}
-                  <b>&ldquo;Open this merchant's Playbook.&rdquo;</b> If the link isn't clickable,
-                  copy the URL printed on that line into a new tab. Because you're signed into
-                  MFunding in the same Chrome window, the <b>Revenue Playbook</b> opens with this
-                  merchant's file preloaded. The{" "}
-                  <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> button (↗) at the bottom of the
-                  contact card's right-hand sidebar does the same thing.
+                  On the contact card, go to <b>Additional Info</b> and click the{" "}
+                  <b>Revenue Playbook</b> link. It opens the merchant's file in{" "}
+                  <b>mfunding.net</b> &mdash; give it up to <b>30 seconds</b> to load. Click it{" "}
+                  <b>once</b> and wait; don't keep clicking.
                 </div>
               </div>
             </li>
@@ -336,7 +364,8 @@ export default function SetterGuidePage() {
               <div>
                 <div className="st-t">Work the Playbook while you have them</div>
                 <div className="st-d">
-                  Fill in the merchant's details, <b>send the application</b>, and get them to{" "}
+                  Follow the Playbook top to bottom: fill in the merchant's details,{" "}
+                  <b>send the application</b>, and get them to{" "}
                   <b>connect their bank / upload statements</b> right there on the call. &ldquo;Let's
                   knock this out while I've got you.&rdquo;
                 </div>
@@ -344,9 +373,10 @@ export default function SetterGuidePage() {
             </li>
             <li>
               <div>
-                <div className="st-t">Disposition the call</div>
+                <div className="st-t">Disposition every live call in WAVV</div>
                 <div className="st-d">
-                  Pick the outcome so the right follow-up fires: <b>Send Application</b>,{" "}
+                  Every call that <b>wasn't</b> a voicemail gets a disposition in WAVV &mdash; pick
+                  the outcome so the right follow-up fires: <b>Send Application</b>,{" "}
                   <b>Call Back</b>, <b>Not Interested</b>, etc. If they say &ldquo;take me off your
                   list,&rdquo; mark <b>DNC</b> immediately.
                 </div>
@@ -355,11 +385,8 @@ export default function SetterGuidePage() {
           </ol>
           <div className="note warn">
             <div className="h">Two things to know</div>
-            The <b>&ldquo;Playbook&rdquo;</b> tab on the HotProspector call screen is <b>not ours</b>{" "}
-            &mdash; what opens MFunding is the <b>Script</b> tab's{" "}
-            <b>&ldquo;Open this merchant's Playbook&rdquo;</b> link, or{" "}
-            <b>&ldquo;Gohighlevel Custom Link&rdquo;</b> on the contact card. And if that button ever
-            errors (&ldquo;Lead data not Synced&rdquo;),
+            The Playbook takes up to <b>30 seconds</b> to open &mdash; that's normal; one click,
+            then wait. And if a contact has <b>no Revenue Playbook link</b> under Additional Info,
             tell your manager &mdash; it means the lead wasn't loaded correctly; meanwhile you can
             find the merchant with the <b>search bar</b> in MFunding (name, business, or phone).
           </div>
