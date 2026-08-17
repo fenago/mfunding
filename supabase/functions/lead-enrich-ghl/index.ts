@@ -122,11 +122,14 @@ async function patchJob(db: SupabaseClient, id: string, patch: Record<string, un
   await db.from("lead_enrich_jobs").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id);
 }
 
-function reinvoke(secret: string, jobId: string, rps?: number) {
+function reinvoke(secret: string, jobId: string, rps?: number, dailyFloor?: number) {
   const p = fetch(`${SUPABASE_URL}/functions/v1/lead-enrich-ghl?secret=${encodeURIComponent(secret)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANON_KEY}` },
-    body: JSON.stringify({ action: "continue", job_id: jobId, ...(rps ? { rps } : {}) }),
+    body: JSON.stringify({
+      action: "continue", job_id: jobId, ...(rps ? { rps } : {}),
+      ...(dailyFloor ? { daily_floor: dailyFloor } : {}),
+    }),
   }).then(() => {}).catch((e) => console.error("[lead-enrich-ghl] reinvoke failed:", e));
   try { (globalThis as { EdgeRuntime?: { waitUntil: (p: Promise<unknown>) => void } }).EdgeRuntime?.waitUntil(p); } catch { /* dev */ }
 }
@@ -180,6 +183,15 @@ Deno.serve(async (req) => {
   const payload = await req.json().catch(() => ({})) as Record<string, unknown>;
   const action = String(payload.action ?? "status");
   const rps = Number(payload.rps) > 0 ? Math.min(Number(payload.rps), 8) : DEFAULT_RPS;
+  // Optional per-run reserve-floor override (owner-directed burns under the default
+  // 60k floor). Clamped to >=5,000 so the floor can be lowered but never removed —
+  // some reserve for setter/playbook traffic always survives. Rides the reinvoke
+  // body so the whole chain keeps the override; a fresh kick without it reverts
+  // to the default floor.
+  const floorRaw = Number(payload.daily_floor);
+  const dailyFloor = Number.isFinite(floorRaw) && floorRaw > 0
+    ? Math.max(5_000, Math.floor(floorRaw))
+    : RESERVE_FLOOR;
 
   try {
     if (action === "start") {
@@ -215,12 +227,12 @@ Deno.serve(async (req) => {
       // UNREADABLE IS NOT PLENTY. If the quota can't be read we pause rather
       // than assume headroom — the whole point of the floor is protecting the
       // floor's traffic, and a guess is not protection.
-      if (left == null || left < RESERVE_FLOOR) {
+      if (left == null || left < dailyFloor) {
         await patchJob(db, jobId, {
           status: "paused", finished_at: new Date().toISOString(),
           message: left == null
             ? `paused — could not READ the GHL daily quota after 3 tries (${quotaWhy}); unreadable is not plenty. Resumable.`
-            : `paused at the ${RESERVE_FLOOR} reserve floor (daily-remaining ${left}) — resumable`,
+            : `paused at the ${dailyFloor} reserve floor (daily-remaining ${left}) — resumable`,
         });
         return json({ ok: true, job_id: jobId, paused: "reserve_floor", daily_remaining: left });
       }
@@ -318,7 +330,7 @@ Deno.serve(async (req) => {
         });
       }
 
-      reinvoke(expected, jobId, rps);
+      reinvoke(expected, jobId, rps, dailyFloor);
       return json({ ok: true, job_id: jobId, updated, errored, skipped, stampFailures, continued: true });
     }
 
@@ -329,7 +341,7 @@ Deno.serve(async (req) => {
     // A statement timeout is a slow window, not a broken job — hand off.
     if (/57014|canceling statement|statement timeout/i.test(msg) && jobId) {
       await patchJob(db, jobId, { message: `window timed out, retrying (${msg.slice(0, 80)})` });
-      reinvoke(expected, jobId, rps);
+      reinvoke(expected, jobId, rps, Number(payload.daily_floor) || undefined);
       return json({ ok: true, job_id: jobId, retried_after_timeout: true });
     }
     if (jobId) {
