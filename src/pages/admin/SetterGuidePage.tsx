@@ -92,6 +92,11 @@ const CSS = `
 .son .fix .a{padding:12px 15px;font-size:13.6px;color:var(--ink-soft)}
 .son .fix .a b{color:var(--ink)}
 
+.son .vm{border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:var(--shadow);padding:15px 18px;margin-top:12px;border-left:4px solid var(--accent)}
+.son .vm .tag{font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint)}
+.son .vm .nm{font-weight:800;font-size:15px;margin:2px 0 8px}
+.son .vm blockquote{margin:0;font-size:14.2px;line-height:1.62;color:var(--ink-soft);font-style:italic}
+.son .vm blockquote b{color:var(--ink);font-style:normal}
 .son a{color:var(--accent-ink);font-weight:700;text-decoration:underline;text-underline-offset:2px}
 .son .card .sub a{color:var(--accent-ink)}
 .son footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink-faint);font-size:12px}
@@ -421,10 +426,103 @@ export default function SetterGuidePage() {
           </div>
         </section>
 
-        {/* 07 — COMMS */}
+        {/* 07 — WAVV VOICEMAIL DROPS */}
         <section>
           <div className="kicker">
             <span className="n">07</span>
+            <h2>Voicemail drops in the WAVV dialer</h2>
+          </div>
+          <p className="lede" style={{ marginBottom: 14 }}>
+            Record your voicemail <b>once</b>; the dialer drops it for you all day. When you hit an
+            answering machine on a live line, click the <b>voicemail icon</b> — and on multiline
+            dialing, WAVV automatically drops it on background lines that reach voicemail while
+            you&rsquo;re talking to a live person. You don&rsquo;t have to do anything.
+          </p>
+          <ol className="steps">
+            <li>
+              <div>
+                <div className="st-t">Open WAVV settings</div>
+                <div className="st-d">
+                  Launch the WAVV dialer, then click the <b>gear/cog icon</b> at the top right of the
+                  dialer banner &rarr; <b>Voicemails</b> tab on the left.
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Pick a recording method</div>
+                <div className="st-d">
+                  <b>Record via Computer</b> (allow Chrome mic permission when asked),{" "}
+                  <b>Record via Phone</b> (a pop-up gives you a number and a 3-digit PIN — use this
+                  if your computer mic sounds rough), or <b>Upload Audio File</b>.
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Record it — 20 to 30 seconds</div>
+                <div className="st-d">
+                  Click the microphone to start, the red button to stop, then play it back.
+                  Re-record until it sounds like a <b>phone call, not a commercial</b>. Record 3&ndash;4
+                  takes and keep the natural one.
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Name it and save</div>
+                <div className="st-d">
+                  Use a clear name like <code>MFunding – Working Capital Intro</code> so you grab the
+                  right one during sessions.
+                </div>
+              </div>
+            </li>
+          </ol>
+          <div className="vm">
+            <div className="tag">Script A &mdash; primary (~25 seconds)</div>
+            <div className="nm">Working Capital Intro</div>
+            <blockquote>
+              &ldquo;Hi, this is <b>[First Name]</b> with MFunding here in South Florida. I&rsquo;m
+              reaching out because we&rsquo;re currently approving working capital for businesses in
+              your industry &mdash; typically $20,000 to $500,000, funded in as little as 24 to 48
+              hours, and it&rsquo;s based on your revenue, not your credit. If you&rsquo;ve got a
+              project, payroll, or opportunity that needs cash faster than a bank moves, give me a
+              call back at <b>[Callback Number]</b>. Again, that&rsquo;s <b>[First Name]</b> with
+              MFunding, <b>[Callback Number]</b>. Talk soon.&rdquo;
+            </blockquote>
+          </div>
+          <div className="vm">
+            <div className="tag">Script B &mdash; short test (~15 seconds)</div>
+            <div className="nm">Quick Approvals</div>
+            <blockquote>
+              &ldquo;Hey, it&rsquo;s <b>[First Name]</b> over at MFunding. Quick call &mdash;
+              we&rsquo;ve got approvals going out this week for business owners in your area, up to
+              $500K based on revenue, not credit. Call me back at <b>[Callback Number]</b> and
+              I&rsquo;ll tell you what you&rsquo;d qualify for. Again, <b>[Callback Number]</b>.
+              Thanks.&rdquo;
+            </blockquote>
+          </div>
+          <div className="note tip">
+            <div className="h">Delivery notes</div>
+            Say the callback number <b>twice, slowly</b> &mdash; that&rsquo;s the #1 reason callbacks
+            get lost. <b>Smile while recording</b>; it genuinely changes the tone. Re-record fresh
+            every few weeks so it doesn&rsquo;t sound canned to repeat-dial prospects.
+          </div>
+          <div className="note warn">
+            <div className="h">Two settings that change whether voicemails happen at all</div>
+            <b>Answer Boost</b> mode skips answering machines entirely &mdash; no voicemails get
+            left; use <b>standard mode</b> on days you want VM drops. And in General Settings, set
+            the <b>ring timeout to 5&ndash;10 rings</b> so calls actually reach voicemail instead of
+            cutting off early. As always: scripts say <span className="say">working capital</span>,{" "}
+            <span className="dont">never &ldquo;a loan&rdquo;</span> &mdash; and DNC requests get
+            honored on the spot.
+          </div>
+        </section>
+
+        {/* 08 — COMMS */}
+        <section>
+          <div className="kicker">
+            <span className="n">08</span>
             <h2>Need help? Message us on Google Chat</h2>
           </div>
           <div className="note key">
