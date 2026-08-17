@@ -41,11 +41,21 @@
 // daily_floor (default 500) the run STOPS cleanly (persists cursor, does NOT
 // reinvoke) rather than spinning on 429s or blowing the cap. Resume after reset.
 //
-// ── STATE EXCLUSION ──────────────────────────────────────────────────────────
+// ── STATE FILTER (exclude by default; include as an override) ────────────────
 // exclude_states (default TX/CA/VA) are dropped. A BLANK/unknown state PASSES
 // THROUGH (we only exclude an explicit match). Server-side this is `state not_eq`
 // per excluded state (state codes are 2 chars, and GHL's `contains` needs ≥3, so
 // `not_eq` is the only workable operator — verified live). Per-contact re-check too.
+//
+// include_states (create mode only) INVERTS the gate: when present + non-empty it
+// takes PRECEDENCE over exclude_states (exclude_states is ignored entirely) and the
+// ONLY contacts kept are those whose state IS in the list. A BLANK/unknown state is
+// SKIPPED (it isn't in the list). Server-side this is an OR-group of `state eq <st>`
+// (2-char `eq` verified live — the positive twin of the exclude `not_eq`), so the
+// working set is reduced for free — the same cheap, no-extra-call skip path as
+// exclude, with a per-contact re-check backing it. This is what lets us load ONLY
+// the held-back TX/CA/VA leads without re-touching the already-created non-TX/CA/VA
+// opps (they simply aren't in the include set — no marker needed to skip them).
 //
 // ROBOTS. Contacts tagged `lt-source` (LT list-delivery / sender robots) are never
 // touched — excluded server-side and re-checked per contact.
@@ -401,11 +411,22 @@ function tagFilter(tags: string[]): Record<string, unknown> {
   };
 }
 
+/** Positive state filter: a single `eq`, or an OR group of `eq` for many. Used by
+ * the include-states override so only the listed states survive server-side. */
+function includeStateFilter(states: string[]): Record<string, unknown> {
+  if (states.length === 1) return { field: "state", operator: "eq", value: states[0] };
+  return { group: "OR", filters: states.map((st) => ({ field: "state", operator: "eq", value: st })) };
+}
+
 /** Base filter set shared by count + create: tags (OR) AND not-marker AND not-robot
- * AND (state not_eq each excluded). Optionally omit the state clauses (count uses
- * them to derive skipped_state by difference). */
+ * AND a state gate. The state gate is either EXCLUDE (`state not_eq` per excluded
+ * state — blank state passes) or, when includeStates is non-empty, INCLUDE (an
+ * OR-group of `state eq` — includeStates takes precedence and excludeStates is
+ * ignored). Pass withState:false to omit the state clauses entirely (count uses that
+ * to derive skipped_state by difference). */
 function buildFilters(
   tags: string[], markerTag: string, excludeStates: string[], withState: boolean,
+  includeStates: string[] = [],
 ): Record<string, unknown>[] {
   const filters: Record<string, unknown>[] = [
     tagFilter(tags),
@@ -413,7 +434,11 @@ function buildFilters(
     { field: "tags", operator: "not_contains", value: ROBOT_TAG },
   ];
   if (withState) {
-    for (const st of excludeStates) filters.push({ field: "state", operator: "not_eq", value: st });
+    if (includeStates.length) {
+      filters.push(includeStateFilter(includeStates));    // include wins; exclude ignored
+    } else {
+      for (const st of excludeStates) filters.push({ field: "state", operator: "not_eq", value: st });
+    }
   }
   return filters;
 }
@@ -571,6 +596,15 @@ Deno.serve(async (req) => {
   const excludeStates = (Array.isArray(exRaw)
     ? Array.from(new Set(exRaw.map((s) => normState(s)).filter((s) => s.length > 0)))
     : DEFAULT_EXCLUDE.slice());
+
+  // include_states (create mode) — when present + non-empty, INVERTS the state gate:
+  // keep ONLY contacts whose state is in this list, and IGNORE exclude_states (include
+  // takes precedence). Blank/unknown state → skipped. Empty/absent → normal exclude
+  // behavior. Normalized to upper 2-letter codes, deduped.
+  const inRaw = (payload as { include_states?: unknown }).include_states;
+  const includeStates = (Array.isArray(inRaw)
+    ? Array.from(new Set(inRaw.map((s) => normState(s)).filter((s) => s.length > 0)))
+    : []);
 
   const pipelineId = clean((payload as { pipeline_id?: unknown }).pipeline_id) || DEFAULT_PIPELINE;
   const stageId = clean((payload as { stage_id?: unknown }).stage_id) || DEFAULT_STAGE;
@@ -1009,7 +1043,7 @@ Deno.serve(async (req) => {
   // which point stamping activates with NO code change. Never blocks a create.
   const oppFieldMap = await loadOppFieldMap(db);
 
-  const filters = buildFilters(tags, markerTag, excludeStates, true);
+  const filters = buildFilters(tags, markerTag, excludeStates, true, includeStates);
   let created = 0, skipped_state = 0, skipped_existing = 0, skipped_robot = 0;
   let errors = 0, processed = 0, marker_failed = 0;
   let done = false;
@@ -1065,6 +1099,7 @@ Deno.serve(async (req) => {
   const resumeBody = (nextCursor: unknown[] | undefined): Record<string, unknown> => ({
     tags, mode: "create", exclude_states: excludeStates, pipeline_id: pipelineId,
     stage_id: stageId, marker_tag: markerTag, value,
+    ...(includeStates.length ? { include_states: includeStates } : {}),
     ...(source ? { source } : {}),
     ...(assignUserId ? { assign_user_id: assignUserId } : {}),
     ...(roundRobin.length ? { round_robin_user_ids: roundRobin } : {}),
@@ -1121,7 +1156,12 @@ Deno.serve(async (req) => {
       if (ctags.includes(markerTag)) { skipped_existing++; continue; }
       if (ctags.includes(ROBOT_TAG)) { skipped_robot++; continue; }
       const st = normState(c.state);
-      if (st && excludeStates.includes(st)) { skipped_state++; continue; }
+      // State gate (per-contact re-check, no GHL call). INCLUDE precedence: when
+      // include_states is set, keep ONLY those states (blank/unknown → skip) and
+      // ignore exclude_states. Otherwise, drop explicitly-excluded states.
+      if (includeStates.length) {
+        if (!st || !includeStates.includes(st)) { skipped_state++; continue; }
+      } else if (st && excludeStates.includes(st)) { skipped_state++; continue; }
       toCreate.push({ c, owner: ownerFor() });
     }
 
@@ -1134,14 +1174,20 @@ Deno.serve(async (req) => {
       const wave = toCreate.slice(i, i + concurrency);
       const results = await Promise.all(wave.map(async ({ c, owner }) => {
         try {
+          // Per-contact Source. A run-level `source`, when provided, wins for every
+          // contact. When OMITTED, we derive it from the contact's own list tags
+          // (lm-ucc → UCC, lm-aged → Aged; anything else → unset) so a mixed
+          // UCC+Aged run stamps each opp with its true lead type natively. This
+          // feeds BOTH the opp Source field and the Lead Type custom field below.
+          const effSource = source ?? (leadTypeFromTags(c.tags) || undefined);
           // Opportunity-level custom fields (Lead State / Lead Type / optional
           // pass-throughs) ride the create POST for free. Empty until the map is
           // configured → omitted entirely, so behavior is unchanged pre-config.
-          const oppCustomFields = buildOppCustomFields(c, source, oppFieldMap, cfg);
+          const oppCustomFields = buildOppCustomFields(c, effSource, oppFieldMap, cfg);
           const opp = await createOpportunity(cfg, {
             pipelineId, pipelineStageId: stageId, contactId: c.id,
             name: opportunityName(c), monetaryValue: value, status: "open",
-            ...(source ? { source } : {}),
+            ...(effSource ? { source: effSource } : {}),
             ...(owner ? { assignedTo: owner } : {}),
             ...(oppCustomFields.length ? { customFields: oppCustomFields } : {}),
           }, onRL);
@@ -1242,6 +1288,7 @@ Deno.serve(async (req) => {
     mode: "create",
     tags,
     exclude_states: excludeStates,
+    include_states: includeStates,
     marker_tag: markerTag,
     pipeline_id: pipelineId,
     stage_id: stageId,
