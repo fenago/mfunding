@@ -188,7 +188,7 @@ const STAGES = [
         Also gated: nothing loads to the CRM or the dialer without your go-ahead.
       </>
     ),
-    tags: ["→ GoHighLevel", "→ HotProspector", "→ Revenue Playbook"],
+    tags: ["→ VibeReach", "→ WAVV Dialer", "→ Revenue Playbook"],
   },
 ];
 

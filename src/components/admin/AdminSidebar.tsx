@@ -116,7 +116,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/ph-ucc", // PH UCC Harvester (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
   "/admin/lead-machine", // Lead Machine (roles: ADMIN) — purchased-list upload → tag → VibeReach push; pure closers excluded via roles
   "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
-  "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — onboarding reference, every staff role
+  "/admin/dialing-machine", // 🔗 How the Dialing Machine Works (roles: ADMIN since 8/17 — SOP still shows the retired HotProspector leg; closers use the Setter Guide)
   "/admin/ucc-machine-guide", // 🔗 How the UCC Harvester Works — the sibling one-pager, every staff role
   "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
 ]);
@@ -146,11 +146,12 @@ const navGroups: NavGroup[] = [
       // Dialer Metrics — per-rep HotProspector scorecard for running the setter
       // floor. Sits with the other PH consoles; same ADMIN gating + closer lens.
       { name: "Dialer Metrics", path: "/admin/dialer", icon: PhoneIcon, roles: ADMIN },
-      // How the Dialing Machine Works — Lists → GHL → HotProspector → Revenue
-      // Playbook, the onboarding one-pager. Closes out the PH console cluster.
-      // OPS (every staff role) + in the closer lens, same as the Funder Cheat
-      // Sheet: it's reference material, not a management surface.
-      { name: "Dialing Machine", path: "/admin/dialing-machine", icon: ShareIcon, roles: OPS },
+      // How the Dialing Machine Works — the lists→dialer pipeline one-pager.
+      // ADMIN-gated since 8/17: its SOP still describes the retired
+      // HotProspector leg (owner: "we are not using hot prospector at all"),
+      // so closers must not read it until it's rewritten for VibeReach+WAVV.
+      // Closers get the current flow in the Setter Guide instead.
+      { name: "Dialing Machine", path: "/admin/dialing-machine", icon: ShareIcon, roles: ADMIN },
       // How the UCC Harvester Works — the sibling one-pager (Source → Match →
       // Build → Skip-Trace → Activate). The owner wants the two explainers
       // adjacent, so it sits immediately after Dialing Machine. Same OPS gating:
