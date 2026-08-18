@@ -47,7 +47,11 @@ const MCA_PIPELINE = "bG9ZEh4eP9x60E1CyaMx";
 const STAGE_NEW_LEAD = "d60d563a-9904-423f-9a8e-0d0df0b12976"; // never a target
 const STAGE_CONTACTED = "bc68ac6f-d45d-4d56-b1c8-c10a7ec4fdf7";
 const STAGE_QUALIFYING = "27960f79-0b08-48ac-8fee-f4a9bf7748e3";
-const DAILY_FLOOR = 60_000;
+// 10k, not the bulk-job 60k: this drain spends ~3 calls per NEW disposition
+// (a few hundred/day on a busy floor), so it cannot meaningfully compete with
+// interactive traffic — but the board staying live DURING the dial day is the
+// whole point of the feature. The floor still guards true exhaustion.
+const DAILY_FLOOR = 10_000;
 const PAGE_LIMIT = 50;
 const MAX_CONTACTS_PER_RUN = 300; // ~900 GHL calls worst case; a busy floor day
 
