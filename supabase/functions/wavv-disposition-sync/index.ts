@@ -63,8 +63,16 @@ type Action =
 // Tag names verified against the live WAVV Manager → Call Dispositions config
 // (owner screenshot 2026-08-17): Interested→wavv-interested, Callback→
 // wavv-callback, Appointment Set→wavv-appointment-set, plus the negative set.
+//
+// OWNER RULING 8/17 ("go with option A"): WAVV natively sets negative-outcome
+// opportunities to LOST at disposition time (verified: lastStatusChangeAt ==
+// call time). Not-interested cards therefore leave the open board and live
+// under the Lost filter — we do NOT resurrect them to Contacted. The lost
+// actions below are idempotent BACKSTOPS for calls WAVV misses; the sweep's
+// real jobs are the DNC hard-suppression and the POSITIVE forward moves
+// (WAVV does not advance stages — we do).
 const MAPPING: Array<{ tag: string; action: Action }> = [
-  { tag: "wavv-not-interested", action: { kind: "stage", stageId: STAGE_CONTACTED } },
+  { tag: "wavv-not-interested", action: { kind: "lost" } },
   { tag: "wavv-bad-number", action: { kind: "lost" } },
   { tag: "wavv-do-not-contact", action: { kind: "dnc" } },
   { tag: "wavv-interested", action: { kind: "stage", stageId: STAGE_QUALIFYING } },
@@ -112,6 +120,16 @@ Deno.serve(async (req) => {
   let cfg: GhlConfig;
   try { cfg = await getGhlConfig(db); }
   catch (e) { return json({ error: `GHL not configured: ${e instanceof Error ? e.message : String(e)}` }, 502); }
+
+  // Diagnostic: return the raw opportunity lookup exactly as this function sees
+  // it (used to chase the moved:0 anomaly on 2026-08-18). No writes.
+  const payload = await req.json().catch(() => ({})) as Record<string, unknown>;
+  if (payload.action === "probe" && typeof payload.contact_id === "string") {
+    const od = await ghlFetch<unknown>(
+      cfg, "GET", `/opportunities/search?location_id=${LOCATION}&contact_id=${payload.contact_id}`,
+    );
+    return json({ ok: od.ok, status: od.status, data: od.data, error: od.error });
+  }
 
   // Rate headers ride every ghlFetch response; track the freshest daily figure.
   let dailyRemaining: number | null = null;
@@ -195,11 +213,21 @@ Deno.serve(async (req) => {
     }
   }
 
-  return json({
+  const summary = {
     ok: true,
     parked_at_floor: parked,
     daily_remaining: dailyRemaining,
     touched,
     stats,
-  });
+  };
+
+  // Persist the last run so cron firings (whose HTTP responses vanish into
+  // pg_net) leave an inspectable trail — same pattern as wavv_sync.
+  await db.from("platform_settings").upsert({
+    key: "wavv_disposition_sync",
+    value: { ...summary, last_run_at: new Date().toISOString() },
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "key" });
+
+  return json(summary);
 });
