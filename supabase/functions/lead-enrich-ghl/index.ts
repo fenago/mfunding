@@ -208,6 +208,23 @@ Deno.serve(async (req) => {
       return json({ ok: true, jobs: data ?? [] });
     }
 
+    if (action === "resume") {
+      // The daily auto-resume path. "continue" deliberately no-ops on a paused
+      // job (so a stray reinvoke can't override a pause) — but the 1:40pm cron
+      // exists precisely to lift the daily floor pause, so it needs this
+      // explicit flip. Only 'paused' resumes; canceled/error stay dead.
+      const jobId = String(payload.job_id ?? "");
+      const { data: job } = await db.from("lead_enrich_jobs").select("*").eq("id", jobId).maybeSingle();
+      if (!job) return json({ error: "job not found" }, 404);
+      if (job.status === "paused") {
+        await patchJob(db, jobId, { status: "running", finished_at: null, message: "resumed by daily auto-resume" });
+        reinvoke(expected, jobId, rps);
+        return json({ ok: true, job_id: jobId, resumed: true });
+      }
+      if (job.status === "running") { reinvoke(expected, jobId, rps); return json({ ok: true, job_id: jobId, already_running: true }); }
+      return json({ ok: true, job_id: jobId, status: job.status, resumed: false });
+    }
+
     if (action === "cancel") {
       const id = String(payload.job_id ?? "");
       await patchJob(db, id, { status: "canceled", finished_at: new Date().toISOString(), message: "canceled" });
