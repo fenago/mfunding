@@ -99,9 +99,11 @@ function localDayEnd(offsetDays = 0): Date {
 function ymd(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-function parseYmdLocal(s: string, endOfDay = false): Date {
+/** A yyyy-mm-dd from a <input type="date"> is a LOCAL calendar day, so it is
+ * built as local midnight (not Date.parse, which would read it as UTC). */
+function parseYmdLocal(s: string): Date {
   const [y, m, d] = s.split("-").map(Number);
-  return new Date(y, (m ?? 1) - 1, d ?? 1, 0, 0, 0, 0 + (endOfDay ? 0 : 0));
+  return new Date(y, (m ?? 1) - 1, d ?? 1, 0, 0, 0, 0);
 }
 
 type RangeKey = "today" | "yesterday" | "7d" | "30d" | "custom";
