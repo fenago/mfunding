@@ -100,6 +100,7 @@ const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSette
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
 const LeadMachinePage = lazyWithReload(() => import("../pages/admin/LeadMachinePage.tsx"));
 const DialerPage = lazyWithReload(() => import("../pages/admin/DialerPage.tsx"));
+const SetterPerformancePage = lazyWithReload(() => import("../pages/admin/SetterPerformancePage.tsx"));
 const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
 const UccMachineGuidePage = lazyWithReload(() => import("../pages/admin/UccMachineGuidePage.tsx"));
 const SetterGuidePage = lazyWithReload(() => import("../pages/admin/SetterGuidePage.tsx"));
@@ -754,6 +755,16 @@ export const routes: RouteObject[] = [
                 path: "dialer",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <DialerPage /> }],
+              },
+              // Setter Performance — the WAVV per-rep scorecard that REPLACES the
+              // HotProspector one above (HP is retired; /admin/dialer stays as the
+              // historical record). Admin-only on purpose: a closer must not read
+              // the floor's per-rep stats, and the wavv_calls RLS policy backs
+              // that up at the data layer.
+              {
+                path: "setter-performance",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <SetterPerformancePage /> }],
               },
               // Lead Tools management (operational — all staff)
               {

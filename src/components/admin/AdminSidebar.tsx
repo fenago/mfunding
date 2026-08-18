@@ -116,6 +116,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/ph-ucc", // PH UCC Harvester (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
   "/admin/lead-machine", // Lead Machine (roles: ADMIN) — purchased-list upload → tag → VibeReach push; pure closers excluded via roles
   "/admin/dialer", // Dialer Metrics (roles: ADMIN) — HotProspector scorecard; pure closers excluded via roles
+  "/admin/setter-performance", // Setter Performance (roles: ADMIN) — WAVV per-rep scorecard; pure closers excluded via roles
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works (roles: ADMIN since 8/17 — SOP still shows the retired HotProspector leg; closers use the Setter Guide)
   "/admin/ucc-machine-guide", // 🔗 How the UCC Harvester Works — the sibling one-pager, every staff role
   "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
@@ -143,6 +144,10 @@ const navGroups: NavGroup[] = [
       // it, tag it, push it into VibeReach for the dialer). Sits next to the UCC
       // Machine because both feed the same dial floor; same ADMIN gating + lens.
       { name: "Lead Machine", path: "/admin/lead-machine", icon: DocumentArrowUpIcon, roles: ADMIN },
+      // Setter Performance — the CURRENT dial-floor scorecard, reading WAVV (the
+      // dialer the setters actually use since HotProspector was retired). Sits
+      // directly above the frozen HP scorecard, which is kept only as history.
+      { name: "Setter Performance", path: "/admin/setter-performance", icon: ChartBarSquareIcon, roles: ADMIN },
       // Dialer Metrics — per-rep HotProspector scorecard for running the setter
       // floor. Sits with the other PH consoles; same ADMIN gating + closer lens.
       { name: "Dialer Metrics", path: "/admin/dialer", icon: PhoneIcon, roles: ADMIN },
