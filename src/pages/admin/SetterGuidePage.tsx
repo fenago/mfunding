@@ -100,6 +100,18 @@ const CSS = `
 .son .vm .nm{font-weight:800;font-size:15px;margin:2px 0 8px}
 .son .vm blockquote{margin:0;font-size:14.2px;line-height:1.62;color:var(--ink-soft);font-style:italic}
 .son .vm blockquote b{color:var(--ink);font-style:normal}
+.son .script{margin-top:30px;padding-top:22px;border-top:1px dashed var(--line)}
+.son .script:first-of-type{margin-top:6px;padding-top:0;border-top:0}
+.son .script .who{font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--gold)}
+.son .script h3{font-size:17px;font-weight:800;margin:2px 0 6px}
+.son .script .psych{font-size:13.6px;color:var(--ink-soft);max-width:70ch}
+.son .script .psych b{color:var(--ink)}
+.son .script .lbl{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink);margin:16px 0 6px}
+.son .branch{display:grid;grid-template-columns:150px 1fr;gap:12px;padding:9px 0;border-bottom:1px solid var(--line-soft);font-size:13.6px}
+.son .branch:last-child{border-bottom:0}
+.son .branch .cue{font-weight:750;color:var(--ink)}
+.son .branch .say-line{color:var(--ink-soft)}
+@media (max-width:620px){.son .branch{grid-template-columns:1fr;gap:2px}}
 .son a{color:var(--accent-ink);font-weight:700;text-decoration:underline;text-underline-offset:2px}
 .son .card .sub a{color:var(--accent-ink)}
 .son footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink-faint);font-size:12px}
@@ -112,6 +124,409 @@ const CSS = `
 }
 @media print{.son{background:#fff}.son .wrap{max-width:100%;padding:0}.son section{break-inside:avoid}}
 `;
+
+// Call scripts by lead type — one persona per script, read word-for-word.
+// Objection rows reuse the .fix table; openings/closes use .vm blockquotes.
+type CallScript = {
+  who: string;
+  title: string;
+  psych: React.ReactNode;
+  opening: React.ReactNode;
+  branches: { cue: string; line: React.ReactNode }[];
+  qualify: React.ReactNode;
+  closeLbl: string;
+  close: React.ReactNode;
+  objections: { q: string; a: React.ReactNode }[];
+};
+
+const SCRIPTS: CallScript[] = [
+  {
+    who: "Script 1 — UCC leads",
+    title: "They already have funding",
+    psych: (
+      <>
+        This owner has taken an advance before — they fund, and they pay. That makes them the most
+        valuable name on any dial list, and they know it, because they get called constantly. Your
+        edge: you're not guessing — their funding history is in the <b>Revenue Playbook</b>. Lead
+        with that credibility and the <b>paydown question</b>; it's the one question that turns this
+        call into money.
+      </>
+    ),
+    opening: (
+      <>
+        &ldquo;Hi, is this <b>[First Name]</b>? <i>(wait)</i> Hey [First Name], this is{" "}
+        <b>[Your Name]</b> over at MFunding &mdash; I&rsquo;ll be quick, I know you&rsquo;re running
+        a business. Here&rsquo;s why I&rsquo;m calling: <b>[Business Name]</b> shows in the public
+        record as having taken working capital before &mdash; and that&rsquo;s the <i>only</i>{" "}
+        reason I&rsquo;m calling. Owners with a real payment history are the ones our funders
+        compete hardest for. One quick question and I&rsquo;ll get out of your hair: that advance
+        you took &mdash; about how much of it have you paid down?&rdquo;
+      </>
+    ),
+    branches: [
+      {
+        cue: "“Most of it / paid off”",
+        line: (
+          <>
+            &ldquo;That&rsquo;s the strongest position a business can be in &mdash; funders offer
+            their best structures to owners exactly where you are. Let me ask you two things
+            &mdash;&rdquo; <i>(qualify)</i>
+          </>
+        ),
+      },
+      {
+        cue: "“About half”",
+        line: (
+          <>
+            &ldquo;That&rsquo;s the renewal window &mdash; right where terms typically get better,
+            not worse. Let me ask you two things &mdash;&rdquo; <i>(qualify)</i>
+          </>
+        ),
+      },
+      {
+        cue: "“Just started”",
+        line: (
+          <>
+            &ldquo;Good to know. Then this is a timing call &mdash; let&rsquo;s find out what you
+            qualify for <i>now</i>, so when you&rsquo;re ready you&rsquo;re 24 hours from
+            funded.&rdquo; <i>(qualify)</i>
+          </>
+        ),
+      },
+    ],
+    qualify: (
+      <>
+        &ldquo;Let me ask you the same three questions a funder will ask me. Roughly, what&rsquo;s
+        [Business Name] doing in <b>monthly revenue</b> right now? &hellip; Any <b>other advances</b>{" "}
+        out right now besides that one? &hellip; And if the numbers made sense &mdash; <b>how much
+        capital</b> would actually move the needle, and what would you put it to work on?&rdquo;
+      </>
+    ),
+    closeLbl: "Set the appointment — the only close a setter needs",
+    close: (
+      <>
+        &ldquo;Here&rsquo;s all that happens next &mdash; nothing to sign, no cost, and this
+        conversation does <b>not</b> touch your credit. I&rsquo;m getting you 15 minutes with our
+        senior funding specialist, who&rsquo;ll bring real numbers from funders who already like
+        your profile. I&rsquo;ve got <b>[today at TIME]</b> or <b>[tomorrow at TIME]</b> &mdash;
+        which works better?&rdquo;
+      </>
+    ),
+    objections: [
+      {
+        q: "“How did you get my info?”",
+        a: (
+          <>
+            &ldquo;Fair question. When a business takes an advance, a UCC filing goes on public
+            record &mdash; that&rsquo;s where we found you. Honestly, it&rsquo;s the best thing on
+            your file: it&rsquo;s proof you fund and you pay. That&rsquo;s why I called you and not
+            the guy down the street.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“I'm not taking on more debt.”",
+        a: (
+          <>
+            &ldquo;Totally get it &mdash; and this isn&rsquo;t about piling on. With your payment
+            history, funders may offer a better-structured position, or capital your current funder
+            isn&rsquo;t giving you. Worst case, you find out what you qualify for and sit on it.
+            Costs nothing to know.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“My last advance was way too expensive.”",
+        a: (
+          <>
+            &ldquo;That&rsquo;s <i>exactly</i> why we should talk. First-time pricing is always the
+            worst pricing. You have history now &mdash; that&rsquo;s leverage. Let&rsquo;s find out
+            what that leverage is worth.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“I get 20 of these calls a day.”",
+        a: (
+          <>
+            &ldquo;I believe you &mdash; your file is that good. The difference is I&rsquo;m not
+            reading your name off a list. I can see your actual funding history, and my funders
+            compete for exactly your profile. Give me 30 seconds to prove this call is
+            different.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“Not interested, I'm all set.”",
+        a: (
+          <>
+            &ldquo;No problem &mdash; one thing before I go. When payroll, a slow month, or a big
+            job shows up, the worst time to look for capital is when you <i>need</i> it. Fifteen
+            minutes gets you a clear picture of what you may qualify for, sitting ready for the day
+            you need it. Can I at least set that up?&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“Take me off your list.”",
+        a: (
+          <>
+            &ldquo;Done &mdash; I&rsquo;m marking you do-not-contact right now. Have a good
+            one.&rdquo; <b>Disposition: Do Not Contact — always, immediately, no rebuttal.</b>
+          </>
+        ),
+      },
+    ],
+  },
+  {
+    who: "Script 2 — Aged leads",
+    title: "They asked about funding before",
+    psych: (
+      <>
+        They raised their hand once — they wanted capital, and something killed it: timing, a slow
+        broker, life. Your job is not to sell funding; it&rsquo;s to <b>re-open a decision they
+        already made</b>. The magic words are <b>&ldquo;this is a follow-up&rdquo;</b> — they make
+        the call warm instead of cold.
+      </>
+    ),
+    opening: (
+      <>
+        &ldquo;Hi <b>[First Name]</b>, this is <b>[Your Name]</b> with MFunding. This is actually a{" "}
+        <b>follow-up call</b> &mdash; a while back you reached out looking into working capital for{" "}
+        <b>[Business Name]</b>. Most owners tell me the timing just wasn&rsquo;t right back then. So
+        let me ask you straight: did you ever end up taking care of that, or is capital still on the
+        table for you?&rdquo;
+      </>
+    ),
+    branches: [
+      {
+        cue: "“Still looking”",
+        line: (
+          <>
+            &ldquo;Then I&rsquo;m glad I caught you. Two quick questions and I&rsquo;ll tell you if
+            it&rsquo;s worth 15 minutes of your time &mdash;&rdquo; <i>(qualify)</i>
+          </>
+        ),
+      },
+      {
+        cue: "“I got funded elsewhere”",
+        line: (
+          <>
+            &ldquo;Good for you &mdash; how&rsquo;s it going? Paid much of it down yet?&rdquo;{" "}
+            <i>(you are now on the UCC script — paydown, renewal, better terms)</i>
+          </>
+        ),
+      },
+      {
+        cue: "“I don't remember that”",
+        line: <i>(first objection below)</i>,
+      },
+    ],
+    qualify: (
+      <>
+        &ldquo;Roughly, what&rsquo;s [Business Name] doing in <b>monthly revenue</b>? &hellip; How
+        long have you <b>been in business</b>? &hellip; And <b>how much capital</b> would actually
+        make a difference right now &mdash; and for what?&rdquo;
+      </>
+    ),
+    closeLbl: "Set the appointment",
+    close: (
+      <>
+        Same close as the UCC script: nothing to sign, no cost, no credit impact from this
+        conversation &mdash; 15 minutes with the senior funding specialist.{" "}
+        <b>&ldquo;[today at TIME]</b> or <b>[tomorrow at TIME]?&rdquo;</b>
+      </>
+    ),
+    objections: [
+      {
+        q: "“I never inquired about anything.”",
+        a: (
+          <>
+            &ldquo;No worries &mdash; could&rsquo;ve been a partner, or a good while back. Either
+            way you&rsquo;ve got the right person on the phone: 30 seconds tells me whether
+            [Business Name] qualifies for anything worth your time. What&rsquo;s monthly revenue
+            running, roughly?&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“The timing still isn't right.”",
+        a: (
+          <>
+            &ldquo;That&rsquo;s fine &mdash; but here&rsquo;s the thing: finding out what you
+            qualify for takes 15 minutes <i>now</i>, and it&rsquo;s worth the most the day the truck breaks or a big
+            contract lands. Find out what you qualify for today, and when timing <i>is</i> right
+            you&rsquo;re 24 hours from funded instead of starting from zero.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“Rates are too high everywhere.”",
+        a: (
+          <>
+            &ldquo;Heard. Two things: this is based on your <b>revenue</b>, not your credit score
+            &mdash; and I don&rsquo;t work for one funder, I make several of them compete for you.
+            You see the real number in writing before you decide anything. Fair?&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“Just send me some information.”",
+        a: (
+          <>
+            &ldquo;Happy to &mdash; but a generic brochure is useless to you. Give me 30 seconds of
+            questions and I&rsquo;ll have our specialist send numbers built on <i>your</i> revenue
+            instead. What&rsquo;s [Business Name] doing monthly right now?&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“I'm busy.”",
+        a: (
+          <>
+            &ldquo;Which is exactly why I&rsquo;m not pitching you &mdash; I&rsquo;m booking you.
+            Fifteen minutes with our specialist: <b>[today TIME]</b> or <b>[tomorrow
+            TIME]</b>?&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“Take me off your list.”",
+        a: (
+          <>
+            Honor it instantly &mdash; <b>Disposition: Do Not Contact</b>, no rebuttal, ever.
+          </>
+        ),
+      },
+    ],
+  },
+  {
+    who: "Script 3 — Trigger leads",
+    title: "They're shopping for funding right now",
+    psych: (
+      <>
+        This owner is in-market <b>this week</b> — they&rsquo;ve applied somewhere and are waiting
+        on numbers. This is the hottest list you will ever dial, and the clock is running: whoever
+        gets them numbers first usually wins. Your angle is never &ldquo;switch to us&rdquo; —
+        it&rsquo;s <b>&ldquo;never take the first offer.&rdquo;</b>
+      </>
+    ),
+    opening: (
+      <>
+        &ldquo;Hi <b>[First Name]</b> &mdash; <b>[Your Name]</b> with MFunding. I&rsquo;ll be
+        straight with you: business owners actively shopping for funding show up on my radar, and{" "}
+        <b>[Business Name]</b> came up this week. So you&rsquo;re looking at capital right now. One
+        question &mdash; have you actually seen your numbers yet, or are you still waiting on
+        somebody&rsquo;s offer?&rdquo;
+      </>
+    ),
+    branches: [
+      {
+        cue: "“Still waiting”",
+        line: (
+          <>
+            &ldquo;That wait is my favorite thing in this business. While they make you wait, my
+            funders move in 24 to 48 hours. Let&rsquo;s get you a second set of numbers so
+            you&rsquo;re comparing, not hoping.&rdquo; <i>(qualify)</i>
+          </>
+        ),
+      },
+      {
+        cue: "“I have an offer”",
+        line: (
+          <>
+            &ldquo;What did they put in front of you? Here&rsquo;s what happens when funders
+            compete: either your offer gets better, or you get proof you already had the best one.
+            Either way, you win.&rdquo; <i>(qualify)</i>
+          </>
+        ),
+      },
+      {
+        cue: "“I'm not looking”",
+        line: <i>(first objection below)</i>,
+      },
+    ],
+    qualify: (
+      <>
+        &ldquo;Roughly, what&rsquo;s <b>monthly revenue</b>? &hellip; Any <b>advances or
+        positions</b> out right now? &hellip; <b>How much</b> are you looking for, and what&rsquo;s
+        it for? &hellip; And <b>when</b> do you need it in hand?&rdquo;
+      </>
+    ),
+    closeLbl: "Set the appointment — with urgency, because this one is real",
+    close: (
+      <>
+        &ldquo;Timing matters on this one, so let&rsquo;s not sit on it. Fifteen minutes with our
+        senior funding specialist and you&rsquo;ll have competing numbers in front of you within 24
+        to 48 hours &mdash; no cost, and no credit impact from this conversation. I&rsquo;ve got{" "}
+        <b>[TIME today]</b> &mdash; or is <b>first thing tomorrow</b> better?&rdquo;
+      </>
+    ),
+    objections: [
+      {
+        q: "“How do you know I'm looking?”",
+        a: (
+          <>
+            &ldquo;When a business owner starts shopping for funding, that activity shows up in
+            industry data that funders and brokers subscribe to &mdash; and that works in{" "}
+            <i>your</i> favor: it means competition for your business instead of one
+            take-it-or-leave-it offer. Which, for the record, is exactly what I&rsquo;m calling to
+            give you.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“I'm already working with someone.”",
+        a: (
+          <>
+            &ldquo;Keep working with them &mdash; seriously. All I&rsquo;m adding is a second bid.
+            You wouldn&rsquo;t take one bid on a job at your business; don&rsquo;t take one on your
+            money. If their deal is best, I&rsquo;ll be the first to tell you to sign it.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“I just got declined.”",
+        a: (
+          <>
+            &ldquo;Then you called a bank or the wrong funder &mdash; declines are half my day. Our
+            funders look at your revenue, not just a credit score, and every funder&rsquo;s box is
+            different. What reason did they give you?&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“I don't want my credit pulled again.”",
+        a: (
+          <>
+            &ldquo;It won&rsquo;t be. This conversation and the initial review have <b>zero</b>{" "}
+            credit impact. Nothing gets formally submitted to any funder without your OK
+            first.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“Is this a loan?”",
+        a: (
+          <>
+            &ldquo;For the working capital advance &mdash; no, it&rsquo;s not a loan and there&rsquo;s
+            no interest rate. It&rsquo;s an advance based on your future revenue, with one fixed
+            payback amount you&rsquo;ll see in writing before you decide anything. We also broker
+            true loan products, and the specialist will tell you plainly which is which.&rdquo;
+          </>
+        ),
+      },
+      {
+        q: "“Take me off your list.”",
+        a: (
+          <>
+            Honor it instantly &mdash; <b>Disposition: Do Not Contact</b>, no rebuttal, ever.
+          </>
+        ),
+      },
+    ],
+  },
+];
 
 // Troubleshooting table — symptom on the left, the fix on the right.
 const FIXES: { q: string; a: React.ReactNode }[] = [
@@ -511,8 +926,8 @@ export default function SetterGuidePage() {
             <blockquote>
               &ldquo;Hi, this is <b>[First Name]</b> with MFunding here in South Florida. I&rsquo;m
               reaching out because we&rsquo;re currently approving working capital for businesses in
-              your industry &mdash; typically $20,000 to $500,000, funded in as little as 24 to 48
-              hours, and it&rsquo;s based on your revenue, not your credit. If you&rsquo;ve got a
+              your industry &mdash; typically $20,000 to $500,000, often funded in as little as 24
+              to 48 hours, and it&rsquo;s based on your revenue, not your credit. If you&rsquo;ve got a
               project, payroll, or opportunity that needs cash faster than a bank moves, give me a
               call back at <b>[Callback Number]</b>. Again, that&rsquo;s <b>[First Name]</b> with
               MFunding, <b>[Callback Number]</b>. Talk soon.&rdquo;
@@ -590,10 +1005,81 @@ export default function SetterGuidePage() {
           </div>
         </section>
 
-        {/* 08 — COMMS */}
+        {/* 08 — CALL SCRIPTS BY LEAD TYPE */}
         <section>
           <div className="kicker">
             <span className="n">08</span>
+            <h2>The scripts — UCC, Aged &amp; Trigger</h2>
+          </div>
+          <p className="lede" style={{ marginBottom: 6 }}>
+            Three lists, three different people on the other end. The <b>Source</b> on the
+            opportunity tells you which script you&rsquo;re on. Read it word-for-word until it
+            sounds like yours — the opening earns you 30 seconds, the qualifying questions fill the
+            Revenue Playbook, and the <b>two-option appointment close</b> is the whole job.
+          </p>
+
+          {SCRIPTS.map((s) => (
+            <div className="script" key={s.who}>
+              <div className="who">{s.who}</div>
+              <h3>{s.title}</h3>
+              <p className="psych">{s.psych}</p>
+
+              <div className="lbl">Opening (~15 seconds)</div>
+              <div className="vm" style={{ marginTop: 0 }}>
+                <blockquote>{s.opening}</blockquote>
+              </div>
+
+              <div className="lbl">Branch on their answer</div>
+              <div>
+                {s.branches.map((b) => (
+                  <div className="branch" key={b.cue}>
+                    <div className="cue">{b.cue}</div>
+                    <div className="say-line">{b.line}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="lbl">Qualify — fill the Revenue Playbook while they talk</div>
+              <div className="vm" style={{ marginTop: 0 }}>
+                <blockquote>{s.qualify}</blockquote>
+              </div>
+
+              <div className="lbl">{s.closeLbl}</div>
+              <div className="vm" style={{ marginTop: 0 }}>
+                <blockquote>{s.close}</blockquote>
+              </div>
+
+              <div className="lbl">Overcoming objections</div>
+              <div className="fix">
+                {s.objections.map((o) => (
+                  <div className="row" key={o.q}>
+                    <div className="q">{o.q}</div>
+                    <div className="a">{o.a}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div className="note warn" style={{ marginTop: 22 }}>
+            <div className="h">Rules that apply to all three scripts — drill these</div>
+            <b>Your job is the appointment, not the deal</b> — qualify, fill the Playbook, book the
+            specialist; never quote rates, never promise an approval.{" "}
+            <span className="say">Working capital / advance / funding</span>,{" "}
+            <span className="dont">never &ldquo;a loan&rdquo;</span> for the advance product (the
+            &ldquo;is this a loan?&rdquo; answer above is the only exception). Always the{" "}
+            <b>two-option close</b> — &ldquo;[TIME] or [TIME]?&rdquo;, never &ldquo;when works for
+            you?&rdquo;. <b>DNC is sacred</b> — &ldquo;stop calling&rdquo; means the do-not-contact
+            disposition on the spot, no rebuttal. <b>Disposition every single call</b> — the board
+            automation runs off it. And talk 30% / listen 70% while qualifying: what they say goes
+            in the Playbook, because the closer&rsquo;s first 60 seconds depends on it.
+          </div>
+        </section>
+
+        {/* 09 — COMMS */}
+        <section>
+          <div className="kicker">
+            <span className="n">09</span>
             <h2>Need help? Message us on Google Chat</h2>
           </div>
           <div className="note key">
