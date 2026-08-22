@@ -28,14 +28,15 @@
 // • wavv-do-not-contact ⇒ contact.dnd = true FIRST (the durable TCPA
 //   suppression GHL actually enforces), then the opp is lost.
 //
-// MAPPING (stage ids are the live MFunding MCA Pipeline values):
-//   wavv-not-interested     → stage  Contacted   (owner: "I expect them to show
-//                                                 up as contacted", 8/17)
+// MAPPING (stage ids are the live MFunding MCA Pipeline values; the MAPPING
+// array below is the single source of truth — owner "option A" ruling 8/17):
+//   wavv-not-interested     → status lost  (WAVV natively losses it at
+//                                           disposition time; ours is a backstop)
 //   wavv-bad-number         → status lost
 //   wavv-do-not-contact     → DND + status lost
-//   wavv-interested         → stage  Qualifying  (future-proof: positive
-//   wavv-callback-scheduled → stage  Contacted    dispositions the owner will
-//                                                 add in WAVV Manager)
+//   wavv-interested         → stage  Qualifying
+//   wavv-appointment-set    → stage  Qualifying
+//   wavv-callback           → stage  Contacted
 //   no-answer / left-voicemail / none / canceled / call-blocked → no action
 //   (lead stays in New Lead for redial; their tags are left untouched).
 
