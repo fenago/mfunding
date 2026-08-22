@@ -457,7 +457,7 @@ export default function SetterGuidePage() {
         <section>
           <div className="kicker">
             <span className="n">07</span>
-            <h2>Voicemail drops in the WAVV dialer</h2>
+            <h2>Voicemails &amp; recordings in the WAVV dialer</h2>
           </div>
           <p className="lede" style={{ marginBottom: 14 }}>
             Record your voicemail <b>once</b>; the dialer drops it for you all day. When you hit an
@@ -527,6 +527,50 @@ export default function SetterGuidePage() {
               $500K based on revenue, not credit. Call me back at <b>[Callback Number]</b> and
               I&rsquo;ll tell you what you&rsquo;d qualify for. Again, <b>[Callback Number]</b>.
               Thanks.&rdquo;
+            </blockquote>
+          </div>
+          <p className="lede" style={{ margin: "18px 0 14px" }}>
+            The drop above is one of <b>four recordings</b> your line needs. The other three:
+            the <b>Callback Message</b> (plays to a live person who answers while you&rsquo;re
+            already on another call &mdash; set in the same Settings &rarr; <b>Voicemails</b> tab),
+            your <b>personal voicemail greeting</b> (what a merchant hears when they call your
+            number back and you miss it), and the <b>team voicemail greeting</b> (the shared
+            MFunding line). Record all of them &mdash; your outbound drop tells people to call
+            back, so what they hit when they do has to sound like MFunding.
+          </p>
+          <div className="vm">
+            <div className="tag">Callback Message &mdash; live answer while you&rsquo;re busy (~15 seconds)</div>
+            <div className="nm">Busy-Line Callback</div>
+            <blockquote>
+              &ldquo;Hi &mdash; so sorry, this is <b>[First Name]</b> with MFunding, and I stepped
+              onto another call right as you picked up. I was calling about working capital
+              approvals for businesses like yours &mdash; up to five hundred thousand, based on
+              revenue, not credit. Call me right back at <b>[Callback Number]</b> &mdash; again,
+              that&rsquo;s <b>[Callback Number]</b> &mdash; or I&rsquo;ll try you again shortly.
+              Thanks!&rdquo;
+            </blockquote>
+          </div>
+          <div className="vm">
+            <div className="tag">Personal voicemail &mdash; your own line&rsquo;s greeting</div>
+            <div className="nm">Missed Callback Greeting</div>
+            <blockquote>
+              &ldquo;Hi, you&rsquo;ve reached <b>[First Name]</b> with MFunding. Sorry I missed you
+              &mdash; I&rsquo;m probably on the line with another business owner right now. Leave
+              your name, your business name, and the best number to reach you, and I&rsquo;ll call
+              you right back. If you&rsquo;re calling about working capital for your business,
+              you&rsquo;re in the right place. Talk soon.&rdquo;
+            </blockquote>
+          </div>
+          <div className="vm">
+            <div className="tag">Team voicemail &mdash; the shared MFunding line</div>
+            <div className="nm">Main Line Greeting</div>
+            <blockquote>
+              &ldquo;Thanks for calling MFunding &mdash; business funding made simple. We help
+              business owners access working capital from twenty thousand to five hundred thousand
+              dollars, based on your revenue, not your credit. Leave your name, your business name,
+              and the best callback number, and a funding specialist will get right back to you.
+              You can also visit mfunding-dot-net to get started online. We&rsquo;ll talk
+              soon.&rdquo;
             </blockquote>
           </div>
           <div className="note tip">
