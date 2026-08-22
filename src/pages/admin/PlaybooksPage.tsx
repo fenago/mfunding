@@ -223,24 +223,28 @@ export default function PlaybooksPage() {
     listCampaigns().then(setCampaigns).catch(() => setCampaigns([]));
   }, []);
   // ── Deep link: open a merchant straight from their contact ────────────────
-  // A setter clicks ONE link on the contact (GHL / HotProspector) and lands here
+  // A setter clicks ONE link on the VibeReach (GHL) contact card and lands here
   // with that merchant's deal ALREADY loaded on the right flow tab — no hunting
   // through My Day, no typing. Forms supported:
   //   /admin/playbooks?deal=<dealId>          → load that deal directly
-  //   /admin/playbooks?contact=<ghlContactId> → resolve via playbook-open-contact
-  //   /admin/playbooks?phone=<phone>          → resolve via playbook-open-contact
-  //     (the UCC/HotProspector path: those leads were CSV-imported into HP and
-  //      have NO GHL contact id, so the phone number is the only identifier the
-  //      setter has on screen. Same fn, same response shape.)
-  //   HP style: HotProspector's integration force-appends
+  //   /admin/playbooks?contact=<ghlContactId> → resolve via playbook-open-contact.
+  //     THIS is the link written onto the contact (Additional Info → "Revenue
+  //     Playbook") by playbook-link-sweep / lead-enrich-ghl — the normal path a
+  //     setter takes off the WAVV contact card.
+  //   /admin/playbooks?phone=<phone>          → resolve via playbook-open-contact.
+  //     The fallback form lead-push-ghl writes for leads pushed BEFORE they had a
+  //     GHL contact id: with no id to embed, the phone is the only identifier on
+  //     screen. Same fn, same response shape.
+  //   Legacy: the retired HotProspector integration force-appended
   //     /v2/location/{loc}/contacts/detail/{id} to the base link, so the contact
-  //     id lands in ?x= (or on the path) — same recovery SendAppPage uses.
+  //     id landed in ?x= (or on the path). Kept for back-compat so old links still
+  //     resolve — same recovery SendAppPage uses.
   // Runs exactly ONCE, then strips the params so a refresh can't re-fire it.
   const deepLinkRan = useRef(false);
   const [deepLink, setDeepLink] = useState<{ phase: "loading" | "error"; message?: string } | null>(null);
 
   // Resolve → load a merchant into the playbook. ONE path for both deep links
-  // (?x= contact id and ?phone=), so they get the same spinner, the same error
+  // (?contact= contact id and ?phone=), so they get the same spinner, the same error
   // banner, and the same "lands on the right flow tab" behavior.
   // Never throws — it reports through setDeepLink/notify and returns ok/not-ok.
   async function openMerchant(
@@ -302,10 +306,10 @@ export default function PlaybooksPage() {
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // (The visible "open by phone" box was removed — the native HP "Gohighlevel
-  // Custom Link" works now that leads sync in linked, and the header search
-  // covers name/business/phone lookups. The silent ?phone= deep link above
-  // remains as a backstop for bookmarklets/automation.)
+  // (The visible "open by phone" box was removed — the "Revenue Playbook" link
+  // custom field on the VibeReach contact card opens the merchant directly, and
+  // the header search covers name/business/phone lookups. The silent ?phone= deep
+  // link above remains as a backstop for bookmarklets/automation.)
 
   const dealCampaign = deal ? campaigns.find((c) => c.id === deal.campaign_id) ?? null : null;
 

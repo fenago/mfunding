@@ -35,13 +35,10 @@ import {
   CHANNEL_META,
   STATUSES,
   DIAL_CHANNEL,
-  listHpCampaigns,
-  linkHpCampaign,
   setDialTag,
   validateDialTag,
   suggestDialTag,
   type DialTagCheck,
-  type HpCampaignOption,
   type Campaign,
   type CampaignStatus,
   type CampaignMetrics,
@@ -494,16 +491,15 @@ function CampaignDetail({
 
 /* ── Dial campaign panel ──────────────────────────────────────────────────────
    The outbound-dial funnel, which the deal-based KPIs above cannot see either
-   end of. Four stages, each reporting only what is actually measurable:
+   end of. Three stages, each reporting only what is actually measurable:
 
-     leads pushed → HP linkage → HP dial activity → deals / funded / revenue
+     leads pushed → deals attributed → funded / revenue
 
-   The third stage is a STATED GAP, not a chart. HotProspector's per-campaign
-   disposition endpoint (getDashboardMemberDatabyCampaign) 404s for every campaign
-   on this account, so hotprospector_disposition_daily has no rows and no amount of
-   waiting will give it any. That is said plainly, with a link to the account-wide
-   Dialer Metrics — and if rows ever DO appear for this campaign, the real numbers
-   render instead, with no further work. */
+   Dial activity is a STATED GAP, not a chart. Nothing in this stack reports
+   calls per CAMPAIGN: WAVV dials the Opportunities board, not a tag, so its
+   numbers are per rep and account-wide. Those live on the setter-performance
+   scorecard, which is what the gap tile links to rather than pretending a
+   per-campaign number exists. */
 function DialCampaignPanel({
   campaign: c, metrics: m, onChanged,
 }: { campaign: Campaign; metrics?: CampaignMetrics; onChanged: () => void }) {
@@ -511,8 +507,6 @@ function DialCampaignPanel({
   const [pushed, setPushed] = useState<number | null>(null);
   const [pushedErr, setPushedErr] = useState<string | null>(null);
   const [runs, setRuns] = useState<{ jobs: number; pushed: number } | null>(null);
-  const [dispositions, setDispositions] = useState<{ disposition: string; cnt: number }[] | null>(null);
-  const [linking, setLinking] = useState(false);
 
   /* How many leads carry this campaign's tag. It MUST go through the counting
      function: lead_records is a 250k-row table behind an 8s statement timeout, and
@@ -562,28 +556,6 @@ function DialCampaignPanel({
     };
   }, [c.id]);
 
-  /* Per-campaign dispositions, keyed on the HP campaign id. Empty today for the
-     reason in the panel header — the query stays so it lights up if that changes. */
-  useEffect(() => {
-    if (!c.hp_campaign_id) return;
-    let stale = false;
-    void supabase
-      .from("hotprospector_disposition_daily")
-      .select("disposition, cnt")
-      .eq("campaign_id", c.hp_campaign_id)
-      .then(({ data }) => {
-        if (stale || !data) return;
-        const byDisp = new Map<string, number>();
-        for (const r of data as { disposition: string; cnt: number }[]) {
-          byDisp.set(r.disposition, (byDisp.get(r.disposition) ?? 0) + (Number(r.cnt) || 0));
-        }
-        setDispositions([...byDisp.entries()].map(([disposition, cnt]) => ({ disposition, cnt })).sort((a, b) => b.cnt - a.cnt));
-      });
-    return () => {
-      stale = true;
-    };
-  }, [c.hp_campaign_id]);
-
   const src = c.dial_source ?? {};
   const srcTypes = Array.isArray(src.lead_types) ? (src.lead_types as string[]) : [];
   const srcStates = Array.isArray(src.states) ? (src.states as string[]) : [];
@@ -615,12 +587,13 @@ function DialCampaignPanel({
       ) : (
         <p className="text-[11px] text-gray-600 dark:text-gray-300">
           <strong>The tag is the join key.</strong> The Lead Machine writes <code className="font-mono">{tag}</code> onto
-          every lead it pushes, the tag lands on the VibeReach contact, and HotProspector dials it once the campaign's
-          "Tags to Dial" targets it.
+          every lead it pushes and it lands on the VibeReach contact, so every number below is scoped by it.{" "}
+          <strong>It is attribution, not a dial target</strong> — WAVV dials the New Lead column of the MFunding MCA
+          Pipeline.
         </p>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {/* 1. Leads pushed */}
         <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3">
           <div className="text-[11px] text-gray-400">Leads pushed</div>
@@ -637,36 +610,14 @@ function DialCampaignPanel({
           )}
         </div>
 
-        {/* 2. HP linkage */}
-        <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3">
-          <div className="text-[11px] text-gray-400">HotProspector campaign</div>
-          {c.hp_campaign_id ? (
-            <>
-              <div className="text-sm font-semibold text-gray-900 dark:text-white truncate" title={c.hp_campaign_name ?? ""}>
-                {c.hp_campaign_name || c.hp_campaign_id}
-              </div>
-              <button onClick={() => setLinking(true)} className="text-[10px] text-ocean-blue hover:underline">
-                change or unlink
-              </button>
-            </>
-          ) : (
-            <>
-              <div className="text-sm text-amber-700 dark:text-amber-300">not linked</div>
-              <button onClick={() => setLinking(true)} className="text-[10px] text-ocean-blue hover:underline">
-                link it →
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* 3. Deals attributed */}
+        {/* 2. Deals attributed */}
         <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3">
           <div className="text-[11px] text-gray-400">Deals attributed</div>
           <div className="text-xl font-bold text-gray-900 dark:text-white">{(m?.leads ?? 0).toLocaleString()}</div>
           <div className="text-[10px] text-gray-400">via deals.campaign_id</div>
         </div>
 
-        {/* 4. The money. Zeros across the board read as a broken query, so when
+        {/* 3. The money. Zeros across the board read as a broken query, so when
              nothing has funded yet this says so in words instead. */}
         <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3">
           <div className="text-[11px] text-gray-400">Funded · revenue at 8 pts</div>
@@ -688,25 +639,15 @@ function DialCampaignPanel({
       {/* Dial activity — the honest gap. */}
       <div className="rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-3">
         <div className="text-[11px] text-gray-400 mb-1">Dial activity</div>
-        {dispositions && dispositions.length > 0 ? (
-          <div className="flex flex-wrap gap-2">
-            {dispositions.map((d) => (
-              <span key={d.disposition} className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200">
-                {d.disposition} <strong>{d.cnt.toLocaleString()}</strong>
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p className="text-xs text-gray-600 dark:text-gray-300">
-            <strong>HotProspector does not break dial stats out per campaign on this account.</strong> Its
-            per-campaign endpoint returns 404 for every campaign, so there is nothing to show here — this is a gap in
-            what HP exposes, not a campaign with no activity.{" "}
-            <Link to="/admin/dialer" className="text-ocean-blue hover:underline">
-              Dialer Metrics
-            </Link>{" "}
-            has the account-wide dial numbers.
-          </p>
-        )}
+        <p className="text-xs text-gray-600 dark:text-gray-300">
+          <strong>Dial activity is not broken out per campaign.</strong> WAVV dials the Opportunities board rather
+          than a tag, so calls, connects and dispositions are recorded <strong>per rep, account-wide</strong> — there
+          is no per-campaign number to show here, and a zero would be a lie rather than a measurement.{" "}
+          <Link to="/admin/setter-performance" className="text-ocean-blue hover:underline">
+            Setter Performance
+          </Link>{" "}
+          has the WAVV scorecard.
+        </p>
       </div>
 
       {/* Where this campaign's leads came from. */}
@@ -718,17 +659,6 @@ function DialCampaignPanel({
           {srcStates.length > 0 && <> · {srcStates.join(", ")}</>}
           {typeof src.planned_count === "number" && <> · {src.planned_count.toLocaleString()} leads in the slice</>}
         </p>
-      )}
-
-      {linking && (
-        <HpLinkPicker
-          campaign={c}
-          onClose={() => setLinking(false)}
-          onLinked={() => {
-            setLinking(false);
-            onChanged();
-          }}
-        />
       )}
     </div>
   );
@@ -783,8 +713,8 @@ function SetDialTag({ campaign: c, onDone }: { campaign: Campaign; onDone: () =>
         res.unchanged
           ? "Already set to that tag — nothing changed."
           : `Tag set to ${res.campaign.dial_tag}.` +
-            (res.ghlTagCreated ? " Created in VibeReach, so run Refresh Meta in HotProspector before it can be selected there." : "") +
-            (res.checklistReseeded ? " The HotProspector checklist was reset, because the old wiring pointed at a different tag." : ""),
+            (res.ghlTagCreated ? " Created in VibeReach." : "") +
+            (res.checklistReseeded ? " The setup checklist was reset, because the old wiring pointed at a different tag." : ""),
       );
       onDone();
     } catch (e) {
@@ -824,85 +754,6 @@ function SetDialTag({ campaign: c, onDone }: { campaign: Campaign; onDone: () =>
       </div>
       {err && <p className="text-xs text-rose-600 dark:text-rose-400">{err}</p>}
       {note && <p className="text-xs text-emerald-700 dark:text-emerald-300">{note}</p>}
-    </div>
-  );
-}
-
-/* The manual HP link. Manual because HP exposes only campaign_id + CampaignTitle
-   — no tags, no detail endpoint — so nothing can match its campaigns to ours
-   automatically. Read-only against HP; the only write is our own column. */
-function HpLinkPicker({
-  campaign: c, onClose, onLinked,
-}: { campaign: Campaign; onClose: () => void; onLinked: () => void }) {
-  const [options, setOptions] = useState<HpCampaignOption[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    let stale = false;
-    listHpCampaigns()
-      .then((o) => {
-        if (!stale) setOptions(o);
-      })
-      .catch((e) => {
-        if (!stale) setErr(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      stale = true;
-    };
-  }, []);
-
-  const save = async (hp: HpCampaignOption | null) => {
-    setSaving(true);
-    setErr(null);
-    try {
-      await linkHpCampaign(c.id, hp ? { hp_campaign_id: hp.hp_campaign_id, hp_campaign_name: hp.hp_campaign_name } : null);
-      onLinked();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="text-xs font-bold text-gray-900 dark:text-white">Link a HotProspector campaign</p>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-          <XMarkIcon className="w-4 h-4" />
-        </button>
-      </div>
-      {err && <p className="text-xs text-rose-600 dark:text-rose-400">{err}</p>}
-      {options == null && !err && <p className="text-xs text-gray-400">loading HotProspector campaigns…</p>}
-      {options?.length === 0 && <p className="text-xs text-gray-500 dark:text-gray-400">HotProspector returned no campaigns.</p>}
-      <div className="space-y-1">
-        {(options ?? []).map((o) => {
-          const claimedByOther = o.linked_to && o.linked_to.id !== c.id;
-          return (
-            <button
-              key={o.hp_campaign_id}
-              disabled={saving || !!claimedByOther}
-              onClick={() => void save(o)}
-              className="w-full text-left text-xs px-2 py-1.5 rounded border border-gray-200 dark:border-gray-700 hover:border-ocean-blue disabled:opacity-50 disabled:hover:border-gray-200 text-gray-800 dark:text-gray-100"
-            >
-              {o.hp_campaign_name || o.hp_campaign_id}
-              {claimedByOther && (
-                <span className="text-gray-400"> · already linked to {o.linked_to?.code || o.linked_to?.name}</span>
-              )}
-              {o.linked_to?.id === c.id && <span className="text-emerald-600 dark:text-emerald-400"> · current</span>}
-            </button>
-          );
-        })}
-      </div>
-      {c.hp_campaign_id && (
-        <button onClick={() => void save(null)} disabled={saving} className="text-[11px] text-rose-600 hover:underline">
-          Unlink
-        </button>
-      )}
-      <p className="text-[10px] text-gray-400">
-        Linking records which HP campaign belongs to this one. It does not change anything in HotProspector — its
-        campaigns are UI-only, so "Tags to Dial" still has to be set there by hand.
-      </p>
     </div>
   );
 }

@@ -99,7 +99,6 @@ const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.
 const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSetterPlaybookPage.tsx"));
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
 const LeadMachinePage = lazyWithReload(() => import("../pages/admin/LeadMachinePage.tsx"));
-const DialerPage = lazyWithReload(() => import("../pages/admin/DialerPage.tsx"));
 const SetterPerformancePage = lazyWithReload(() => import("../pages/admin/SetterPerformancePage.tsx"));
 const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
 const UccMachineGuidePage = lazyWithReload(() => import("../pages/admin/UccMachineGuidePage.tsx"));
@@ -500,7 +499,7 @@ export const routes: RouteObject[] = [
               // Admins were locked out while the dial-campaign function and the
               // campaigns RLS SELECT policy both admit them, so an admin could
               // mint a dial campaign from the Lead Machine and then had nowhere to
-              // work its HotProspector setup checklist.
+              // work its dial-campaign setup checklist.
               {
                 path: "campaigns",
                 element: <AdminOnlyProtectedRoute />,
@@ -541,7 +540,7 @@ export const routes: RouteObject[] = [
                 path: "cheat-sheet",
                 element: <FunderCheatSheetPage />,
               },
-              // How the Dialing Machine Works — the Lists → GHL → HotProspector →
+              // How the Dialing Machine Works — the Lists → VibeReach → WAVV →
               // Revenue Playbook one-pager. Setters (role `closer`) read it as
               // onboarding, so it takes the same NO-extra-guard treatment as the
               // cheat sheet: AdminProtectedRoute's isStaff check (closer +
@@ -748,19 +747,12 @@ export const routes: RouteObject[] = [
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <LeadMachinePage /> }],
               },
-              // Dialer Metrics — the HotProspector (PowerDialer) per-rep scorecard.
-              // A management surface for running the setter floor, so it carries the
-              // same admin-only guard as the other PH consoles.
-              {
-                path: "dialer",
-                element: <AdminOnlyProtectedRoute />,
-                children: [{ index: true, element: <DialerPage /> }],
-              },
-              // Setter Performance — the WAVV per-rep scorecard that REPLACES the
-              // HotProspector one above (HP is retired; /admin/dialer stays as the
-              // historical record). Admin-only on purpose: a closer must not read
-              // the floor's per-rep stats, and the wavv_calls RLS policy backs
-              // that up at the data layer.
+              // Setter Performance — the WAVV per-rep scorecard, and the only one:
+              // the HotProspector scorecard that used to live at /admin/dialer was
+              // deleted with the rest of the HP teardown (the historical
+              // hotprospector_* tables are untouched in the DB). Admin-only on
+              // purpose: a closer must not read the floor's per-rep stats, and the
+              // wavv_calls RLS policy backs that up at the data layer.
               {
                 path: "setter-performance",
                 element: <AdminOnlyProtectedRoute />,

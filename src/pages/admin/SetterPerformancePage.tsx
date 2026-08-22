@@ -1,7 +1,9 @@
 // Setter Performance — the WAVV dial-floor scorecard.
 //
-// REPLACES the HotProspector scorecard at /admin/dialer (HP is retired; that page
-// is frozen as the historical record). Setters now dial with WAVV embedded in
+// The ONLY dial-floor scorecard: it replaced the HotProspector one that used to
+// live at /admin/dialer, and that page has since been deleted with the rest of
+// the HP teardown (the historical hotprospector_* tables are untouched in the
+// DB — this page just never reads them). Setters dial with WAVV embedded in
 // VibeReach, so per-call activity comes from the WAVV Public API v3, mirrored into
 // public.wavv_calls every 10 minutes by the `wavv-sync` edge function. This page
 // reads the MIRROR for every aggregate and only calls the edge function for three

@@ -343,7 +343,7 @@ const PAGE_SIZE = 25;
 const TRACE_COST_DISPLAY = 0.07;
 const TRACE_COST_GUARD = 0.1;
 const HARD_CALL_CAP = 100; // the edge fn traces at most 100 leads per call, and we batch in chunks of this
-// The GHL/HP push does a few rate-limited GHL calls PER lead (upsert + tags +
+// The push to VibeReach does a few rate-limited GHL calls PER lead (upsert + tags +
 // custom fields) with retry/backoff + pacing, so it processes far fewer leads
 // per call than skip-trace. Chunk at 50 so a clean chunk finishes well inside the
 // edge fn's time budget; anything a chunk doesn't reach comes back as
@@ -1283,11 +1283,11 @@ export default function PhUccMachinePage() {
   const [apolloCap, setApolloCap] = useState(""); // "" = enrich all filtered; else partial ("top N")
 
   // ── Filter-driven "Push to VibeReach (GHL)" (FREE — no spend) ──
-  // Pushes the CURRENT filtered, skip-traced set into GHL as tagged contacts;
-  // HotProspector then pulls them by tag (Sync Leads) so they land in the dialer
-  // LINKED. Only contactable leads (phone OR email) are pushed; needs_skiptrace
-  // rows are skipped server-side. A per-run batch tag is what HP's sync and the
-  // dialer campaign target.
+  // Pushes the CURRENT filtered, skip-traced set into GHL as tagged contacts, so
+  // they land as New Lead opportunities on the MFunding MCA Pipeline that setters
+  // dial with WAVV. Only contactable leads (phone OR email) are pushed;
+  // needs_skiptrace rows are skipped server-side. The per-run batch tag is what
+  // the dial campaign and the Source/tag filters target.
   const [pushDialable, setPushDialable] = useState<number | null>(null); // filtered ∩ has phone/email
   const [pushAlready, setPushAlready] = useState<number | null>(null); // filtered ∩ already pushed
   const [pushCap, setPushCap] = useState(""); // "" = push all dialable; else partial ("top N")
@@ -2156,8 +2156,9 @@ export default function PhUccMachinePage() {
        2) loops them in batches of 100 (the edge fn's per-call ceiling), invoking
           ph-ucc-push-ghl with the day's batch tag, showing live progress,
        3) reports the ACTUAL totals (new / updated / skipped-no-contact / errors).
-     GHL FIRST is deliberate: HotProspector then pulls by tag ("Sync Leads"), which
-     is the only path that lands leads in the dialer LINKED to their GHL contact.
+     GHL FIRST is deliberate: the contact has to exist in GHL to carry its Revenue
+     Playbook link and to show up as a New Lead opportunity the setter can dial with
+     WAVV. Nothing dialable exists outside GHL.
      De-dupe + idempotency are enforced server-side: GHL upsert collapses an existing
      merchant onto one contact, and a re-push updates rather than duplicates. */
   const runFilteredPush = useCallback(
@@ -2258,8 +2259,9 @@ export default function PhUccMachinePage() {
         setPushResult(
           `Pushed ${pushed.toLocaleString()} into VibeReach · ${updated.toLocaleString()} already loaded · ` +
             `${skipped.toLocaleString()} skipped (no contact)${errStr}. ` +
-            `Tagged "ucc-lead" + "${batchTag}". Next: HotProspector → Settings → Integrations → set Step 2 to ` +
-            `"${batchTag}" → Sync Leads. They arrive LINKED (the playbook link works), then dial by tag.`,
+            `Tagged "ucc-lead" + "${batchTag}". They're live in VibeReach now as New Lead opportunities on the ` +
+            `MFunding MCA Pipeline — nothing else to wire up. Setters filter Source = UCC and hit Call on the ` +
+            `New Lead column to dial them with WAVV.`,
         );
         // Refresh funnel / lead table / summaries to reflect the loaded rows.
         await Promise.all([loadFunnel(), loadLeads(), loadPushSummary(), loadTraceSummary()]);
@@ -2502,7 +2504,7 @@ export default function PhUccMachinePage() {
     !overBudget &&
     !batchRunning;
 
-  // ── Push-to-GHL/HP math (FREE — no wallet). The optional "push up to N" cap
+  // ── Push-to-VibeReach math (FREE — no wallet). The optional "push up to N" cap
   // makes a partial run; empty = push all dialable in the current filter. ──
   const pushBatchTag = `ucc-batch-${todayStamp()}`;
   const pushCapNum = pushCap.trim() ? Math.max(0, Math.floor(Number(pushCap) || 0)) : null;
@@ -2747,7 +2749,7 @@ export default function PhUccMachinePage() {
               <CheckCircleIcon className="w-5 h-5 shrink-0 mt-0.5" />
               <span>
                 Scrub = <strong>DNC + TCPA-litigator suppression applied at skip-trace</strong> (BatchData). Leads with a
-                usable phone go straight to <strong>ready</strong> and load to GHL/HP via the Push button — no separate
+                usable phone go straight to <strong>ready</strong> and load into VibeReach via the Push button — no separate
                 cell-scrub gate.
               </span>
             </div>
@@ -2844,7 +2846,7 @@ export default function PhUccMachinePage() {
                   onClick={exportLeadsCsv}
                   disabled={exporting}
                   className="btn-ghost inline-flex items-center gap-1.5 text-sm"
-                  title="Offline analysis only. For dialing, use Push to VibeReach — do NOT import this CSV into HotProspector."
+                  title="Offline analysis only. For dialing, use Push to VibeReach — never dial off this CSV."
                 >
                   <ArrowDownTrayIcon className="w-4 h-4" />
                   {exporting ? "Exporting…" : "Export CSV (offline analysis)"}
@@ -2859,14 +2861,15 @@ export default function PhUccMachinePage() {
               </div>
             </div>
 
-            {/* CSV is for offline analysis, NOT dialing — importing it into HotProspector
-                by hand causes duplicates/mismaps AND leaves the leads unlinked to GHL.
-                Push to VibeReach below, then Sync Leads by tag, is the dialing path. */}
+            {/* CSV is for offline analysis, NOT dialing. Loading these rows into any
+                dialer by hand duplicates/mismaps them and leaves them with no GHL
+                contact id — so the setter's Revenue Playbook link can't work.
+                Push to VibeReach below is the only dialing path. */}
             <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
               <ExclamationTriangleIcon className="w-3.5 h-3.5 shrink-0" />
-              For dialing, use <strong>Push to VibeReach</strong> then HotProspector's <strong>Sync Leads</strong> — do
-              NOT import the CSV into HotProspector (duplicates / mismaps, and the leads arrive unlinked). The CSV is for
-              offline analysis only.
+              For dialing, use <strong>Push to VibeReach</strong> — never dial off this CSV. Leads loaded by hand carry
+              no GHL contact id, so the setter's Revenue Playbook link won't work (plus duplicates / mismaps). The CSV
+              is for offline analysis only.
             </p>
 
             {/* Filter bar — every control maps to a real ph_ucc_leads column and
@@ -3183,7 +3186,7 @@ export default function PhUccMachinePage() {
               </div>
             )}
 
-            {/* ── Push THIS filtered set to GHL/HP (FREE — confirm-gated) ── */}
+            {/* ── Push THIS filtered set to VibeReach (FREE — confirm-gated) ── */}
             <div className="rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-900/10 p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <ArrowUpTrayIcon className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
@@ -3290,11 +3293,11 @@ export default function PhUccMachinePage() {
               <p className="text-[11px] text-gray-400">
                 Pushes into VibeReach (GHL) as contacts tagged <code>ucc-lead</code> + the batch tag{" "}
                 <code>{pushBatchTag}</code>, with the UCC context (positions / current funders / MCA score) written onto
-                each contact. Then in <strong>HotProspector → Settings → Integrations</strong>: set Step 2 to{" "}
-                <code>{pushBatchTag}</code> and hit <strong>Sync Leads</strong> — HP pulls them in LINKED (so the
-                "Gohighlevel Custom Link" opens the playbook instead of erroring). Campaigns then dial by tag. Only
-                contactable leads are pushed; <code>needs_skiptrace</code> rows are skipped, and a lead already pushed is
-                skipped (upsert — never duplicated).
+                each contact. They land as <strong>New Lead</strong> opportunities on the{" "}
+                <strong>MFunding MCA Pipeline</strong>, each carrying its Revenue Playbook link — setters filter{" "}
+                <strong>Source</strong> = <code>UCC</code> and hit <strong>Call</strong> on the New Lead column to dial
+                them with WAVV. Only contactable leads are pushed; <code>needs_skiptrace</code> rows are skipped, and a
+                lead already pushed is skipped (upsert — never duplicated).
               </p>
             </div>
 
@@ -4286,8 +4289,9 @@ export default function PhUccMachinePage() {
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Upserts each lead as a VibeReach (GHL) contact tagged <code>ucc-lead</code> + <code>{pushBatchTag}</code>.
               A lead already pushed is skipped — upsert, never duplicated. Only contactable leads go;
-              skip-trace-pending rows are skipped. Runs in batches with a live count. Afterwards, pull them into
-              HotProspector with <strong>Sync Leads</strong> on that batch tag.
+              skip-trace-pending rows are skipped. Runs in batches with a live count. Afterwards they're dialable
+              straight from VibeReach — <strong>New Lead</strong> on the MFunding MCA Pipeline, filtered by{" "}
+              <strong>Source</strong>.
             </p>
             <div className="flex items-center justify-end gap-2">
               <button onClick={() => setPushConfirmOpen(false)} className="btn-ghost">

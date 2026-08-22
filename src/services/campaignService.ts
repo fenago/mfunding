@@ -66,15 +66,16 @@ export interface Campaign {
   product_id: string | null;                     // Synergy catalog product key
   pricing_snapshot: Record<string, unknown> | null; // computed selection at create time
   // ── Dial campaigns (channel 'outbound_dial') ────────────────────────────────
-  // THE TAG IS THE JOIN KEY. `dial_tag` is one string that ties three systems
-  // together: lead-push-ghl writes it into lead_records.push_tags, it lands on the
-  // GHL contact, and the HotProspector campaign's "Tags to Dial" targets it. It is
-  // UNIQUE across campaigns (partial unique index campaigns_dial_tag_uidx), so no
-  // two campaigns can ever claim the same slice.
+  // THE TAG IS THE JOIN KEY. `dial_tag` is one string that ties the push to its
+  // scoreboard: lead-push-ghl writes it into lead_records.push_tags and it lands
+  // on the GHL contact, so every per-campaign number is scoped by it. It is NOT a
+  // dial target — WAVV dials the New Lead column of the MFunding MCA Pipeline, not
+  // a tag. UNIQUE across campaigns (partial unique index campaigns_dial_tag_uidx),
+  // so no two campaigns can ever claim the same slice.
   dial_tag: string | null;
-  // HP linkage is a STORED column, not a live lookup — HP exposes only campaign_id
-  // and CampaignTitle (no tags, no per-campaign detail endpoint), so the owner
-  // links it by hand once and we remember it.
+  // HISTORICAL ONLY. HotProspector is retired (owner ruling 8/17) and nothing
+  // reads these to do anything — the columns still exist and still hold the
+  // linkage recorded while HP was live, so they stay mapped rather than dropped.
   hp_campaign_id: string | null;
   hp_campaign_name: string | null;
   // Which slice of the Lead Machine this campaign was minted from. Written by the
@@ -683,15 +684,6 @@ export interface DialTagCheck {
   valid: boolean;
 }
 
-/** One HotProspector campaign as the link picker sees it. HP exposes ONLY these
- *  two fields — no tags, no stats, no detail endpoint. */
-export interface HpCampaignOption {
-  hp_campaign_id: string;
-  hp_campaign_name: string;
-  /** Set when another of our campaigns already claims it. */
-  linked_to: { id: string; code: string | null; name: string } | null;
-}
-
 /** supabase-js buries the function's real message in error.context — dig it out,
  *  otherwise every failure surfaces as a useless "non-2xx status code". */
 async function dialFnError(error: unknown): Promise<string> {
@@ -762,17 +754,19 @@ export async function validateDialTag(tag: string, campaignId?: string | null): 
 
 export interface CreatedDialCampaign {
   campaign: Campaign;
-  /** Whether the tag had to be CREATED in GHL, or already existed there. Drives
-   *  the "Refresh Meta" step: HP's tag picker reads a cached copy of GHL's tag
-   *  list, so a brand-new tag is invisible to HP until that refresh runs. */
+  /** Whether the tag had to be CREATED in GHL, or already existed there. Surfaced
+   *  so the confirmation can say which happened — an existing tag may already
+   *  carry contacts from an earlier push. */
   ghlTagCreated: boolean;
 }
 
 /**
  * Create a dial campaign. The function mints the `code`, creates the tag in GHL
  * (a location-level label only — no contact is created, updated or messaged) and
- * seeds the HP setup checklist server-side. Do NOT seed a checklist here: the
- * server owns those item keys.
+ * seeds the setup checklist server-side. Do NOT seed a checklist here: the
+ * server owns those item keys. (The dial-campaign function still seeds the old
+ * HotProspector-era items — HP is retired, so treat stale items as the server's
+ * problem to fix, not something to paper over client-side.)
  */
 export async function createDialCampaign(input: {
   name: string;
@@ -797,10 +791,10 @@ export interface SetDialTagResult {
   campaign: Campaign;
   ghlTagCreated: boolean;
   previousTag: string | null;
-  /** The server always re-seeds the HP checklist on a real change: the item
-   *  labels embed the tag, and a tag change invalidates the HP wiring (HP is
-   *  still pointed at the old tag), so previously-ticked steps would be claiming
-   *  work that no longer applies. */
+  /** The server always re-seeds the setup checklist on a real change: the item
+   *  labels embed the tag, and a tag change invalidates whatever was wired to the
+   *  old one, so previously-ticked steps would be claiming work that no longer
+   *  applies. */
   checklistReseeded: boolean;
   /** True when the tag was already exactly this — nothing was written. */
   unchanged: boolean;
@@ -832,25 +826,6 @@ export async function setDialTag(campaignId: string, tag: string): Promise<SetDi
     checklistReseeded: res.checklist_reseeded === true,
     unchanged: res.unchanged === true,
   };
-}
-
-/** Read-only list of HotProspector campaigns for the manual link picker. */
-export async function listHpCampaigns(): Promise<HpCampaignOption[]> {
-  const res = await callDialFn<{ campaigns: HpCampaignOption[] }>({ action: "hp_campaigns" });
-  return res.campaigns ?? [];
-}
-
-/** Attach (or, with a null id, detach) a HotProspector campaign. */
-export async function linkHpCampaign(
-  campaignId: string,
-  hp: { hp_campaign_id: string; hp_campaign_name: string } | null,
-): Promise<void> {
-  await callDialFn({
-    action: "link_hp",
-    campaign_id: campaignId,
-    hp_campaign_id: hp?.hp_campaign_id ?? null,
-    hp_campaign_name: hp?.hp_campaign_name ?? null,
-  });
 }
 
 /** Persist just the setup checklist (from ticking an item). */

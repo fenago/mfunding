@@ -1,17 +1,30 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // How the Dialing Machine Works
 //
-// The CORRECTED end-to-end SOP: Lists → GoHighLevel (tagged) → HotProspector
-// (linked sync) → Revenue Playbook → GoHighLevel writeback. Static reference
-// page — no data fetching.
+// The end-to-end SOP: Lists → Lead Machine → VibeReach (contact + New Lead
+// opportunity) → WAVV → Revenue Playbook → disposition writes the board back.
+// Static reference page — no data fetching.
 //
-// ⚠️ Content history: this page previously documented "CSV → import straight
-// into HotProspector". That flow is WRONG and broke the setter floor (1,047
-// leads loaded that way carried no GoHighLevel id, so the setter's
-// "Gohighlevel Custom Link" button errored "Lead data not Synced" on every
-// one). Lists must land in GoHighLevel FIRST and reach HotProspector only via
-// the tagged Settings → Integrations sync. Do not reintroduce a direct-to-HP
-// import path here.
+// ⚠️ Content history. This page used to document a HotProspector leg (load into
+// GHL, tag, then sync the tag down into HP, then build an HP campaign on a
+// group). HotProspector is FULLY RETIRED (owner ruling 8/17: "we are not using
+// hot prospector at all") and that whole middle section no longer exists: WAVV
+// lives inside VibeReach and dials a pipeline column directly, so there is no
+// sync step, no group, and no dialer-side campaign. Do not reintroduce one.
+//
+// Every fact below is checked against the live system, not remembered:
+//   • pipeline + stage names — GHL /opportunities/pipelines, "MFunding MCA
+//     Pipeline" bG9ZEh4eP9x60E1CyaMx
+//   • the disposition → board mapping — the MAPPING array in
+//     supabase/functions/wavv-disposition-sync/index.ts (NOT that file's older
+//     header comment, which still describes a superseded not-interested rule)
+//   • the 10-minute cadence — 20260818_wavv_disposition_sync_cron.sql
+//   • the setter-side clicks — SetterGuidePage, which is the setters' own doc
+// If any of those change, fix them THERE first and mirror the change here.
+//
+// Audience: OPS (every staff role, setters included) — this is the manager-side
+// companion to the Setter Guide. Same flow, told as "how does a bought list
+// become a dialed lead" rather than "how do I run my shift".
 //
 // Theming: the app drives dark mode with a `dark` class on <html> (see
 // lib/theme-context), so the dark token block is scoped to `.dark .dmw`. The
@@ -24,7 +37,8 @@ const CSS = `
   --ink:#0f2942; --ink-soft:#40546b; --ink-faint:#7387a0;
   --ground:#f6f8fb; --panel:#ffffff; --line:#dfe6ee; --line-soft:#eef2f7;
   --accent:#0f9d6b; --accent-ink:#0a7a52; --gold:#c08a2d; --danger:#c0392d;
-  --sys-list:#c08a2d; --sys-ghl:#2f6fb0; --sys-hp:#7c5cd6; --sys-play:#0f9d6b; --sys-close:#2f9e6e;
+  --sys-list:#c08a2d; --sys-lm:#7c5cd6; --sys-ghl:#2f6fb0; --sys-wavv:#1b8fa6;
+  --sys-play:#0f9d6b; --sys-close:#2f9e6e;
   --num-ink:#ffffff;
   --shadow:0 1px 2px rgba(15,41,66,.06),0 5px 18px rgba(15,41,66,.05);
   --radius:14px;
@@ -36,7 +50,8 @@ const CSS = `
   --ink:#e8eef5; --ink-soft:#a9b8c8; --ink-faint:#8095a8;
   --ground:#0b1620; --panel:#111e2b; --line:#24313f; --line-soft:#18242f;
   --accent:#2fc98d; --accent-ink:#57d7a5; --gold:#d9ab52; --danger:#ef8177;
-  --sys-list:#d9ab52; --sys-ghl:#6aa6e0; --sys-hp:#a68bf0; --sys-play:#2fc98d; --sys-close:#54c68d;
+  --sys-list:#d9ab52; --sys-lm:#a68bf0; --sys-ghl:#6aa6e0; --sys-wavv:#55c4dc;
+  --sys-play:#2fc98d; --sys-close:#54c68d;
   --num-ink:#08131c;
   --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
 }
@@ -53,45 +68,48 @@ const CSS = `
 .dmw section{margin-top:34px}
 .dmw .sec-h{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:14px}
 /* system cards */
-.dmw .sys{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px}
+.dmw .sys{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
 .dmw .syscard{border:1px solid var(--line);border-left-width:4px;border-radius:12px;background:var(--panel);box-shadow:var(--shadow);padding:13px 15px}
 .dmw .syscard .k{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint)}
 .dmw .syscard .nm{font-weight:750;font-size:15px;margin:2px 0 4px}
 .dmw .syscard .ds{font-size:12.5px;color:var(--ink-soft)}
 .dmw .s-list{border-left-color:var(--sys-list)}
+.dmw .s-lm{border-left-color:var(--sys-lm)}
 .dmw .s-ghl{border-left-color:var(--sys-ghl)}
-.dmw .s-hp{border-left-color:var(--sys-hp)}
+.dmw .s-wavv{border-left-color:var(--sys-wavv)}
 .dmw .s-play{border-left-color:var(--sys-play)}
 /* diagram */
 .dmw figure{margin:0;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow);padding:18px 18px 12px}
 .dmw .diagram{width:100%;height:auto;display:block}
 .dmw .n{fill:var(--panel);stroke-width:1.7}
 .dmw .n-list{stroke:var(--sys-list)}
+.dmw .n-lm{stroke:var(--sys-lm)}
 .dmw .n-ghl{stroke:var(--sys-ghl);stroke-width:2.6}
-.dmw .n-hp{stroke:var(--sys-hp)}
+.dmw .n-wavv{stroke:var(--sys-wavv);stroke-width:2.6}
 .dmw .n-close{stroke:var(--sys-close)}
 .dmw .n-play{stroke:var(--sys-play);stroke-width:2.6}
 .dmw .nt{fill:var(--ink);font-weight:750;font-size:12.5px}
 .dmw .nr{fill:var(--ink-soft);font-size:9.7px;font-weight:600}
 .dmw .edge{stroke:var(--ink-faint);stroke-width:1.7;fill:none}
 .dmw .edge-accent{stroke:var(--sys-play);stroke-width:1.9;fill:none}
-.dmw .edge-hp{stroke:var(--sys-hp);stroke-width:2.4;fill:none}
+.dmw .edge-wavv{stroke:var(--sys-wavv);stroke-width:2.4;fill:none}
 .dmw .arrowhead{fill:var(--ink-faint)}
 .dmw .arrowhead-a{fill:var(--sys-play)}
-.dmw .arrowhead-h{fill:var(--sys-hp)}
+.dmw .arrowhead-w{fill:var(--sys-wavv)}
 .dmw .elabel{fill:var(--ink-soft);font-size:10.5px;font-weight:600}
 .dmw .elabel-a{fill:var(--accent-ink);font-size:10.5px;font-weight:700}
-.dmw .elabel-h{fill:var(--sys-hp);font-size:10.5px;font-weight:700}
+.dmw .elabel-w{fill:var(--sys-wavv);font-size:10.5px;font-weight:700}
 .dmw figcaption{font-size:12.5px;color:var(--ink-soft);margin-top:10px;padding-top:9px;border-top:1px solid var(--line-soft)}
 /* steps */
 .dmw .steps{display:flex;flex-direction:column;gap:0}
-.dmw .step{display:grid;grid-template-columns:34px 122px 1fr;gap:14px;align-items:start;padding:13px 0;border-bottom:1px solid var(--line-soft)}
+.dmw .step{display:grid;grid-template-columns:34px 132px 1fr;gap:14px;align-items:start;padding:13px 0;border-bottom:1px solid var(--line-soft)}
 .dmw .step:last-child{border-bottom:0}
 .dmw .num{width:28px;height:28px;border-radius:50%;background:var(--accent);color:var(--num-ink);font-weight:800;font-size:13px;display:grid;place-items:center}
 .dmw .where{font-size:10.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:4px 8px;border-radius:6px;text-align:center;align-self:start;margin-top:1px}
 .dmw .w-list{background:color-mix(in srgb,var(--sys-list) 16%,transparent);color:var(--sys-list)}
+.dmw .w-lm{background:color-mix(in srgb,var(--sys-lm) 18%,transparent);color:var(--sys-lm)}
 .dmw .w-ghl{background:color-mix(in srgb,var(--sys-ghl) 16%,transparent);color:var(--sys-ghl)}
-.dmw .w-hp{background:color-mix(in srgb,var(--sys-hp) 18%,transparent);color:var(--sys-hp)}
+.dmw .w-wavv{background:color-mix(in srgb,var(--sys-wavv) 18%,transparent);color:var(--sys-wavv)}
 .dmw .w-play{background:color-mix(in srgb,var(--sys-play) 16%,transparent);color:var(--accent-ink)}
 .dmw .w-close{background:color-mix(in srgb,var(--sys-close) 16%,transparent);color:var(--sys-close)}
 .dmw .stext{font-size:13.5px;color:var(--ink)}
@@ -102,7 +120,7 @@ const CSS = `
 .dmw thead th{background:var(--line-soft);text-align:left;padding:10px 14px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);font-weight:700}
 .dmw tbody td{padding:11px 14px;border-top:1px solid var(--line-soft);vertical-align:top}
 .dmw tbody td:first-child{font-weight:700;color:var(--sys-ghl)}
-.dmw tbody td:nth-child(2){font-weight:700;color:var(--sys-hp)}
+.dmw tbody td:nth-child(2){font-weight:700;color:var(--sys-wavv)}
 .dmw .callout{margin-top:14px;border-left:3px solid var(--gold);background:var(--panel);border-radius:0 10px 10px 0;padding:13px 16px;font-size:13.5px;color:var(--ink-soft);box-shadow:var(--shadow)}
 .dmw .callout b{color:var(--ink)}
 /* cadence table — plain first/second columns, badge in col 2 */
@@ -111,6 +129,14 @@ const CSS = `
 .dmw .cad{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:6px;white-space:nowrap}
 .dmw .cad-once{background:color-mix(in srgb,var(--sys-ghl) 16%,transparent);color:var(--sys-ghl)}
 .dmw .cad-batch{background:color-mix(in srgb,var(--gold) 22%,transparent);color:var(--gold)}
+/* disposition table — WAVV label, tag, what moves */
+.dmw .tbl-disp tbody td:first-child{color:var(--ink);font-weight:750}
+.dmw .tbl-disp tbody td:nth-child(2){color:var(--ink-faint);font-weight:600;font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:12px;white-space:nowrap}
+.dmw .tbl-disp tbody td:nth-child(3){color:var(--ink-soft);font-weight:400}
+.dmw .mv{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;padding:3px 8px;border-radius:6px;white-space:nowrap;margin-right:7px}
+.dmw .mv-fwd{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent-ink)}
+.dmw .mv-lost{background:color-mix(in srgb,var(--danger) 18%,transparent);color:var(--danger)}
+.dmw .mv-none{background:color-mix(in srgb,var(--ink-faint) 18%,transparent);color:var(--ink-faint)}
 /* option headings inside a SOP box */
 .dmw .opt{font-size:12.8px;font-weight:800;color:var(--ink);margin:2px 0 9px}
 .dmw .opt.second{margin-top:18px;padding-top:15px;border-top:1px solid var(--line-soft)}
@@ -145,41 +171,55 @@ const CSS = `
 .dmw .ok::marker{content:"✅  "}
 .dmw .todo::marker{content:"⏳  "}
 .dmw .no::marker{content:"⛔  "}
+.dmw code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:.9em;background:var(--line-soft);padding:1px 6px;border-radius:5px;font-weight:700}
 .dmw footer{margin-top:40px;padding-top:15px;border-top:1px solid var(--line);color:var(--ink-faint);font-size:12px}
 `;
 
-// The four systems, in the order the lead travels through them.
+// The five systems, in the order the lead travels through them.
 const SYSTEMS = [
   {
     cls: "s-list",
     kicker: "The lists",
-    name: "UCC machine + bought lists",
+    name: "UCC Harvester + bought lists",
     body: (
       <>
-        Where leads come from — the merchants your <b>homegrown UCC machine</b> surfaces
-        (/admin/ph-ucc) and any <b>purchased list</b> you drop in as a CSV.
+        Where leads come from — the merchants the <b>UCC Harvester</b> surfaces (/admin/ph-ucc) and
+        any <b>purchased list</b> you drop in as a CSV.
+      </>
+    ),
+  },
+  {
+    cls: "s-lm",
+    kicker: "The loader",
+    name: "Lead Machine",
+    body: (
+      <>
+        /admin/lead-machine. Stages the file, lets you <b>filter a slice</b>, tags it, and{" "}
+        <b>pushes it into VibeReach</b>. This is the only way a bought list is allowed to reach the
+        floor.
       </>
     ),
   },
   {
     cls: "s-ghl",
-    kicker: "The brain · loads FIRST",
-    name: "GoHighLevel · VibeReach",
+    kicker: "The brain · system of record",
+    name: "VibeReach · GoHighLevel",
     body: (
       <>
-        The CRM and <b>system of record</b>. Every list lands here first and gets a{" "}
-        <b>batch tag</b>. Nothing reaches the dialer except through here.
+        The CRM. A pushed lead becomes a <b>contact</b> (carrying its Revenue Playbook link) and a{" "}
+        <b>New Lead opportunity</b> on the <b>MFunding MCA Pipeline</b>. The board is what gets
+        dialed.
       </>
     ),
   },
   {
-    cls: "s-hp",
-    kicker: "The dialer",
-    name: "HotProspector",
+    cls: "s-wavv",
+    kicker: "The dialer · inside VibeReach",
+    name: "WAVV",
     body: (
       <>
-        Where setters spend the day. Leads arrive by the <b>tagged GoHighLevel sync</b> — which is
-        what makes each one <b>linked</b> (it carries its GHL id) so the setter's button works.
+        Not a separate app — the <b>Call</b> button on a pipeline column header. Rings{" "}
+        <b>3 numbers at once</b>, drops the losers on the first answer, and pops the contact card.
       </>
     ),
   },
@@ -189,9 +229,9 @@ const SYSTEMS = [
     name: "Revenue Playbook",
     body: (
       <>
-        Inside your app. On a live call the setter clicks{" "}
-        <b>"Gohighlevel Custom Link"</b> and it opens <b>with the merchant preloaded</b> — script,
-        send-app, Connect-Bank. This is where they work.
+        Inside our app. On a live call the setter opens it from the contact card —{" "}
+        <b>Additional Info → Revenue Playbook</b> — and it loads <b>that merchant</b>: script,
+        send-app, Connect-Bank.
       </>
     ),
   },
@@ -205,7 +245,7 @@ const STEPS = [
     cls: "w-list",
     body: (
       <>
-        A batch appears — either your <b>UCC machine</b> or a <b>purchased list</b> (CSV: First,
+        A batch appears — either the <b>UCC Harvester</b> or a <b>purchased list</b> (CSV: First,
         Last, Company, Phone, Email, City, State, Zip).
       </>
     ),
@@ -218,43 +258,29 @@ const STEPS = [
         In <b>/admin/ph-ucc</b> you <b>filter</b> the leads you want — Lead heat (# of stacked
         advances), Confidence (Confirmed / High), state — then <b>skip-trace</b> the filtered set
         (BatchData ~$0.06/lead fills phone + email; <b>DNC and TCPA-litigator numbers are suppressed
-        automatically</b>). Then <b>Export</b>.
+        automatically</b>).
       </>
     ),
   },
   {
-    where: "→ GoHighLevel",
+    where: "Lead Machine",
+    cls: "w-lm",
+    body: (
+      <>
+        In <b>/admin/lead-machine</b>, stage the file, <b>filter the slice</b> you want to run, and
+        give it a <b>dial tag</b>. The tag is <b>attribution, not a dial target</b> — nothing dials
+        because of a tag.
+      </>
+    ),
+  },
+  {
+    where: "→ VibeReach",
     cls: "w-ghl",
     body: (
       <>
-        <b>Load the list into GoHighLevel FIRST</b> — the <b>VibeReach Contacts → Import</b> flow, or
-        an API upsert by phone/email, into the <b>MFunding.net</b> location.{" "}
-        <b>Exact clicks are in Part B below.</b> This is also what puts the merchants in VibeReach
-        where the rest of the business lives.
-      </>
-    ),
-  },
-  {
-    where: "GoHighLevel",
-    cls: "w-ghl",
-    body: (
-      <>
-        <b>TAG every lead in the batch</b> — e.g. <b>ucc-lead</b>, or a dated tag like{" "}
-        <b>ucc-2026-08-12</b>. The tag is <b>not optional</b>: it is the key the HotProspector sync
-        reads. No tag = nothing syncs.
-      </>
-    ),
-  },
-  {
-    where: "→ HotProspector",
-    cls: "w-hp",
-    body: (
-      <>
-        <b>The linchpin.</b> HotProspector → <b>Settings → INTEGRATIONS → Go High Level Integration</b>{" "}
-        → the <b>MFunding.net</b> row → Step 2 <b>Select Your Tag</b> = the batch tag → Step 3{" "}
-        <b>Group to Sync With</b> = the dialer group → <b>Sync Leads</b>. A red{" "}
-        <b>"InProgress N%"</b> shows on the row; when it finishes the contacts are in HP{" "}
-        <b>linked</b>.
+        <b>Push to VibeReach.</b> Each lead is <b>upserted by phone/email</b> (so a re-push never
+        duplicates a merchant), gets its tags, gets its <b>Revenue Playbook link</b>, and lands as a{" "}
+        <b>New Lead opportunity</b> on the <b>MFunding MCA Pipeline</b>.
       </>
     ),
   },
@@ -263,33 +289,43 @@ const STEPS = [
     cls: "w-close",
     body: (
       <>
-        <b>Before anything else:</b> open one synced contact → click{" "}
-        <b>"Gohighlevel Custom Link"</b> (bottom of the right sidebar) → the Revenue Playbook must
-        open <b>that merchant with no "not synced" error</b>. If it errors, the lead didn't come
-        through GoHighLevel — <b>stop and fix it</b>.
+        <b>Before the floor touches it:</b> the <b>New Lead</b> column grew by roughly the push size,
+        the setter's <b>Source</b> filter finds them, and one contact's{" "}
+        <b>Additional Info → Revenue Playbook</b> opens that merchant. If any of the three fails,{" "}
+        <b>stop and fix it</b>.
       </>
     ),
   },
   {
-    where: "HotProspector",
-    cls: "w-hp",
+    where: "VibeReach",
+    cls: "w-ghl",
     body: (
       <>
-        Build the <b>3-line campaign</b> on that group — <b>Mode = Progressive(M)</b> with{" "}
-        <b>Dialing Leads = 3</b>, <b>"TAGS TO DIAL WITHOUT SORTING" ON with the batch tag</b> (this
-        is what the dialer actually resolves leads by), caller ID <b>+1 954-860-7138</b>, hours{" "}
-        <b>8:00am–9:00pm in the lead's timezone</b> (TCPA), the setter script attached with{" "}
-        <b>Autoload</b>. Assign setters on the <b>"Assign To"</b> field in Campaign Settings.
+        The setter opens <b>Opportunities → MFunding MCA Pipeline</b>, then{" "}
+        <b>Advanced Filters → Source → Is → </b>
+        <code>UCC</code> or <code>Aged</code> — <b>capital letters matter</b> — and presses the blue{" "}
+        <b>Apply</b>. One filter only; nothing stacked on top.
       </>
     ),
   },
   {
-    where: "Validate",
-    cls: "w-close",
+    where: "→ WAVV",
+    cls: "w-wavv",
     body: (
       <>
-        <b>Owner makes ONE test call</b> — script auto-loads, the button opens the Playbook, the
-        disposition writes back to GoHighLevel. <b>Only then do setters start.</b>
+        <b>Call</b> on the <b>New Lead</b> column header starts the dial session. WAVV rings{" "}
+        <b>3 numbers at a time</b> and lines up the next 3 when the setter finishes.
+      </>
+    ),
+  },
+  {
+    where: "WAVV",
+    cls: "w-wavv",
+    body: (
+      <>
+        <b>Answering machine → Voicemail, then Resume.</b> WAVV drops the setter's pre-recorded
+        message and dials on. On multiline it drops VMs on the background lines automatically while
+        the setter talks.
       </>
     ),
   },
@@ -298,52 +334,129 @@ const STEPS = [
     cls: "w-play",
     body: (
       <>
-        Live answer → setter clicks into the <b>Revenue Playbook</b> (merchant preloaded), sends the{" "}
-        <b>e-sign application</b> + the <b>Connect-Bank / upload links</b> while the merchant is on
-        the phone. "Check your text while I've got you."
+        Live answer → WAVV pops the <b>contact card</b> → <b>Additional Info → Revenue Playbook</b>{" "}
+        (one click, <b>up to 30 seconds</b>) → the setter sends the <b>e-sign application</b> and the{" "}
+        <b>Connect-Bank / upload links</b> while the merchant is on the phone.
       </>
     ),
   },
   {
-    where: "→ GoHighLevel",
+    where: "→ VibeReach",
     cls: "w-ghl",
     body: (
       <>
-        The <b>disposition writes back to GoHighLevel</b> → fires the follow-up <b>workflow</b> →
-        moves the pipeline. Complete files (<b>signed + bank connected</b>) hand to the{" "}
-        <b>MCA pipeline</b> for your closers. Watch per-setter KPIs on <b>/admin/dialer</b>.
+        <b>Disposition every live call in WAVV.</b> The disposition tags the contact and{" "}
+        <b>moves the opportunity on the board</b> — see the mapping below. Complete files (
+        <b>signed + bank connected</b>) hand on to the closers. Managers watch per-rep KPIs on{" "}
+        <b>/admin/setter-performance</b>.
       </>
     ),
   },
 ];
 
-// GHL ↔ HotProspector vocabulary. An em dash means the concept doesn't exist there.
+// VibeReach ↔ WAVV vocabulary. An em dash means the concept doesn't exist there.
 const VOCAB: [string, string, string][] = [
   [
     "Contact",
-    "Lead (in a Group)",
-    "the merchant's record — it reaches HotProspector only through the tagged GoHighLevel sync, never by CSV import",
+    "the person on the line",
+    "the merchant's record. It carries the Revenue Playbook link under Additional Info — that link is the setter's whole cockpit",
+  ],
+  [
+    "Opportunity · Pipeline · Stage",
+    "— (no pipeline)",
+    "the card on the board. WAVV dials a COLUMN of it, so the stage a lead sits in is what decides whether it gets called",
+  ],
+  [
+    "Source (on the opportunity)",
+    "—",
+    'what the setter filters on: UCC or Aged, typed in exact capitals, then the blue Apply. This is how a setter gets "their" book',
   ],
   [
     "Tag",
-    "the sync key",
-    "the batch label you put on every lead (e.g. ucc-2026-08-12). It's what Settings → Integrations → Step 2 reads. No tag, no sync.",
+    "— (WAVV writes wavv-* ones)",
+    "provenance and attribution only (lm-ucc, the batch tag, the campaign tag). A tag DOES NOT make anything dial",
   ],
+  ["Workflow", "—", "the automation that sends docs and fires follow-up when a stage changes"],
+  ["—", "Call (column header)", "starts a 3-line dial session on everything in that column"],
+  ["—", "Voicemail / Resume", "drop the pre-recorded message on an answering machine and move to the next 3"],
   [
-    "Contact ID",
-    "the link behind \"Gohighlevel Custom Link\"",
-    "the GoHighLevel id a synced lead carries. A lead without one can't open the Playbook — that's the \"Lead data not Synced\" error",
+    "—",
+    "Disposition",
+    "the outcome the setter records. It stamps a wavv-* tag on the contact, which is what moves the board",
   ],
-  [
-    "Pipeline · Stage · Opportunity",
-    "— (no pipeline)",
-    "where the deal sits in your funnel; HotProspector doesn't have this — the disposition drives it",
-  ],
-  ["Workflow", "— (fired by a disposition/tag)", "the automation that sends docs & moves stages"],
-  ["—", "Group", "HotProspector's bucket of people to dial — the sync's destination, and what a campaign dials"],
-  ["—", "Campaign", "the dialing job: a group + mode + calling hours + caller-ID + script + assigned setters"],
-  ["—", "Disposition", "the outcome the setter records on a call — see below"],
 ];
+
+// Disposition → what the board does. Straight from the MAPPING array in
+// supabase/functions/wavv-disposition-sync/index.ts — do not paraphrase it from
+// memory, and do not trust that file's older header comment, which still shows a
+// superseded not-interested → Contacted rule.
+const DISPOSITIONS: { label: string; tag: string; kind: "fwd" | "lost" | "none"; move: string; note: React.ReactNode }[] =
+  [
+    {
+      label: "Interested",
+      tag: "wavv-interested",
+      kind: "fwd",
+      move: "→ Qualifying",
+      note: <>The forward move. WAVV does not advance stages itself — the sweep does.</>,
+    },
+    {
+      label: "Appointment Set",
+      tag: "wavv-appointment-set",
+      kind: "fwd",
+      move: "→ Qualifying",
+      note: <>Same destination as Interested: a booked call is a qualified conversation.</>,
+    },
+    {
+      label: "Callback",
+      tag: "wavv-callback",
+      kind: "fwd",
+      move: "→ Contacted",
+      note: <>Reached, not yet qualified — it leaves New Lead so it stops being cold-dialed.</>,
+    },
+    {
+      label: "Not Interested",
+      tag: "wavv-not-interested",
+      kind: "lost",
+      move: "Lost",
+      note: (
+        <>
+          <b>WAVV sets this to Lost itself, at disposition time.</b> The card leaves the open board
+          and lives under the Lost filter; the sweep is only a backstop for calls WAVV misses.
+        </>
+      ),
+    },
+    {
+      label: "Bad Number",
+      tag: "wavv-bad-number",
+      kind: "lost",
+      move: "Lost",
+      note: <>Same treatment — the merchant was never reachable on this record.</>,
+    },
+    {
+      label: "Do Not Contact",
+      tag: "wavv-do-not-contact",
+      kind: "lost",
+      move: "DND, then Lost",
+      note: (
+        <>
+          <b>The contact is marked DND first</b> — that is the durable TCPA suppression VibeReach
+          actually enforces — and only then is the opportunity lost.
+        </>
+      ),
+    },
+    {
+      label: "No Answer · Left Voicemail · Canceled · Blocked",
+      tag: "— (no mapping)",
+      kind: "none",
+      move: "nothing moves",
+      note: (
+        <>
+          Deliberate. The lead <b>stays in New Lead so it gets redialed</b>; a voicemail is not an
+          outcome.
+        </>
+      ),
+    },
+  ];
 
 // What is already built and never touched again, vs. what you redo for every
 // single batch. `once` = set up once and left alone; `batch` = a fresh one for
@@ -353,131 +466,130 @@ const SETUP_MATRIX: { thing: React.ReactNode; cadence: "once" | "batch"; note: R
     {
       thing: (
         <>
-          HotProspector ↔ GoHighLevel <b>integration connection</b>
+          The <b>MFunding MCA Pipeline</b> and its stages
         </>
       ),
       cadence: "once",
       note: (
         <>
-          <b>Already connected</b> to the <b>MFunding.net</b> location and shows as a row under
-          HP <b>Settings → INTEGRATIONS → Go High Level Integration</b>.{" "}
-          <b>Never disconnect or re-add it</b> — you only ever change Step 2 / Step 3 on that row.
+          <b>Already built</b> — New Lead → Contacted → Qualifying → Application Sent → … → Funded →
+          Renewal Eligible. <b>Never re-stage it</b>: the stage ids are hard-referenced by the
+          disposition sweep and the intake functions.
         </>
       ),
     },
     {
       thing: (
         <>
-          HP <b>Custom URL</b> = <b>https://mfunding.net/admin/playbooks?x=</b>
+          The <b>Revenue Playbook link</b> on each contact
         </>
       ),
       cadence: "once",
       note: (
         <>
-          <b>Already set.</b> This is the setting that makes the setter's{" "}
-          <b>"Gohighlevel Custom Link"</b> button open the Revenue Playbook on the right merchant.
-          Don't edit it.
+          <b>Written automatically.</b> The push sets it, and a sweep backfills any contact that
+          missed it. <b>Nothing to do per batch</b> — but a contact with no link under{" "}
+          <b>Additional Info</b> is a real defect worth reporting, not a setter mistake.
         </>
       ),
     },
     {
       thing: (
         <>
-          <b>Setter Team seats</b> in HotProspector + their <b>mfunding.net logins</b>
+          <b>WAVV seats</b> per setter + their <b>mfunding.net logins</b>
         </>
       ),
       cadence: "once",
       note: (
         <>
-          <b>One-time per setter</b>, not per batch. New setter = create the HP team user{" "}
-          <b>and</b> the mfunding.net login once; after that they just get assigned to each new
-          campaign.
+          <b>One-time per setter</b>, not per batch. New setter = the VibeReach/WAVV seat{" "}
+          <b>and</b> the mfunding.net login, once.
         </>
       ),
     },
     {
       thing: (
         <>
-          The <b>call script</b> template
+          Each setter's <b>recorded voicemail</b>
         </>
       ),
       cadence: "once",
       note: (
         <>
-          <b>"UCC Setter Script — Momentum"</b> is built once and <b>reused on every campaign</b>.
-          Edit the wording whenever you want — you do not create a new script per batch.
+          Recorded by the setter in <b>WAVV → gear icon → Voicemails</b>, 20–30 seconds, in their own
+          voice. Re-recorded every few weeks so it doesn't sound canned — never per batch.
         </>
       ),
     },
     {
       thing: (
         <>
-          The <b>batch TAG</b> in GoHighLevel
+          The <b>disposition set</b> + the board mapping
         </>
       ),
-      cadence: "batch",
+      cadence: "once",
       note: (
         <>
-          <b>A NEW dated tag for every list</b> — e.g. <b>ucc-2026-08-20</b>. This is the key the
-          HotProspector sync reads. <b>Never reuse an old batch tag.</b>
+          Configured in <b>WAVV Manager → Call Dispositions</b>; the moves are made by the{" "}
+          <b>disposition sweep, which runs every 10 minutes</b>. Both are built —{" "}
+          <b>adding a new disposition means updating the mapping</b>, or it will silently move
+          nothing.
         </>
       ),
     },
     {
       thing: (
         <>
-          <b>GoHighLevel import</b> of the list (with that tag on it)
+          The <b>call script</b>
         </>
       ),
-      cadence: "batch",
+      cadence: "once",
       note: (
         <>
-          Every batch gets loaded into the <b>MFunding.net</b> location first, tagged during the
-          import. See <b>Part B</b> for the exact clicks.
+          Built once and reused. Edit the wording whenever you want — you do not create a new script
+          per batch.
         </>
       ),
     },
     {
       thing: (
         <>
-          HP <b>group</b>
+          <b>Stage + filter the list</b> in the Lead Machine
         </>
       ),
       cadence: "batch",
       note: (
         <>
-          <b>Create one group per batch</b> — e.g. <b>"UCC 2026-08-20"</b> — so counts, campaigns
-          and reporting stay clean per list.
+          Every list gets uploaded (or loaded from a staged file) and cut down to the slice you
+          actually want to run. See <b>Part B</b>.
         </>
       ),
     },
     {
       thing: (
         <>
-          HP integration row: <b>Step 2 tag + Step 3 group + Sync Leads</b>
+          A <b>dial tag</b> for the slice
         </>
       ),
       cadence: "batch",
       note: (
         <>
-          You <b>re-point the same existing row</b> at this batch's tag and this batch's group, then
-          hit <b>Sync Leads</b>. See <b>Part C</b>.
+          <b>A new dated tag per list</b>. It is how spend, deals and revenue attribute back to this
+          batch — <b>it is not what dials</b>. Never recycle one, or two batches' numbers merge.
         </>
       ),
     },
     {
       thing: (
         <>
-          <b>Dialer campaign</b>
+          <b>Push to VibeReach</b>
         </>
       ),
       cadence: "batch",
       note: (
         <>
-          <b>A new campaign per batch</b> — the <b>mode LOCKS at creation</b>, so campaigns aren't
-          re-editable into a different shape. Name it after the batch, point it at this batch's
-          group, <b>set this batch's tag under "TAGS TO DIAL WITHOUT SORTING"</b>, and{" "}
-          <b>assign the setters on it</b>. See <b>Part D</b>.
+          The one action that puts the batch in front of the floor: contacts upserted, tagged,
+          Playbook-linked, and opened as <b>New Lead</b> opportunities.
         </>
       ),
     },
@@ -490,9 +602,8 @@ const SETUP_MATRIX: { thing: React.ReactNode; cadence: "once" | "batch"; note: R
       cadence: "batch",
       note: (
         <>
-          <b>Every single batch</b>, before setters dial: the Custom Link opens the Playbook, the
-          Dialer LIST view shows the real count, and the owner makes one test call.{" "}
-          <b>Parts C-5 and E.</b>
+          <b>Every single batch</b>, before setters dial: the board count, the Source filter, one
+          Revenue Playbook link, and one test call. <b>Part C.</b>
         </>
       ),
     },
@@ -511,32 +622,33 @@ export default function DialingMachinePage() {
           <p className="eyebrow" style={{ marginTop: 14 }}>
             Internal · How the Machine Fits Together
           </p>
-          <h1>Lists → GoHighLevel → HotProspector → Revenue Playbook</h1>
+          <h1>Lists → VibeReach → WAVV → Revenue Playbook</h1>
           <p>
-            Where a lead comes from, how it gets <b>loaded into GoHighLevel and tagged</b>, how the
-            tag syncs it down into the dialer <b>linked</b>, how a setter works the live call, and
-            how the outcome writes back to the CRM. Read the rule, then the picture, then the SOP.
+            Where a lead comes from, how the Lead Machine <b>pushes it into VibeReach as a New Lead
+            opportunity</b>, how a setter filters to it and dials it with <b>WAVV</b>, how the
+            Revenue Playbook opens on the live call, and how the disposition <b>moves the board back
+            in VibeReach</b>. Read the rule, then the picture, then the SOP.
           </p>
         </header>
 
         {/* THE RULE */}
         <section>
           <div className="warn danger">
-            <b>THE ONE ARCHITECTURE RULE — lists load into GoHighLevel FIRST, then sync down into
-            HotProspector.</b>{" "}
-            GoHighLevel is the system of record. <u>Never import a list directly into
-            HotProspector.</u>{" "}
-            Leads loaded that way have <b>no GoHighLevel id</b>, so the setter's{" "}
-            <b>"Gohighlevel Custom Link"</b> button errors <b>"Lead data not Synced"</b> on every
-            single one and the setter has no cockpit. That is exactly what happened: <b>1,047 leads
-            CSV'd straight into HotProspector</b>, a dead floor, and a day lost. Every batch goes{" "}
-            <b>list → GoHighLevel (tagged) → sync → dialer</b>. No exceptions.
+            <b>THE ONE ARCHITECTURE RULE — a lead is dialable only once it is a VibeReach contact
+            with an opportunity on the board.</b>{" "}
+            VibeReach is the system of record and WAVV dials <b>a pipeline column</b>, not a file.{" "}
+            <u>Never dial a merchant off a CSV, an export, or a personal list.</u>{" "}
+            A lead that skipped the push has <b>no Revenue Playbook link</b> on its card, <b>no
+            opportunity</b> for the Call button to pick up, and <b>no disposition writeback</b> — so
+            the setter has no cockpit, the follow-up never fires, and the call is unrecorded work.
+            Every batch goes <b>list → Lead Machine → Push to VibeReach → the board</b>. No
+            exceptions.
           </div>
         </section>
 
         {/* SYSTEMS */}
         <section>
-          <div className="sec-h">The four systems &amp; what each one is for</div>
+          <div className="sec-h">The five systems &amp; what each one is for</div>
           <div className="sys">
             {SYSTEMS.map((s) => (
               <div key={s.name} className={`syscard ${s.cls}`}>
@@ -576,11 +688,11 @@ export default function DialingMachinePage() {
             </table>
           </div>
           <div className="callout">
-            <b>The short version:</b> the <b>plumbing is already built</b> — the HP↔GHL connection,
-            the Custom URL, the setter seats and the script. <b>What you redo for every list</b> is:
-            a <b>new dated tag</b>, a <b>GHL import carrying that tag</b>, a <b>new HP group</b>,{" "}
-            <b>re-point the integration row and Sync</b>, a <b>new campaign</b>, and the{" "}
-            <b>validation clicks</b>. Six things. Nothing else gets touched.
+            <b>The short version:</b> the <b>plumbing is already built</b> — the pipeline, the
+            Playbook links, the seats, the voicemails, the dispositions and the script.{" "}
+            <b>What you redo for every list</b> is: <b>stage and filter it</b>, <b>a new dial tag</b>
+            , <b>push it to VibeReach</b>, and the <b>validation clicks</b>. Four things. Nothing
+            else gets touched.
           </div>
         </section>
 
@@ -590,9 +702,9 @@ export default function DialingMachinePage() {
           <figure>
             <svg
               className="diagram"
-              viewBox="0 0 720 300"
+              viewBox="0 0 760 300"
               role="img"
-              aria-label="Lists from the UCC machine or a purchased file are loaded into GoHighLevel first and tagged. The tagged contacts sync down into HotProspector, arriving linked with their GoHighLevel id. On a live call the setter clicks from HotProspector into the Revenue Playbook, which sends the application and Connect-Bank links and writes the disposition back to GoHighLevel, which fires the follow-up workflow, moves the pipeline, and hands a complete file to the closers."
+              aria-label="Lists from the UCC Harvester or a purchased file are staged and filtered in the Lead Machine, then pushed into VibeReach, where each lead becomes a contact and a New Lead opportunity on the MFunding MCA Pipeline. WAVV dials that column three lines at a time. On a live answer the setter opens the Revenue Playbook from the contact card and sends the application and Connect-Bank links. The disposition writes back to VibeReach, moving the opportunity on the board, firing the follow-up workflow, and handing a complete file to the closers."
             >
               <defs>
                 <marker
@@ -618,7 +730,7 @@ export default function DialingMachinePage() {
                   <path className="arrowhead-a" d="M0,0 L10,5 L0,10 z" />
                 </marker>
                 <marker
-                  id="dmw-arh"
+                  id="dmw-arw"
                   viewBox="0 0 10 10"
                   refX="8.5"
                   refY="5"
@@ -626,101 +738,117 @@ export default function DialingMachinePage() {
                   markerHeight="7"
                   orient="auto-start-reverse"
                 >
-                  <path className="arrowhead-h" d="M0,0 L10,5 L0,10 z" />
+                  <path className="arrowhead-w" d="M0,0 L10,5 L0,10 z" />
                 </marker>
               </defs>
 
-              {/* nodes */}
-              <rect className="n n-list" x="14" y="54" width="150" height="60" rx="11" />
-              <text className="nt" x="89" y="80" textAnchor="middle">
+              {/* nodes — top row: the load path */}
+              <rect className="n n-list" x="10" y="50" width="118" height="58" rx="11" />
+              <text className="nt" x="69" y="75" textAnchor="middle">
                 Lists
               </text>
-              <text className="nr" x="89" y="97" textAnchor="middle">
-                UCC machine · bought lists
+              <text className="nr" x="69" y="92" textAnchor="middle">
+                UCC · bought
               </text>
 
-              <rect className="n n-ghl" x="250" y="54" width="200" height="60" rx="11" />
-              <text className="nt" x="350" y="80" textAnchor="middle">
-                GoHighLevel · VibeReach
+              <rect className="n n-lm" x="196" y="50" width="132" height="58" rx="11" />
+              <text className="nt" x="262" y="75" textAnchor="middle">
+                Lead Machine
               </text>
-              <text className="nr" x="350" y="97" textAnchor="middle">
-                system of record · loads FIRST
-              </text>
-
-              <rect className="n n-close" x="548" y="54" width="158" height="60" rx="11" />
-              <text className="nt" x="627" y="80" textAnchor="middle">
-                MCA Pipeline
-              </text>
-              <text className="nr" x="627" y="97" textAnchor="middle">
-                your closers
+              <text className="nr" x="262" y="92" textAnchor="middle">
+                stage · filter · tag
               </text>
 
-              <rect className="n n-hp" x="176" y="210" width="158" height="60" rx="11" />
-              <text className="nt" x="255" y="236" textAnchor="middle">
-                HotProspector
+              <rect className="n n-ghl" x="396" y="50" width="186" height="58" rx="11" />
+              <text className="nt" x="489" y="75" textAnchor="middle">
+                VibeReach
               </text>
-              <text className="nr" x="255" y="253" textAnchor="middle">
-                the dialer
+              <text className="nr" x="489" y="92" textAnchor="middle">
+                contact + New Lead opportunity
               </text>
 
-              <rect className="n n-play" x="430" y="210" width="212" height="60" rx="11" />
-              <text className="nt" x="536" y="236" textAnchor="middle">
+              <rect className="n n-close" x="646" y="50" width="104" height="58" rx="11" />
+              <text className="nt" x="698" y="75" textAnchor="middle">
+                Closers
+              </text>
+              <text className="nr" x="698" y="92" textAnchor="middle">
+                MCA pipeline
+              </text>
+
+              {/* nodes — bottom row: the call */}
+              <rect className="n n-wavv" x="196" y="212" width="150" height="58" rx="11" />
+              <text className="nt" x="271" y="237" textAnchor="middle">
+                WAVV
+              </text>
+              <text className="nr" x="271" y="254" textAnchor="middle">
+                dials the column · 3 lines
+              </text>
+
+              <rect className="n n-play" x="414" y="212" width="210" height="58" rx="11" />
+              <text className="nt" x="519" y="237" textAnchor="middle">
                 Revenue Playbook
               </text>
-              <text className="nr" x="536" y="253" textAnchor="middle">
+              <text className="nr" x="519" y="254" textAnchor="middle">
                 merchant preloaded · the cockpit
               </text>
 
               {/* edges */}
-              {/* lists -> GHL (load + tag) */}
-              <line className="edge" x1="164" y1="84" x2="246" y2="84" markerEnd="url(#dmw-ar)" />
-              <text className="elabel" x="205" y="76" textAnchor="middle">
-                load + TAG
+              {/* lists -> lead machine */}
+              <line className="edge" x1="128" y1="79" x2="192" y2="79" markerEnd="url(#dmw-ar)" />
+              <text className="elabel" x="160" y="71" textAnchor="middle">
+                upload
               </text>
-              {/* GHL -> hotprospector (the tagged sync — the linchpin) */}
-              <polyline
-                className="edge-hp"
-                points="300,114 300,162 255,162 255,206"
-                markerEnd="url(#dmw-arh)"
-              />
-              <text className="elabel-h" x="292" y="154" textAnchor="end">
-                tagged sync → leads arrive LINKED
+              {/* lead machine -> vibereach (the push) */}
+              <line className="edge" x1="328" y1="79" x2="392" y2="79" markerEnd="url(#dmw-ar)" />
+              <text className="elabel" x="360" y="71" textAnchor="middle">
+                push + tag
               </text>
-              {/* ghl -> closers */}
-              <line className="edge" x1="450" y1="84" x2="544" y2="84" markerEnd="url(#dmw-ar)" />
-              <text className="elabel" x="497" y="76" textAnchor="middle">
+              {/* vibereach -> closers */}
+              <line className="edge" x1="582" y1="79" x2="642" y2="79" markerEnd="url(#dmw-ar)" />
+              <text className="elabel" x="612" y="71" textAnchor="middle">
                 handoff
               </text>
-              {/* hp -> playbook */}
+              {/* vibereach -> wavv (the board IS the dial list) */}
+              <polyline
+                className="edge-wavv"
+                points="450,108 450,168 271,168 271,208"
+                markerEnd="url(#dmw-arw)"
+              />
+              <text className="elabel-w" x="358" y="161" textAnchor="middle">
+                WAVV dials the New Lead column
+              </text>
+              {/* wavv -> playbook */}
               <line
                 className="edge-accent"
-                x1="334"
-                y1="240"
-                x2="426"
-                y2="240"
+                x1="346"
+                y1="241"
+                x2="410"
+                y2="241"
                 markerEnd="url(#dmw-ara)"
               />
-              <text className="elabel-a" x="380" y="232" textAnchor="middle">
-                clicks in
+              <text className="elabel-a" x="378" y="233" textAnchor="middle">
+                opens
               </text>
-              {/* playbook -> ghl (disposition writeback) */}
+              {/* playbook -> vibereach (disposition writeback) */}
               <polyline
                 className="edge-accent"
-                points="536,206 536,140 350,140 350,118"
+                points="600,208 600,140 560,140 560,112"
                 markerEnd="url(#dmw-ara)"
               />
-              <text className="elabel-a" x="443" y="133" textAnchor="middle">
-                sends app + bank · disposition → workflow
+              <text className="elabel-a" x="612" y="182" textAnchor="start">
+                disposition
+              </text>
+              <text className="elabel-a" x="612" y="196" textAnchor="start">
+                moves the board
               </text>
             </svg>
             <figcaption>
-              <b>The one idea:</b> every list goes into <b>GoHighLevel first</b> and gets a{" "}
-              <b>batch tag</b>; that tag is what pulls the contacts down into HotProspector{" "}
-              <b>linked</b> — carrying the GoHighLevel id that makes the setter's{" "}
-              <b>"Gohighlevel Custom Link"</b> button open the Revenue Playbook. A lead that skipped
-              GoHighLevel has no id and <b>cannot be worked</b>. On a live answer the setter clicks
-              from the dialer into the Playbook, sends the app + bank links, and the call's outcome{" "}
-              <b>writes back to GoHighLevel</b> to fire the follow-up and move the pipeline.
+              <b>The one idea:</b> the <b>board is the dial list</b>. The Lead Machine's push is what
+              turns a bought row into a <b>VibeReach contact</b> — carrying its Revenue Playbook link
+              — and a <b>New Lead opportunity</b>, and WAVV's <b>Call</b> button dials that column.
+              A lead that skipped the push is on no column, so it <b>cannot be worked</b>. On a live
+              answer the setter opens the Playbook off the contact card, sends the app + bank links,
+              and the <b>disposition writes back</b> to move the card and fire the follow-up.
             </figcaption>
           </figure>
         </section>
@@ -741,49 +869,49 @@ export default function DialingMachinePage() {
 
         {/* PITFALLS */}
         <section>
-          <div className="sec-h">Pitfalls — each of these cost us hours</div>
+          <div className="sec-h">Pitfalls — each of these has cost us a session</div>
           <div className="stbox">
             <ul>
               <li className="no">
-                <b>Importing a CSV directly into HotProspector.</b> Those leads have{" "}
-                <b>no GoHighLevel link</b>, so the setter's button errors on every one.{" "}
-                <b>Always load through GoHighLevel.</b>
+                <b>Dialing off a CSV or an export.</b> Those merchants are on no column and have no
+                Playbook link. <b>Everything goes through the push.</b>
               </li>
               <li className="no">
-                <b>Running the sync with no tag.</b> Step 2 <b>Select Your Tag</b> is required —
-                without it <b>Sync Leads is a silent no-op</b>. The error toast ("Tag for selected
-                row not to be empty") flashes for a second and vanishes. <b>This cost a full day.</b>
+                <b>The Source filter is case-sensitive.</b> It must be exactly <code>UCC</code> or{" "}
+                <code>Aged</code> — <b>lowercase finds nothing</b> — and you must press the blue{" "}
+                <b>Apply</b>. Confirm it took: the count next to the pipeline name changes.
               </li>
               <li className="no">
-                <b>The "Sync Leads" button on the CONTACTS toolbar is a decoy</b> — it syncs field
-                definitions, not contacts. The real one is in{" "}
-                <b>Settings → Integrations → the MFunding.net row</b>.
+                <b>Stacking filters on top of Source.</b> One filter only. A second one silently
+                shrinks the book and the setter spends the morning on 40 leads.
               </li>
               <li className="no">
-                <b>HotProspector's contact SEARCH box is broken</b> — verify a batch with the{" "}
-                <b>Tags filter</b> (Contacts → Search Filter → Tags), never by searching a name.
+                <b>Not signed into mfunding.net in the SAME Chrome window.</b> The Revenue Playbook
+                link then lands on a login screen instead of the merchant. Both tabs, one window, all
+                day.
               </li>
               <li className="no">
-                <b>Campaign shows "Leads Found: 0" even though the group is full.</b> The campaign
-                must <b>ALSO have the batch tag set under "TAGS TO DIAL WITHOUT SORTING"</b> — a
-                group-only campaign reads HotProspector's <b>broken group index</b> and finds
-                nothing. Set the tag; the count appears.
+                <b>Clicking the Playbook link repeatedly.</b> It takes <b>up to 30 seconds</b>. One
+                click, then wait — extra clicks just queue more loads.
               </li>
               <li className="no">
-                <b>HotProspector silently reverts some campaign edits after Save and Close.</b>{" "}
-                <b>Always REOPEN the campaign after saving</b> and confirm your change actually
-                stuck.
+                <b>WAVV's "Answer Boost" mode skips answering machines entirely</b> — no voicemails
+                get left at all. Use <b>standard mode</b> on days you want VM drops, and set the{" "}
+                <b>ring timeout to 5–10 rings</b> so calls actually reach voicemail.
               </li>
               <li className="no">
-                <b>"Power" mode is ONE line.</b> The 3-line mode is <b>Progressive(M)</b> with{" "}
-                <b>Dialing Leads = 3</b>, and the <b>mode locks at creation</b> — pick it up front or
-                build a new campaign.
+                <b>Not dispositioning a live call.</b> No disposition = no tag = <b>the card never
+                moves and the follow-up never fires</b>. The conversation is lost the moment the
+                setter hangs up.
               </li>
               <li className="no">
-                <b>Reusing an old batch tag.</b> A <b>batch tag is per-batch</b> — dated, one list,
-                never recycled. Point Step 2 at an old tag and the <b>re-sync re-pulls that whole old
-                batch</b> into this batch's group, and your setters spend the day re-dialing people
-                you already called.
+                <b>Treating a missing Revenue Playbook link as a setter problem.</b> It isn't — that
+                lead didn't get loaded properly. The setter works around it via the merchant search;
+                the batch gets reported and fixed.
+              </li>
+              <li className="no">
+                <b>Recycling a dial tag.</b> Tags are attribution. Reuse one and two batches' cost,
+                deals and revenue merge into a number that describes neither.
               </li>
             </ul>
           </div>
@@ -792,7 +920,7 @@ export default function DialingMachinePage() {
         {/* SOP */}
         <section>
           <div className="sec-h">
-            How to run a batch, start to finish — every part below is per-batch
+            How to run a batch, start to finish
           </div>
 
           <div className="sopbox">
@@ -806,7 +934,7 @@ export default function DialingMachinePage() {
                 <b>UCC Harvester (/admin/ph-ucc)</b> — <b>filter</b> the leads you want (Lead heat,
                 Confidence = Confirmed / High, state), <b>skip-trace</b> the filtered set (BatchData{" "}
                 <b>~$0.06/lead</b> — fills phone + email; <b>DNC and TCPA-litigator numbers are
-                suppressed automatically</b>), then <b>export</b>.
+                suppressed automatically</b>).
               </li>
               <li>
                 <b>Or a purchased list</b> — a CSV with <b>First, Last, Company, Phone, Email, City,
@@ -818,119 +946,67 @@ export default function DialingMachinePage() {
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">B</span>
-              <h3>Load into GoHighLevel / VibeReach — and TAG it</h3>
+              <h3>Stage it, tag it, push it — in the Lead Machine</h3>
               <span className="cadline cad cad-batch">Every batch</span>
             </div>
-
-            <div className="opt">
-              Option 1 — the VibeReach UI import (the standard way, no engineer needed)
-            </div>
             <ol>
               <li>
-                Go to <b>app.vibereach.io</b> and make sure you are in the <b>MFunding.net</b>{" "}
-                location — use the <b>location switcher at the top</b>. If you're in the wrong
-                location the contacts land somewhere the dialer can't see them.
+                Open <b>/admin/lead-machine</b> and <b>upload the CSV</b> (or load a file already
+                staged). Uploading <b>applies no tags and sends nothing</b> — it just puts the rows
+                in front of you as a batch.
               </li>
               <li>
-                Left menu → <b>Contacts</b> → on the top toolbar click the <b>Import</b> icon (the{" "}
-                <b>cloud-with-an-arrow</b>) → <b>Import Contacts</b>.
+                <b>Filter down to the slice you actually want to run</b> — state, lead type, line
+                type, revenue. Different slices of one file can go out as different batches.
               </li>
               <li>
-                <b>Upload the CSV.</b> Columns: <b>First Name, Last Name, Business Name, Phone,
-                Email, City, State, Postal Code</b>. → <b>Next</b>.
+                <b>Name the dial tag</b> — a new dated one, e.g. <code>dial-ucc-0820</code>. Every
+                pushed lead also picks up its <b>lm-type tag</b> and <b>batch tag</b> automatically;
+                those are provenance. <b>None of these tags dial anything</b> — they are how the
+                numbers attribute back.
               </li>
               <li>
-                <b>Map the columns</b> to GoHighLevel fields — First Name → <b>First Name</b>, Last
-                Name → <b>Last Name</b>, Company → <b>Business Name</b>, Phone → <b>Phone</b>, Email
-                → <b>Email</b>, City / State / Postal Code to their matching fields. → <b>Next</b>.
-              </li>
-              <li>
-                On the import-options screen, <b>add a TAG to all imported contacts</b> — type the{" "}
-                <b>NEW batch tag</b>, e.g. <b>ucc-2026-08-20</b> (<b>dated, one per batch</b> — this
-                is the exact tag HotProspector will sync on). Set the <b>dedupe preference</b> to{" "}
-                <b>update existing contacts by email/phone</b> so you don't create duplicate
-                merchants.
-              </li>
-              <li>
-                <b>Start Import</b> → wait for it to finish. Then <b>verify</b>: Contacts →{" "}
-                <b>filter by that tag</b> → the count must match your list. If the tag shows{" "}
-                <b>0 contacts</b>, the tag didn't apply — <b>redo the import; do not go to Part C.</b>
+                <b>Push to VibeReach.</b> Leads are <b>upserted by phone/email</b>, so a re-push
+                updates the merchant already there instead of creating a second one. Each pushed lead
+                gets its tags, its <b>Revenue Playbook link</b>, and a <b>New Lead opportunity</b> on
+                the <b>MFunding MCA Pipeline</b>.
               </li>
             </ol>
-
-            <div className="opt second">
-              Option 2 — ask Claude / engineering to push it by API (what we do for UCC Harvester
-              batches)
-            </div>
-            <ol>
-              <li>
-                Say: <b>"push batch X to GHL with tag Y."</b> The UCC Harvester's skip-traced leads get{" "}
-                <b>upserted into the MFunding.net location by phone/email</b> with the batch tag
-                applied — <b>no CSV handling, no manual mapping, no duplicate merchants</b>.
-              </li>
-              <li>
-                You still <b>verify the same way</b>: Contacts → filter by the tag → the count
-                matches.
-              </li>
-            </ol>
-
             <div className="callout">
-              <b>Why the tag matters — this is the whole ballgame.</b> HotProspector's sync pulls{" "}
-              <b>ONLY the contacts carrying the tag you pick in Step 2</b> of the integration row.{" "}
-              <b>No tag on the contacts = nothing to sync</b>, and the sync will look like it ran and
-              did nothing. The tag is also what puts the merchants in <b>VibeReach</b>, where the
-              workflows, conversations and pipeline live.
+              <b>The push is the whole handoff.</b> There is no sync step after it, no dialer-side
+              list to build, and nothing to wire up in WAVV. The moment the push finishes, the leads
+              are sitting on the board where the setters' <b>Call</b> button reaches them.
             </div>
           </div>
 
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">C</span>
-              <h3>Sync GoHighLevel → HotProspector (the linchpin)</h3>
+              <h3>Validate the batch — never skip this</h3>
               <span className="cadline cad cad-batch">Every batch</span>
             </div>
             <ol>
               <li>
-                Go to <b>app.hotprospector.com</b> → <b>top-right avatar</b> → <b>Settings</b> → the{" "}
-                <b>INTEGRATIONS</b> tab → the card titled <b>"Go High Level Integration"</b> → click{" "}
-                <b>"Go High Level Integration"</b>. That opens the <b>Integration wizard page</b>,
-                which lists the connected locations as rows. <b>The connection already exists — you
-                are only changing two dropdowns on the MFunding.net row.</b>
+                <b>The board grew.</b> Open <b>Opportunities → MFunding MCA Pipeline</b>: the{" "}
+                <b>New Lead</b> column should be up by roughly your push size.
               </li>
               <li>
-                On the <b>MFunding.net</b> row, <b>Step 2 "Select Your Tag"</b> → click the box → a
-                dropdown opens with a <b>tiny search box</b> at the top → type this batch's tag (e.g.{" "}
-                <b>ucc-2026-08-20</b>) → <b>click the tag</b> to select it. ⚠️ <b>If the tag doesn't
-                appear</b>, HotProspector's copy of the tag list is stale: <b>avatar menu → Quick
-                Links → "Refresh Meta"</b>, then come back and retry.
+                <b>The setter's filter finds them.</b> <b>Advanced Filters → Source → Is →</b>{" "}
+                <code>UCC</code> (or <code>Aged</code>, exact capitals) → blue <b>Apply</b>. If the
+                count doesn't move, the filter isn't on — <b>fix that before the floor starts</b>,
+                not during.
               </li>
               <li>
-                <b>Step 3 "Group to Sync With"</b> → pick <b>this batch's HP group</b>. If it doesn't
-                exist yet, create it first: <b>Contacts → "Create Group"</b> → name it after the
-                batch, e.g. <b>"UCC 2026-08-20"</b> — then come back to this row.
+                <b>One contact opens its Playbook.</b> Open any of the new arrivals →{" "}
+                <b>Additional Info</b> → click <b>Revenue Playbook</b> → it must open{" "}
+                <b>that merchant</b> in mfunding.net within ~30 seconds. A login screen means you
+                aren't signed into mfunding.net in that window; <b>no link at all</b> means the push
+                didn't land properly.
               </li>
               <li>
-                <b>Step 4</b> → click <b>"Sync Leads"</b>. The row shows a red{" "}
-                <b>"InProgress N%"</b> — <b>wait for it to finish.</b> ⚠️ <b>The toasts lie here:</b>{" "}
-                you may see <b>"No Leads Found"</b> while it is in fact syncing. <b>Judge by the
-                CONTACT COUNT instead</b> — the Contacts page header (<b>"Showing 0-25 of N"</b>)
-                should grow by roughly your batch size.
-              </li>
-              <li>
-                <b>VALIDATE — mandatory, before anything else.</b> Go to <b>Contacts</b> → open one
-                of the <b>new arrivals</b> (sort/spot by <b>Last Updated = minutes ago</b>) → the
-                contact card must show <b>"Location Name : MFunding.net"</b> underneath the email →
-                then click <b>"Gohighlevel Custom Link"</b> at the <b>bottom of the right
-                sidebar</b> (it has an ↗ icon) → the <b>MFunding Revenue Playbook must open that
-                merchant</b>. If it errors <b>"Lead data not Synced"</b>, that lead did NOT come
-                through GoHighLevel — <b>stop and re-check Parts B and C.</b>
-              </li>
-              <li>
-                <b>Count the batch by its TAG, not by the group.</b> In HotProspector go to{" "}
-                <b>Contacts → Search Filter → Tags</b> → pick this batch's tag — that count is the{" "}
-                <b>authoritative lead count</b> for the batch.{" "}
-                <b>Group counts are not reliable</b> (HP's group index is broken account-wide), so
-                never validate a batch off a group number.
+                <b>One test call.</b> Someone dials one lead end to end — Call → answer → Playbook
+                opens → disposition → the card moves on the board.{" "}
+                <b>Only then do setters start.</b> Three minutes of checking beats a lost day.
               </li>
             </ol>
           </div>
@@ -938,146 +1014,88 @@ export default function DialingMachinePage() {
           <div className="sopbox">
             <div className="sop-h">
               <span className="badge">D</span>
-              <h3>Build the 3-line campaign — a NEW one for this batch</h3>
-              <span className="cadline cad cad-batch">Every batch</span>
-            </div>
-            <div className="warn">
-              <b>You build a NEW campaign for every batch.</b> You do not reuse or re-point an old
-              one, because <b>the dialing mode LOCKS at creation</b> and the lead set is tied to the
-              group. So each batch: <b>Dialer → New Campaign</b> → <b>name it after the batch</b>{" "}
-              (e.g. "UCC 2026-08-20") → <b>Group = this batch's group</b> →{" "}
-              <b>Mode = Progressive(M)</b> → <b>Dialing Leads = 3</b> → <b>assign the setters on
-              it</b>. The details are below.
-            </div>
-            <ol>
-              <li>
-                <b>Dialer → New Campaign</b> → <b>name it after the batch</b> (e.g.{" "}
-                <b>"UCC 2026-08-20"</b> — matching the group name keeps the floor from dialing last
-                week's list). Advance with the green <b>Next</b> button (clicking tab names doesn't
-                switch tabs), and note HP <b>creates the campaign as you click Next</b> — it exists
-                before you reach the final screen.
-              </li>
-              <li>
-                <b>Mode = Progressive(M)</b> — this is the 3-at-once mode. Selecting it reveals{" "}
-                <b>"Dialing Leads"</b> → <b>set it to 3</b> (rings 3 simultaneously, connects the
-                first answer, drops the others). <b>"Power" = one at a time — NOT what we run.</b>{" "}
-                ⚠️ <b>The mode LOCKS after creation.</b>
-              </li>
-              <li>
-                <b>Group = this batch's group</b> — the one you just synced into in Part C, not last
-                batch's. <b>Caller ID = +1 954-860-7138.</b>{" "}
-                <b>Dialer Access Hours = 8:00am–9:00pm</b> in the <b>lead's timezone</b> (that's
-                TCPA).
-              </li>
-              <li>
-                ⚠️ <b>Then toggle ON "TAGS TO DIAL WITHOUT SORTING" and select this batch's tag</b>{" "}
-                (the same dated tag from Part B, e.g. <b>ucc-2026-08-20</b>).{" "}
-                <u>
-                  The tag is what the dialer actually resolves leads by — the group alone cannot be
-                  trusted, because HotProspector's group counters are broken account-wide.
-                </u>{" "}
-                The <b>"Leads Found"</b> count should jump to your batch size the moment you pick the
-                tag. <b>If it still reads 0, the tag isn't set — do not proceed.</b>
-              </li>
-              <li>
-                <b>Call Statuses:</b> turn on <b>"Send Application"</b>.
-              </li>
-              <li>
-                <b>Script:</b> attach <b>"UCC Setter Script — Momentum"</b> with{" "}
-                <b>Autoload on dialer screen</b> checked.
-              </li>
-              <li>
-                <b>Assign setters on the "Assign To" field in Campaign Settings</b> — not an "Action
-                menu" item. The <b>account owner has access implicitly</b> and won't appear in that
-                list.
-              </li>
-              <li>
-                ⚠️ <b>Check Maximum Dial Attempts</b> — it can save as <b>1</b>. Set it to <b>20</b>.
-              </li>
-              <li>
-                ⚠️ <b>REOPEN the campaign after "Save and Close" and confirm every setting stuck</b>{" "}
-                — HotProspector <b>silently reverts some edits on save</b>. Re-check the tag, the
-                mode, Dialing Leads and Maximum Dial Attempts.
-              </li>
-              <li>
-                ⚠️ If the Edit screen shows <b>"0 Leads Found"</b> while the group is loaded, treat it
-                as a <b>missing tag, not a display bug</b> — set the batch tag under{" "}
-                <b>"TAGS TO DIAL WITHOUT SORTING"</b>. Cross-check the real number against the{" "}
-                <b>batch-tag count in GoHighLevel</b> and the <b>Dialer LIST view</b>.
-              </li>
-              <li>
-                <b>Call recording</b> requires the <b>owner</b> to accept HotProspector's consent
-                agreement: <b>Edit → Call Handling → Automatic → Agree</b>. Until then, no recordings
-                (and no AI call scoring).
-              </li>
-            </ol>
-          </div>
-
-          <div className="sopbox">
-            <div className="sop-h">
-              <span className="badge">E</span>
-              <h3>Validate end to end — never skip this</h3>
-              <span className="cadline cad cad-batch">Every batch</span>
-            </div>
-            <ol>
-              <li>
-                A synced lead's <b>"Gohighlevel Custom Link"</b> opens the Revenue Playbook on that
-                merchant.
-              </li>
-              <li>
-                The campaign's <b>"Leads Found"</b> is non-zero (i.e. the batch tag is set on it) and
-                the <b>Dialer LIST view</b> shows the <b>real lead count</b>, matching the{" "}
-                <b>batch-tag count in Contacts</b>.
-              </li>
-              <li>
-                <b>The owner makes ONE test call:</b> the script auto-loads → the button opens the
-                Playbook → the disposition <b>writes back to GoHighLevel</b>.
-              </li>
-              <li>
-                <b>Only then do setters start.</b> This is the lesson from the dead floor — three
-                minutes of checking beats a lost day.
-              </li>
-            </ol>
-            <div className="callout">
-              <b>Ignore HotProspector's "Pipeline Status: Unassigned" column.</b> On the HP Contacts
-              list every synced lead shows <b>Pipeline Status: Unassigned</b>. That is{" "}
-              <b>HotProspector's own internal pipeline feature, which our flow does not use</b> —{" "}
-              <b>"Unassigned" there is normal and is not a broken sync</b>. The real pipeline is the{" "}
-              <b>12 stages inside the MFunding Revenue Playbook</b> (and the GoHighLevel pipeline
-              behind it). Never troubleshoot against that column.
-            </div>
-          </div>
-
-          <div className="sopbox">
-            <div className="sop-h">
-              <span className="badge">F</span>
               <h3>The setter's daily flow</h3>
               <span className="cadline cad cad-once">Every day, no setup</span>
             </div>
             <ol>
               <li>
-                <b>Google Chrome.</b> Log into <b>both</b> app.hotprospector.com <b>and</b>{" "}
-                mfunding.net in the <b>same window</b>.
+                <b>Google Chrome, one window.</b> Tab 1 <b>app.vibereach.io</b>, tab 2{" "}
+                <b>mfunding.net</b>, both signed in, left open all day. Not two browsers, not
+                incognito — the shared session is what makes the Playbook link work.
               </li>
               <li>
-                <b>Dialer → the campaign → green ▶</b> → tick the timezone confirmation →{" "}
-                <b>Start Dialing</b> (3 lines).
+                <b>Opportunities → MFunding MCA Pipeline</b> → <b>Advanced Filters → Source → Is →</b>{" "}
+                <code>UCC</code> or <code>Aged</code> (exact capitals) → blue <b>Apply</b>. One
+                filter, nothing stacked.
               </li>
               <li>
-                <b>On answer:</b> the script auto-loads → click <b>"Gohighlevel Custom Link"</b> →
-                the Revenue Playbook opens with the merchant loaded → <b>send the application +
-                Connect Bank live on the call</b>.
+                <b>Press Call on the New Lead column header.</b> That's WAVV: 3 lines at once, the
+                other two drop on the first answer, and it lines up the next 3 when you're done.
               </li>
               <li>
-                <b>Record the disposition</b> — it writes back to GoHighLevel and fires the
-                workflows.
+                <b>Answering machine → Voicemail, then Resume.</b> The pre-recorded drop goes out and
+                the dialer moves on. No dead air.
               </li>
               <li>
-                <b>Backstop if the button ever errors:</b> copy the merchant's phone number (it's in
-                the script) → <b>mfunding.net/admin/playbooks</b> →{" "}
-                <b>"Open a merchant by phone"</b> box → <b>Open</b>.
+                <b>Live answer → contact card → Additional Info → Revenue Playbook.</b> One click,
+                wait up to 30 seconds. Then work it top to bottom: capture the details,{" "}
+                <b>send the application</b>, get the <b>bank connected</b> — all while they're on the
+                phone.
+              </li>
+              <li>
+                <b>Disposition the call in WAVV.</b> Every live call, every time — that's what moves
+                the board and fires the follow-up.
+              </li>
+              <li>
+                <b>Backstop if a contact has no Playbook link:</b> find the merchant with the{" "}
+                <b>search bar</b> in mfunding.net (name, business, or phone) and keep working — then
+                tell your manager, because that lead was loaded wrong.
               </li>
             </ol>
+            <div className="callout">
+              <b>Compliance, every call:</b> it's an <b>advance / working capital / funding</b> —{" "}
+              <b>never "a loan"</b>. Open with <b>"this call may be recorded."</b> No upfront fees,
+              no guarantees. Dial only <b>8am–9pm the merchant's local time</b>.{" "}
+              <b>"Take me off your list" → Do Not Contact on the spot</b>, no arguing, no redial.
+            </div>
+          </div>
+        </section>
+
+        {/* DISPOSITIONS */}
+        <section>
+          <div className="sec-h">Dispositions — what each one does to the board</div>
+          <div className="tablewrap">
+            <table className="tbl-disp">
+              <thead>
+                <tr>
+                  <th>Disposition in WAVV</th>
+                  <th>Tag it stamps</th>
+                  <th>What happens to the opportunity</th>
+                </tr>
+              </thead>
+              <tbody>
+                {DISPOSITIONS.map((d) => (
+                  <tr key={d.tag}>
+                    <td>{d.label}</td>
+                    <td>{d.tag}</td>
+                    <td>
+                      <span className={`mv mv-${d.kind}`}>{d.move}</span>
+                      {d.note}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="callout">
+            <b>How the move actually happens.</b> WAVV stamps a <code>wavv-*</code> tag on the
+            contact; a sweep runs <b>every 10 minutes</b>, reads the new tags, moves the
+            opportunities and then <b>removes the tag</b> so each disposition is processed once. Two
+            consequences worth knowing: the board is <b>current within ten minutes, not instantly</b>
+            , and the sweep <b>never moves anything back INTO New Lead</b> — that stage fires the
+            speed-to-lead email, and re-entering it would email the merchant again.{" "}
+            <b>Adding a new disposition in WAVV Manager does nothing on its own</b> until it's added
+            to the mapping.
           </div>
         </section>
 
@@ -1088,16 +1106,16 @@ export default function DialingMachinePage() {
             <table>
               <thead>
                 <tr>
-                  <th>GoHighLevel (VibeReach)</th>
-                  <th>HotProspector</th>
+                  <th>VibeReach (GoHighLevel)</th>
+                  <th>WAVV</th>
                   <th>What it actually is</th>
                 </tr>
               </thead>
               <tbody>
-                {VOCAB.map(([ghl, hp, what]) => (
+                {VOCAB.map(([ghl, wavv, what]) => (
                   <tr key={what}>
                     <td>{ghl}</td>
-                    <td>{hp}</td>
+                    <td>{wavv}</td>
                     <td>{what}</td>
                   </tr>
                 ))}
@@ -1105,17 +1123,11 @@ export default function DialingMachinePage() {
             </table>
           </div>
           <div className="callout">
-            <b>What's a "disposition"?</b> Just the <b>outcome label for a call</b> — "sent
-            application," "appointment set," "not interested," "no answer," "bad number." It's how
-            the systems know what happened so the right follow-up fires. In your setup the setter
-            mostly just <b>works the Revenue Playbook</b>; the outcome of that call becomes the
-            disposition that flows back to GoHighLevel automatically — they're not stopping to fill
-            out a form.
-          </div>
-          <div className="callout">
-            <b>Answering machines:</b> when a call hits voicemail, the setter drops a pre-recorded
-            message with the <b>Voicemail Drop</b> button and moves on — no dead air. Record/manage
-            those under <b>Settings → Templates → Voicemail / RVM</b>.
+            <b>Why "the tag doesn't dial" keeps coming up.</b> Under the old dialer a tag was the
+            thing you pointed a campaign at, so a mistyped tag meant a dead floor. That is no longer
+            true: <b>WAVV dials a pipeline column</b>. A tag now only decides which batch the cost
+            and revenue land against — worth getting right, but it will never be the reason nobody
+            got called.
           </div>
         </section>
 
@@ -1127,25 +1139,25 @@ export default function DialingMachinePage() {
               <h3>✅ Proven, verified live</h3>
               <ul>
                 <li className="ok">
-                  <b>Tagged GoHighLevel → HotProspector sync</b> — Settings → Integrations → tag +
-                  group + Sync Leads lands contacts in HP <b>linked</b>.
+                  <b>Lead Machine push → VibeReach</b> — upsert by phone/email, tags applied, Revenue
+                  Playbook link written, <b>New Lead opportunity opened</b> on the MFunding MCA
+                  Pipeline.
                 </li>
                 <li className="ok">
-                  <b>"Gohighlevel Custom Link" opens the Revenue Playbook</b> on a synced lead, with
-                  the merchant preloaded.
+                  <b>WAVV dials the column</b> — Call on the New Lead header, <b>3 lines at once</b>,
+                  VM drop + Resume, contact card on a live answer.
                 </li>
                 <li className="ok">
-                  <b>HP → GoHighLevel writeback</b> — dispositions flow up to GHL and fire the
-                  follow-up workflows.
+                  <b>Additional Info → Revenue Playbook opens the merchant</b> preloaded, given a
+                  same-window mfunding.net session.
                 </li>
                 <li className="ok">
-                  <b>3 lines at once</b> — Progressive(M) with Dialing Leads = 3, on the Business
-                  plan, no add-on.
+                  <b>Dispositions move the board</b> — verified against the live WAVV disposition
+                  set; the sweep runs every 10 minutes and is idempotent.
                 </li>
                 <li className="ok">
                   <b>Revenue Playbook cockpit</b> — send-app + Connect-Bank + upload links, tokenized
-                  (send.mfunding.net). <b>/admin/dialer</b> for per-setter KPIs, and the script's{" "}
-                  <b>"Open this merchant's Playbook"</b> link as the one-click way in.
+                  (send.mfunding.net). Per-rep KPIs on <b>/admin/setter-performance</b>.
                 </li>
               </ul>
             </div>
@@ -1153,23 +1165,28 @@ export default function DialingMachinePage() {
               <h3>⛔ Never do this</h3>
               <ul>
                 <li className="no">
-                  <b>Never import a list straight into HotProspector.</b> No GoHighLevel id → the
-                  setter's button errors on every lead → dead floor.
+                  <b>Never dial off a CSV or export.</b> No opportunity, no Playbook link, no
+                  writeback.
                 </li>
                 <li className="no">
-                  <b>Never run the sync without the Step-2 tag</b> — it's a silent no-op and you'll
-                  think the batch loaded.
+                  <b>Never type the Source value in lowercase</b>, and never skip the blue{" "}
+                  <b>Apply</b> — the filter simply isn't on.
                 </li>
                 <li className="no">
-                  <b>Never build a campaign on the group alone</b> — it must also carry the batch tag
-                  under <b>"TAGS TO DIAL WITHOUT SORTING"</b>, or it dials nothing.
+                  <b>Never stack a second filter</b> on top of Source. It hides most of the book
+                  without saying so.
                 </li>
                 <li className="no">
-                  <b>Never trust HP's search box or any group count</b> — the authoritative count is
-                  the <b>batch tag</b> (Contacts → Search Filter → Tags).
+                  <b>Never leave a live call undispositioned.</b> The card doesn't move and the
+                  follow-up doesn't fire.
                 </li>
                 <li className="no">
-                  <b>Never let setters start before the three end-to-end checks pass</b> (SOP E).
+                  <b>Never re-stage the MFunding MCA Pipeline</b> or move a card back into{" "}
+                  <b>New Lead</b> by hand — the stage ids are wired into the disposition sweep, and
+                  New Lead re-fires the speed-to-lead email.
+                </li>
+                <li className="no">
+                  <b>Never let setters start before the four checks in Part C pass.</b>
                 </li>
               </ul>
             </div>

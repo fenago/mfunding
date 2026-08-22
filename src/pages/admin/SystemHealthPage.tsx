@@ -61,9 +61,13 @@ const SERVICE_META: Record<string, { label: string; hint: string }> = {
     label: "Plaid (bank connection)",
     hint: "Check PLAID_CLIENT_ID / PLAID_SECRET_* in the vault and the environment toggle in platform_settings.plaid.",
   },
+  // RETIRED — kept only so this row renders with a truthful label. The probe
+  // (checkHotProspector in the system-health-check edge function) still writes a
+  // `hotprospector` row, and metaFor() would otherwise render it as an unlabeled
+  // mystery service. Delete this entry only together with the probe.
   hotprospector: {
-    label: "HotProspector (PowerDialer)",
-    hint: "The dialer API rejected our token exchange. Check HOTPROSPECTOR_API_UID / HOTPROSPECTOR_API_KEY in the vault and the account status at hookscall.com — setters can't dial while this is down.",
+    label: "HotProspector (retired dialer)",
+    hint: "RETIRED — HotProspector is no longer used for dialing; setters dial with WAVV from VibeReach. This probe is a leftover in the system-health-check edge function, so its up/down is NOT actionable — ignore it and remove checkHotProspector from that function.",
   },
   "site:mfunding.net": {
     label: "Website (mfunding.net)",

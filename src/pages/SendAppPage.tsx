@@ -3,8 +3,8 @@ import { SUPABASE_URL } from "../config";
 
 // SendAppPage — the setter's one-press "Send Application" confirm page.
 //
-// A setter reaches this from a link on the contact (HotProspector's "Gohighlevel
-// Custom Link", a GHL LINK custom field, or any pasted link). It:
+// A setter reaches this from the link custom field on the VibeReach (GHL) contact
+// card — Additional Info — or from any pasted link. It:
 //   1. reads the contact id (c) + link token (k) from the URL,
 //   2. PEEKS the merchant name via the send-app-link edge function (GET, no send),
 //   3. shows one "Send Application" button — the send fires ONLY on that explicit
@@ -16,13 +16,15 @@ import { SUPABASE_URL } from "../config";
 // never the master send secret.
 //
 // URL styles supported:
-//   • clean:  /send-app?c=<contactId>&k=<token>
-//   • HP:     /send-app?k=<token>&x=<HP-appended path that contains
-//             /contacts/detail/<contactId>>  — because HotProspector's integration
-//             "Custom URL" force-appends /v2/location/{loc}/contacts/detail/{id}?...,
-//             pointing its base at ".../send-app?k=<token>&x=" lands that whole suffix
-//             in the query, from which we recover the contact id. One HP setting →
-//             every contact, no per-contact data.
+//   • current: /send-app?c=<contactId>&k=<token>  — the form written onto the
+//              contact's link custom field, which is what setters actually click.
+//   • legacy:  /send-app?k=<token>&x=<suffix containing /contacts/detail/<id>>
+//              Back-compat only. This dates from the retired HotProspector
+//              integration, whose "Custom URL" force-appended
+//              /v2/location/{loc}/contacts/detail/{id}?... to whatever base you
+//              gave it, so the contact id landed in ?x= and had to be recovered
+//              from there. That dialer is gone, but the recovery branch stays so
+//              any old link still resolves instead of erroring.
 //
 // Compliance: MCA = purchase of future receivables, NOT a loan.
 
@@ -34,7 +36,8 @@ function parseParams(): { c: string; k: string } {
   const sp = new URLSearchParams(window.location.search);
   let c = sp.get("c") ?? "";
   const k = sp.get("k") ?? "";
-  // HP-appended suffix lands in ?x=… (or occasionally on the path); recover the id.
+  // Legacy (retired-dialer) links put the appended suffix in ?x=… (or occasionally
+  // on the path); recover the id so those still work.
   if (!c) {
     const hay = `${sp.get("x") ?? ""} ${window.location.pathname}`;
     c = hay.match(/\/contacts\/detail\/([^/?#\s]+)/)?.[1] ?? "";

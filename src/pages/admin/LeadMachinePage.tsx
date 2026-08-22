@@ -41,8 +41,9 @@ import {
 /*                                                                     */
 /* The purchased-list pipeline, one screen:                            */
 /*   upload the CSV → it lands in Supabase → filter / sort / search →  */
-/*   tag → push into VibeReach (GoHighLevel), which HotProspector      */
-/*   dials by tag.                                                     */
+/*   tag → push into VibeReach (GoHighLevel), where the leads land as  */
+/*   New Lead opportunities on the MFunding MCA Pipeline and WAVV      */
+/*   dials that column.                                                */
 /*                                                                     */
 /* Built against the lead-machine backend contract (tables            */
 /* lead_batches / lead_records; storage bucket lead-uploads; edge fns  */
@@ -342,7 +343,7 @@ function fullName(l: LeadRecord): string {
   return n || "—";
 }
 
-/** Lowercase-kebab, the tag shape HotProspector campaigns target. */
+/** Lowercase-kebab, the tag shape VibeReach tags / campaign codes use. */
 function kebab(s: string): string {
   return s
     .toLowerCase()
@@ -860,12 +861,12 @@ function ProcessStrip() {
       title: "VibeReach",
       sub: "the contact record, carrying its tags",
       tone: "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20",
-      arrow: "HotProspector syncs by tag",
+      arrow: "lands as a New Lead opportunity",
     },
     {
       key: "dial",
-      title: "The dialer",
-      sub: "the campaign dials that tag",
+      title: "WAVV",
+      sub: "dials the New Lead column of the MFunding MCA Pipeline",
       tone: "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20",
     },
   ];
@@ -910,7 +911,7 @@ function ProcessStrip() {
         </li>
         <li>
           • Every pushed lead always carries its <strong>lm-type tag + batch tag</strong> automatically — those are
-          provenance and dial nothing — plus your campaign tag, which is the one a dialer campaign targets.
+          provenance only — plus your campaign tag, which is what attribution and the VibeReach filters key on.
         </li>
       </ul>
     </section>
@@ -918,33 +919,26 @@ function ProcessStrip() {
 }
 
 /* ================================================================== */
-/* Section 5 — the HotProspector handoff                               */
+/* Section 5 — after the push                                          */
 /* ================================================================== */
-/* The exact clicks that get a pushed slice dialing. EVERY FACT HERE IS COPIED
-   FROM DialingMachinePage (Parts C and D), which is the source of truth — those
-   steps took two days and a dead setter floor to establish, so nothing here is
-   re-derived, reworded into a guess, or "tidied up". If HP's UI changes, fix it
-   THERE first and mirror it here.
+/* What is TRUE once a slice has been pushed, and nothing more. There is no
+   tag→dialer sync step any longer: WAVV dials straight off the VibeReach
+   Opportunities board, so the only thing that matters after a push is that the
+   leads are sitting in the MFunding MCA Pipeline's New Lead column with a Source
+   the setter's filter actually matches.
 
-   The five steps stay expanded: this is the next action after a push, not
-   reference material, and the owner asked for it to be visible without hunting.
-   The traps fold, because they're read once.
-
-   COPY RULE, and it is the whole point of this section: a step is ONE imperative
-   line naming the exact UI, with the fiddly bits on a single grey line under it.
-   No war stories, no justification, no history in the step flow — every "why"
-   lives in the folded traps block instead. Anything that isn't needed to execute
-   does not belong between the numbers. */
-function HotProspectorHandoff({
-  tag, campaign, batchCode, tagIsNewInGhl, lastPush,
+   Deliberately SHORT. The old version of this section walked five HotProspector
+   screens; HP is retired, and inventing a replacement ritual per batch would be
+   worse than saying the small true thing. The full floor SOP lives on the
+   Dialing Machine page — link to it rather than re-stating it here. */
+function AfterPushHandoff({
+  tag, campaign, lastPush,
 }: {
   tag: string | null;
   campaign: Campaign | null;
-  batchCode: string | null;
-  tagIsNewInGhl: boolean;
   lastPush: { pushed: number; tags: string[]; batchCode: string | null } | null;
 }) {
-  // The tag actually on screen, so the steps name the real thing rather than a
+  // The tag actually on screen, so the copy names the real thing rather than a
   // placeholder the owner has to mentally substitute.
   const T = tag ? (
     <code className="font-mono font-bold text-cyan-700 dark:text-cyan-300">{tag}</code>
@@ -956,10 +950,6 @@ function HotProspectorHandoff({
   // action first and only drops down here when it needs the detail.
   const sub = "mt-0.5 text-[11px] font-normal text-gray-500 dark:text-gray-400";
 
-  /* A concrete group name beats "this batch's group" — it's what he types into
-     HP's Create Group box. HP's own convention is the batch code spaced out
-     (UCC-20260813 → "UCC 20260813"), per the SOP's "name it after the batch". */
-  const groupName = batchCode ? batchCode.replace(/-/g, " ") : null;
   const checklist = campaign ? checklistProgress(campaign) : null;
 
   return (
@@ -967,7 +957,7 @@ function HotProspectorHandoff({
       <div className="flex flex-wrap items-center gap-2">
         <PhoneArrowUpRightIcon className="w-4 h-4 text-cyan-600 dark:text-cyan-400 shrink-0" />
         <h3 className="text-sm font-bold text-gray-900 dark:text-white">
-          After the push — into HotProspector, step by step
+          After the push — get it dialing in VibeReach
         </h3>
         {tag && (
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-600 text-white font-mono font-semibold">
@@ -986,17 +976,6 @@ function HotProspectorHandoff({
             checklist {checklist.done} of {checklist.total}
           </Link>
         )}
-        {/* Lives here rather than inside step 4, so that step stays one clause.
-            Linking only affects whether dial stats attribute back — it is not on
-            the path to getting the floor dialing. */}
-        {campaign && !campaign.hp_campaign_id && (
-          <Link
-            to="/admin/campaigns"
-            className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 hover:underline"
-          >
-            link HP campaign →
-          </Link>
-        )}
       </div>
 
       {/* Bound to the push that RAN, not the panel's live draft — he's about to
@@ -1005,122 +984,44 @@ function HotProspectorHandoff({
         <p className="text-[11px] text-emerald-800 dark:text-emerald-300">
           <strong>You just pushed {lastPush.pushed.toLocaleString()} leads</strong> tagged{" "}
           <code className="font-mono">{lastPush.tags.join(", ")}</code>
-          {lastPush.batchCode && <> from {lastPush.batchCode}</>}. Now put them in front of the dialer:
+          {lastPush.batchCode && <> from {lastPush.batchCode}</>}. They are VibeReach contacts now.
         </p>
       )}
 
       <p className="text-[11px] text-gray-600 dark:text-gray-300">
-        <strong>One tag, three places:</strong> the push above · HP <strong>Step 2 "Select Your Tag"</strong> · the
-        campaign's <strong>"Tags to Dial"</strong>. All three must be {T}.
-      </p>
-
-      <p className="text-[11px] font-semibold text-red-700 dark:text-red-400">
-        Never import a CSV straight into HotProspector — the setter's merchant link breaks on every lead.
+        <strong>The tag does not dial.</strong> {T} is attribution plus a VibeReach filter. <strong>WAVV dials the
+        Opportunities board</strong>, so what makes a pushed lead reachable is landing as a <strong>New Lead</strong>{" "}
+        opportunity in the <strong>MFunding MCA Pipeline</strong> with the <strong>Source</strong> the setter filters on.
       </p>
 
       <ol className="space-y-2 text-xs text-gray-700 dark:text-gray-200 list-decimal pl-5 marker:font-bold marker:text-cyan-700 dark:marker:text-cyan-400">
         <li>
-          <strong>Push the slice from the panel above, tagged {T}.</strong>
-          <div className={sub}>The tagged GoHighLevel sync is the only way leads may enter HotProspector.</div>
-        </li>
-        {/* Required or skippable — knowable from whether GHL actually minted the
-            tag, so it says one thing instead of hedging both. */}
-        {tagIsNewInGhl ? (
-          <li>
-            <strong>Run HP → avatar menu → Quick Links → "Refresh Meta" — required.</strong>
-            <div className={sub}>{tag} was just created in VibeReach, so HP can't see it yet.</div>
-          </li>
-        ) : (
-          <li>
-            {/* "HP's Step 2", not "Step 2 below" — "below" pointed at OUR numbered
-                list while "Step 2" means HP's wizard row, so the two numbering
-                systems collided for a beat. */}
-            <strong>Check {T} appears in HP's Step 2 — if not, Quick Links → "Refresh Meta".</strong>
-            <div className={sub}>Usually already there; this tag wasn't created just now.</div>
-          </li>
-        )}
-        <li>
-          <strong>
-            HP → Settings → INTEGRATIONS → "Go High Level Integration" → the MFunding.net row.
-          </strong>{" "}
-          Step 2 tag = {T} · Step 3 group ={" "}
-          {groupName ? <strong>"{groupName}"</strong> : <>this batch's HP group</>} · Step 4{" "}
-          <strong>"Sync Leads"</strong>.
+          <strong>Confirm the slice landed as New Lead opportunities in the MFunding MCA Pipeline.</strong>
           <div className={sub}>
-            The tag dropdown has a tiny search box.{" "}
-            {groupName ? (
-              <>Make "{groupName}" first under Contacts → "Create Group" if it's missing.</>
-            ) : (
-              <>Make the group first under Contacts → "Create Group" if it's missing.</>
-            )}{" "}
-            Wait for the row's red "InProgress N%".
+            Contacts alone are invisible to the dialer — the board is what WAVV reads.
           </div>
         </li>
         <li>
-          <strong>
-            In{" "}
-            {campaign?.hp_campaign_name ? (
-              <>your linked HP campaign "{campaign.hp_campaign_name}"</>
-            ) : (
-              <>the HP dialer campaign</>
-            )}
-            , toggle "TAGS TO DIAL WITHOUT SORTING" ON and pick {T}.
-          </strong>
-          {/* One clause, and it's the stop condition. The "link the HP campaign"
-              offer used to ride along here and pushed this to three clauses on
-              the one step where stopping is the point; it lives in the header
-              chip now — it's an attribution nicety, not something needed to get
-              the floor dialing. */}
+          <strong>Check the Source reads <code className="font-mono">UCC</code> or <code className="font-mono">Aged</code> — exact capitals.</strong>
           <div className={sub}>
-            "Leads Found" must show{" "}
-            {lastPush && lastPush.pushed > 0 ? <strong>{lastPush.pushed.toLocaleString()}</strong> : <>your number</>}.
-            If it reads 0 the tag isn't set — stop.
+            The setter's filter matches the string exactly; a lower-cased source hides the whole slice.
           </div>
         </li>
         <li>
-          <strong>Reopen the campaign — confirm the settings stuck.</strong>
-          <div className={sub}>HotProspector silently reverts some edits on save.</div>
+          <strong>Setter: Opportunities → Advanced Filters → Source is <code className="font-mono">UCC</code> / <code className="font-mono">Aged</code> → blue Apply.</strong>
+          <div className={sub}>The filter is what scopes the dial list — the campaign tag is not a dial target.</div>
+        </li>
+        <li>
+          <strong>Press Call on the New Lead column header — that is WAVV, three lines at once.</strong>
+          <div className={sub}>
+            Voicemail → press <strong>Voicemail</strong> then <strong>Resume</strong>. Live answer → contact card →
+            Additional Info → <strong>Revenue Playbook</strong>. Disposition every live call in WAVV.
+          </div>
         </li>
       </ol>
 
-      <details className="group">
-        <summary className="cursor-pointer text-[11px] font-semibold text-cyan-800 dark:text-cyan-300 hover:underline">
-          Why these exact clicks — the traps ▾
-        </summary>
-        <ul className="mt-2 space-y-1.5 text-[11px] text-gray-600 dark:text-gray-300 list-disc pl-5">
-          <li>
-            <strong>Why a CSV import is fatal.</strong> Leads that skipped GoHighLevel carry no GoHighLevel id, so
-            the setter's <strong>"Gohighlevel Custom Link"</strong> errors <strong>"Lead data not Synced"</strong>{" "}
-            on every one and they have no cockpit. That already cost a dead floor and a lost day on 1,047 leads.
-          </li>
-          <li>
-            <strong>Why "Refresh Meta".</strong> HotProspector caches GoHighLevel's tag list, so a tag it has never
-            seen isn't selectable in Step 2 until that runs.
-          </li>
-          <li>
-            <strong>Step 2's tag is mandatory.</strong> With no tag selected, <strong>Sync Leads is a silent
-            no-op</strong> — it reports nothing useful and moves zero leads.
-          </li>
-          <li>
-            <strong>The toasts lie during the sync.</strong> You may see <strong>"No Leads Found"</strong> while it
-            is in fact syncing. Judge by the <strong>contact count</strong> instead — the Contacts header
-            ("Showing 0-25 of N") should grow by roughly your push size.
-          </li>
-          <li>
-            <strong>Never target by group.</strong> HotProspector's group counters are broken account-wide, so a
-            group number can't validate a batch. Count by tag: <strong>Contacts → Search Filter → Tags</strong>.
-            The tag index is the one that's correct.
-          </li>
-          <li>
-            <strong>The "Sync Leads" button on the CONTACTS toolbar is a decoy</strong> — it syncs field
-            definitions, not leads. The one that moves leads is on the{" "}
-            <strong>Settings → Integrations → MFunding.net</strong> row.
-          </li>
-        </ul>
-      </details>
-
       <p className="text-[11px] text-gray-500 dark:text-gray-400">
-        Full SOP — groups, campaign build, Progressive(M), setter assignment, TCPA hours:{" "}
+        Full SOP — filters, WAVV, playbook handoff, TCPA hours:{" "}
         <Link to="/admin/dialing-machine" className="text-ocean-blue hover:underline font-medium">
           Dialing Machine
         </Link>
@@ -1139,9 +1040,9 @@ function HotProspectorHandoff({
 /* ================================================================== */
 /* Deliberately LIGHTER than the Campaigns page wizard, which is driven by the
    Synergy product catalog and asks for budget, vendor, pricing and a channel.
-   A dial campaign needs two things: a name and the tag that joins it to HP.
-   Everything else (the code, the GHL tag, the HP setup checklist) is minted
-   server-side by the dial-campaign function. */
+   A dial campaign needs two things: a name and the tag that joins the push to
+   its scoreboard. Everything else (the code, the GHL tag, the setup checklist)
+   is minted server-side by the dial-campaign function. */
 function NewDialCampaign({
   suggestedName,
   suggestedTag,
@@ -2455,8 +2356,8 @@ export default function LeadMachinePage() {
 
   /* ── Tags, and campaigns as a property OF a tag ───────────────────────────
      THE MODEL, which the UI now states outright: there is only ONE kind of tag.
-     Every tag behaves identically — it lands on every pushed lead and HP can dial
-     by any of them. A CAMPAIGN IS A TAG WITH A SCOREBOARD: the same string, bound
+     Every tag behaves identically — it lands on every pushed lead and any of them
+     can be filtered on in VibeReach. A CAMPAIGN IS A TAG WITH A SCOREBOARD: the same string, bound
      to a campaigns row so its leads, calls, deals and revenue roll up.
 
      So "tracked" is DERIVED from the tag matching a campaign's dial_tag, never
@@ -2761,16 +2662,8 @@ export default function LeadMachinePage() {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [createdNote, setCreatedNote] = useState<string | null>(null);
 
-  /* Tags this session actually CREATED in GHL. HotProspector caches GHL's tag
-     list, so "Refresh Meta" is genuinely required for these and genuinely
-     unnecessary for a tag that already existed — the difference is knowable, so
-     the HP steps state it instead of hedging both ways every time.
-     `ghl_tag.created` from the create response is the authority: the tag may
-     already have existed in GHL even when the campaign is brand new. */
-  const [tagsNewInGhl, setTagsNewInGhl] = useState<Set<string>>(new Set());
-
-  /* The push that actually ran, so the HP steps describe THAT rather than
-     whatever the panel's draft says now. Set only on a completed push. */
+  /* The push that actually ran, so the after-push section describes THAT rather
+     than whatever the panel's draft says now. Set only on a completed push. */
   const [lastPush, setLastPush] = useState<{
     pushed: number;
     tags: string[];
@@ -2824,16 +2717,12 @@ export default function LeadMachinePage() {
         const t = c.dial_tag;
         setTags((prev) => (prev.includes(t) ? prev : [...prev, t]));
         setAttributionTag(t);
-        // Only when GHL actually minted it — an existing tag needs no Refresh Meta.
-        if (ghlTagCreated) setTagsNewInGhl((prev) => new Set(prev).add(t));
       }
       setCreatorOpen(false);
       setCreatedNote(
         `${campaignLabel(c)} created. The tag ${c.dial_tag} ` +
-          (ghlTagCreated
-            ? "was just created in VibeReach, so HotProspector will not see it until you run Refresh Meta."
-            : "already existed in VibeReach.") +
-          " Its setup checklist on the Campaigns page has the remaining HotProspector steps.",
+          (ghlTagCreated ? "was just created in VibeReach." : "already existed in VibeReach.") +
+          " Its setup checklist on the Campaigns page has the remaining steps.",
       );
     },
     [],
@@ -3138,12 +3027,12 @@ export default function LeadMachinePage() {
             (errored > 0 ? ` · ${errored.toLocaleString()} errored` : "") +
             `. Tags: ${tagList}` +
             (attributionCampaign
-              ? ` — metrics attribute to ${campaignLabel(attributionCampaign)}. HotProspector dials it once that campaign's "Tags to Dial" includes ${attributionCampaign.dial_tag}.`
-              : " — target those tags in a HotProspector campaign to dial them."),
+              ? ` — metrics attribute to ${campaignLabel(attributionCampaign)}. The tag is attribution plus a VibeReach filter; WAVV dials these off the New Lead column of the MFunding MCA Pipeline.`
+              : " — those tags are attribution plus a VibeReach filter; WAVV dials these off the New Lead column of the MFunding MCA Pipeline."),
         );
-        /* Freeze what this run actually did, so the HP steps below describe the
-           push that happened rather than the panel's live draft — which the owner
-           is about to change as he sets up the next slice. */
+        /* Freeze what this run actually did, so the after-push section below
+           describes the push that happened rather than the panel's live draft —
+           which the owner is about to change as he sets up the next slice. */
         setLastPush({
           pushed,
           tags: effectiveTags,
@@ -3232,9 +3121,9 @@ export default function LeadMachinePage() {
           the <strong>batch tag</strong>, plus <strong>your campaign tags</strong>.
         </p>
         <p>
-          The <code>lm-*</code> tags are <strong>provenance only — they are inert and dial nothing</strong>. Dialing is
-          driven <strong>only by the campaign tag you type</strong>, so a list sits harmlessly in VibeReach until you
-          point a HotProspector campaign at your own tag.
+          The <code>lm-*</code> tags are <strong>provenance only — they are inert and dial nothing</strong>.
+          Attribution runs <strong>only off the campaign tag you type</strong>; dialing itself happens on the
+          Opportunities board, where WAVV works the <strong>New Lead</strong> column of the MFunding MCA Pipeline.
         </p>
         <p>
           <strong className="text-gray-800 dark:text-gray-100">Exports</strong> follow the same filters as the push, and
@@ -3767,8 +3656,8 @@ export default function LeadMachinePage() {
                     <TagIcon className="w-4 h-4 text-gray-400 shrink-0" />
                     <span className="text-xs font-bold text-gray-900 dark:text-white">Tags for this push</span>
                     <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                      Enter after each — add as many as you want. Every tag lands on every pushed lead, and
-                      HotProspector can dial by any of them.
+                      Enter after each — add as many as you want. Every tag lands on every pushed lead, and any of
+                      them can be filtered on in VibeReach.
                     </span>
                   </div>
 
@@ -4080,17 +3969,15 @@ export default function LeadMachinePage() {
               </div>
             )}
 
-            {/* ── 5. Into HotProspector ── */}
+            {/* ── 5. After the push — into the dialer ── */}
             {/* After a push, describe THAT push; before one, the live draft. */}
-            <HotProspectorHandoff
+            <AfterPushHandoff
               tag={lastPush?.tags[0] ?? attributionCampaign?.dial_tag ?? effectiveTags[0] ?? null}
               campaign={
                 lastPush?.campaignId
                   ? (dialCampaigns.find((c) => c.id === lastPush.campaignId) ?? null)
                   : attributionCampaign
               }
-              batchCode={lastPush?.batchCode ?? pinnedBatch?.batch_code ?? null}
-              tagIsNewInGhl={tagsNewInGhl.has(lastPush?.tags[0] ?? attributionCampaign?.dial_tag ?? "")}
               lastPush={lastPush}
             />
 
