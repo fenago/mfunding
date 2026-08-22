@@ -24,6 +24,9 @@ verify_jwt = false   # public inbound webhook — auth enforced in-code via fail
 [functions.live-transfer-intake]
 verify_jwt = false   # GHL live-transfer webhook / Zapier — auth enforced in-code via fail-closed shared-secret gate (?secret=)
 
+[functions.ghl-event-hook]
+verify_jwt = false   # GHL workflow webhook actions (call completed / merchant replied) — GHL cannot send a Supabase JWT; auth enforced in-code via fail-closed shared-secret gate (?secret= / x-ghl-secret)
+
 [functions.process-document]
 verify_jwt = false
 
