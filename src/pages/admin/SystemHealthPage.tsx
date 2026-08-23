@@ -65,6 +65,10 @@ const SERVICE_META: Record<string, { label: string; hint: string }> = {
   // (checkHotProspector in the system-health-check edge function) still writes a
   // `hotprospector` row, and metaFor() would otherwise render it as an unlabeled
   // mystery service. Delete this entry only together with the probe.
+  wavv: {
+    label: "WAVV (dialer API key)",
+    hint: "The vault key is probed against WAVV's v3 API. If it's red with 'key rejected', that's the known WAVV provisioning issue — chase WAVV support; the row goes green by itself the moment they enable API access. When green, Setter Performance starts syncing.",
+  },
   hotprospector: {
     label: "HotProspector (retired dialer)",
     hint: "RETIRED — HotProspector is no longer used for dialing; setters dial with WAVV from VibeReach. This probe is a leftover in the system-health-check edge function, so its up/down is NOT actionable — ignore it and remove checkHotProspector from that function.",

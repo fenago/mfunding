@@ -240,6 +240,57 @@ async function checkHotProspector(db: SupabaseClient): Promise<CheckResult> {
   }
 }
 
+/** WAVV (the dialer's public API). The key lives in the vault (get_wavv_api_key)
+ * and is probed against GET /v3/users. History: every panel-issued key has
+ * returned 401 INVALID_API_KEY since 2026-08-17 (trial-plan provisioning —
+ * ticket open with WAVV support), so this check exists precisely to notice the
+ * moment WAVV flips it on: the row goes green on its own, no code change. */
+async function checkWavv(db: SupabaseClient): Promise<CheckResult> {
+  const svc = "wavv";
+  const t0 = Date.now();
+  try {
+    const { data: apiKey, error: keyErr } = await db.rpc("get_wavv_api_key");
+    if (keyErr) {
+      return {
+        service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0,
+        detail: `vault read failed: ${keyErr.message}`,
+      };
+    }
+    if (!apiKey || typeof apiKey !== "string" || apiKey.length < 10) {
+      return {
+        service: svc, status: "degraded", http_status: null, latency_ms: Date.now() - t0,
+        detail: "no API key staged in the vault (get_wavv_api_key returned empty).",
+      };
+    }
+    const res = await fetch("https://api.wavv.com/v3/users", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(12000),
+    });
+    const latency = Date.now() - t0;
+    if (res.ok) {
+      return {
+        service: svc, status: "up", http_status: res.status, latency_ms: latency,
+        detail: `authenticated (${res.status}) — WAVV API access is LIVE. Setter Performance can sync.`,
+      };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return {
+        service: svc, status: "down", http_status: res.status, latency_ms: latency,
+        detail: "key rejected (INVALID_API_KEY) — known WAVV provisioning issue; waiting on WAVV support to enable API access for the team.",
+      };
+    }
+    return {
+      service: svc, status: "degraded", http_status: res.status, latency_ms: latency,
+      detail: `unexpected HTTP ${res.status} from /v3/users.`,
+    };
+  } catch (e) {
+    return {
+      service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0,
+      detail: `unreachable: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 /** A public site should answer 200. A non-2xx = degraded (reachable, wrong);
  * a network throw/timeout = down (unreachable). */
 async function checkSite(service: string, url: string): Promise<CheckResult> {
@@ -615,18 +666,19 @@ Deno.serve(async (req) => {
 
   // ── Run every probe (in parallel where independent) ──
   const results: CheckResult[] = [];
-  const [instantly, ghl, llm, plaid, hotprospector, site1, site2, cron, egress] = await Promise.all([
+  const [instantly, ghl, llm, plaid, hotprospector, wavv, site1, site2, cron, egress] = await Promise.all([
     checkInstantly(db),
     checkGhl(cfg, cfgErr),
     checkLlm(db),
     checkPlaid(db),
     checkHotProspector(db),
+    checkWavv(db),
     checkSite("site:mfunding.net", "https://mfunding.net"),
     checkSite("site:my.mfunding.net", "https://my.mfunding.net"),
     checkCron(db),
     checkSupabaseEgress(db),
   ]);
-  results.push(instantly, ghl, llm, plaid, hotprospector, site1, site2, cron, egress);
+  results.push(instantly, ghl, llm, plaid, hotprospector, wavv, site1, site2, cron, egress);
   // Edge-runtime self-check: if this line runs, the function + its scheduler are alive.
   results.push({ service: "edge-runtime", status: "up", http_status: null, latency_ms: null, detail: `edge function executed at ${new Date().toISOString()}.` });
 
