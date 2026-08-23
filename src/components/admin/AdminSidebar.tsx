@@ -302,14 +302,16 @@ export default function AdminSidebar() {
     // An admin who also has a closer row (e.g. Carlos) has role "admin", not
     // "closer" (see UserProfileContext) — they keep the full manager nav.
     // Exceptions: a setter can always reach "My Profile" to keep their own
-    // name/address/1099 details current, and the "Setter Guide" — their day-one
-    // onboarding doc, which they have to be able to re-open on the floor. Those
-    // are the only two screens outside the Playbook they're allowed.
+    // name/address/1099 details current, the "Setter Guide" — their day-one
+    // onboarding doc, which they have to be able to re-open on the floor — and
+    // the "Funder Cheat Sheet" (owner request 8/23: the deal-matching reference
+    // is available to closers; a closer_read_lenders RLS policy backs it).
     if (
       profile?.role === "closer" &&
       item.path !== "/admin/playbooks" &&
       item.path !== "/admin/my-profile" &&
-      item.path !== "/admin/setter-guide"
+      item.path !== "/admin/setter-guide" &&
+      item.path !== "/admin/cheat-sheet"
     )
       return false;
     // Closer lens: only the daily operating links, regardless of group.
