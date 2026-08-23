@@ -30,13 +30,16 @@
 //
 // MAPPING (stage ids are the live MFunding MCA Pipeline values; the MAPPING
 // array below is the single source of truth — owner "option A" ruling 8/17):
-//   wavv-not-interested     → status lost  (WAVV natively losses it at
-//                                           disposition time; ours is a backstop)
-//   wavv-bad-number         → status lost
-//   wavv-do-not-contact     → DND + status lost
-//   wavv-interested         → stage  Qualifying
-//   wavv-appointment-set    → stage  Qualifying
-//   wavv-callback           → stage  Contacted
+//   wavv-not-interested       → status lost  (WAVV natively losses it at
+//                                             disposition time; ours is a backstop)
+//   wavv-bad-number           → status lost
+//   wavv-do-not-contact       → DND + status lost
+//   wavv-full-app-statements  → stage  Docs Collected   (ladder rung 1)
+//   wavv-full-application     → stage  Application Sent (ladder rung 2)
+//   wavv-appointment-set      → stage  Qualifying       (ladder rung 3)
+//   wavv-interested           → stage  Qualifying (legacy tag from before the
+//                               8/22 rename of Interested → Full Application)
+//   wavv-callback             → stage  Contacted
 //   no-answer / left-voicemail / none / canceled / call-blocked → no action
 //   (lead stays in New Lead for redial; their tags are left untouched).
 
@@ -48,6 +51,8 @@ const MCA_PIPELINE = "bG9ZEh4eP9x60E1CyaMx";
 const STAGE_NEW_LEAD = "d60d563a-9904-423f-9a8e-0d0df0b12976"; // never a target
 const STAGE_CONTACTED = "bc68ac6f-d45d-4d56-b1c8-c10a7ec4fdf7";
 const STAGE_QUALIFYING = "27960f79-0b08-48ac-8fee-f4a9bf7748e3";
+const STAGE_APPLICATION_SENT = "2071ceb6-b0cf-4700-b57b-f8a3ef4b15bf";
+const STAGE_DOCS_COLLECTED = "c49fa9f8-a155-4d14-a597-2b23fd937b32";
 // 10k, not the bulk-job 60k: this drain spends ~3 calls per NEW disposition
 // (a few hundred/day on a busy floor), so it cannot meaningfully compete with
 // interactive traffic — but the board staying live DURING the dial day is the
@@ -72,11 +77,19 @@ type Action =
 // actions below are idempotent BACKSTOPS for calls WAVV misses; the sweep's
 // real jobs are the DNC hard-suppression and the POSITIVE forward moves
 // (WAVV does not advance stages — we do).
+// OWNER RULING 8/22 (outcome-ladder dispositions): the WAVV dispositions
+// "None" and "Interested" were repurposed to the two application outcomes —
+// "Full App + Statements" (tag wavv-full-app-statements) → Docs Collected and
+// "Full Application" (tag wavv-full-application) → Application Sent. The old
+// wavv-interested mapping stays as a legacy drain for tags stamped before the
+// rename; wavv-none never had an action and still doesn't.
 const MAPPING: Array<{ tag: string; action: Action }> = [
   { tag: "wavv-not-interested", action: { kind: "lost" } },
   { tag: "wavv-bad-number", action: { kind: "lost" } },
   { tag: "wavv-do-not-contact", action: { kind: "dnc" } },
-  { tag: "wavv-interested", action: { kind: "stage", stageId: STAGE_QUALIFYING } },
+  { tag: "wavv-full-app-statements", action: { kind: "stage", stageId: STAGE_DOCS_COLLECTED } },
+  { tag: "wavv-full-application", action: { kind: "stage", stageId: STAGE_APPLICATION_SENT } },
+  { tag: "wavv-interested", action: { kind: "stage", stageId: STAGE_QUALIFYING } }, // legacy pre-rename tag
   { tag: "wavv-appointment-set", action: { kind: "stage", stageId: STAGE_QUALIFYING } },
   { tag: "wavv-callback", action: { kind: "stage", stageId: STAGE_CONTACTED } },
 ];
