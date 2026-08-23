@@ -267,6 +267,9 @@ async function checkWavv(db: SupabaseClient): Promise<CheckResult> {
       signal: AbortSignal.timeout(12000),
     });
     const latency = Date.now() - t0;
+    // Owner requirement: whatever error WAVV returns must be VISIBLE verbatim on
+    // the System Health page — so the raw response body rides in the detail line.
+    const rawBody = (await res.text().catch(() => "")).slice(0, 200).trim();
     if (res.ok) {
       return {
         service: svc, status: "up", http_status: res.status, latency_ms: latency,
@@ -276,12 +279,12 @@ async function checkWavv(db: SupabaseClient): Promise<CheckResult> {
     if (res.status === 401 || res.status === 403) {
       return {
         service: svc, status: "down", http_status: res.status, latency_ms: latency,
-        detail: "key rejected (INVALID_API_KEY) — known WAVV provisioning issue; waiting on WAVV support to enable API access for the team.",
+        detail: `WAVV error HTTP ${res.status}: ${rawBody || "(empty body)"} — known WAVV provisioning issue; waiting on WAVV support to enable API access for the team.`,
       };
     }
     return {
       service: svc, status: "degraded", http_status: res.status, latency_ms: latency,
-      detail: `unexpected HTTP ${res.status} from /v3/users.`,
+      detail: `WAVV error HTTP ${res.status} from /v3/users: ${rawBody || "(empty body)"}`,
     };
   } catch (e) {
     return {
