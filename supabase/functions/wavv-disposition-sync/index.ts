@@ -162,11 +162,32 @@ Deno.serve(async (req) => {
   // reflects a disposition in real time and the 10-min poll can drop to a nightly
   // safety net. ~3-4 GHL calls per event; ZERO idle cost (nothing runs unless a
   // real disposition happened). Same MAPPING, same never-target-New-Lead guard.
-  if (payload.action === "push" && typeof payload.contact_id === "string") {
-    const contactId = payload.contact_id;
+  // GHL's workflow Webhook action nests the action's Custom Data under a
+  // `customData` object and sends the contact id top-level as `contact_id`
+  // (it may also appear as contactId / customData.contact_id depending on the
+  // GHL version). Read all of these so the push works from a real GHL webhook
+  // AND from a hand-crafted {action,contact_id} body.
+  const cd = (payload.customData ?? {}) as Record<string, unknown>;
+  const pushRequested = payload.action === "push" || cd.action === "push";
+  const pushContactId =
+    (typeof payload.contact_id === "string" && payload.contact_id) ||
+    (typeof payload.contactId === "string" && (payload.contactId as string)) ||
+    (typeof cd.contact_id === "string" && (cd.contact_id as string)) ||
+    (typeof cd.contactId === "string" && (cd.contactId as string)) ||
+    (typeof payload.id === "string" && (payload.id as string)) ||
+    "";
+  const pushTag =
+    (typeof payload.tag === "string" && (payload.tag as string)) ||
+    (typeof cd.tag === "string" && (cd.tag as string)) ||
+    "";
+  if (pushRequested) {
+    const contactId = pushContactId;
+    if (!contactId) {
+      return json({ ok: false, error: "push: no contact id in payload", payload_keys: Object.keys(payload) }, 200);
+    }
     let tags: string[] = [];
-    if (typeof payload.tag === "string" && MAPPING.some((m) => m.tag === payload.tag)) {
-      tags = [payload.tag as string];
+    if (pushTag && MAPPING.some((m) => m.tag === pushTag)) {
+      tags = [pushTag];
     } else {
       // No/other tag supplied — read the contact and act on any mapped tag it has.
       const cr = track(await ghlFetch<{ contact?: { tags?: string[] } }>(
