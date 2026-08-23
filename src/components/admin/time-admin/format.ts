@@ -113,22 +113,118 @@ export function instantWithTime(iso: string | null): string {
 }
 
 /**
+ * How many calendar days after the day worked an instant landed. Both sides are
+ * reduced to an EASTERN calendar day first, so the comparison is date-against-
+ * date and a late-evening timestamp doesn't round up into an extra day.
+ * Returns null when there is no instant to measure — an UNKNOWN gap, which the
+ * caller must not render as zero.
+ */
+export function daysAfterWorkDate(workDate: string, instant: string | null): number | null {
+  if (!instant) return null;
+  const on = dateKeyET(instant);
+  if (!on) return null;
+  return Math.round((parseYmd(on).getTime() - parseYmd(workDate).getTime()) / 86_400_000);
+}
+
+/**
  * An entry logged 2+ calendar days after the day it covers was backfilled from
  * memory, not checked in live — the owner wants those flagged before he pays
- * them. The check-in instant is reduced to its EASTERN calendar day first, so
- * the comparison is date-against-date and a late-evening check-in doesn't round
- * up into "late".
+ * them.
  */
 export const LATE_LOG_DAYS = 2;
 
+/** Beyond this the backfill stops being forgetfulness and gets the red treatment. */
+export const VERY_LATE_LOG_DAYS = 4;
+
 export function loggedLate(workDate: string, checkedInAt: string | null): boolean {
-  if (!checkedInAt) return false;
-  const loggedOn = dateKeyET(checkedInAt);
-  if (!loggedOn) return false;
-  const days = Math.round(
-    (parseYmd(loggedOn).getTime() - parseYmd(workDate).getTime()) / 86_400_000
-  );
-  return days >= LATE_LOG_DAYS;
+  const days = daysAfterWorkDate(workDate, checkedInAt);
+  return days != null && days >= LATE_LOG_DAYS;
+}
+
+/** "4 days later" / "same day" — how stale a change was when it landed. */
+export function lateLabel(days: number | null): string {
+  if (days == null) return "timing unknown";
+  if (days <= 0) return "same day";
+  if (days === 1) return "next day";
+  return `${days} days later`;
+}
+
+/**
+ * Tone for a gap measured by daysAfterWorkDate(). `unknown` is deliberately its
+ * own tier: a missing timestamp is not a clean one.
+ */
+export type LateTone = "ok" | "late" | "very-late" | "unknown";
+
+export function lateTone(days: number | null): LateTone {
+  if (days == null) return "unknown";
+  if (days >= VERY_LATE_LOG_DAYS) return "very-late";
+  if (days >= LATE_LOG_DAYS) return "late";
+  return "ok";
+}
+
+export const LATE_TONE_CLASS: Record<LateTone, string> = {
+  ok: "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300",
+  late: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+  "very-late": "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+  unknown: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400",
+};
+
+// ---------------------------------------------------------------------------
+// Clock times — clock_in / clock_out are real INSTANTS, so Eastern, not UTC.
+// ---------------------------------------------------------------------------
+
+/** "9:00a" — an instant as an Eastern wall clock, compact enough for a table. */
+export function clockTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d
+    .toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: APP_TZ })
+    // Intl separates the meridiem with a narrow no-break space in newer ICU.
+    .replace(/[\s\u202f\u00a0]*AM$/i, "a")
+    .replace(/[\s\u202f\u00a0]*PM$/i, "p");
+}
+
+/** "45m" / "1h 15m" — break length, or unpaid-gap length. */
+export function minutesLabel(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest ? `${h}h ${rest}m` : `${h}h`;
+}
+
+export interface ClockShape {
+  clock_in?: string | null;
+  clock_out?: string | null;
+  break_minutes?: number | null;
+}
+
+/**
+ * "9:00a–5:30p · 30m break" for a clocked shift, or null when the day was
+ * entered as plain hours. Null means MANUAL ENTRY, not missing data — the
+ * caller says so in words rather than leaving a blank cell.
+ *
+ * A shift that crosses midnight (Manila setters on a US-hours shift do this)
+ * gets a "+1d" marker so 11:00p–7:00a doesn't read as an eight-hour gap
+ * backwards.
+ */
+export function clockSpan(e: ClockShape): string | null {
+  const inAt = e.clock_in ?? null;
+  const outAt = e.clock_out ?? null;
+  const brk = Number(e.break_minutes) || 0;
+  if (!inAt && !outAt) return null;
+
+  const start = clockTime(inAt);
+  const end = clockTime(outAt);
+  let span = outAt ? `${start}–${end}` : `${start}– still clocked in`;
+
+  if (inAt && outAt) {
+    const dIn = dateKeyET(inAt);
+    const dOut = dateKeyET(outAt);
+    if (dIn && dOut && dIn !== dOut) span += " +1d";
+  }
+  return brk > 0 ? `${span} · ${minutesLabel(brk)} break` : span;
 }
 
 export const ROLE_BADGE: Record<string, string> = {

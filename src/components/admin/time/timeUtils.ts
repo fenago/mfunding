@@ -7,6 +7,14 @@
 // These helpers FORMAT and shift date strings only. What "today" is, and where a
 // pay week starts, are decided in Eastern by todayISO()/weekBounds() in
 // @/services/timeTracking — never re-derived here from the browser clock.
+//
+// Clock in/out are stored as timestamptz. Both directions of that conversion
+// (a "HH:mm" the worker typed -> a UTC instant, and back) go through the
+// Eastern helpers in @/utils/time. A setter in Manila typing "9:00" means 9 AM
+// on the COMPANY's clock; `new Date("2026-08-23T09:00")` would silently record
+// it as 9 AM Manila — a 12-hour lie in the payroll table.
+
+import { APP_TZ, etWallClockToUtcIso } from "@/utils/time";
 
 export function toISODate(d: Date): string {
   const y = d.getFullYear();
@@ -76,6 +84,75 @@ export function fmtTimeOfDay(ts: string): string {
 export function fmtHours(n: number | null | undefined): string {
   const v = Number(n) || 0;
   return String(Number(v.toFixed(2)));
+}
+
+// ---------------------------------------------------------------------------
+// Shift times (clock in / clock out)
+// ---------------------------------------------------------------------------
+
+/** "09:00" -> minutes since midnight, or null if it isn't a wall-clock time. */
+export function parseTimeInput(value: string): number | null {
+  const m = value.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/** A stored timestamp -> the "HH:mm" a time input needs, read in EASTERN. */
+export function etTimeInputValue(ts: string | null | undefined): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: APP_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  const h = get("hour");
+  const min = get("minute");
+  if (!h || !min) return "";
+  // hourCycle h23 can still surface "24" for midnight in some engines.
+  return `${String(Number(h) % 24).padStart(2, "0")}:${min}`;
+}
+
+/**
+ * A work date (yyyy-mm-dd) + a "HH:mm" the worker typed -> the UTC instant,
+ * interpreting the time AS EASTERN. Null when either piece is malformed, so a
+ * bad value is never stored as a plausible-looking wrong one.
+ */
+export function etStampFor(workDate: string, timeValue: string): string | null {
+  const dm = workDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const minutes = parseTimeInput(timeValue);
+  if (!dm || minutes === null) return null;
+  return etWallClockToUtcIso(+dm[1], +dm[2], +dm[3], Math.floor(minutes / 60), minutes % 60);
+}
+
+/** "9:00 AM" — a stored shift timestamp, in Eastern. */
+export function fmtClock(ts: string | null | undefined): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: APP_TZ,
+  });
+}
+
+/** "9:00a–5:30p" — the compact form for a day cell. Empty when not clocked. */
+export function fmtClockRange(
+  clockIn: string | null | undefined,
+  clockOut: string | null | undefined,
+): string {
+  const a = fmtClock(clockIn);
+  const b = fmtClock(clockOut);
+  if (!a || !b) return "";
+  const tiny = (s: string) => s.replace(/\s?AM$/i, "a").replace(/\s?PM$/i, "p");
+  return `${tiny(a)}–${tiny(b)}`;
 }
 
 /** Always "$" — the currency code is appended only when it isn't USD. */

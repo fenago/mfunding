@@ -13,6 +13,7 @@ import {
   createPendingRun,
   listAllEntries,
   listAllPayRuns,
+  listAuditForPeriod,
   listStaffWithRates,
   markPaid,
   shiftWeek,
@@ -21,10 +22,17 @@ import {
   type PayRun,
   type StaffWithRate,
   type TimeEntry,
+  type TimeEntryAudit,
 } from "@/services/timeTracking";
 import ArmedButton from "@/components/admin/time-admin/ArmedButton";
 import PaymentHistory from "@/components/admin/time-admin/PaymentHistory";
+import EditHistoryPanel, {
+  EditedBadge,
+  RecentEditsStrip,
+} from "@/components/admin/time-admin/EditHistory";
+import { editEvents, firstLoggedByEntry, groupBy } from "@/components/admin/time-admin/auditDiff";
 import {
+  clockSpan,
   displayName,
   formatHours,
   formatMoney,
@@ -112,17 +120,28 @@ type Row = {
   cost: number | null;
   run: PayRun | null;
   lateCount: number;
+  /** Audit rows for this person's entries this week — [] means genuinely none. */
+  audit: TimeEntryAudit[];
+  editCount: number;
+  lateEditCount: number;
 };
 
 export default function TimePayPage() {
   const [staff, setStaff] = useState<StaffWithRate[]>([]);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [runs, setRuns] = useState<PayRun[]>([]);
+  // Keyed by user_id, the way the service returns it. null is NOT an empty audit
+  // trail — it means we could not read one, and the UI has to say so rather than
+  // render every row as clean.
+  const [audit, setAudit] = useState<Map<string, TimeEntryAudit[]> | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set());
+  const [recentOpen, setRecentOpen] = useState(false);
 
   // The Monday of the week being run. weekBounds() owns the Monday-start rule.
   const [weekStart, setWeekStart] = useState<string>(() => weekBounds(new Date()).start);
@@ -159,6 +178,16 @@ export default function TimePayPage() {
     } finally {
       setLoading(false);
     }
+
+    // The audit trail loads on its own so a missing/blocked audit table degrades
+    // to "edit history unavailable" instead of blanking the payroll table.
+    try {
+      setAudit(await listAuditForPeriod(week.start, week.end));
+      setAuditError(null);
+    } catch (err) {
+      setAudit(null);
+      setAuditError(err instanceof Error ? err.message : "The audit trail could not be read.");
+    }
   }, [week.start, week.end]);
 
   useEffect(() => {
@@ -168,15 +197,24 @@ export default function TimePayPage() {
   function goWeek(deltaWeeks: number) {
     setWeekStart(shiftWeek(weekStart, deltaWeeks).start);
     setExpanded(new Set());
+    setHistoryOpen(new Set());
+  }
+
+  function toggleIn(set: Set<string>, id: string): Set<string> {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
   }
 
   function toggleExpanded(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setExpanded((prev) => toggleIn(prev, id));
+  }
+
+  /** The "edited" badge opens the person's row AND their history in one click. */
+  function openHistory(id: string) {
+    setExpanded((prev) => new Set(prev).add(id));
+    setHistoryOpen((prev) => toggleIn(prev, id));
   }
 
   // --- derived ------------------------------------------------------------
@@ -191,6 +229,41 @@ export default function TimePayPage() {
     for (const list of m.values()) list.sort((a, b) => a.work_date.localeCompare(b.work_date));
     return m;
   }, [entries]);
+
+  /** The week's audit rows flattened — [] when clean, and only when clean. */
+  const auditRows = useMemo(() => (audit ? [...audit.values()].flat() : []), [audit]);
+
+  /** entry id → when it was FIRST logged. checked_in_at is re-stamped by the
+   *  update trigger, so for an edited entry it is the LAST touch, not the first. */
+  const firstLogged = useMemo(() => firstLoggedByEntry(auditRows), [auditRows]);
+
+  /** entry id → its edits, newest first, for the per-day "edited" chip. Rows whose
+   *  entry was hard-deleted have no id to hang off and live in the panel only. */
+  const editsByEntry = useMemo(
+    () =>
+      groupBy(
+        editEvents(auditRows).filter((e) => e.audit.time_entry_id),
+        (e) => e.audit.time_entry_id as string
+      ),
+    [auditRows]
+  );
+
+  /**
+   * When an entry was REALLY first logged. The DB re-stamps checked_in_at on
+   * every update, so on an edited entry it holds the last touch — reading it as
+   * the original would flag a same-day entry that was merely corrected later as
+   * "logged late". The audit's insert row is the truth; checked_in_at is the
+   * fallback for weeks whose audit trail we could not read.
+   */
+  const loggedAt = useCallback(
+    (e: TimeEntry) => firstLogged.get(e.id) ?? e.checked_in_at,
+    [firstLogged]
+  );
+
+  const nameFor = useMemo(() => {
+    const m = new Map(staff.map((s) => [s.id, displayName(s)]));
+    return (userId: string | null) => (userId ? (m.get(userId) ?? null) : null);
+  }, [staff]);
 
   /** The pay run covering THIS week, per user. A paid run outranks a pending one. */
   const runForWeek = useMemo(() => {
@@ -215,6 +288,8 @@ export default function TimePayPage() {
         const es = entriesByUser.get(s.id) ?? [];
         const hours = es.reduce((t, e) => t + (Number(e.hours) || 0), 0);
         const rate = s.hourly_rate == null ? null : Number(s.hourly_rate);
+        const rows = audit?.get(s.id) ?? [];
+        const edits = editEvents(rows);
         return {
           staff: s,
           entries: es,
@@ -222,10 +297,13 @@ export default function TimePayPage() {
           rate,
           cost: rate == null ? null : hours * rate,
           run: runForWeek.get(s.id) ?? null,
-          lateCount: es.filter((e) => loggedLate(e.work_date, e.checked_in_at)).length,
+          lateCount: es.filter((e) => loggedLate(e.work_date, loggedAt(e))).length,
+          audit: rows,
+          editCount: edits.length,
+          lateEditCount: edits.filter((e) => e.isLate).length,
         };
       }),
-    [staff, entriesByUser, runForWeek]
+    [staff, entriesByUser, runForWeek, audit, loggedAt]
   );
 
   // Someone with a pay run but no hours still shows — a recorded payment must
@@ -424,6 +502,15 @@ export default function TimePayPage() {
         </div>
       </div>
 
+      {/* Who rewrote their hours after the fact — the at-a-glance tamper view. */}
+      <RecentEditsStrip
+        rows={audit ? auditRows : null}
+        unreadable={auditError}
+        nameFor={nameFor}
+        open={recentOpen}
+        onToggle={() => setRecentOpen((v) => !v)}
+      />
+
       {/* Staff table */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
         {loading ? (
@@ -452,7 +539,12 @@ export default function TimePayPage() {
                   const s = row.staff;
                   const isOpen = expanded.has(s.id);
                   const daySummary = row.entries
-                    .map((e) => `${shortDate(e.work_date)}: ${formatHours(Number(e.hours) || 0)}`)
+                    .map((e) => {
+                      const span = clockSpan(e);
+                      return `${shortDate(e.work_date)}: ${formatHours(Number(e.hours) || 0)}${
+                        span ? ` · ${span}` : ""
+                      }`;
+                    })
                     .join("\n");
 
                   return (
@@ -481,7 +573,7 @@ export default function TimePayPage() {
                             )}
                           </button>
                           <div>
-                            <div className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                            <div className="font-medium text-gray-900 dark:text-white flex flex-wrap items-center gap-2">
                               {displayName(s)}
                               {row.lateCount > 0 && (
                                 <span
@@ -489,6 +581,11 @@ export default function TimePayPage() {
                                   className="inline-block w-2 h-2 rounded-full bg-amber-500"
                                 />
                               )}
+                              <EditedBadge
+                                count={row.editCount}
+                                late={row.lateEditCount}
+                                onClick={() => openHistory(s.id)}
+                              />
                             </div>
                             <div className="flex items-center gap-2 mt-0.5">
                               <span className="text-xs text-gray-500 dark:text-gray-400">
@@ -504,44 +601,88 @@ export default function TimePayPage() {
                               </span>
                             </div>
 
-                            {/* Day-by-day, with the time each entry was RECORDED so
-                                backfilled hours are obvious before they get paid. */}
+                            {/* Day-by-day: the shift as clocked, the hours claimed,
+                                and when it was RECORDED — so backfilled or rewritten
+                                hours are obvious before they get paid. */}
                             {isOpen && (
                               <div className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 divide-y divide-gray-200 dark:divide-gray-700 max-w-3xl">
                                 {row.entries.map((e) => {
-                                  const late = loggedLate(e.work_date, e.checked_in_at);
+                                  const late = loggedLate(e.work_date, loggedAt(e));
+                                  const span = clockSpan(e);
+                                  const edits = editsByEntry.get(e.id) ?? [];
+                                  const lateEdits = edits.filter((x) => x.isLate).length;
+                                  const firstAt = firstLogged.get(e.id) ?? null;
                                   return (
-                                    <div
-                                      key={e.id}
-                                      className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-xs"
-                                    >
-                                      <span className="w-24 font-medium text-gray-700 dark:text-gray-200">
-                                        {shortDate(e.work_date)}
-                                      </span>
-                                      <span className="w-14 text-right tabular-nums font-semibold text-gray-900 dark:text-white">
-                                        {formatHours(Number(e.hours) || 0)}
-                                      </span>
-                                      <span className="text-gray-500 dark:text-gray-400">
-                                        logged {instantWithTime(e.checked_in_at)}
-                                      </span>
-                                      {late && (
-                                        <span
-                                          title="logged late"
-                                          className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400"
-                                        >
-                                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
-                                          logged late
+                                    <div key={e.id} className="px-3 py-2 text-xs">
+                                      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                                        <span className="w-24 font-medium text-gray-700 dark:text-gray-200">
+                                          {shortDate(e.work_date)}
                                         </span>
-                                      )}
-                                      {e.note && (
-                                        <span className="text-gray-500 dark:text-gray-400 italic">
-                                          {e.note}
+                                        <span className="w-14 text-right tabular-nums font-semibold text-gray-900 dark:text-white">
+                                          {formatHours(Number(e.hours) || 0)}
                                         </span>
-                                      )}
+                                        {span ? (
+                                          <span className="tabular-nums text-gray-700 dark:text-gray-300">
+                                            {span}
+                                          </span>
+                                        ) : (
+                                          <span
+                                            className="text-gray-400 dark:text-gray-500 italic"
+                                            title="Hours typed in directly — no clock in/out was recorded for this day"
+                                          >
+                                            manual entry
+                                          </span>
+                                        )}
+                                        <EditedBadge
+                                          compact
+                                          count={edits.length}
+                                          late={lateEdits}
+                                          onClick={() => openHistory(s.id)}
+                                        />
+                                      </div>
+                                      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-24 text-[11px] text-gray-500 dark:text-gray-400">
+                                        {firstAt ? (
+                                          <>
+                                            <span>first logged {instantWithTime(firstAt)}</span>
+                                            {edits.length > 0 && (
+                                              <span>
+                                                last touched {instantWithTime(e.checked_in_at)}
+                                              </span>
+                                            )}
+                                          </>
+                                        ) : (
+                                          <span>logged {instantWithTime(e.checked_in_at)}</span>
+                                        )}
+                                        {late && (
+                                          <span
+                                            title="logged 2+ days after the day worked"
+                                            className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400"
+                                          >
+                                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                            logged late
+                                          </span>
+                                        )}
+                                        {e.note && (
+                                          <span className="text-gray-500 dark:text-gray-400 italic">
+                                            {e.note}
+                                          </span>
+                                        )}
+                                      </div>
                                     </div>
                                   );
                                 })}
                               </div>
+                            )}
+
+                            {/* Full audit trail for this person's week. */}
+                            {isOpen && historyOpen.has(s.id) && (
+                              auditError ? (
+                                <div className="mt-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300 max-w-3xl">
+                                  <strong>Edit history unavailable.</strong> {auditError}
+                                </div>
+                              ) : (
+                                <EditHistoryPanel rows={row.audit} nameFor={nameFor} />
+                              )
                             )}
                           </div>
                         </div>

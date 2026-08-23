@@ -8,6 +8,14 @@
 //
 // Pay weeks run MONDAY -> SUNDAY. See weekBounds().
 //
+// v2 (20260823_time_tracking_v2.sql) adds real shift times — clock_in, clock_out
+// and break_minutes — plus an append-only time_entry_audit trail written by a DB
+// trigger on every insert/update/delete. `hours` stays the stored source of
+// truth that payroll reads; clock times DERIVE it (see computeHours). Nothing
+// here writes to time_entry_audit: it is trigger-written and read-only to
+// clients, which is what makes "logged 2h, bumped to 4h four days later"
+// impossible to hide.
+//
 // Access control lives in RLS (migration 20260823_time_tracking.sql), not here:
 // workers read/write only their own rows, and every write to staff_rates /
 // pay_runs is super_admin-only. The "admin" functions below are ordinary
@@ -16,7 +24,7 @@
 
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
-import { APP_TZ } from "@/utils/time";
+import { APP_TZ, dateKeyET } from "@/utils/time";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,10 +36,46 @@ export interface TimeEntry {
   work_date: string; // yyyy-mm-dd
   hours: number;
   note: string | null;
+  /** Shift start, a real instant (ISO timestamptz). Null on hours-only entries. */
+  clock_in: string | null;
+  /** Shift end, a real instant (ISO timestamptz). Null on hours-only entries. */
+  clock_out: string | null;
+  /** Unpaid break/lunch already deducted from `hours`. Never null (DB default 0). */
+  break_minutes: number;
   /** Server-stamped submission time. Compare against work_date to spot late/bulk logging. */
   checked_in_at: string;
   created_at: string;
   updated_at: string;
+}
+
+export type TimeEntryAuditAction = "insert" | "update" | "delete";
+
+/**
+ * One append-only row per change to a timesheet row, written by the
+ * log_time_entry_change() trigger — never by this client. `changed_by` is
+ * whoever was authenticated when the change landed, which is not necessarily
+ * `user_id` (an admin editing someone else's week shows up as a difference).
+ * RLS: a worker sees only their own rows; super admins see everyone's.
+ */
+export interface TimeEntryAudit {
+  id: string;
+  /** Null once the underlying entry is hard-deleted — the audit row survives it. */
+  time_entry_id: string | null;
+  user_id: string;
+  work_date: string; // yyyy-mm-dd
+  action: TimeEntryAuditAction;
+  old_hours: number | null;
+  new_hours: number | null;
+  old_clock_in: string | null;
+  new_clock_in: string | null;
+  old_clock_out: string | null;
+  new_clock_out: string | null;
+  old_break_minutes: number | null;
+  new_break_minutes: number | null;
+  old_note: string | null;
+  new_note: string | null;
+  changed_by: string | null;
+  changed_at: string;
 }
 
 export interface StaffRate {
@@ -84,8 +128,18 @@ export const TIME_STAFF_ROLES = ["closer", "employee", "admin", "super_admin"] a
 
 export interface CheckInInput {
   workDate: string; // yyyy-mm-dd
-  hours: number;
+  /**
+   * Explicit hours — a manual override. Omit it and supply clockIn + clockOut
+   * instead to have the shift derive the hours.
+   */
+  hours?: number;
   note?: string;
+  /** Shift start as a real instant (anything Date-parseable; stored as ISO). */
+  clockIn?: string | null;
+  /** Shift end as a real instant. `null` clears a previously stored value. */
+  clockOut?: string | null;
+  /** Unpaid break/lunch in minutes, deducted from the derived hours. */
+  breakMinutes?: number;
 }
 
 export interface PayRunInput {
@@ -169,25 +223,117 @@ async function currentUserId(): Promise<string> {
 }
 
 /**
- * Log (or correct) the hours worked on a date for the signed-in user.
+ * Paid hours for a shift: elapsed clock time minus the unpaid break, to 2dp.
+ * Null when either end of the shift is missing or unparseable — an open shift
+ * has no hours yet. A break longer than the shift returns a NEGATIVE number on
+ * purpose so the caller rejects it instead of silently storing zero.
+ * Pure: safe for live "3.75 h" previews while someone is typing.
+ */
+export function computeHours(
+  clockIn: string | null | undefined,
+  clockOut: string | null | undefined,
+  breakMinutes = 0,
+): number | null {
+  if (!clockIn || !clockOut) return null;
+  const start = Date.parse(clockIn);
+  const end = Date.parse(clockOut);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const worked = Math.max(0, (end - start) / 3_600_000);
+  const unpaid = Number(breakMinutes) || 0;
+  return Math.round((worked - unpaid / 60) * 100) / 100;
+}
+
+/**
+ * Do a row's stored shift times still reproduce its stored `hours`?
+ * Null when there's no shift to check (an hours-only entry). False means the
+ * two disagree — which is legitimate (someone overrode the hours, or corrected
+ * hours through the old hours-only form, which deliberately leaves the shift
+ * untouched) but is worth showing the owner rather than hiding.
+ * Tolerance is 0.01h to absorb numeric(5,2) rounding.
+ */
+export function hoursMatchShift(
+  entry: Pick<TimeEntry, "hours" | "clock_in" | "clock_out" | "break_minutes">,
+): boolean | null {
+  const derived = computeHours(entry.clock_in, entry.clock_out, entry.break_minutes);
+  if (derived === null) return null;
+  return Math.abs(derived - Number(entry.hours)) <= 0.01;
+}
+
+/** An instant the caller gave us, normalized to ISO for a timestamptz column. */
+function toInstantIso(value: string | null | undefined, label: string): string | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) throw new Error(`${label} is not a valid time.`);
+  return new Date(ms).toISOString();
+}
+
+/**
+ * Log (or correct) a day's work for the signed-in user.
  * Upserts on (user_id, work_date): re-submitting a day overwrites the claim and
- * the DB re-stamps checked_in_at to now.
+ * the DB re-stamps checked_in_at to now (and writes a time_entry_audit row).
+ *
+ * `hours` is always what gets stored and paid. Supply clockIn + clockOut (and
+ * optionally breakMinutes) to derive it; supply `hours` directly to override.
+ * Omitting the clock fields entirely leaves any already-stored shift times
+ * alone, so the legacy hours-only form keeps working unchanged; passing any one
+ * of them rewrites all three together, so the stored shift can never disagree
+ * with the hours it produced.
+ *
+ * NOTE: an OPEN shift (clock-in with no clock-out) cannot be stored — the
+ * hours column is NOT NULL with a `hours > 0` check. Clock-out and clock-in
+ * have to be saved in the same call, or an explicit `hours` passed.
  */
 export async function checkIn(input: CheckInInput): Promise<TimeEntry> {
   const user_id = await currentUserId();
-  const hours = Number(input.hours);
+
+  const touchesShift =
+    input.clockIn !== undefined || input.clockOut !== undefined || input.breakMinutes !== undefined;
+
+  const breakMinutes = input.breakMinutes === undefined ? 0 : Number(input.breakMinutes);
+  if (!Number.isFinite(breakMinutes) || breakMinutes < 0) {
+    throw new Error("Break minutes must be zero or greater.");
+  }
+
+  const clock_in = toInstantIso(input.clockIn, "Clock-in");
+  const clock_out = toInstantIso(input.clockOut, "Clock-out");
+  if (clock_in && clock_out && Date.parse(clock_out) < Date.parse(clock_in)) {
+    throw new Error("Clock-out must be after clock-in.");
+  }
+
+  const derived = computeHours(clock_in, clock_out, breakMinutes);
+  if (derived !== null && derived <= 0 && input.hours === undefined) {
+    throw new Error("The break is as long as the shift — no paid hours left to log.");
+  }
+
+  const explicit = input.hours === undefined || input.hours === null ? null : Number(input.hours);
+  const hours = explicit ?? derived;
+  if (hours === null) {
+    throw new Error(
+      clock_in && !clock_out
+        ? "Add a clock-out time (or enter hours directly) to save this day."
+        : "Enter the hours worked, or a clock-in and clock-out time.",
+    );
+  }
   // Fail here with a readable message rather than letting the CHECK constraint
   // surface as a raw Postgres error in the UI.
   if (!Number.isFinite(hours) || hours <= 0 || hours > 24) {
     throw new Error("Hours must be greater than 0 and no more than 24.");
   }
+
   const note = input.note?.trim() ? input.note.trim() : null;
+  // work_date is a bare calendar date and is passed straight through: parsing it
+  // as a Date would land on UTC midnight and shift it a day back in Eastern.
+  const row = {
+    user_id,
+    work_date: input.workDate,
+    hours,
+    note,
+    ...(touchesShift ? { clock_in, clock_out, break_minutes: breakMinutes } : {}),
+  };
 
   const rows = await mustWrite<TimeEntry>(
     "checkIn",
-    supabase
-      .from("time_entries")
-      .upsert({ user_id, work_date: input.workDate, hours, note }, { onConflict: "user_id,work_date" }),
+    supabase.from("time_entries").upsert(row, { onConflict: "user_id,work_date" }),
   );
   return rows[0];
 }
@@ -200,6 +346,21 @@ export async function listMyEntries(fromDate?: string): Promise<TimeEntry[]> {
   const { data, error } = await q.order("work_date", { ascending: false });
   if (error) throw error;
   return (data || []) as TimeEntry[];
+}
+
+/**
+ * The signed-in user's own edit history, newest change first. `fromDate` is an
+ * inclusive filter on work_date (the day worked), not on when the edit landed,
+ * so a late correction to an old day still shows up under that old day.
+ * RLS scopes this to the caller — the user_id filter is belt-and-braces.
+ */
+export async function listMyAudit(fromDate?: string): Promise<TimeEntryAudit[]> {
+  const user_id = await currentUserId();
+  let q = supabase.from("time_entry_audit").select("*").eq("user_id", user_id);
+  if (fromDate) q = q.gte("work_date", fromDate);
+  const { data, error } = await q.order("changed_at", { ascending: false });
+  if (error) throw error;
+  return (data || []) as TimeEntryAudit[];
 }
 
 /** The signed-in user's pay history, newest period first. */
@@ -302,6 +463,54 @@ export async function listAllEntries(periodStart: string, periodEnd: string): Pr
   return (data || []) as TimeEntry[];
 }
 
+/**
+ * One person's edit history for a week (inclusive work_date range), newest
+ * change first — the owner's "was this edited after the fact?" view.
+ * Super-admin-only in practice: RLS returns only the caller's own rows to
+ * anyone else, so an empty array means "nothing to see" OR "not permitted".
+ */
+export async function listAuditForUser(
+  userId: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<TimeEntryAudit[]> {
+  const { data, error } = await supabase
+    .from("time_entry_audit")
+    .select("*")
+    .eq("user_id", userId)
+    .gte("work_date", periodStart)
+    .lte("work_date", periodEnd)
+    .order("changed_at", { ascending: false });
+  if (error) throw error;
+  return (data || []) as TimeEntryAudit[];
+}
+
+/**
+ * Every audit row in a work_date range, grouped by user_id (each list newest
+ * change first) — one query for a whole week's roll-up instead of one per
+ * person. Same RLS caveat as listAuditForUser.
+ */
+export async function listAuditForPeriod(
+  periodStart: string,
+  periodEnd: string,
+): Promise<Map<string, TimeEntryAudit[]>> {
+  const { data, error } = await supabase
+    .from("time_entry_audit")
+    .select("*")
+    .gte("work_date", periodStart)
+    .lte("work_date", periodEnd)
+    .order("changed_at", { ascending: false });
+  if (error) throw error;
+
+  const byUser = new Map<string, TimeEntryAudit[]>();
+  for (const row of (data || []) as TimeEntryAudit[]) {
+    const list = byUser.get(row.user_id);
+    if (list) list.push(row);
+    else byUser.set(row.user_id, [row]);
+  }
+  return byUser;
+}
+
 /** Every pay run, newest period first. */
 export async function listAllPayRuns(): Promise<PayRun[]> {
   const { data, error } = await supabase
@@ -356,6 +565,39 @@ export async function createPendingRun(input: PayRunInput): Promise<PayRun> {
 // ---------------------------------------------------------------------------
 // Roll-up helper
 // ---------------------------------------------------------------------------
+
+/**
+ * Was this change made late enough to deserve a second look? True when the
+ * change landed on an EASTERN calendar day two or more days after the day
+ * worked — same-day and next-day corrections are normal, "I revised Monday on
+ * Thursday" is the pattern the owner wants flagged.
+ *
+ * Accepts an audit row (uses `action` + `changed_at`; only 'update' counts, an
+ * original 'insert' logged late is late LOGGING, not an edit) or a TimeEntry
+ * (falls back to `checked_in_at`, which the DB re-stamps on every write).
+ * Day arithmetic is done on Eastern calendar days via dateKeyET, never on raw
+ * instants, so a 9pm ET edit doesn't count as the next day because UTC says so.
+ */
+export function editedAfterTheFact(
+  row: {
+    work_date: string;
+    action?: TimeEntryAuditAction;
+    changed_at?: string | null;
+    checked_in_at?: string | null;
+  },
+): boolean {
+  if (row.action && row.action !== "update") return false;
+  const when = row.changed_at ?? row.checked_in_at;
+  if (!when || !row.work_date) return false;
+
+  const changedDay = dateKeyET(when); // "" when unparseable
+  if (!changedDay) return false;
+  const changedMs = Date.parse(`${changedDay}T00:00:00Z`);
+  const workedMs = Date.parse(`${row.work_date}T00:00:00Z`);
+  if (!Number.isFinite(changedMs) || !Number.isFinite(workedMs)) return false;
+
+  return (changedMs - workedMs) / 86_400_000 >= 2;
+}
 
 /** Sum hours per user_id — feeds "weekly hours x rate = cost" in the admin view. */
 export function totalHoursByUser(entries: TimeEntry[]): Map<string, number> {

@@ -3,27 +3,52 @@ import {
   CheckCircleIcon,
   ClockIcon,
   ExclamationTriangleIcon,
+  PencilSquareIcon,
 } from "@heroicons/react/24/outline";
 import {
   checkIn,
+  computeHours,
   getMyRate,
+  listMyAudit,
   listMyEntries,
   listMyPayRuns,
+  shiftWeek,
   todayISO,
   weekBounds,
   type PayRun,
   type StaffRate,
   type TimeEntry,
+  type TimeEntryAudit,
 } from "@/services/timeTracking";
-import WeekStrip from "./WeekStrip";
+import WeekStrip, { type DayCell } from "./WeekStrip";
 import WeekHistory, { type WeekSummary } from "./WeekHistory";
 import PayRunList from "./PayRunList";
-import { addDays, fmtDate, fmtHours, fmtTimeOfDay } from "./timeUtils";
+import {
+  addDays,
+  etStampFor,
+  etTimeInputValue,
+  fmtClock,
+  fmtDate,
+  fmtHours,
+  fmtTimeOfDay,
+} from "./timeUtils";
 
 /** How far back the history goes. Keeps the read bounded on a long-tenured user. */
 const HISTORY_DAYS = 182;
 
 const QUICK_HOURS = [4, 6, 8];
+
+/** Common shifts, one click. Eastern wall-clock — the same clock payroll uses. */
+const SHIFT_PRESETS = [
+  { label: "9–5 · 30m lunch", in: "09:00", out: "17:00", brk: "30" },
+  { label: "8–5 · 1h lunch", in: "08:00", out: "17:00", brk: "60" },
+];
+
+const DEFAULT_IN = "09:00";
+const DEFAULT_OUT = "17:00";
+
+/** How the worker is logging the day: real shift times, or a bare hours figure. */
+type LogMode = "clock" | "hours";
 
 export default function TimePayTab({
   userId,
@@ -45,10 +70,21 @@ export default function TimePayTab({
     status: "loading" | "ok" | "error";
     rate: StaffRate | null;
   }>({ status: "loading", rate: null });
+  // The edit trail is a nice-to-have, so a failure here must not take the tab
+  // down — but it must not render as "never edited" either. See the note below
+  // the week strip.
+  const [auditState, setAuditState] = useState<{
+    status: "ok" | "error";
+    rows: TimeEntryAudit[];
+  }>({ status: "ok", rows: [] });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [workDate, setWorkDate] = useState(today);
+  const [mode, setMode] = useState<LogMode>("clock");
+  const [clockInVal, setClockInVal] = useState(DEFAULT_IN);
+  const [clockOutVal, setClockOutVal] = useState(DEFAULT_OUT);
+  const [breakVal, setBreakVal] = useState("0");
   const [hours, setHours] = useState("8");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -57,16 +93,30 @@ export default function TimePayTab({
     date: string;
     hours: number;
     at: string | null;
+    clockIn: string | null;
+    clockOut: string | null;
   } | null>(null);
+
+  /**
+   * The window we read. Floored to a MONDAY so every week the strip can page to
+   * is fully loaded — a window starting mid-week would render that week's
+   * earlier days as blank when they were simply outside the query.
+   */
+  const historyFrom = useMemo(
+    () => weekBounds(addDays(today, -HISTORY_DAYS)).start,
+    [today],
+  );
 
   /** Re-reads time entries + pay runs. Returns the fresh entries, or throws. */
   const loadEntries = useCallback(async () => {
-    const from = addDays(today, -HISTORY_DAYS);
-    const [fresh, runs] = await Promise.all([listMyEntries(from), listMyPayRuns()]);
+    const [fresh, runs] = await Promise.all([
+      listMyEntries(historyFrom),
+      listMyPayRuns(),
+    ]);
     setEntries(fresh);
     setPayRuns(runs);
     return fresh;
-  }, [today]);
+  }, [historyFrom]);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,11 +160,31 @@ export default function TimePayTab({
     };
   }, [userId]);
 
+  const loadAudit = useCallback(async () => {
+    try {
+      const rows = await listMyAudit(historyFrom);
+      setAuditState({ status: "ok", rows });
+    } catch {
+      setAuditState({ status: "error", rows: [] });
+    }
+  }, [historyFrom]);
+
+  useEffect(() => {
+    void loadAudit();
+  }, [loadAudit, userId]);
+
   const entryByDate = useMemo(() => {
     const map: Record<string, TimeEntry> = {};
     for (const e of entries) map[e.work_date] = e;
     return map;
   }, [entries]);
+
+  /** Work dates whose saved figures were changed after the first submission. */
+  const editedDates = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of auditState.rows) if (a.action === "update") set.add(a.work_date);
+    return set;
+  }, [auditState.rows]);
 
   const existing = entryByDate[workDate] ?? null;
 
@@ -123,28 +193,78 @@ export default function TimePayTab({
   // never overwrites what the user is currently typing.
   useEffect(() => {
     const row = entryByDate[workDate];
+    const savedIn = etTimeInputValue(row?.clock_in);
+    const savedOut = etTimeInputValue(row?.clock_out);
     setHours(row ? fmtHours(row.hours) : "8");
     setNote(row?.note ?? "");
+    setClockInVal(savedIn || DEFAULT_IN);
+    setClockOutVal(savedOut || DEFAULT_OUT);
+    setBreakVal(row?.break_minutes ? fmtHours(row.break_minutes) : "0");
+    // A day already logged as bare hours reopens in the hours form; everything
+    // else (including a brand-new day) defaults to logging real shift times.
+    setMode(savedIn && savedOut ? "clock" : row ? "hours" : "clock");
   }, [workDate, entryByDate]);
 
+  // --- The live shift math -------------------------------------------------
+  // Derived from the SAME instants and the SAME function the service will use,
+  // so the "= 7.5 hrs" preview is the number that gets stored — including
+  // across a DST switch, where wall-clock subtraction would be an hour off.
+  const breakMinutes = useMemo(() => {
+    const n = Number(breakVal);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }, [breakVal]);
+
+  const shift = useMemo(() => {
+    const inIso = etStampFor(workDate, clockInVal);
+    const outIso = etStampFor(workDate, clockOutVal);
+    if (!inIso || !outIso) {
+      return { inIso, outIso, hours: null as number | null, error: "Enter both a clock-in and a clock-out time." };
+    }
+    if (Date.parse(outIso) <= Date.parse(inIso)) {
+      return { inIso, outIso, hours: null, error: "Clock out has to be later than clock in — same day only." };
+    }
+    const h = computeHours(inIso, outIso, breakMinutes);
+    if (h === null || h <= 0) {
+      return { inIso, outIso, hours: null, error: "That break is as long as the shift — no paid hours left." };
+    }
+    if (h > 24) {
+      return { inIso, outIso, hours: null, error: "That's more than 24 hours. Check the times." };
+    }
+    return { inIso, outIso, hours: h, error: null as string | null };
+  }, [workDate, clockInVal, clockOutVal, breakMinutes]);
+
+  const clockReady = mode === "clock" && shift.hours !== null;
+
+  // --- Week paging ---------------------------------------------------------
   // Pass the date STRING, not a Date — the string path is pure calendar math
   // with no timezone conversion to shift the week.
   const thisWeek = useMemo(() => weekBounds(today), [today]);
+  const [visibleWeekStart, setVisibleWeekStart] = useState(thisWeek.start);
+  const visibleWeek = useMemo(() => weekBounds(visibleWeekStart), [visibleWeekStart]);
+  const isCurrentWeek = visibleWeek.start === thisWeek.start;
+  // Paging stops at the loaded window: an unloaded week would render as a week
+  // of dashes, which is indistinguishable from a week nobody worked.
+  const canGoBack = shiftWeek(visibleWeek.start, -1).start >= historyFrom;
 
-  const hoursByDate = useMemo(() => {
-    const map: Record<string, number> = {};
+  const cellsByDate = useMemo(() => {
+    const map: Record<string, DayCell> = {};
     for (const e of entries) {
-      map[e.work_date] = (map[e.work_date] || 0) + (Number(e.hours) || 0);
+      map[e.work_date] = {
+        hours: Number(e.hours) || 0,
+        clockIn: e.clock_in,
+        clockOut: e.clock_out,
+        edited: editedDates.has(e.work_date),
+      };
     }
     return map;
-  }, [entries]);
+  }, [entries, editedDates]);
 
-  /** Past Mon–Sun weeks (current week lives in the strip above), newest first. */
+  /** Mon–Sun weeks other than the two already on screen, newest first. */
   const pastWeeks: WeekSummary[] = useMemo(() => {
     const byWeek: Record<string, { start: string; end: string; hours: number }> = {};
     for (const e of entries) {
       const { start, end } = weekBounds(e.work_date);
-      if (start === thisWeek.start) continue;
+      if (start === thisWeek.start || start === visibleWeek.start) continue;
       if (!byWeek[start]) byWeek[start] = { start, end, hours: 0 };
       byWeek[start].hours += Number(e.hours) || 0;
     }
@@ -159,28 +279,75 @@ export default function TimePayTab({
           payRuns.find((r) => r.period_start <= w.start && r.period_end >= w.end) ??
           null,
       }));
-  }, [entries, payRuns, thisWeek.start]);
+  }, [entries, payRuns, thisWeek.start, visibleWeek.start]);
+
+  const clearFeedback = () => {
+    setConfirmed(null);
+    setSubmitError(null);
+  };
 
   const handleCheckIn = async () => {
-    const h = Number(hours);
     setSubmitError(null);
     setConfirmed(null);
-    if (!Number.isFinite(h) || h <= 0) {
-      setSubmitError("Enter the hours you worked — for example 8.");
-      return;
+
+    // Build exactly one of the two shapes the service accepts: shift times (it
+    // derives the hours) or explicit hours with the shift cleared, so a stored
+    // shift can never sit next to an hours figure it didn't produce.
+    let payload: Parameters<typeof checkIn>[0];
+    if (mode === "clock") {
+      if (!shift.hours || !shift.inIso || !shift.outIso) {
+        setSubmitError(shift.error ?? "Check the clock-in and clock-out times.");
+        return;
+      }
+      payload = {
+        workDate,
+        clockIn: shift.inIso,
+        clockOut: shift.outIso,
+        breakMinutes,
+        note: note.trim() || undefined,
+      };
+    } else {
+      const h = Number(hours);
+      if (!Number.isFinite(h) || h <= 0) {
+        setSubmitError("Enter the hours you worked — for example 8.");
+        return;
+      }
+      if (h > 24) {
+        setSubmitError("That's more than 24 hours. Check the number and try again.");
+        return;
+      }
+      payload = {
+        workDate,
+        hours: h,
+        // Explicit nulls, not omissions: switching a day from shift times back
+        // to plain hours has to wipe the old times, or the week strip would
+        // keep showing a shift that no longer matches the hours.
+        clockIn: null,
+        clockOut: null,
+        breakMinutes: 0,
+        note: note.trim() || undefined,
+      };
     }
-    if (h > 24) {
-      setSubmitError("That's more than 24 hours. Check the number and try again.");
-      return;
-    }
+
     setSubmitting(true);
     try {
       // checked_in_at is stamped by the DB, so the confirmation quotes the
-      // server's time, not this browser's.
-      const saved = await checkIn({ workDate, hours: h, note: note.trim() || undefined });
-      setConfirmed({ date: workDate, hours: h, at: saved?.checked_in_at ?? null });
+      // server's time, not this browser's — and the clock times quoted back are
+      // the ones actually stored, not the ones typed.
+      const saved = await checkIn(payload);
+      setConfirmed({
+        date: workDate,
+        hours: Number(saved?.hours) || shift.hours || Number(hours),
+        at: saved?.checked_in_at ?? null,
+        clockIn: saved?.clock_in ?? null,
+        clockOut: saved?.clock_out ?? null,
+      });
+      // Show the week the entry landed in, so the confirmation and the strip
+      // below it never disagree.
+      setVisibleWeekStart(weekBounds(workDate).start);
       try {
         await loadEntries();
+        void loadAudit();
         setLoadError(null);
       } catch {
         // The check-in itself succeeded — only the refresh failed. Say so rather
@@ -196,6 +363,10 @@ export default function TimePayTab({
     }
   };
 
+  const fieldLabel = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1";
+  const chip =
+    "rounded-full border border-gray-200 dark:border-gray-600 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:border-mint-green hover:text-mint-green transition-colors";
+
   return (
     <div className="space-y-6">
       {isImpersonating && (
@@ -210,22 +381,34 @@ export default function TimePayTab({
 
       {/* --- Daily check-in: the whole point of this tab --- */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
-        <div className="flex items-start gap-2 mb-3">
-          <ClockIcon className="w-5 h-5 flex-shrink-0 mt-0.5 text-mint-green" />
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Daily check-in</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              Log your hours at the end of each shift. One entry per day — dates follow the
-              company&apos;s Eastern workday.
-            </p>
+        <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+          <div className="flex items-start gap-2">
+            <ClockIcon className="w-5 h-5 flex-shrink-0 mt-0.5 text-mint-green" />
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                Daily check-in
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                Log your shift at the end of each day. One entry per day — times and dates follow
+                the company&apos;s <strong>Eastern</strong> workday.
+              </p>
+            </div>
           </div>
+          <button
+            type="button"
+            className="text-xs font-medium text-mint-green hover:underline"
+            onClick={() => {
+              setMode((m) => (m === "clock" ? "hours" : "clock"));
+              clearFeedback();
+            }}
+          >
+            {mode === "clock" ? "Just enter hours instead" : "Log exact times instead"}
+          </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Date
-            </label>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="col-span-2 md:col-span-1">
+            <label className={fieldLabel}>Date</label>
             <input
               type="date"
               className="input-field"
@@ -233,60 +416,139 @@ export default function TimePayTab({
               max={today}
               onChange={(e) => {
                 setWorkDate(e.target.value || today);
-                setConfirmed(null);
-                setSubmitError(null);
+                clearFeedback();
               }}
             />
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Hours worked
-            </label>
-            <input
-              type="number"
-              className="input-field"
-              value={hours}
-              min={0}
-              max={24}
-              step={0.25}
-              onChange={(e) => {
-                setHours(e.target.value);
-                setConfirmed(null);
-                setSubmitError(null);
-              }}
-            />
-            <div className="flex gap-1.5 mt-1.5">
-              {QUICK_HOURS.map((q) => (
-                <button
-                  key={q}
-                  type="button"
-                  onClick={() => {
-                    setHours(String(q));
-                    setConfirmed(null);
+
+          {mode === "clock" ? (
+            <>
+              <div>
+                <label className={fieldLabel}>Clock in</label>
+                <input
+                  type="time"
+                  className="input-field"
+                  value={clockInVal}
+                  onChange={(e) => {
+                    setClockInVal(e.target.value);
+                    clearFeedback();
                   }}
-                  className="rounded-full border border-gray-200 dark:border-gray-600 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:border-mint-green hover:text-mint-green transition-colors"
+                />
+              </div>
+              <div>
+                <label className={fieldLabel}>Clock out</label>
+                <input
+                  type="time"
+                  className="input-field"
+                  value={clockOutVal}
+                  onChange={(e) => {
+                    setClockOutVal(e.target.value);
+                    clearFeedback();
+                  }}
+                />
+              </div>
+              <div>
+                <label className={fieldLabel}>
+                  Break / lunch <span className="font-normal text-gray-400">(minutes)</span>
+                </label>
+                <input
+                  type="number"
+                  className="input-field"
+                  value={breakVal}
+                  min={0}
+                  max={480}
+                  step={5}
+                  onChange={(e) => {
+                    setBreakVal(e.target.value);
+                    clearFeedback();
+                  }}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="col-span-2">
+              <label className={fieldLabel}>Hours worked</label>
+              <input
+                type="number"
+                className="input-field"
+                value={hours}
+                min={0}
+                max={24}
+                step={0.25}
+                onChange={(e) => {
+                  setHours(e.target.value);
+                  clearFeedback();
+                }}
+              />
+              <div className="flex gap-1.5 mt-1.5">
+                {QUICK_HOURS.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    className={chip}
+                    onClick={() => {
+                      setHours(String(q));
+                      clearFeedback();
+                    }}
+                  >
+                    {q} hrs
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <label className={fieldLabel}>
+            What did you work on? <span className="font-normal text-gray-400">(optional)</span>
+          </label>
+          <input
+            type="text"
+            className="input-field"
+            value={note}
+            onChange={(e) => {
+              setNote(e.target.value);
+              setConfirmed(null);
+            }}
+            placeholder="Dialed UCC list, 40 contacts"
+          />
+        </div>
+
+        {mode === "clock" && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+            {shift.hours !== null ? (
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                = <strong className="text-gray-900 dark:text-white">{fmtHours(shift.hours)} hrs</strong>{" "}
+                <span className="text-gray-500 dark:text-gray-400">
+                  {breakMinutes > 0 ? `(after a ${fmtHours(breakMinutes)} min break)` : "(no break deducted)"}
+                </span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-sm text-amber-700 dark:text-amber-400">
+                <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0" />
+                {shift.error}
+              </span>
+            )}
+            <span className="flex flex-wrap gap-1.5">
+              {SHIFT_PRESETS.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  className={chip}
+                  onClick={() => {
+                    setClockInVal(p.in);
+                    setClockOutVal(p.out);
+                    setBreakVal(p.brk);
+                    clearFeedback();
+                  }}
                 >
-                  {q} hrs
+                  {p.label}
                 </button>
               ))}
-            </div>
+            </span>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              What did you work on? <span className="font-normal text-gray-400">(optional)</span>
-            </label>
-            <input
-              type="text"
-              className="input-field"
-              value={note}
-              onChange={(e) => {
-                setNote(e.target.value);
-                setConfirmed(null);
-              }}
-              placeholder="Dialed UCC list, 40 contacts"
-            />
-          </div>
-        </div>
+        )}
 
         {existing && (
           <p className="mt-3 inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/20 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
@@ -295,7 +557,11 @@ export default function TimePayTab({
         )}
 
         <div className="mt-4 flex flex-wrap items-center gap-4">
-          <button className="btn-primary" onClick={handleCheckIn} disabled={submitting}>
+          <button
+            className="btn-primary"
+            onClick={handleCheckIn}
+            disabled={submitting || (mode === "clock" && !clockReady)}
+          >
             {submitting ? "Saving…" : existing ? "Update my hours" : "Check in"}
           </button>
 
@@ -305,7 +571,10 @@ export default function TimePayTab({
               <span>
                 <strong>{fmtHours(confirmed.hours)} hrs</strong> logged for{" "}
                 {fmtDate(confirmed.date)}
-                {confirmed.at ? ` — checked in at ${fmtTimeOfDay(confirmed.at)}` : ""}
+                {confirmed.clockIn && confirmed.clockOut
+                  ? ` — ${fmtClock(confirmed.clockIn)} to ${fmtClock(confirmed.clockOut)} ET`
+                  : ""}
+                {confirmed.at ? ` · saved at ${fmtTimeOfDay(confirmed.at)}` : ""}
               </span>
             </span>
           )}
@@ -331,12 +600,47 @@ export default function TimePayTab({
         </div>
       ) : (
         <>
-          <WeekStrip
-            weekStart={thisWeek.start}
-            weekEnd={thisWeek.end}
-            hoursByDate={hoursByDate}
-            today={today}
-          />
+          <div className="space-y-2">
+            <WeekStrip
+              weekStart={visibleWeek.start}
+              weekEnd={visibleWeek.end}
+              byDate={cellsByDate}
+              today={today}
+              selectedDate={workDate}
+              isCurrentWeek={isCurrentWeek}
+              canGoBack={canGoBack}
+              onPrev={() => setVisibleWeekStart(shiftWeek(visibleWeek.start, -1).start)}
+              onNext={() => setVisibleWeekStart(shiftWeek(visibleWeek.start, 1).start)}
+              onThisWeek={() => setVisibleWeekStart(thisWeek.start)}
+              onSelectDay={(d) => {
+                // Pointing the form at a day from a past week is the whole reason
+                // paging exists — no date-picker hunting to fix last Tuesday.
+                setWorkDate(d);
+                clearFeedback();
+              }}
+            />
+            {workDate !== today && (
+              // The form sits above the fold, so a click down here would
+              // otherwise look like it did nothing.
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                The check-in form above is pointed at <strong>{fmtDate(workDate)}</strong>.
+              </p>
+            )}
+            {auditState.status === "error" ? (
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                Couldn&apos;t read your edit history, so no day is marked as edited above — that
+                doesn&apos;t mean none were.
+              </p>
+            ) : (
+              editedDates.size > 0 && (
+                <p className="flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
+                  <PencilSquareIcon className="w-3.5 h-3.5 flex-shrink-0 text-amber-500 dark:text-amber-400" />
+                  Days marked with a pencil were changed after the first check-in. Payroll sees the
+                  same trail.
+                </p>
+              )
+            )}
+          </div>
           <WeekHistory weeks={pastWeeks} rate={rateState.rate} rateStatus={rateState.status} />
           <PayRunList runs={payRuns} />
         </>
