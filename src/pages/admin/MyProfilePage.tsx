@@ -6,6 +6,7 @@ import {
   BanknotesIcon,
   DocumentTextIcon,
   CheckCircleIcon,
+  ClockIcon,
   ExclamationTriangleIcon,
   LockClosedIcon,
 } from "@heroicons/react/24/outline";
@@ -23,14 +24,16 @@ import {
   materializeMyDoc,
   type DocStatus,
 } from "../../services/closerDocsService";
+import TimePayTab from "../../components/admin/time/TimePayTab";
 
-type TabId = "personal" | "address" | "payment" | "tax";
+type TabId = "personal" | "address" | "payment" | "tax" | "time";
 
 const TABS: { id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "personal", label: "Personal", icon: UserCircleIcon },
   { id: "address", label: "Mailing Address", icon: MapPinIcon },
   { id: "payment", label: "Payment", icon: BanknotesIcon },
   { id: "tax", label: "Tax", icon: DocumentTextIcon },
+  { id: "time", label: "Time & Pay", icon: ClockIcon },
 ];
 
 const US_STATES = [
@@ -435,8 +438,8 @@ export default function MyProfilePage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Profile</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Keep your personal, mailing, payment, and tax details current. This is your own record —
-          only you (and MFunding payroll) can see it.
+          Keep your personal, mailing, payment, and tax details current, and check in with your
+          hours each day. This is your own record — only you (and MFunding payroll) can see it.
         </p>
       </div>
 
@@ -854,8 +857,17 @@ export default function MyProfilePage() {
           </div>
         )}
 
-        {/* Save row — shared across tabs (one save persists profile + payment). */}
-        <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700 flex items-center gap-4">
+        {activeTab === "time" && (
+          <TimePayTab userId={source?.id} isImpersonating={isImpersonating} />
+        )}
+
+        {/* Save row — shared across tabs (one save persists profile + payment).
+            Time & Pay saves through its own Check in button, so it's hidden there. */}
+        <div
+          className={`mt-6 pt-4 border-t border-gray-200 dark:border-gray-700 items-center gap-4 ${
+            activeTab === "time" ? "hidden" : "flex"
+          }`}
+        >
           <button className="btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : "Save changes"}
           </button>

@@ -50,6 +50,7 @@ import {
   CircleStackIcon,
   UserCircleIcon,
   LifebuoyIcon,
+  ClockIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -235,6 +236,10 @@ const navGroups: NavGroup[] = [
       { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
       { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
       { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },
+      // Owner-only: the weekly payroll run — everyone's hours, hourly rates, and
+      // what has actually been paid out. Sits next to Commissions because it's
+      // the other half of "what the team costs".
+      { name: "Time & Pay", path: "/admin/time-pay", icon: ClockIcon, roles: SUPER },
       // Owner-only: pipeline + funded commission, and measured funnel conversion vs target.
       { name: "Revenue & Commission", path: "/admin/revenue", icon: ReceiptPercentIcon, roles: SUPER },
     ],

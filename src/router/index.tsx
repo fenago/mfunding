@@ -142,6 +142,7 @@ const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDet
 const CloserListPage = lazyWithReload(() => import("../pages/admin/closers/CloserListPage.tsx"));
 const MyEarningsPage = lazyWithReload(() => import("../pages/admin/closers/MyEarningsPage.tsx"));
 const MyProfilePage = lazyWithReload(() => import("../pages/admin/MyProfilePage.tsx"));
+const TimePayPage = lazyWithReload(() => import("../pages/admin/TimePayPage.tsx"));
 const CloserDetailPage = lazyWithReload(() => import("../pages/admin/closers/CloserDetailPage.tsx"));
 const DocsIndexPage = lazyWithReload(() => import("../pages/admin/docs/DocsIndexPage.tsx"));
 const DocViewerPage = lazyWithReload(() => import("../pages/admin/docs/DocViewerPage.tsx"));
@@ -671,6 +672,13 @@ export const routes: RouteObject[] = [
                 path: "revenue",
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <RevenuePage /> }],
+              },
+              // Time & Pay — weekly payroll run: hours, rates, cost, mark paid
+              // (super_admin only; it exposes every staff member's pay)
+              {
+                path: "time-pay",
+                element: <SuperAdminProtectedRoute />,
+                children: [{ index: true, element: <TimePayPage /> }],
               },
               // Unit Economics — MCA (super_admin only)
               {
