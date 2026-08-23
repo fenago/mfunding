@@ -39,6 +39,18 @@ For ANY GoHighLevel work in this project, always use the **`mfunding-ghl`** skil
 
 ---
 
+## ⚡ REAL-TIME PUSH, NOT POLLING (GHL/CRM state changes)
+
+**Default architecture for reacting to any GoHighLevel/VibeReach state change (a disposition, a call, an inbound reply, a stage move) is a webhook PUSH, never a polling sweep.** The GHL location is capped at **200,000 API calls/day**, and polling burns it whether or not anything happened — a per-record sweep's cost scales with the size of the book (139k+ opportunities), so it gets more expensive forever and adds minutes of latency. This directly kills speed-to-lead.
+
+**The pattern:** a GHL workflow (trigger: Contact Tag added, Call Completed, Customer Replied, etc.) fires a **Webhook action** → a Supabase edge function does a **targeted, single-record** update (~2s, ~3-4 GHL calls per event) → **zero idle cost** (nothing runs unless a real event happened). Build the trigger workflows in the VibeReach UI with Claude + Chrome (native GHL workflow builder automates fine; the WAVV/dispositions panels are the exception — those are edited from the **Agency dashboard**, and disposition rows are click-only). Auth an edge fn call with the anon key in the `Authorization: Bearer` header AND `?secret=<webhook_secret>` (from the vault / `get_ghl_config`).
+
+**Polling is allowed ONLY as a nightly safety-net reconcile** to catch anything a webhook missed — never as the primary path, and never on a short interval against the whole book. Any NEW recurring job that reads GHL per-record must justify itself against the `ghl-standing-consumers-ledger` memory and use the activity gate / drain pattern (remove the tag/flag after processing so cost tracks NEW information, not book size).
+
+Live examples of this architecture: `ghl-event-hook` (calls + replies), `wavv-disposition-sync` `action:'push'` (dispositions → pipeline stages). See memories `ghl-event-hooks`, `ghl-standing-consumers-ledger`, `ghl-api-daily-cap`, `setters-dial-in-vibereach-wavv`.
+
+---
+
 ## INDUSTRY HIERARCHY
 
 ```
