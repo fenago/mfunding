@@ -1065,6 +1065,64 @@ function SetterPlan({
       </Section>
 
       {/* KPIs & TARGETS — table */}
+      {/* LIVE FLOOR NUMBERS — actuals, hand-updated as the data evolves.
+          Owner-reported 2026-08-23: ~1,200 dials/day, ~68 conversations/day,
+          ~2.5 appointments/week. Keep this table above the model targets so
+          the real numbers always read first. */}
+      <Section
+        title="Live Floor Numbers — actuals"
+        subtitle="Real dialing data (as of Aug 23, 2026). These evolve week to week — this table is the truth; everything below it is the model."
+        icon={StarIcon}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                <th className="py-2 pr-3 font-semibold">Metric</th>
+                <th className="py-2 pr-3 font-semibold">Actual</th>
+                <th className="py-2 font-semibold">Read</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-t border-gray-100 dark:border-gray-700 align-top">
+                <td className="py-2.5 pr-3 font-semibold text-gray-900 dark:text-white">Dials</td>
+                <td className="py-2.5 pr-3 text-mint-green font-semibold whitespace-nowrap">
+                  ~1,200 / day
+                </td>
+                <td className="py-2.5 text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
+                  Floor-wide daily volume across the dialing crew.
+                </td>
+              </tr>
+              <tr className="border-t border-gray-100 dark:border-gray-700 align-top">
+                <td className="py-2.5 pr-3 font-semibold text-gray-900 dark:text-white">
+                  Live conversations
+                </td>
+                <td className="py-2.5 pr-3 text-mint-green font-semibold whitespace-nowrap">
+                  ~68 / day
+                </td>
+                <td className="py-2.5 text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
+                  ≈5.7% of dials reach a live person — a healthy connect rate for
+                  purchased business lists.
+                </td>
+              </tr>
+              <tr className="border-t border-gray-100 dark:border-gray-700 align-top">
+                <td className="py-2.5 pr-3 font-semibold text-gray-900 dark:text-white">
+                  Appointments
+                </td>
+                <td className="py-2.5 pr-3 text-mint-green font-semibold whitespace-nowrap">
+                  ~2.5 / week
+                </td>
+                <td className="py-2.5 text-gray-500 dark:text-gray-400 text-xs leading-relaxed">
+                  ≈340 conversations/week converting at under 1% — this is the
+                  pinch point. The outcome-ladder scripts (app + statements on
+                  the first call) attack exactly this stage.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
       <Section
         title="KPIs & Targets"
         subtitle="Per-setter daily + weekly, and funnel-level conversion + cost targets."
