@@ -16,6 +16,15 @@
 // clients, which is what makes "logged 2h, bumped to 4h four days later"
 // impossible to hide.
 //
+// v3 (20260823_schedule_and_hour_cap.sql) adds the expected schedule and the
+// weekly hour cap: staff_rates gains expected_weekly_hours / weekly_hours_cap /
+// schedule_note, and weekly_hour_approvals holds one row per person per pay week
+// saying "over the cap was OK this week". A week over cap with no approval row is
+// UNAPPROVED overtime — see overCap() / unapprovedOvertime(). The cap is stored
+// per person and defaults to 40 in the DB, so a missing cap here means "no rate
+// row yet", not "no limit"; the helpers fall back to DEFAULT_WEEKLY_HOURS_CAP
+// rather than treating an unknown cap as unlimited.
+//
 // Access control lives in RLS (migration 20260823_time_tracking.sql), not here:
 // workers read/write only their own rows, and every write to staff_rates /
 // pay_runs is super_admin-only. The "admin" functions below are ordinary
@@ -36,6 +45,12 @@ export interface TimeEntry {
   work_date: string; // yyyy-mm-dd
   hours: number;
   note: string | null;
+  /**
+   * Free-text context the worker chose to add, separate from `note` ("what did
+   * you work on?"). NOT covered by the log_time_entry_change() trigger, so
+   * changes to it leave no audit row — never put anything payroll depends on here.
+   */
+  context_note: string | null;
   /** Shift start, a real instant (ISO timestamptz). Null on hours-only entries. */
   clock_in: string | null;
   /** Shift end, a real instant (ISO timestamptz). Null on hours-only entries. */
@@ -82,9 +97,62 @@ export interface StaffRate {
   user_id: string;
   hourly_rate: number;
   currency: string;
+  /** Hours per week the owner EXPECTS from this person. Null = never set; it is
+   *  a scheduling expectation only and nothing pays or blocks on it. */
+  expected_weekly_hours: number | null;
+  /** Hours per week past which a week counts as overtime. Never null (DB default 40). */
+  weekly_hours_cap: number;
+  /** Free text: which days/hours the owner expects them online. */
+  schedule_note: string | null;
   updated_at: string;
   updated_by: string | null;
 }
+
+/**
+ * One row per person per pay week: "this week going over the cap is approved".
+ * The ABSENCE of a row is meaningful — an over-cap week with no row is
+ * unapproved overtime. `approved: false` is an explicit denial and reads the
+ * same as absent to unapprovedOvertime(), but keeps the note and who set it.
+ * RLS: a worker reads only their own; only super admins write.
+ */
+export interface WeeklyApproval {
+  id: string;
+  user_id: string;
+  period_start: string; // Monday, yyyy-mm-dd
+  approved: boolean;
+  approved_by: string | null;
+  approved_at: string;
+  note: string | null;
+}
+
+/**
+ * Schedule fields for upsertRate/upsertSchedule. Every field is optional and
+ * OMITTING one leaves the stored value alone — only the keys present are
+ * written. `null` is different from omitted: it CLEARS the column (cap excluded,
+ * it is NOT NULL in the DB).
+ */
+export interface ScheduleInput {
+  /** Expected hours/week; null clears it. */
+  expectedWeeklyHours?: number | null;
+  /**
+   * Overtime threshold; must be > 0 when given. The column is NOT NULL, so null
+   * (an admin blanking the field) RESETS it to DEFAULT_WEEKLY_HOURS_CAP rather
+   * than clearing it — a person always has a cap, and "no cap" is not a state
+   * the overtime flag could interpret. Omit the field to leave it as-is.
+   */
+  weeklyHoursCap?: number | null;
+  /** Schedule note; null or blank clears it. */
+  scheduleNote?: string | null;
+}
+
+/** The cap assumed when a person has no staff_rates row (matches the DB default). */
+export const DEFAULT_WEEKLY_HOURS_CAP = 40;
+
+/**
+ * Slack when comparing hours against the cap. numeric(5,2) sums of 7 rows can
+ * land on 40.00000001; without this, a dead-on-40 week would flag as overtime.
+ */
+const CAP_EPSILON = 0.01;
 
 export type PayRunStatus = "pending" | "paid";
 
@@ -108,6 +176,13 @@ export interface PayRun {
  * `hourly_rate` / `currency` / `full_name` are flattened conveniences for the
  * admin table; `rate` keeps the full row (updated_at / updated_by) for anyone
  * who needs to show when a rate last changed.
+ *
+ * INVARIANT the admin UI depends on: `rate === null` is the ONLY signal that
+ * nothing is stored for this person. The flattened `weekly_hours_cap` cannot
+ * carry it, because it is pre-defaulted to DEFAULT_WEEKLY_HOURS_CAP and so reads
+ * identically whether the owner chose 40 or never chose anything. Do not
+ * synthesize a placeholder `rate` object for people without a row — that would
+ * silently turn "unset, house default applies" into "the owner set this".
  */
 export interface StaffWithRate {
   id: string;
@@ -119,6 +194,12 @@ export interface StaffWithRate {
   role: string;
   hourly_rate: number | null;
   currency: string | null;
+  /** Expected hours/week, or null if never set. */
+  expected_weekly_hours: number | null;
+  /** The EFFECTIVE overtime threshold — DEFAULT_WEEKLY_HOURS_CAP when there is
+   *  no rate row, so callers can compare against it without a fallback of their own. */
+  weekly_hours_cap: number;
+  schedule_note: string | null;
   rate: StaffRate | null;
 }
 
@@ -134,6 +215,11 @@ export interface CheckInInput {
    */
   hours?: number;
   note?: string;
+  /**
+   * Extra context for the day. Omitted leaves any stored value alone; null or
+   * blank clears it. Unaudited — see TimeEntry.context_note.
+   */
+  contextNote?: string | null;
   /** Shift start as a real instant (anything Date-parseable; stored as ISO). */
   clockIn?: string | null;
   /** Shift end as a real instant. `null` clears a previously stored value. */
@@ -328,6 +414,9 @@ export async function checkIn(input: CheckInInput): Promise<TimeEntry> {
     work_date: input.workDate,
     hours,
     note,
+    ...(input.contextNote === undefined
+      ? {}
+      : { context_note: input.contextNote?.trim() ? input.contextNote.trim() : null }),
     ...(touchesShift ? { clock_in, clock_out, break_minutes: breakMinutes } : {}),
   };
 
@@ -387,6 +476,28 @@ export async function getMyRate(): Promise<StaffRate | null> {
   return (data as StaffRate) ?? null;
 }
 
+/**
+ * The signed-in user's own schedule — expected hours, cap and schedule note.
+ * This is the SAME staff_rates row getMyRate() returns (workers may read their
+ * own row under RLS); it exists as its own name so schedule UI does not read as
+ * if it were fetching pay. Null when no rate row has been created yet, in which
+ * case the effective cap is DEFAULT_WEEKLY_HOURS_CAP.
+ */
+export async function getMySchedule(): Promise<StaffRate | null> {
+  return getMyRate();
+}
+
+/**
+ * The signed-in user's approval row for a week, or null if there is none.
+ * Workers may read their own; a non-super caller asking about someone ELSE gets
+ * null from RLS, which is indistinguishable from "not approved" — only trust a
+ * null here for your own user or as a super admin.
+ */
+export async function getMyApproval(periodStart: string): Promise<WeeklyApproval | null> {
+  const user_id = await currentUserId();
+  return getApproval(user_id, periodStart);
+}
+
 // ---------------------------------------------------------------------------
 // Admin (super_admin only — enforced by RLS)
 // ---------------------------------------------------------------------------
@@ -418,6 +529,10 @@ export async function listStaffWithRates(): Promise<StaffWithRate[]> {
       full_name: staffName(p),
       hourly_rate: rate ? Number(rate.hourly_rate) : null,
       currency: rate?.currency ?? null,
+      expected_weekly_hours:
+        rate?.expected_weekly_hours == null ? null : Number(rate.expected_weekly_hours),
+      weekly_hours_cap: effectiveCap(rate?.weekly_hours_cap),
+      schedule_note: rate?.schedule_note ?? null,
       rate,
     };
   });
@@ -431,24 +546,122 @@ export function staffName(
   return p.display_name?.trim() || full || p.email || null;
 }
 
-/** Set someone's hourly rate. Super admin only; RLS rejects everyone else. */
+/**
+ * Translate a ScheduleInput into staff_rates columns, keeping ONLY the keys the
+ * caller actually supplied. This is what makes the upserts non-destructive:
+ * PostgREST builds its ON CONFLICT DO UPDATE SET list from the payload keys, so
+ * a column that never enters the object is never written.
+ */
+function scheduleColumns(schedule: ScheduleInput): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+
+  if (schedule.expectedWeeklyHours !== undefined) {
+    if (schedule.expectedWeeklyHours === null) {
+      patch.expected_weekly_hours = null;
+    } else {
+      const expected = Number(schedule.expectedWeeklyHours);
+      if (!Number.isFinite(expected) || expected < 0 || expected > 168) {
+        throw new Error("Expected weekly hours must be between 0 and 168.");
+      }
+      patch.expected_weekly_hours = expected;
+    }
+  }
+
+  if (schedule.weeklyHoursCap !== undefined) {
+    if (schedule.weeklyHoursCap === null) {
+      patch.weekly_hours_cap = DEFAULT_WEEKLY_HOURS_CAP;
+    } else {
+      const cap = Number(schedule.weeklyHoursCap);
+      // A zero or negative cap would flag every worked week as overtime — reject
+      // it here rather than storing a nonsense threshold.
+      if (!Number.isFinite(cap) || cap <= 0 || cap > 168) {
+        throw new Error("Weekly hours cap must be greater than 0 and no more than 168.");
+      }
+      patch.weekly_hours_cap = cap;
+    }
+  }
+
+  if (schedule.scheduleNote !== undefined) {
+    patch.schedule_note = schedule.scheduleNote?.trim() ? schedule.scheduleNote.trim() : null;
+  }
+
+  return patch;
+}
+
+/** Pay + schedule columns, all optional — only the keys present get written. */
+interface StaffRatePatch extends ScheduleInput {
+  hourlyRate?: number;
+  currency?: string;
+}
+
+/**
+ * The one place staff_rates is written. `label` names the caller in any
+ * DbWriteError so a failed schedule save does not report itself as a pay save.
+ */
+async function writeStaffRate(
+  label: string,
+  userId: string,
+  input: StaffRatePatch,
+): Promise<StaffRate> {
+  const patch: Record<string, unknown> = {};
+
+  if (input.hourlyRate !== undefined) {
+    const rate = Number(input.hourlyRate);
+    if (!Number.isFinite(rate) || rate < 0) throw new Error("Hourly rate must be zero or greater.");
+    patch.hourly_rate = rate;
+  }
+  if (input.currency !== undefined) patch.currency = input.currency;
+  Object.assign(patch, scheduleColumns(input));
+
+  if (Object.keys(patch).length === 0) {
+    throw new Error(`${label}: nothing to update — supply at least one field.`);
+  }
+  const updated_by = await currentUserId();
+
+  const rows = await mustWrite<StaffRate>(
+    label,
+    supabase
+      .from("staff_rates")
+      // updated_at is left to the column default / touch trigger.
+      .upsert({ user_id: userId, updated_by, ...patch }, { onConflict: "user_id" }),
+  );
+  return rows[0];
+}
+
+/**
+ * Set someone's hourly rate, and optionally their schedule in the same write.
+ * Super admin only; RLS rejects everyone else.
+ *
+ * This is a PARTIAL update: fields you leave out keep whatever is stored, since
+ * only the keys passed reach the ON CONFLICT DO UPDATE SET list. So the
+ * three-argument call from the pay table cannot disturb the schedule. `currency`
+ * is always written, defaulting to USD.
+ *
+ * For a schedule-only write use upsertSchedule() — pay and schedule each have
+ * exactly one way to be written, deliberately.
+ */
 export async function upsertRate(
   userId: string,
   hourlyRate: number,
   currency = "USD",
+  schedule: ScheduleInput = {},
 ): Promise<StaffRate> {
-  const rate = Number(hourlyRate);
-  if (!Number.isFinite(rate) || rate < 0) throw new Error("Hourly rate must be zero or greater.");
-  const updated_by = await currentUserId();
+  return writeStaffRate("upsertRate", userId, { hourlyRate, currency, ...schedule });
+}
 
-  const rows = await mustWrite<StaffRate>(
-    "upsertRate",
-    supabase
-      .from("staff_rates")
-      // updated_at is left to the column default / touch trigger.
-      .upsert({ user_id: userId, hourly_rate: rate, currency, updated_by }, { onConflict: "user_id" }),
-  );
-  return rows[0];
+/**
+ * Set someone's schedule WITHOUT touching their pay. Super admin only.
+ * Only the supplied fields are written; the rest of the row is left alone.
+ *
+ * If the person has no staff_rates row yet this creates one, which means their
+ * hourly_rate starts at the column default of 0 until a rate is set — a
+ * schedule can exist before pay does.
+ */
+export async function upsertSchedule(
+  userId: string,
+  schedule: ScheduleInput,
+): Promise<StaffRate> {
+  return writeStaffRate("upsertSchedule", userId, schedule);
 }
 
 /** All staff entries in a date range (inclusive) — the weekly cost roll-up. */
@@ -563,8 +776,149 @@ export async function createPendingRun(input: PayRunInput): Promise<PayRun> {
 }
 
 // ---------------------------------------------------------------------------
+// Weekly overtime approvals
+//
+// Reads are open to the row's owner and to super admins; every WRITE is
+// super-admin-only via RLS. Because RLS filters rather than errors on reads, a
+// null/empty result from a non-super caller means "not visible to you" as much
+// as "not there" — see the note on getMyApproval.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every week is keyed by its MONDAY. Callers hand us whatever date they have
+ * (a week picker's start, a row's work_date) and we normalize to the Monday of
+ * that week, so a lookup can never miss a row that a write placed under the
+ * canonical date.
+ */
+function weekKey(periodStart: string): string {
+  return weekBoundsOf(periodStart).start;
+}
+
+/** Every approval row for one pay week — the admin week table's OT column. */
+export async function listWeekApprovals(periodStart: string): Promise<WeeklyApproval[]> {
+  const { data, error } = await supabase
+    .from("weekly_hour_approvals")
+    .select("*")
+    .eq("period_start", weekKey(periodStart));
+  if (error) throw error;
+  return (data || []) as WeeklyApproval[];
+}
+
+/** Index a week's approvals by user_id, for row-by-row lookup in a staff table. */
+export function approvalsByUser(rows: WeeklyApproval[]): Map<string, WeeklyApproval> {
+  const byUser = new Map<string, WeeklyApproval>();
+  for (const row of rows) byUser.set(row.user_id, row);
+  return byUser;
+}
+
+/** One person's approval for one week, or null if there is none. */
+export async function getApproval(
+  userId: string,
+  periodStart: string,
+): Promise<WeeklyApproval | null> {
+  const { data, error } = await supabase
+    .from("weekly_hour_approvals")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("period_start", weekKey(periodStart))
+    .maybeSingle();
+  if (error) throw error;
+  return (data as WeeklyApproval) ?? null;
+}
+
+/**
+ * Approve (or explicitly deny) over-cap hours for one person for one week.
+ * Upserts on (user_id, period_start), so re-deciding a week updates in place
+ * and re-stamps approved_by/approved_at with whoever decided it just now.
+ * Super admin only; RLS rejects everyone else.
+ */
+export async function setWeekApproval(
+  userId: string,
+  periodStart: string,
+  approved: boolean,
+  note?: string,
+): Promise<WeeklyApproval> {
+  const approved_by = await currentUserId();
+
+  const rows = await mustWrite<WeeklyApproval>(
+    "setWeekApproval",
+    supabase.from("weekly_hour_approvals").upsert(
+      {
+        user_id: userId,
+        period_start: weekKey(periodStart),
+        approved,
+        approved_by,
+        // Stamped explicitly: the column default only fires on INSERT, and this
+        // upsert's UPDATE path has to move the timestamp too.
+        approved_at: new Date().toISOString(),
+        note: note?.trim() ? note.trim() : null,
+      },
+      { onConflict: "user_id,period_start" },
+    ),
+  );
+  return rows[0];
+}
+
+/**
+ * Withdraw a week's approval by DELETING the row, so the week returns to the
+ * same state as one that was never decided (unapproved, no stale note or
+ * approver hanging around). Use setWeekApproval(..., false, note) instead when
+ * you want an explicit, attributed refusal on the record.
+ *
+ * Returns true if a row was removed, false if there was nothing to remove.
+ * The existence check is not just an optimization: a DELETE blocked by RLS also
+ * reports zero rows, so without it "you are not allowed" would be silently
+ * indistinguishable from "already gone".
+ */
+export async function clearWeekApproval(userId: string, periodStart: string): Promise<boolean> {
+  const week = weekKey(periodStart);
+  const existing = await getApproval(userId, week);
+  if (!existing) return false;
+
+  await mustWrite<WeeklyApproval>(
+    "clearWeekApproval",
+    supabase.from("weekly_hour_approvals").delete().eq("user_id", userId).eq("period_start", week),
+  );
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Roll-up helper
 // ---------------------------------------------------------------------------
+
+/**
+ * The cap to judge a week against. A missing or unusable stored cap falls back
+ * to DEFAULT_WEEKLY_HOURS_CAP — never to "unlimited", which would quietly turn
+ * bad data into a clean bill of health.
+ */
+export function effectiveCap(cap: number | null | undefined): number {
+  const limit = Number(cap);
+  return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_WEEKLY_HOURS_CAP;
+}
+
+/**
+ * Did this week exceed the cap? Pure. Hours exactly ON the cap are fine; only a
+ * real excess (beyond CAP_EPSILON of rounding noise) counts.
+ * Unparseable hours return false — there is no overage to claim when we cannot
+ * read the total; show the raw week rather than trusting this.
+ */
+export function overCap(hours: number, cap: number | null | undefined): boolean {
+  const worked = Number(hours);
+  if (!Number.isFinite(worked)) return false;
+  return worked > effectiveCap(cap) + CAP_EPSILON;
+}
+
+/**
+ * Over the cap AND nobody signed off on it — the flag the owner actually wants.
+ * A missing approval row and an `approved: false` row both count as unapproved.
+ */
+export function unapprovedOvertime(
+  hours: number,
+  cap: number | null | undefined,
+  approval: Pick<WeeklyApproval, "approved"> | null | undefined,
+): boolean {
+  return overCap(hours, cap) && !approval?.approved;
+}
 
 /**
  * Was this change made late enough to deserve a second look? True when the

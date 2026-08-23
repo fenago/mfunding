@@ -1,6 +1,7 @@
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
+  ExclamationTriangleIcon,
   PencilSquareIcon,
 } from "@heroicons/react/24/outline";
 import { addDays, fmtClockRange, fmtDayNum, fmtHours, fmtRange, fmtWeekday } from "./timeUtils";
@@ -33,6 +34,7 @@ export default function WeekStrip({
   onNext,
   onThisWeek,
   onSelectDay,
+  weeklyCap,
 }: {
   weekStart: string;
   weekEnd: string;
@@ -47,9 +49,21 @@ export default function WeekStrip({
   onNext: () => void;
   onThisWeek: () => void;
   onSelectDay: (workDate: string) => void;
+  /**
+   * Hours after which this week's total needs a manager's approval. Purely
+   * informational — the worker can't approve their own overtime, and nothing
+   * here blocks them from logging hours they genuinely worked.
+   */
+  weeklyCap?: number | null;
 }) {
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
   const total = days.reduce((sum, d) => sum + (byDate[d]?.hours || 0), 0);
+  // The cap this week is actually over, or null. Quarter-hour entries sum with
+  // float error, so an exactly-40 week must not trip the notice at 40.000000004.
+  const capExceeded =
+    typeof weeklyCap === "number" && weeklyCap > 0 && total - weeklyCap > 0.005
+      ? weeklyCap
+      : null;
 
   const navBtn =
     "rounded-lg border border-gray-200 dark:border-gray-600 p-1.5 text-gray-500 dark:text-gray-400 hover:border-mint-green hover:text-mint-green disabled:opacity-30 disabled:hover:border-gray-200 dark:disabled:hover:border-gray-600 disabled:hover:text-gray-500 transition-colors";
@@ -101,6 +115,18 @@ export default function WeekStrip({
           <span className="ml-1 text-sm text-gray-500 dark:text-gray-400">hrs logged</span>
         </div>
       </div>
+
+      {capExceeded !== null && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300">
+          <ExclamationTriangleIcon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>
+            You&apos;re at <strong>{fmtHours(total)}h</strong>{" "}
+            {isCurrentWeek ? "this week" : "in this week"} — anything over{" "}
+            <strong>{fmtHours(capExceeded)}</strong> needs approval from your manager. Keep logging
+            what you actually worked.
+          </span>
+        </div>
+      )}
 
       <div className="grid grid-cols-7 gap-1.5">
         {days.map((d) => {

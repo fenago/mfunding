@@ -10,27 +10,45 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import {
+  approvalsByUser,
+  clearWeekApproval,
   createPendingRun,
   listAllEntries,
   listAllPayRuns,
   listAuditForPeriod,
   listStaffWithRates,
+  listWeekApprovals,
   markPaid,
+  overCap,
+  setWeekApproval,
   shiftWeek,
+  unapprovedOvertime,
   upsertRate,
+  upsertSchedule,
   weekBounds,
   type PayRun,
+  type ScheduleInput,
   type StaffWithRate,
   type TimeEntry,
   type TimeEntryAudit,
+  type WeeklyApproval,
 } from "@/services/timeTracking";
 import ArmedButton from "@/components/admin/time-admin/ArmedButton";
 import PaymentHistory from "@/components/admin/time-admin/PaymentHistory";
+import OvertimeFlag from "@/components/admin/time-admin/OvertimeFlag";
+import SchedulePanel, { ScheduleSummary } from "@/components/admin/time-admin/SchedulePanel";
 import EditHistoryPanel, {
   EditedBadge,
   RecentEditsStrip,
 } from "@/components/admin/time-admin/EditHistory";
 import { editEvents, firstLoggedByEntry, groupBy } from "@/components/admin/time-admin/auditDiff";
+import {
+  applySchedulePatch,
+  isApproved,
+  overageHours,
+  scheduleOf,
+  type Schedule,
+} from "@/components/admin/time-admin/schedule";
 import {
   clockSpan,
   displayName,
@@ -124,6 +142,16 @@ type Row = {
   audit: TimeEntryAudit[];
   editCount: number;
   lateEditCount: number;
+  /** What the owner expects of this person in a normal week. */
+  schedule: Schedule;
+  /** The cap actually enforced — the person's own, or the 40h default. */
+  cap: number;
+  /** Hours past the cap; 0 when the week is inside it. */
+  overBy: number;
+  /** This week's overtime sign-off, or null when there isn't one. */
+  approval: WeeklyApproval | null;
+  /** Over the cap with no approval on file. Always false while approvals are unreadable. */
+  flagged: boolean;
 };
 
 export default function TimePayPage() {
@@ -135,12 +163,18 @@ export default function TimePayPage() {
   // render every row as clean.
   const [audit, setAudit] = useState<Map<string, TimeEntryAudit[]> | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
+  // Same rule as the audit map: null means the approvals could NOT be read, which
+  // is not the same as "nobody's overtime is approved" and must not be drawn as
+  // a wall of red flags.
+  const [approvals, setApprovals] = useState<Map<string, WeeklyApproval> | null>(null);
+  const [approvalsError, setApprovalsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set());
+  const [scheduleOpen, setScheduleOpen] = useState<Set<string>>(new Set());
   const [recentOpen, setRecentOpen] = useState(false);
 
   // The Monday of the week being run. weekBounds() owns the Monday-start rule.
@@ -188,6 +222,17 @@ export default function TimePayPage() {
       setAudit(null);
       setAuditError(err instanceof Error ? err.message : "The audit trail could not be read.");
     }
+
+    // Overtime sign-offs load separately for the same reason.
+    try {
+      setApprovals(approvalsByUser(await listWeekApprovals(week.start)));
+      setApprovalsError(null);
+    } catch (err) {
+      setApprovals(null);
+      setApprovalsError(
+        err instanceof Error ? err.message : "Overtime approvals could not be read."
+      );
+    }
   }, [week.start, week.end]);
 
   useEffect(() => {
@@ -215,6 +260,10 @@ export default function TimePayPage() {
   function openHistory(id: string) {
     setExpanded((prev) => new Set(prev).add(id));
     setHistoryOpen((prev) => toggleIn(prev, id));
+  }
+
+  function toggleSchedule(id: string) {
+    setScheduleOpen((prev) => toggleIn(prev, id));
   }
 
   // --- derived ------------------------------------------------------------
@@ -290,6 +339,9 @@ export default function TimePayPage() {
         const rate = s.hourly_rate == null ? null : Number(s.hourly_rate);
         const rows = audit?.get(s.id) ?? [];
         const edits = editEvents(rows);
+        const schedule = scheduleOf(s);
+        const cap = schedule.cap;
+        const approval = approvals?.get(s.id) ?? null;
         return {
           staff: s,
           entries: es,
@@ -301,15 +353,25 @@ export default function TimePayPage() {
           audit: rows,
           editCount: edits.length,
           lateEditCount: edits.filter((e) => e.isLate).length,
+          schedule,
+          cap,
+          // overCap() carries the service's rounding slack, so a 40.004h week is
+          // not "over" here while being over there.
+          overBy: overCap(hours, cap) ? overageHours(hours, cap) : 0,
+          approval,
+          // While approvals are unreadable nobody is "unapproved" — the flag
+          // needs evidence, and the chip says "approval unknown" instead.
+          flagged: approvals != null && Boolean(unapprovedOvertime(hours, cap, approval)),
         };
       }),
-    [staff, entriesByUser, runForWeek, audit, loggedAt]
+    [staff, entriesByUser, runForWeek, audit, approvals, loggedAt]
   );
 
   // Someone with a pay run but no hours still shows — a recorded payment must
-  // never disappear behind the zero-hours filter.
+  // never disappear behind the zero-hours filter. An overtime decision on file is
+  // a record of the same kind, so it stays visible too.
   const visibleRows = useMemo(
-    () => (showAll ? rows : rows.filter((r) => r.hours > 0 || r.run)),
+    () => (showAll ? rows : rows.filter((r) => r.hours > 0 || r.run || r.approval)),
     [rows, showAll]
   );
 
@@ -321,6 +383,10 @@ export default function TimePayPage() {
   const workedCount = rows.filter((r) => r.hours > 0).length;
   const missingRateCount = rows.filter((r) => r.hours > 0 && r.rate == null).length;
   const lateTotal = rows.reduce((t, r) => t + r.lateCount, 0);
+  const overCapRows = rows.filter((r) => r.overBy > 0);
+  const flaggedRows = overCapRows.filter((r) => r.flagged);
+  const flaggedOverHours = flaggedRows.reduce((t, r) => t + r.overBy, 0);
+  const approvedOverCount = overCapRows.filter((r) => isApproved(r.approval)).length;
 
   // --- actions ------------------------------------------------------------
 
@@ -333,6 +399,61 @@ export default function TimePayPage() {
     } catch (err) {
       setStaff((prev) => prev.map((x) => (x.id === s.id ? { ...x, hourly_rate: before } : x)));
       notify(err instanceof Error ? err.message : "Could not save the rate.", "error");
+    }
+  }
+
+  /**
+   * One schedule field at a time, optimistic, reverting the whole row on failure.
+   * upsertSchedule() writes only the keys it is handed, so this never disturbs
+   * the hourly rate.
+   */
+  async function saveSchedule(s: StaffWithRate, patch: ScheduleInput) {
+    const hadRate = s.rate != null;
+    setStaff((prev) => prev.map((x) => (x.id === s.id ? applySchedulePatch(x, patch) : x)));
+    try {
+      await upsertSchedule(s.id, patch);
+      notify(`${displayName(s)} — schedule saved`);
+      // The very first save CREATES the staff_rates row, which is what turns the
+      // cap from "house default" into a stored value. Only that case needs a
+      // re-read; every later save is fully described by the optimistic patch.
+      if (!hadRate) setStaff(await listStaffWithRates());
+    } catch (err) {
+      setStaff((prev) => prev.map((x) => (x.id === s.id ? s : x)));
+      notify(err instanceof Error ? err.message : "Could not save the schedule.", "error");
+    }
+  }
+
+  /**
+   * Sign off (or withdraw sign-off) on a week that ran past the cap. The list is
+   * re-read rather than patched locally because who/when approved is stamped
+   * server-side, and a made-up approver name on a payroll record is worse than
+   * a moment's wait.
+   */
+  async function decideOvertime(row: Row, approve: boolean, note?: string) {
+    const who = displayName(row.staff);
+    try {
+      // clearWeekApproval() returns false when there was no row to delete. A
+      // blocked write throws instead, so false really does mean "already gone" —
+      // and saying "revoked" over a no-op would claim an action that never happened.
+      let removed = true;
+      if (approve) await setWeekApproval(row.staff.id, week.start, true, note);
+      else removed = await clearWeekApproval(row.staff.id, week.start);
+      setApprovals(approvalsByUser(await listWeekApprovals(week.start)));
+      setApprovalsError(null);
+      notify(
+        approve
+          ? `${who} — ${formatHours(row.overBy)} of overtime approved for this week`
+          : removed
+            ? `${who} — overtime approval revoked`
+            : `${who} — there was no overtime approval on this week to revoke`
+      );
+    } catch (err) {
+      notify(
+        err instanceof Error
+          ? err.message
+          : `Could not ${approve ? "approve" : "revoke"} the overtime.`,
+        "error"
+      );
     }
   }
 
@@ -448,8 +569,18 @@ export default function TimePayPage() {
         </div>
       )}
 
+      {approvalsError && (
+        <div className="flex items-start gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+          <span>
+            <strong>Overtime approvals unavailable.</strong> {approvalsError} Weeks past the cap are
+            shown as <em>approval unknown</em> — not as unapproved.
+          </span>
+        </div>
+      )}
+
       {/* Totals */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-2">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
             Hours this week
@@ -489,6 +620,56 @@ export default function TimePayPage() {
             what you still owe for this week
           </p>
         </div>
+
+        {/* Who blew past 40 without asking. */}
+        <div
+          className={`rounded-lg border px-3 py-2 ${
+            approvals == null
+              ? "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60"
+              : flaggedRows.length > 0
+                ? "border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20"
+                : "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60"
+          }`}
+        >
+          <p
+            className={`text-[10px] font-semibold uppercase tracking-wide ${
+              flaggedRows.length > 0 && approvals != null
+                ? "text-red-700 dark:text-red-400"
+                : "text-gray-500 dark:text-gray-400"
+            }`}
+          >
+            Unapproved overtime
+          </p>
+          {approvals == null ? (
+            <>
+              <p className="mt-1 text-lg font-bold text-gray-400 dark:text-gray-500">unreadable</p>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-tight">
+                {overCapRows.length} over cap, approval state unknown
+              </p>
+            </>
+          ) : flaggedRows.length > 0 ? (
+            <>
+              <p className="mt-1 text-lg font-bold tabular-nums text-red-700 dark:text-red-300">
+                {flaggedRows.length} {flaggedRows.length === 1 ? "person" : "people"}
+              </p>
+              <p className="text-[11px] font-semibold text-red-700/90 dark:text-red-400/90 leading-tight">
+                +{formatHours(flaggedOverHours)} over cap — needs your OK
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="mt-1 text-lg font-bold tabular-nums text-gray-900 dark:text-white">
+                None
+              </p>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-tight">
+                {overCapRows.length === 0
+                  ? "everyone inside their weekly cap"
+                  : `${approvedOverCount} over cap, all approved`}
+              </p>
+            </>
+          )}
+        </div>
+
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 px-3 py-2">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
             Logged late
@@ -586,6 +767,18 @@ export default function TimePayPage() {
                                 late={row.lateEditCount}
                                 onClick={() => openHistory(s.id)}
                               />
+                              {/* The over-40 flag rides next to the name so it is
+                                  visible whether or not the row is expanded. */}
+                              <OvertimeFlag
+                                hours={row.hours}
+                                cap={row.cap}
+                                overBy={row.overBy}
+                                approval={row.approval}
+                                approvalsReadable={approvals != null}
+                                approverName={nameFor(row.approval?.approved_by ?? null)}
+                                onApprove={(note) => decideOvertime(row, true, note)}
+                                onRevoke={() => decideOvertime(row, false)}
+                              />
                             </div>
                             <div className="flex items-center gap-2 mt-0.5">
                               <span className="text-xs text-gray-500 dark:text-gray-400">
@@ -600,6 +793,20 @@ export default function TimePayPage() {
                                 {s.role}
                               </span>
                             </div>
+
+                            {/* When the owner expects this person in, and the cap
+                                that decides what counts as overtime. */}
+                            <ScheduleSummary
+                              schedule={row.schedule}
+                              open={scheduleOpen.has(s.id)}
+                              onToggle={() => toggleSchedule(s.id)}
+                            />
+                            {scheduleOpen.has(s.id) && (
+                              <SchedulePanel
+                                schedule={row.schedule}
+                                onSave={(patch) => saveSchedule(s, patch)}
+                              />
+                            )}
 
                             {/* Day-by-day: the shift as clocked, the hours claimed,
                                 and when it was RECORDED — so backfilled or rewritten
@@ -665,6 +872,11 @@ export default function TimePayPage() {
                                         {e.note && (
                                           <span className="text-gray-500 dark:text-gray-400 italic">
                                             {e.note}
+                                          </span>
+                                        )}
+                                        {e.context_note && (
+                                          <span className="text-amber-700 dark:text-amber-300 italic">
+                                            &ldquo;{e.context_note}&rdquo;
                                           </span>
                                         )}
                                       </div>
@@ -863,9 +1075,18 @@ function ActionCell({
       )}
       <ArmedButton
         label="Mark paid"
-        confirmLabel={`Confirm ${row.cost == null ? "" : formatMoney(row.cost, row.staff.currency)}?`}
+        // A flagged week is still payable — the owner just has to see the words
+        // before the second click.
+        confirmLabel={`Confirm ${row.cost == null ? "" : formatMoney(row.cost, row.staff.currency)}${
+          row.flagged ? ` · ${formatHours(row.overBy)} UNAPPROVED OT` : ""
+        }?`}
         disabled={blocked}
-        title={why ?? "Record this week as paid"}
+        title={
+          why ??
+          (row.flagged
+            ? `Record this week as paid — includes ${formatHours(row.overBy)} of overtime you have not approved`
+            : "Record this week as paid")
+        }
         onFire={() => onRecord(row, "paid")}
         className="bg-ocean-blue text-white hover:opacity-90"
         armedClassName="bg-emerald-600 text-white hover:bg-emerald-700"

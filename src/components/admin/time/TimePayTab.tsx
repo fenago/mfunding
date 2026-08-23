@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  CalendarDaysIcon,
   CheckCircleIcon,
   ClockIcon,
   ExclamationTriangleIcon,
@@ -9,6 +10,7 @@ import {
   checkIn,
   computeHours,
   getMyRate,
+  getMySchedule,
   listMyAudit,
   listMyEntries,
   listMyPayRuns,
@@ -47,6 +49,16 @@ const SHIFT_PRESETS = [
 const DEFAULT_IN = "09:00";
 const DEFAULT_OUT = "17:00";
 
+/**
+ * The overtime line when payroll hasn't set a per-worker cap — and the fallback
+ * when the schedule can't be read at all. Federal-standard 40, so the notice is
+ * never wrong in a way that costs anyone hours.
+ */
+const DEFAULT_WEEKLY_CAP = 40;
+
+/** Whatever shape the service hands back — inferred so it stays in step with it. */
+type MySchedule = NonNullable<Awaited<ReturnType<typeof getMySchedule>>>;
+
 /** How the worker is logging the day: real shift times, or a bare hours figure. */
 type LogMode = "clock" | "hours";
 
@@ -70,6 +82,13 @@ export default function TimePayTab({
     status: "loading" | "ok" | "error";
     rate: StaffRate | null;
   }>({ status: "loading", rate: null });
+  // Same three-way split as the rate: "no schedule set" (banner hidden, nothing
+  // to say) and "couldn't read the schedule" are different facts, and only the
+  // first one is safe to render as silence.
+  const [scheduleState, setScheduleState] = useState<{
+    status: "loading" | "ok" | "error";
+    schedule: MySchedule | null;
+  }>({ status: "loading", schedule: null });
   // The edit trail is a nice-to-have, so a failure here must not take the tab
   // down — but it must not render as "never edited" either. See the note below
   // the week strip.
@@ -87,6 +106,7 @@ export default function TimePayTab({
   const [breakVal, setBreakVal] = useState("0");
   const [hours, setHours] = useState("8");
   const [note, setNote] = useState("");
+  const [contextNote, setContextNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<{
@@ -160,6 +180,24 @@ export default function TimePayTab({
     };
   }, [userId]);
 
+  // The expected schedule the owner set for this worker, if any. A failure here
+  // is cosmetic — it must never stop someone logging the hours they worked.
+  useEffect(() => {
+    let cancelled = false;
+    setScheduleState({ status: "loading", schedule: null });
+    void (async () => {
+      try {
+        const s = await getMySchedule();
+        if (!cancelled) setScheduleState({ status: "ok", schedule: s });
+      } catch {
+        if (!cancelled) setScheduleState({ status: "error", schedule: null });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
   const loadAudit = useCallback(async () => {
     try {
       const rows = await listMyAudit(historyFrom);
@@ -197,6 +235,7 @@ export default function TimePayTab({
     const savedOut = etTimeInputValue(row?.clock_out);
     setHours(row ? fmtHours(row.hours) : "8");
     setNote(row?.note ?? "");
+    setContextNote(row?.context_note ?? "");
     setClockInVal(savedIn || DEFAULT_IN);
     setClockOutVal(savedOut || DEFAULT_OUT);
     setBreakVal(row?.break_minutes ? fmtHours(row.break_minutes) : "0");
@@ -281,6 +320,29 @@ export default function TimePayTab({
       }));
   }, [entries, payRuns, thisWeek.start, visibleWeek.start]);
 
+  // --- The schedule the worker is measured against -------------------------
+  const schedule = scheduleState.status === "ok" ? scheduleState.schedule : null;
+
+  /** The overtime line. A missing or unreadable schedule falls back to 40. */
+  const weeklyCap = useMemo(() => {
+    const c = Number(schedule?.weekly_hours_cap);
+    return Number.isFinite(c) && c > 0 ? c : DEFAULT_WEEKLY_CAP;
+  }, [schedule]);
+
+  /**
+   * What the banner can actually say. A row that carries neither a note nor an
+   * expected figure is not a schedule anyone set — it gets no banner, since an
+   * empty "Your schedule:" tells the worker less than nothing.
+   */
+  const scheduleBanner = useMemo(() => {
+    if (!schedule) return null;
+    const note = schedule.schedule_note?.trim() || null;
+    const expectedNum = Number(schedule.expected_weekly_hours);
+    const expected = Number.isFinite(expectedNum) && expectedNum > 0 ? expectedNum : null;
+    if (!note && expected === null) return null;
+    return { note, expected };
+  }, [schedule]);
+
   const clearFeedback = () => {
     setConfirmed(null);
     setSubmitError(null);
@@ -305,6 +367,7 @@ export default function TimePayTab({
         clockOut: shift.outIso,
         breakMinutes,
         note: note.trim() || undefined,
+        contextNote: contextNote.trim() || null,
       };
     } else {
       const h = Number(hours);
@@ -326,6 +389,7 @@ export default function TimePayTab({
         clockOut: null,
         breakMinutes: 0,
         note: note.trim() || undefined,
+        contextNote: contextNote.trim() || null,
       };
     }
 
@@ -377,6 +441,34 @@ export default function TimePayTab({
             user you&apos;re viewing as.
           </span>
         </div>
+      )}
+
+      {scheduleBanner && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm dark:border-gray-700 dark:bg-gray-800/40">
+          <CalendarDaysIcon className="w-4 h-4 flex-shrink-0 text-mint-green" />
+          <span className="text-gray-500 dark:text-gray-400">Your schedule:</span>
+          {scheduleBanner.note && (
+            <strong className="text-gray-900 dark:text-white">{scheduleBanner.note}</strong>
+          )}
+          {scheduleBanner.note && scheduleBanner.expected !== null && (
+            <span className="text-gray-300 dark:text-gray-600">·</span>
+          )}
+          {scheduleBanner.expected !== null && (
+            <span className="text-gray-700 dark:text-gray-300">
+              <strong className="text-gray-900 dark:text-white">
+                {fmtHours(scheduleBanner.expected)} hrs/week
+              </strong>{" "}
+              expected
+            </span>
+          )}
+        </div>
+      )}
+
+      {scheduleState.status === "error" && (
+        <p className="text-xs text-gray-400 dark:text-gray-500">
+          Couldn&apos;t read your schedule, so it isn&apos;t shown above — that doesn&apos;t mean
+          none is set. The weekly notice falls back to {DEFAULT_WEEKLY_CAP} hours.
+        </p>
       )}
 
       {/* --- Daily check-in: the whole point of this tab --- */}
@@ -515,6 +607,21 @@ export default function TimePayTab({
           />
         </div>
 
+        <div className="mt-4">
+          <label className={fieldLabel}>
+            Anything else? <span className="font-normal text-gray-400">(optional)</span>
+          </label>
+          <textarea
+            className="input-field min-h-[64px]"
+            value={contextNote}
+            onChange={(e) => {
+              setContextNote(e.target.value);
+              setConfirmed(null);
+            }}
+            placeholder="Any context you want your manager to see — e.g. internet was down 2 hrs, left early for an appointment."
+          />
+        </div>
+
         {mode === "clock" && (
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
             {shift.hours !== null ? (
@@ -609,6 +716,7 @@ export default function TimePayTab({
               selectedDate={workDate}
               isCurrentWeek={isCurrentWeek}
               canGoBack={canGoBack}
+              weeklyCap={weeklyCap}
               onPrev={() => setVisibleWeekStart(shiftWeek(visibleWeek.start, -1).start)}
               onNext={() => setVisibleWeekStart(shiftWeek(visibleWeek.start, 1).start)}
               onThisWeek={() => setVisibleWeekStart(thisWeek.start)}
