@@ -13,15 +13,18 @@ export type WeekSummary = {
 
 /**
  * Past weeks, newest first — hours logged and what happened to the money.
- * An estimate is shown ONLY when the worker can read their own staff_rates row;
- * with no rate we print "—" rather than implying a number we don't have.
+ * An estimate is shown ONLY when the worker's rate was actually read; a missing
+ * rate and an unreadable one both hide it, but they say different things, since
+ * "no rate set yet" is misleading when the truth is we couldn't tell.
  */
 export default function WeekHistory({
   weeks,
   rate,
+  rateStatus,
 }: {
   weeks: WeekSummary[];
   rate: StaffRate | null;
+  rateStatus: "loading" | "ok" | "error";
 }) {
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
@@ -30,6 +33,18 @@ export default function WeekHistory({
         Weeks run <strong>Monday to Sunday</strong>. Pay status comes from payroll — an
         &ldquo;estimated&rdquo; figure is your hours &times; your rate, not a promise.
       </p>
+
+      {rateStatus === "error" && (
+        <p className="text-xs text-amber-700 dark:text-amber-400 mb-3">
+          Couldn&apos;t read your hourly rate, so estimates are hidden below. This is a loading
+          problem — it does <strong>not</strong> mean your rate is unset.
+        </p>
+      )}
+      {rateStatus === "ok" && !rate?.hourly_rate && (
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          No hourly rate on file yet — estimates appear once payroll sets one.
+        </p>
+      )}
 
       {weeks.length === 0 ? (
         <p className="text-sm text-gray-500 dark:text-gray-400">

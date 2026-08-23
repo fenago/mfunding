@@ -18,7 +18,7 @@ import {
 import WeekStrip from "./WeekStrip";
 import WeekHistory, { type WeekSummary } from "./WeekHistory";
 import PayRunList from "./PayRunList";
-import { addDays, atNoonUTC, fmtDate, fmtHours, fmtTimeOfDay } from "./timeUtils";
+import { addDays, fmtDate, fmtHours, fmtTimeOfDay } from "./timeUtils";
 
 /** How far back the history goes. Keeps the read bounded on a long-tenured user. */
 const HISTORY_DAYS = 182;
@@ -38,7 +38,13 @@ export default function TimePayTab({
 
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [payRuns, setPayRuns] = useState<PayRun[]>([]);
-  const [rate, setRate] = useState<StaffRate | null>(null);
+  // "No rate set" and "couldn't read the rate" look identical if you collapse
+  // them to null, and the first is a plausible-looking lie when the second is
+  // true — it sends someone to payroll over a rate that's configured fine.
+  const [rateState, setRateState] = useState<{
+    status: "loading" | "ok" | "error";
+    rate: StaffRate | null;
+  }>({ status: "loading", rate: null });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -85,16 +91,18 @@ export default function TimePayTab({
     };
   }, [loadEntries, userId]);
 
-  // The worker's own rate. If no rate is set yet (or the read fails) we simply
-  // show no estimate — never a guessed number presented as an amount owed.
+  // The worker's own rate. getMyRate() returns null only for a genuinely absent
+  // row and THROWS on a read failure — keep those apart. Either way no estimate
+  // is shown, so a wrong number can never reach the screen.
   useEffect(() => {
     let cancelled = false;
+    setRateState({ status: "loading", rate: null });
     void (async () => {
       try {
         const r = await getMyRate();
-        if (!cancelled) setRate(r);
+        if (!cancelled) setRateState({ status: "ok", rate: r });
       } catch {
-        if (!cancelled) setRate(null);
+        if (!cancelled) setRateState({ status: "error", rate: null });
       }
     })();
     return () => {
@@ -119,7 +127,9 @@ export default function TimePayTab({
     setNote(row?.note ?? "");
   }, [workDate, entryByDate]);
 
-  const thisWeek = useMemo(() => weekBounds(atNoonUTC(today)), [today]);
+  // Pass the date STRING, not a Date — the string path is pure calendar math
+  // with no timezone conversion to shift the week.
+  const thisWeek = useMemo(() => weekBounds(today), [today]);
 
   const hoursByDate = useMemo(() => {
     const map: Record<string, number> = {};
@@ -133,7 +143,7 @@ export default function TimePayTab({
   const pastWeeks: WeekSummary[] = useMemo(() => {
     const byWeek: Record<string, { start: string; end: string; hours: number }> = {};
     for (const e of entries) {
-      const { start, end } = weekBounds(atNoonUTC(e.work_date));
+      const { start, end } = weekBounds(e.work_date);
       if (start === thisWeek.start) continue;
       if (!byWeek[start]) byWeek[start] = { start, end, hours: 0 };
       byWeek[start].hours += Number(e.hours) || 0;
@@ -327,7 +337,7 @@ export default function TimePayTab({
             hoursByDate={hoursByDate}
             today={today}
           />
-          <WeekHistory weeks={pastWeeks} rate={rate} />
+          <WeekHistory weeks={pastWeeks} rate={rateState.rate} rateStatus={rateState.status} />
           <PayRunList runs={payRuns} />
         </>
       )}

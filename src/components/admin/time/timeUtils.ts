@@ -21,15 +21,6 @@ export function parseISODate(iso: string): Date {
   return new Date(y || 1970, (m || 1) - 1, d || 1, 12);
 }
 
-/**
- * A date string as a Date safe to hand to weekBounds(). Noon UTC lands on the
- * same calendar day in Eastern; UTC midnight would resolve to the day BEFORE
- * and silently shift the whole week.
- */
-export function atNoonUTC(iso: string): Date {
-  return new Date(`${iso}T12:00:00Z`);
-}
-
 export function addDays(iso: string, n: number): string {
   const d = parseISODate(iso);
   d.setDate(d.getDate() + n);
