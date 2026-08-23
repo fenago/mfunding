@@ -1128,10 +1128,81 @@ export default function SetterGuidePage() {
           </div>
         </section>
 
-        {/* 09 — COMMS */}
+        {/* 09 — LOG YOUR HOURS */}
         <section>
           <div className="kicker">
             <span className="n">09</span>
+            <h2>Log your hours &mdash; every shift</h2>
+          </div>
+          <p className="lede" style={{ marginBottom: 14 }}>
+            You get paid off what you log here. Do it at the <b>end of every shift</b> &mdash; one
+            entry per day, takes ten seconds. The system also records the exact moment you submit,
+            so log the same day you work.
+          </p>
+          <ol className="steps">
+            <li>
+              <div>
+                <div className="st-t">Open your profile on MFunding.net</div>
+                <div className="st-d">
+                  On <b>mfunding.net</b> (signed in), click your name/avatar and go to{" "}
+                  <b>My Profile</b> &mdash; or go straight to{" "}
+                  <code>mfunding.net/admin/my-profile</code>.
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Click the &ldquo;Time &amp; Pay&rdquo; tab</div>
+                <div className="st-d">
+                  It&rsquo;s the tab row at the top of your profile, next to Personal / Address /
+                  Payment / Tax. Tap <b>Time &amp; Pay</b>.
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Fill in the Daily check-in</div>
+                <div className="st-d">
+                  In the <b>Daily check-in</b> box: pick the <b>Date</b> you worked (defaults to
+                  today), type your <b>Hours</b> (decimals are fine &mdash; <code>7.5</code> = seven
+                  and a half hours), and add a short <b>note</b> if you want (&ldquo;UCC dials + 2
+                  apps&rdquo;).
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Hit &ldquo;Check in&rdquo;</div>
+                <div className="st-d">
+                  You&rsquo;ll see a confirmation with the exact time it saved. Done. If you already
+                  logged that day, changing the hours and checking in again just <b>updates</b> it
+                  &mdash; you won&rsquo;t create a double entry.
+                </div>
+              </div>
+            </li>
+            <li>
+              <div>
+                <div className="st-t">Check your week &amp; your pay</div>
+                <div className="st-d">
+                  Below the check-in, the <b>This week</b> strip shows Monday&ndash;Sunday with your
+                  running total, and <b>History</b> shows past weeks with what you were paid and
+                  when. Pay runs <b>weekly</b>.
+                </div>
+              </div>
+            </li>
+          </ol>
+          <div className="note warn">
+            <div className="h">The two rules that matter</div>
+            <b>Log the day you work it</b> &mdash; the system stamps when you submit, and hours
+            logged days late get flagged for review. And <b>hours only</b>: this is your time
+            sheet, not your commissions &mdash; deals and splits live in their own place.
+          </div>
+        </section>
+
+        {/* 10 — COMMS */}
+        <section>
+          <div className="kicker">
+            <span className="n">10</span>
             <h2>Need help? Message us on Google Chat</h2>
           </div>
           <div className="note key">
