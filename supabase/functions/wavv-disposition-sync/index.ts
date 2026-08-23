@@ -155,6 +155,63 @@ Deno.serve(async (req) => {
   };
   const floored = () => dailyRemaining !== null && dailyRemaining < DAILY_FLOOR;
 
+  // ── REAL-TIME PUSH: one contact, right now ──────────────────────────────────
+  // A GHL workflow ("SETTER disposition → stage") fires the instant WAVV stamps a
+  // wavv-* tag and POSTs {action:"push", contact_id, tag}. This does the same
+  // move the polling loop does, but for a single contact in ~2s — so the board
+  // reflects a disposition in real time and the 10-min poll can drop to a nightly
+  // safety net. ~3-4 GHL calls per event; ZERO idle cost (nothing runs unless a
+  // real disposition happened). Same MAPPING, same never-target-New-Lead guard.
+  if (payload.action === "push" && typeof payload.contact_id === "string") {
+    const contactId = payload.contact_id;
+    let tags: string[] = [];
+    if (typeof payload.tag === "string" && MAPPING.some((m) => m.tag === payload.tag)) {
+      tags = [payload.tag as string];
+    } else {
+      // No/other tag supplied — read the contact and act on any mapped tag it has.
+      const cr = track(await ghlFetch<{ contact?: { tags?: string[] } }>(
+        cfg, "GET", `/contacts/${contactId}`, undefined, onRL));
+      const have = new Set(cr.data?.contact?.tags ?? []);
+      tags = MAPPING.filter((m) => have.has(m.tag)).map((m) => m.tag);
+    }
+    if (tags.length === 0) {
+      return json({ ok: true, pushed: contactId, matched: 0, note: "no mapped disposition tag on contact" });
+    }
+    const od = track(await ghlFetch<{ opportunities?: Array<{ id: string; pipelineId: string; pipelineStageId: string; status: string }> }>(
+      cfg, "GET", `/opportunities/search?location_id=${LOCATION}&contact_id=${contactId}`, undefined, onRL));
+    const opps = (od.data?.opportunities ?? []).filter((o) => o.pipelineId === MCA_PIPELINE);
+    const result = { moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0 };
+    for (const tag of tags) {
+      const action = MAPPING.find((m) => m.tag === tag)!.action;
+      let ok = od.ok;
+      if (!od.ok) result.errors++;
+      if (ok && action.kind === "dnc") {
+        const r = track(await ghlFetch(cfg, "PUT", `/contacts/${contactId}`, { dnd: true }, onRL));
+        if (r.ok) result.dnd++; else { result.errors++; ok = false; }
+      }
+      if (ok) {
+        for (const o of opps) {
+          if (action.kind === "stage") {
+            if (o.pipelineStageId === action.stageId) continue;
+            const r = track(await ghlFetch(cfg, "PUT", `/opportunities/${o.id}`, { pipelineStageId: action.stageId }, onRL));
+            if (r.ok) { result.moved++; o.pipelineStageId = action.stageId; } else { result.errors++; ok = false; }
+          } else if (action.kind === "lost") {
+            if (o.status === "lost") continue;
+            const r = track(await ghlFetch(cfg, "PUT", `/opportunities/${o.id}`, { status: "lost" }, onRL));
+            if (r.ok) { result.lost++; o.status = "lost"; } else { result.errors++; ok = false; }
+          }
+        }
+      }
+      // Remove the tag only on full success — a failure leaves it for the nightly
+      // reconcile sweep to retry, exactly like the polling path.
+      if (ok) {
+        const r = track(await ghlFetch(cfg, "DELETE", `/contacts/${contactId}/tags`, { tags: [tag] }, onRL));
+        if (r.ok) result.tag_removed++; else result.errors++;
+      }
+    }
+    return json({ ok: true, pushed: contactId, tags, result, daily_remaining: dailyRemaining });
+  }
+
   const stats: Record<string, { processed: number; moved: number; lost: number; dnd: number; tag_removed: number; errors: number }> = {};
   let touched = 0;
   let parked = false;
