@@ -145,32 +145,29 @@ const SCRIPTS: CallScript[] = [
     title: "They already have funding",
     psych: (
       <>
-        This owner has taken an advance before — they fund, and they pay. That makes them the most
-        valuable name on any dial list, and they know it, because they get called constantly. Your
-        edge: you're not guessing — their funding history is in the <b>Revenue Playbook</b>. Lead
-        with that credibility and the <b>paydown question</b>; it's the one question that turns this
-        call into money.
+        This owner has taken an advance before — they fund, and they pay. They also get called
+        constantly, so <b>don't sound like the other twenty calls</b>: no hype, no pressure. Open
+        honest, ask how the last advance actually went, and listen. The <b>paydown question</b>{" "}
+        tells you exactly where they are; their answer sets up the pivot.
       </>
     ),
     opening: (
       <>
-        &ldquo;Hi, is this <b>[First Name]</b>? <i>(wait)</i> Hey [First Name], this is{" "}
-        <b>[Your Name]</b> over at MFunding &mdash; I&rsquo;ll be quick, I know you&rsquo;re running
-        a business. Here&rsquo;s why I&rsquo;m calling: <b>[Business Name]</b> shows in the public
-        record as having taken working capital before &mdash; and that&rsquo;s the <i>only</i>{" "}
-        reason I&rsquo;m calling. Owners with a real payment history are the ones our funders
-        compete hardest for. One quick question and I&rsquo;ll get out of your hair: that advance
-        you took &mdash; about how much of it have you paid down?&rdquo;
+        &ldquo;Hi <b>[First Name]</b>? This is <b>[Your Name]</b> with MFunding. I know these calls
+        come out of nowhere, so I&rsquo;ll be straight with you. We work with business owners
+        who&rsquo;ve used funding before &mdash; that&rsquo;s public record, it&rsquo;s how I found
+        you. I&rsquo;m not calling to pile more on you. Honest question: how did that last advance
+        work out for you?&rdquo; <i>(Listen. Then:)</i> &ldquo;Where are you at with it now &mdash;
+        mostly paid down?&rdquo;
       </>
     ),
     branches: [
       {
-        cue: "“Most of it / paid off”",
+        cue: "“Mostly / paid off”",
         line: (
           <>
-            &ldquo;That&rsquo;s the strongest position a business can be in &mdash; funders offer
-            their best structures to owners exactly where you are. Let me ask you two things
-            &mdash;&rdquo; <i>(qualify)</i>
+            &ldquo;That&rsquo;s a good spot. Funders treat owners with payment history a lot better
+            the second time around.&rdquo; <i>(pivot)</i>
           </>
         ),
       },
@@ -178,8 +175,8 @@ const SCRIPTS: CallScript[] = [
         cue: "“About half”",
         line: (
           <>
-            &ldquo;That&rsquo;s the renewal window &mdash; right where terms typically get better,
-            not worse. Let me ask you two things &mdash;&rdquo; <i>(qualify)</i>
+            &ldquo;That&rsquo;s usually where renewal terms start getting better instead of
+            worse.&rdquo; <i>(pivot)</i>
           </>
         ),
       },
@@ -187,29 +184,42 @@ const SCRIPTS: CallScript[] = [
         cue: "“Just started”",
         line: (
           <>
-            &ldquo;Good to know. Then this is a timing call &mdash; let&rsquo;s find out what you
-            qualify for <i>now</i>, so when you&rsquo;re ready you&rsquo;re 24 hours from
-            funded.&rdquo; <i>(qualify)</i>
+            &ldquo;Fair enough &mdash; no pressure today. Still worth knowing what you&rsquo;d
+            qualify for, so it&rsquo;s on the shelf when you need it.&rdquo; <i>(pivot)</i>
+          </>
+        ),
+      },
+      {
+        cue: "The pivot",
+        line: (
+          <>
+            &ldquo;Tell you what &mdash; rather than me pitching you, let me get a clear picture and
+            have our funding specialist put real numbers in front of you. Takes about two minutes.
+            Fair?&rdquo; <i>(capture the application)</i>
           </>
         ),
       },
     ],
     qualify: (
       <>
-        &ldquo;Let me ask you the same three questions a funder will ask me. Roughly, what&rsquo;s
-        [Business Name] doing in <b>monthly revenue</b> right now? &hellip; Any <b>other advances</b>{" "}
-        out right now besides that one? &hellip; And if the numbers made sense &mdash; <b>how much
-        capital</b> would actually move the needle, and what would you put it to work on?&rdquo;
+        We already have the business name. <b>Get first: best cell number and email.</b> Then: owner
+        first + last name &bull; entity type (LLC, corp, sole prop) &bull; EIN &bull; years in
+        business &bull; industry &bull; business address &bull; &ldquo;Who do you bank with?&rdquo;
+        (get the <b>bank name</b>) &bull; optional: owner home address &mdash; &ldquo;Funders
+        usually want the owner&rsquo;s home address on the app &mdash; want to knock that out
+        now?&rdquo;
       </>
     ),
-    closeLbl: "Set the appointment — the only close a setter needs",
+    closeLbl: "The close — bank statements, then the fallbacks",
     close: (
       <>
-        &ldquo;Here&rsquo;s all that happens next &mdash; nothing to sign, no cost, and this
-        conversation does <b>not</b> touch your credit. I&rsquo;m getting you 15 minutes with our
-        senior funding specialist, who&rsquo;ll bring real numbers from funders who already like
-        your profile. I&rsquo;ve got <b>[today at TIME]</b> or <b>[tomorrow at TIME]</b> &mdash;
-        which works better?&rdquo;
+        <b>Best outcome:</b> &ldquo;Last thing &mdash; offers get built off your last 3 months of
+        business bank statements. <b>Is this cell OK to text?</b> I&rsquo;ll send a secure upload
+        link right now, and you&rsquo;re done &mdash; the specialist calls you with actual numbers
+        instead of a sales pitch.&rdquo; <b>No statements?</b> Finish the application anyway — the
+        specialist collects docs later. <b>No application?</b> &ldquo;No problem. Can I at least set
+        you up with 15 minutes with the specialist &mdash; [time] or [time]? And is it OK if I text
+        you the confirmation?&rdquo;
       </>
     ),
     objections: [
@@ -218,9 +228,8 @@ const SCRIPTS: CallScript[] = [
         a: (
           <>
             &ldquo;Fair question. When a business takes an advance, a UCC filing goes on public
-            record &mdash; that&rsquo;s where we found you. Honestly, it&rsquo;s the best thing on
-            your file: it&rsquo;s proof you fund and you pay. That&rsquo;s why I called you and not
-            the guy down the street.&rdquo;
+            record &mdash; that&rsquo;s where we found you. That&rsquo;s all I can see &mdash;
+            I&rsquo;m not inside your business.&rdquo;
           </>
         ),
       },
@@ -228,10 +237,9 @@ const SCRIPTS: CallScript[] = [
         q: "“I'm not taking on more debt.”",
         a: (
           <>
-            &ldquo;Totally get it &mdash; and this isn&rsquo;t about piling on. With your payment
-            history, funders may offer a better-structured position, or capital your current funder
-            isn&rsquo;t giving you. Worst case, you find out what you qualify for and sit on it.
-            Costs nothing to know.&rdquo;
+            &ldquo;Respect that. This isn&rsquo;t about stacking &mdash; it&rsquo;s about knowing
+            your options. If the numbers aren&rsquo;t better than what you have, throw them
+            away.&rdquo;
           </>
         ),
       },
@@ -239,9 +247,8 @@ const SCRIPTS: CallScript[] = [
         q: "“My last advance was way too expensive.”",
         a: (
           <>
-            &ldquo;That&rsquo;s <i>exactly</i> why we should talk. First-time pricing is always the
-            worst pricing. You have history now &mdash; that&rsquo;s leverage. Let&rsquo;s find out
-            what that leverage is worth.&rdquo;
+            &ldquo;You&rsquo;re not alone &mdash; first-time pricing is usually the worst. Payment
+            history is leverage. No obligation to find out what it&rsquo;s worth.&rdquo;
           </>
         ),
       },
@@ -249,10 +256,8 @@ const SCRIPTS: CallScript[] = [
         q: "“I get 20 of these calls a day.”",
         a: (
           <>
-            &ldquo;I believe you &mdash; your file is that good. The difference is I&rsquo;m not
-            reading your name off a list. I can see your actual funding history, and my funders
-            compete for exactly your profile. Give me 30 seconds to prove this call is
-            different.&rdquo;
+            &ldquo;I believe you, and I won&rsquo;t waste your time. Two minutes of questions, real
+            numbers from the specialist, you decide. That&rsquo;s the whole thing.&rdquo;
           </>
         ),
       },
@@ -260,10 +265,9 @@ const SCRIPTS: CallScript[] = [
         q: "“Not interested, I'm all set.”",
         a: (
           <>
-            &ldquo;No problem &mdash; one thing before I go. When payroll, a slow month, or a big
-            job shows up, the worst time to look for capital is when you <i>need</i> it. Fifteen
-            minutes gets you a clear picture of what you may qualify for, sitting ready for the day
-            you need it. Can I at least set that up?&rdquo;
+            &ldquo;Understood. If it ever changes &mdash; payroll gap, big job, slow month &mdash;
+            we&rsquo;re here. Want me to text you my info so you have it?&rdquo; <i>(A yes here is
+            still a win — you got permission to text.)</i>
           </>
         ),
       },
@@ -285,56 +289,62 @@ const SCRIPTS: CallScript[] = [
       <>
         They raised their hand once — they wanted capital, and something killed it: timing, a slow
         broker, life. Your job is not to sell funding; it&rsquo;s to <b>re-open a decision they
-        already made</b>. The magic words are <b>&ldquo;this is a follow-up&rdquo;</b> — they make
-        the call warm instead of cold.
+        already made</b>. The magic words are <b>&ldquo;I'm just following up&rdquo;</b> — they make
+        the call warm instead of cold. And don&rsquo;t insist it was them: it may have been a
+        partner, or a year ago.
       </>
     ),
     opening: (
       <>
-        &ldquo;Hi <b>[First Name]</b>, this is <b>[Your Name]</b> with MFunding. This is actually a{" "}
-        <b>follow-up call</b> &mdash; a while back you reached out looking into working capital for{" "}
-        <b>[Business Name]</b>. Most owners tell me the timing just wasn&rsquo;t right back then. So
-        let me ask you straight: did you ever end up taking care of that, or is capital still on the
-        table for you?&rdquo;
+        &ldquo;Hi <b>[First Name]</b>? <b>[Your Name]</b> with MFunding. Quick one &mdash; a while
+        back you, or somebody at <b>[Business Name]</b>, looked into funding for the business.
+        I&rsquo;m just following up on it. Did you ever get that handled, or is it still on the
+        list?&rdquo;
       </>
     ),
     branches: [
       {
-        cue: "“Still looking”",
+        cue: "“Still on the list”",
         line: (
           <>
-            &ldquo;Then I&rsquo;m glad I caught you. Two quick questions and I&rsquo;ll tell you if
-            it&rsquo;s worth 15 minutes of your time &mdash;&rdquo; <i>(qualify)</i>
+            &ldquo;OK. I&rsquo;m not going to pitch you &mdash; let me just get a clear picture and
+            have our specialist show you what&rsquo;s actually available. Takes about two minutes.
+            Fair?&rdquo; <i>(capture the application)</i>
           </>
         ),
       },
       {
-        cue: "“I got funded elsewhere”",
+        cue: "“Got funded elsewhere”",
         line: (
           <>
-            &ldquo;Good for you &mdash; how&rsquo;s it going? Paid much of it down yet?&rdquo;{" "}
-            <i>(you are now on the UCC script — paydown, renewal, better terms)</i>
+            &ldquo;Glad it worked out. How&rsquo;s it going &mdash; mostly paid down by now?&rdquo;{" "}
+            <i>(you are now on the UCC script — renewal talk, better second-time terms)</i>
           </>
         ),
       },
       {
-        cue: "“I don't remember that”",
-        line: <i>(first objection below)</i>,
+        cue: "“Don't remember / wasn't me”",
+        line: (
+          <>
+            &ldquo;Could&rsquo;ve been a partner, or a good while back &mdash; no worries. While
+            I&rsquo;ve got you: is capital even on the radar this year?&rdquo; If no &mdash; polite
+            exit, ask OK to text your info.
+          </>
+        ),
       },
     ],
     qualify: (
       <>
-        &ldquo;Roughly, what&rsquo;s [Business Name] doing in <b>monthly revenue</b>? &hellip; How
-        long have you <b>been in business</b>? &hellip; And <b>how much capital</b> would actually
-        make a difference right now &mdash; and for what?&rdquo;
+        Same capture, same order: <b>cell + email first</b>, then owner name, entity type, EIN,
+        years in business, industry, business address, bank name, optional home address.
       </>
     ),
-    closeLbl: "Set the appointment",
+    closeLbl: "The close — bank statements, then the fallbacks",
     close: (
       <>
-        Same close as the UCC script: nothing to sign, no cost, no credit impact from this
-        conversation &mdash; 15 minutes with the senior funding specialist.{" "}
-        <b>&ldquo;[today at TIME]</b> or <b>[tomorrow at TIME]?&rdquo;</b>
+        Same ladder as UCC: statements link (<b>&ldquo;is this cell OK to text?&rdquo;</b>) &rarr;
+        application only &rarr; 15-minute appointment with the specialist + OK to text the
+        confirmation.
       </>
     ),
     objections: [
@@ -353,10 +363,9 @@ const SCRIPTS: CallScript[] = [
         q: "“The timing still isn't right.”",
         a: (
           <>
-            &ldquo;That&rsquo;s fine &mdash; but here&rsquo;s the thing: finding out what you
-            qualify for takes 15 minutes <i>now</i>, and it&rsquo;s worth the most the day the truck breaks or a big
-            contract lands. Find out what you qualify for today, and when timing <i>is</i> right
-            you&rsquo;re 24 hours from funded instead of starting from zero.&rdquo;
+            &ldquo;That&rsquo;s fine &mdash; most owners do this when things are calm, so the day
+            the truck breaks they&rsquo;re 24 hours from funded instead of starting from zero. Two
+            minutes now saves the scramble later.&rdquo;
           </>
         ),
       },
@@ -374,9 +383,9 @@ const SCRIPTS: CallScript[] = [
         q: "“Just send me some information.”",
         a: (
           <>
-            &ldquo;Happy to &mdash; but a generic brochure is useless to you. Give me 30 seconds of
-            questions and I&rsquo;ll have our specialist send numbers built on <i>your</i> revenue
-            instead. What&rsquo;s [Business Name] doing monthly right now?&rdquo;
+            &ldquo;Generic brochures are useless to you. Give me the two minutes, and what you get
+            back is built on <i>your</i> actual business &mdash; that&rsquo;s information worth
+            reading.&rdquo;
           </>
         ),
       },
@@ -384,9 +393,8 @@ const SCRIPTS: CallScript[] = [
         q: "“I'm busy.”",
         a: (
           <>
-            &ldquo;Which is exactly why I&rsquo;m not pitching you &mdash; I&rsquo;m booking you.
-            Fifteen minutes with our specialist: <b>[today TIME]</b> or <b>[tomorrow
-            TIME]</b>?&rdquo;
+            &ldquo;Totally get it. When&rsquo;s better &mdash; <b>[time]</b> or <b>[time]</b>?
+            I&rsquo;ll text you a reminder if that&rsquo;s OK.&rdquo;
           </>
         ),
       },
@@ -406,60 +414,68 @@ const SCRIPTS: CallScript[] = [
     psych: (
       <>
         This owner is in-market <b>this week</b> — they&rsquo;ve applied somewhere and are waiting
-        on numbers. This is the hottest list you will ever dial, and the clock is running: whoever
-        gets them numbers first usually wins. Your angle is never &ldquo;switch to us&rdquo; —
-        it&rsquo;s <b>&ldquo;never take the first offer.&rdquo;</b>
+        on numbers. The clock is running: whoever shows real numbers first usually wins. Your angle
+        is never &ldquo;switch to us&rdquo; — it&rsquo;s <b>&ldquo;never take the first
+        offer&rdquo;</b> — and if they say they&rsquo;re not looking, believe them and exit
+        gracefully.
       </>
     ),
     opening: (
       <>
-        &ldquo;Hi <b>[First Name]</b> &mdash; <b>[Your Name]</b> with MFunding. I&rsquo;ll be
-        straight with you: business owners actively shopping for funding show up on my radar, and{" "}
-        <b>[Business Name]</b> came up this week. So you&rsquo;re looking at capital right now. One
-        question &mdash; have you actually seen your numbers yet, or are you still waiting on
-        somebody&rsquo;s offer?&rdquo;
+        &ldquo;Hi <b>[First Name]</b>? <b>[Your Name]</b> with MFunding. My timing might actually be
+        decent for once &mdash; it looks like you may be exploring funding options for{" "}
+        <b>[Business Name]</b> right now. If it&rsquo;s already handled, say the word and I&rsquo;m
+        gone. If you&rsquo;re still weighing options &mdash; where are you in the process?&rdquo;
       </>
     ),
     branches: [
       {
-        cue: "“Still waiting”",
+        cue: "“Still waiting on numbers”",
         line: (
           <>
-            &ldquo;That wait is my favorite thing in this business. While they make you wait, my
-            funders move in 24 to 48 hours. Let&rsquo;s get you a second set of numbers so
-            you&rsquo;re comparing, not hoping.&rdquo; <i>(qualify)</i>
+            &ldquo;That wait is the worst part. We can usually get real numbers back in 24 to 48
+            hours &mdash; worth having a second set to compare.&rdquo;{" "}
+            <i>(capture the application)</i>
           </>
         ),
       },
       {
-        cue: "“I have an offer”",
+        cue: "“I have an offer already”",
         line: (
           <>
-            &ldquo;What did they put in front of you? Here&rsquo;s what happens when funders
-            compete: either your offer gets better, or you get proof you already had the best one.
-            Either way, you win.&rdquo; <i>(qualify)</i>
+            &ldquo;Then you&rsquo;re in the driver&rsquo;s seat. Before you sign anything, it costs
+            nothing to put one more set of numbers next to it. If yours is better, I&rsquo;ll tell
+            you to sign it.&rdquo; <i>(capture the application)</i>
           </>
         ),
       },
       {
         cue: "“I'm not looking”",
-        line: <i>(first objection below)</i>,
+        line: (
+          <>
+            &ldquo;Then my data&rsquo;s off &mdash; it happens. Ten seconds while I&rsquo;ve got
+            you: if capital ever <i>is</i> on the list, we do this with no credit impact and no
+            obligation. OK if I text you my info?&rdquo;
+          </>
+        ),
       },
     ],
     qualify: (
       <>
-        &ldquo;Roughly, what&rsquo;s <b>monthly revenue</b>? &hellip; Any <b>advances or
-        positions</b> out right now? &hellip; <b>How much</b> are you looking for, and what&rsquo;s
-        it for? &hellip; And <b>when</b> do you need it in hand?&rdquo;
+        Same capture, same order: <b>cell + email first</b>, then owner name, entity type, EIN,
+        years in business, industry, business address, bank name, optional home address.
       </>
     ),
-    closeLbl: "Set the appointment — with urgency, because this one is real",
+    closeLbl: "The close — statements first, and move fast",
     close: (
       <>
-        &ldquo;Timing matters on this one, so let&rsquo;s not sit on it. Fifteen minutes with our
-        senior funding specialist and you&rsquo;ll have competing numbers in front of you within 24
-        to 48 hours &mdash; no cost, and no credit impact from this conversation. I&rsquo;ve got{" "}
-        <b>[TIME today]</b> &mdash; or is <b>first thing tomorrow</b> better?&rdquo;
+        <b>Best outcome:</b> &ldquo;You&rsquo;re already pulling statements together for somebody
+        else anyway &mdash; same documents, one more set of offers. <b>Is this cell OK to text?</b>{" "}
+        I&rsquo;ll send a secure upload link right now for your last 3 months of business bank
+        statements, and the specialist calls you with actual numbers.&rdquo; <b>No statements?</b>{" "}
+        Finish the application anyway. <b>No application?</b> &ldquo;Timing matters on this one, so
+        let&rsquo;s not sit on it &mdash; I&rsquo;ve got [time] today with the specialist, or [time]
+        tomorrow. And is it OK if I text you the confirmation?&rdquo;
       </>
     ),
     objections: [
@@ -468,10 +484,9 @@ const SCRIPTS: CallScript[] = [
         a: (
           <>
             &ldquo;When a business owner starts shopping for funding, that activity shows up in
-            industry data that funders and brokers subscribe to &mdash; and that works in{" "}
-            <i>your</i> favor: it means competition for your business instead of one
-            take-it-or-leave-it offer. Which, for the record, is exactly what I&rsquo;m calling to
-            give you.&rdquo;
+            industry data that funders and brokers subscribe to &mdash; that&rsquo;s how it works
+            behind the curtain. The upside for you is competition: you should never have to take
+            the first offer.&rdquo;
           </>
         ),
       },
@@ -1013,9 +1028,12 @@ export default function SetterGuidePage() {
           </div>
           <p className="lede" style={{ marginBottom: 6 }}>
             Three lists, three different people on the other end. The <b>Source</b> on the
-            opportunity tells you which script you&rsquo;re on. Read it word-for-word until it
-            sounds like yours — the opening earns you 30 seconds, the qualifying questions fill the
-            Revenue Playbook, and the <b>two-option appointment close</b> is the whole job.
+            opportunity tells you which script you&rsquo;re on. Every call has the same{" "}
+            <b>goal ladder</b> — get the best outcome you can before you hang up:{" "}
+            <b>1) full application + bank statements</b>, <b>2) full application</b>,{" "}
+            <b>3) an appointment with the funding specialist + permission to text</b>. These
+            scripts are also loaded in the WAVV dialer (Call Scripts) so they&rsquo;re on screen
+            during the call.
           </p>
 
           {SCRIPTS.map((s) => (
@@ -1039,7 +1057,7 @@ export default function SetterGuidePage() {
                 ))}
               </div>
 
-              <div className="lbl">Qualify — fill the Revenue Playbook while they talk</div>
+              <div className="lbl">Capture the application — cell + email first, in this order</div>
               <div className="vm" style={{ marginTop: 0 }}>
                 <blockquote>{s.qualify}</blockquote>
               </div>
@@ -1063,8 +1081,9 @@ export default function SetterGuidePage() {
 
           <div className="note warn" style={{ marginTop: 22 }}>
             <div className="h">Rules that apply to all three scripts — drill these</div>
-            <b>Your job is the appointment, not the deal</b> — qualify, fill the Playbook, book the
-            specialist; never quote rates, never promise an approval.{" "}
+            <b>Work the goal ladder every call</b> — application + statements beats application
+            beats appointment, but any rung beats nothing; never quote rates, never promise an
+            approval.{" "}
             <span className="say">Working capital / advance / funding</span>,{" "}
             <span className="dont">never &ldquo;a loan&rdquo;</span> for the advance product (the
             &ldquo;is this a loan?&rdquo; answer above is the only exception). Always the{" "}
