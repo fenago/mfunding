@@ -216,7 +216,11 @@ Deno.serve(async (req) => {
             if (o.pipelineStageId === action.stageId) continue;
             const r = track(await ghlFetch(cfg, "PUT", `/opportunities/${o.id}`, { pipelineStageId: action.stageId }, onRL));
             if (r.ok) { result.moved++; o.pipelineStageId = action.stageId; } else { result.errors++; ok = false; }
-          } else if (action.kind === "lost") {
+          } else {
+            // "lost" AND "dnc" both close the opp (dnc = DND on the contact,
+            // set above, PLUS the opp goes Lost). The polling path uses the same
+            // plain else — the push path must too, or do-not-contact leaves the
+            // card open (bug caught by the 8/23 do-not-contact end-to-end test).
             if (o.status === "lost") continue;
             const r = track(await ghlFetch(cfg, "PUT", `/opportunities/${o.id}`, { status: "lost" }, onRL));
             if (r.ok) { result.lost++; o.status = "lost"; } else { result.errors++; ok = false; }
