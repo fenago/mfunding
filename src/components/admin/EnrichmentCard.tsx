@@ -9,6 +9,7 @@ import {
   XCircleIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
+import AppSendButtons from "./AppSendButtons";
 
 /**
  * EnrichmentCard — one-button Firecrawl research on a lead's business
@@ -101,6 +102,9 @@ export default function EnrichmentCard({
   customerId,
   onUse,
   enableConfirm = false,
+  onSendPartial,
+  onSendDocs,
+  onFillApplication,
 }: {
   dealId: string;
   customerId: string;
@@ -113,6 +117,12 @@ export default function EnrichmentCard({
    *  compare/draft-fill so research never mutates a doc already on paper. Ignored
    *  when onUse is provided (draft-fill takes precedence). */
   enableConfirm?: boolean;
+  /** Optional: when all three are provided, the card also shows the three
+   *  application-send actions beside "Research business" (same handlers as the
+   *  playbook step). Omitted → the button group doesn't render. */
+  onSendPartial?: () => void;
+  onSendDocs?: () => void;
+  onFillApplication?: () => void;
 }) {
   const [row, setRow] = useState<EnrichmentRow | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -260,15 +270,27 @@ export default function EnrichmentCard({
   if (!row && !running) {
     return (
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
-        <button
-          type="button"
-          onClick={() => void run()}
-          disabled={capReached}
-          title={capReached ? "Daily research budget reached — resets at midnight ET" : "Research this business online (Firecrawl)"}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
-        >
-          <GlobeAltIcon className="w-4 h-4" /> Research business
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void run()}
+            disabled={capReached}
+            title={capReached ? "Daily research budget reached — resets at midnight ET" : "Research this business online (Firecrawl)"}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            <GlobeAltIcon className="w-4 h-4" /> Research business
+          </button>
+          {/* Send the application right from here too — only when the host wired
+              the handlers (the playbook does; standalone/draft-fill hosts don't). */}
+          {onSendPartial && onSendDocs && onFillApplication && (
+            <AppSendButtons
+              size="sm"
+              onSendPartial={onSendPartial}
+              onSendDocs={onSendDocs}
+              onFillApplication={onFillApplication}
+            />
+          )}
+        </div>
         {note && <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">{note}</p>}
       </div>
     );

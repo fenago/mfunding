@@ -20,7 +20,6 @@ import {
   XMarkIcon,
   LockClosedIcon,
   PencilSquareIcon,
-  DocumentTextIcon,
   DocumentArrowUpIcon,
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
@@ -61,6 +60,7 @@ import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
+import AppSendButtons from "../../components/admin/AppSendButtons";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, updateExistingPositions, resyncDealPositions, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
@@ -946,6 +946,9 @@ export default function PlaybooksPage() {
               canClaim={isCloserRole && !!effectiveUserId}
               onAssignCloser={(profileId) => assignCloser(deal.id, profileId)}
               myProfileId={effectiveUserId}
+              onSendPartial={() => sendPartialDocs(false)}
+              onSendDocs={() => sendDocs(false)}
+              onFillApplication={() => setShowApplication(true)}
             />
           </div>
           {/* Opening script — auto-selected from the merchant's lead type (Aged /
@@ -2966,7 +2969,7 @@ function OpeningScriptCard({ deal }: { deal: DealWithCustomer }) {
   );
 }
 
-function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null }) {
+function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId, onSendPartial, onSendDocs, onFillApplication }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null; onSendPartial: () => void; onSendDocs: () => void; onFillApplication: () => void }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
   const closerName = deal.closer
@@ -3312,6 +3315,17 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                 reconciles the product-* tags on the GHL contact. The chips ARE
                 the display. */}
             <ProductsChips deal={deal} onRefresh={onRefresh} />
+
+            {/* Send the application from the top of the deal too — the same three
+                paths that live in the Application-Sent step, so a closer who's ready
+                to send doesn't have to scroll down to the step to do it. */}
+            <AppSendButtons
+              size="sm"
+              className="mt-2.5"
+              onSendPartial={onSendPartial}
+              onSendDocs={onSendDocs}
+              onFillApplication={onFillApplication}
+            />
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -3425,7 +3439,14 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
           right from the playbook — per-field "✓ Use this" or "Confirm all". The
           application modal keeps its own side-by-side draft-fill flow. */}
       <div className="mt-3">
-        <EnrichmentCard dealId={deal.id} customerId={deal.customer_id} enableConfirm />
+        <EnrichmentCard
+          dealId={deal.id}
+          customerId={deal.customer_id}
+          enableConfirm
+          onSendPartial={onSendPartial}
+          onSendDocs={onSendDocs}
+          onFillApplication={onFillApplication}
+        />
       </div>
     </div>
   );
@@ -4376,36 +4397,12 @@ function StepCard({
               adding SSN, DOB, driver's license, and address as they read them to you. Then send it and all they do is{" "}
               <b>tap to sign</b>.
             </p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {/* Path 3 — 04C PARTIAL, the DEFAULT: we prefill the lead's info, the
-                  merchant completes EIN/SSN/banking on the doc. Closer types nothing. */}
-              <button
-                type="button"
-                onClick={() => onSendPartial(false)}
-                title="Prefills everything the lead told us; the merchant completes EIN, SSN, address and banking on the document, then signs. You type nothing."
-                className="inline-flex items-center gap-1.5 rounded-lg bg-mint-green px-3 py-1.5 text-white font-semibold hover:opacity-90"
-              >
-                ⚡ Send partial <span className="font-normal opacity-90">(they finish the rest)</span>
-              </button>
-              {/* Path 1 — send the ORIGINAL docs, no prefill (the merchant fills it all). */}
-              <button
-                type="button"
-                onClick={() => onSendDocs(false)}
-                title="Send the application + disclosure + upload link as-is — the merchant fills out everything and e-signs. No prefilling."
-                className="inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-white font-semibold hover:opacity-90"
-              >
-                📨 Send blank <span className="font-normal opacity-90">(they fill everything)</span>
-              </button>
-              {/* Path 2 — white-glove: closer fills it all, merchant just signs. */}
-              <button
-                type="button"
-                onClick={onFillApplication}
-                title="Fill the application for the merchant (pre-filled from what we know), then send — all they do is tap to sign."
-                className="inline-flex items-center gap-1.5 rounded-lg border border-ocean-blue/50 text-ocean-blue px-3 py-1.5 font-semibold hover:bg-ocean-blue/5"
-              >
-                <DocumentTextIcon className="w-4 h-4" /> Fill it in for them first
-              </button>
-            </div>
+            <AppSendButtons
+              className="mt-2"
+              onSendPartial={() => onSendPartial(false)}
+              onSendDocs={() => onSendDocs(false)}
+              onFillApplication={onFillApplication}
+            />
             <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
               Three ways to send: <b>Send partial</b> prefills what the lead told us and the merchant completes the
               rest — the fastest path, use it by default. <b>Send blank</b> emails the empty application for them to

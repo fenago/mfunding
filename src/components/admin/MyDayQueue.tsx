@@ -1176,8 +1176,13 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   const [kindFilter, setKindFilter] = useState<"all" | "live_transfer" | "realtime_appt">("all");
   const [ageFilter, setAgeFilter] = useState<"all" | "today" | "24h" | "48h">("all");
   const [needFilter, setNeedFilter] = useState<"all" | "untouched" | "missed_handoff" | "callback">("all");
-  const filtersActive = kindFilter !== "all" || ageFilter !== "all" || needFilter !== "all";
-  const clearFilters = () => { setKindFilter("all"); setAgeFilter("all"); setNeedFilter("all"); };
+  // Custom look-back: search ANY period ("2 weeks", "4 days"). When set (customN is
+  // a positive number) it REPLACES the age chips above — don't double-apply.
+  const [customN, setCustomN] = useState<number | "">("");
+  const [customUnit, setCustomUnit] = useState<"days" | "weeks" | "months">("days");
+  const customActive = typeof customN === "number" && customN > 0;
+  const filtersActive = kindFilter !== "all" || ageFilter !== "all" || needFilter !== "all" || customActive;
+  const clearFilters = () => { setKindFilter("all"); setAgeFilter("all"); setNeedFilter("all"); setCustomN(""); };
 
   const baseItems = useMemo(() => {
     const scoped = deals.filter((d) => {
@@ -1223,7 +1228,11 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
     if (!filtersActive) return baseItems;
     return baseItems.filter(({ deal: d }) => {
       if (kindFilter !== "all" && d.lead_source !== kindFilter) return false;
-      if (ageFilter === "today") {
+      if (customActive) {
+        // Custom look-back WINS over the age chips (never both). weeks = 7d, months = 30d.
+        const unitMs = customUnit === "weeks" ? 7 * 86_400_000 : customUnit === "months" ? 30 * 86_400_000 : 86_400_000;
+        if (now - Date.parse(d.created_at) > (customN as number) * unitMs) return false;
+      } else if (ageFilter === "today") {
         // "Today" is the EASTERN calendar day — the business clock, not the laptop's.
         if (dateKeyET(d.created_at) !== dateKeyET(new Date(now))) return false;
       } else if (ageFilter !== "all") {
@@ -1238,7 +1247,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
       if (needFilter === "callback" && !d.callback_at) return false;
       return true;
     });
-  }, [baseItems, filtersActive, kindFilter, ageFilter, needFilter, now, handoff]);
+  }, [baseItems, filtersActive, kindFilter, ageFilter, needFilter, customActive, customN, customUnit, now, handoff]);
 
   // ⭐ STARRED — the user's bookmarks, lifted to the top and OUT of their normal
   // lanes (deduped below). Built from pinnedDeals (the authoritative full rows for
@@ -1352,10 +1361,50 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
           />
           <span className="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-0.5" />
           <FilterChips
-            value={ageFilter}
-            onPick={setAgeFilter}
+            value={customActive ? ("all" as typeof ageFilter) : ageFilter}
+            onPick={(v) => { setAgeFilter(v); setCustomN(""); }}
             options={[["all", "Any time"], ["today", "Today"], ["24h", "Last 24h"], ["48h", "Last 48h"]]}
           />
+          {/* Custom look-back — search ANY window. Picking a chip above clears this;
+              typing here replaces the chips (they never double-apply). */}
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 transition-colors ${
+              customActive
+                ? "bg-mint-green/20 border-mint-green text-emerald-700 dark:text-emerald-300"
+                : "border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400"
+            }`}
+            title="Show deals created within any custom look-back window"
+          >
+            <span className="text-gray-400 dark:text-gray-500">Last</span>
+            <input
+              type="number"
+              min={1}
+              inputMode="numeric"
+              value={customN}
+              onChange={(e) => { const v = e.target.value; setCustomN(v === "" ? "" : Math.max(1, Math.floor(Number(v) || 0))); }}
+              placeholder="#"
+              className="w-9 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-1 py-0 text-[11px] text-center text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-ocean-blue"
+            />
+            <select
+              value={customUnit}
+              onChange={(e) => setCustomUnit(e.target.value as typeof customUnit)}
+              className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-0.5 py-0 text-[11px] text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-ocean-blue"
+            >
+              <option value="days">days</option>
+              <option value="weeks">weeks</option>
+              <option value="months">months</option>
+            </select>
+            {customActive && (
+              <button
+                type="button"
+                onClick={() => setCustomN("")}
+                title="Clear custom look-back"
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                <XMarkIcon className="w-3 h-3" />
+              </button>
+            )}
+          </span>
           <span className="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-0.5" />
           <FilterChips
             value={needFilter}
