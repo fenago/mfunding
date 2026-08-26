@@ -134,6 +134,21 @@ export function etDateTimeLocalToUtcIso(local: string): string | null {
   return etWallClockToUtcIso(+m[1], +m[2], +m[3], +m[4], +m[5]);
 }
 
+/** A UTC instant → the `<input type="datetime-local">` value of its EASTERN wall
+ * clock ("2026-07-14T16:00") — the read-side twin of etDateTimeLocalToUtcIso.
+ * This is what prefills a reschedule dialog with the time the merchant actually
+ * agreed to, rather than the same instant re-read in the browser's zone. */
+export function etDateTimeLocalValue(iso: string | Date): string {
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  if (Number.isNaN(d.getTime())) return "";
+  const p: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TZ, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(d)) p[part.type] = part.value;
+  return `${p.year}-${p.month}-${p.day}T${p.hour === "24" ? "00" : p.hour}:${p.minute}`;
+}
+
 /** Tomorrow at H:MM **Eastern** → UTC ISO. "Tomorrow" is Eastern's tomorrow, not
  * the browser's — a Phoenix closer at 10:30 PM MST is already past midnight ET. */
 export function tomorrowAtEtIso(hour: number, minute = 0): string {

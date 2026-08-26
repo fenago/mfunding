@@ -61,6 +61,7 @@ import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
 import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
 import AppSendButtons from "../../components/admin/AppSendButtons";
+import BookAppointmentControl from "../../components/admin/BookAppointmentControl";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, updateExistingPositions, resyncDealPositions, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
@@ -949,6 +950,7 @@ export default function PlaybooksPage() {
               onSendPartial={() => sendPartialDocs(false)}
               onSendDocs={() => sendDocs(false)}
               onFillApplication={() => setShowApplication(true)}
+              onNotify={notify}
             />
           </div>
           {/* Opening script — auto-selected from the merchant's lead type (Aged /
@@ -2969,7 +2971,7 @@ function OpeningScriptCard({ deal }: { deal: DealWithCustomer }) {
   );
 }
 
-function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId, onSendPartial, onSendDocs, onFillApplication }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null; onSendPartial: () => void; onSendDocs: () => void; onFillApplication: () => void }) {
+function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId, onSendPartial, onSendDocs, onFillApplication, onNotify }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null; onSendPartial: () => void; onSendDocs: () => void; onFillApplication: () => void; onNotify: (text: string, tone?: "ok" | "error") => void }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
   const closerName = deal.closer
@@ -3325,6 +3327,21 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               onSendPartial={onSendPartial}
               onSendDocs={onSendDocs}
               onFillApplication={onFillApplication}
+            />
+
+            {/* The merchant said "call me Thursday at 3" — book it HERE, on the
+                closer's only screen, rather than sending them to the Calendar to
+                type it again. Booked state (and Reschedule / Cancel) replaces the
+                button in place, so the agreed time is visible on every open. */}
+            <BookAppointmentControl
+              className="mt-2"
+              dealId={deal.id}
+              appointmentAt={deal.appointment_at}
+              appointmentSyncedAt={deal.appointment_synced_at}
+              appointmentSyncError={deal.appointment_sync_error}
+              ownerUserId={myProfileId}
+              onRefresh={onRefresh}
+              onNotify={onNotify}
             />
           </div>
         </div>

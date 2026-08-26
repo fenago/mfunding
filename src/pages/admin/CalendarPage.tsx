@@ -19,7 +19,7 @@ import {
   type OpenDealHit,
 } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
-import { APP_TZ, dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, timeET } from "../../utils/time";
+import { dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, etDateTimeLocalValue, timeET } from "../../utils/time";
 
 /**
  * /admin/calendar — the in-app calendar, for EVERY staff level.
@@ -33,18 +33,24 @@ import { APP_TZ, dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, timeET } from "
  * calendar follows. An existing callback is never silently overwritten: the
  * dialog shows the current time and makes "Replace" explicit.
  *
- * Three item types, all off `deals`:
- *   🕐 callback  — deals.callback_at (timed; red + banner once it's past due)
- *   📎 stips due — deals.stips_promised_by (an all-day DATE promise, shown only
- *                  while the deal is still in a stage where the promise matters)
- *   ⏱ SLA       — deals.first_call_due_at, FUTURE only (5-minute windows; rare)
+ * Four item types, all off `deals`:
+ *   🕐 callback    — deals.callback_at (timed; red + banner once it's past due)
+ *   📅 appointment — deals.appointment_at (timed; a 30-min meeting the merchant
+ *                    AGREED to and was invited to). Booked/rescheduled/cancelled
+ *                    in the Revenue Playbook. A PAST appointment is just a past
+ *                    appointment — never "missed", never red: unlike a callback
+ *                    it isn't a promise the rep owes, so reddening it would only
+ *                    dilute the missed-callback banner that does need obeying.
+ *   📎 stips due   — deals.stips_promised_by (an all-day DATE promise, shown only
+ *                    while the deal is still in a stage where the promise matters)
+ *   ⏱ SLA         — deals.first_call_due_at, FUTURE only (5-minute windows; rare)
  *
  * Scope mirrors My Day exactly: closers are already fenced to their own book +
  * unassigned by RLS; admins get a Mine/All toggle (default All for super_admin,
  * Mine otherwise). Every time on screen is Eastern.
  */
 
-type ItemType = "callback" | "stips" | "sla";
+type ItemType = "callback" | "appointment" | "stips" | "sla";
 
 interface CalItem {
   key: string;
@@ -63,6 +69,12 @@ const TYPE_META: Record<ItemType, { icon: string; label: string; chip: string; d
     label: "Callback",
     chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
     dot: "bg-blue-500",
+  },
+  appointment: {
+    icon: "📅",
+    label: "Appointment",
+    chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+    dot: "bg-violet-500",
   },
   stips: {
     icon: "📎",
@@ -147,7 +159,7 @@ function lateLabel(iso: string, now: number): string {
   return `${Math.floor(h / 24)}d late`;
 }
 
-/** Every dated commitment on a deal → 0–3 calendar items. */
+/** Every dated commitment on a deal → 0–4 calendar items. */
 function itemsOf(deal: CalendarDeal, now: number, todayKey: string): CalItem[] {
   const out: CalItem[] = [];
   if (deal.callback_at) {
@@ -158,6 +170,18 @@ function itemsOf(deal: CalendarDeal, now: number, todayKey: string): CalItem[] {
       dateKey: dateKeyET(deal.callback_at),
       at: deal.callback_at,
       pastDue: Date.parse(deal.callback_at) < now, // deal is open by construction — a past callback is a missed promise
+    });
+  }
+  if (deal.appointment_at) {
+    out.push({
+      key: `${deal.id}-appt`,
+      type: "appointment",
+      deal,
+      dateKey: dateKeyET(deal.appointment_at),
+      at: deal.appointment_at,
+      // Never past-due: an appointment that already happened isn't a broken
+      // promise, so it stays out of the red banner and off the red palette.
+      pastDue: false,
     });
   }
   if (deal.stips_promised_by && STIPS_PENDING_STATUSES.has(deal.status)) {
@@ -193,18 +217,6 @@ function byDayOrder(a: CalItem, b: CalItem): number {
   if (a.at && !b.at) return 1;
   if (a.at && b.at) return Date.parse(a.at) - Date.parse(b.at);
   return nameOf(a.deal).localeCompare(nameOf(b.deal));
-}
-
-/** A UTC instant → the `datetime-local` value of its EASTERN wall clock
- * ("2026-07-14T16:00") — the read-side twin of etDateTimeLocalToUtcIso, used to
- * prefill the reschedule dialog with the time the merchant actually agreed to. */
-function etDateTimeLocalValue(iso: string): string {
-  const p: Record<string, string> = {};
-  for (const part of new Intl.DateTimeFormat("en-CA", {
-    timeZone: APP_TZ, hour12: false,
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-  }).formatToParts(new Date(iso))) p[part.type] = part.value;
-  return `${p.year}-${p.month}-${p.day}T${p.hour === "24" ? "00" : p.hour}:${p.minute}`;
 }
 
 /** What the schedule dialog opens with: a deal (or none — the picker finds one)
@@ -460,15 +472,31 @@ function ItemRow({
   const lateStips = type === "stips" && pastDue;
   const chip = missedCallback || lateStips ? RED_CHIP : meta.chip;
 
-  // "📅 synced to GHL" only when the GHL appointment reflects THIS exact instant
-  // (same value-equality rule as My Day — a stale tick after a reschedule is a lie).
+  // "📅 synced to GHL" only when the GHL event reflects THIS exact instant (same
+  // value-equality rule as My Day — a stale tick after a reschedule is a lie).
+  // Callbacks and appointments each carry their own trio of columns; neither
+  // borrows the other's, so the tick can never point at the wrong commitment.
   const onCalendar =
-    type === "callback" &&
-    !!deal.callback_ghl_event_id &&
-    !!deal.callback_synced_at &&
-    !!deal.callback_at &&
-    Date.parse(deal.callback_synced_at) === Date.parse(deal.callback_at);
-  const syncError = type === "callback" && !onCalendar && deal.callback_sync_error;
+    type === "callback"
+      ? !!deal.callback_ghl_event_id &&
+        !!deal.callback_synced_at &&
+        !!deal.callback_at &&
+        Date.parse(deal.callback_synced_at) === Date.parse(deal.callback_at)
+      : type === "appointment"
+        ? !!deal.appointment_ghl_event_id &&
+          !!deal.appointment_synced_at &&
+          !!deal.appointment_at &&
+          Date.parse(deal.appointment_synced_at) === Date.parse(deal.appointment_at)
+        : false;
+  const rawSyncNote =
+    type === "callback" ? deal.callback_sync_error
+    : type === "appointment" ? deal.appointment_sync_error
+    : null;
+  // Not on GHL at all = a real problem. But an appointment CAN be on the calendar
+  // and still carry a soft note ("booked UNASSIGNED") — that one is shown as the
+  // note it is, not dressed up as a sync failure.
+  const syncError = !onCalendar ? rawSyncNote : null;
+  const softNote = onCalendar ? rawSyncNote : null;
 
   return (
     <Link
@@ -506,6 +534,11 @@ function ItemRow({
       {syncError && (
         <span className="hidden sm:inline text-[11px] font-medium text-amber-600 dark:text-amber-400 shrink-0" title={`GHL sync failed: ${syncError}`}>
           ⚠ not on GHL
+        </span>
+      )}
+      {softNote && (
+        <span className="hidden sm:inline text-[11px] font-medium text-amber-600 dark:text-amber-400 shrink-0 max-w-[10rem] truncate" title={softNote}>
+          ⚠ {softNote}
         </span>
       )}
       {showCloser && (
@@ -669,7 +702,8 @@ export default function CalendarPage() {
           <div>
             <h1 className="text-xl font-bold text-gray-900 dark:text-white">Calendar</h1>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              Every callback, stips promise, and SLA window — straight from the pipeline. All times <b>ET</b>.
+              Every callback, booked appointment, stips promise, and SLA window — straight from the pipeline.
+              All times <b>ET</b>.
             </p>
           </div>
         </div>
@@ -743,7 +777,7 @@ export default function CalendarPage() {
           <p className="text-sm text-gray-400 py-1">Loading the calendar…</p>
         ) : todayItems.length === 0 ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            <b>Nothing due today</b> — no callbacks, no promised stips, no SLA windows.{" "}
+            <b>Nothing due today</b> — no callbacks, no appointments, no promised stips, no SLA windows.{" "}
             <Link to="/admin/playbooks" className="text-ocean-blue hover:underline">Work My Day in the Revenue Playbook →</Link>
           </p>
         ) : (
@@ -849,6 +883,7 @@ export default function CalendarPage() {
           {/* Legend */}
           <div className="flex flex-wrap items-center gap-3 mt-3 text-[11px] text-gray-500 dark:text-gray-400">
             <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${TYPE_META.callback.dot}`} /> 🕐 callback</span>
+            <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${TYPE_META.appointment.dot}`} /> 📅 appointment</span>
             <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${TYPE_META.stips.dot}`} /> 📎 stips due</span>
             <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${TYPE_META.sla.dot}`} /> ⏱ SLA</span>
             <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${RED_DOT}`} /> missed callback</span>
@@ -864,7 +899,7 @@ export default function CalendarPage() {
             <p className="text-sm text-gray-400">Loading…</p>
           ) : selectedItems.length === 0 ? (
             <p className="text-sm text-gray-500 dark:text-gray-400 italic">
-              Nothing scheduled — no callbacks, promises, or deadlines land on this day
+              Nothing scheduled — no callbacks, appointments, promises, or deadlines land on this day
               {scope === "mine" && canToggle ? " in your book. Try All." : "."}
             </p>
           ) : (
