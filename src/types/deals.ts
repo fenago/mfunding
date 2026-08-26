@@ -190,6 +190,23 @@ export interface Deal {
   callback_synced_at?: string | null;
   /** Last calendar-sync failure (null = healthy). Never blocks the callback. */
   callback_sync_error?: string | null;
+  // ── Booked appointments (distinct from callbacks) ──
+  /** A real appointment the merchant AGREED to and was emailed an invite for.
+   *  Unlike callback_at it is NOT settled by the app: a logged attempt after it
+   *  comes due does not clear it, and it never expires at end of day. It stands
+   *  until its time arrives or a human clears it. 30 min, merchant-invited calendar. */
+  appointment_at?: string | null;
+  /** GHL appointment id projecting appointment_at (one-way DB→GHL). */
+  appointment_ghl_event_id?: string | null;
+  /** Which GHL calendar that event lives on (normally the merchant-invited one). */
+  appointment_ghl_calendar_id?: string | null;
+  /** The appointment_at INSTANT the GHL event reflects — NOT a sync timestamp.
+   *  On calendar ⇔ appointment_synced_at === appointment_at. */
+  appointment_synced_at?: string | null;
+  /** Last sync failure OR soft warning (e.g. "booked UNASSIGNED"). Never blocks. */
+  appointment_sync_error?: string | null;
+  /** The app user who booked it — drives assignedUserId on the GHL appointment. */
+  appointment_owner_user_id?: string | null;
   // ── Lead scoring v1 (research/PLAN_lead_scoring.md) ──
   /** Close-likelihood grade A–D. v1 weights are JUDGMENT (0 funded deals) — always label as estimate. */
   lead_grade?: "A" | "B" | "C" | "D" | null;

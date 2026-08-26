@@ -1,5 +1,5 @@
-// callback-calendar-sync — projects deals.callback_at onto the GHL
-// "Callbacks — Internal" calendar. One direction only: DB → GHL.
+// callback-calendar-sync — projects deals.callback_at (and, in a second pass,
+// deals.appointment_at) onto GHL calendars. One direction only: DB → GHL.
 //
 // WHY (research/PLAN_followups_calendar.md): "call me at 4pm" merchants were
 // being missed because the promise lived only in the app. Now the promise
@@ -19,6 +19,20 @@
 //     callback_sync_error (recorded, NEVER thrown to the caller: a GHL outage
 //     must never lose a callback; My Day reads callback_at directly and the
 //     next sweep retries until healed).
+//
+// SECOND PROJECTION — BOOKED APPOINTMENTS (deals.appointment_at):
+// Same sweep, same proven POST/PUT/cancel + apptId digger, a SEPARATE set of
+// columns and a different contract. A callback is a soft promise this app is
+// allowed to settle for itself (a logged attempt after it comes due clears it; a
+// merchant_stated window expires at the end of its Eastern day). A booked
+// appointment is neither: the merchant agreed to a specific meeting and was
+// emailed an invite, so it stands until its time arrives or a human clears it.
+// Because appointment_at lives in its own columns, BOTH of those callback
+// behaviours are structurally unable to touch it — the expiry block below filters
+// on callback_source and only ever writes callback_at.
+// Appointments always book on the merchant-invited calendar (toNotify:true, 30
+// min) and are assigned to the SETTER WHO BOOKED (appointment_owner_user_id →
+// profiles.ghl_user_id), not to the deal's closer.
 //
 // MERCHANT INVITES (Phase 3, per-send, DEFAULT OFF): deals.callback_invite
 // picks the calendar. FALSE → "Callbacks — Internal" (no contact notifications,
@@ -47,6 +61,8 @@ import {
 } from "../_shared/ghl.ts";
 
 const APPT_MINUTES = 15;
+// A booked appointment is a real meeting, not a "got a sec?" — half an hour.
+const APPOINTMENT_MINUTES = 30;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -68,10 +84,27 @@ interface SyncDeal {
   customer: { business_name: string | null; first_name: string | null; last_name: string | null } | null;
 }
 
-function titleFor(d: SyncDeal, invited: boolean): string {
-  const who = d.customer?.business_name ||
-    [d.customer?.first_name, d.customer?.last_name].filter(Boolean).join(" ") ||
+interface SyncAppointment {
+  id: string;
+  deal_number: string | null;
+  appointment_at: string | null;
+  appointment_ghl_event_id: string | null;
+  appointment_ghl_calendar_id: string | null;
+  appointment_synced_at: string | null;
+  appointment_owner_user_id: string | null;
+  ghl_contact_id: string | null;
+  assigned_closer_id: string | null;
+  customer: { business_name: string | null; first_name: string | null; last_name: string | null } | null;
+}
+
+function merchantName(c: SyncDeal["customer"]): string {
+  return c?.business_name ||
+    [c?.first_name, c?.last_name].filter(Boolean).join(" ") ||
     "merchant";
+}
+
+function titleFor(d: SyncDeal, invited: boolean): string {
+  const who = merchantName(d.customer);
   // Invited titles are MERCHANT-VISIBLE (Google invitation emails are on for
   // that calendar) — neutral wording, no internal jargon, no deal numbers.
   return invited
@@ -347,6 +380,162 @@ Deno.serve(async (req) => {
     }
   }
 
-  console.log("[callback-sync] sweep", JSON.stringify(summary));
-  return json({ ok: true, ...summary });
+  // ══ SECOND PROJECTION: booked appointments (deals.appointment_at) ═══════════
+  // Deliberately a separate pass over separate columns rather than a flag on the
+  // callback pass: that separation IS the guarantee that the callback auto-clear
+  // and the EOD expiry above can never reach an appointment.
+  const appt = { swept: 0, created: 0, updated: 0, cancelled: 0, skipped: 0, failed: [] as { deal: string; error: string }[] };
+  {
+    let aq = db.from("deals")
+      .select(`
+        id, deal_number, appointment_at, appointment_ghl_event_id,
+        appointment_ghl_calendar_id, appointment_synced_at, appointment_owner_user_id,
+        ghl_contact_id, assigned_closer_id,
+        customer:customers!customer_id ( business_name, first_name, last_name )
+      `)
+      .or("appointment_at.not.is.null,appointment_ghl_event_id.not.is.null");
+    if (onlyDealId) aq = aq.eq("id", onlyDealId);
+    const { data: aRows, error: aErr } = await aq;
+    if (aErr) {
+      // UNREADABLE is not "nothing to do" — say so loudly rather than reporting a
+      // clean zero-appointment sweep.
+      console.error("[callback-sync] appointment query FAILED", aErr.message);
+      appt.failed.push({ deal: "*", error: `appointment query failed: ${aErr.message}` });
+    }
+    const appts = (aRows ?? []) as unknown as SyncAppointment[];
+    appt.swept = appts.length;
+
+    // Booking user → GHL user id. profiles.ghl_user_id is the mapping of record
+    // (setters have a profile, not a closers row); the closers table is a legacy
+    // mirror kept in step by the migration. Unmapped → book UNASSIGNED, never fail.
+    const ghlUserByProfileId = new Map<string, string>();
+    if (appts.length > 0) {
+      const ownerIds = [...new Set(appts.map((a) => a.appointment_owner_user_id).filter((x): x is string => !!x))];
+      if (ownerIds.length > 0) {
+        const { data: profRows, error: profErr } = await db.from("profiles")
+          .select("id, ghl_user_id").in("id", ownerIds).not("ghl_user_id", "is", null);
+        if (profErr) console.error("[callback-sync] appointment owner map FAILED", profErr.message);
+        for (const p of profRows ?? []) ghlUserByProfileId.set(p.id as string, p.ghl_user_id as string);
+      }
+    }
+
+    for (const a of appts) {
+      const label = a.deal_number ?? a.id;
+      try {
+        // ── CLEARED: appointment gone but an event lingers → cancel it ──
+        if (!a.appointment_at) {
+          if (!a.appointment_ghl_event_id) { appt.skipped++; continue; }
+          const res = await ghlFetch(cfg, "PUT", `/calendars/events/appointments/${a.appointment_ghl_event_id}`, {
+            appointmentStatus: "cancelled",
+            toNotify: false, // a cancelled meeting is communicated by a human, not a robot
+          });
+          if (!res.ok && res.status !== 404) {
+            const msg = `appointment cancel failed: ${ghlErrorMessage(res.error)}`;
+            await writeBack(db, a.id, { appointment_sync_error: msg });
+            appt.failed.push({ deal: label, error: msg });
+            continue;
+          }
+          await writeBack(db, a.id, {
+            appointment_ghl_event_id: null, appointment_ghl_calendar_id: null,
+            appointment_synced_at: null, appointment_sync_error: null,
+          });
+          appt.cancelled++;
+          continue;
+        }
+
+        // Appointments belong on the merchant-invited calendar — that calendar is
+        // what emails the confirmation + 60-min reminder. If config can't provide
+        // it, book internal rather than lose the meeting, and leave the warning up.
+        const targetCalendarId = invitedCalendarId ?? internalCalendarId;
+        const warnings: string[] = [];
+        if (!invitedCalendarId) {
+          warnings.push("no invited_calendar_id configured — booked internal, merchant NOT notified");
+        }
+
+        if (
+          a.appointment_ghl_event_id && a.appointment_synced_at &&
+          Date.parse(a.appointment_synced_at) === Date.parse(a.appointment_at) &&
+          (a.appointment_ghl_calendar_id ?? targetCalendarId) === targetCalendarId
+        ) { appt.skipped++; continue; }
+
+        if (!a.ghl_contact_id) {
+          await writeBack(db, a.id, { appointment_sync_error: "no ghl contact" });
+          appt.failed.push({ deal: label, error: "no ghl contact" });
+          continue;
+        }
+
+        let eventId = a.appointment_ghl_event_id;
+        const currentCalendarId = a.appointment_ghl_calendar_id ?? targetCalendarId;
+        if (eventId && currentCalendarId !== targetCalendarId) {
+          const res = await ghlFetch(cfg, "PUT", `/calendars/events/appointments/${eventId}`, {
+            appointmentStatus: "cancelled", toNotify: false,
+          });
+          if (!res.ok && res.status !== 404) throw new Error(`cross-calendar cancel failed: ${ghlErrorMessage(res.error)}`);
+          eventId = null;
+        }
+
+        const startMs = Date.parse(a.appointment_at);
+        const body: Record<string, unknown> = {
+          calendarId: targetCalendarId,
+          locationId: cfg.locationId,
+          contactId: a.ghl_contact_id,
+          startTime: new Date(startMs).toISOString(),
+          endTime: new Date(startMs + APPOINTMENT_MINUTES * 60_000).toISOString(),
+          // MERCHANT-VISIBLE (this calendar emails the contact) — neutral wording.
+          // Never "loan": an MCA is a purchase of future receivables.
+          title: `Funding consultation — ${merchantName(a.customer)}`,
+          appointmentStatus: "confirmed",
+          ignoreFreeSlotValidation: true,
+          ignoreDateRange: true,
+          toNotify: true, // the invite + reminder ARE the point of a booked appointment
+        };
+        // Only ever send a VERIFIED id: an unknown assignedUserId can 400 the
+        // create, and an unassigned meeting beats a meeting that never booked.
+        const ownerGhlId = a.appointment_owner_user_id
+          ? ghlUserByProfileId.get(a.appointment_owner_user_id)
+          : undefined;
+        if (ownerGhlId) body.assignedUserId = ownerGhlId;
+        else if (a.appointment_owner_user_id) {
+          warnings.push("booking user has no GHL user id — booked UNASSIGNED");
+        }
+
+        let action: "created" | "updated";
+        if (eventId) {
+          const res = await ghlFetch(cfg, "PUT", `/calendars/events/appointments/${eventId}`, body);
+          if (res.ok) {
+            action = "updated";
+          } else if (res.status === 404) {
+            const created = await ghlFetch(cfg, "POST", "/calendars/events/appointments", body);
+            if (!created.ok) throw new Error(`recreate failed: ${ghlErrorMessage(created.error)}`);
+            eventId = apptId(created.data);
+            action = "created";
+          } else {
+            throw new Error(`update failed: ${ghlErrorMessage(res.error)}`);
+          }
+        } else {
+          const created = await ghlFetch(cfg, "POST", "/calendars/events/appointments", body);
+          if (!created.ok) throw new Error(`create failed: ${ghlErrorMessage(created.error)}`);
+          eventId = apptId(created.data);
+          action = "created";
+        }
+        if (!eventId) throw new Error("GHL returned no appointment id");
+
+        await writeBack(db, a.id, {
+          appointment_ghl_event_id: eventId,
+          appointment_ghl_calendar_id: targetCalendarId,
+          appointment_synced_at: a.appointment_at,
+          appointment_sync_error: warnings.length ? warnings.join("; ") : null,
+        });
+        appt[action]++;
+      } catch (e) {
+        const msg = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+        await writeBack(db, a.id, { appointment_sync_error: msg });
+        appt.failed.push({ deal: label, error: msg });
+      }
+    }
+  }
+
+  const out = { ...summary, appointments: appt };
+  console.log("[callback-sync] sweep", JSON.stringify(out));
+  return json({ ok: true, ...out });
 });

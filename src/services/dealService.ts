@@ -230,6 +230,12 @@ export interface CalendarDeal {
   callback_ghl_event_id: string | null;
   callback_synced_at: string | null;
   callback_sync_error: string | null;
+  /** A BOOKED appointment — a separate commitment from a callback (see
+   *  scheduleAppointment). Rendered by the Calendar alongside callbacks. */
+  appointment_at: string | null;
+  appointment_ghl_event_id: string | null;
+  appointment_synced_at: string | null;
+  appointment_sync_error: string | null;
   stips_promised_by: string | null;
   first_call_due_at: string | null;
   assigned_closer_id: string | null;
@@ -254,12 +260,13 @@ export async function getCalendarDeals(): Promise<CalendarDeal[]> {
     .select(`
       id, deal_number, status,
       callback_at, callback_invite, callback_ghl_event_id, callback_synced_at, callback_sync_error,
+      appointment_at, appointment_ghl_event_id, appointment_synced_at, appointment_sync_error,
       stips_promised_by, first_call_due_at, assigned_closer_id,
       customer:customers!customer_id ( id, first_name, last_name, business_name ),
       closer:profiles!assigned_closer_id ( id, first_name, last_name )
     `)
     .not("status", "in", `(${QUEUE_CLOSED_STATUSES.join(",")})`)
-    .or("callback_at.not.is.null,stips_promised_by.not.is.null,first_call_due_at.not.is.null");
+    .or("callback_at.not.is.null,appointment_at.not.is.null,stips_promised_by.not.is.null,first_call_due_at.not.is.null");
 
   if (error) {
     console.error("Error fetching calendar deals:", error);
@@ -1789,5 +1796,60 @@ export async function scheduleCallback(
     }).eq("id", dealId),
   );
   // Same instant-projection as logContactAttempt: fire-and-forget, never blocking.
+  supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: dealId } }).catch(() => {});
+}
+
+/**
+ * Book a real APPOINTMENT with the merchant (the Playbook's "Book appointment").
+ *
+ * Not a callback, and deliberately not stored as one:
+ *   • A callback is a soft promise the app settles for itself — logContactAttempt
+ *     clears it the moment a rep logs an attempt after it came due, and a
+ *     merchant_stated window auto-expires at the end of its Eastern day.
+ *   • An appointment is a meeting the merchant AGREED to and was emailed an invite
+ *     for. It stands until its time arrives or a human clears it. Its own columns
+ *     are what make that immunity structural rather than a pile of exceptions.
+ *
+ * Projection (callback-calendar-sync): 30 minutes on the merchant-invited GHL
+ * calendar with toNotify:true — the merchant gets GHL's confirmation + 60-minute
+ * reminder — assigned to the person who booked it, resolved via
+ * profiles.ghl_user_id. No GHL id for that person → the appointment still books,
+ * just UNASSIGNED, with a soft warning in appointment_sync_error. The booking is
+ * never allowed to fail over an assignment.
+ *
+ * @param apptAtIso  the ET-entered instant, already converted to UTC ISO by
+ *                   etDateTimeLocalToUtcIso at the input.
+ * @param ownerUserId the signed-in app user booking it (the setter).
+ */
+export async function scheduleAppointment(
+  dealId: string,
+  apptAtIso: string,
+  opts: { ownerUserId?: string | null } = {},
+): Promise<void> {
+  await mustWrite(
+    "schedule appointment",
+    supabase.from("deals").update({
+      appointment_at: apptAtIso,
+      appointment_owner_user_id: opts.ownerUserId ?? null,
+    }).eq("id", dealId),
+  );
+  // Instant projection; the 5-min sweep stays the reliability floor. Never blocks.
+  supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: dealId } }).catch(() => {});
+}
+
+/**
+ * Cancel a booked appointment. Nulling appointment_at is the whole instruction —
+ * the sweep cancels the GHL event and forgets the id on its next pass over this
+ * deal (invoked immediately below). The owner is cleared with it so a stale setter
+ * can't be re-assigned to a future booking.
+ */
+export async function clearAppointment(dealId: string): Promise<void> {
+  await mustWrite(
+    "clear appointment",
+    supabase.from("deals").update({
+      appointment_at: null,
+      appointment_owner_user_id: null,
+    }).eq("id", dealId),
+  );
   supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: dealId } }).catch(() => {});
 }
