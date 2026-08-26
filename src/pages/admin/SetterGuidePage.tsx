@@ -112,12 +112,33 @@ const CSS = `
 .son .branch .cue{font-weight:750;color:var(--ink)}
 .son .branch .say-line{color:var(--ink-soft)}
 @media (max-width:620px){.son .branch{grid-template-columns:1fr;gap:2px}}
+/* Data-capture reference (section 08): mandatory checklist + full field list */
+.son .must{border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);border-left:4px solid var(--accent);border-radius:12px;background:color-mix(in srgb,var(--accent) 9%,var(--panel));box-shadow:var(--shadow);padding:14px 17px}
+.son .must .mh{font-weight:800;font-size:13.5px;color:var(--accent-ink);margin-bottom:10px}
+.son .mgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:7px 16px}
+.son .mitem{display:grid;grid-template-columns:15px 1fr;gap:8px;align-items:start;font-size:13.8px;font-weight:750;color:var(--ink)}
+.son .mitem .tick{color:var(--accent);font-weight:800}
+.son .mfoot{margin-top:11px;padding-top:9px;border-top:1px solid color-mix(in srgb,var(--accent) 25%,transparent);font-size:12.9px;color:var(--ink-soft)}
+.son .mfoot b{color:var(--ink)}
+.son .fields{display:grid;grid-template-columns:1fr 1fr;gap:13px;align-items:start;margin-top:13px}
+.son .fgroup{border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:var(--shadow);padding:12px 15px 13px}
+.son .ghead{font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:2px}
+.son .fld{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.son .fgroup .fld:last-child{border-bottom:0;padding-bottom:1px}
+.son .fld .fn{font-weight:750;font-size:13.8px}
+.son .fld .hint{display:block;font-size:12.6px;line-height:1.45;font-weight:400;color:var(--ink-soft);margin-top:2px}
+.son .fld .hint b{color:var(--ink);font-weight:750}
+.son .rq,.son .op,.son .ak{font-size:9.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;padding:2.5px 7px;border-radius:999px;white-space:nowrap}
+.son .rq{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent-ink);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+.son .op{background:transparent;color:var(--ink-faint);border:1px solid var(--line)}
+.son .ak{background:var(--gold-soft);color:var(--gold);border:1px solid color-mix(in srgb,var(--gold) 40%,transparent)}
 .son a{color:var(--accent-ink);font-weight:700;text-decoration:underline;text-underline-offset:2px}
 .son .card .sub a{color:var(--accent-ink)}
 .son footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink-faint);font-size:12px}
 
 @media (max-width:620px){
   .son .cards{grid-template-columns:1fr}
+  .son .fields{grid-template-columns:1fr}
   .son .fix .row{grid-template-columns:1fr}
   .son .fix .q{background:transparent;padding-bottom:2px}
   .son .fix .a{padding-top:2px}
@@ -572,6 +593,123 @@ const SCRIPTS: CallScript[] = [
       },
     ],
   },
+];
+
+// Everything the setter collects on a live call. `req` fields are the ones that
+// gate the deal — they're repeated in MANDATORY as the at-a-glance checklist.
+// Order inside "The owner" keeps the scripts' rule: cell + email get asked first.
+type FieldTag = "req" | "opt" | "nice" | "ask";
+const TAG_LABEL: Record<FieldTag, string> = {
+  req: "✓ required",
+  opt: "optional",
+  nice: "nice to have",
+  ask: "always ask",
+};
+const TAG_CLASS: Record<FieldTag, string> = { req: "rq", opt: "op", nice: "op", ask: "ak" };
+
+const FIELDS: { g: string; items: { f: string; tag: FieldTag; hint?: React.ReactNode }[] }[] = [
+  {
+    g: "The business",
+    items: [
+      {
+        f: "Business legal name",
+        tag: "req",
+        hint: "The registered name, not the sign out front — “what's the legal name on the paperwork?”",
+      },
+      { f: "Entity type", tag: "opt", hint: "LLC, corporation, partnership, or sole proprietor." },
+      {
+        f: "EIN / Tax ID number",
+        tag: "req",
+        hint: "Nine digits. If they don't have it handy, ask them to grab it while you're on the line.",
+      },
+      {
+        f: "Business start date",
+        tag: "req",
+        hint: "Month and year is enough — time in business drives what they qualify for.",
+      },
+      { f: "Industry", tag: "opt", hint: "What they actually do, in their words." },
+      { f: "Business phone", tag: "opt", hint: "The line the business answers." },
+      { f: "Business email", tag: "opt", hint: "The office/company address, if it's different from theirs." },
+      {
+        f: "Business address",
+        tag: "req",
+        hint: "Street, city, state, ZIP — the physical location, not a PO box.",
+      },
+    ],
+  },
+  {
+    g: "The owner",
+    items: [
+      {
+        f: "Cell phone",
+        tag: "req",
+        hint: (
+          <>
+            Ask first, every call. It is <b>often not the business phone</b> — “what's the best cell
+            for you directly?”
+          </>
+        ),
+      },
+      {
+        f: "Personal email",
+        tag: "req",
+        hint: (
+          <>
+            Ask second. <b>An email is required</b> — the application and upload link go there.
+          </>
+        ),
+      },
+      { f: "First name", tag: "req" },
+      { f: "Last name", tag: "req" },
+      { f: "Title", tag: "opt", hint: "Owner, president, managing member." },
+      {
+        f: "% ownership",
+        tag: "opt",
+        hint: (
+          <>
+            <b>Assume 100%</b> and keep moving. Only ask if they mention a partner or say “we.”
+          </>
+        ),
+      },
+      {
+        f: "Date of birth",
+        tag: "nice",
+        hint: "Their age is fine if they hesitate — don't fight for it and lose the app.",
+      },
+    ],
+  },
+  {
+    g: "Banking & permission to text",
+    items: [
+      {
+        f: "Bank name",
+        tag: "req",
+        hint: "“Who do you bank with?” — the bank the business actually runs through.",
+      },
+      {
+        f: "OK to text the cell",
+        tag: "ask",
+        hint: (
+          <>
+            “<b>Is this cell OK to text?</b>” — that yes is your text permission and it's how the
+            secure upload link gets to them. Ask it as you send the link.
+          </>
+        ),
+      },
+    ],
+  },
+];
+
+// The gate: no deal moves without all eight.
+const MANDATORY = [
+  "Business name",
+  "Tax ID number (EIN)",
+  "Business start date",
+  "Cell phone",
+  "Email",
+  "Business address",
+  "First and last name",
+  "The bank they use",
 ];
 
 // Troubleshooting table — symptom on the left, the fix on the right.
@@ -1066,6 +1204,53 @@ export default function SetterGuidePage() {
             scripts are also loaded in the WAVV dialer (Call Scripts) so they&rsquo;re on screen
             during the call.
           </p>
+
+          {/* The data set every script is trying to capture — mandatory first. */}
+          <p className="eyebrow">What you collect on the call</p>
+          <div className="must">
+            <div className="mh">★ The eight you cannot hang up without</div>
+            <div className="mgrid">
+              {MANDATORY.map((m) => (
+                <span className="mitem" key={m}>
+                  <span className="tick" aria-hidden="true">
+                    ✓
+                  </span>
+                  <span>{m}</span>
+                </span>
+              ))}
+            </div>
+            <div className="mfoot">
+              These eight are what move the deal forward &mdash; missing even one and the specialist
+              has to call back for it, which is where files die. <b>If the call is wrapping up and
+              you&rsquo;re short one, ask for it before you say goodbye.</b> Everything else below is
+              a bonus that makes the specialist&rsquo;s job easier.
+            </div>
+          </div>
+
+          <div className="fields">
+            {FIELDS.map((g) => (
+              <div className="fgroup" key={g.g}>
+                <div className="ghead">{g.g}</div>
+                {g.items.map((it) => (
+                  <div className="fld" key={it.f}>
+                    <div>
+                      <span className="fn">{it.f}</span>
+                      {it.hint && <span className="hint">{it.hint}</span>}
+                    </div>
+                    <span className={TAG_CLASS[it.tag]}>{TAG_LABEL[it.tag]}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div className="note tip">
+            <div className="h">Ask in this order</div>
+            <b>Cell first, email second</b> &mdash; if the call dies right there you can still finish
+            the file by text. Then business name, EIN, start date, address, bank. Fill it into the{" "}
+            <b>Revenue Playbook</b> while they&rsquo;re talking, not after &mdash; the Playbook is the
+            only place this gets saved.
+          </div>
 
           {SCRIPTS.map((s) => (
             <div className="script" key={s.who}>
