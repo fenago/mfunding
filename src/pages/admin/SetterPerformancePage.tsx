@@ -158,7 +158,65 @@ const TOOLTIP_STYLE = {
  *  fuzzy-matched into "positive". */
 const POSITIVE_DISPOSITIONS = ["Interested", "Appointment Set", "Full Application", "Callback"];
 
+// ── What counts as a real conversation ───────────────────────────────────────
+// NOT duration, and NOT WAVV's `human` flag. Both are unreliable here and the
+// mirror proves it: 5,024 rows are dispositioned "Voice Message" with outcome
+// VOICEMAIL yet 136 of them carry human=true, and 1,124 of the 1,187 NO_CALLBACK
+// rows (avg 8 seconds) are flagged human. In the other direction the single
+// 787-second call that produced a Full Application has human=false. So a
+// duration/flag test both counts voicemails and misses real talks.
+//
+// A DISPOSITION is different: it is set by the setter AFTER the call, and these
+// six can only be chosen once a live person has been spoken to. Everything a
+// machine or a dead line produces ("Voice Message", "No Answer", "Bad Number",
+// "Call Blocked", "Agent Canceled", "None", NULL) is excluded by construction.
+//
+// HONESTY CAVEAT, stated in the UI too: this measures DISPOSITIONED talks. A
+// setter who does not disposition their calls under-reports conversations.
+const CONVERSATION_DISPOSITIONS = [
+  "Interested", "Not Interested", "Appointment Set", "Callback", "Full Application", "Do Not Contact",
+];
+const CONVERSATION_HELP =
+  "Conversation = the setter reached a live person and dispositioned the call (Interested · Not Interested · Appointment Set · Callback · Full Application · Do Not Contact). Voicemails are excluded. Undispositioned calls are not counted, so under-dispositioning under-reports this.";
+
+/** Outcomes WAVV reports for a machine or an unanswered line. NO_CALLBACK is on
+ *  the list on purpose: those rows average 8 seconds and are flagged human. */
+const NON_HUMAN_OUTCOMES = new Set(["VOICEMAIL", "NO_VOICEMAIL", "NO_ANSWER", "NO_CALLBACK"]);
+
+/** REACHED A HUMAN = the call was answered and nothing about it says machine.
+ *  Defined negatively (exclude the voicemail/no-answer tells) rather than by
+ *  trusting `human`, and gated on an answer so it stays a strict subset of
+ *  Connects — a rejected/disconnected/busy line reached nobody. */
+function reachedHuman(r: Pick<SetterCall, "answered_at" | "outcome" | "disposition" | "note">): boolean {
+  if (!r.answered_at) return false;
+  if (r.outcome && NON_HUMAN_OUTCOMES.has(r.outcome.toUpperCase())) return false;
+  if (r.disposition === "Voice Message" || r.disposition === "No Answer") return false;
+  if (r.note && /^\s*played voicemail/i.test(r.note)) return false;
+  return true;
+}
+
+function isConversation(r: Pick<SetterCall, "disposition">): boolean {
+  return !!r.disposition && CONVERSATION_DISPOSITIONS.includes(r.disposition);
+}
+
 const UNASSIGNED_FILTER = "__unassigned__";
+
+// ── Table chrome ─────────────────────────────────────────────────────────────
+// One set of classes for every table on the page. DaisyUI's table-sm/table-xs
+// packs cells so tightly that a number runs into the percentage beside it
+// ("43056.9%"), so padding is set explicitly here instead. Numeric columns are
+// right-aligned and tabular so digits line up in a column.
+const TABLE_WRAP = "overflow-x-auto rounded-lg border border-base-300";
+const TABLE = "table w-full";
+const THEAD = "bg-base-200/60 dark:bg-gray-800/50";
+const TH = "px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 whitespace-nowrap border-b border-base-300";
+const TH_NUM = `${TH} text-right`;
+const TD = "px-3 py-2.5 text-sm text-gray-700 dark:text-gray-200";
+const TD_NUM = `${TD} text-right tabular-nums whitespace-nowrap`;
+const TBODY = "divide-y divide-base-300/70";
+const TR = "hover:bg-base-200/40 dark:hover:bg-gray-800/30 transition-colors";
+/** The vertical rule that separates the two column GROUPS in the Setters table. */
+const GROUP_EDGE = "border-l border-base-300";
 
 // ── Date helpers ─────────────────────────────────────────────────────────────
 // Ranges are chosen in the MANAGER'S LOCAL DAY (a shift is a local-clock thing),
@@ -651,9 +709,11 @@ export default function SetterPerformancePage() {
   }
 
   // ── Team funnel ───────────────────────────────────────────────────────────
-  // Dial → Connect (answered_at set) → Human (human=true) → Conversation
-  // (human AND >=60s) → Positive disposition. Each stage is a strict subset of
-  // the one above it, so the step rates below are real conditional rates.
+  // Dial → Connect (answered_at set) → Human (reachedHuman: answered and not a
+  // voicemail/no-answer tell) → Conversation (a talk disposition) → Positive
+  // disposition. Each stage is a strict subset of the one above it — the
+  // conversation dispositions only ever occur on answered, non-voicemail rows —
+  // so the step rates below are real conditional rates, never over 100%.
   const funnel = useMemo(() => {
     let dials = 0, connects = 0, humans = 0, conversations = 0, positives = 0;
     let talkSeconds = 0, connectedSeconds = 0;
@@ -663,10 +723,8 @@ export default function SetterPerformancePage() {
       const secs = r.seconds ?? 0;
       talkSeconds += secs;
       if (r.answered_at) { connects++; connectedSeconds += secs; }
-      if (r.human === true) {
-        humans++;
-        if (secs >= 60) conversations++;
-      }
+      if (reachedHuman(r)) humans++;
+      if (isConversation(r)) conversations++;
       if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) positives++;
       if (r.phone) phones.add(r.phone);
     }
@@ -697,12 +755,13 @@ export default function SetterPerformancePage() {
         count: funnel.connects, stepLabel: "of dials answered", stepPct: pct(funnel.connects, funnel.dials), targetKey: "answer_rate_pct",
       },
       {
-        key: "human", label: "Reached a human", help: "WAVV classified the answer as a live person, not voicemail",
+        key: "human", label: "Reached a human",
+        help: "Answered, and nothing about the call says machine: outcome is not VOICEMAIL / NO_VOICEMAIL / NO_ANSWER / NO_CALLBACK, the setter did not disposition it 'Voice Message' or 'No Answer', and no 'Played voicemail' note. WAVV's own human flag is NOT used — it marks voicemails as human.",
         count: funnel.humans, stepLabel: "of answers were human", stepPct: pct(funnel.humans, funnel.connects), targetKey: "human_rate_pct",
       },
       {
-        key: "conversations", label: "Conversations (≥60s)", help: "Human answer with at least 60 seconds of talk time",
-        count: funnel.conversations, stepLabel: "of humans talked ≥60s", stepPct: pct(funnel.conversations, funnel.humans), targetKey: "conversation_rate_pct",
+        key: "conversations", label: "Conversations", help: CONVERSATION_HELP,
+        count: funnel.conversations, stepLabel: "of humans dispositioned as a talk", stepPct: pct(funnel.conversations, funnel.humans), targetKey: "conversation_rate_pct",
       },
       {
         key: "positives", label: "Positive dispositions", help: POSITIVE_DISPOSITIONS.join(" · "),
@@ -738,10 +797,8 @@ export default function SetterPerformancePage() {
       const secs = r.seconds ?? 0;
       row.talkSeconds += secs;
       if (r.answered_at) { row.connects++; row.connectedSeconds += secs; }
-      if (r.human === true) {
-        row.human++;
-        if (secs >= 60) row.conversations++;
-      }
+      if (reachedHuman(r)) row.human++;
+      if (isConversation(r)) row.conversations++;
       if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) row.positives++;
       if (r.phone) row.phones.add(r.phone);
       if (r.started_at) row.days.add(ymd(new Date(r.started_at)));
@@ -808,10 +865,10 @@ export default function SetterPerformancePage() {
 
   // ── Daily trend ───────────────────────────────────────────────────────────
   const trend = useMemo(() => {
-    const byDay = new Map<string, { day: string; dials: number; connects: number; human: number; appointments: number }>();
+    const byDay = new Map<string, { day: string; dials: number; connects: number; human: number; conversations: number; appointments: number }>();
     const touch = (day: string) => {
       let b = byDay.get(day);
-      if (!b) { b = { day, dials: 0, connects: 0, human: 0, appointments: 0 }; byDay.set(day, b); }
+      if (!b) { b = { day, dials: 0, connects: 0, human: 0, conversations: 0, appointments: 0 }; byDay.set(day, b); }
       return b;
     };
     for (const r of aggRows) {
@@ -819,7 +876,9 @@ export default function SetterPerformancePage() {
       const b = touch(ymd(new Date(r.started_at))); // local day, matching the picker
       b.dials++;
       if (r.answered_at) b.connects++;
-      if (r.human === true) b.human++;
+      // Same voicemail-aware definitions the funnel and scorecard use.
+      if (reachedHuman(r)) b.human++;
+      if (isConversation(r)) b.conversations++;
     }
     for (const d of dealRows ?? []) {
       if (inRange(d.appointment_at, range.from, range.to) && d.appointment_at) {
@@ -961,26 +1020,45 @@ export default function SetterPerformancePage() {
       </div>
 
       {/* ── Range picker (applies to EVERY tab) ── */}
-      <div className="flex flex-wrap items-center gap-2">
-        {(Object.keys(RANGE_LABELS) as RangeKey[]).map((k) => (
-          <button
-            key={k}
-            className={`btn btn-xs ${rangeKey === k ? "btn-primary" : "btn-ghost border border-base-300"}`}
-            onClick={() => setRangeKey(k)}
-          >
-            {RANGE_LABELS[k]}
-          </button>
-        ))}
+      {/* One segmented control, not five loose buttons: a single bordered track,
+          evenly sized segments, the active one filled in the brand mint. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div
+          role="group"
+          aria-label="Date range"
+          className="inline-flex items-center gap-1 rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-1"
+        >
+          {(Object.keys(RANGE_LABELS) as RangeKey[]).map((k) => {
+            const active = rangeKey === k;
+            return (
+              <button
+                key={k}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setRangeKey(k)}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${
+                  active
+                    ? "bg-mint-green text-gray-900 shadow-sm"
+                    : "text-gray-600 dark:text-gray-300 hover:bg-base-100 dark:hover:bg-gray-700/60"
+                }`}
+              >
+                {RANGE_LABELS[k]}
+              </button>
+            );
+          })}
+        </div>
+
         {rangeKey === "custom" && (
-          <div className="flex items-center gap-2 ml-2">
-            <input type="date" className="input input-xs input-bordered" value={customFrom}
+          <div className="flex items-center gap-2">
+            <input type="date" className="input input-sm input-bordered" value={customFrom}
               onChange={(e) => setCustomFrom(e.target.value)} />
             <span className="text-xs text-gray-400">to</span>
-            <input type="date" className="input input-xs input-bordered" value={customTo}
+            <input type="date" className="input input-sm input-bordered" value={customTo}
               onChange={(e) => setCustomTo(e.target.value)} />
           </div>
         )}
-        <span className="text-xs text-gray-400 ml-2">
+
+        <span className="text-xs text-gray-400">
           {range.from.toLocaleDateString()} – {new Date(range.to.getTime() - 1).toLocaleDateString()} (your local days)
         </span>
       </div>
@@ -1079,14 +1157,14 @@ export default function SetterPerformancePage() {
                 {/* Floor totals */}
                 <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                   {[
-                    { label: "Dials", value: funnel.dials, fmt: (v: number) => v.toLocaleString() },
-                    { label: "Connects", value: funnel.connects, fmt: (v: number) => v.toLocaleString() },
-                    { label: "Humans", value: funnel.humans, fmt: (v: number) => v.toLocaleString() },
-                    { label: "Convos ≥60s", value: funnel.conversations, fmt: (v: number) => v.toLocaleString() },
-                    { label: "Talk time", value: funnel.talkSeconds, fmt: hms },
-                    { label: "Unique leads", value: funnel.uniqueLeads, fmt: (v: number) => v.toLocaleString() },
+                    { label: "Dials", value: funnel.dials, fmt: (v: number) => v.toLocaleString(), help: "Outbound call rows in this range" },
+                    { label: "Connects", value: funnel.connects, fmt: (v: number) => v.toLocaleString(), help: "WAVV recorded an answer — includes answering machines" },
+                    { label: "Humans", value: funnel.humans, fmt: (v: number) => v.toLocaleString(), help: "Answered and not a voicemail/no-answer — WAVV's own human flag is not used" },
+                    { label: "Conversations", value: funnel.conversations, fmt: (v: number) => v.toLocaleString(), help: CONVERSATION_HELP },
+                    { label: "Talk time", value: funnel.talkSeconds, fmt: hms, help: "Total seconds across every dial in range" },
+                    { label: "Unique leads", value: funnel.uniqueLeads, fmt: (v: number) => v.toLocaleString(), help: "Distinct merchant phone numbers dialed" },
                   ].map((kpi) => (
-                    <div key={kpi.label} className="card bg-base-100 border border-base-300 shadow-sm">
+                    <div key={kpi.label} className="card bg-base-100 border border-base-300 shadow-sm" title={kpi.help}>
                       <div className="card-body p-4">
                         <div className="text-xs uppercase tracking-wide text-gray-400">{kpi.label}</div>
                         <div className="text-xl font-semibold text-gray-900 dark:text-white">
@@ -1147,6 +1225,20 @@ export default function SetterPerformancePage() {
                       })}
                     </div>
 
+                    <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                      <div>
+                        <span className="font-semibold text-gray-700 dark:text-gray-200">Conversation</span> = the setter
+                        reached a live person and dispositioned the call — Interested, Not Interested, Appointment Set,
+                        Callback, Full Application or Do Not Contact. <b>Voicemails are excluded.</b> Neither call
+                        length nor WAVV's <code>human</code> flag is used: voicemails run long and get flagged human,
+                        and real talks sometimes do not.
+                      </div>
+                      <div className="opacity-90">
+                        These counts come from setter dispositions, so a setter who does not disposition their calls
+                        under-reports conversations.
+                      </div>
+                    </div>
+
                     <p className="text-xs text-gray-400">
                       Thresholds come from <code>platform_settings.ph_dialer_kpi_targets</code>. A rate marked
                       with <span className="font-semibold">·</span> has no stored threshold and is judged against a
@@ -1171,8 +1263,8 @@ export default function SetterPerformancePage() {
                         </li>
                         <li>
                           <span className="font-semibold text-gray-900 dark:text-white">The tail is thin.</span>{" "}
-                          <b className="text-gray-900 dark:text-white">{funnel.conversations.toLocaleString()}</b> conversations
-                          ran 60 seconds or longer, and <b className="text-gray-900 dark:text-white">{funnel.positives.toLocaleString()}</b>{" "}
+                          <b className="text-gray-900 dark:text-white">{funnel.conversations.toLocaleString()}</b> calls were
+                          dispositioned as a real conversation, and <b className="text-gray-900 dark:text-white">{funnel.positives.toLocaleString()}</b>{" "}
                           calls carried a positive disposition ({POSITIVE_DISPOSITIONS.join(", ")}) — that is{" "}
                           <b className="text-gray-900 dark:text-white">
                             {funnel.dials > 0 ? ((funnel.positives / funnel.dials) * 100).toFixed(2) : "—"}%
@@ -1211,25 +1303,30 @@ export default function SetterPerformancePage() {
                       Deals assigned to that person in this range. An unassigned number has no person to join
                       deals on, so its pipeline cells read “—”.
                     </p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      <span className="font-semibold text-gray-600 dark:text-gray-300">Convos</span> = the setter reached a
+                      live person and dispositioned the call (voicemails excluded); it is not a call-length test.
+                      Undispositioned calls are not counted.
+                    </p>
                     {dealsError && (
                       <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
                         Pipeline columns unreadable this load ({dealsError}) — they show “—”, which is unknown, not zero.
                       </p>
                     )}
 
-                    <div className="overflow-x-auto mt-3">
-                      <table className="table table-sm">
-                        <thead>
+                    <div className={`${TABLE_WRAP} mt-3`}>
+                      <table className={TABLE}>
+                        <thead className={THEAD}>
                           <tr>
-                            <th className="text-left" />
-                            <th colSpan={8} className="text-center text-xs uppercase tracking-wide text-gray-400 border-b border-base-300">Dialing (WAVV)</th>
-                            <th colSpan={3} className="text-center text-xs uppercase tracking-wide text-gray-400 border-b border-base-300">Pipeline (Deals)</th>
+                            <th className={`${TH} border-b-0`} />
+                            <th colSpan={8} className={`${TH} text-center border-b-0`}>Dialing (WAVV)</th>
+                            <th colSpan={3} className={`${TH} ${GROUP_EDGE} text-center border-b-0`}>Pipeline (Deals)</th>
                           </tr>
                           <tr>
                             {SETTER_COLUMNS.map((c) => (
                               <th
                                 key={c.key ?? c.label}
-                                className={`${c.align} ${c.key ? "cursor-pointer select-none" : ""} whitespace-nowrap`}
+                                className={`${c.align === "text-right" ? TH_NUM : TH} ${c.groupStart ? GROUP_EDGE : ""} ${c.key ? "cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200" : ""}`}
                                 onClick={() => c.key && sortBy(c.key)}
                                 title={c.help}
                               >
@@ -1239,7 +1336,7 @@ export default function SetterPerformancePage() {
                             ))}
                           </tr>
                         </thead>
-                        <tbody>
+                        <tbody className={TBODY}>
                           {sortedSetterRows.map((r) => {
                             const dialsPerDay = r.activeDays > 0 ? r.dials / r.activeDays : null;
                             const answerRate = r.dials > 0 ? (r.connects / r.dials) * 100 : null;
@@ -1247,8 +1344,8 @@ export default function SetterPerformancePage() {
                             const dpd = targetFor("dials_per_day");
                             const dpdRag = ragOf(dialsPerDay, dpd.target);
                             return (
-                              <tr key={r.key} className="hover">
-                                <td className="font-medium text-gray-900 dark:text-white min-w-[12rem]">
+                              <tr key={r.key} className={TR}>
+                                <td className={`${TD} font-medium text-gray-900 dark:text-white min-w-[13rem]`}>
                                   <div className="flex items-center gap-2">
                                     {r.name}
                                     {!r.attributed && (
@@ -1257,29 +1354,29 @@ export default function SetterPerformancePage() {
                                       </span>
                                     )}
                                   </div>
-                                  <div className="text-xs text-gray-400">{r.numbers.map(prettyPhone).join(" · ") || "—"}</div>
+                                  <div className="text-xs text-gray-400 mt-0.5">{r.numbers.map(prettyPhone).join(" · ") || "—"}</div>
                                 </td>
-                                <td className="text-right tabular-nums">{r.dials.toLocaleString()}</td>
-                                <td className="text-right tabular-nums">
+                                <td className={TD_NUM}>{r.dials.toLocaleString()}</td>
+                                <td className={TD_NUM}>
                                   <span className={`font-semibold ${RAG_TEXT[dpdRag]}`} title={dpd.target ? `Target ≥${dpd.target.green}/day green, ≥${dpd.target.amber} amber · over ${r.activeDays} day${r.activeDays === 1 ? "" : "s"} with activity` : "No threshold configured"}>
                                     <Metric value={dialsPerDay} />
                                   </span>
                                 </td>
-                                <td className="text-right tabular-nums">{r.connects.toLocaleString()}</td>
-                                <td className="text-right tabular-nums"><RagPct value={answerRate} target={targetFor("answer_rate_pct").target} /></td>
-                                <td className="text-right tabular-nums">{r.human.toLocaleString()}</td>
-                                <td className="text-right tabular-nums"><RagPct value={humanRate} target={targetFor("human_rate_pct").target} /></td>
-                                <td className="text-right tabular-nums">
-                                  <span title={`${hms(r.talkSeconds)} total talk time`}>{r.conversations.toLocaleString()}</span>
+                                <td className={TD_NUM}>{r.connects.toLocaleString()}</td>
+                                <td className={TD_NUM}><RagPct value={answerRate} target={targetFor("answer_rate_pct").target} /></td>
+                                <td className={TD_NUM}>{r.human.toLocaleString()}</td>
+                                <td className={TD_NUM}><RagPct value={humanRate} target={targetFor("human_rate_pct").target} /></td>
+                                <td className={TD_NUM}>
+                                  <span title={`${hms(r.talkSeconds)} total talk time across all dials`}>{r.conversations.toLocaleString()}</span>
                                 </td>
-                                <td className="text-right tabular-nums">{r.positives.toLocaleString()}</td>
-                                <td className="text-right tabular-nums">{r.appointments === null ? <Metric value={null} /> : r.appointments.toLocaleString()}</td>
-                                <td className="text-right tabular-nums">{r.appsSent === null ? <Metric value={null} /> : r.appsSent.toLocaleString()}</td>
-                                <td className="text-right tabular-nums">
+                                <td className={TD_NUM}>{r.positives.toLocaleString()}</td>
+                                <td className={`${TD_NUM} ${GROUP_EDGE}`}>{r.appointments === null ? <Metric value={null} /> : r.appointments.toLocaleString()}</td>
+                                <td className={TD_NUM}>{r.appsSent === null ? <Metric value={null} /> : r.appsSent.toLocaleString()}</td>
+                                <td className={TD_NUM}>
                                   {r.funded === null ? <Metric value={null} /> : (
                                     <span title={r.fundedAmount ? `${usd(r.fundedAmount)} funded` : undefined}>
                                       {r.funded.toLocaleString()}
-                                      {r.fundedAmount ? <span className="text-xs text-gray-400 ml-1">{usd(r.fundedAmount)}</span> : null}
+                                      {r.fundedAmount ? <span className="text-xs text-gray-400 ml-1.5">{usd(r.fundedAmount)}</span> : null}
                                     </span>
                                   )}
                                 </td>
@@ -1287,23 +1384,23 @@ export default function SetterPerformancePage() {
                             );
                           })}
                           {sortedSetterRows.length === 0 && (
-                            <tr><td colSpan={12} className="text-center text-sm text-gray-400 py-6">No outbound calls in this range.</td></tr>
+                            <tr><td colSpan={12} className="text-center text-sm text-gray-400 py-8">No outbound calls in this range.</td></tr>
                           )}
                         </tbody>
                         <tfoot>
-                          <tr className="font-semibold border-t-2 border-base-300">
-                            <td>Team</td>
-                            <td className="text-right tabular-nums">{funnel.dials.toLocaleString()}</td>
-                            <td className="text-right"><Metric value={null} /></td>
-                            <td className="text-right tabular-nums">{funnel.connects.toLocaleString()}</td>
-                            <td className="text-right tabular-nums"><RagPct value={funnel.dials > 0 ? (funnel.connects / funnel.dials) * 100 : null} target={targetFor("answer_rate_pct").target} /></td>
-                            <td className="text-right tabular-nums">{funnel.humans.toLocaleString()}</td>
-                            <td className="text-right tabular-nums"><RagPct value={funnel.connects > 0 ? (funnel.humans / funnel.connects) * 100 : null} target={targetFor("human_rate_pct").target} /></td>
-                            <td className="text-right tabular-nums">{funnel.conversations.toLocaleString()}</td>
-                            <td className="text-right tabular-nums">{funnel.positives.toLocaleString()}</td>
-                            <td className="text-right tabular-nums">{sumOrDash(sortedSetterRows.map((r) => r.appointments))}</td>
-                            <td className="text-right tabular-nums">{sumOrDash(sortedSetterRows.map((r) => r.appsSent))}</td>
-                            <td className="text-right tabular-nums">{sumOrDash(sortedSetterRows.map((r) => r.funded))}</td>
+                          <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                            <td className={`${TD} text-gray-900 dark:text-white`}>Team</td>
+                            <td className={TD_NUM}>{funnel.dials.toLocaleString()}</td>
+                            <td className={TD_NUM}><Metric value={null} /></td>
+                            <td className={TD_NUM}>{funnel.connects.toLocaleString()}</td>
+                            <td className={TD_NUM}><RagPct value={funnel.dials > 0 ? (funnel.connects / funnel.dials) * 100 : null} target={targetFor("answer_rate_pct").target} /></td>
+                            <td className={TD_NUM}>{funnel.humans.toLocaleString()}</td>
+                            <td className={TD_NUM}><RagPct value={funnel.connects > 0 ? (funnel.humans / funnel.connects) * 100 : null} target={targetFor("human_rate_pct").target} /></td>
+                            <td className={TD_NUM}>{funnel.conversations.toLocaleString()}</td>
+                            <td className={TD_NUM}>{funnel.positives.toLocaleString()}</td>
+                            <td className={`${TD_NUM} ${GROUP_EDGE}`}>{sumOrDash(sortedSetterRows.map((r) => r.appointments))}</td>
+                            <td className={TD_NUM}>{sumOrDash(sortedSetterRows.map((r) => r.appsSent))}</td>
+                            <td className={TD_NUM}>{sumOrDash(sortedSetterRows.map((r) => r.funded))}</td>
                           </tr>
                         </tfoot>
                       </table>
@@ -1330,15 +1427,20 @@ export default function SetterPerformancePage() {
                         <p className="text-sm text-gray-400 py-4">Nothing reported in this range.</p>
                       ) : (
                         <>
-                          <div className="overflow-x-auto mt-2">
-                            <table className="table table-xs">
-                              <thead>
-                                <tr><th>Value</th><th className="text-right">Calls</th><th className="text-right">%</th><th className="w-1/3">Share</th></tr>
+                          <div className={`${TABLE_WRAP} mt-2`}>
+                            <table className={TABLE}>
+                              <thead className={THEAD}>
+                                <tr>
+                                  <th className={TH}>Value</th>
+                                  <th className={TH_NUM}>Calls</th>
+                                  <th className={TH_NUM}>%</th>
+                                  <th className={`${TH} w-1/3`}>Share</th>
+                                </tr>
                               </thead>
-                              <tbody>
+                              <tbody className={TBODY}>
                                 {panel.rows.map((d) => (
-                                  <tr key={d.label} className="hover">
-                                    <td className="whitespace-nowrap">
+                                  <tr key={d.label} className={TR}>
+                                    <td className={`${TD} whitespace-nowrap`}>
                                       {d.label === "(none)"
                                         ? <span className="text-gray-300 dark:text-gray-600 italic" title="No disposition was recorded on these calls">(none)</span>
                                         : d.label}
@@ -1348,9 +1450,9 @@ export default function SetterPerformancePage() {
                                         </span>
                                       )}
                                     </td>
-                                    <td className="text-right tabular-nums">{d.count.toLocaleString()}</td>
-                                    <td className="text-right tabular-nums">{d.pct.toFixed(1)}%</td>
-                                    <td>
+                                    <td className={TD_NUM}>{d.count.toLocaleString()}</td>
+                                    <td className={TD_NUM}>{d.pct.toFixed(1)}%</td>
+                                    <td className={`${TD} min-w-[8rem]`}>
                                       <div className="h-2 w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden">
                                         <div className={`h-full ${d.positive ? "bg-emerald-500" : "bg-sky-600"}`} style={{ width: `${Math.min(100, d.pct)}%` }} />
                                       </div>
@@ -1391,9 +1493,10 @@ export default function SetterPerformancePage() {
                 <div className="card-body p-4">
                   <h2 className="font-semibold text-gray-900 dark:text-white">Daily activity</h2>
                   <p className="text-xs text-gray-400">
-                    Dials, connects and human contacts from WAVV (outbound); appointments from Deals by
+                    Dials, connects, human contacts and conversations from WAVV (outbound); appointments from Deals by
                     <code className="mx-1">appointment_at</code>. Days with no calls simply do not appear —
-                    the axis is the days that had activity, not a zero-filled calendar.
+                    the axis is the days that had activity, not a zero-filled calendar. Humans exclude voicemails,
+                    and a conversation is a call the setter dispositioned as a real talk.
                   </p>
                   {trend.length === 0 ? (
                     <p className="text-sm text-gray-400 py-6">No activity in this range.</p>
@@ -1410,6 +1513,7 @@ export default function SetterPerformancePage() {
                         <Line yAxisId="left" type="monotone" dataKey="dials" name="Dials" stroke="#007EA7" strokeWidth={2} dot={false} />
                         <Line yAxisId="left" type="monotone" dataKey="connects" name="Connects" stroke="#8B5CF6" strokeWidth={2} dot={false} />
                         <Line yAxisId="left" type="monotone" dataKey="human" name="Humans" stroke="#00C49A" strokeWidth={2} dot={false} />
+                        <Line yAxisId="right" type="monotone" dataKey="conversations" name="Conversations" stroke="#EC4899" strokeWidth={2} dot={false} />
                       </ComposedChart>
                     </ResponsiveContainer>
                   )}
@@ -1459,23 +1563,36 @@ export default function SetterPerformancePage() {
                     {neverSynced ? "Waiting for first sync — no outbound WAVV calls have been mirrored yet." : "No calls match these filters."}
                   </p>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="table table-sm">
-                      <thead>
+                  <div className={`${TABLE_WRAP} mt-3`}>
+                    <table className={TABLE}>
+                      <thead className={THEAD}>
                         <tr>
-                          <th>Time</th><th>Attributed to</th><th>Contact</th><th className="text-right">Duration</th>
-                          <th>Outcome</th><th>Disposition</th><th>Human</th><th>Note</th><th>Recording</th><th>Transcript</th>
+                          <th className={TH}>Time</th>
+                          <th className={TH}>Attributed to</th>
+                          <th className={TH}>Contact</th>
+                          <th className={TH_NUM}>Duration</th>
+                          <th className={TH}>Outcome</th>
+                          <th className={TH}>Disposition</th>
+                          <th className={TH} title="Whether this call reached a live person, by the same voicemail-aware test the scorecard uses">Live person</th>
+                          <th className={TH}>Note</th>
+                          <th className={TH}>Recording</th>
+                          <th className={TH}>Transcript</th>
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className={TBODY}>
                         {logRows.map((r) => {
                           const m = media[r.wavv_call_id] ?? {};
+                          // A transcript can only exist where a recording exists. Offering the
+                          // control on an unrecorded row produces a guaranteed "no transcript",
+                          // which reads as broken — so those rows show a dash instead.
+                          const hasRecording = r.recorded === true;
+                          const live = reachedHuman(r);
                           return (
-                            <tr key={r.wavv_call_id} className="hover align-top">
-                              <td className="whitespace-nowrap">
+                            <tr key={r.wavv_call_id} className={`${TR} align-top`}>
+                              <td className={`${TD} whitespace-nowrap`}>
                                 {r.started_at ? new Date(r.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : <Metric value={null} />}
                               </td>
-                              <td className="min-w-[10rem]">
+                              <td className={`${TD} min-w-[11rem]`}>
                                 {r.setter_name ? (
                                   <span className="font-medium text-gray-900 dark:text-white">{r.setter_name}</span>
                                 ) : (
@@ -1483,31 +1600,34 @@ export default function SetterPerformancePage() {
                                     {r.caller_label ?? prettyPhone(r.caller_id)}
                                   </span>
                                 )}
-                                <div className="text-xs text-gray-400">{prettyPhone(r.caller_id)}</div>
+                                <div className="text-xs text-gray-400 mt-0.5">{prettyPhone(r.caller_id)}</div>
                               </td>
-                              <td className="min-w-[9rem]">
+                              <td className={`${TD} min-w-[10rem]`}>
                                 <Text value={r.contact_name} />
-                                <div className="text-xs text-gray-400">{prettyPhone(r.phone)}</div>
+                                <div className="text-xs text-gray-400 mt-0.5">{prettyPhone(r.phone)}</div>
                               </td>
-                              <td className="text-right whitespace-nowrap">{r.seconds === null ? <Metric value={null} /> : hms(r.seconds)}</td>
-                              <td><Text value={r.outcome} /></td>
-                              <td>
+                              <td className={TD_NUM}>{r.seconds === null ? <Metric value={null} /> : hms(r.seconds)}</td>
+                              <td className={`${TD} whitespace-nowrap`}><Text value={r.outcome} /></td>
+                              <td className={`${TD} whitespace-nowrap`}>
                                 {r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)
                                   ? <span className="font-semibold text-emerald-600 dark:text-emerald-400">{r.disposition}</span>
                                   : <Text value={r.disposition} />}
                               </td>
-                              <td>
-                                {r.human === null
-                                  ? <Metric value={null} />
-                                  : <span className={`badge badge-xs ${r.human ? "badge-success" : "badge-ghost"}`}>{r.human ? "human" : "machine"}</span>}
+                              <td className={`${TD} whitespace-nowrap`}>
+                                <span
+                                  className={`badge badge-sm ${live ? "badge-success" : "badge-ghost"}`}
+                                  title={live ? "Answered, and no voicemail/no-answer tell on the call" : "Voicemail, no answer, or never answered"}
+                                >
+                                  {live ? "live" : "machine"}
+                                </span>
                               </td>
-                              <td className="max-w-[14rem]">
+                              <td className={`${TD} max-w-[14rem]`}>
                                 {r.note
                                   ? <span className="text-xs whitespace-pre-wrap break-words">{r.note}</span>
                                   : <span className="text-gray-300 dark:text-gray-600" title="No note left on this call">—</span>}
                               </td>
-                              <td className="min-w-[13rem]">
-                                {r.recorded === false || r.recorded === null ? (
+                              <td className={`${TD} min-w-[13rem]`}>
+                                {!hasRecording ? (
                                   <span className="text-gray-300 dark:text-gray-600 text-xs" title={r.recorded === null ? "WAVV did not report whether this call was recorded" : "This call was not recorded"}>
                                     no recording
                                   </span>
@@ -1522,29 +1642,40 @@ export default function SetterPerformancePage() {
                                   </div>
                                 )}
                               </td>
-                              <td className="min-w-[16rem]">
-                                <button className="btn btn-xs btn-ghost gap-1" onClick={() => toggleTranscript(r.wavv_call_id)}>
-                                  <DocumentTextIcon className="w-3 h-3" />{m.open ? "Hide" : "Transcript"}
-                                </button>
-                                {m.open && (
-                                  <div className="mt-1 text-xs max-w-md">
-                                    {m.loadingTx ? (
-                                      <span className="text-gray-400">Loading…</span>
-                                    ) : m.txError ? (
-                                      <span className="text-amber-600 dark:text-amber-400">{m.txError}</span>
-                                    ) : (
-                                      <>
-                                        {(m.summary ?? r.summary) && (
-                                          <div className="mb-1 p-2 rounded bg-base-200">
-                                            <span className="font-semibold">Summary: </span>{m.summary ?? r.summary}
-                                          </div>
+                              <td className={`${TD} min-w-[16rem]`}>
+                                {!hasRecording ? (
+                                  <span
+                                    className="text-gray-300 dark:text-gray-600"
+                                    title="This call was not recorded, so there is nothing to transcribe — WAVV only transcribes recorded calls"
+                                  >
+                                    —
+                                  </span>
+                                ) : (
+                                  <>
+                                    <button className="btn btn-xs btn-ghost gap-1" onClick={() => toggleTranscript(r.wavv_call_id)}>
+                                      <DocumentTextIcon className="w-3 h-3" />{m.open ? "Hide" : "Transcript"}
+                                    </button>
+                                    {m.open && (
+                                      <div className="mt-1.5 text-xs max-w-md">
+                                        {m.loadingTx ? (
+                                          <span className="text-gray-400">Loading…</span>
+                                        ) : m.txError ? (
+                                          <span className="text-amber-600 dark:text-amber-400">{m.txError}</span>
+                                        ) : (
+                                          <>
+                                            {(m.summary ?? r.summary) && (
+                                              <div className="mb-1.5 p-2 rounded bg-base-200">
+                                                <span className="font-semibold">Summary: </span>{m.summary ?? r.summary}
+                                              </div>
+                                            )}
+                                            {m.transcript
+                                              ? <div className="whitespace-pre-wrap p-2 rounded bg-base-200 max-h-48 overflow-y-auto leading-relaxed">{m.transcript}</div>
+                                              : <span className="text-gray-400">Recorded, but WAVV has not published a transcript for this call yet — they appear a few minutes after the call ends. Try again shortly.</span>}
+                                          </>
                                         )}
-                                        {m.transcript
-                                          ? <div className="whitespace-pre-wrap p-2 rounded bg-base-200 max-h-48 overflow-y-auto">{m.transcript}</div>
-                                          : <span className="text-gray-400">No transcript yet — WAVV populates these after the call.</span>}
-                                      </>
+                                      </div>
                                     )}
-                                  </div>
+                                  </>
                                 )}
                               </td>
                             </tr>
@@ -1610,29 +1741,34 @@ export default function SetterPerformancePage() {
                 ) : numberRows.length === 0 ? (
                   <p className="text-sm text-gray-400 py-4">No outbound numbers have been seen in wavv_calls yet.</p>
                 ) : (
-                  <div className="overflow-x-auto mt-3">
-                    <table className="table table-sm">
-                      <thead>
+                  <div className={`${TABLE_WRAP} mt-3`}>
+                    <table className={TABLE}>
+                      <thead className={THEAD}>
                         <tr>
-                          <th>Number</th><th className="text-right">Calls (all time)</th><th>Last used</th>
-                          <th>Label</th><th>Assigned setter</th><th>State</th><th />
+                          <th className={TH}>Number</th>
+                          <th className={TH_NUM}>Calls (all time)</th>
+                          <th className={TH}>Last used</th>
+                          <th className={TH}>Label</th>
+                          <th className={TH}>Assigned setter</th>
+                          <th className={TH}>State</th>
+                          <th className={TH} />
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className={TBODY}>
                         {numberRows.map((n) => {
                           const draft = numberDrafts[n.caller_id] ?? { setter_id: n.setter_id ?? "", label: n.label ?? "" };
                           const dirty = draft.setter_id !== (n.setter_id ?? "") || draft.label !== (n.label ?? "");
                           return (
-                            <tr key={n.caller_id} className="hover align-top">
-                              <td className="font-medium text-gray-900 dark:text-white whitespace-nowrap">
+                            <tr key={n.caller_id} className={`${TR} align-top`}>
+                              <td className={`${TD} font-medium text-gray-900 dark:text-white whitespace-nowrap`}>
                                 {prettyPhone(n.caller_id)}
-                                <div className="text-xs text-gray-400">{n.caller_id}</div>
+                                <div className="text-xs text-gray-400 mt-0.5">{n.caller_id}</div>
                               </td>
-                              <td className="text-right tabular-nums">{n.call_count.toLocaleString()}</td>
-                              <td className="whitespace-nowrap text-sm">
+                              <td className={TD_NUM}>{n.call_count.toLocaleString()}</td>
+                              <td className={`${TD} whitespace-nowrap`}>
                                 {n.last_seen ? new Date(n.last_seen).toLocaleDateString() : <Metric value={null} />}
                               </td>
-                              <td>
+                              <td className={TD}>
                                 <input
                                   type="text"
                                   className="input input-xs input-bordered w-44"
@@ -1641,7 +1777,7 @@ export default function SetterPerformancePage() {
                                   onChange={(e) => setNumberDrafts((d) => ({ ...d, [n.caller_id]: { ...draft, label: e.target.value } }))}
                                 />
                               </td>
-                              <td>
+                              <td className={TD}>
                                 <select
                                   className="select select-xs select-bordered w-52"
                                   value={draft.setter_id}
@@ -1658,16 +1794,16 @@ export default function SetterPerformancePage() {
                                   )}
                                 </select>
                               </td>
-                              <td className="whitespace-nowrap">
+                              <td className={`${TD} whitespace-nowrap`}>
                                 {n.is_assigned ? (
-                                  <span className="badge badge-xs badge-success">assigned</span>
+                                  <span className="badge badge-sm badge-success">assigned</span>
                                 ) : n.in_mapping_table ? (
-                                  <span className="badge badge-xs badge-warning">unassigned</span>
+                                  <span className="badge badge-sm badge-warning">unassigned</span>
                                 ) : (
-                                  <span className="badge badge-xs badge-ghost" title="Seen on the wire but never added to the mapping table — saving adds it">new</span>
+                                  <span className="badge badge-sm badge-ghost" title="Seen on the wire but never added to the mapping table — saving adds it">new</span>
                                 )}
                               </td>
-                              <td className="whitespace-nowrap">
+                              <td className={`${TD} whitespace-nowrap`}>
                                 <button
                                   className="btn btn-xs btn-primary"
                                   disabled={!dirty || savingNumber === n.caller_id}
@@ -1700,17 +1836,19 @@ type SortKey =
   | "name" | "dials" | "dialsPerDay" | "connects" | "human" | "conversations"
   | "positives" | "talk" | "appointments" | "appsSent" | "funded";
 
-const SETTER_COLUMNS: { key: SortKey | null; label: string; align: string; help?: string }[] = [
+/** `groupStart` marks the first PIPELINE column, which carries the vertical rule
+ *  separating it from the dialing group. */
+const SETTER_COLUMNS: { key: SortKey | null; label: string; align: string; help?: string; groupStart?: boolean }[] = [
   { key: "name",          label: "Setter / number", align: "text-left" },
   { key: "dials",         label: "Dials",     align: "text-right", help: "Outbound calls placed from this setter's number(s)" },
   { key: "dialsPerDay",   label: "Dials/day", align: "text-right", help: "Dials ÷ days in this range on which this setter actually dialed" },
   { key: "connects",      label: "Connects",  align: "text-right", help: "Calls with an answer timestamp — includes answering machines" },
   { key: null,            label: "Answer %",  align: "text-right", help: "Connects ÷ dials" },
-  { key: "human",         label: "Humans",    align: "text-right", help: "Calls WAVV classified as reaching a live person" },
+  { key: "human",         label: "Humans",    align: "text-right", help: "Answered and not a voicemail/no-answer. WAVV's human flag is NOT used — it marks voicemails as human." },
   { key: null,            label: "Human %",   align: "text-right", help: "Humans ÷ connects" },
-  { key: "conversations", label: "Convos",    align: "text-right", help: "Human answer with at least 60 seconds of talk time" },
+  { key: "conversations", label: "Convos",    align: "text-right", help: CONVERSATION_HELP },
   { key: "positives",     label: "Positive",  align: "text-right", help: "Interested · Appointment Set · Full Application · Callback" },
-  { key: "appointments",  label: "Appts",     align: "text-right", help: "Deals with an appointment booked in this range" },
+  { key: "appointments",  label: "Appts",     align: "text-right", help: "Deals with an appointment booked in this range", groupStart: true },
   { key: "appsSent",      label: "Apps sent", align: "text-right", help: "Deals whose application was sent in this range" },
   { key: "funded",        label: "Funded",    align: "text-right", help: "Deals funded in this range" },
 ];
