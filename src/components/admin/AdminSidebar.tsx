@@ -308,15 +308,18 @@ export default function AdminSidebar() {
     // "closer" (see UserProfileContext) — they keep the full manager nav.
     // Exceptions: a setter can always reach "My Profile" to keep their own
     // name/address/1099 details current, the "Setter Guide" — their day-one
-    // onboarding doc, which they have to be able to re-open on the floor — and
-    // the "Funder Cheat Sheet" (owner request 8/23: the deal-matching reference
-    // is available to closers; a closer_read_lenders RLS policy backs it).
+    // onboarding doc, which they have to be able to re-open on the floor, the
+    // "Funder Cheat Sheet" (owner request 8/23: the deal-matching reference
+    // is available to closers; a closer_read_lenders RLS policy backs it), and
+    // the "Calendar" (owner request 8/26: closers/setters must see their own
+    // appointments + callbacks; RLS scopes it to their book).
     if (
       profile?.role === "closer" &&
       item.path !== "/admin/playbooks" &&
       item.path !== "/admin/my-profile" &&
       item.path !== "/admin/setter-guide" &&
-      item.path !== "/admin/cheat-sheet"
+      item.path !== "/admin/cheat-sheet" &&
+      item.path !== "/admin/calendar"
     )
       return false;
     // Closer lens: only the daily operating links, regardless of group.
