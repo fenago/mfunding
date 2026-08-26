@@ -14,16 +14,31 @@
 // key value is never printed, never echoed into an error, never stored in state.
 //
 // ── THE INVALID-KEY STATE IS A FIRST-CLASS OUTCOME, NOT A CRASH ──────────────
-// As of this writing the vault key is INVALID — live probe returns
-//   HTTP 401 {"error":"Invalid API key","code":"INVALID_API_KEY"}
-// (the owner most likely pasted the webhook signing secret). Every action
-// therefore branches on 401 and returns HTTP 200 with
+// The vault key is LIVE as of 2026-08-26 (GET /v3/calls returns 200 with real
+// data). It was previously invalid, and the handling for that stays: every action
+// branches on 401 and returns HTTP 200 with
 //   { ok:false, key_invalid:true, error:"WAVV API key invalid …" }
 // and stamps last_status:'key_invalid' into the sync state. This is deliberate:
 // the page must be able to distinguish "the dialer had a quiet day" (real zeros)
 // from "we cannot read WAVV at all" (unreadable). A silent empty result would
 // render as a floor that made no calls — the exact failure-reads-as-success bug
 // this codebase has been burned by. UNREADABLE IS NOT ZERO.
+//
+// ── `direction` IS REQUIRED, AND PAGING RUNS NEWEST-FIRST ────────────────────
+// Two live-verified facts about GET /v3/calls that the original build got wrong:
+//
+//  1. `direction` is MANDATORY. Omitting it returns
+//     HTTP 400 {"error":"direction is required and must be one of: inbound,
+//     outbound"} — so the sync 400'd on every page and stored nothing. We now
+//     page each direction separately and merge into the same upsert.
+//
+//  2. The feed is keyset-paginated NEWEST-FIRST: `nextCursor` is the startedAt of
+//     the last (oldest) row on the page, and passing it walks strictly BACKWARD in
+//     time. That inverts what a watermark means mid-descent. The old code advanced
+//     the watermark to the NEWEST row it had stored and called that gap-free — but
+//     on a descending scan the newest row arrives on page 1, so a truncated run
+//     would jump the watermark past everything it had not yet read and silently
+//     lose the entire older tail. See the resume-cursor design on SyncState.
 //
 // ── ACTIONS ──────────────────────────────────────────────────────────────────
 //   sync       incremental pull from the watermark (minus overlap) to now,
@@ -33,10 +48,9 @@
 //              and NEVER stored (a stored URL would rot and leak).
 //   transcript { transcript, summary } for one call (WAVV populates it async).
 //   reparse    re-derive typed columns from the stored `raw`. NO API spend. This
-//              is the escape hatch for the unknown per-agent field: the moment a
-//              real call reveals whether it is userId / user / member / agent,
-//              add the key to AGENT_KEY_PATHS and one reparse attributes the
-//              entire history. See the agent_key comment on the table.
+//              is the escape hatch for any projection change: widen the field
+//              mapping, deploy, run reparse once, and the whole stored history is
+//              re-derived without touching WAVV.
 //
 // AUTH mirrors ghl-create-opportunities: trusted shared secret (?secret= or
 // x-ghl-secret, matched against get_ghl_config().webhook_secret) for cron, OR a
@@ -50,12 +64,13 @@ import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
 const WAVV_BASE = "https://api.wavv.com/v3";
 const STATE_KEY = "wavv_sync";
 
-// WAVV caps limit at 200. 20 pages ≈ 4,000 calls per run; at a 10-minute cadence
-// that is far more headroom than a PH setter floor can produce, and it bounds a
-// cold first run so a single invocation cannot hit the wall clock. A run that
-// hits the cap reports truncated:true and leaves the watermark at the last call
-// it actually stored, so the next run resumes exactly there — never a gap.
-const MAX_PAGES = 20;
+// WAVV caps limit at 200. The page budget is shared across BOTH directions, so it
+// bounds the whole invocation. 60 pages ≈ 12,000 calls — enough to finish a cold
+// 30-day start in one or two runs (the live floor produced ~8,000 outbound calls in
+// 9 days) while still leaving BUDGET_MS as the real wall-clock guard. A run that
+// hits either cap reports truncated:true and persists a per-direction resume
+// cursor, so the next run continues the descent instead of restarting it.
+const MAX_PAGES = 60;
 const PAGE_LIMIT = 200;
 
 // Re-pull a 10-minute window behind the watermark on every run. WAVV indexes by
@@ -122,13 +137,33 @@ function pick(obj: Record<string, unknown>, paths: string[]): unknown {
   return undefined;
 }
 
-// ── The unknown per-agent field ──────────────────────────────────────────────
-// WAVV's published call-object docs list id/direction/phone/callerId/startedAt/
-// answeredAt/endedAt/seconds/outcome/disposition/human/recorded/summary — and
-// name NO per-agent field, though one must exist for a multi-seat team. We could
-// not confirm it live (invalid key). These are the candidate paths, widest first;
-// whichever hits first wins. When the real field is observed, add it to the TOP
-// of this list and run action:'reparse' — no re-pull, no data loss.
+// ── The per-agent field does not exist. This is a finding, not a TODO. ───────
+// Resolved live on 2026-08-26 against 8,015 real calls. The COMPLETE key set of a
+// WAVV v3 call object is:
+//
+//   id teamId campaignId direction phone callerId contactId contactName
+//   startedAt answeredAt endedAt seconds outcome disposition human note
+//   summary recorded
+//
+// No user, member, seat, agent, owner or dialer field — under any spelling, at any
+// depth. Three further probes close off the workarounds:
+//   • The roster cannot be fetched: /v3/users, /v3/team, /v3/teams, /v3/members,
+//     /v3/agents and /v3/campaigns ALL return 401 INVALID_API_KEY with the same
+//     key that reads /calls fine. The token is scoped to calls only.
+//   • /calls silently IGNORES unknown query params — userId=, agentId=, expand=user
+//     all return 200 with unfiltered data rather than 400. So there is no hidden
+//     user dimension to filter on either; a 200 here proves nothing exists.
+//   • GET /v3/calls/{id} returns the same 18 fields as the list. No detail expansion.
+//
+// The paths below are kept ONLY so that if WAVV later adds the field, one deploy +
+// action:'reparse' attributes the whole stored history with no re-pull. Today they
+// all miss and agent_key stays NULL, which is the honest answer.
+//
+// DO NOT proxy attribution from caller_id or campaign_id. caller_id is two shared
+// company numbers across the entire floor (9543354964 / 9542450661) and campaign_id
+// is a dial LIST, not a person. Grouping by either would render a per-setter
+// scorecard that looks authoritative and attributes calls to the wrong people —
+// worse than showing "Unattributed", which is true.
 const AGENT_KEY_PATHS = [
   "userId", "user.id", "user", "memberId", "member.id", "member",
   "agentId", "agent.id", "agent", "seatId", "seat.id", "seat",
@@ -172,14 +207,38 @@ function projectCall(raw: Record<string, unknown>) {
     human:        boolOrNull(pick(raw, ["human"])),
     recorded:     boolOrNull(pick(raw, ["recorded"])),
     summary:      clean(pick(raw, ["summary"])),
+    // Real fields the first build dropped on the floor. contact_id is the GHL
+    // contact id in the MFunding location (verified live) — the only join key
+    // between a WAVV call and a lead we own, so it is the closest thing to
+    // attribution this feed offers.
+    team_id:      clean(pick(raw, ["teamId", "team_id"])),
+    campaign_id:  clean(pick(raw, ["campaignId", "campaign_id"])),
+    contact_id:   clean(pick(raw, ["contactId", "contact_id"])),
+    contact_name: clean(pick(raw, ["contactName", "contact_name"])),
+    note:         clean(pick(raw, ["note"])),
     agent_key:    agentKey,
     agent_name:   agentName,
     raw,
   };
 }
 
+const DIRECTIONS = ["outbound", "inbound"] as const;
+type Direction = typeof DIRECTIONS[number];
+
 type SyncState = {
+  /** Everything with startedAt > watermark has been COMPLETELY synced, both
+   *  directions. Only advances when a full window finishes — never mid-descent. */
   watermark: string | null;
+  /** Upper bound of a window still being walked across multiple invocations. It is
+   *  pinned at the start of the descent so calls arriving mid-walk cannot shift the
+   *  window under us; they are picked up by the next window instead. */
+  run_before: string | null;
+  /** Directions still owing work in the current window, each mapped to its resume
+   *  cursor (null = start from the newest end). A direction is DELETED from this map
+   *  once it is fully drained. Empty/absent map = the window is complete, which is
+   *  the only condition under which the watermark may move. Presence-as-work-owed is
+   *  what makes a truncated descending scan resumable without a gap. */
+  pending: Partial<Record<Direction, string | null>> | null;
   last_sync_at: string | null;
   last_status: string;
   last_error: string | null;
@@ -189,7 +248,8 @@ type SyncState = {
 };
 
 const EMPTY_STATE: SyncState = {
-  watermark: null, last_sync_at: null, last_status: "never_run",
+  watermark: null, run_before: null, pending: null,
+  last_sync_at: null, last_status: "never_run",
   last_error: null, key_invalid: false, rows_upserted_last: 0, truncated: false,
 };
 
@@ -396,89 +456,124 @@ Deno.serve(async (req) => {
 
   if (action !== "sync") return json({ error: `unknown action "${action}"` }, 400);
 
-  // ── sync — incremental pull ───────────────────────────────────────────────
+  // ── sync — incremental pull, both directions ──────────────────────────────
   const state = await loadState(db);
   const nowIso = new Date().toISOString();
+
+  // Resume an unfinished window rather than starting a new one, otherwise a floor
+  // that out-produces one invocation would restart the descent forever and never
+  // reach its own history.
+  const resuming = !!(state.run_before && state.pending && Object.keys(state.pending).length > 0);
+  const before = resuming ? state.run_before! : nowIso;
+  const pending: Partial<Record<Direction, string | null>> = resuming
+    ? { ...state.pending }
+    : { outbound: null, inbound: null };
+
   // Watermark minus the overlap window; cold start reaches back COLD_START_DAYS
   // rather than pulling all of WAVV's history in one invocation.
   const startedAfter = state.watermark
     ? new Date(new Date(state.watermark).getTime() - OVERLAP_MS).toISOString()
     : new Date(Date.now() - COLD_START_DAYS * 86_400_000).toISOString();
 
-  let cursor: string | null = null;
   let pages = 0, upserted = 0, truncated = false;
-  let maxStarted: string | null = state.watermark;
+  const perDirection: Record<string, number> = {};
 
-  while (pages < MAX_PAGES) {
-    if (Date.now() - startedMs > BUDGET_MS) { truncated = true; break; }
+  // Page budget and wall clock are shared across both directions — the runtime
+  // kills the whole invocation, not one loop.
+  outer:
+  for (const dir of DIRECTIONS) {
+    if (!(dir in pending)) continue;   // already drained in an earlier invocation
+    let cursor: string | null = pending[dir] ?? null;
+    perDirection[dir] = perDirection[dir] ?? 0;
 
-    const params: Record<string, string> = {
-      startedAfter,
-      startedBefore: nowIso,
-      limit: String(PAGE_LIMIT),
-    };
-    if (cursor) params.cursor = cursor;
+    for (;;) {
+      if (pages >= MAX_PAGES || Date.now() - startedMs > BUDGET_MS) {
+        // Stop mid-descent. `cursor` is where this direction must resume from; it
+        // is persisted below, so the older tail is not lost.
+        pending[dir] = cursor;
+        truncated = true;
+        break outer;
+      }
 
-    const res = await wavvGet<Record<string, unknown>>(apiKey, "/calls", params);
-    if (!res.ok) {
-      // Nothing partial is thrown away: whatever pages already landed are stored
-      // and the watermark advances to the newest call ACTUALLY stored, so the
-      // next run resumes from there. The failure is reported honestly.
-      const patch: Partial<SyncState> = {
-        last_sync_at: nowIso,
-        last_status: res.keyInvalid ? "key_invalid" : "error",
-        last_error: res.error,
-        key_invalid: res.keyInvalid,
-        rows_upserted_last: upserted,
-        truncated,
+      const params: Record<string, string> = {
+        direction: dir,               // REQUIRED — omitting it is a hard 400.
+        startedAfter,
+        startedBefore: before,
+        limit: String(PAGE_LIMIT),
       };
-      if (maxStarted && maxStarted !== state.watermark) patch.watermark = maxStarted;
-      const saved = await saveState(db, patch);
-      return json({
-        ok: false, key_invalid: res.keyInvalid, error: res.error,
-        upserted, pages, truncated, watermark: saved.watermark,
-      });
-    }
-    pages++;
+      if (cursor) params.cursor = cursor;
 
-    const body = res.body;
-    // Defensive shape handling: the docs describe a paginated collection but we
-    // could not confirm the wrapper key, so the common shapes are all accepted.
-    const items = (Array.isArray(body) ? body
-      : Array.isArray(body.calls) ? body.calls
-      : Array.isArray(body.data) ? body.data
-      : Array.isArray(body.results) ? body.results
-      : Array.isArray(body.items) ? body.items
-      : []) as Record<string, unknown>[];
-
-    const rows = items.map(projectCall).filter((r) => r.wavv_call_id.length > 0);
-    if (rows.length) {
-      const { error } = await db.from("wavv_calls")
-        .upsert(rows, { onConflict: "wavv_call_id" });
-      if (error) {
+      const res = await wavvGet<Record<string, unknown>>(apiKey, "/calls", params);
+      if (!res.ok) {
+        // Nothing partial is thrown away: pages already stored stay stored, and the
+        // resume cursor is persisted so the next run picks the descent back up at
+        // exactly this point. The watermark does NOT move — the window is unfinished.
+        pending[dir] = cursor;
         const saved = await saveState(db, {
-          last_sync_at: nowIso, last_status: "error",
-          last_error: `upsert failed: ${error.message}`, rows_upserted_last: upserted, truncated,
+          run_before: before,
+          pending,
+          last_sync_at: nowIso,
+          last_status: res.keyInvalid ? "key_invalid" : "error",
+          last_error: res.error,
+          key_invalid: res.keyInvalid,
+          rows_upserted_last: upserted,
+          truncated: true,
         });
-        return json({ ok: false, error: `upsert failed: ${error.message}`, upserted, pages, watermark: saved.watermark }, 500);
+        return json({
+          ok: false, key_invalid: res.keyInvalid, error: res.error,
+          upserted, pages, direction: dir, truncated: true, watermark: saved.watermark,
+        });
       }
-      upserted += rows.length;
-      for (const r of rows) {
-        if (r.started_at && (!maxStarted || r.started_at > maxStarted)) maxStarted = r.started_at;
-      }
-    }
+      pages++;
 
-    cursor = (clean(pick(body, ["nextCursor", "next_cursor", "cursor", "paging.nextCursor"])) ?? null) as string | null;
-    if (!cursor || items.length === 0) break;
-    if (pages >= MAX_PAGES) truncated = true;
+      const body = res.body;
+      // Live shape is { data: [...], nextCursor }. The other wrappers are kept as
+      // cheap tolerance in case WAVV renames the envelope.
+      const items = (Array.isArray(body) ? body
+        : Array.isArray(body.data) ? body.data
+        : Array.isArray(body.calls) ? body.calls
+        : Array.isArray(body.results) ? body.results
+        : Array.isArray(body.items) ? body.items
+        : []) as Record<string, unknown>[];
+
+      const rows = items.map(projectCall).filter((r) => r.wavv_call_id.length > 0);
+      if (rows.length) {
+        const { error } = await db.from("wavv_calls")
+          .upsert(rows, { onConflict: "wavv_call_id" });
+        if (error) {
+          pending[dir] = cursor;
+          const saved = await saveState(db, {
+            run_before: before, pending,
+            last_sync_at: nowIso, last_status: "error",
+            last_error: `upsert failed: ${error.message}`,
+            rows_upserted_last: upserted, truncated: true,
+          });
+          return json({ ok: false, error: `upsert failed: ${error.message}`, upserted, pages, watermark: saved.watermark }, 500);
+        }
+        upserted += rows.length;
+        perDirection[dir] += rows.length;
+      }
+
+      const next = clean(pick(body, ["nextCursor", "next_cursor", "paging.nextCursor"]));
+      // No cursor, an empty page, or a cursor that failed to move = the end of this
+      // direction's window. The equality guard matters: a cursor that repeats would
+      // otherwise spin until the budget runs out and report a false truncation.
+      if (!next || items.length === 0 || next === cursor) {
+        delete pending[dir];
+        break;
+      }
+      cursor = next;
+    }
   }
 
-  // On a clean, complete pass with nothing new, hold the watermark at `now` so
-  // the window does not creep backwards; otherwise take the newest call stored.
-  const newWatermark = truncated ? (maxStarted ?? state.watermark) : (maxStarted && maxStarted > nowIso ? maxStarted : nowIso);
+  // The window is done only when BOTH directions have drained. Until then the
+  // watermark stays put — moving it early is exactly the gap this design prevents.
+  const complete = Object.keys(pending).length === 0;
 
   const saved = await saveState(db, {
-    watermark: newWatermark,
+    watermark: complete ? before : state.watermark,
+    run_before: complete ? null : before,
+    pending: complete ? null : pending,
     last_sync_at: nowIso,
     last_status: "ok",
     last_error: null,
@@ -487,5 +582,13 @@ Deno.serve(async (req) => {
     truncated,
   });
 
-  return json({ ok: true, upserted, pages, truncated, watermark: saved.watermark });
+  return json({
+    ok: true, upserted, pages, truncated,
+    complete, per_direction: perDirection,
+    window: { startedAfter, startedBefore: before },
+    watermark: saved.watermark,
+    // Present only while a descent is still owed work — tells the caller to invoke
+    // again rather than assume the pull finished.
+    pending: complete ? null : pending,
+  });
 });
