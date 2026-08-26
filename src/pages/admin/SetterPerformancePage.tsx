@@ -42,7 +42,8 @@
 //    number, so it can carry no setter attribution at all. The view excludes it
 //    and this page never adds it back.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import {
   PhoneIcon,
   ArrowPathIcon,
@@ -81,6 +82,10 @@ interface SetterCall {
   human: boolean | null;
   recorded: boolean | null;
   phone: string | null;
+  /** The GHL contact id. Drives the "Open →" deep link into the Revenue
+   *  Playbook (/admin/playbooks?contact=…). Null on a dial WAVV never tied to a
+   *  contact record — those rows render un-clickable rather than guessing. */
+  contact_id: string | null;
   contact_name: string | null;
   caller_id: string | null;
   setter_id: string | null;
@@ -94,7 +99,7 @@ interface SetterCall {
 // One unbroken string literal on purpose: the client is untyped, so supabase-js
 // infers the row shape by parsing this literal. Splitting it across a `+`
 // concatenation defeats that parse and the result degrades to GenericStringError.
-const CALL_COLS = "wavv_call_id,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
+const CALL_COLS = "wavv_call_id,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
 
 const CALLS_VIEW = "v_wavv_outbound_setter_calls";
 const NUMBERS_VIEW = "v_wavv_outbound_caller_ids";
@@ -181,7 +186,12 @@ const CONVERSATION_HELP =
 
 /** Outcomes WAVV reports for a machine or an unanswered line. NO_CALLBACK is on
  *  the list on purpose: those rows average 8 seconds and are flagged human. */
-const NON_HUMAN_OUTCOMES = new Set(["VOICEMAIL", "NO_VOICEMAIL", "NO_ANSWER", "NO_CALLBACK"]);
+const NON_HUMAN_OUTCOMES = ["VOICEMAIL", "NO_VOICEMAIL", "NO_ANSWER", "NO_CALLBACK"] as const;
+const NON_HUMAN_OUTCOME_SET = new Set<string>(NON_HUMAN_OUTCOMES);
+/** Dispositions a setter picks when the line was a machine or nobody picked up. */
+const NON_HUMAN_DISPOSITIONS = ["Voice Message", "No Answer"] as const;
+/** WAVV stamps this note prefix when the dialer dropped a pre-recorded voicemail. */
+const VOICEMAIL_NOTE_PREFIX = "Played voicemail";
 
 /** REACHED A HUMAN = the call was answered and nothing about it says machine.
  *  Defined negatively (exclude the voicemail/no-answer tells) rather than by
@@ -189,15 +199,176 @@ const NON_HUMAN_OUTCOMES = new Set(["VOICEMAIL", "NO_VOICEMAIL", "NO_ANSWER", "N
  *  Connects — a rejected/disconnected/busy line reached nobody. */
 function reachedHuman(r: Pick<SetterCall, "answered_at" | "outcome" | "disposition" | "note">): boolean {
   if (!r.answered_at) return false;
-  if (r.outcome && NON_HUMAN_OUTCOMES.has(r.outcome.toUpperCase())) return false;
-  if (r.disposition === "Voice Message" || r.disposition === "No Answer") return false;
+  if (r.outcome && NON_HUMAN_OUTCOME_SET.has(r.outcome.toUpperCase())) return false;
+  if (r.disposition && (NON_HUMAN_DISPOSITIONS as readonly string[]).includes(r.disposition)) return false;
   if (r.note && /^\s*played voicemail/i.test(r.note)) return false;
   return true;
+}
+
+// ── The SERVER-SIDE twin of reachedHuman() ───────────────────────────────────
+// The Call log is a paged server query, so its "reached a human" filter has to
+// run in Postgres — filtering the visible page in the browser would silently
+// answer a different question ("humans on page 1") than the one asked.
+//
+// Both strings are built from the SAME constants reachedHuman() uses, so the
+// predicate and the filter cannot drift apart. Each clause is null-SAFE: in SQL
+// `outcome NOT IN (...)` is NULL (→ excluded) when outcome is null, but a null
+// outcome tells us nothing about a machine, so the row must survive.
+//
+// One knowing difference: reachedHuman() upper-cases outcome before comparing
+// and these compare as stored. Every outcome WAVV has ever written is already
+// upper-case, so the two agree on today's data; if a lower-case outcome ever
+// lands, the filter is the one that would miss it.
+const IN_LIST = (values: readonly string[]) => values.map((v) => (v.includes(" ") ? `"${v}"` : v)).join(",");
+
+/** ANDed together (each is one `.or()`), plus answered_at NOT NULL, these select
+ *  exactly the rows reachedHuman() returns true for. */
+const HUMAN_OR_CLAUSES = [
+  `outcome.is.null,outcome.not.in.(${IN_LIST(NON_HUMAN_OUTCOMES)})`,
+  `disposition.is.null,disposition.not.in.(${IN_LIST(NON_HUMAN_DISPOSITIONS)})`,
+  `note.is.null,note.not.ilike."${VOICEMAIL_NOTE_PREFIX}%"`,
+];
+
+/** The exact complement — one OR, because NOT(a AND b AND c) is (¬a OR ¬b OR ¬c).
+ *  It therefore includes lines that were never answered at all, not only
+ *  voicemails, which is why the UI labels it "voicemail / no human". */
+const NOT_HUMAN_OR_CLAUSE = [
+  "answered_at.is.null",
+  `outcome.in.(${IN_LIST(NON_HUMAN_OUTCOMES)})`,
+  `disposition.in.(${IN_LIST(NON_HUMAN_DISPOSITIONS)})`,
+  `note.ilike."${VOICEMAIL_NOTE_PREFIX}%"`,
+].join(",");
+
+/** Every outcome WAVV has written to this mirror. Kept as a constant so the
+ *  dropdown offers the full vocabulary even when the active range contains only
+ *  a few of them; anything new that shows up in the data is unioned in. */
+const KNOWN_OUTCOMES = [
+  "VOICEMAIL", "USER_HUNG_UP", "NO_ANSWER", "NO_CALLBACK", "HUNG_UP",
+  "REJECTED", "DISCONNECTED", "BUSY", "NO_VOICEMAIL", "UNKNOWN",
+];
+
+/** PostgREST parses `or=(…)` as a comma-separated list, so a raw search string
+ *  containing , ( ) " \ would rewrite the filter rather than be matched by it.
+ *  Wildcards are stripped too — a typed % should search for text, not glob. */
+function sanitizeSearch(q: string): string {
+  return q.replace(/[,()"\\%*]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function isConversation(r: Pick<SetterCall, "disposition">): boolean {
   return !!r.disposition && CONVERSATION_DISPOSITIONS.includes(r.disposition);
 }
+
+// ── The funnel, as one definition ────────────────────────────────────────────
+// Dial → Connect (answered_at set) → Human (reachedHuman: answered and not a
+// voicemail/no-answer tell) → Conversation (a talk disposition) → Positive
+// disposition. Each stage is a strict subset of the one above it — the
+// conversation dispositions only ever occur on answered, non-voicemail rows —
+// so the step rates are real conditional rates, never over 100%.
+//
+// Pure and row-based on purpose: the team-wide funnel and every per-setter /
+// per-number card run this SAME function over a different slice of the same
+// loaded rows, so a grouped card can never drift from the combined one.
+interface FunnelCounts {
+  dials: number;
+  connects: number;
+  humans: number;
+  conversations: number;
+  positives: number;
+  talkSeconds: number;
+  connectedSeconds: number;
+  uniqueLeads: number;
+}
+
+function computeFunnel(calls: SetterCall[]): FunnelCounts {
+  let dials = 0, connects = 0, humans = 0, conversations = 0, positives = 0;
+  let talkSeconds = 0, connectedSeconds = 0;
+  const phones = new Set<string>();
+  for (const r of calls) {
+    dials++;
+    const secs = r.seconds ?? 0;
+    talkSeconds += secs;
+    if (r.answered_at) { connects++; connectedSeconds += secs; }
+    if (reachedHuman(r)) humans++;
+    if (isConversation(r)) conversations++;
+    if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) positives++;
+    if (r.phone) phones.add(r.phone);
+  }
+  return { dials, connects, humans, conversations, positives, talkSeconds, connectedSeconds, uniqueLeads: phones.size };
+}
+
+interface FunnelStage {
+  key: string;
+  label: string;
+  /** Short label for the compact grid cards, where the full sentence will not fit. */
+  short: string;
+  help: string;
+  count: number;
+  stepLabel: string;
+  stepShort: string;
+  stepPct: number | null;
+  targetKey: string | null;
+}
+
+function funnelStagesOf(f: FunnelCounts): FunnelStage[] {
+  const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
+  return [
+    {
+      key: "dials", label: "Dials", short: "Dials", help: "Outbound call rows in this range",
+      count: f.dials, stepLabel: "—", stepShort: "—", stepPct: null, targetKey: null,
+    },
+    {
+      key: "connects", label: "Connects", short: "Connects",
+      help: "WAVV recorded an answer timestamp — INCLUDING answering machines",
+      count: f.connects, stepLabel: "of dials answered", stepShort: "answered",
+      stepPct: pct(f.connects, f.dials), targetKey: "answer_rate_pct",
+    },
+    {
+      key: "human", label: "Reached a human", short: "Humans",
+      help: "Answered, and nothing about the call says machine: outcome is not VOICEMAIL / NO_VOICEMAIL / NO_ANSWER / NO_CALLBACK, the setter did not disposition it 'Voice Message' or 'No Answer', and no 'Played voicemail' note. WAVV's own human flag is NOT used — it marks voicemails as human.",
+      count: f.humans, stepLabel: "of answers were human", stepShort: "were human",
+      stepPct: pct(f.humans, f.connects), targetKey: "human_rate_pct",
+    },
+    {
+      key: "conversations", label: "Conversations", short: "Conversations", help: CONVERSATION_HELP,
+      count: f.conversations, stepLabel: "of humans dispositioned as a talk", stepShort: "of humans talked",
+      stepPct: pct(f.conversations, f.humans), targetKey: "conversation_rate_pct",
+    },
+    {
+      key: "positives", label: "Positive dispositions", short: "Positives",
+      help: POSITIVE_DISPOSITIONS.join(" · "),
+      count: f.positives, stepLabel: "of conversations", stepShort: "of talks",
+      stepPct: pct(f.positives, f.conversations), targetKey: "positive_rate_pct",
+    },
+  ];
+}
+
+/** How the Funnel tab is sliced. Combined is the default and is the team-wide
+ *  funnel exactly as it has always rendered.
+ *
+ *  There is deliberately NO "by number" view: a setter is assigned to a single
+ *  number 1:1, so by-number would draw the identical funnel under a different
+ *  heading. The by-number case that DOES carry information — a number nobody is
+ *  assigned to — is folded into "By setter" as its own card, titled with the
+ *  line rather than with an invented person. */
+type FunnelView = "combined" | "setter";
+const FUNNEL_VIEWS: { id: FunnelView; label: string }[] = [
+  { id: "combined", label: "Combined" },
+  { id: "setter",   label: "By setter" },
+];
+
+/** One grouped slice of the loaded rows — a setter, or an unassigned line.
+ *  Never a fabricated person: an unattributed row keeps its number's identity. */
+interface FunnelGroup {
+  key: string;
+  title: string;
+  subtitle: string;
+  unassigned: boolean;
+  calls: SetterCall[];
+}
+
+/** Looks a KPI threshold up, and says whether it came from the stored settings
+ *  blob or a built-in default. Passed down so a card never invents a target. */
+type TargetLookup = (key: string) => { target: KpiTarget | null; isDefault: boolean };
 
 const UNASSIGNED_FILTER = "__unassigned__";
 
@@ -255,6 +426,27 @@ type RangeKey = "today" | "yesterday" | "7d" | "30d" | "custom";
 const RANGE_LABELS: Record<RangeKey, string> = {
   today: "Today", yesterday: "Yesterday", "7d": "Last 7 days", "30d": "Last 30 days", custom: "Custom",
 };
+
+/** Stamped in US Eastern, and LABELLED as Eastern in the header, because the
+ *  floor runs on an Eastern clock while the managers reading this do not all
+ *  sit in it. The date-range pills stay on the reader's local day (see above) —
+ *  the column tooltip carries the reader's own clock so the two are never
+ *  silently conflated. */
+function etStamp(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+function localTimeTitle(iso: string | null): string {
+  if (!iso) return "No start time reported by WAVV";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "No start time reported by WAVV";
+  return `Your local time: ${d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+}
 
 function sinceText(iso: string | null): string {
   if (!iso) return "never";
@@ -415,7 +607,15 @@ export default function SetterPerformancePage() {
   const canManageNumbers = isAdmin || isSuperAdmin;
 
   const [tab, setTab] = useState<TabId>("funnel");
-  const [rangeKey, setRangeKey] = useState<RangeKey>("7d");
+  /** Sub-toggle INSIDE the Funnel panel — not a page tab. Combined is default. */
+  const [funnelView, setFunnelView] = useState<FunnelView>("combined");
+  /** Scroll target for the funnel's clickable "Positive dispositions" count. */
+  const positivesRef = useRef<HTMLDivElement | null>(null);
+  const [positivesHighlight, setPositivesHighlight] = useState(false);
+  // Opens on TODAY: this page is read as a shift monitor — "how is the floor
+  // doing right now" — so the first paint must be today's dials, not a 7-day
+  // blend that hides a dead morning.
+  const [rangeKey, setRangeKey] = useState<RangeKey>("today");
   const [customFrom, setCustomFrom] = useState<string>(ymd(localDayStart(6)));
   const [customTo, setCustomTo] = useState<string>(ymd(localDayStart(0)));
 
@@ -444,6 +644,13 @@ export default function SetterPerformancePage() {
   const [filterNumber, setFilterNumber] = useState<string>("all");
   const [filterDisposition, setFilterDisposition] = useState<string>("all");
   const [filterMinSeconds, setFilterMinSeconds] = useState<string>("");
+  const [filterOutcome, setFilterOutcome] = useState<string>("all");
+  const [filterContact, setFilterContact] = useState<"all" | "human" | "machine">("all");
+  const [filterRecording, setFilterRecording] = useState<"all" | "yes" | "no">("all");
+  /** What the user is typing, and what has actually been sent. Debounced so a
+   *  10-character name is one server round trip, not ten. */
+  const [logSearch, setLogSearch] = useState<string>("");
+  const [logSearchApplied, setLogSearchApplied] = useState<string>("");
 
   // Numbers tab (admin control surface for attribution).
   const [numberRows, setNumberRows] = useState<NumberRow[] | null>(null);
@@ -624,6 +831,35 @@ export default function SetterPerformancePage() {
       const minSec = parseInt(filterMinSeconds, 10);
       if (Number.isFinite(minSec) && minSec > 0) q = q.gte("seconds", minSec);
 
+      if (filterOutcome !== "all") q = q.eq("outcome", filterOutcome);
+
+      // Contact type runs in Postgres, not on the fetched page — see the
+      // HUMAN_OR_CLAUSES comment. Each .or() is appended as its own `or=` param
+      // and PostgREST ANDs repeated params together.
+      if (filterContact === "human") {
+        q = q.not("answered_at", "is", null);
+        for (const clause of HUMAN_OR_CLAUSES) q = q.or(clause);
+      } else if (filterContact === "machine") {
+        q = q.or(NOT_HUMAN_OR_CLAUSE);
+      }
+
+      // `recorded` is nullable, so "No recording" must claim the unknowns too —
+      // otherwise a null row belongs to neither option and quietly disappears.
+      if (filterRecording === "yes") q = q.is("recorded", true);
+      else if (filterRecording === "no") q = q.or("recorded.is.false,recorded.is.null");
+
+      // Name OR phone. Phone is stored as bare digits, so a typed "(412) 668"
+      // is reduced to digits before matching — otherwise the punctuation the
+      // table displays would never match the value it is stored as.
+      if (logSearchApplied.trim()) {
+        const text = sanitizeSearch(logSearchApplied);
+        const digits = logSearchApplied.replace(/\D/g, "");
+        const parts: string[] = [];
+        if (text) parts.push(`contact_name.ilike."%${text}%"`);
+        if (digits) parts.push(`phone.ilike."%${digits}%"`);
+        if (parts.length > 0) q = q.or(parts.join(","));
+      }
+
       const { data, error, count } = await q
         .order("started_at", { ascending: false })
         .range(logPage * LOG_PAGE_SIZE, logPage * LOG_PAGE_SIZE + LOG_PAGE_SIZE - 1);
@@ -637,12 +873,23 @@ export default function SetterPerformancePage() {
       setLoadError((prev) => prev ?? (e instanceof Error ? e.message : "Failed to load the call log"));
     }
     setLogLoading(false);
-  }, [fromIso, toIso, filterSetter, filterNumber, filterDisposition, filterMinSeconds, logPage]);
+  }, [
+    fromIso, toIso, filterSetter, filterNumber, filterDisposition, filterMinSeconds,
+    filterOutcome, filterContact, filterRecording, logSearchApplied, logPage,
+  ]);
 
   useEffect(() => { void loadLog(); }, [loadLog]);
   // Any filter or range change restarts pagination — page 3 of a different
   // filter is a different question.
-  useEffect(() => { setLogPage(0); }, [fromIso, toIso, filterSetter, filterNumber, filterDisposition, filterMinSeconds]);
+  useEffect(() => { setLogPage(0); }, [
+    fromIso, toIso, filterSetter, filterNumber, filterDisposition, filterMinSeconds,
+    filterOutcome, filterContact, filterRecording, logSearchApplied,
+  ]);
+  // Debounce the search box so typing does not fire a query per keystroke.
+  useEffect(() => {
+    const t = window.setTimeout(() => setLogSearchApplied(logSearch), 350);
+    return () => window.clearTimeout(t);
+  }, [logSearch]);
 
   // ── Sync now ──────────────────────────────────────────────────────────────
   async function syncNow() {
@@ -709,27 +956,8 @@ export default function SetterPerformancePage() {
   }
 
   // ── Team funnel ───────────────────────────────────────────────────────────
-  // Dial → Connect (answered_at set) → Human (reachedHuman: answered and not a
-  // voicemail/no-answer tell) → Conversation (a talk disposition) → Positive
-  // disposition. Each stage is a strict subset of the one above it — the
-  // conversation dispositions only ever occur on answered, non-voicemail rows —
-  // so the step rates below are real conditional rates, never over 100%.
-  const funnel = useMemo(() => {
-    let dials = 0, connects = 0, humans = 0, conversations = 0, positives = 0;
-    let talkSeconds = 0, connectedSeconds = 0;
-    const phones = new Set<string>();
-    for (const r of aggRows) {
-      dials++;
-      const secs = r.seconds ?? 0;
-      talkSeconds += secs;
-      if (r.answered_at) { connects++; connectedSeconds += secs; }
-      if (reachedHuman(r)) humans++;
-      if (isConversation(r)) conversations++;
-      if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) positives++;
-      if (r.phone) phones.add(r.phone);
-    }
-    return { dials, connects, humans, conversations, positives, talkSeconds, connectedSeconds, uniqueLeads: phones.size };
-  }, [aggRows]);
+  // Same computeFunnel() the grouped cards use, run over every loaded row.
+  const funnel = useMemo(() => computeFunnel(aggRows), [aggRows]);
 
   const targetFor = useCallback(
     (key: string): { target: KpiTarget | null; isDefault: boolean } => {
@@ -743,32 +971,77 @@ export default function SetterPerformancePage() {
     [targets],
   );
 
-  const funnelStages = useMemo(() => {
-    const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
-    return [
-      {
-        key: "dials", label: "Dials", help: "Outbound call rows in this range",
-        count: funnel.dials, stepLabel: "—", stepPct: null as number | null, targetKey: null as string | null,
-      },
-      {
-        key: "connects", label: "Connects", help: "WAVV recorded an answer timestamp — INCLUDING answering machines",
-        count: funnel.connects, stepLabel: "of dials answered", stepPct: pct(funnel.connects, funnel.dials), targetKey: "answer_rate_pct",
-      },
-      {
-        key: "human", label: "Reached a human",
-        help: "Answered, and nothing about the call says machine: outcome is not VOICEMAIL / NO_VOICEMAIL / NO_ANSWER / NO_CALLBACK, the setter did not disposition it 'Voice Message' or 'No Answer', and no 'Played voicemail' note. WAVV's own human flag is NOT used — it marks voicemails as human.",
-        count: funnel.humans, stepLabel: "of answers were human", stepPct: pct(funnel.humans, funnel.connects), targetKey: "human_rate_pct",
-      },
-      {
-        key: "conversations", label: "Conversations", help: CONVERSATION_HELP,
-        count: funnel.conversations, stepLabel: "of humans dispositioned as a talk", stepPct: pct(funnel.conversations, funnel.humans), targetKey: "conversation_rate_pct",
-      },
-      {
-        key: "positives", label: "Positive dispositions", help: POSITIVE_DISPOSITIONS.join(" · "),
-        count: funnel.positives, stepLabel: "of conversations", stepPct: pct(funnel.positives, funnel.conversations), targetKey: "positive_rate_pct",
-      },
-    ];
-  }, [funnel]);
+  // ── Funnel grouping (Combined / By setter / By number) ────────────────────
+  // Grouped in memory off the SAME aggRows the combined funnel uses — no extra
+  // query. A row the view could not attribute (setter_id null) groups under its
+  // number's label; it is NEVER promoted into a person it was not assigned to.
+  const funnelGroups = useMemo((): FunnelGroup[] => {
+    if (funnelView === "combined") return [];
+    const acc = new Map<string, FunnelGroup>();
+    for (const r of aggRows) {
+      // Attributed → the person. Unattributed → the LINE, titled with its
+      // number/label and badged. A number is never promoted into a person.
+      const attributed = !!r.setter_id;
+      const key = attributed ? `setter:${r.setter_id}` : `caller:${r.caller_id ?? "unknown"}`;
+      let g = acc.get(key);
+      if (!g) {
+        g = attributed
+          ? {
+              key,
+              title: r.setter_name ?? "Setter (name not reported)",
+              subtitle: r.caller_id ? `Dialing from ${prettyPhone(r.caller_id)}` : "Assigned setter",
+              unassigned: false,
+              calls: [],
+            }
+          : {
+              key,
+              title: r.caller_label ?? (r.caller_id ? prettyPhone(r.caller_id) : "Unknown number"),
+              subtitle: r.caller_id ? prettyPhone(r.caller_id) : "No caller ID on these rows",
+              unassigned: true,
+              calls: [],
+            };
+        acc.set(key, g);
+      }
+      // Setters are 1:1 with a number, but if the data ever says otherwise the
+      // subtitle says so rather than naming whichever number landed first.
+      if (attributed && r.caller_id && g.subtitle.startsWith("Dialing from")) {
+        const line = `Dialing from ${prettyPhone(r.caller_id)}`;
+        if (g.subtitle !== line) g.subtitle = "Dialing from multiple numbers";
+      }
+      g.calls.push(r);
+    }
+    return [...acc.values()]
+      .filter((g) => g.calls.length > 0)
+      .sort((a, b) => b.calls.length - a.calls.length);
+  }, [aggRows, funnelView]);
+
+  // ── Positive dispositions, call by call ───────────────────────────────────
+  // Every row in range whose disposition is on POSITIVE_DISPOSITIONS — the exact
+  // rows behind the funnel's bottom bar, so a manager can open the merchant
+  // instead of trusting a number. Sorted by disposition (in ladder order), then
+  // newest first inside each. Built from the SAME aggRows; no extra query.
+  const positiveCalls = useMemo(() => {
+    const rows = aggRows.filter((r) => r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition));
+    return rows.sort((a, b) => {
+      const da = POSITIVE_DISPOSITIONS.indexOf(a.disposition!);
+      const db = POSITIVE_DISPOSITIONS.indexOf(b.disposition!);
+      if (da !== db) return da - db;
+      return (b.started_at ?? "").localeCompare(a.started_at ?? "");
+    });
+  }, [aggRows]);
+
+  const positiveCounts = useMemo(() => {
+    const counts = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
+    for (const r of positiveCalls) counts.set(r.disposition!, (counts.get(r.disposition!) ?? 0) + 1);
+    return POSITIVE_DISPOSITIONS.map((d) => ({ disposition: d, count: counts.get(d) ?? 0 }));
+  }, [positiveCalls]);
+
+  /** The funnel's positive bar is a jump link into the list of those exact calls. */
+  const jumpToPositives = useCallback(() => {
+    positivesRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setPositivesHighlight(true);
+    window.setTimeout(() => setPositivesHighlight(false), 1600);
+  }, []);
 
   // ── Per-setter aggregates ─────────────────────────────────────────────────
   // Grouped on the view's own setter_id. A row the view could not attribute
@@ -938,6 +1211,36 @@ export default function SetterPerformancePage() {
     () => dispositionBreakdown.map((d) => (d.label === "(none)" ? ["__none__", "(none)"] as const : [d.label, d.label] as const)),
     [dispositionBreakdown],
   );
+
+  /** The known WAVV vocabulary, plus anything new the mirror has started
+   *  reporting — so a value that exists in the data is never unfilterable. */
+  const outcomeOptions = useMemo(() => {
+    const seen = new Set(KNOWN_OUTCOMES);
+    for (const r of aggRows) if (r.outcome) seen.add(r.outcome);
+    return [...seen].sort();
+  }, [aggRows]);
+
+  const logFilterCount =
+    (filterSetter !== "all" ? 1 : 0) +
+    (filterNumber !== "all" ? 1 : 0) +
+    (filterDisposition !== "all" ? 1 : 0) +
+    (filterOutcome !== "all" ? 1 : 0) +
+    (filterContact !== "all" ? 1 : 0) +
+    (filterRecording !== "all" ? 1 : 0) +
+    (filterMinSeconds.trim() ? 1 : 0) +
+    (logSearch.trim() ? 1 : 0);
+
+  const clearLogFilters = useCallback(() => {
+    setFilterSetter("all");
+    setFilterNumber("all");
+    setFilterDisposition("all");
+    setFilterOutcome("all");
+    setFilterContact("all");
+    setFilterRecording("all");
+    setFilterMinSeconds("");
+    setLogSearch("");
+    setLogSearchApplied("");
+  }, []);
 
   // ── On-demand recording / transcript ──────────────────────────────────────
   async function fetchRecording(callId: string) {
@@ -1175,56 +1478,42 @@ export default function SetterPerformancePage() {
                   ))}
                 </div>
 
-                {/* The funnel itself */}
-                <div className="card bg-base-100 border border-base-300 shadow-sm">
-                  <div className="card-body p-4 space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                        <FunnelIcon className="w-5 h-5 text-mint-green" /> Dial funnel (outbound)
-                      </h2>
-                      <RagLegend />
+                {/* Grouping sub-toggle — a control INSIDE this panel, not a page tab. */}
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs uppercase tracking-wide text-gray-400">Group the funnel by</span>
+                    <div role="tablist" aria-label="Funnel grouping" className="inline-flex rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-0.5">
+                      {FUNNEL_VIEWS.map((v) => (
+                        <button
+                          key={v.id}
+                          role="tab"
+                          aria-selected={funnelView === v.id}
+                          onClick={() => setFunnelView(v.id)}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                            funnelView === v.id
+                              ? "bg-base-100 dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm"
+                              : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                          }`}
+                        >
+                          {v.label}
+                        </button>
+                      ))}
                     </div>
+                  </div>
+                  {/* Combined keeps its legend inside the card header, as it always has. */}
+                  {funnelView !== "combined" && <RagLegend />}
+                </div>
 
-                    <div className="space-y-3">
-                      {funnelStages.map((s, i) => {
-                        const { target, isDefault } = s.targetKey ? targetFor(s.targetKey) : { target: null, isDefault: false };
-                        const rag = ragOf(s.stepPct, target);
-                        const widthPct = funnel.dials > 0 ? Math.max((s.count / funnel.dials) * 100, s.count > 0 ? 1.5 : 0) : 0;
-                        return (
-                          <div key={s.key} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-                            <div className="w-full sm:w-52 shrink-0">
-                              <div className="text-sm font-medium text-gray-900 dark:text-white" title={s.help}>{s.label}</div>
-                              <div className="text-xs text-gray-400">
-                                {funnel.dials > 0 ? `${((s.count / funnel.dials) * 100).toFixed(1)}% of dials` : "—"}
-                              </div>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="h-7 w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden">
-                                <div
-                                  className={`h-full ${i === 0 ? "bg-sky-500" : RAG_BAR[rag]} transition-all`}
-                                  style={{ width: `${widthPct}%` }}
-                                />
-                              </div>
-                            </div>
-                            <div className="w-full sm:w-56 shrink-0 flex items-center justify-between sm:justify-end gap-3">
-                              <span className="text-base font-semibold text-gray-900 dark:text-white tabular-nums">
-                                {s.count.toLocaleString()}
-                              </span>
-                              {i === 0 ? (
-                                <span className="text-xs text-gray-400">start</span>
-                              ) : (
-                                <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP[rag]}`}>
-                                  <RagPct value={s.stepPct} target={target} />
-                                  <span className="opacity-70">{s.stepLabel}</span>
-                                  {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
+                {/* ── Combined: the team-wide funnel, unchanged ── */}
+                {funnelView === "combined" && (
+                  <FunnelCard
+                    calls={aggRows}
+                    title="Dial funnel (outbound)"
+                    icon
+                    targetFor={targetFor}
+                    headerRight={<RagLegend />}
+                    onPositivesClick={jumpToPositives}
+                  >
                     <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
                       <div>
                         <span className="font-semibold text-gray-700 dark:text-gray-200">Conversation</span> = the setter
@@ -1245,11 +1534,144 @@ export default function SetterPerformancePage() {
                       built-in default. A rate with no threshold at all renders grey — never green.
                       {targets === null && <span className="text-amber-600 dark:text-amber-400"> Targets could not be read this load, so stored thresholds are not in play.</span>}
                     </p>
+                  </FunnelCard>
+                )}
+
+                {/* ── By setter: one compact funnel per setter (unassigned lines
+                       keep their own card, titled with the line) ── */}
+                {funnelView === "setter" && (
+                  funnelGroups.length === 0 ? (
+                    <div className="alert">
+                      <InformationCircleIcon className="w-5 h-5" />
+                      <span>No calls in this range can be grouped by setter.</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+                        {funnelGroups.map((g) => (
+                          <FunnelCard
+                            key={g.key}
+                            calls={g.calls}
+                            title={g.title}
+                            subtitle={g.subtitle}
+                            badge={g.unassigned ? "unassigned" : undefined}
+                            targetFor={targetFor}
+                            compact
+                          />
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-400">
+                        {funnelGroups.length.toLocaleString()} card{funnelGroups.length === 1 ? "" : "s"} with dials in this
+                        range, sorted by dials. Each runs the same funnel definition and the same thresholds as the combined
+                        view. A card marked <span className="text-amber-600 dark:text-amber-400 font-medium">unassigned</span>{" "}
+                        is a NUMBER nobody is mapped to — assign it on the Numbers tab and its dials move to that person.
+                      </p>
+                    </>
+                  )
+                )}
+
+                {/* ── Positive dispositions, call by call ── */}
+                <div
+                  ref={positivesRef}
+                  className={`card bg-base-100 border shadow-sm scroll-mt-4 transition-colors ${
+                    positivesHighlight ? "border-mint-green" : "border-base-300"
+                  }`}
+                >
+                  <div className="card-body p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <CheckCircleIcon className="w-5 h-5 text-mint-green" /> Positive dispositions
+                      </h2>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {positiveCounts.map((p) => (
+                          <span
+                            key={p.disposition}
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
+                              p.count > 0 ? RAG_CHIP.green : RAG_CHIP.none
+                            }`}
+                          >
+                            {p.disposition}
+                            <b className="tabular-nums">{p.count.toLocaleString()}</b>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {positiveCalls.length === 0 ? (
+                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                        <b className="text-gray-700 dark:text-gray-200">No positive dispositions in this range.</b> Every
+                        dial was dispositioned something else, or left undispositioned — an undispositioned call never
+                        counts here, so this can read empty on a day that had real interest.
+                      </div>
+                    ) : (
+                      <>
+                        <div className={TABLE_WRAP}>
+                          <table className={TABLE}>
+                            <thead className={THEAD}>
+                              <tr>
+                                <th className={TH}>Time (ET)</th>
+                                <th className={TH}>Setter</th>
+                                <th className={TH}>Merchant</th>
+                                <th className={TH}>Phone</th>
+                                <th className={TH}>Disposition</th>
+                                <th className={TH} />
+                              </tr>
+                            </thead>
+                            <tbody className={TBODY}>
+                              {positiveCalls.map((r) => (
+                                <tr key={r.wavv_call_id} className={TR}>
+                                  <td className={`${TD} whitespace-nowrap`} title={localTimeTitle(r.started_at)}>
+                                    {etStamp(r.started_at)}
+                                  </td>
+                                  <td className={TD}>
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate">{attributionName(r)}</span>
+                                      {!r.setter_id && (
+                                        <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                                          unassigned
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className={TD}><Text value={r.contact_name} /></td>
+                                  <td className={`${TD} tabular-nums whitespace-nowrap`}>{prettyPhone(r.phone)}</td>
+                                  <td className={TD}>
+                                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.green}`}>
+                                      {r.disposition}
+                                    </span>
+                                  </td>
+                                  <td className={`${TD} text-right whitespace-nowrap`}>
+                                    {r.contact_id ? (
+                                      <Link
+                                        to={`/admin/playbooks?contact=${encodeURIComponent(r.contact_id)}`}
+                                        className="text-mint-green hover:underline underline-offset-2 font-medium"
+                                        title="Open this merchant in the Revenue Playbook"
+                                      >
+                                        Open →
+                                      </Link>
+                                    ) : (
+                                      <span className="text-gray-300 dark:text-gray-600" title="WAVV did not tie this dial to a contact record, so there is nothing to open">
+                                        —
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-xs text-gray-400">
+                          {positiveCalls.length.toLocaleString()} call{positiveCalls.length === 1 ? "" : "s"} in this range
+                          carried a positive disposition, newest first inside each type. <b>Open →</b> takes you straight
+                          into that merchant's Revenue Playbook. Times are US Eastern; hover a time for your own clock.
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
 
                 {/* The insight — the thing a manager should act on */}
-                {funnel.dials > 0 && (
+                {funnelView === "combined" && funnel.dials > 0 && (
                   <div className="card bg-base-100 border border-base-300 shadow-sm">
                     <div className="card-body p-4">
                       <h2 className="font-semibold text-gray-900 dark:text-white">Where the floor is losing the day</h2>
@@ -1532,6 +1954,13 @@ export default function SetterPerformancePage() {
                     {logCount !== null && <span className="text-sm font-normal text-gray-400">({logCount.toLocaleString()})</span>}
                   </h2>
                   <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="search" placeholder="Search name or phone"
+                      className="input input-xs input-bordered w-48"
+                      value={logSearch}
+                      onChange={(e) => setLogSearch(e.target.value)}
+                      title="Matches the merchant's contact name or phone number across the whole range, not just this page"
+                    />
                     <select className="select select-xs select-bordered" value={filterSetter} onChange={(e) => setFilterSetter(e.target.value)}>
                       <option value="all">All setters</option>
                       {setterFilterOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
@@ -1544,15 +1973,50 @@ export default function SetterPerformancePage() {
                       <option value="all">All dispositions</option>
                       {dispositionOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
+                    <select className="select select-xs select-bordered" value={filterOutcome} onChange={(e) => setFilterOutcome(e.target.value)} title="What WAVV reported for the line itself">
+                      <option value="all">All outcomes</option>
+                      {outcomeOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                    <select
+                      className="select select-xs select-bordered"
+                      value={filterContact}
+                      onChange={(e) => setFilterContact(e.target.value as "all" | "human" | "machine")}
+                      title="Reached a human = answered, and nothing about the call says machine. Voicemail / no human is the exact complement, so it also holds lines that were never answered."
+                    >
+                      <option value="all">Any contact type</option>
+                      <option value="human">Reached a human</option>
+                      <option value="machine">Voicemail / no human</option>
+                    </select>
+                    <select
+                      className="select select-xs select-bordered"
+                      value={filterRecording}
+                      onChange={(e) => setFilterRecording(e.target.value as "all" | "yes" | "no")}
+                    >
+                      <option value="all">Any recording</option>
+                      <option value="yes">Has recording</option>
+                      <option value="no">No recording</option>
+                    </select>
                     <input
                       type="number" min={0} placeholder="Min secs"
                       className="input input-xs input-bordered w-24"
                       value={filterMinSeconds}
                       onChange={(e) => setFilterMinSeconds(e.target.value)}
                     />
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-ghost"
+                      disabled={logFilterCount === 0}
+                      onClick={clearLogFilters}
+                    >
+                      Clear{logFilterCount > 0 ? ` (${logFilterCount})` : ""}
+                    </button>
                   </div>
                 </div>
-                <p className="text-xs text-gray-400">Outbound calls only — an inbound call's caller ID is the merchant, so it carries no setter attribution.</p>
+                <p className="text-xs text-gray-400">
+                  Outbound calls only — an inbound call's caller ID is the merchant, so it carries no setter attribution.
+                  Every filter runs in the database across the <b>whole date range</b>, not just the page on screen, and
+                  they all apply together.
+                </p>
 
                 {logLoading ? (
                   <div className="flex items-center gap-2 text-gray-400 text-sm py-4">
@@ -1859,6 +2323,153 @@ function sumOrDash(values: (number | null)[]) {
   const known = values.filter((v): v is number => v !== null);
   if (known.length === 0) return <Metric value={null} />;
   return <span>{known.reduce((a, b) => a + b, 0).toLocaleString()}</span>;
+}
+
+// ── FunnelCard ───────────────────────────────────────────────────────────────
+// The whole funnel body — stage bars, counts, % of dials, step-conversion RAG
+// chips — over WHATEVER set of calls it is handed. The Combined view passes
+// every loaded row; the By-setter / By-number views pass one group's rows. One
+// renderer means a grouped card and the team card can never disagree.
+//
+// `compact` is the grid variant: same numbers, same RAG rule, tighter layout so
+// several funnels sit side by side for comparison.
+function FunnelCard({
+  calls, title, subtitle, badge, targetFor, compact = false, icon = false, headerRight, onPositivesClick, children,
+}: {
+  calls: SetterCall[];
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  targetFor: TargetLookup;
+  compact?: boolean;
+  icon?: boolean;
+  headerRight?: ReactNode;
+  /** When set, the bottom "Positive dispositions" count becomes a jump link to
+   *  the list of those exact calls. */
+  onPositivesClick?: () => void;
+  children?: ReactNode;
+}) {
+  const funnel = useMemo(() => computeFunnel(calls), [calls]);
+  const stages = useMemo(() => funnelStagesOf(funnel), [funnel]);
+
+  // Honest empty: a group with no dials has nothing to draw, so it draws
+  // nothing rather than a card of zeros and dashes.
+  if (funnel.dials === 0) return null;
+
+  return (
+    <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className={`card-body ${compact ? "p-3.5 space-y-3" : "p-4 space-y-4"}`}>
+        <div className={`flex flex-wrap justify-between gap-x-3 ${subtitle ? "items-start gap-y-1" : "items-center gap-y-3"}`}>
+          <div className="min-w-0">
+            <h2 className={`font-semibold text-gray-900 dark:text-white flex items-center gap-2 ${compact ? "text-sm" : ""}`}>
+              {icon && <FunnelIcon className="w-5 h-5 text-mint-green shrink-0" />}
+              <span className="truncate" title={title}>{title}</span>
+              {badge && (
+                <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                  {badge}
+                </span>
+              )}
+            </h2>
+            {subtitle && (
+              <div className="text-xs text-gray-400 truncate" title={subtitle}>{subtitle}</div>
+            )}
+          </div>
+          {headerRight ?? (compact && (
+            <div className="text-right shrink-0">
+              <div className="text-base font-semibold text-gray-900 dark:text-white tabular-nums leading-tight">
+                {funnel.dials.toLocaleString()}
+              </div>
+              <div className="text-[10px] uppercase tracking-wide text-gray-400">dials</div>
+            </div>
+          ))}
+        </div>
+
+        <div className={compact ? "space-y-2.5" : "space-y-3"}>
+          {stages.map((s, i) => {
+            const { target, isDefault } = s.targetKey ? targetFor(s.targetKey) : { target: null, isDefault: false };
+            const rag = ragOf(s.stepPct, target);
+            const widthPct = funnel.dials > 0 ? Math.max((s.count / funnel.dials) * 100, s.count > 0 ? 1.5 : 0) : 0;
+            const ofDials = funnel.dials > 0 ? `${((s.count / funnel.dials) * 100).toFixed(1)}% of dials` : "—";
+            const bar = (
+              <div className={`${compact ? "h-4" : "h-7"} w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden`}>
+                <div
+                  className={`h-full ${i === 0 ? "bg-sky-500" : RAG_BAR[rag]} transition-all`}
+                  style={{ width: `${widthPct}%` }}
+                />
+              </div>
+            );
+
+            // The positive count is the one number a manager wants to drill into,
+            // so where a drill-down exists it renders as a link to those calls.
+            const jumpable = s.key === "positives" && !!onPositivesClick && s.count > 0;
+            const countBase = `${compact ? "text-sm shrink-0" : "text-base"} font-semibold tabular-nums`;
+            const countNode = jumpable ? (
+              <button
+                type="button"
+                onClick={onPositivesClick}
+                title="Jump to every positive-disposition call in this range"
+                className={`${countBase} text-mint-green hover:underline underline-offset-2`}
+              >
+                {s.count.toLocaleString()} <span aria-hidden="true">↓</span>
+              </button>
+            ) : (
+              <span className={`${countBase} text-gray-900 dark:text-white`}>{s.count.toLocaleString()}</span>
+            );
+
+            if (compact) {
+              return (
+                <div key={s.key} className="space-y-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate" title={s.help}>
+                      {s.short}
+                    </span>
+                    {countNode}
+                  </div>
+                  {bar}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-gray-400 truncate">{ofDials}</span>
+                    {i === 0 ? (
+                      <span className="text-[10px] text-gray-400 shrink-0">start</span>
+                    ) : (
+                      <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${RAG_CHIP[rag]}`}>
+                        <RagPct value={s.stepPct} target={target} digits={0} />
+                        <span className="opacity-70">{s.stepShort}</span>
+                        {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div key={s.key} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                <div className="w-full sm:w-52 shrink-0">
+                  <div className="text-sm font-medium text-gray-900 dark:text-white" title={s.help}>{s.label}</div>
+                  <div className="text-xs text-gray-400">{ofDials}</div>
+                </div>
+                <div className="flex-1 min-w-0">{bar}</div>
+                <div className="w-full sm:w-56 shrink-0 flex items-center justify-between sm:justify-end gap-3">
+                  {countNode}
+                  {i === 0 ? (
+                    <span className="text-xs text-gray-400">start</span>
+                  ) : (
+                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP[rag]}`}>
+                      <RagPct value={s.stepPct} target={target} />
+                      <span className="opacity-70">{s.stepLabel}</span>
+                      {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {children}
+      </div>
+    </div>
+  );
 }
 
 function RagLegend() {
