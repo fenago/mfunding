@@ -755,16 +755,17 @@ export const routes: RouteObject[] = [
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <LeadMachinePage /> }],
               },
-              // Setter Performance — the WAVV per-rep scorecard, and the only one:
-              // the HotProspector scorecard that used to live at /admin/dialer was
-              // deleted with the rest of the HP teardown (the historical
-              // hotprospector_* tables are untouched in the DB). Admin-only on
-              // purpose: a closer must not read the floor's per-rep stats, and the
-              // wavv_calls RLS policy backs that up at the data layer.
+              // Setter Performance — the WAVV per-rep scorecard. Owner ruling
+              // 2026-08-26: "everybody in the company needs to see this page" — so
+              // NO extra guard; AdminProtectedRoute's isStaff check (closer +
+              // employee + admin + super_admin) is exactly the audience, merchants
+              // (role `user`) are bounced. The wavv_calls RLS was widened to the
+              // same staff set (migration 20260826c) so the data actually loads for
+              // closers. The Numbers (attribution) tab stays admin/super-only inside
+              // the page.
               {
                 path: "setter-performance",
-                element: <AdminOnlyProtectedRoute />,
-                children: [{ index: true, element: <SetterPerformancePage /> }],
+                element: <SetterPerformancePage />,
               },
               // Lead Tools management (operational — all staff)
               {

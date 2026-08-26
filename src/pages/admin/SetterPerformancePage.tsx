@@ -1863,11 +1863,12 @@ function sumOrDash(values: (number | null)[]) {
 
 function RagLegend() {
   return (
-    <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" /> on target</span>
-      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-amber-500" /> below target</span>
-      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-500" /> off target</span>
-      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-gray-400" /> no target / no data</span>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+      <span className="font-semibold text-gray-600 dark:text-gray-300">What the colors mean:</span>
+      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" /> <b className="text-emerald-600 dark:text-emerald-400">Green</b> = at or above target</span>
+      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-amber-500" /> <b className="text-amber-600 dark:text-amber-400">Yellow</b> = below target — needs attention</span>
+      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-500" /> <b className="text-red-600 dark:text-red-400">Red</b> = well off target</span>
+      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-gray-400" /> <b>Grey</b> = no target set / no data</span>
     </div>
   );
 }

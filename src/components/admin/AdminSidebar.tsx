@@ -147,7 +147,7 @@ const navGroups: NavGroup[] = [
       // the setters actually use). The only per-rep scorecard now: the old
       // HotProspector one at /admin/dialer was deleted with the rest of the HP
       // teardown. Same ADMIN gating + closer lens as the other PH consoles.
-      { name: "Setter Performance", path: "/admin/setter-performance", icon: ChartBarSquareIcon, roles: ADMIN },
+      { name: "Setter Performance", path: "/admin/setter-performance", icon: ChartBarSquareIcon, roles: OPS },
       // How the Dialing Machine Works — the lists→dialer pipeline one-pager.
       // Back to OPS: the SOP was rewritten for VibeReach + WAVV, so setters can
       // read it again. It's the manager-side companion to the Setter Guide —
@@ -319,7 +319,8 @@ export default function AdminSidebar() {
       item.path !== "/admin/my-profile" &&
       item.path !== "/admin/setter-guide" &&
       item.path !== "/admin/cheat-sheet" &&
-      item.path !== "/admin/calendar"
+      item.path !== "/admin/calendar" &&
+      item.path !== "/admin/setter-performance"
     )
       return false;
     // Closer lens: only the daily operating links, regardless of group.
