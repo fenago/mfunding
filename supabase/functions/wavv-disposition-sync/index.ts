@@ -37,6 +37,9 @@
 //   wavv-full-app-statements  → stage  Docs Collected   (ladder rung 1)
 //   wavv-full-application     → stage  Application Sent (ladder rung 2)
 //   wavv-appointment-set      → stage  Qualifying       (ladder rung 3)
+//                               PLUS deals.appointment_promised_at = now() when
+//                               no real time is booked yet — the disposition
+//                               carries no time, so the Calendar asks for one.
 //   wavv-interested           → stage  Qualifying (legacy tag from before the
 //                               8/22 rename of Interested → Full Application)
 //   wavv-callback             → stage  Contacted
@@ -103,6 +106,40 @@ for (const m of MAPPING) {
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+// ── "Appointment Set" carries NO time ───────────────────────────────────────
+// The WAVV disposition tells us an appointment was agreed to; it has nowhere to
+// put WHEN. Guessing a time would put a fake meeting on the merchant-invited
+// calendar and email the merchant about it, so instead we raise a PROMISE flag
+// on the deal (deals.appointment_promised_at) and the Calendar shows it as
+// "⚠ Appointment promised — book the time". Booking a real time clears it.
+//
+// Rules, identical on the push and poll paths (this helper is why):
+//   • never overwrite a real booking (appointment_at IS NOT NULL) — already done
+//   • never re-stamp an existing promise — the age of the promise is the point
+//   • no deal / no ghl_contact_id / a DB error is a NO-OP, never a failure: the
+//     stage move already succeeded and must not be retried over this.
+const APPOINTMENT_SET_TAG = "wavv-appointment-set";
+
+async function flagAppointmentPromised(
+  db: SupabaseClient,
+  contactId: string,
+): Promise<{ flagged: number; error: string | null }> {
+  if (!contactId) return { flagged: 0, error: null };
+  try {
+    const { data, error } = await db
+      .from("deals")
+      .update({ appointment_promised_at: new Date().toISOString() })
+      .eq("ghl_contact_id", contactId)
+      .is("appointment_at", null)
+      .is("appointment_promised_at", null)
+      .select("id");
+    if (error) return { flagged: 0, error: error.message };
+    return { flagged: (data ?? []).length, error: null };
+  } catch (e) {
+    return { flagged: 0, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 async function webhookSecret(db: SupabaseClient): Promise<string> {
@@ -201,7 +238,7 @@ Deno.serve(async (req) => {
     const od = track(await ghlFetch<{ opportunities?: Array<{ id: string; pipelineId: string; pipelineStageId: string; status: string }> }>(
       cfg, "GET", `/opportunities/search?location_id=${LOCATION}&contact_id=${contactId}`, undefined, onRL));
     const opps = (od.data?.opportunities ?? []).filter((o) => o.pipelineId === MCA_PIPELINE);
-    const result = { moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0 };
+    const result = { moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0, appointment_promised: 0 };
     for (const tag of tags) {
       const action = MAPPING.find((m) => m.tag === tag)!.action;
       let ok = od.ok;
@@ -227,6 +264,13 @@ Deno.serve(async (req) => {
           }
         }
       }
+      // "Appointment Set" with no time yet ⇒ raise the book-the-time flag on the
+      // deal. Runs only after the stage move came back clean, and never blocks
+      // the tag removal below (see flagAppointmentPromised).
+      if (ok && tag === APPOINTMENT_SET_TAG) {
+        const f = await flagAppointmentPromised(db, contactId);
+        result.appointment_promised += f.flagged;
+      }
       // Remove the tag only on full success — a failure leaves it for the nightly
       // reconcile sweep to retry, exactly like the polling path.
       if (ok) {
@@ -237,12 +281,12 @@ Deno.serve(async (req) => {
     return json({ ok: true, pushed: contactId, tags, result, daily_remaining: dailyRemaining });
   }
 
-  const stats: Record<string, { processed: number; moved: number; lost: number; dnd: number; tag_removed: number; errors: number }> = {};
+  const stats: Record<string, { processed: number; moved: number; lost: number; dnd: number; tag_removed: number; errors: number; appointment_promised: number }> = {};
   let touched = 0;
   let parked = false;
 
   for (const { tag, action } of MAPPING) {
-    const s = (stats[tag] = { processed: 0, moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0 });
+    const s = (stats[tag] = { processed: 0, moved: 0, lost: 0, dnd: 0, tag_removed: 0, errors: 0, appointment_promised: 0 });
     // Drain: always page 1 — processed contacts leave the filter via tag removal.
     // A guard caps runaway loops if tag removal ever silently fails.
     let guard = 0;
@@ -294,6 +338,13 @@ Deno.serve(async (req) => {
             }
             if (floored()) { parked = true; break; }
           }
+        }
+
+        // 3b) Same book-the-time flag the push path raises — one helper, so the
+        //     nightly reconcile can never behave differently from real time.
+        if (ok && !parked && tag === APPOINTMENT_SET_TAG) {
+          const f = await flagAppointmentPromised(db, c.id);
+          s.appointment_promised += f.flagged;
         }
 
         // 4) Remove the wavv tag ONLY when every step above succeeded — a failed

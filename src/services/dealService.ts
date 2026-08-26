@@ -236,6 +236,10 @@ export interface CalendarDeal {
   appointment_ghl_event_id: string | null;
   appointment_synced_at: string | null;
   appointment_sync_error: string | null;
+  /** A WAVV "Appointment Set" disposition with NO time yet (that disposition
+   *  carries none). Promised AND unbooked = the Calendar's amber "book the time"
+   *  alert; it is never a timed item, because there is no time. */
+  appointment_promised_at: string | null;
   stips_promised_by: string | null;
   first_call_due_at: string | null;
   assigned_closer_id: string | null;
@@ -261,12 +265,16 @@ export async function getCalendarDeals(): Promise<CalendarDeal[]> {
       id, deal_number, status,
       callback_at, callback_invite, callback_ghl_event_id, callback_synced_at, callback_sync_error,
       appointment_at, appointment_ghl_event_id, appointment_synced_at, appointment_sync_error,
+      appointment_promised_at,
       stips_promised_by, first_call_due_at, assigned_closer_id,
       customer:customers!customer_id ( id, first_name, last_name, business_name ),
       closer:profiles!assigned_closer_id ( id, first_name, last_name )
     `)
     .not("status", "in", `(${QUEUE_CLOSED_STATUSES.join(",")})`)
-    .or("callback_at.not.is.null,appointment_at.not.is.null,stips_promised_by.not.is.null,first_call_due_at.not.is.null");
+    .or(
+      "callback_at.not.is.null,appointment_at.not.is.null,appointment_promised_at.not.is.null," +
+        "stips_promised_by.not.is.null,first_call_due_at.not.is.null",
+    );
 
   if (error) {
     console.error("Error fetching calendar deals:", error);
@@ -1831,6 +1839,10 @@ export async function scheduleAppointment(
     supabase.from("deals").update({
       appointment_at: apptAtIso,
       appointment_owner_user_id: opts.ownerUserId ?? null,
+      // Booking a real time is the ONLY thing that answers a WAVV "Appointment
+      // Set" disposition (which carries no time). Clearing the promise here is
+      // what takes the deal off the Calendar's "book the time" alert list.
+      appointment_promised_at: null,
     }).eq("id", dealId),
   );
   // Instant projection; the 5-min sweep stays the reliability floor. Never blocks.
@@ -1842,6 +1854,10 @@ export async function scheduleAppointment(
  * the sweep cancels the GHL event and forgets the id on its next pass over this
  * deal (invoked immediately below). The owner is cleared with it so a stale setter
  * can't be re-assigned to a future booking.
+ *
+ * appointment_promised_at is deliberately NOT re-raised: cancelling is a human
+ * saying the meeting is off, not a setter promising one. Re-flagging would put
+ * a "book the time" nag back on the Calendar that nobody asked for.
  */
 export async function clearAppointment(dealId: string): Promise<void> {
   await mustWrite(

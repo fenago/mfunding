@@ -45,6 +45,14 @@ import { dateKeyET, dateTimeET, etDateTimeLocalToUtcIso, etDateTimeLocalValue, t
  *                    while the deal is still in a stage where the promise matters)
  *   ⏱ SLA         — deals.first_call_due_at, FUTURE only (5-minute windows; rare)
  *
+ * Plus ONE thing that is deliberately NOT a calendar item: deals.
+ * appointment_promised_at. The WAVV "Appointment Set" disposition carries no
+ * time, so a setter can promise a meeting the calendar has no slot for. Those
+ * land in an amber "Appointments promised — book the time" list at the top
+ * (amber, not the red of a missed callback: nothing is late yet, something is
+ * merely unfinished). Booking a real time in the Revenue Playbook clears the
+ * flag and the deal reappears as a normal 📅 appointment.
+ *
  * Scope mirrors My Day exactly: closers are already fenced to their own book +
  * unassigned by RLS; admins get a Mine/All toggle (default All for super_admin,
  * Mine otherwise). Every time on screen is Eastern.
@@ -157,6 +165,16 @@ function lateLabel(iso: string, now: number): string {
   if (h < 1) return `${Math.max(1, Math.floor((now - Date.parse(iso)) / 60_000))}m late`;
   if (h < 24) return `${h}h late`;
   return `${Math.floor(h / 24)}d late`;
+}
+
+/** "12m ago" / "3h ago" / "2d ago" — how stale a promise is. */
+function agoLabel(iso: string, now: number): string {
+  const mins = Math.floor((now - Date.parse(iso)) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 /** Every dated commitment on a deal → 0–4 calendar items. */
@@ -570,6 +588,57 @@ function ItemRow({
   );
 }
 
+/**
+ * One "promised, no time yet" line. Not an ItemRow: it has no time to show, and
+ * pretending otherwise (a guessed slot, an "All day" label) is exactly the lie
+ * this list exists to prevent. The only action is to go book the real time.
+ */
+function PromisedRow({
+  deal,
+  now,
+  showCloser,
+}: {
+  deal: CalendarDeal;
+  now: number;
+  showCloser: boolean;
+}) {
+  return (
+    <div className="group flex items-center gap-2.5 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2">
+      <span className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+        📅 No time yet
+      </span>
+      <span className="flex-1 min-w-0 flex items-baseline gap-1.5">
+        <span className="text-sm font-semibold text-gray-900 dark:text-white truncate">{nameOf(deal)}</span>
+        {deal.deal_number && (
+          <span className="text-[11px] font-mono text-gray-400 shrink-0">{deal.deal_number}</span>
+        )}
+      </span>
+      <span
+        className="shrink-0 text-[11px] font-medium text-amber-700 dark:text-amber-400 tabular-nums"
+        title={deal.appointment_promised_at ? dateTimeET(deal.appointment_promised_at) : undefined}
+      >
+        promised {deal.appointment_promised_at ? agoLabel(deal.appointment_promised_at, now) : "—"}
+      </span>
+      {showCloser && (
+        <span
+          className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+            deal.assigned_closer_id ? closerChipClass(deal.assigned_closer_id) : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300"
+          }`}
+        >
+          {closerNameOf(deal)}
+        </span>
+      )}
+      <Link
+        to={`/admin/playbooks?deal=${deal.id}`}
+        title="Open the Revenue Playbook and book the real time — that clears this flag"
+        className="shrink-0 px-2 py-0.5 rounded-lg text-[11px] font-semibold text-white bg-amber-600 hover:bg-amber-700"
+      >
+        Book the time →
+      </Link>
+    </div>
+  );
+}
+
 export default function CalendarPage() {
   const { effectiveUserId, isAdmin, isSuperAdmin } = useUserProfile();
   // Same scope pattern as My Day: closers are RLS-fenced already; admins toggle.
@@ -617,10 +686,27 @@ export default function CalendarPage() {
     [effectiveUserId],
   );
 
-  const items = useMemo(() => {
-    const scoped = deals.filter((d) => (!canToggle ? mineScope(d) : scope === "all" ? true : mineScope(d)));
-    return scoped.flatMap((d) => itemsOf(d, now, todayKey));
-  }, [deals, canToggle, scope, mineScope, now, todayKey]);
+  // Mine/All scoping happens once, here — the timed grid and the promised-
+  // appointment alert list must never disagree about whose book they're showing.
+  const scopedDeals = useMemo(
+    () => deals.filter((d) => (!canToggle ? mineScope(d) : scope === "all" ? true : mineScope(d))),
+    [deals, canToggle, scope, mineScope],
+  );
+
+  const items = useMemo(
+    () => scopedDeals.flatMap((d) => itemsOf(d, now, todayKey)),
+    [scopedDeals, now, todayKey],
+  );
+
+  // Promised an appointment, still no time on it. Oldest promise first — the
+  // one that's been sitting longest is the one most likely to be forgotten.
+  const promisedAppointments = useMemo(
+    () =>
+      scopedDeals
+        .filter((d) => d.appointment_promised_at && !d.appointment_at)
+        .sort((a, b) => Date.parse(a.appointment_promised_at!) - Date.parse(b.appointment_promised_at!)),
+    [scopedDeals],
+  );
 
   const byDay = useMemo(() => {
     const map = new Map<string, CalItem[]>();
@@ -758,6 +844,30 @@ export default function CalendarPage() {
           <div className="space-y-1.5">
             {missedCallbacks.map((it) => (
               <ItemRow key={it.key} item={it} now={now} showCloser={showCloser} onReschedule={openReschedule} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* APPOINTMENTS PROMISED, NO TIME YET — the WAVV "Appointment Set"
+          disposition has no time field, so these can't go in the day grid.
+          Amber, not red: nothing is late, something is unfinished. */}
+      {!loading && promisedAppointments.length > 0 && (
+        <div className="rounded-xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
+          <h2 className="text-sm font-bold text-amber-800 dark:text-amber-300 mb-1">
+            ⚠ Appointments promised — book the time
+            <span className="ml-1.5 font-semibold">
+              ({promisedAppointments.length} merchant{promisedAppointments.length === 1 ? "" : "s"})
+            </span>
+          </h2>
+          <p className="text-[11px] text-amber-700 dark:text-amber-400 mb-2">
+            A setter dispositioned <b>Appointment Set</b>, but that disposition carries no time — nothing is on
+            the calendar and the merchant has <b>not</b> been invited. Book the real time in the Revenue Playbook
+            and this clears itself.
+          </p>
+          <div className="space-y-1.5">
+            {promisedAppointments.map((d) => (
+              <PromisedRow key={`${d.id}-promised`} deal={d} now={now} showCloser={showCloser} />
             ))}
           </div>
         </div>
