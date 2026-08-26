@@ -241,10 +241,12 @@ async function checkHotProspector(db: SupabaseClient): Promise<CheckResult> {
 }
 
 /** WAVV (the dialer's public API). The key lives in the vault (get_wavv_api_key)
- * and is probed against GET /v3/users. History: every panel-issued key has
- * returned 401 INVALID_API_KEY since 2026-08-17 (trial-plan provisioning —
- * ticket open with WAVV support), so this check exists precisely to notice the
- * moment WAVV flips it on: the row goes green on its own, no code change. */
+ * and is probed against GET /v3/calls?direction=outbound — WAVV's own documented
+ * verification endpoint (docs.wavv.com: keys are team-scoped, Bearer, no exchange).
+ * NOTE: do NOT probe /v3/users — this key type is scoped to /calls and 401s on
+ * /users even while fully valid (that false 401 cost a month of "still down").
+ * History: keys 401'd from 2026-08-17 until a working key (wavv_654d…) was staged
+ * 2026-08-26 and verified LIVE (200 with real call data). */
 async function checkWavv(db: SupabaseClient): Promise<CheckResult> {
   const svc = "wavv";
   const t0 = Date.now();
@@ -262,7 +264,7 @@ async function checkWavv(db: SupabaseClient): Promise<CheckResult> {
         detail: "no API key staged in the vault (get_wavv_api_key returned empty).",
       };
     }
-    const res = await fetch("https://api.wavv.com/v3/users", {
+    const res = await fetch("https://api.wavv.com/v3/calls?direction=outbound&limit=1", {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(12000),
     });
