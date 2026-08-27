@@ -697,15 +697,27 @@ export const routes: RouteObject[] = [
                 element: <SuperAdminProtectedRoute />,
                 children: [{ index: true, element: <UnitEconomicsVCFPage /> }],
               },
-              // Closer Comp Plan (all staff — closer + admin + super_admin)
+              // Closer Comp Plan — admin + super_admin ONLY. It prints the whole
+              // split ladder (30% → 35% → 40% company-lead, 65% self-gen) plus
+              // the payout calculator, which is exactly what setters must not
+              // see. The sidebar already excludes it from a setter's nav; this
+              // closes the direct-URL path. Commissioned closers are role
+              // 'admin' with a `closers` row, so they still reach it.
               {
                 path: "closer-comp",
-                element: <CloserCompPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <CloserCompPage /> }],
               },
-              // My Earnings (all staff) — self-scoped by RLS to the signed-in closer
+              // My Earnings — self-scoped by RLS to the signed-in closer, but
+              // admin + super_admin ONLY at the route level. Setters (role
+              // 'closer') must never see a commission split or a per-deal cut
+              // anywhere in the app, and hiding the nav link is not a guard —
+              // the URL was still directly navigable. Commissioned closers are
+              // role 'admin' with a `closers` row, so they keep access.
               {
                 path: "my-earnings",
-                element: <MyEarningsPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <MyEarningsPage /> }],
               },
               // My Profile (all staff) — self-service edit of the signed-in
               // user's own profiles row. RLS ("Users can update own profile")

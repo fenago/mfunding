@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { BanknotesIcon, ArrowPathIcon, InformationCircleIcon } from "@heroicons/react/24/outline";
 import { Link } from "react-router-dom";
 import supabase from "@/supabase";
+import { useUserProfile } from "@/context/UserProfileContext";
 import { COMMISSION_DEFAULTS } from "@/types/commissions";
 import { FUND_ODDS, ADVANCE_CEILING_PCT, STAGE_LABEL, STAGE_ORDER } from "@/config/funnelOdds";
 
@@ -29,6 +30,14 @@ import { FUND_ODDS, ADVANCE_CEILING_PCT, STAGE_LABEL, STAGE_ORDER } from "@/conf
  * on it today, but we read each closer's ACTUAL split from the closers table rather
  * than hardcoding, so this stays honest the moment someone escalates to 35% or 40%.
  * Unassigned deals fall back to the 30% default.
+ *
+ * WHO SEES THE SPLIT. Setters (role 'closer') must never see a commission split
+ * or a per-deal cut anywhere in the app. This component reads the role itself
+ * (showEconomics = isAdmin || isSuperAdmin, the same test the Revenue Playbook
+ * uses) so it stays safe on every surface it is dropped onto, with no prop to
+ * forget. When showEconomics is false the pipeline VALUE and the odds still
+ * render — only the split %, the closer cut, and the company-keeps figure (which
+ * gives the split away by subtraction) are withheld.
  */
 
 // The stage ladder, the fund odds, and the revenue-based advance ceiling all live in
@@ -52,6 +61,8 @@ const usd = (n: number) =>
 type Basis = "realistic" | "asked";
 
 export default function MoneyInPlay() {
+  const { isAdmin, isSuperAdmin } = useUserProfile();
+  const showEconomics = isAdmin || isSuperAdmin;
   const [rows, setRows] = useState<Row[]>([]);
   const [splits, setSplits] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -150,8 +161,8 @@ export default function MoneyInPlay() {
           <div>
             <h2 className="text-lg font-bold text-gray-900 dark:text-white">Money in play</h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              {loading ? "Loading…" : `${calc.count} open deal${calc.count === 1 ? "" : "s"}`} · {COMMISSION_DEFAULTS.NEW_DEAL_POINTS} points gross ·{" "}
-              {split}% closer split
+              {loading ? "Loading…" : `${calc.count} open deal${calc.count === 1 ? "" : "s"}`} · {COMMISSION_DEFAULTS.NEW_DEAL_POINTS} points gross
+              {showEconomics && ` · ${split}% closer split`}
             </p>
           </div>
         </div>
@@ -177,7 +188,7 @@ export default function MoneyInPlay() {
       </div>
 
       {/* The three headline numbers. */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className={`grid grid-cols-2 gap-3 ${showEconomics ? "lg:grid-cols-4" : "lg:grid-cols-2"}`}>
         <Stat
           label="In play"
           value={usd(calc.tValue)}
@@ -190,18 +201,22 @@ export default function MoneyInPlay() {
           sub="if every deal funded"
           tone="text-ocean-blue dark:text-mint-green"
         />
-        <Stat
-          label={`Closer commission (${split}%)`}
-          value={usd(calc.tCloser)}
-          sub="what we'd owe out"
-          tone="text-amber-600 dark:text-amber-400"
-        />
-        <Stat
-          label={`Company keeps (${100 - split}%)`}
-          value={usd(calc.tCompany)}
-          sub="if every deal funded"
-          tone="text-emerald-600 dark:text-emerald-400"
-        />
+        {showEconomics && (
+          <>
+            <Stat
+              label={`Closer commission (${split}%)`}
+              value={usd(calc.tCloser)}
+              sub="what we'd owe out"
+              tone="text-amber-600 dark:text-amber-400"
+            />
+            <Stat
+              label={`Company keeps (${100 - split}%)`}
+              value={usd(calc.tCompany)}
+              sub="if every deal funded"
+              tone="text-emerald-600 dark:text-emerald-400"
+            />
+          </>
+        )}
       </div>
 
       {/* The forecast — the same money, weighted by the odds of actually funding. */}
@@ -222,22 +237,26 @@ export default function MoneyInPlay() {
               {usd(calc.expectedGross)}
             </div>
           </div>
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Expected closer ({split}%)
-            </div>
-            <div className="text-2xl font-bold text-amber-600 dark:text-amber-400 tabular-nums">
-              {usd(calc.expectedCloser)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Expected to company
-            </div>
-            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-              {usd(calc.expectedCompany)}
-            </div>
-          </div>
+          {showEconomics && (
+            <>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  Expected closer ({split}%)
+                </div>
+                <div className="text-2xl font-bold text-amber-600 dark:text-amber-400 tabular-nums">
+                  {usd(calc.expectedCloser)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                  Expected to company
+                </div>
+                <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  {usd(calc.expectedCompany)}
+                </div>
+              </div>
+            </>
+          )}
         </div>
         <p className="mt-2 flex items-start gap-1 text-[11px] text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 pt-2">
           <InformationCircleIcon className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
@@ -271,7 +290,7 @@ export default function MoneyInPlay() {
                 <th className="py-2 px-3 font-semibold text-right">Deals</th>
                 <th className="py-2 px-3 font-semibold text-right">In play</th>
                 <th className="py-2 px-3 font-semibold text-right">Gross</th>
-                <th className="py-2 px-3 font-semibold text-right">Closer {split}%</th>
+                {showEconomics && <th className="py-2 px-3 font-semibold text-right">Closer {split}%</th>}
                 <th className="py-2 pl-3 font-semibold text-right">Expected</th>
               </tr>
             </thead>
@@ -289,7 +308,9 @@ export default function MoneyInPlay() {
                     <td className="py-2 px-3 text-right tabular-nums text-gray-600 dark:text-gray-300">{r.n}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-gray-900 dark:text-white">{usd(r.value)}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ocean-blue dark:text-mint-green">{usd(r.gross)}</td>
-                    <td className="py-2 px-3 text-right tabular-nums text-amber-600 dark:text-amber-400">{usd(r.closer)}</td>
+                    {showEconomics && (
+                      <td className="py-2 px-3 text-right tabular-nums text-amber-600 dark:text-amber-400">{usd(r.closer)}</td>
+                    )}
                     <td className="py-2 pl-3 text-right tabular-nums font-semibold text-gray-900 dark:text-white">
                       {usd(r.expected)}
                     </td>
