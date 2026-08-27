@@ -63,6 +63,7 @@ import {
   BanknotesIcon,
   ClockIcon,
   ClipboardDocumentListIcon,
+  ScaleIcon,
 } from "@heroicons/react/24/outline";
 import {
   BarChart, Bar, ComposedChart, Line, XAxis, YAxis, CartesianGrid,
@@ -73,6 +74,7 @@ import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { DEAL_STAGES, type DealStatus } from "@/types/deals";
 import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
+import DialCeilingPanel from "@/components/admin/DialCeilingPanel";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** One row of public.v_wavv_outbound_setter_calls — an OUTBOUND call already
@@ -993,7 +995,7 @@ function hourLabel(h: number): string {
   return h < 12 ? `${h}a` : `${h - 12}p`;
 }
 
-type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dispositions" | "trends" | "log" | "numbers";
+type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "trends" | "log" | "numbers";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
   { id: "setters",        label: "Setters",        icon: UserGroupIcon },
@@ -1011,6 +1013,10 @@ const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: bool
   // them: those two say how a COHORT converted, this one hands the setter the
   // individual merchants and the buttons to move them.
   { id: "assignments",    label: "Assignments",    icon: ClipboardDocumentListIcon },
+  // Immediately right of Assignments: it answers the OTHER half of "how is this
+  // setter doing". The scorecard tabs count dials; this one asks how much of the
+  // shift produced them (occupancy) and how much of the "talking" is real.
+  { id: "dial_ceiling",   label: "Dial Ceiling",   icon: ScaleIcon },
   { id: "numbers",        label: "Numbers",        icon: HashtagIcon, adminOnly: true },
 ];
 
@@ -2142,6 +2148,13 @@ export default function SetterPerformancePage() {
   /** Assignments also reads `deals`, so it too renders outside the WAVV gate and
    *  suppresses the dialer banners. */
   const dealsTabActive = sourceTabActive || tab === "assignments";
+  /** Dial Ceiling is WAVV data, but it is aggregated SERVER-SIDE by its own RPCs
+   *  rather than folded from this page's paged pull. So the sync-health banners
+   *  (invalid key, never synced, missing attribution) still apply to it — a stale
+   *  mirror makes its numbers stale too — while the two banners about THIS page's
+   *  fold (its load error, its 20k row ceiling) do not, and showing them there
+   *  would be a warning about numbers that tab never reads. */
+  const ceilingTabActive = tab === "dial_ceiling";
   /** Managers see everyone's book behind a picker; a closer sees only their own.
    *  A UI scope, not a permission — RLS is what actually governs the rows. */
   const canSeeAllAssignments = isAdmin || isSuperAdmin;
@@ -2242,7 +2255,7 @@ export default function SetterPerformancePage() {
         </div>
       )}
 
-      {!dealsTabActive && loadError && (
+      {!dealsTabActive && !ceilingTabActive && loadError && (
         <div className="alert alert-error">
           <ExclamationTriangleIcon className="w-5 h-5" />
           <span>Could not read setter performance: {loadError}</span>
@@ -2259,7 +2272,7 @@ export default function SetterPerformancePage() {
         </div>
       )}
 
-      {!dealsTabActive && aggregateTruncated && (
+      {!dealsTabActive && !ceilingTabActive && aggregateTruncated && (
         <div className="alert alert-warning">
           <ExclamationTriangleIcon className="w-5 h-5" />
           <span>
@@ -2320,6 +2333,18 @@ export default function SetterPerformancePage() {
            not a window. Scope is enforced inside the panel (a closer sees only
            their own assigned_closer_id) on top of the deals RLS. */
         <AssignmentsPanel viewerId={effectiveUserId} canSeeAll={canSeeAllAssignments} />
+      ) : tab === "dial_ceiling" ? (
+        /* Dial Ceiling — per-setter OCCUPANCY and the honest-conversation read.
+           It calls its own server-side RPCs, so it renders outside the WAVV
+           loading gate: the page's paged fold is neither its input nor its
+           limit, and waiting on that fold would only delay it. The RANGE is
+           shared — the same picker every other tab honours. */
+        <DialCeilingPanel
+          fromIso={fromIso}
+          toIso={toIso}
+          rangeLabel={RANGE_LABELS[rangeKey]}
+          targetFor={targetFor}
+        />
       ) : isSourceTab(tab) ? (
         <SourceFunnelPanel
           // Keyed by tab so the closer filter resets when you switch products —

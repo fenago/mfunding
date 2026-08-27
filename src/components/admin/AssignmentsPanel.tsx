@@ -7,9 +7,12 @@
 // without leaving the row.
 //
 // WHO SEES WHAT. A role='closer' session sees ONLY deals whose assigned_closer_id
-// is their own profile id; there is no picker, because there is nothing to pick.
-// An admin/super_admin gets a closer picker (All / each closer / Unassigned) and
-// an extra Closer column. This is a UI scope, NOT a security boundary — the
+// is their own profile id, so the "Assigned to" filter is inert for them (it is
+// still rendered, disabled and showing their own name — the honest statement that
+// this book is scoped, not that scope is a thing they were denied). An
+// admin/super_admin gets the live version of that filter (Anyone / each closer /
+// Unassigned), which re-runs the query. Both roles see the "Assigned to" COLUMN.
+// This is a UI scope, NOT a security boundary — the
 // boundary is RLS (closer_select_all_deals lets any staff READ deals; INSERT and
 // UPDATE stay own-book). Notes are the tighter one: activity_log was deliberately
 // NOT widened for closers, so a setter reads notes on their own book only, which
@@ -94,7 +97,7 @@ interface AssignRow {
 
 const UNASSIGNED = "__unassigned__";
 
-type SortKey = "merchant" | "source" | "stage" | "assigned" | "last_contact";
+type SortKey = "merchant" | "source" | "stage" | "assignee" | "assigned" | "last_contact";
 type ApptFilter = "all" | "booked" | "promised" | "none";
 type SourceFilter = "all" | "live_transfer" | "realtime_appt" | "other";
 
@@ -108,6 +111,15 @@ function merchantName(r: AssignRow): string {
     || [c?.first_name, c?.last_name].filter(Boolean).join(" ").trim()
     || "Unnamed merchant"
   );
+}
+
+/** Who owns the row, as text. Three honest states and no fourth: a real name, the
+ *  explicit fact that nobody owns it, or — when staff_directory cannot name the id
+ *  — the id fragment itself. A blank cell here reads as "data missing" and would
+ *  be the one thing this column must never say. */
+function assigneeLabel(r: AssignRow, names: Record<string, string>): string {
+  if (!r.assigned_closer_id) return "Unassigned";
+  return names[r.assigned_closer_id] ?? r.assigned_closer_id.slice(0, 8);
 }
 
 function contactLine(r: AssignRow): string {
@@ -306,13 +318,18 @@ export default function AssignmentsPanel({
     );
   }, [rows]);
 
+  // The assignee filter counts as a filter like any other — it is the one that
+  // narrows the QUERY rather than the loaded page, so leaving it out of the count
+  // would let "Clear (0)" sit next to a table that is still scoped to one closer.
   const filterCount =
+    (canSeeAll && closerFilter !== "all" ? 1 : 0) +
     (filterSource !== "all" ? 1 : 0) +
     (filterStage !== "all" ? 1 : 0) +
     (filterAppt !== "all" ? 1 : 0) +
     (search.trim() ? 1 : 0);
 
   const clearFilters = () => {
+    if (canSeeAll) setCloserFilter("all");
     setFilterSource("all");
     setFilterStage("all");
     setFilterAppt("all");
@@ -363,6 +380,8 @@ export default function AssignmentsPanel({
             (LADDER_ORDER.get(a.status ?? "") ?? 900) - (LADDER_ORDER.get(b.status ?? "") ?? 900)
             || stageLabel(a.status).localeCompare(stageLabel(b.status))
           );
+        case "assignee":
+          return assigneeLabel(a, names).localeCompare(assigneeLabel(b, names));
         case "last_contact":
           return ts(lastContactAt(a)) - ts(lastContactAt(b));
         case "assigned":
@@ -371,7 +390,7 @@ export default function AssignmentsPanel({
       }
     };
     return [...filtered].sort((a, b) => cmp(a, b) * dir);
-  }, [rows, filterSource, filterStage, filterAppt, search, sort]);
+  }, [rows, filterSource, filterStage, filterAppt, search, sort, names]);
 
   const toggleSort = (key: SortKey) =>
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: key === "assigned" }));
@@ -389,7 +408,8 @@ export default function AssignmentsPanel({
     }
   };
 
-  const colCount = canSeeAll ? 8 : 7;
+  // Merchant · Source · Stage · Assigned to · Assigned · Last contact · Appointment · Actions
+  const colCount = 8;
 
   return (
     <div className="card bg-base-100 border border-base-300 shadow-sm">
@@ -425,20 +445,6 @@ export default function AssignmentsPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {canSeeAll && (
-              <select
-                className="select select-xs select-bordered"
-                value={closerFilter}
-                onChange={(e) => setCloserFilter(e.target.value)}
-                title="Whose book to load. This is a view scope, not a permission — RLS is what actually governs the rows."
-              >
-                <option value="all">All closers</option>
-                <option value={UNASSIGNED}>Unassigned</option>
-                {closerOptions.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            )}
             <button
               type="button"
               className="btn btn-xs btn-ghost gap-1"
@@ -460,6 +466,36 @@ export default function AssignmentsPanel({
             onChange={(e) => setSearch(e.target.value)}
             title="Matches business name, contact name, email, deal number, or phone digits"
           />
+          {/* Assigned to. The ONE control that narrows by owner, and the only one
+              on this bar that re-runs the QUERY rather than filtering the loaded
+              page — which is the point: with a 1,000-row cap, picking a closer is
+              how you actually reach the rest of their book. */}
+          {canSeeAll ? (
+            <select
+              className="select select-xs select-bordered"
+              value={closerFilter}
+              onChange={(e) => setCloserFilter(e.target.value)}
+              title="Narrow the book to one owner. This re-reads the deals for that person — it is a view scope, not a permission; RLS is what actually governs the rows."
+            >
+              <option value="all">Anyone assigned</option>
+              <option value={UNASSIGNED}>Unassigned</option>
+              {closerOptions.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          ) : (
+            <select
+              className="select select-xs select-bordered"
+              value="me"
+              disabled
+              title="This tab is already scoped to you, so there is no one else to filter to."
+              onChange={() => {}}
+            >
+              <option value="me">
+                {(viewerId && names[viewerId]) || "Assigned to you"}
+              </option>
+            </select>
+          )}
           <select
             className="select select-xs select-bordered"
             value={filterSource}
@@ -557,7 +593,7 @@ export default function AssignmentsPanel({
                   <Th label="Merchant" active={sort.key === "merchant"} desc={sort.desc} onClick={() => toggleSort("merchant")} />
                   <Th label="Source" active={sort.key === "source"} desc={sort.desc} onClick={() => toggleSort("source")} />
                   <Th label="Stage" active={sort.key === "stage"} desc={sort.desc} onClick={() => toggleSort("stage")} />
-                  {canSeeAll && <th className="text-xs font-semibold text-gray-500 dark:text-gray-400">Closer</th>}
+                  <Th label="Assigned to" active={sort.key === "assignee"} desc={sort.desc} onClick={() => toggleSort("assignee")} />
                   <Th label="Assigned" active={sort.key === "assigned"} desc={sort.desc} onClick={() => toggleSort("assigned")} />
                   <Th label="Last contact" active={sort.key === "last_contact"} desc={sort.desc} onClick={() => toggleSort("last_contact")} />
                   <th className="text-xs font-semibold text-gray-500 dark:text-gray-400">Appointment</th>
@@ -609,23 +645,23 @@ export default function AssignmentsPanel({
                           )}
                         </td>
 
-                        {/* Closer (admins) */}
-                        {canSeeAll && (
-                          <td className="align-top text-xs text-gray-600 dark:text-gray-300">
-                            {r.assigned_closer_id ? (
-                              names[r.assigned_closer_id] ?? (
-                                <span
-                                  className="font-mono opacity-70"
-                                  title="staff_directory could not name this user id — shown as an id fragment rather than an invented name"
-                                >
-                                  {r.assigned_closer_id.slice(0, 8)}
-                                </span>
-                              )
-                            ) : (
-                              <span className="text-amber-600 dark:text-amber-400 font-semibold">Unassigned</span>
-                            )}
-                          </td>
-                        )}
+                        {/* Assigned to — shown to everyone. A setter only ever sees
+                            their own name here, which is not noise: it is the
+                            visible proof the row is theirs. */}
+                        <td className="align-top text-xs text-gray-600 dark:text-gray-300">
+                          {r.assigned_closer_id ? (
+                            names[r.assigned_closer_id] ?? (
+                              <span
+                                className="font-mono opacity-70"
+                                title="staff_directory could not name this user id — shown as an id fragment rather than an invented name"
+                              >
+                                {r.assigned_closer_id.slice(0, 8)}
+                              </span>
+                            )
+                          ) : (
+                            <span className="text-amber-600 dark:text-amber-400 font-semibold">Unassigned</span>
+                          )}
+                        </td>
 
                         {/* Assigned / created */}
                         <td
