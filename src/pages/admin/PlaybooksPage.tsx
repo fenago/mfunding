@@ -329,10 +329,14 @@ export default function PlaybooksPage() {
     listCampaigns().then(setCampaigns).catch(() => {});
   }, [deal?.campaign_id, dealCampaign]);
   const { splits, hasCloser, renewalsEnabled } = useCloserSplits();
-  const { isSuperAdmin, profile, effectiveUserId } = useUserProfile();
+  const { isAdmin, isSuperAdmin, profile, effectiveUserId } = useUserProfile();
   // Renewals are gated per closer: super_admin always, a closer by their flag,
   // anyone without a closer row keeps default access.
   const canRenew = isSuperAdmin || !hasCloser || renewalsEnabled;
+  // Setters (role=closer) must never see their own cut or split % in the
+  // playbook — only management does. The DEAL's size ("$ in play", funding
+  // amount) stays visible to everyone; this hides the personal payout math.
+  const showEconomics = isAdmin || isSuperAdmin;
 
   // Realtime alerts for the playbook: (1) the SECOND a live-transfer / real-time
   // lead becomes a deal, chime + a persistent bottom-right toast; (2) when a
@@ -507,7 +511,8 @@ export default function PlaybooksPage() {
     const prevKey = order[prevIdx];
     const prevNum = prevKey ? core.findIndex((s) => s.key === prevKey) + 1 : 0;
     const label = STAGE_LABELS[active.pipeline][stageKey] ?? stageKey;
-    const cut = deal ? expectedCommissionInPlay(deal.amount_requested, deal.is_renewal) * (splits.company_lead_split / 100) : 0;
+    // Cut only for management — a setter gets the same toast without the money.
+    const cut = showEconomics && deal ? expectedCommissionInPlay(deal.amount_requested, deal.is_renewal) * (splits.company_lead_split / 100) : 0;
     if (stageKey === "funded") {
       setCelebrate(`FUNDED 🎉${cut > 0 ? ` your cut ≈ ${money0(cut)}` : ""}`);
       setConfetti(true);
@@ -888,8 +893,8 @@ export default function PlaybooksPage() {
       </div>
       )}
 
-      {/* My commission calculator */}
-      <CommissionCalculator splits={splits} hasCloser={hasCloser} canRenew={canRenew} />
+      {/* My commission calculator — management only (it reveals the split math) */}
+      {showEconomics && <CommissionCalculator splits={splits} hasCloser={hasCloser} canRenew={canRenew} />}
 
       {/* Steps */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5">
@@ -929,7 +934,7 @@ export default function PlaybooksPage() {
           {matchBanner && matchBanner.dealId === deal.id && (
             <VendorEmailBanner banner={matchBanner} onDismiss={dismissBanner} />
           )}
-          {showSticky && <StickyMoneyBar deal={deal} pipeline={active.pipeline} splits={splits} campaign={dealCampaign} />}
+          {showSticky && <StickyMoneyBar deal={deal} pipeline={active.pipeline} splits={splits} campaign={dealCampaign} showEconomics={showEconomics} />}
           <div ref={contextBarRef}>
             <DealContextBar
               deal={deal}
@@ -942,6 +947,7 @@ export default function PlaybooksPage() {
               openEditLead={() => setShowEditLead(true)}
               splits={splits}
               hasCloser={hasCloser}
+              showEconomics={showEconomics}
               canReassign={canReassignDeal}
               closerOptions={closerOptions}
               canClaim={isCloserRole && !!effectiveUserId}
@@ -1196,9 +1202,10 @@ function Confetti() {
 
 // ───────────────────────── Sticky money bar ─────────────────────────
 // Appears when the green context bar scrolls out of view — keeps the deal name,
-// where it is in the pipeline, and the closer's cut in front of them. Sticks to
-// the top of the content scroll area; z below modals (z-50) and floating buttons.
-function StickyMoneyBar({ deal, pipeline, splits, campaign }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; splits: CloserSplits; campaign: Campaign | null }) {
+// where it is in the pipeline, and (for management only) the cut in front of
+// them. Sticks to the top of the content scroll area; z below modals (z-50) and
+// floating buttons. showEconomics comes from the parent — never derived here.
+function StickyMoneyBar({ deal, pipeline, splits, campaign, showEconomics }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; splits: CloserSplits; campaign: Campaign | null; showEconomics: boolean }) {
   const { idx, stageCount, cfg, myCut } = dealMoneyStats(deal, pipeline, splits);
   return (
     <div className="sticky top-0 z-30 -mx-5 mb-4 flex items-center gap-2 border-b border-emerald-300 dark:border-emerald-800 bg-emerald-50/95 dark:bg-emerald-900/40 px-5 py-2 backdrop-blur">
@@ -1219,7 +1226,7 @@ function StickyMoneyBar({ deal, pipeline, splits, campaign }: { deal: DealWithCu
           · Stage {idx + 1} of {stageCount} — {cfg?.label ?? deal.status}
         </span>
       )}
-      {myCut > 0 && (
+      {showEconomics && myCut > 0 && (
         <span className="shrink-0 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
           · your cut ≈ {money0(myCut)}
         </span>
@@ -2971,7 +2978,7 @@ function OpeningScriptCard({ deal }: { deal: DealWithCustomer }) {
   );
 }
 
-function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId, onSendPartial, onSendDocs, onFillApplication, onNotify }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null; onSendPartial: () => void; onSendDocs: () => void; onFillApplication: () => void; onNotify: (text: string, tone?: "ok" | "error") => void }) {
+function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefresh, openCloseDeal, openEditLead, splits, hasCloser, showEconomics, canReassign, closerOptions, canClaim, onAssignCloser, myProfileId, onSendPartial, onSendDocs, onFillApplication, onNotify }: { deal: DealWithCustomer; pipeline: "mca" | "vcf"; campaign: Campaign | null; onClear: () => void; onAdvance: (stageKey: string) => void; onRefresh: () => void; openCloseDeal: () => void; openEditLead: () => void; splits: CloserSplits; hasCloser: boolean; showEconomics: boolean; canReassign: boolean; closerOptions: CloserOption[]; canClaim: boolean; onAssignCloser: (profileId: string | null) => void; myProfileId: string | null; onSendPartial: () => void; onSendDocs: () => void; onFillApplication: () => void; onNotify: (text: string, tone?: "ok" | "error") => void }) {
   const { stages, stageCount, idx, cfg, inPlay, myCut } = dealMoneyStats(deal, pipeline, splits);
   const terminal = TERMINAL.includes(deal.status);
   const closerName = deal.closer
@@ -3398,11 +3405,15 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                 title="Potential gross commission at the requested amount (amount × points)">
                 ≈ ${Math.round(inPlay).toLocaleString()} in play
               </span>
-              <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white dark:bg-emerald-600"
-                title={`Your cut at your ${splits.company_lead_split}% company-lead split${hasCloser ? "" : " (default rate)"}`}>
-                your cut ≈ ${Math.round(myCut).toLocaleString()}
-                <span className="ml-1 font-normal opacity-90">· {splits.company_lead_split}% company-lead split</span>
-              </span>
+              {/* Personal cut + split % — management only. The "$ in play" chip
+                  above is the DEAL's size and stays visible to setters. */}
+              {showEconomics && (
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-600 text-white dark:bg-emerald-600"
+                  title={`Your cut at your ${splits.company_lead_split}% company-lead split${hasCloser ? "" : " (default rate)"}`}>
+                  your cut ≈ ${Math.round(myCut).toLocaleString()}
+                  <span className="ml-1 font-normal opacity-90">· {splits.company_lead_split}% company-lead split</span>
+                </span>
+              )}
             </>
           ) : null}
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${cfg?.bgColor} ${cfg?.color}`}>
