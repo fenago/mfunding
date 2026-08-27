@@ -58,6 +58,9 @@ import {
   ArrowTrendingUpIcon,
   HashtagIcon,
   CheckCircleIcon,
+  ArrowsRightLeftIcon,
+  BoltIcon,
+  BanknotesIcon,
 } from "@heroicons/react/24/outline";
 import {
   BarChart, Bar, ComposedChart, Line, XAxis, YAxis, CartesianGrid,
@@ -66,6 +69,7 @@ import {
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "@/context/UserProfileContext";
+import { DEAL_STAGES, type DealStatus } from "@/types/deals";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** One row of public.v_wavv_outbound_setter_calls — an OUTBOUND call already
@@ -143,6 +147,216 @@ interface DealRow {
 interface SetterOption {
   id: string;      // profiles.id — what wavv_caller_setters.setter_id references
   name: string;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SYNERGY LEAD TABS — "Live Transfers" and "Real-Time"
+// ═════════════════════════════════════════════════════════════════════════════
+// These two tabs measure something DIFFERENT from every other tab on this page.
+// Everything else is WAVV DIAL activity (v_wavv_outbound_setter_calls). These
+// are PIPELINE OUTCOMES read from public.deals: of the leads Synergy delivered,
+// how far did each setter carry them?
+//
+//   • LIVE TRANSFER (deals.lead_source = 'live_transfer') — the vendor warm-
+//     transfers the merchant while they are on the phone.
+//   • REAL-TIME   (deals.lead_source = 'realtime_appt')  — an email-delivered
+//     lead the setter has to call themselves.
+//
+// Both flags are written by the `live-transfer-intake` edge function when the
+// lead lands, so nothing here re-derives or re-tags anything.
+//
+// THE RANGE MEANS "RECEIVED", NOT "WORKED". These tabs filter deals.created_at,
+// i.e. when the lead arrived — a cohort. That is deliberately NOT the filter the
+// Setters tab's loadDeals() uses (it ORs three activity timestamps to answer
+// "what moved in this window"), so the two queries are kept separate rather than
+// one being bent into the other's shape.
+const SOURCE_DEAL_COLS = "id,lead_source,status,previous_status,assigned_closer_id,created_at,contacted_at,spoke_at,qualified_at,application_sent_at,funded_at,appointment_at,amount_funded";
+/** Bounded like the WAVV aggregate pass. Hitting it is REPORTED in the UI. */
+const SOURCE_DEAL_CAP = 5000;
+
+interface SourceDeal {
+  id: string;
+  lead_source: string | null;
+  status: string | null;
+  previous_status: string | null;
+  assigned_closer_id: string | null;
+  created_at: string | null;
+  contacted_at: string | null;
+  spoke_at: string | null;
+  qualified_at: string | null;
+  application_sent_at: string | null;
+  funded_at: string | null;
+  appointment_at: string | null;
+  amount_funded: number | null;
+}
+
+/** The MCA ladder in the app's OWN order — DEAL_STAGES from types/deals.ts, the
+ *  same list the deal stepper renders. Index = depth. Parked statuses
+ *  (nurture / declined / dead) are deliberately absent: they are not rungs, they
+ *  are where a deal goes when it leaves the ladder, which is why a parked deal
+ *  falls back to its `previous_status`. */
+const MCA_LADDER: DealStatus[] = DEAL_STAGES.map((s) => s.key);
+const LADDER_INDEX = new Map<string, number>(MCA_LADDER.map((k, i) => [k as string, i]));
+const IDX = (k: DealStatus) => LADDER_INDEX.get(k)!;
+
+// ── HOW "REACHED THIS STAGE" IS DERIVED ──────────────────────────────────────
+// A deal does not leave a breadcrumb at every rung, so the deepest rung it ever
+// held is taken as the MAX of two independent readings:
+//
+//   1. ITS CURRENT POSITION. status → ladder index. A deal sitting in 'funded'
+//      is counted at Contacted, Qualifying and Application Sent too, because it
+//      demonstrably passed through them. A deal PARKED in nurture/declined/dead
+//      has no rung, so `previous_status` — the last active stage, captured on
+//      the way out — is read instead. Neither → depth 0 (Received only).
+//   2. ITS STAGE TIMESTAMPS. contacted_at / spoke_at / qualified_at /
+//      application_sent_at / funded_at, each of which proves that rung was
+//      reached even if the deal has since been dragged backwards or parked.
+//
+// Taking the max makes the funnel MONOTONE by construction: every deal counted
+// at a stage is counted at every stage above it, so a step rate can never come
+// out over 100% and a later stage can never out-count an earlier one.
+function pipelineDepth(d: SourceDeal): number {
+  let depth =
+    LADDER_INDEX.get(d.status ?? "") ??
+    LADDER_INDEX.get(d.previous_status ?? "") ??
+    0;
+  const mark = (iso: string | null, stage: DealStatus) => {
+    if (iso) depth = Math.max(depth, IDX(stage));
+  };
+  mark(d.contacted_at, "contacted");
+  mark(d.spoke_at, "contacted");
+  mark(d.qualified_at, "qualifying");
+  mark(d.application_sent_at, "application_sent");
+  if (d.funded_at || d.status === "funded") depth = Math.max(depth, IDX("funded"));
+  return depth;
+}
+
+interface PipeCounts {
+  received: number;
+  contacted: number;
+  qualifying: number;
+  appsSent: number;
+  funded: number;
+  appointments: number;
+  fundedAmount: number;
+  /** Still sitting at Received with nothing logged — the untouched pile. */
+  untouched: number;
+}
+
+function computePipeline(deals: SourceDeal[]): PipeCounts {
+  const c: PipeCounts = {
+    received: 0, contacted: 0, qualifying: 0, appsSent: 0, funded: 0,
+    appointments: 0, fundedAmount: 0, untouched: 0,
+  };
+  for (const d of deals) {
+    c.received++;
+    const depth = pipelineDepth(d);
+    if (depth >= IDX("contacted")) c.contacted++; else c.untouched++;
+    if (depth >= IDX("qualifying")) c.qualifying++;
+    if (depth >= IDX("application_sent")) c.appsSent++;
+    if (depth >= IDX("funded")) {
+      c.funded++;
+      c.fundedAmount += Number(d.amount_funded ?? 0);
+    }
+    if (d.appointment_at) c.appointments++;
+  }
+  return c;
+}
+
+/** Which lead product a tab is about, and the KPI-target key prefix its rates
+ *  are judged under. The two products are held to SEPARATE thresholds on
+ *  purpose: a warm transfer that only converts like a cold email is a problem,
+ *  and one shared target would hide that. */
+interface SourceTabDef {
+  id: "live_transfers" | "realtime";
+  leadSource: string;
+  label: string;
+  noun: string;
+  targetPrefix: string;
+  blurb: ReactNode;
+}
+
+const SOURCE_TABS: Record<"live_transfers" | "realtime", SourceTabDef> = {
+  live_transfers: {
+    id: "live_transfers",
+    leadSource: "live_transfer",
+    label: "Live Transfers",
+    noun: "transfer",
+    targetPrefix: "lt",
+    blurb: (
+      <>
+        Synergy warm-transferred the merchant to a setter <b>while they were on the phone</b>. Marked on the
+        deal as <code>lead_source = live_transfer</code> by the <code>live-transfer-intake</code> function.
+      </>
+    ),
+  },
+  realtime: {
+    id: "realtime",
+    leadSource: "realtime_appt",
+    label: "Real-Time",
+    noun: "lead",
+    targetPrefix: "rt",
+    blurb: (
+      <>
+        Synergy delivered the lead <b>by email</b> and the setter placed the call. Marked on the deal as{" "}
+        <code>lead_source = realtime_appt</code> by the <code>live-transfer-intake</code> function.
+      </>
+    ),
+  },
+};
+
+/** The pipeline funnel, as one definition — the twin of funnelStagesOf() on the
+ *  dial side. `targetSuffix` is appended to the tab's prefix (lt_ / rt_) to look
+ *  a threshold up in platform_settings.ph_dialer_kpi_targets. There are NO
+ *  built-in defaults for these: an unset threshold renders grey, never green. */
+function pipelineStagesOf(c: PipeCounts, targetPrefix: string): FunnelStage[] {
+  const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
+  const key = (suffix: string) => `${targetPrefix}_${suffix}`;
+  return [
+    {
+      key: "received", label: "Received", short: "Received",
+      help: "Every deal of this lead source created in the range — the cohort the vendor delivered",
+      count: c.received, stepLabel: "—", stepShort: "—", stepPct: null, targetKey: null,
+    },
+    {
+      key: "contacted", label: "Contacted", short: "Contacted",
+      help: "Reached at-or-past the Contacted rung: a contacted_at / spoke_at stamp, or a current (or pre-park) status of Contacted or later",
+      count: c.contacted, stepLabel: "of leads received", stepShort: "of received",
+      stepPct: pct(c.contacted, c.received), targetKey: key("contact_rate_pct"),
+    },
+    {
+      key: "qualifying", label: "Qualifying", short: "Qualifying",
+      help: "Reached at-or-past the Qualifying rung: a qualified_at stamp, or a current (or pre-park) status of Qualifying or later",
+      count: c.qualifying, stepLabel: "of contacted", stepShort: "of contacted",
+      stepPct: pct(c.qualifying, c.contacted), targetKey: key("qualify_rate_pct"),
+    },
+    {
+      key: "application_sent", label: "Application sent", short: "App sent",
+      help: "Reached at-or-past the Application Sent rung: an application_sent_at stamp, or a current (or pre-park) status of App Sent or later",
+      count: c.appsSent, stepLabel: "of qualified", stepShort: "of qualified",
+      stepPct: pct(c.appsSent, c.qualifying), targetKey: key("app_rate_pct"),
+    },
+    {
+      key: "funded", label: "Funded", short: "Funded",
+      help: "Funded: a funded_at stamp, or a current status of Funded",
+      count: c.funded, stepLabel: "of applications", stepShort: "of apps",
+      stepPct: pct(c.funded, c.appsSent), targetKey: key("fund_rate_pct"),
+    },
+  ];
+}
+
+/** One setter's slice of a lead-source cohort. `unassigned` is a real bucket,
+ *  not a person: a deal with no assigned_closer_id belongs to nobody and is
+ *  never folded into whoever happens to be busiest. */
+interface PipeGroup {
+  key: string;
+  name: string;
+  unassigned: boolean;
+  /** True when the name could not be read (profiles is super-admin-only), so the
+   *  row is titled by id fragment rather than by an invented name. */
+  nameUnknown: boolean;
+  deals: SourceDeal[];
+  counts: PipeCounts;
 }
 
 // The aggregate pass pulls raw rows and folds them in the browser. Bounded so a
@@ -592,15 +806,24 @@ interface SetterRow {
   fundedAmount: number | null;
 }
 
-type TabId = "funnel" | "setters" | "dispositions" | "trends" | "log" | "numbers";
+type TabId = "funnel" | "setters" | "live_transfers" | "realtime" | "dispositions" | "trends" | "log" | "numbers";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
-  { id: "funnel",       label: "Funnel",       icon: FunnelIcon },
-  { id: "setters",      label: "Setters",      icon: UserGroupIcon },
-  { id: "dispositions", label: "Dispositions", icon: ChartBarIcon },
-  { id: "trends",       label: "Trends",       icon: ArrowTrendingUpIcon },
-  { id: "log",          label: "Call log",     icon: ChatBubbleLeftRightIcon },
-  { id: "numbers",      label: "Numbers",      icon: HashtagIcon, adminOnly: true },
+  { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
+  { id: "setters",        label: "Setters",        icon: UserGroupIcon },
+  { id: "live_transfers", label: "Live Transfers", icon: ArrowsRightLeftIcon },
+  { id: "realtime",       label: "Real-Time",      icon: BoltIcon },
+  { id: "dispositions",   label: "Dispositions",   icon: ChartBarIcon },
+  { id: "trends",         label: "Trends",         icon: ArrowTrendingUpIcon },
+  { id: "log",            label: "Call log",       icon: ChatBubbleLeftRightIcon },
+  { id: "numbers",        label: "Numbers",        icon: HashtagIcon, adminOnly: true },
 ];
+
+/** The two DEALS-based tabs. They read a different table from every other tab,
+ *  so they render outside the WAVV load gate and skip the WAVV banners. */
+const SOURCE_TAB_IDS = ["live_transfers", "realtime"] as const;
+function isSourceTab(t: TabId): t is "live_transfers" | "realtime" {
+  return (SOURCE_TAB_IDS as readonly string[]).includes(t);
+}
 
 export default function SetterPerformancePage() {
   const { isAdmin, isSuperAdmin } = useUserProfile();
@@ -625,6 +848,17 @@ export default function SetterPerformancePage() {
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   const [dealRows, setDealRows] = useState<DealRow[] | null>(null);
   const [dealsError, setDealsError] = useState<string | null>(null);
+  // Synergy lead cohorts (Live Transfers / Real-Time tabs). null = UNREADABLE,
+  // which renders as an error, never as an empty cohort.
+  const [sourceDeals, setSourceDeals] = useState<SourceDeal[] | null>(null);
+  const [sourceDealsError, setSourceDealsError] = useState<string | null>(null);
+  const [sourceDealsLoading, setSourceDealsLoading] = useState(true);
+  /** The cohort query hit its row cap — REPORTED, never silently absorbed. */
+  const [sourceDealsTruncated, setSourceDealsTruncated] = useState(false);
+  /** profiles.id → display name, for deals.assigned_closer_id. Only super admins
+   *  can read public.profiles, so this map can legitimately come back empty for
+   *  a closer/employee session — the UI says so instead of inventing names. */
+  const [closerNames, setCloserNames] = useState<Record<string, string>>({});
   const [targets, setTargets] = useState<Record<string, KpiTarget> | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -754,6 +988,57 @@ export default function SetterPerformancePage() {
   }, [fromIso, toIso]);
 
   useEffect(() => { void loadDeals(); }, [loadDeals]);
+
+  // ── Synergy lead cohorts (Live Transfers / Real-Time tabs) ────────────────
+  // ONE query covers both tabs — the two lead sources are pulled together and
+  // split in memory, so switching tabs costs nothing and the two funnels are
+  // guaranteed to be reading the same snapshot.
+  //
+  // Filtered on created_at (when the lead LANDED), because the question these
+  // tabs answer is "of what the vendor delivered in this window, how much did we
+  // convert" — a cohort question. Recent cohorts are therefore still maturing,
+  // which the UI states rather than letting a fresh day read as a bad day.
+  const loadSourceDeals = useCallback(async () => {
+    setSourceDealsLoading(true);
+    setSourceDealsError(null);
+    try {
+      const { data, error } = await supabase
+        .from("deals")
+        .select(SOURCE_DEAL_COLS)
+        .in("lead_source", [SOURCE_TABS.live_transfers.leadSource, SOURCE_TABS.realtime.leadSource])
+        .gte("created_at", fromIso)
+        .lt("created_at", toIso)
+        .order("created_at", { ascending: false })
+        .limit(SOURCE_DEAL_CAP);
+      if (error) throw new Error(error.message);
+      const rows = (data ?? []) as SourceDeal[];
+      setSourceDeals(rows);
+      setSourceDealsTruncated(rows.length >= SOURCE_DEAL_CAP);
+
+      // Resolve setter names. RLS may hand back fewer rows than asked for (a
+      // non-super-admin reads only their own profile); every id that does not
+      // come back stays nameless and is rendered as such.
+      const ids = [...new Set(rows.map((r) => r.assigned_closer_id).filter((v): v is string => !!v))];
+      if (ids.length > 0) {
+        const { data: profs } = await supabase.from("profiles").select("id,display_name,first_name,last_name").in("id", ids);
+        const map: Record<string, string> = {};
+        for (const p of (profs ?? []) as { id: string; display_name: string | null; first_name: string | null; last_name: string | null }[]) {
+          // `||` not `??`: an all-null name joins to "", falsy but not nullish.
+          const name = p.display_name || [p.first_name, p.last_name].filter(Boolean).join(" ");
+          if (name) map[p.id] = name;
+        }
+        setCloserNames(map);
+      } else {
+        setCloserNames({});
+      }
+    } catch (e) {
+      setSourceDeals(null);
+      setSourceDealsError(e instanceof Error ? e.message : "Failed to read Synergy lead deals");
+    }
+    setSourceDealsLoading(false);
+  }, [fromIso, toIso]);
+
+  useEffect(() => { void loadSourceDeals(); }, [loadSourceDeals]);
 
   // ── Numbers tab data (worklist view + the setter roster to assign from) ───
   // The roster is the ACTIVE CLOSERS, resolved to their profiles.id because that
@@ -1136,6 +1421,45 @@ export default function SetterPerformancePage() {
 
   const anyAttributed = setterRows.some((r) => r.attributed);
 
+  // ── Synergy cohorts, split by product and grouped by setter ───────────────
+  // Both tabs are folded here off the SAME loaded rows, so the two funnels can
+  // never be reading different snapshots of the table.
+  const sourceCohorts = useMemo(() => {
+    const build = (leadSource: string) => {
+      if (sourceDeals === null) return null;
+      const deals = sourceDeals.filter((d) => d.lead_source === leadSource);
+      const acc = new Map<string, SourceDeal[]>();
+      for (const d of deals) {
+        const key = d.assigned_closer_id ?? UNASSIGNED_FILTER;
+        const bucket = acc.get(key);
+        if (bucket) bucket.push(d);
+        else acc.set(key, [d]);
+      }
+      const groups: PipeGroup[] = [...acc.entries()].map(([key, rows]) => {
+        const unassigned = key === UNASSIGNED_FILTER;
+        const name = unassigned ? null : (closerNames[key] ?? null);
+        return {
+          key,
+          name: unassigned ? "Unassigned" : (name ?? `Setter · ${key.slice(0, 8)}`),
+          unassigned,
+          nameUnknown: !unassigned && name === null,
+          deals: rows,
+          counts: computePipeline(rows),
+        };
+      });
+      // Unassigned sinks to the bottom; everyone else by cohort size.
+      groups.sort((a, b) => {
+        if (a.unassigned !== b.unassigned) return a.unassigned ? 1 : -1;
+        return b.counts.received - a.counts.received;
+      });
+      return { deals, counts: computePipeline(deals), groups };
+    };
+    return {
+      live_transfers: build(SOURCE_TABS.live_transfers.leadSource),
+      realtime: build(SOURCE_TABS.realtime.leadSource),
+    };
+  }, [sourceDeals, closerNames]);
+
   // ── Daily trend ───────────────────────────────────────────────────────────
   const trend = useMemo(() => {
     const byDay = new Map<string, { day: string; dials: number; connects: number; human: number; conversations: number; appointments: number }>();
@@ -1285,6 +1609,10 @@ export default function SetterPerformancePage() {
   const emptyRange = !neverSynced && aggRows.length === 0 && !loading;
   const logPages = logCount === null ? 0 : Math.ceil(logCount / LOG_PAGE_SIZE);
   const visibleTabs = TABS.filter((t) => !t.adminOnly || canManageNumbers);
+  /** The Synergy tabs read `deals`, not WAVV — so every WAVV banner below is
+   *  suppressed on them. A stale dialer sync says nothing about a lead cohort,
+   *  and showing it there would be a warning about the wrong data source. */
+  const sourceTabActive = isSourceTab(tab);
 
   function sortBy(key: SortKey) {
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: key !== "name" }));
@@ -1366,8 +1694,8 @@ export default function SetterPerformancePage() {
         </span>
       </div>
 
-      {/* ── Banners ── */}
-      {keyInvalid && (
+      {/* ── Banners (WAVV-side only — see sourceTabActive) ── */}
+      {!sourceTabActive && keyInvalid && (
         <div className="alert alert-error">
           <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
           <div>
@@ -1382,14 +1710,14 @@ export default function SetterPerformancePage() {
         </div>
       )}
 
-      {loadError && (
+      {!sourceTabActive && loadError && (
         <div className="alert alert-error">
           <ExclamationTriangleIcon className="w-5 h-5" />
           <span>Could not read setter performance: {loadError}</span>
         </div>
       )}
 
-      {!loading && neverSynced && !loadError && (
+      {!sourceTabActive && !loading && neverSynced && !loadError && (
         <div className="alert">
           <InformationCircleIcon className="w-5 h-5" />
           <span>
@@ -1399,7 +1727,7 @@ export default function SetterPerformancePage() {
         </div>
       )}
 
-      {aggregateTruncated && (
+      {!sourceTabActive && aggregateTruncated && (
         <div className="alert alert-warning">
           <ExclamationTriangleIcon className="w-5 h-5" />
           <span>
@@ -1411,7 +1739,7 @@ export default function SetterPerformancePage() {
       )}
 
       {/* ── Attribution notice — permanent, not a bug to be fixed by a reparse ── */}
-      {!loading && aggRows.length > 0 && !anyAttributed && (
+      {!sourceTabActive && !loading && aggRows.length > 0 && !anyAttributed && (
         <div className="alert alert-info">
           <InformationCircleIcon className="w-5 h-5 shrink-0" />
           <div className="text-sm">
@@ -1447,7 +1775,23 @@ export default function SetterPerformancePage() {
         </nav>
       </div>
 
-      {loading ? (
+      {/* ═══════════ SYNERGY LEAD TABS (deals, not WAVV) ═══════════ */}
+      {/* Rendered BEFORE the WAVV loading gate on purpose: these read `deals`,
+          so a slow or broken dialer sync must not blank them. */}
+      {/* isSourceTab() is called inline (not via sourceTabActive) so TypeScript
+          narrows `tab` for the lookups below — no casts. */}
+      {isSourceTab(tab) ? (
+        <SourceFunnelPanel
+          def={SOURCE_TABS[tab]}
+          cohort={sourceCohorts[tab]}
+          loading={sourceDealsLoading}
+          error={sourceDealsError}
+          truncated={sourceDealsTruncated}
+          targetFor={targetFor}
+          rangeLabel={RANGE_LABELS[rangeKey]}
+          anyNameUnknown={sourceCohorts[tab]?.groups.some((g) => g.nameUnknown) ?? false}
+        />
+      ) : loading ? (
         <div className="flex items-center gap-2 text-gray-400 text-sm">
           <span className="loading loading-spinner loading-sm" /> Loading WAVV calls…
         </div>
@@ -2384,12 +2728,47 @@ function FunnelCard({
           ))}
         </div>
 
+        <StageBars
+          stages={stages}
+          targetFor={targetFor}
+          compact={compact}
+          ofLabel="of dials"
+          jumpKey="positives"
+          onJump={onPositivesClick}
+        />
+
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── StageBars ────────────────────────────────────────────────────────────────
+// The bar/count/step-chip stack, shared by the WAVV dial funnel (FunnelCard) and
+// the Synergy pipeline funnel (SourceFunnelPanel). Stage 0 is the denominator
+// for every bar's width and for the "% of <ofLabel>" line, so the two funnels
+// draw identically even though they count entirely different things.
+function StageBars({
+  stages, targetFor, compact = false, ofLabel, jumpKey, onJump,
+}: {
+  stages: FunnelStage[];
+  targetFor: TargetLookup;
+  compact?: boolean;
+  /** Names the denominator: "of dials" on the dial funnel, "of leads" on the
+   *  pipeline one. Never guessed from the data. */
+  ofLabel: string;
+  /** Stage whose count becomes a drill-down link, when onJump is supplied. */
+  jumpKey?: string;
+  onJump?: () => void;
+}) {
+  const total = stages[0]?.count ?? 0;
+  return (
         <div className={compact ? "space-y-2.5" : "space-y-3"}>
           {stages.map((s, i) => {
             const { target, isDefault } = s.targetKey ? targetFor(s.targetKey) : { target: null, isDefault: false };
             const rag = ragOf(s.stepPct, target);
-            const widthPct = funnel.dials > 0 ? Math.max((s.count / funnel.dials) * 100, s.count > 0 ? 1.5 : 0) : 0;
-            const ofDials = funnel.dials > 0 ? `${((s.count / funnel.dials) * 100).toFixed(1)}% of dials` : "—";
+            const widthPct = total > 0 ? Math.max((s.count / total) * 100, s.count > 0 ? 1.5 : 0) : 0;
+            const ofDials = total > 0 ? `${((s.count / total) * 100).toFixed(1)}% ${ofLabel}` : "—";
             const bar = (
               <div className={`${compact ? "h-4" : "h-7"} w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden`}>
                 <div
@@ -2399,14 +2778,14 @@ function FunnelCard({
               </div>
             );
 
-            // The positive count is the one number a manager wants to drill into,
-            // so where a drill-down exists it renders as a link to those calls.
-            const jumpable = s.key === "positives" && !!onPositivesClick && s.count > 0;
+            // Where the caller supplied a drill-down for this stage, its count
+            // renders as a link instead of plain text.
+            const jumpable = !!jumpKey && s.key === jumpKey && !!onJump && s.count > 0;
             const countBase = `${compact ? "text-sm shrink-0" : "text-base"} font-semibold tabular-nums`;
             const countNode = jumpable ? (
               <button
                 type="button"
-                onClick={onPositivesClick}
+                onClick={onJump}
                 title="Jump to every positive-disposition call in this range"
                 className={`${countBase} text-mint-green hover:underline underline-offset-2`}
               >
@@ -2465,10 +2844,6 @@ function FunnelCard({
             );
           })}
         </div>
-
-        {children}
-      </div>
-    </div>
   );
 }
 
@@ -2492,5 +2867,312 @@ function EmptyRange({ total }: { total: number | null }) {
         No outbound calls in this range. {total === null ? "The all-time count is unreadable." : `${total.toLocaleString()} outbound call${total === 1 ? "" : "s"} are mirrored across all time.`}
       </span>
     </div>
+  );
+}
+
+// ── SourceFunnelPanel ────────────────────────────────────────────────────────
+// The whole Live Transfers / Real-Time tab: summary tiles, the team pipeline
+// funnel, and the per-setter breakdown. One component serves both products —
+// they differ only by lead_source and by KPI-target prefix, so a difference
+// between the two tabs can only ever be a difference in the DATA.
+function SourceFunnelPanel({
+  def, cohort, loading, error, truncated, targetFor, rangeLabel, anyNameUnknown,
+}: {
+  def: SourceTabDef;
+  /** null = the deals read FAILED. Not "no leads" — the difference is the whole
+   *  point, and the two render completely differently. */
+  cohort: { deals: SourceDeal[]; counts: PipeCounts; groups: PipeGroup[] } | null;
+  loading: boolean;
+  error: string | null;
+  truncated: boolean;
+  targetFor: TargetLookup;
+  rangeLabel: string;
+  anyNameUnknown: boolean;
+}) {
+  const stages = useMemo(
+    () => (cohort ? pipelineStagesOf(cohort.counts, def.targetPrefix) : []),
+    [cohort, def.targetPrefix],
+  );
+
+  const header = (
+    <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card-body p-4 space-y-2">
+        <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+          {def.id === "live_transfers"
+            ? <ArrowsRightLeftIcon className="w-5 h-5 text-mint-green" />
+            : <BoltIcon className="w-5 h-5 text-mint-green" />}
+          {def.label} — pipeline outcomes
+        </h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400">{def.blurb}</p>
+        <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
+          <div>
+            <b className="text-gray-700 dark:text-gray-200">These are pipeline outcomes from Deals, not WAVV dial counts.</b>{" "}
+            Nothing on this tab is a dial, a connect or a disposition — every number is a deal position.
+          </div>
+          <div>
+            <b className="text-gray-700 dark:text-gray-200">The range is when the lead was RECEIVED</b> (
+            <code>deals.created_at</code>), so this is a cohort: <b>{rangeLabel}</b>'s leads followed to wherever they
+            have got to <i>as of now</i>. A cohort that only just landed has not had time to convert — read a short
+            range as early, not as bad.
+          </div>
+          <div>
+            <b className="text-gray-700 dark:text-gray-200">How a stage is counted:</b> a lead counts at a stage if it
+            carries that stage's timestamp <i>or</i> its current status is at-or-past that stage on the MCA ladder — so
+            a funded deal counts at Contacted, Qualifying and Application Sent too. A lead parked in
+            Nurture / Declined / Dead is read at the last active stage it held before it was parked. The deepest of
+            those readings wins, which is why a later stage can never out-count an earlier one.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (error) {
+    return (
+      <div className="space-y-4">
+        {header}
+        <div className="alert alert-error">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+          <div>
+            <div className="font-semibold">Could not read {def.label.toLowerCase()} from Deals.</div>
+            <div className="text-sm opacity-90">
+              {error} — this is <b>unreadable</b>, not an empty cohort. Nothing below is being shown as zero.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading || cohort === null) {
+    return (
+      <div className="space-y-4">
+        {header}
+        <div className="flex items-center gap-2 text-gray-400 text-sm">
+          <span className="loading loading-spinner loading-sm" /> Loading {def.label.toLowerCase()}…
+        </div>
+      </div>
+    );
+  }
+
+  const c = cohort.counts;
+
+  if (c.received === 0) {
+    return (
+      <div className="space-y-4">
+        {header}
+        <div className="alert">
+          <InformationCircleIcon className="w-5 h-5" />
+          <span>
+            No {def.noun}s were received in this range. The range filters when the lead <b>landed</b>, so widen it
+            to see {def.noun}s delivered earlier — work done today on an older {def.noun} shows up in that
+            {def.noun}'s own cohort, not this one.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const tiles: { label: string; value: string; help: string }[] = [
+    { label: "Received", value: c.received.toLocaleString(), help: `${def.noun}s delivered in this range` },
+    { label: "Contacted", value: c.contacted.toLocaleString(), help: "Reached at-or-past the Contacted rung" },
+    { label: "Appointments", value: c.appointments.toLocaleString(), help: "Leads in this cohort with a booked appointment (deals.appointment_at). A callback is not an appointment and is not counted." },
+    { label: "Apps sent", value: c.appsSent.toLocaleString(), help: "Reached at-or-past Application Sent" },
+    { label: "Funded", value: c.funded.toLocaleString(), help: "Funded deals from this cohort" },
+    { label: "Funded $", value: c.fundedAmount > 0 ? usd(c.fundedAmount) : "$0", help: "Sum of amount_funded across this cohort's funded deals" },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {header}
+
+      {truncated && (
+        <div className="alert alert-warning">
+          <ExclamationTriangleIcon className="w-5 h-5" />
+          <span>
+            This range exceeds {SOURCE_DEAL_CAP.toLocaleString()} Synergy leads — everything below covers only the{" "}
+            {SOURCE_DEAL_CAP.toLocaleString()} most recent. Narrow the range for exact totals.
+          </span>
+        </div>
+      )}
+
+      {/* Summary tiles */}
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+        {tiles.map((t) => (
+          <div key={t.label} className="card bg-base-100 border border-base-300 shadow-sm" title={t.help}>
+            <div className="card-body p-4">
+              <div className="text-xs uppercase tracking-wide text-gray-400 flex items-center gap-1">
+                {t.label === "Funded $" && <BanknotesIcon className="w-3.5 h-3.5" />}
+                {t.label}
+              </div>
+              <div className="text-xl font-semibold text-gray-900 dark:text-white tabular-nums">{t.value}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Team funnel */}
+      <div className="card bg-base-100 border border-base-300 shadow-sm">
+        <div className="card-body p-4 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              <FunnelIcon className="w-5 h-5 text-mint-green" /> Combined pipeline funnel (team)
+            </h2>
+            <RagLegend />
+          </div>
+
+          <StageBars stages={stages} targetFor={targetFor} ofLabel={`of ${def.noun}s`} />
+
+          <p className="text-xs text-gray-400">
+            Step rates are judged against{" "}
+            <code>{def.targetPrefix}_contact_rate_pct</code>, <code>{def.targetPrefix}_qualify_rate_pct</code>,{" "}
+            <code>{def.targetPrefix}_app_rate_pct</code> and <code>{def.targetPrefix}_fund_rate_pct</code> in{" "}
+            <code>platform_settings.ph_dialer_kpi_targets</code>. None of them has a built-in default, so until the
+            owner stores a threshold every rate renders <b>grey — no target</b>, never green.{" "}
+            {def.id === "live_transfers"
+              ? "Live transfers are held to their own thresholds: a warm transfer that converts like a cold call is the problem worth seeing."
+              : "Real-time leads are held to their own thresholds — they arrive by email, so they should not be measured against a warm transfer."}
+          </p>
+        </div>
+      </div>
+
+      {/* Per-setter breakdown */}
+      <div className="card bg-base-100 border border-base-300 shadow-sm">
+        <div className="card-body p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              <UserGroupIcon className="w-5 h-5 text-mint-green" /> Per-setter breakdown
+            </h2>
+            <span className="text-xs text-gray-400">
+              {cohort.groups.length.toLocaleString()} bucket{cohort.groups.length === 1 ? "" : "s"} · sorted by {def.noun}s received
+            </span>
+          </div>
+          <p className="text-xs text-gray-400 mt-1">
+            Grouped on <code>deals.assigned_closer_id</code>. A {def.noun} nobody owns lands in{" "}
+            <b>Unassigned</b> — a real bucket, never folded into whoever is busiest.
+          </p>
+          {anyNameUnknown && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+              Some setter names could not be read with your access (staff names live in <code>profiles</code>, which
+              only super admins may read), so those rows are titled by id. The counts are unaffected.
+            </p>
+          )}
+
+          <div className={`${TABLE_WRAP} mt-3`}>
+            <table className={TABLE}>
+              <thead className={THEAD}>
+                <tr>
+                  <th className={TH}>Setter</th>
+                  <th className={TH_NUM} title={`${def.noun}s delivered to this setter in this range`}>Received</th>
+                  <th className={TH_NUM}>Contacted</th>
+                  <th className={TH_NUM} title="Contacted ÷ received">Contact %</th>
+                  <th className={TH_NUM}>Qualifying</th>
+                  <th className={TH_NUM} title="Qualifying ÷ contacted">Qual %</th>
+                  <th className={TH_NUM}>App sent</th>
+                  <th className={TH_NUM} title="App sent ÷ qualifying">App %</th>
+                  <th className={`${TH_NUM} ${GROUP_EDGE}`} title="Deals in this cohort with a booked appointment">Appts</th>
+                  <th className={TH_NUM}>Funded</th>
+                  <th className={TH_NUM}>Funded $</th>
+                </tr>
+              </thead>
+              <tbody className={TBODY}>
+                {cohort.groups.map((g) => (
+                  <PipeRow key={g.key} name={g.name} unassigned={g.unassigned} counts={g.counts} def={def} targetFor={targetFor} />
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                  <PipeCells name="Team" counts={c} def={def} targetFor={targetFor} />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* The thing to act on */}
+      <div className="card bg-base-100 border border-base-300 shadow-sm">
+        <div className="card-body p-4">
+          <h2 className="font-semibold text-gray-900 dark:text-white">What this cohort is telling you</h2>
+          <ul className="mt-2 space-y-2 text-sm text-gray-600 dark:text-gray-300">
+            <li>
+              <span className="font-semibold text-gray-900 dark:text-white">Untouched:</span>{" "}
+              <b className={c.untouched > 0 ? "text-amber-600 dark:text-amber-400" : "text-gray-900 dark:text-white"}>
+                {c.untouched.toLocaleString()}
+              </b>{" "}
+              of {c.received.toLocaleString()} {def.noun}s have <b>no contact logged at all</b> — no contacted/spoke
+              stamp and still sitting at New.{" "}
+              {def.id === "live_transfers"
+                ? "On a live transfer that is money already spent on a merchant who was handed to us on the phone."
+                : "On a real-time lead that is a delivered lead nobody called."}
+            </li>
+            <li>
+              <span className="font-semibold text-gray-900 dark:text-white">Received → application:</span>{" "}
+              <b className="text-gray-900 dark:text-white">
+                {c.received > 0 ? ((c.appsSent / c.received) * 100).toFixed(1) : "—"}%
+              </b>{" "}
+              of this cohort got an application out ({c.appsSent.toLocaleString()} of {c.received.toLocaleString()}).
+            </li>
+            <li>
+              <span className="font-semibold text-gray-900 dark:text-white">Funded:</span>{" "}
+              <b className="text-gray-900 dark:text-white">{c.funded.toLocaleString()}</b>
+              {c.fundedAmount > 0 && <> for <b className="text-gray-900 dark:text-white">{usd(c.fundedAmount)}</b></>}.
+              {c.funded === 0 && " Nothing from this cohort has funded yet — on a fresh range that is expected, since funding lags the lead by days."}
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** One body row of the per-setter table. */
+function PipeRow({
+  name, unassigned, counts, def, targetFor,
+}: {
+  name: string; unassigned: boolean; counts: PipeCounts; def: SourceTabDef; targetFor: TargetLookup;
+}) {
+  return (
+    <tr className={TR}>
+      <PipeCells name={name} unassigned={unassigned} counts={counts} def={def} targetFor={targetFor} />
+    </tr>
+  );
+}
+
+/** The cells, shared by every setter row and the Team footer so the two can
+ *  never format or judge a number differently. */
+function PipeCells({
+  name, unassigned = false, counts, def, targetFor,
+}: {
+  name: string; unassigned?: boolean; counts: PipeCounts; def: SourceTabDef; targetFor: TargetLookup;
+}) {
+  const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
+  const t = (suffix: string) => targetFor(`${def.targetPrefix}_${suffix}`).target;
+  return (
+    <>
+      <td className={`${TD} font-medium text-gray-900 dark:text-white min-w-[11rem]`}>
+        <div className="flex items-center gap-2">
+          <span className="truncate" title={name}>{name}</span>
+          {unassigned && (
+            <span
+              className="shrink-0 badge badge-xs badge-ghost"
+              title={`No closer is assigned to these ${def.noun}s — assign them on the deal`}
+            >
+              no owner
+            </span>
+          )}
+        </div>
+      </td>
+      <td className={TD_NUM}>{counts.received.toLocaleString()}</td>
+      <td className={TD_NUM}>{counts.contacted.toLocaleString()}</td>
+      <td className={TD_NUM}><RagPct value={pct(counts.contacted, counts.received)} target={t("contact_rate_pct")} /></td>
+      <td className={TD_NUM}>{counts.qualifying.toLocaleString()}</td>
+      <td className={TD_NUM}><RagPct value={pct(counts.qualifying, counts.contacted)} target={t("qualify_rate_pct")} /></td>
+      <td className={TD_NUM}>{counts.appsSent.toLocaleString()}</td>
+      <td className={TD_NUM}><RagPct value={pct(counts.appsSent, counts.qualifying)} target={t("app_rate_pct")} /></td>
+      <td className={`${TD_NUM} ${GROUP_EDGE}`}>{counts.appointments.toLocaleString()}</td>
+      <td className={TD_NUM}>{counts.funded.toLocaleString()}</td>
+      <td className={TD_NUM}>{counts.fundedAmount > 0 ? usd(counts.fundedAmount) : <span className="text-gray-300 dark:text-gray-600">$0</span>}</td>
+    </>
   );
 }
