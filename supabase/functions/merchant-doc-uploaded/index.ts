@@ -219,6 +219,9 @@ async function ghlWriteBack(
 
     // ── Resolve the GHL contact (stored id, else heal by email upsert). ──
     let contactId = (input.customer.ghl_contact_id as string | null) ?? null;
+    // Did we have to resolve the contact by upsert? If so it needs the `merchant`
+    // tag, which the upsert no longer sets (see the tag note below).
+    let resolvedByUpsert = false;
     if (!contactId) {
       const email = (input.customer.email as string | null)?.trim();
       if (!email) {
@@ -233,7 +236,10 @@ async function ghlWriteBack(
         lastName: (input.customer.last_name as string | null) ?? undefined,
         companyName: (input.customer.business_name as string | null) ?? undefined,
         phone: (input.customer.phone as string | null) ?? undefined,
-        tags: ["merchant"],
+        // NO `tags` HERE — /contacts/upsert REPLACES the whole tag array. This upsert
+        // dedupes by email, so it can land on an EXISTING contact and wipe its
+        // lead-source/campaign tags (synergy, live-transfer, …). `merchant` is folded
+        // into the ADDITIVE addContactTags call below instead.
         source: "Portal Doc Upload",
       });
       contactId = up.data?.contact?.id ?? null;
@@ -243,6 +249,7 @@ async function ghlWriteBack(
         await logWriteBack(db, input, lines);
         return outcome;
       }
+      resolvedByUpsert = true;
       const { error: linkErr } = await db.from("customers")
         .update({ ghl_contact_id: contactId }).eq("id", input.customerId);
       if (linkErr) console.warn("[merchant-doc-uploaded] persisting healed ghl_contact_id failed:", linkErr.message);
@@ -292,6 +299,7 @@ async function ghlWriteBack(
 
     // ── a) Tags (idempotent; visible in GHL; tag-added automations may key on them). ──
     const tags = ["portal-doc-uploaded"];
+    if (resolvedByUpsert) tags.push("merchant");
     if (input.docType === "bank_statement" && bankSatisfied) tags.push("portal-statements-in");
     const tagRes = await addContactTags(cfg, contactId, tags);
     outcome.tags = tags;

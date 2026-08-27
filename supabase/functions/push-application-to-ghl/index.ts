@@ -441,11 +441,16 @@ Deno.serve(async (req) => {
     city: (customer.address_city as string | null) ?? undefined,
     state: (customer.address_state as string | null) ?? undefined,
     postalCode: (customer.address_zip as string | null) ?? undefined,
-    tags: ["merchant"],
+    // NO `tags` HERE — /contacts/upsert REPLACES the whole tag array, so passing
+    // ["merchant"] silently WIPED every other tag the contact carried (that is how
+    // 31% of Synergy contacts lost their `synergy` / `live-transfer` attribution
+    // as they progressed). Tags are added ADDITIVELY below via POST /contacts/{id}/tags.
     source: "MCA Application",
   });
   const contactId = cr.data?.contact?.id ?? null;
   if (!contactId) return json({ error: `GHL upsert failed: ${cr.error ?? "no contact id"}` }, 502);
+  // Additive: ADDS `merchant` without touching lead-source/campaign tags.
+  await addContactTags(cfg, contactId, ["merchant"]); // best-effort
   if ((customer.ghl_contact_id ?? null) !== contactId) {
     await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);
   }

@@ -32,7 +32,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact,
-  latestEmailMessageId,
+  latestEmailMessageId, addContactTags,
 } from "../_shared/ghl.ts";
 import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
 import { ensureMerchantPortalUser, generatePortalMagicLink } from "../_shared/merchantPortal.ts";
@@ -152,11 +152,15 @@ Deno.serve(async (req) => {
       lastName: (customer.last_name as string | null) ?? undefined,
       companyName: (customer.business_name as string | null) ?? undefined,
       phone: (customer.phone as string | null) ?? undefined,
-      tags: ["merchant"],
+      // NO `tags` HERE — /contacts/upsert REPLACES the whole tag array. This upsert
+      // dedupes by email, so it can land on an EXISTING contact and wipe its
+      // lead-source/campaign tags (synergy, live-transfer, …). Added additively below.
       source: "Portal Login Link",
     });
     contactId = cr.data?.contact?.id ?? null;
     if (!contactId) return bail("ghl-upsert-returned-no-contact-id", email);
+    // Additive: ADDS `merchant`, clobbers nothing.
+    await addContactTags(cfg, contactId, ["merchant"]); // best-effort
     if ((customer.ghl_contact_id ?? null) !== contactId) {
       await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customerId);
     }

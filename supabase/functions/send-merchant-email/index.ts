@@ -15,7 +15,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, sendEmailToContact, latestEmailMessageId,
-  sendMarker, ensureContactEmail, ghlErrorMessage,
+  sendMarker, ensureContactEmail, ghlErrorMessage, addContactTags,
   lastEmailFailure, bounceMessage, recordEmailOutcome, type LastEmailOutcome,
 } from "../_shared/ghl.ts";
 import { renderMerchantEmail } from "../_shared/merchantEmail.ts";
@@ -108,7 +108,9 @@ Deno.serve(async (req) => {
     lastName: (customer.last_name as string | null) ?? undefined,
     companyName: (customer.business_name as string | null) ?? undefined,
     phone: (customer.phone as string | null) ?? undefined,
-    tags: ["merchant"],
+    // NO `tags` HERE — ensureContactEmail heals by calling /contacts/upsert, which
+    // REPLACES the whole tag array; ["merchant"] would wipe the contact's
+    // lead-source/campaign tags (synergy, live-transfer, …). Added additively below.
     source: "Merchant Message",
   });
   const merchantLabel = ((customer.business_name as string | null)
@@ -130,6 +132,8 @@ Deno.serve(async (req) => {
       dealId, from: linkedId, to: contactId, email: merchantEmail, previous_contact_email: pre.previousEmail,
     }));
   }
+  // Additive tag: ADDS `merchant` without clobbering lead-source/campaign tags.
+  await addContactTags(cfg, contactId, ["merchant"]); // best-effort
   // Persist whatever contact actually owns this email so later comms reuse it.
   if ((customer.ghl_contact_id ?? null) !== contactId) {
     const { error: cuErr } = await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);

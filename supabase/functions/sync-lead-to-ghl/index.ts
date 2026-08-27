@@ -28,6 +28,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import {
   corsHeaders, serviceClient, getGhlConfig, ghlFetch, upsertContact, searchContacts,
+  addContactTags,
 } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
@@ -123,9 +124,14 @@ Deno.serve(async (req) => {
     if (!email && !phone) {
       return json({ error: "This lead has no email or phone yet, so there's nothing to create a GHL contact from." }, 422);
     }
-    const cr = await upsertContact(cfg, { email, phone, firstName, lastName, companyName, tags: ["merchant"], source: "Lead edit" });
+    // NO `tags` in the upsert — /contacts/upsert REPLACES the whole tag array, and
+    // this upsert dedupes by email/phone, so "bootstrap" can land on an EXISTING
+    // contact and wipe its lead-source/campaign tags (synergy, live-transfer, …).
+    // `merchant` goes on ADDITIVELY below.
+    const cr = await upsertContact(cfg, { email, phone, firstName, lastName, companyName, source: "Lead edit" });
     const newId = cr.data?.contact?.id ?? null;
     if (!newId) return json({ error: `GHL contact create failed: ${cr.error ?? "no contact id"}` }, 502);
+    await addContactTags(cfg, newId, ["merchant"]); // best-effort
     await db.from("customers").update({ ghl_contact_id: newId }).eq("id", customerId);
     if (dealId) await db.from("deals").update({ ghl_contact_id: newId }).eq("id", dealId);
     return json({ ok: true, contactId: newId, created: true });
