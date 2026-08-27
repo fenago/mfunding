@@ -61,6 +61,7 @@ import {
   ArrowsRightLeftIcon,
   BoltIcon,
   BanknotesIcon,
+  ClockIcon,
 } from "@heroicons/react/24/outline";
 import {
   BarChart, Bar, ComposedChart, Line, XAxis, YAxis, CartesianGrid,
@@ -810,10 +811,178 @@ interface SetterRow {
   fundedAmount: number | null;
 }
 
-type TabId = "funnel" | "setters" | "live_transfers" | "realtime" | "dispositions" | "trends" | "log" | "numbers";
+// ═════════════════════════════════════════════════════════════════════════════
+// TALK TIME — is the floor TALKING, or just blasting voicemails?
+// ═════════════════════════════════════════════════════════════════════════════
+// The Setters scorecard ranks by DIALS, which is exactly the number that misleads
+// here: a seat can triple everyone's dial count by hanging up on machines faster.
+// This tab puts dials and real conversation time side by side.
+//
+// ── WHY THIS TAB IS BY LINE AND NOT BY PERSON ────────────────────────────────
+// The rest of the page attributes a call to whoever the Numbers tab mapped its
+// caller_id to. For COUNTING dials that map is the best available handle. For
+// TALK TIME it is not good enough, because the two outbound numbers are dialed
+// by MULTIPLE SEATS AT ONCE. That is measured, not suspected — three independent
+// reads of wavv_calls agree:
+//   • a sweep over started_at/ended_at peaks at 10 simultaneous calls on line 1
+//     and 7 on line 2, where one WAVV seat power-dials about 4;
+//   • 4,144 pairs of calls on one day literally overlap in time on the same line;
+//   • 17 pairs of those overlaps are BOTH live human conversations — and one
+//     person cannot hold two conversations at once.
+// WAVV's call object carries no per-agent field at all (see the file header), so
+// there is no second signal to fall back on. A per-person talk-time row would
+// therefore be one person's NAME worn by the whole floor's traffic — invented,
+// not measured. So every aggregate on this tab is BY LINE plus a floor total,
+// and the mapped name appears only as a caveated secondary label.
+//
+// The one genuinely per-person signal in range is the setter's own check-in from
+// time_entries, so that gets its own table and is deliberately NOT divided into
+// line talk-minutes.
+//
+// ── WHAT COUNTS AS TALKING ───────────────────────────────────────────────────
+// `seconds` on the mirror is the CONNECTED duration — ended_at minus answered_at,
+// verified against the data (the two agree to the decimal), so it is 0/absent on
+// a line nobody picked up. But a played voicemail is "connected" too, and on this
+// floor most of the connected clock is exactly that. So TALK SECONDS = the
+// seconds on calls reachedHuman() accepts, and nothing else. Seconds spent on an
+// answering machine are counted separately as MACHINE TIME and shown next to it —
+// not folded in, and not thrown away.
+//
+// NOTHING HERE IS INFERRED FROM AN EMPTY RESULT. A setter with no check-in has no
+// clocked hours, which renders "—". The clock is not read at all unless the
+// session can see the whole floor's entries (see loadTimeEntries).
+
+/** One OUTBOUND LINE over the range. NOT a person — see the block above. */
+interface TalkRow {
+  key: string;                    // caller_id, or "unknown" for rows carrying none
+  /** 1-based display index, assigned by dials descending: "Line 1", "Line 2". */
+  lineNo: number;
+  callerId: string | null;
+  /** The admin's label for the line, else the formatted number. */
+  lineLabel: string;
+  /** Who the Numbers tab maps this line to. Shown ONLY as a caveated secondary
+   *  label ("mapped: …"), never as the row's identity — the line is shared. */
+  mappedName: string | null;
+  mappedSetterId: string | null;
+  dials: number;
+  connects: number;
+  humans: number;                 // reachedHuman()
+  conversations: number;          // isConversation() — dispositioned as a talk
+  /** Seconds on human-reached calls only. THE talk-time number. */
+  talkSeconds: number;
+  /** Seconds on answered calls that did NOT reach a human — machine time. */
+  machineSeconds: number;
+  activeDays: number;
+  /** Distinct local (day, hour) buckets holding at least one dial. */
+  activeHours: number;
+  /** Longest run of minutes between two consecutive dials INSIDE one local day.
+   *  null when no day in range holds two dials, so there is no gap to measure —
+   *  that is unmeasurable, not a perfect zero-idle shift.
+   *
+   *  ON A SHARED LINE THIS IS A FLOOR SIGNAL: it says the whole line went quiet,
+   *  which is a real operational fact, but it can never say WHO stopped dialing. */
+  longestIdleGapMin: number | null;
+  /** When the longest gap started/ended, for the tooltip. */
+  idleGapFrom: string | null;
+  idleGapTo: string | null;
+  /** Most calls in flight at once on this line — the seat-count evidence, shown
+   *  in the table so the sharing caveat carries its own proof. null when no row
+   *  has both a start and an end to sweep. */
+  peakConcurrent: number | null;
+  /** Most LIVE CONVERSATIONS in flight at once. ≥2 is proof of multiple people:
+   *  one person cannot talk to two merchants simultaneously. */
+  peakConcurrentHuman: number | null;
+}
+
+/** The sentinel key for the whole-floor block on the heatmap. */
+const FLOOR_KEY = "__floor__";
+
+/** Most spans overlapping at any instant. Ends sort BEFORE starts at an equal
+ *  timestamp, so a call that ends exactly as the next begins is not an overlap. */
+function peakConcurrency(spans: { s: number; e: number }[]): number | null {
+  if (spans.length === 0) return null;
+  const ev: { t: number; d: number }[] = [];
+  for (const sp of spans) { ev.push({ t: sp.s, d: 1 }); ev.push({ t: sp.e, d: -1 }); }
+  ev.sort((a, b) => a.t - b.t || a.d - b.d);
+  let cur = 0, mx = 0;
+  for (const e of ev) { cur += e.d; if (cur > mx) mx = cur; }
+  return mx;
+}
+
+/** One local day of one setter's dial clock, bucketed by local hour. */
+interface TalkGridDay {
+  day: string;                    // yyyy-mm-dd, local
+  dials: number[];                // length 24
+  talkSeconds: number[];          // length 24
+}
+
+/** public.time_entries — the worker's own check-in. `hours` is CLAIMED; clock_in
+ *  / clock_out is the real span when the worker used the clock. */
+interface TimeEntryRow {
+  user_id: string;
+  work_date: string;
+  hours: number | string | null;
+  clock_in: string | null;
+  clock_out: string | null;
+  break_minutes: number | string | null;
+}
+
+/** Minutes on the clock for one logged day, and whether that came from a real
+ *  clock-in/out span or from the hours the worker typed. The distinction is
+ *  surfaced, because a claimed 8 hours is a different kind of fact. */
+function entryMinutes(e: TimeEntryRow): { minutes: number; fromClock: boolean } {
+  if (e.clock_in && e.clock_out) {
+    const span = (new Date(e.clock_out).getTime() - new Date(e.clock_in).getTime()) / 60000;
+    if (Number.isFinite(span) && span > 0) {
+      const brk = Number(e.break_minutes ?? 0);
+      return { minutes: Math.max(0, span - (Number.isFinite(brk) ? brk : 0)), fromClock: true };
+    }
+  }
+  const h = Number(e.hours ?? 0);
+  return { minutes: Number.isFinite(h) ? h * 60 : 0, fromClock: false };
+}
+
+/** What one setter's shift looked like against the clock. Every field is
+ *  nullable on purpose — a missing check-in must never render as 0% occupancy. */
+interface Occupancy {
+  clockedMinutes: number;
+  daysLogged: number;
+  /** False when at least one of those days was a typed hours claim, not a clock span. */
+  allFromClock: boolean;
+}
+
+const TALK_DEF =
+  "Talk time = seconds on calls that reached a LIVE PERSON. A played voicemail is a connection, not a conversation, so its seconds are counted as machine time instead — never as talking.";
+
+type TalkMetric = "dials" | "talk";
+
+// ── Heatmap shading ──────────────────────────────────────────────────────────
+// One emerald ramp, square-rooted so a light hour is still visible next to a
+// heavy one, drawn as inline rgba because the intensity is per-cell. An hour
+// with zero activity gets NO fill — it reads as the empty track, so "quiet at
+// 11" is visible as a hole rather than as a very faint green.
+function heatFill(value: number, max: number): string | undefined {
+  if (value <= 0 || max <= 0) return undefined;
+  // Clamped: the whole-floor block is the SUM of the line blocks and routinely
+  // runs past the per-line peak that sets the scale, so it saturates rather than
+  // running off the end of the ramp into an invalid alpha.
+  const a = 0.14 + 0.76 * Math.min(1, Math.sqrt(value / max));
+  return `rgba(16, 185, 129, ${a.toFixed(3)})`;
+}
+
+function hourLabel(h: number): string {
+  if (h === 0) return "12a";
+  if (h === 12) return "12p";
+  return h < 12 ? `${h}a` : `${h - 12}p`;
+}
+
+type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "dispositions" | "trends" | "log" | "numbers";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
   { id: "setters",        label: "Setters",        icon: UserGroupIcon },
+  // Sits next to Setters because it answers the follow-up question that table
+  // raises: the scorecard says who DIALS most, this one says who TALKS most.
+  { id: "talk_time",      label: "Talk Time",      icon: ClockIcon },
   { id: "dispositions",   label: "Dispositions",   icon: ChartBarIcon },
   { id: "trends",         label: "Trends",         icon: ArrowTrendingUpIcon },
   { id: "log",            label: "Call log",       icon: ChatBubbleLeftRightIcon },
@@ -868,6 +1037,15 @@ export default function SetterPerformancePage() {
   const [targets, setTargets] = useState<Record<string, KpiTarget> | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Talk Time tab: which metric the activity heatmap shades by, and the shift
+  // clock behind occupancy. `timeEntries` null = NOT READ (see loadTimeEntries),
+  // which is a different fact from an empty array (read fine, nobody logged).
+  const [talkMetric, setTalkMetric] = useState<TalkMetric>("talk");
+  const [timeEntries, setTimeEntries] = useState<TimeEntryRow[] | null>(null);
+  const [timeEntriesError, setTimeEntriesError] = useState<string | null>(null);
+  /** profiles.id → display name for whoever logged a check-in in the range. */
+  const [clockedNames, setClockedNames] = useState<Record<string, string>>({});
 
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -994,6 +1172,59 @@ export default function SetterPerformancePage() {
   }, [fromIso, toIso]);
 
   useEffect(() => { void loadDeals(); }, [loadDeals]);
+
+  // ── Shift clock, for occupancy on the Talk Time tab ───────────────────────
+  // RLS on public.time_entries is "your own row, or super admin". A plain admin
+  // therefore reads NOTHING for anyone else — and PostgREST returns that as an
+  // empty 200, not an error, so the query would silently answer "nobody clocked
+  // in today" when the truth is "you cannot see it". The read is therefore not
+  // attempted at all below super admin, and the panel says which of the two it
+  // is looking at.
+  //
+  // work_date is a plain DATE (the worker's own calendar day), so it is bounded
+  // by the range's local calendar days, not by the UTC instants the call
+  // timestamps use.
+  const clockFromDay = ymd(range.from);
+  const clockToDay = ymd(new Date(range.to.getTime() - 1));
+  const loadTimeEntries = useCallback(async () => {
+    if (!isSuperAdmin) {
+      setTimeEntries(null);
+      setTimeEntriesError(null);
+      return;
+    }
+    setTimeEntriesError(null);
+    try {
+      const { data, error } = await supabase
+        .from("time_entries")
+        .select("user_id,work_date,hours,clock_in,clock_out,break_minutes")
+        .gte("work_date", clockFromDay)
+        .lte("work_date", clockToDay);
+      if (error) throw new Error(error.message);
+      const rows = (data ?? []) as TimeEntryRow[];
+      setTimeEntries(rows);
+
+      // Names via staff_directory (the same source the calls view uses), so a
+      // person's clocked hours are titled with the same name as everywhere else.
+      // A user the directory cannot name keeps an id fragment — never a guess.
+      const ids = [...new Set(rows.map((r) => r.user_id))];
+      if (ids.length > 0) {
+        const { data: profs } = await supabase.from("staff_directory").select("id,name").in("id", ids);
+        const map: Record<string, string> = {};
+        for (const p of (profs ?? []) as { id: string; name: string | null }[]) {
+          if (p.name) map[p.id] = p.name;
+        }
+        setClockedNames(map);
+      } else {
+        setClockedNames({});
+      }
+    } catch (e) {
+      // null, not [] — a failed read leaves the clock unknown, never 0 hours.
+      setTimeEntries(null);
+      setTimeEntriesError(e instanceof Error ? e.message : "Failed to read time entries");
+    }
+  }, [isSuperAdmin, clockFromDay, clockToDay]);
+
+  useEffect(() => { void loadTimeEntries(); }, [loadTimeEntries]);
 
   // ── Synergy lead cohorts (Live Transfers / Real-Time tabs) ────────────────
   // ONE query covers both tabs — the two lead sources are pulled together and
@@ -1426,6 +1657,228 @@ export default function SetterPerformancePage() {
   }, [setterRows, sort]);
 
   const anyAttributed = setterRows.some((r) => r.attributed);
+
+  // ── Talk time: the per-LINE clock, and the hour-of-day grid ───────────────
+  // Grouped on caller_id — the LINE — because the lines are shared by several
+  // seats at once and a per-person split would be fabricated (see the block
+  // above TalkRow). One pass off the SAME aggRows the rest of the page uses
+  // builds the line totals, the floor total, and the heatmap buckets.
+  //
+  // DAYS AND HOURS ARE LOCAL, matching the range pills and the Trends chart —
+  // the reader's own clock. The call-level timestamps elsewhere on the page are
+  // stamped Eastern and labelled as such; the heatmap says which clock it is on
+  // in its own caption rather than leaving the two to be conflated.
+  const talk = useMemo(() => {
+    interface Acc extends Omit<TalkRow, "lineNo" | "activeDays" | "activeHours" | "longestIdleGapMin" | "idleGapFrom" | "idleGapTo" | "peakConcurrent" | "peakConcurrentHuman"> {
+      /** day -> hour -> counts, and the ordered dial starts used for idle gaps. */
+      days: Map<string, TalkGridDay>;
+      starts: Map<string, number[]>;
+      /** Every call's [start,end] span, for the concurrency sweep. */
+      spans: { s: number; e: number }[];
+      humanSpans: { s: number; e: number }[];
+    }
+    const acc = new Map<string, Acc>();
+    // The whole floor, accumulated alongside so the heatmap can draw it as its
+    // own block without a second pass.
+    const floorDays = new Map<string, TalkGridDay>();
+    const allDays = new Set<string>();
+    let minHour = 23;
+    let maxHour = 0;
+
+    const touchDay = (map: Map<string, TalkGridDay>, day: string) => {
+      let g = map.get(day);
+      if (!g) {
+        g = { day, dials: new Array<number>(24).fill(0), talkSeconds: new Array<number>(24).fill(0) };
+        map.set(day, g);
+      }
+      return g;
+    };
+
+    for (const r of aggRows) {
+      const key = r.caller_id ?? "unknown";
+      let row = acc.get(key);
+      if (!row) {
+        row = {
+          key,
+          callerId: r.caller_id,
+          lineLabel: r.caller_label ?? (r.caller_id ? prettyPhone(r.caller_id) : "Unknown number"),
+          mappedName: r.setter_name,
+          mappedSetterId: r.setter_id,
+          dials: 0, connects: 0, humans: 0, conversations: 0,
+          talkSeconds: 0, machineSeconds: 0,
+          days: new Map(), starts: new Map(), spans: [], humanSpans: [],
+        };
+        acc.set(key, row);
+      }
+      row.dials++;
+
+      const secs = r.seconds ?? 0;
+      const human = reachedHuman(r);
+      if (human) row.humans++;
+      if (isConversation(r)) row.conversations++;
+      if (r.answered_at) {
+        row.connects++;
+        // Answered seconds split two ways and never double-counted: a human
+        // talk, or time spent on a machine.
+        if (human) row.talkSeconds += secs;
+        else row.machineSeconds += secs;
+      }
+
+      if (!r.started_at) continue;
+      const started = new Date(r.started_at);
+      const t = started.getTime();
+      if (!Number.isFinite(t)) continue;
+
+      // Concurrency evidence needs both ends of the call; rows missing one are
+      // simply not swept rather than given an invented duration.
+      if (r.ended_at) {
+        const e = new Date(r.ended_at).getTime();
+        if (Number.isFinite(e) && e > t) {
+          row.spans.push({ s: t, e });
+          if (human) row.humanSpans.push({ s: t, e });
+        }
+      }
+
+      const day = ymd(started);
+      const hour = started.getHours();
+      allDays.add(day);
+      if (hour < minHour) minHour = hour;
+      if (hour > maxHour) maxHour = hour;
+
+      const grid = touchDay(row.days, day);
+      grid.dials[hour]++;
+      if (human) grid.talkSeconds[hour] += secs;
+
+      const floor = touchDay(floorDays, day);
+      floor.dials[hour]++;
+      if (human) floor.talkSeconds[hour] += secs;
+
+      const list = row.starts.get(day);
+      if (list) list.push(t); else row.starts.set(day, [t]);
+    }
+
+    const rows: TalkRow[] = [...acc.values()]
+      .map(({ days, starts, spans, humanSpans, ...row }) => {
+        // Longest silence between two consecutive dials, measured WITHIN a day so
+        // an overnight break never reads as a 16-hour idle stretch. A day holding
+        // a single dial contributes no gap at all.
+        let gap: number | null = null;
+        let gapFrom: string | null = null;
+        let gapTo: string | null = null;
+        for (const list of starts.values()) {
+          if (list.length < 2) continue;
+          list.sort((a, b) => a - b);
+          for (let i = 1; i < list.length; i++) {
+            const mins = (list[i] - list[i - 1]) / 60000;
+            if (gap === null || mins > gap) {
+              gap = mins;
+              gapFrom = new Date(list[i - 1]).toISOString();
+              gapTo = new Date(list[i]).toISOString();
+            }
+          }
+        }
+        let activeHours = 0;
+        for (const g of days.values()) activeHours += g.dials.reduce((n, v) => n + (v > 0 ? 1 : 0), 0);
+        return {
+          ...row,
+          lineNo: 0,   // assigned after the sort below, so it reads 1,2,3 down the table
+          activeDays: days.size,
+          activeHours,
+          longestIdleGapMin: gap,
+          idleGapFrom: gapFrom,
+          idleGapTo: gapTo,
+          peakConcurrent: peakConcurrency(spans),
+          peakConcurrentHuman: peakConcurrency(humanSpans),
+        };
+      })
+      .sort((a, b) => b.dials - a.dials)
+      .map((r, i) => ({ ...r, lineNo: i + 1 }));
+
+    // The heatmap's own lookup, keyed the same way, so a row and its grid can
+    // never fall out of step. The floor gets its own entry under FLOOR_KEY.
+    const grids = new Map<string, TalkGridDay[]>();
+    for (const [key, a] of acc) {
+      grids.set(key, [...a.days.values()].sort((x, y) => x.day.localeCompare(y.day)));
+    }
+    grids.set(FLOOR_KEY, [...floorDays.values()].sort((x, y) => x.day.localeCompare(y.day)));
+
+    const dayList = [...allDays].sort();
+    // Columns are trimmed to the hours the floor actually worked (padded by one
+    // on each side) — a full 24-wide grid squeezes the working hours into an
+    // unreadable strip. The caption states the window that is drawn.
+    const hours: number[] = [];
+    if (dayList.length > 0 && minHour <= maxHour) {
+      for (let h = Math.max(0, minHour - 1); h <= Math.min(23, maxHour + 1); h++) hours.push(h);
+    }
+    return { rows, grids, days: dayList, hours };
+  }, [aggRows]);
+
+  /** profiles.id → clocked shift for the range. A setter absent from this map
+   *  logged no check-in; a NULL map means the clock could not be read at all. */
+  const clockedByUser = useMemo((): Map<string, Occupancy> | null => {
+    if (timeEntries === null) return null;
+    const acc = new Map<string, Occupancy>();
+    for (const e of timeEntries) {
+      const { minutes, fromClock } = entryMinutes(e);
+      if (minutes <= 0) continue;
+      const cur = acc.get(e.user_id) ?? { clockedMinutes: 0, daysLogged: 0, allFromClock: true };
+      cur.clockedMinutes += minutes;
+      cur.daysLogged++;
+      cur.allFromClock = cur.allFromClock && fromClock;
+      acc.set(e.user_id, cur);
+    }
+    return acc;
+  }, [timeEntries]);
+
+  /** Floor totals — summed from the same line rows the table renders, not
+   *  recomputed from aggRows, so the footer always equals its own columns. */
+  const talkFloor = useMemo(() => {
+    const t = {
+      dials: 0, connects: 0, humans: 0, conversations: 0,
+      talkSeconds: 0, machineSeconds: 0, activeDays: 0, activeHours: 0,
+    };
+    const days = new Set<string>();
+    for (const r of talk.rows) {
+      t.dials += r.dials; t.connects += r.connects; t.humans += r.humans;
+      t.conversations += r.conversations; t.talkSeconds += r.talkSeconds; t.machineSeconds += r.machineSeconds;
+    }
+    // Active days/hours are floor-wide unions, not sums — two lines dialing in
+    // the same hour is ONE hour the floor was working, not two.
+    for (const g of talk.grids.get(FLOOR_KEY) ?? []) {
+      days.add(g.day);
+      t.activeHours += g.dials.reduce((n, v) => n + (v > 0 ? 1 : 0), 0);
+    }
+    t.activeDays = days.size;
+    return t;
+  }, [talk.rows, talk.grids]);
+
+  /** The people the dialing lines are mapped to. Used ONLY as the denominator
+   *  set for floor occupancy and to caption the clocked-hours table — never to
+   *  split talk minutes between them. */
+  const dialingSetterIds = useMemo(
+    () => new Set(talk.rows.map((r) => r.mappedSetterId).filter((v): v is string => !!v)),
+    [talk.rows],
+  );
+
+  /** Floor occupancy: every talk minute over every clocked minute of the people
+   *  mapped to a dialing line. Honest at this level and only at this level,
+   *  because the numerator cannot be split by person. `clockedMinutes` null =
+   *  the clock was unreadable; `excludedClockedUsers` are clocked staff who are
+   *  not on a dialing line and are therefore left out of the denominator. */
+  const floorOccupancy = useMemo(() => {
+    if (clockedByUser === null) return null;
+    let clockedMinutes = 0;
+    let people = 0;
+    let allFromClock = true;
+    let excludedClockedUsers = 0;
+    for (const [userId, occ] of clockedByUser) {
+      if (!dialingSetterIds.has(userId)) { excludedClockedUsers++; continue; }
+      clockedMinutes += occ.clockedMinutes;
+      people++;
+      allFromClock = allFromClock && occ.allFromClock;
+    }
+    return { clockedMinutes, people, allFromClock, excludedClockedUsers };
+  }, [clockedByUser, dialingSetterIds]);
 
   // ── Synergy cohorts, split by product and grouped by setter ───────────────
   // Both tabs are folded here off the SAME loaded rows, so the two funnels can
@@ -2186,6 +2639,441 @@ export default function SetterPerformancePage() {
             )
           )}
 
+          {/* ═══════════════ TALK TIME ═══════════════ */}
+          {tab === "talk_time" && (
+            emptyRange ? <EmptyRange total={totalRowsEver} /> : (
+              <div className="space-y-4">
+                {/* ── The caveat that governs everything below it ── */}
+                <div className="alert alert-warning items-start">
+                  <ExclamationTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <div className="font-semibold">
+                      These are LINES, not people. WAVV cannot tie a call to an individual setter.
+                    </div>
+                    <div className="opacity-90 mt-1">
+                      WAVV's call records carry <b>no per-agent field at all</b> — the only dial-side identifier is the
+                      number dialed FROM. That alone makes a per-person talk-time row one person's{" "}
+                      <b>name worn by the whole line's traffic</b>.
+                      {/* The strength of the second claim is set by what THIS range
+                          actually proves, so the banner never over-claims on a
+                          quiet window. */}
+                      {(() => {
+                        const proven = talk.rows.filter((r) => (r.peakConcurrentHuman ?? 0) >= 2);
+                        const heavy = talk.rows.filter((r) => (r.peakConcurrent ?? 0) >= 5);
+                        if (proven.length > 0) {
+                          return (
+                            <> And in this range these lines are <b>provably shared</b>: {proven.map((r) => `line ${r.lineNo}`).join(", ")}{" "}
+                            carried two live conversations at the same moment, which one person cannot do.</>
+                          );
+                        }
+                        if (heavy.length > 0) {
+                          return (
+                            <> In this range {heavy.map((r) => `line ${r.lineNo}`).join(", ")} peaked at{" "}
+                            {heavy.map((r) => r.peakConcurrent).join(" / ")} simultaneous calls, well past the ~4 one
+                            WAVV seat power-dials — consistent with several seats sharing the number.</>
+                          );
+                        }
+                        return (
+                          <> This range does not itself show overlapping calls, so it neither proves nor disproves
+                          sharing here — but the missing per-agent field is structural and applies regardless.</>
+                        );
+                      })()}{" "}
+                      Per-line and floor-wide talk time below are real and measured. True per-setter talk time needs{" "}
+                      <b>one WAVV number per setter</b>.
+                    </div>
+                    {/* The caveat carries its own proof, computed from the loaded
+                        rows — not an assertion the reader has to take on trust. */}
+                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                      {talk.rows.map((r) => (
+                        <span
+                          key={r.key}
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
+                            (r.peakConcurrentHuman ?? 0) >= 2 ? RAG_CHIP.red : RAG_CHIP.none
+                          }`}
+                          title={
+                            r.peakConcurrent === null
+                              ? "No call on this line carries both a start and an end time, so concurrency cannot be swept"
+                              : `Peak simultaneous calls on this line. One WAVV seat power-dials about 4 lines, so a peak well above that is more than one person.${
+                                  (r.peakConcurrentHuman ?? 0) >= 2
+                                    ? ` And ${r.peakConcurrentHuman} LIVE CONVERSATIONS overlapped here — one person cannot talk to two merchants at once.`
+                                    : ""
+                                }`}
+                        >
+                          Line {r.lineNo}: <b className="tabular-nums">{r.peakConcurrent === null ? "—" : `${r.peakConcurrent} calls at once`}</b>
+                          {(r.peakConcurrentHuman ?? 0) >= 2 && (
+                            <b className="tabular-nums">· {r.peakConcurrentHuman} live talks at once</b>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── Dials vs talk, by line ── */}
+                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                  <div className="card-body p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <ClockIcon className="w-5 h-5 text-mint-green" /> Dials vs talk time, by line
+                      </h2>
+                      <RagLegend />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">
+                      <span className="font-semibold text-gray-600 dark:text-gray-300">Talk min</span> counts only the
+                      seconds on calls that reached a <b>live person</b>. A played voicemail is a connection, not a
+                      conversation, so its seconds land in <span className="font-semibold text-amber-600 dark:text-amber-400">machine time</span>{" "}
+                      instead. Read the two leftmost number columns together: a big dial count next to a small talk
+                      number means that line is blasting voicemail — <b>a fact about the line's traffic</b>, not about
+                      any one person on it.
+                    </p>
+
+                    <div className={`${TABLE_WRAP} mt-3`}>
+                      <table className={TABLE}>
+                        <thead className={THEAD}>
+                          <tr>
+                            <th className={`${TH} border-b-0`} />
+                            <th colSpan={4} className={`${TH} text-center border-b-0`}>Dials vs talk</th>
+                            <th colSpan={4} className={`${TH} ${GROUP_EDGE} text-center border-b-0`}>Who the line reached</th>
+                            <th colSpan={3} className={`${TH} ${GROUP_EDGE} text-center border-b-0`}>Rhythm</th>
+                          </tr>
+                          <tr>
+                            <th className={TH}>Line</th>
+                            <th className={TH_NUM} title="Outbound call rows on this line in this range">Dials</th>
+                            <th className={TH_NUM} title={TALK_DEF}>Talk min</th>
+                            <th className={TH_NUM} title="Talk minutes divided by the days this line dialed — this is the column judged against the talk_min target, so a multi-day range is not compared to a one-day threshold. It is a LINE target, and the line carries several seats.">Talk / day</th>
+                            <th className={TH_NUM} title="Talk minutes earned per 100 dials. The blunt efficiency read: how much conversation each hundred dials on this line actually bought.">Talk / 100 dials</th>
+                            <th className={`${TH_NUM} ${GROUP_EDGE}`} title="WAVV recorded an answer — INCLUDING answering machines">Connects</th>
+                            <th className={TH_NUM} title="Answered and nothing about the call says machine. WAVV's own human flag is not used.">Humans</th>
+                            <th className={TH_NUM} title={CONVERSATION_HELP}>Convos</th>
+                            <th className={TH_NUM} title="Talk minutes divided by human-reached calls — the average length of a real conversation on this line. Divided by humans, NOT by dispositioned convos, because the seconds in the numerator are exactly the human-reached seconds.">Avg / human</th>
+                            <th className={`${TH_NUM} ${GROUP_EDGE}`} title="Talk minutes divided by the number of clock-hours in which this line placed at least one dial">Talk / active hr</th>
+                            <th className={TH_NUM} title="Longest stretch between two consecutive dials on this line inside a single day. On a shared line this says THE LINE went quiet — it can never say who stopped dialing.">Longest idle</th>
+                            <th className={TH_NUM} title="Most calls in flight at once on this line. One WAVV seat power-dials about 4 lines, so a materially higher peak is several people sharing the number.">Peak at once</th>
+                          </tr>
+                        </thead>
+                        <tbody className={TBODY}>
+                          {talk.rows.map((r) => {
+                            const talkMin = r.talkSeconds / 60;
+                            const machineMin = r.machineSeconds / 60;
+                            const answeredMin = talkMin + machineMin;
+                            const talkPerDay = r.activeDays > 0 ? talkMin / r.activeDays : null;
+                            const talkPer100 = r.dials > 0 ? (talkMin / r.dials) * 100 : null;
+                            const avgHuman = r.humans > 0 ? r.talkSeconds / r.humans : null;
+                            const talkPerHour = r.activeHours > 0 ? talkMin / r.activeHours : null;
+                            const humanShare = answeredMin > 0 ? (talkMin / answeredMin) * 100 : null;
+                            const tm = targetFor("talk_min");
+                            const ig = targetFor("idle_gap_min");
+                            return (
+                              <tr key={r.key} className={TR}>
+                                <td className={`${TD} font-medium text-gray-900 dark:text-white min-w-[14rem]`}>
+                                  <div className="flex items-center gap-2">
+                                    <span>Line {r.lineNo}</span>
+                                    <span className="text-xs font-normal text-gray-500 dark:text-gray-400 tabular-nums">
+                                      {r.callerId ? prettyPhone(r.callerId) : "no caller ID"}
+                                    </span>
+                                  </div>
+                                  {/* The mapping is a LABEL for the line, never the row's identity. */}
+                                  <div className="text-[11px] text-gray-400 mt-0.5">
+                                    {r.mappedName ? (
+                                      <span title="Who the Numbers tab maps this line to. The line is shared by several seats, so this names the line's owner-of-record — NOT the person who made these calls.">
+                                        mapped: {r.mappedName} <span className="opacity-70">· shared line</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-amber-600 dark:text-amber-400" title="No setter is mapped to this number in the Numbers tab">
+                                        no setter mapped
+                                      </span>
+                                    )}
+                                  </div>
+                                  {/* The talk-vs-machine split of the answered clock, as one bar. */}
+                                  <div
+                                    className="mt-1.5 h-1.5 w-full max-w-[11rem] rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden flex"
+                                    title={
+                                      answeredMin > 0
+                                        ? `${hms(r.talkSeconds)} with a live person · ${hms(r.machineSeconds)} on machines / unanswered pickups`
+                                        : "Nothing was answered on this line in range"
+                                    }
+                                  >
+                                    {answeredMin > 0 && (
+                                      <>
+                                        <div className="h-full bg-emerald-500" style={{ width: `${(talkMin / answeredMin) * 100}%` }} />
+                                        <div className="h-full bg-amber-500/70" style={{ width: `${(machineMin / answeredMin) * 100}%` }} />
+                                      </>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] text-gray-400 mt-0.5">
+                                    {humanShare === null
+                                      ? <span title="No answered calls, so there is no connected clock to split">—</span>
+                                      : <><b className="text-emerald-600 dark:text-emerald-400">{humanShare.toFixed(0)}%</b> of connected time was a person</>}
+                                  </div>
+                                </td>
+                                <td className={TD_NUM}>{r.dials.toLocaleString()}</td>
+                                <td className={TD_NUM}>
+                                  <span className="font-semibold text-gray-900 dark:text-white" title={`${hms(r.talkSeconds)} with a live person`}>
+                                    {talkMin.toFixed(1)}
+                                  </span>
+                                </td>
+                                <td className={TD_NUM}>
+                                  <span
+                                    className={`font-semibold ${RAG_TEXT[ragOf(talkPerDay, tm.target)]}`}
+                                    title={tm.target
+                                      ? `Target ≥${tm.target.green} min/day green, ≥${tm.target.amber} amber · over ${r.activeDays} day${r.activeDays === 1 ? "" : "s"} this line dialed`
+                                      : "No talk_min threshold configured — not judged"}
+                                  >
+                                    <Metric value={talkPerDay} digits={1} />
+                                  </span>
+                                </td>
+                                <td className={TD_NUM}><Metric value={talkPer100} digits={1} /></td>
+                                <td className={`${TD_NUM} ${GROUP_EDGE}`}>{r.connects.toLocaleString()}</td>
+                                <td className={TD_NUM}>{r.humans.toLocaleString()}</td>
+                                <td className={TD_NUM}>{r.conversations.toLocaleString()}</td>
+                                <td className={TD_NUM}>
+                                  {avgHuman === null
+                                    ? <Metric value={null} />
+                                    : <span title={`${r.humans.toLocaleString()} human-reached calls`}>{hms(avgHuman)}</span>}
+                                </td>
+                                <td className={`${TD_NUM} ${GROUP_EDGE}`}>
+                                  <span title={r.activeHours > 0 ? `${r.activeHours} clock-hour${r.activeHours === 1 ? "" : "s"} in which this line placed at least one dial` : "No hour in range holds a dial on this line"}>
+                                    <Metric value={talkPerHour} digits={1} />
+                                  </span>
+                                </td>
+                                <td className={TD_NUM}>
+                                  {r.longestIdleGapMin === null ? (
+                                    <span className="text-gray-300 dark:text-gray-600" title="No day in this range holds two dials on this line, so there is no gap to measure — this is unmeasurable, not a gapless shift">—</span>
+                                  ) : (
+                                    <span
+                                      className={`font-semibold ${RAG_TEXT[ragOf(r.longestIdleGapMin, ig.target)]}`}
+                                      title={`${etStamp(r.idleGapFrom)} → ${etStamp(r.idleGapTo)} (ET) — the whole LINE was silent${ig.target ? ` · target ≤${ig.target.green}m green, ≤${ig.target.amber}m amber` : " · no idle_gap_min threshold configured"}`}
+                                    >
+                                      {Math.round(r.longestIdleGapMin).toLocaleString()}m
+                                    </span>
+                                  )}
+                                </td>
+                                <td className={TD_NUM}>
+                                  {r.peakConcurrent === null ? (
+                                    <span className="text-gray-300 dark:text-gray-600" title="No call on this line carries both a start and an end, so concurrency cannot be swept">—</span>
+                                  ) : (
+                                    <span
+                                      className={(r.peakConcurrentHuman ?? 0) >= 2 ? "font-semibold text-red-600 dark:text-red-400" : ""}
+                                      title={`${r.peakConcurrent} calls in flight simultaneously${
+                                        (r.peakConcurrentHuman ?? 0) >= 2
+                                          ? ` — and ${r.peakConcurrentHuman} of those overlaps were BOTH live conversations, which one person cannot do`
+                                          : ""}`}
+                                    >
+                                      {r.peakConcurrent.toLocaleString()}
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {talk.rows.length === 0 && (
+                            <tr><td colSpan={12} className="text-center text-sm text-gray-400 py-8">No outbound calls in this range.</td></tr>
+                          )}
+                        </tbody>
+                        <tfoot>
+                          <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                            <td className={`${TD} text-gray-900 dark:text-white`}>
+                              Whole floor
+                              <div className="text-[11px] font-normal text-gray-400 mt-0.5">
+                                every line combined — the level this data is honest at
+                              </div>
+                            </td>
+                            <td className={TD_NUM}>{talkFloor.dials.toLocaleString()}</td>
+                            <td className={TD_NUM} title={`${hms(talkFloor.talkSeconds)} with a live person · ${hms(talkFloor.machineSeconds)} on machines`}>
+                              {(talkFloor.talkSeconds / 60).toFixed(1)}
+                            </td>
+                            <td className={TD_NUM}>
+                              <Metric value={talkFloor.activeDays > 0 ? talkFloor.talkSeconds / 60 / talkFloor.activeDays : null} digits={1} />
+                            </td>
+                            <td className={TD_NUM}>
+                              <Metric value={talkFloor.dials > 0 ? (talkFloor.talkSeconds / 60 / talkFloor.dials) * 100 : null} digits={1} />
+                            </td>
+                            <td className={`${TD_NUM} ${GROUP_EDGE}`}>{talkFloor.connects.toLocaleString()}</td>
+                            <td className={TD_NUM}>{talkFloor.humans.toLocaleString()}</td>
+                            <td className={TD_NUM}>{talkFloor.conversations.toLocaleString()}</td>
+                            <td className={TD_NUM}>
+                              {talkFloor.humans > 0 ? hms(talkFloor.talkSeconds / talkFloor.humans) : <Metric value={null} />}
+                            </td>
+                            <td className={`${TD_NUM} ${GROUP_EDGE}`} title={`${talkFloor.activeHours} clock-hour${talkFloor.activeHours === 1 ? "" : "s"} in which the floor placed at least one dial (a union across lines, not a sum)`}>
+                              <Metric value={talkFloor.activeHours > 0 ? talkFloor.talkSeconds / 60 / talkFloor.activeHours : null} digits={1} />
+                            </td>
+                            {/* Idle gap and peak concurrency are per-line facts;
+                                a floor-wide number would mean something else
+                                entirely, so neither is summed here. */}
+                            <td className={TD_NUM}><Metric value={null} /></td>
+                            <td className={TD_NUM}><Metric value={null} /></td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+
+                    <p className="text-xs text-gray-400 mt-2">
+                      Sorted by dials, highest first. Talk seconds come from WAVV's per-call duration, which is the
+                      answered-to-hung-up span — so an unanswered dial contributes nothing, and a voicemail's seconds
+                      are excluded from talk by the same human test the Funnel uses.
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Only two columns are graded: <b>Talk / day</b> against <code>talk_min</code> and{" "}
+                      <b>Longest idle</b> against <code>idle_gap_min</code>, both from{" "}
+                      <code>platform_settings.ph_dialer_kpi_targets</code>. Those thresholds are the ones the owner
+                      set, not ones derived from what the floor currently does — a column of red means the floor is
+                      under the stated target, which is a finding, not a fault in the report. Note both are being
+                      applied to a <b>line</b> carrying several seats, so they read as line targets here.
+                      {targets === null && <span className="text-amber-600 dark:text-amber-400"> Targets could not be read this load, so both graded columns render grey.</span>}
+                    </p>
+                  </div>
+                </div>
+
+                {/* ── When is the floor on the phone ── */}
+                <ActivityHeatmap
+                  rows={talk.rows}
+                  grids={talk.grids}
+                  days={talk.days}
+                  hours={talk.hours}
+                  metric={talkMetric}
+                  onMetric={setTalkMetric}
+                  floor={talkFloor}
+                />
+
+                {/* ── The one genuinely per-person signal ── */}
+                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                  <div className="card-body p-4">
+                    <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                      <UserGroupIcon className="w-5 h-5 text-mint-green" /> Clocked hours, per setter
+                    </h2>
+                    <p className="text-xs text-gray-400 mt-1">
+                      From each person's own check-in in <b>Time &amp; Pay</b> — the only per-individual signal on this
+                      tab, because the worker submits it themselves. It is deliberately <b>not</b> divided into talk
+                      minutes: those minutes belong to a shared line and cannot be split between the people on it.
+                    </p>
+
+                    {clockedByUser === null ? (
+                      <div className="alert alert-info mt-3">
+                        <InformationCircleIcon className="w-5 h-5 shrink-0" />
+                        <div className="text-sm">
+                          <div className="font-semibold">The shift clock is not readable in this session.</div>
+                          {timeEntriesError
+                            ? <>The time-entry read failed: {timeEntriesError}. The line talk-time above is unaffected.</>
+                            : <>
+                                <code>time_entries</code> is readable only by the person who logged it and by a
+                                super admin, so this session cannot see the floor's check-ins. That is missing
+                                visibility, <b>not</b> zero hours — the hours are withheld rather than guessed.
+                              </>}
+                        </div>
+                      </div>
+                    ) : clockedByUser.size === 0 ? (
+                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400 mt-3">
+                        <b className="text-gray-700 dark:text-gray-200">No check-in was logged by anyone in this range.</b>{" "}
+                        The clock read cleanly and came back empty — nobody submitted hours for these days.
+                      </div>
+                    ) : (
+                      <div className={`${TABLE_WRAP} mt-3`}>
+                        <table className={TABLE}>
+                          <thead className={THEAD}>
+                            <tr>
+                              <th className={TH}>Setter</th>
+                              <th className={TH_NUM} title="Days in this range with a submitted check-in">Days logged</th>
+                              <th className={TH_NUM} title="Clock-out minus clock-in, less breaks, summed over the days logged">Clocked hours</th>
+                              <th className={TH_NUM} title="Clocked hours divided by days logged">Avg / day</th>
+                              <th className={TH}>On a dialing line?</th>
+                            </tr>
+                          </thead>
+                          <tbody className={TBODY}>
+                            {[...clockedByUser.entries()]
+                              .sort((a, b) => b[1].clockedMinutes - a[1].clockedMinutes)
+                              .map(([userId, occ]) => (
+                                <tr key={userId} className={TR}>
+                                  <td className={`${TD} font-medium text-gray-900 dark:text-white`}>
+                                    {clockedNames[userId] ?? (
+                                      <span title="staff_directory could not name this user id — shown as an id fragment rather than an invented name">
+                                        Staff · {userId.slice(0, 8)}
+                                      </span>
+                                    )}
+                                    {!occ.allFromClock && (
+                                      <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5" title="At least one of these days was entered as typed hours rather than a clock-in/clock-out span">
+                                        includes claimed hours
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className={TD_NUM}>{occ.daysLogged.toLocaleString()}</td>
+                                  <td className={`${TD_NUM} font-semibold text-gray-900 dark:text-white`}>{(occ.clockedMinutes / 60).toFixed(1)}h</td>
+                                  <td className={TD_NUM}>{(occ.clockedMinutes / 60 / occ.daysLogged).toFixed(1)}h</td>
+                                  <td className={TD}>
+                                    {dialingSetterIds.has(userId) ? (
+                                      <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30">
+                                        yes — counted in floor occupancy
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs bg-gray-500/10 text-gray-500 dark:text-gray-400 border-gray-500/30" title="This person is not mapped to any number that dialed in this range, so their hours are left out of the floor occupancy denominator">
+                                        not mapped to a dialing line
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* ── Floor occupancy — the only level the ratio is honest at ── */}
+                    {floorOccupancy !== null && floorOccupancy.people > 0 && (
+                      <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 mt-3">
+                        <div className="text-xs uppercase tracking-wide text-gray-400">Floor occupancy</div>
+                        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 mt-1.5">
+                          {(() => {
+                            const talkMin = talkFloor.talkSeconds / 60;
+                            const lineMin = (talkFloor.talkSeconds + talkFloor.machineSeconds) / 60;
+                            const clocked = floorOccupancy.clockedMinutes;
+                            return (
+                              <>
+                                <div>
+                                  <div className="text-xl font-semibold text-gray-900 dark:text-white">
+                                    <Metric value={clocked > 0 ? (talkMin / clocked) * 100 : null} digits={1} suffix="%" />
+                                  </div>
+                                  <div className="text-xs text-gray-400">of the clocked floor was talking to a person</div>
+                                </div>
+                                <div>
+                                  <div className="text-xl font-semibold text-gray-900 dark:text-white">
+                                    <Metric value={clocked > 0 ? (lineMin / clocked) * 100 : null} digits={1} suffix="%" />
+                                  </div>
+                                  <div className="text-xs text-gray-400">was connected to anything, machines included</div>
+                                </div>
+                                <div>
+                                  <div className="text-xl font-semibold text-gray-900 dark:text-white tabular-nums">
+                                    {(clocked / 60).toFixed(1)}h
+                                  </div>
+                                  <div className="text-xs text-gray-400">
+                                    clocked across {floorOccupancy.people} setter{floorOccupancy.people === 1 ? "" : "s"} on a dialing line
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">
+                          <b>Floor-wide only.</b> Every talk minute from every line over every clocked minute of the{" "}
+                          {floorOccupancy.people} setter{floorOccupancy.people === 1 ? "" : "s"} mapped to a dialing
+                          line. It cannot be split per person, because the numerator cannot be.
+                          {floorOccupancy.excludedClockedUsers > 0 && (
+                            <> {floorOccupancy.excludedClockedUsers} other clocked staff{" "}
+                            {floorOccupancy.excludedClockedUsers === 1 ? "is" : "are"} excluded from the denominator —
+                            they are not mapped to a number that dialed in this range.</>
+                          )}
+                        </p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          Cold dialing is mostly dialing: a single-digit talking share is normal and is not by itself a
+                          slacking signal. The pair worth reading is a <b>low talking share next to a high connected
+                          share</b> — the shift went into answering machines.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          )}
+
           {/* ═══════════════ DISPOSITIONS ═══════════════ */}
           {tab === "dispositions" && (
             emptyRange ? <EmptyRange total={totalRowsEver} /> : (
@@ -2864,6 +3752,238 @@ function RagLegend() {
       <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-amber-500" /> <b className="text-amber-600 dark:text-amber-400">Yellow</b> = below target — needs attention</span>
       <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-500" /> <b className="text-red-600 dark:text-red-400">Red</b> = well off target</span>
       <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-gray-400" /> <b>Grey</b> = no target set / no data</span>
+    </div>
+  );
+}
+
+// ── ActivityHeatmap ──────────────────────────────────────────────────────────
+// "On the phone 9–11, quiet 11–1", drawn rather than argued. The WHOLE FLOOR
+// first, then one block per LINE — never per person, because the lines are
+// shared (see the block above TalkRow). Rows = local calendar day, columns =
+// local hour, shaded by dials or by talk minutes.
+//
+// A CSS grid, not Recharts: this is a categorical day × hour matrix, and every
+// Recharts shape that could draw it (scatter with sized points, stacked bars)
+// would have to fake the cell geometry. The page's chart styling is matched by
+// hand instead — same borders, same muted axis grey, same tabular numerals.
+//
+// SHADED AGAINST ONE SCALE. The busiest cell anywhere on the grid sets the
+// darkest green for EVERY block, so two lines are directly comparable; per-block
+// normalisation would paint a quiet line as busy as a loud one. The floor block
+// is excluded from setting that scale — it is the sum of the others and would
+// wash every line out. An hour with no activity gets no fill at all, so a gap in
+// the day reads as a hole.
+function ActivityHeatmap({
+  rows, grids, days, hours, metric, onMetric, floor,
+}: {
+  rows: TalkRow[];
+  grids: Map<string, TalkGridDay[]>;
+  days: string[];
+  hours: number[];
+  metric: TalkMetric;
+  onMetric: (m: TalkMetric) => void;
+  floor: { dials: number; talkSeconds: number };
+}) {
+  // Per-day rows get unreadable past a week or so, so a long range opens
+  // collapsed into one aggregate day — overridable, never silently imposed.
+  const [scopeOverride, setScopeOverride] = useState<"day" | "combined" | null>(null);
+  const scope = scopeOverride ?? (days.length > 7 ? "combined" : "day");
+
+  const valueOf = useCallback(
+    (g: TalkGridDay, h: number) => (metric === "dials" ? g.dials[h] : g.talkSeconds[h] / 60),
+    [metric],
+  );
+
+  /** Each drawable block, plus the single darkest per-LINE value on the grid. */
+  const { blocks, max } = useMemo(() => {
+    let peak = 0;
+    const build = (key: string) => {
+      const dayGrids = grids.get(key) ?? [];
+      if (scope === "combined") {
+        const totals = new Array<number>(24).fill(0);
+        for (const g of dayGrids) for (let h = 0; h < 24; h++) totals[h] += valueOf(g, h);
+        return [{
+          label: `${dayGrids.length} day${dayGrids.length === 1 ? "" : "s"}`,
+          title: dayGrids.length > 0 ? `${dayGrids[0].day} → ${dayGrids[dayGrids.length - 1].day}` : "No dialing days",
+          values: totals,
+        }];
+      }
+      // Every day in the RANGE gets a row, including days this line did not
+      // dial — an absent row would hide a dead day entirely.
+      const byDay = new Map(dayGrids.map((g) => [g.day, g]));
+      return days.map((day) => {
+        const g = byDay.get(day);
+        const values = new Array<number>(24).fill(0);
+        if (g) for (let h = 0; h < 24; h++) values[h] = valueOf(g, h);
+        const d = parseYmdLocal(day);
+        return {
+          label: d.toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" }),
+          title: g ? day : `${day} — no dials`,
+          values,
+        };
+      });
+    };
+
+    const lineBlocks = rows.map((r) => {
+      const cells = build(r.key);
+      // Only the LINE blocks set the shading scale — the floor block is their
+      // sum and would flatten every line to near-white against it.
+      for (const c of cells) for (const h of hours) if (c.values[h] > peak) peak = c.values[h];
+      return {
+        key: r.key,
+        title: `Line ${r.lineNo} · ${r.callerId ? prettyPhone(r.callerId) : "no caller ID"}`,
+        subtitle: r.mappedName ? `mapped: ${r.mappedName} · shared line` : "no setter mapped",
+        isFloor: false,
+        dials: r.dials,
+        talkSeconds: r.talkSeconds,
+        cells,
+      };
+    });
+
+    // The floor first: the question "is the room on the phone right now" is the
+    // one this grid can answer without any attribution at all.
+    const blocks = [
+      {
+        key: FLOOR_KEY,
+        title: "Whole floor",
+        subtitle: "every line combined — no attribution needed to read this",
+        isFloor: true,
+        dials: floor.dials,
+        talkSeconds: floor.talkSeconds,
+        cells: build(FLOOR_KEY),
+      },
+      ...lineBlocks,
+    ];
+    return { blocks, max: peak };
+  }, [rows, grids, days, hours, scope, valueOf, floor]);
+
+  const unit = metric === "dials" ? "dials" : "talk min";
+  const fmt = (v: number) => (metric === "dials" ? v.toLocaleString() : v.toFixed(1));
+  const gridCols = { gridTemplateColumns: `5.5rem repeat(${hours.length}, minmax(0, 1fr))` };
+
+  return (
+    <div className="card bg-base-100 border border-base-300 shadow-sm">
+      <div className="card-body p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              <ClockIcon className="w-5 h-5 text-mint-green" /> When the floor is on the phone
+            </h2>
+            <p className="text-xs text-gray-400 mt-1">
+              Hour of day on <b>your local clock</b> — the same clock the date-range pills use. (Call timestamps
+              elsewhere on this page are stamped Eastern, so the two are labelled rather than blended.)
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              The floor block needs no attribution to be true. Each <b>line</b> block below it is a shared number,
+              so a quiet stretch there means <b>that line</b> went quiet — not that a named person stopped dialing.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div role="tablist" aria-label="Heatmap metric" className="inline-flex rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-0.5">
+              {([["talk", "Talk minutes"], ["dials", "Dials"]] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  role="tab"
+                  aria-selected={metric === id}
+                  onClick={() => onMetric(id)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    metric === id
+                      ? "bg-base-100 dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm"
+                      : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {days.length > 1 && (
+              <div role="tablist" aria-label="Heatmap rows" className="inline-flex rounded-lg border border-base-300 bg-base-200/60 dark:bg-gray-800/50 p-0.5">
+                {([["day", "By day"], ["combined", "All days"]] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    role="tab"
+                    aria-selected={scope === id}
+                    onClick={() => setScopeOverride(id)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      scope === id
+                        ? "bg-base-100 dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm"
+                        : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {hours.length === 0 || blocks.length === 0 ? (
+          <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400 mt-3">
+            No dial carries a start time in this range, so there is no hour-of-day picture to draw.
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto mt-3">
+              <div className="min-w-[38rem] space-y-4">
+                {blocks.map((block) => (
+                  <div key={block.key} className={block.isFloor ? "pb-3 border-b border-base-300" : undefined}>
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 mb-1.5">
+                      <span className="text-sm font-medium text-gray-900 dark:text-white">{block.title}</span>
+                      <span className="text-[11px] text-gray-400">{block.subtitle}</span>
+                      <span className="text-xs text-gray-400">
+                        · {block.dials.toLocaleString()} dials · {(block.talkSeconds / 60).toFixed(1)} talk min
+                      </span>
+                    </div>
+
+                    {/* Hour ruler */}
+                    <div className="grid gap-px" style={gridCols}>
+                      <div />
+                      {hours.map((h) => (
+                        <div key={h} className="text-[10px] text-gray-400 text-center tabular-nums pb-0.5">
+                          {hourLabel(h)}
+                        </div>
+                      ))}
+                    </div>
+
+                    {block.cells.map((c) => (
+                      <div key={c.label} className="grid gap-px items-center" style={gridCols}>
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400 pr-2 truncate" title={c.title}>
+                          {c.label}
+                        </div>
+                        {hours.map((h) => {
+                          const v = c.values[h];
+                          return (
+                            <div
+                              key={h}
+                              className="h-6 rounded-sm border border-base-300/60 bg-base-200/40 dark:bg-gray-800/40"
+                              style={{ backgroundColor: heatFill(v, max) }}
+                              title={`${c.title} · ${hourLabel(h)} — ${v > 0 ? `${fmt(v)} ${unit}` : `no ${unit}`}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Scale */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400 mt-3">
+              <span className="font-semibold text-gray-600 dark:text-gray-300">Shading:</span>
+              <span>none</span>
+              <span className="flex items-center gap-px">
+                {[0.2, 0.4, 0.6, 0.8, 1].map((f) => (
+                  <span key={f} className="w-5 h-3 rounded-sm border border-base-300/60" style={{ backgroundColor: heatFill(f * max, max) }} />
+                ))}
+              </span>
+              <span className="tabular-nums">{fmt(max)} {unit} — the busiest hour on any single LINE</span>
+              <span className="opacity-80">· one scale across every block, so the lines compare like for like. The whole-floor block is their sum, so its heavy hours saturate.</span>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
