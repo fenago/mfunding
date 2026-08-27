@@ -31,7 +31,6 @@ export const SECONDARY_KEYWORDS = [
 // Long-tail keywords (lower volume, highest intent - "Mike Chen" avatar)
 export const LONGTAIL_KEYWORDS = [
   'business funding after bank rejection',
-  'small business loan no credit check',
   'emergency business funding',
   'working capital for small business',
   'business loan denied by bank',

@@ -20,8 +20,8 @@ const momentumProcess = [
   { step: 'Get Funded', time: '24-48 hrs', done: true },
 ];
 
-// Animated approval rate counter
-function ApprovalCounter() {
+// Animated application-time counter
+function ApplyTimeCounter() {
   const count = useMotionValue(0);
   const rounded = useTransform(count, (latest) => Math.round(latest));
   const [displayValue, setDisplayValue] = useState(0);
@@ -33,7 +33,7 @@ function ApprovalCounter() {
       (entries) => {
         if (entries[0].isIntersecting && !hasAnimated) {
           setHasAnimated(true);
-          animate(count, 4, {
+          animate(count, 5, {
             duration: 2,
             ease: [0.4, 0, 0.2, 1],
           });
@@ -63,7 +63,7 @@ function ApprovalCounter() {
       initial={{ scale: 1 }}
       whileHover={{ scale: 1.05 }}
     >
-      {displayValue}x higher
+      {displayValue} minutes
     </motion.span>
   );
 }
@@ -198,8 +198,8 @@ export default function SolutionSection() {
                   Your business tells a story. We actually read it.
                 </motion.p>
                 <p className="text-text-secondary">
-                  Our approval rates are <ApprovalCounter /> than
-                  traditional lenders because we look at what matters.
+                  Applying takes <ApplyTimeCounter />, and we weigh your cash
+                  flow and recent performance — not just a credit score.
                 </p>
               </div>
             </motion.div>

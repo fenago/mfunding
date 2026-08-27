@@ -13,7 +13,7 @@ const problems = [
     color: '#E11D48',
     backTitle: 'We Say Yes.',
     backItems: [
-      '93% approval rate',
+      'Approvals for businesses banks decline',
       'No credit score minimum',
       'Based on your cash flow',
       'Decision in hours, not weeks',

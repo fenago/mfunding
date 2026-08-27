@@ -162,7 +162,7 @@ export default function HeroSection() {
                 transition={{ duration: 1.5, repeat: Infinity }}
               />
               <span className="text-white/90 text-sm font-medium">
-                93% Approval Rate • Funded in 24-48 Hours
+                Approvals for Imperfect Credit • Funded in 24-48 Hours
               </span>
             </motion.div>
 
@@ -361,8 +361,8 @@ export default function HeroSection() {
               className="absolute -top-12 -left-12 z-30"
             />
             <FloatingStat
-              value="93%"
-              label="Approval rate"
+              value="5 min"
+              label="Application time"
               delay={1}
               className="absolute top-16 -right-16 z-30"
             />
