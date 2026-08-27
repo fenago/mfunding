@@ -175,7 +175,11 @@ interface SetterOption {
 // one being bent into the other's shape.
 const SOURCE_DEAL_COLS = "id,lead_source,status,previous_status,assigned_closer_id,created_at,contacted_at,spoke_at,qualified_at,application_sent_at,funded_at,appointment_at,amount_funded";
 /** Bounded like the WAVV aggregate pass. Hitting it is REPORTED in the UI. */
-const SOURCE_DEAL_CAP = 5000;
+// Must not exceed the PostgREST max-rows (1,000) — a higher number here would
+// be a lie: the server truncates at 1,000 regardless, and the `>= CAP` test that
+// raises the "narrow the range" banner would then never fire, so the tab would
+// under-report in silence. See the note on AGG_ROW_CAP.
+const SOURCE_DEAL_CAP = 1000;
 
 interface SourceDeal {
   id: string;
@@ -369,7 +373,18 @@ const ALL_CLOSERS = "__all_closers__";
 // The aggregate pass pulls raw rows and folds them in the browser. Bounded so a
 // wide range can never try to stream the whole view; hitting the cap is
 // REPORTED (see aggregateTruncated), never silently absorbed.
+//
+// ⚠️ PostgREST enforces the project's max-rows (1,000 here) on EVERY select, and
+// it truncates SILENTLY — no error, no header the client checks. A single
+// `.limit(AGG_ROW_CAP)` therefore came back with exactly 1,000 rows on a day
+// that really had 1,802 calls, and because every funnel card, the by-setter
+// scorecard, the charts and Talk Time all fold this one array, all of them
+// under-reported at once (DIALS read a suspiciously round 1,000). So the slice
+// is fetched in explicit `.range()` pages of AGG_PAGE_SIZE until a short page
+// proves the range is exhausted. AGG_PAGE_SIZE must stay <= the project's
+// max-rows or the paging silently short-reads again.
 const AGG_ROW_CAP = 20000;
+const AGG_PAGE_SIZE = 1000;
 const LOG_PAGE_SIZE = 50;
 const TOOLTIP_STYLE = {
   backgroundColor: "#21262D",
@@ -1025,6 +1040,9 @@ export default function SetterPerformancePage() {
 
   const [aggRows, setAggRows] = useState<SetterCall[]>([]);
   const [aggregateTruncated, setAggregateTruncated] = useState(false);
+  // The server's exact call count for the active range — the ground truth the
+  // folded row set is checked against.
+  const [rangeTotal, setRangeTotal] = useState<number | null>(null);
   const [totalRowsEver, setTotalRowsEver] = useState<number | null>(null);
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   const [dealRows, setDealRows] = useState<DealRow[] | null>(null);
@@ -1117,30 +1135,73 @@ export default function SetterPerformancePage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [stateRes, targetRes, countRes, sliceRes] = await Promise.all([
+      const [stateRes, targetRes, countRes, rangeCountRes] = await Promise.all([
         supabase.from("platform_settings").select("value").eq("key", "wavv_sync").maybeSingle(),
         supabase.from("platform_settings").select("value").eq("key", "ph_dialer_kpi_targets").maybeSingle(),
         supabase.from(CALLS_VIEW).select("wavv_call_id", { count: "exact", head: true }),
+        // The range's TRUE dial count, aggregated server-side and never subject
+        // to max-rows. This is the yardstick the paged pull below is measured
+        // against, so "did we get everything" is answered by comparing two
+        // numbers rather than by trusting however many rows happened to arrive.
         supabase.from(CALLS_VIEW)
-          .select(CALL_COLS)
+          .select("wavv_call_id", { count: "exact", head: true })
           .gte("started_at", fromIso)
-          .lt("started_at", toIso)
-          .order("started_at", { ascending: false })
-          .limit(AGG_ROW_CAP),
+          .lt("started_at", toIso),
       ]);
 
       if (stateRes.error) throw new Error(stateRes.error.message);
       if (countRes.error) throw new Error(countRes.error.message);
-      if (sliceRes.error) throw new Error(sliceRes.error.message);
+      if (rangeCountRes.error) throw new Error(rangeCountRes.error.message);
 
       setSyncState((stateRes.data?.value ?? null) as SyncState | null);
       // A failed/absent targets read leaves targets null — every RAG then reads
       // "no target" (grey), which is the honest state, not a silent all-green.
       setTargets(targetRes.error ? null : ((targetRes.data?.value ?? null) as Record<string, KpiTarget> | null));
       setTotalRowsEver(countRes.count ?? 0);
-      const rows = (sliceRes.data ?? []) as SetterCall[];
+      const rangeTotal = rangeCountRes.count ?? 0;
+
+      // Page the slice. The server already told us how many rows there are, so
+      // the exact page count is known up front and every page is fetched in ONE
+      // parallel burst — a 30-day range is 13 pages, which would be 13 sequential
+      // round trips otherwise, and firing them together also keeps the pages as
+      // close to a single snapshot as the client can get.
+      //
+      // started_at alone is NOT a total order — two calls can share an instant,
+      // and offset paging over a non-deterministic sort can repeat one row and
+      // drop another across a page seam. wavv_call_id breaks every tie and pins
+      // the order; it is unique in the view, so the de-dupe below is belt-and-
+      // braces against a row landing mid-flight and shifting the offsets.
+      const wanted = Math.min(rangeTotal, AGG_ROW_CAP);
+      const pageCount = Math.ceil(wanted / AGG_PAGE_SIZE);
+      const pageResults = await Promise.all(
+        Array.from({ length: pageCount }, (_, i) => supabase.from(CALLS_VIEW)
+          .select(CALL_COLS)
+          .gte("started_at", fromIso)
+          .lt("started_at", toIso)
+          .order("started_at", { ascending: false })
+          .order("wavv_call_id", { ascending: false })
+          .range(i * AGG_PAGE_SIZE, Math.min((i + 1) * AGG_PAGE_SIZE, wanted) - 1)),
+      );
+
+      const seen = new Set<string>();
+      const rows: SetterCall[] = [];
+      for (const pageRes of pageResults) {
+        // One failed page makes the whole fold wrong, so it fails the load
+        // rather than quietly shrinking the funnel.
+        if (pageRes.error) throw new Error(pageRes.error.message);
+        for (const r of (pageRes.data ?? []) as SetterCall[]) {
+          if (seen.has(r.wavv_call_id)) continue;
+          seen.add(r.wavv_call_id);
+          rows.push(r);
+        }
+      }
+
       setAggRows(rows);
-      setAggregateTruncated(rows.length >= AGG_ROW_CAP);
+      setRangeTotal(rangeTotal);
+      // Truncated now means ONE thing: the range genuinely exceeds the ceiling
+      // we chose to stop at. It is decided by the server's own count, so it can
+      // no longer be fooled by — nor silently hide — a max-rows cut.
+      setAggregateTruncated(rangeTotal > AGG_ROW_CAP);
     } catch (e) {
       // A failed read is UNREADABLE, not an empty floor — blank the slice and
       // show the error rather than letting stale rows imply fresh truth.
@@ -2202,9 +2263,10 @@ export default function SetterPerformancePage() {
         <div className="alert alert-warning">
           <ExclamationTriangleIcon className="w-5 h-5" />
           <span>
-            This range exceeds {AGG_ROW_CAP.toLocaleString()} calls — the funnel, scorecard, charts and
-            breakdowns cover only the {AGG_ROW_CAP.toLocaleString()} most recent calls in it. Narrow the
-            range for exact totals. (The call log is queried separately and stays exact.)
+            This range holds <strong>{(rangeTotal ?? 0).toLocaleString()}</strong> calls — more than the{" "}
+            {AGG_ROW_CAP.toLocaleString()}-call ceiling, so the funnel, scorecard, charts and breakdowns
+            cover only the {aggRows.length.toLocaleString()} most recent calls in it. Narrow the range for
+            exact totals. (The call log is queried separately and stays exact.)
           </span>
         </div>
       )}
