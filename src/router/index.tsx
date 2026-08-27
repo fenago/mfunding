@@ -581,10 +581,12 @@ export const routes: RouteObject[] = [
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <EmailPage /> }],
               },
-              // Cold email planner — capacity model + warmup tracker (admin+)
+              // Cold email planner — capacity model + warmup tracker (admin+ only;
+              // AdminOnlyProtectedRoute excludes role=closer even by direct URL)
               {
                 path: "cold-email",
-                element: <ColdEmailPlannerPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <ColdEmailPlannerPage /> }],
               },
               // Users & roles (super_admin only)
               {
@@ -597,14 +599,15 @@ export const routes: RouteObject[] = [
                   },
                 ],
               },
-              // Customers (admin+)
+              // Customers (admin+ only; AdminOnlyProtectedRoute excludes role=closer
+              // even by direct URL — setters work merchants via the Playbook, not here)
               {
                 path: "customers",
-                element: <CustomersListPage />,
-              },
-              {
-                path: "customers/:id",
-                element: <CustomerDetailPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [
+                  { index: true, element: <CustomersListPage /> },
+                  { path: ":id", element: <CustomerDetailPage /> },
+                ],
               },
               // Marketing (super_admin only)
               {
