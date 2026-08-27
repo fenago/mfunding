@@ -411,14 +411,19 @@ export const routes: RouteObject[] = [
                   },
                 ],
               },
-              // Deals (admin+)
+              // Deals (admin+ only — owner ruling 8/27: airtight, no setters).
+              // DealListPage/DealDetailPage print GROSS commission ($ in play);
+              // AdminOnlyProtectedRoute excludes role=closer even by direct URL
+              // (nav already hides it). Commissioned closers are role=admin, kept.
               {
                 path: "deals",
-                element: <DealListPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <DealListPage /> }],
               },
               {
                 path: "deals/:id",
-                element: <DealDetailPage />,
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <DealDetailPage /> }],
               },
               // Closers (super_admin only)
               {
