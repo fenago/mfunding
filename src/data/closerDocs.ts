@@ -3,18 +3,24 @@
 // SOURCE OF TRUTH for the list: research/legal/closer-onboarding-checklist-sop.md
 // (Phase 0). The nine documents below are exactly that checklist, in that order.
 //
-// WHERE THE TEXT LIVES: for the six markdown documents, the authoritative body is
-// in the DB (public.closer_doc_templates), seeded verbatim from research/legal/*.md.
-// It is NOT imported into the bundle — the text a closer signs must be merged
-// server-side and frozen (see src/lib/closerDocMerge.ts + the
-// send-closer-onboarding-package edge function). The two reference documents,
-// which nobody signs, are imported straight from the repo with Vite's ?raw loader.
+// WHERE THE TEXT LIVES: for the signable markdown documents, the authoritative
+// body is in the DB (public.closer_doc_templates), seeded verbatim from
+// research/legal/*.md. It is NOT imported into the bundle — the text a closer
+// signs must be merged server-side and frozen (see src/lib/closerDocMerge.ts +
+// the send-closer-onboarding-package edge function).
+//
+// COMPENSATION DOCUMENTS ARE NEVER BUNDLED. A `?raw` import is a string literal
+// in the JS every browser downloads, so bundling the Comp Offer Sheet shipped
+// the whole rate ladder to setters and merchants no matter what the UI hid.
+// Its body now lives in closer_doc_templates behind RLS (migration
+// 20260827_closer_comp_docs_to_db.sql) and is fetched per-viewer — the server
+// returns zero rows to anyone without commission terms. Only the SOP, which
+// states no rates, is still imported with ?raw.
 //
 // NOTHING IN THIS APP AUTHORS OR EDITS LEGAL LANGUAGE. Merging substitutes bracket
 // tokens for real values; that is all.
 
 import onboardingSopMd from "../../research/legal/closer-onboarding-checklist-sop.md?raw";
-import compOfferSheetMd from "../../research/Momentum_Closer_Comp_Offer_Sheet.md?raw";
 
 /** What has to happen to the document. */
 export type DocAction = "sign" | "collect" | "complete" | "reference";
@@ -45,11 +51,28 @@ export interface CloserDoc {
   delivery: DocDelivery;
   /** Repo path (or where it comes from) — so the owner knows what backs the page. */
   path: string;
-  /** Rendered in-app for reference docs only. Signable docs render from the DB. */
+  /**
+   * Bundled body — reference docs that state NO commission terms only. Anything
+   * put here ships to every browser. See bodyFromDb for the rest.
+   */
   body?: string;
+  /**
+   * The body is a reference text held in closer_doc_templates and fetched at
+   * view time, so RLS decides whether this viewer ever receives the bytes. This
+   * is how a reference doc that states rates is served.
+   */
+  bodyFromDb?: boolean;
   externalUrl?: string;
   /** Shown on the viewer for anything that isn't e-signed. */
   handling?: string;
+  /**
+   * The document states commission terms — split percentages, a worked payout
+   * example, or the draw. Only a person who HAS commission terms (a `closers`
+   * row) may read it. A setter is role `closer` with no `closers` row: they are
+   * paid hourly, have no split, and must never see one — not even a template
+   * rate they could mistake for their own. See isCompensationDoc().
+   */
+  compensation?: boolean;
 }
 
 export const ACTION_LABEL: Record<DocAction, string> = {
@@ -82,6 +105,7 @@ export const CLOSER_DOCS: CloserDoc[] = [
     summary: "The master 1099 agreement. Everything else hangs off this one.",
     action: "sign",
     delivery: "manual",
+    compensation: true,
     path: "research/platform_reqs/v2_MCA_Commission_Agreement.docx",
     handling:
       "This is a .docx — it cannot be rendered or merged in the browser, so it is excluded from the e-sign package. Download it from the repo path above, fill it in, and send it for signature by hand (or convert it to markdown and it can join the e-sign flow). Schedule A is its rate sheet and must travel with it.",
@@ -93,6 +117,7 @@ export const CLOSER_DOCS: CloserDoc[] = [
     summary: "The splits, the draw, the payout timing. Attaches to the agreement above.",
     action: "sign",
     delivery: "esign",
+    compensation: true,
     path: "research/legal/closer-ic-commission-agreement-scheduleA.md",
   },
   {
@@ -129,6 +154,8 @@ export const CLOSER_DOCS: CloserDoc[] = [
     summary: "What happens to commission when a funded deal defaults or unwinds.",
     action: "sign",
     delivery: "esign",
+    // Worked example inside: "$1,400 (35% of a $4,000 commission) … $700".
+    compensation: true,
     path: "research/legal/closer-clawback-policy-acknowledgment.md",
   },
   {
@@ -195,8 +222,12 @@ export const REFERENCE_DOCS: CloserDoc[] = [
     summary: "What the closer is offered. Sent during recruiting — not a signature item.",
     action: "reference",
     delivery: "manual",
-    path: "research/Momentum_Closer_Comp_Offer_Sheet.md",
-    body: compOfferSheetMd,
+    // Every split and payout number in the plan, in plain text. It used to be a
+    // `?raw` import, which meant it shipped in the bundle to everyone; it is now
+    // fetched from the DB so RLS gates who receives it at all.
+    compensation: true,
+    bodyFromDb: true,
+    path: "closer_doc_templates (slug: comp-offer-sheet)",
   },
   {
     slug: "onboarding-checklist-sop",
@@ -219,4 +250,9 @@ export const ESIGNABLE_SLUGS: string[] = CLOSER_DOCS.filter((d) => d.delivery ==
 
 export function getCloserDoc(slug: string | undefined): CloserDoc | undefined {
   return ALL_DOCS.find((d) => d.slug === slug);
+}
+
+/** Does this document state commission terms? See CloserDoc.compensation. */
+export function isCompensationDoc(slug: string | undefined): boolean {
+  return !!getCloserDoc(slug)?.compensation;
 }

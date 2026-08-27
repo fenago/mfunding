@@ -7,7 +7,20 @@
 //      ledger hashes. Never re-merge on the client for a signer.
 //   2. For a manager: a live PREVIEW merged from the template + that closer's
 //      row, clearly labelled as a preview, with any unfilled fields called out.
-//   3. Reference docs (comp sheet, SOP): straight from the repo markdown.
+//   3. Reference docs: the SOP from bundled repo markdown; the Comp Offer Sheet
+//      fetched from closer_doc_templates, because it states rates and must not
+//      be in the bundle at all.
+//
+// WHO MAY SEE COMMISSION TERMS: only a viewer who HAS commission terms — i.e. a
+// real `closers` row (their own splits, draw, clawback example) — or a manager.
+// A setter is role `closer` with NO closers row; they are not commissioned, and
+// the compensation documents must not render for them.
+//
+// This gate is DEFENCE IN DEPTH, not the enforcement. The enforcement is RLS on
+// closer_doc_templates (migration 20260827_closer_comp_docs_to_db.sql): a setter
+// asking the API directly for the comp bodies gets zero rows. The old bundled
+// `?raw` comp sheet could not be protected this way — the bytes were already in
+// every browser, and hiding the component only hid the component.
 //
 // The signing act: type your full legal name + tick the consent box. The RPC
 // records name, consent sentence, content snapshot, SHA-256, timestamp, IP, and
@@ -21,6 +34,7 @@ import {
   CheckCircleIcon,
   ExclamationTriangleIcon,
   LockClosedIcon,
+  NoSymbolIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { useUserProfile } from "@/context/UserProfileContext";
@@ -31,6 +45,7 @@ import {
   getDocTemplates,
   getMergeSettings,
   getMyCloser,
+  getReferenceDocBody,
   getSignatures,
   signDocument,
   CONSENT_TEXT,
@@ -56,6 +71,10 @@ export default function CloserDocViewerPage() {
   const [settings, setSettings] = useState<MergeSettings>({});
   const [signature, setSignature] = useState<SignatureRow | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Reference body held in the DB (the Comp Offer Sheet). */
+  const [dbBody, setDbBody] = useState<string | null>(null);
+  /** The DB read FAILED. Never let that render as "nothing to show". */
+  const [dbBodyError, setDbBodyError] = useState<string | null>(null);
 
   const [typedName, setTypedName] = useState("");
   const [consented, setConsented] = useState(false);
@@ -69,6 +88,22 @@ export default function CloserDocViewerPage() {
       const me = await getMyCloser();
       setMyCloserId(me?.id ?? null);
       if (me) setTypedName(`${me.first_name} ${me.last_name}`.trim());
+
+      // Reference body that lives in the DB. Don't even ask for it when the
+      // viewer is barred from it — RLS would return nothing anyway, and asking
+      // would blur "refused" into "empty". If we DO ask and the read fails, the
+      // error is kept so the page can say so instead of rendering a blank doc.
+      if (doc?.bodyFromDb) {
+        const barred = !isManager && !me && !!doc.compensation;
+        if (barred) {
+          setDbBody(null);
+          setDbBodyError(null);
+        } else {
+          const res = await getReferenceDocBody(slug);
+          setDbBody(res.body);
+          setDbBodyError(res.error);
+        }
+      }
 
       const [rows, sigs] = await Promise.all([getCloserDocuments(), getSignatures()]);
       const mine = me ? rows.find((r) => r.closer_id === me.id && r.doc_slug === slug) ?? null : null;
@@ -91,31 +126,48 @@ export default function CloserDocViewerPage() {
     } finally {
       setLoading(false);
     }
-  }, [slug, isManager]);
+  }, [slug, isManager, doc]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Does this viewer have commission terms of their own? `myCloserId` is the
+  // closers row keyed to the signed-in user (getMyCloser → closers.user_id),
+  // the same signal useCloserSplits() calls `hasCloser`. No row = a setter, who
+  // has no split to be shown. Managers keep full visibility.
+  //
+  // Fail closed: while the row is still loading `myCloserId` is null, so the
+  // restriction is ON until we have actually confirmed otherwise.
+  const compRestricted = !isManager && !myCloserId && !!doc?.compensation;
 
   // What text do we show?
   const { body, mode, missing } = useMemo((): {
     body: string | null;
-    mode: "frozen" | "preview" | "reference" | "none";
+    mode: "frozen" | "preview" | "reference" | "restricted" | "none";
     missing: MissingField[];
   } => {
     if (!doc) return { body: null, mode: "none", missing: [] };
 
-    // Reference docs ship straight from the repo.
+    // A compensation document, and this viewer has no commission terms. Nothing
+    // is rendered — not the frozen copy, not the repo markdown, not a preview.
+    // There is no redacted variant on purpose: the numbers ARE the document.
+    if (compRestricted) return { body: null, mode: "restricted", missing: [] };
+
+    // Reference docs. The SOP ships from the repo; the Comp Offer Sheet comes
+    // from the DB. Both resolve BEFORE the merge preview so a reference doc is
+    // never mistaken for a mergeable template.
     if (doc.body) return { body: doc.body, mode: "reference", missing: [] };
+    if (doc.bodyFromDb && dbBody) return { body: dbBody, mode: "reference", missing: [] };
 
     // The signer's own frozen copy always wins.
     if (myRow?.merged_content) return { body: myRow.merged_content, mode: "frozen", missing: [] };
 
-    // Manager preview.
-    if (isManager && template && previewCloser) {
+    // Manager preview. Reference docs are never merged — nobody signs them.
+    if (isManager && !doc.bodyFromDb && template && previewCloser) {
       const res = mergeCloserDoc(template.slug, template.body_md, previewCloser, settings);
       return { body: res.content, mode: "preview", missing: res.missing };
     }
     return { body: null, mode: "none", missing: [] };
-  }, [doc, myRow, isManager, template, previewCloser, settings]);
+  }, [doc, myRow, isManager, template, previewCloser, settings, compRestricted, dbBody]);
 
   const status = (myRow?.status ?? "not_sent") as DocStatus;
   const canSign = !!myCloserId && doc?.delivery === "esign" && status === "sent" && !signature;
@@ -176,8 +228,9 @@ export default function CloserDocViewerPage() {
 
       <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 font-mono">{doc.path}</p>
 
-      {/* Non-e-sign handling note */}
-      {doc.handling && (
+      {/* Non-e-sign handling note. Suppressed for a restricted viewer — it is
+          instructions for handling a document they are not being shown. */}
+      {doc.handling && mode !== "restricted" && (
         <div className="mt-5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-4">
           <p className="text-sm text-gray-700 dark:text-gray-300">{doc.handling}</p>
           {doc.externalUrl && (
@@ -254,6 +307,39 @@ export default function CloserDocViewerPage() {
         <article className="mt-6 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6">
           <MarkdownDoc source={body} />
         </article>
+      ) : mode === "restricted" ? (
+        <div className="mt-6 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6">
+          <div className="flex items-start gap-3">
+            <NoSymbolIcon className="w-5 h-5 shrink-0 text-gray-400 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-gray-900 dark:text-white">
+                This document isn&apos;t part of your role.
+              </p>
+              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+                It sets out commission terms, which apply to commissioned closers only. If you think it should
+                apply to you, ask your manager.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : dbBodyError ? (
+        // The read failed. Say that. An unreadable document must never look
+        // like an empty one.
+        <div className="mt-6 rounded-xl border-2 border-rose-400 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/25 p-6">
+          <div className="flex items-start gap-3">
+            <ExclamationTriangleIcon className="w-5 h-5 shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-rose-900 dark:text-rose-100">
+                Couldn&apos;t load this document.
+              </p>
+              <p className="mt-1 text-sm text-rose-800 dark:text-rose-200">
+                The text is stored in the database and the read failed — this is not an empty document.
+                Try again; if it keeps failing, tell the owner.
+              </p>
+              <p className="mt-2 text-xs font-mono text-rose-700 dark:text-rose-300">{dbBodyError}</p>
+            </div>
+          </div>
+        </div>
       ) : (
         <div className="mt-6 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6">
           <p className="text-sm text-gray-500 dark:text-gray-400">

@@ -547,6 +547,10 @@ export default function CloserDocsPage() {
 
   // --- Closer view: only their own documents. -------------------------------
   if (!isManager) {
+    // No `closers` row = no commission terms (a setter). The compensation
+    // documents aren't theirs to sign and aren't theirs to read — don't list
+    // them. The viewer route enforces the same rule on a direct URL hit.
+    const visibleDocs = myCloserId ? CLOSER_DOCS : CLOSER_DOCS.filter((d) => !d.compensation);
     const mine = rows.filter((r) => r.closer_id === myCloserId);
     const bySlug: Record<string, CloserDocumentRow> = {};
     mine.forEach((r) => { bySlug[r.doc_slug] = r; });
@@ -571,7 +575,7 @@ export default function CloserDocsPage() {
         <div className="mt-6 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
           <table className="w-full">
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-              {CLOSER_DOCS.map((doc) => {
+              {visibleDocs.map((doc) => {
                 const status = (bySlug[doc.slug]?.status ?? "not_sent") as DocStatus;
                 return (
                   <tr key={doc.slug} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">

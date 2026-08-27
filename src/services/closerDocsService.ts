@@ -82,6 +82,29 @@ export async function getDocTemplates(): Promise<CloserDocTemplate[]> {
   return (data ?? []) as CloserDocTemplate[];
 }
 
+/**
+ * The body of a REFERENCE document held in closer_doc_templates (the Comp Offer
+ * Sheet). Not bundled: RLS decides whether the caller receives the text, so a
+ * setter gets zero rows here even on a hand-rolled PostgREST call.
+ *
+ * Three outcomes, kept distinct on purpose — "the server refused me" must never
+ * be indistinguishable from "there is nothing there":
+ *   { body }        → the text
+ *   { body: null }  → no row visible to this viewer (RLS, or unknown slug)
+ *   { error }       → the read FAILED; the caller must say so, not render blank
+ */
+export async function getReferenceDocBody(
+  slug: string,
+): Promise<{ body: string | null; error: string | null }> {
+  const { data, error } = await supabase
+    .from("closer_doc_templates")
+    .select("body_md")
+    .eq("slug", slug)
+    .maybeSingle();
+  if (error) return { body: null, error: error.message };
+  return { body: (data?.body_md as string | undefined) ?? null, error: null };
+}
+
 /** Every tracker row. RLS narrows this to the caller's own rows for a closer. */
 export async function getCloserDocuments(closerId?: string): Promise<CloserDocumentRow[]> {
   let q = supabase
