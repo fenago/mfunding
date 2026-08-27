@@ -21,11 +21,11 @@
 // confirmation", or a loud red stop on the wrong template. It never claims a success it
 // has not verified.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { XMarkIcon, DocumentTextIcon, PaperAirplaneIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
-import { updateDealStatus } from "../../services/dealService";
+import { updateDealStatus, updateCustomerAdditionalEmails } from "../../services/dealService";
 import EnrichmentCard, { type EnrichmentUseField } from "./EnrichmentCard";
 import type { DealWithCustomer } from "../../types/deals";
 
@@ -285,9 +285,13 @@ export default function MerchantApplicationModal({
 }) {
   const [form, setForm] = useState<AppForm>(EMPTY);
   // A saved draft freezes contact info at save time. If the LEAD's email/phone
-  // was edited afterwards (Edit lead info), the draft is stale — surface it and
-  // offer a one-click sync instead of silently keeping the old value.
-  const [drift, setDrift] = useState<{ email?: string; phone?: string } | null>(null);
+  // was edited afterwards (Edit lead info), the draft is stale — surface it.
+  // PHONE drift is still a one-click replace. EMAIL drift is NOT a replace: an
+  // address the merchant once used is an address that still reaches them, so a
+  // changed email is ADDITIVE — see the keep-both effect below. `prevEmail` is
+  // the address the saved draft froze, captured here so the effect never has to
+  // race the form state to find out what we'd otherwise be dropping.
+  const [drift, setDrift] = useState<{ email?: string; prevEmail?: string; phone?: string } | null>(null);
   const [tab, setTab] = useState<Tab>("business");
   const [loading, setLoading] = useState(true);
   const [existingId, setExistingId] = useState<string | null>(null);
@@ -317,6 +321,28 @@ export default function MerchantApplicationModal({
   const [wrongTemplate, setWrongTemplate] = useState<{ got: string | null; expected: string } | null>(null);
 
   const cust = deal.customer;
+
+  // The merchant's extra addresses (customers.additional_emails), CC'd on every
+  // outbound merchant email. Held in state — not read straight off the `deal`
+  // prop — because the email-drift effect writes to this list and the CC set +
+  // the confirmation banner have to reflect that write immediately, without a
+  // reload of the deal.
+  const [addlEmails, setAddlEmails] = useState<string[]>(() =>
+    (cust?.additional_emails ?? []).map((e) => e.trim()).filter(Boolean),
+  );
+  // Mirror of the list for the drift effect, which must read the CURRENT array
+  // without listing it as a dependency (that would re-fire the effect on its own
+  // write). State stays the render source of truth; this is only the read path.
+  const addlEmailsRef = useRef<string[]>(addlEmails);
+  useEffect(() => { addlEmailsRef.current = addlEmails; }, [addlEmails]);
+  // What the keep-both effect actually did, for the confirmation banner. `added`
+  // is what we truly persisted — empty when both addresses were already on file —
+  // so the banner can never claim a write that didn't happen.
+  const [keptEmail, setKeptEmail] = useState<{ from: string; to: string; added: string[] } | null>(null);
+  const [keptEmailError, setKeptEmailError] = useState<string | null>(null);
+  // One attempt per (customer, old→new) pair. Guards re-renders, tab switches and
+  // re-opening the modal from re-adding or thrashing the same address.
+  const keptEmailRef = useRef<Set<string>>(new Set());
 
   /**
    * Record that the e-sign document HAS GONE OUT.
@@ -376,8 +402,11 @@ export default function MerchantApplicationModal({
         // AFTER the draft was saved — the draft still has the old address.)
         const norm = (s?: string | null) => (s ?? "").trim().toLowerCase();
         const digits = (s?: string | null) => (s ?? "").replace(/\D/g, "");
-        const d: { email?: string; phone?: string } = {};
-        if (cust?.email && norm(cust.email) !== norm(next.business_email)) d.email = cust.email;
+        const d: { email?: string; prevEmail?: string; phone?: string } = {};
+        if (cust?.email && norm(cust.email) !== norm(next.business_email)) {
+          d.email = cust.email;
+          d.prevEmail = next.business_email;
+        }
         if (cust?.phone && digits(cust.phone) !== digits(next.business_phone)) d.phone = cust.phone;
         setDrift(d.email || d.phone ? d : null);
       } else {
@@ -445,6 +474,77 @@ export default function MerchantApplicationModal({
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deal.id]);
+
+  // If this modal is ever reused for a different merchant without unmounting, the
+  // CC list has to follow — one merchant's extra addresses must never ride along
+  // on another's send. Mount is a no-op (state already seeded from the prop).
+  const custIdRef = useRef(deal.customer_id);
+  useEffect(() => {
+    if (custIdRef.current === deal.customer_id) return;
+    custIdRef.current = deal.customer_id;
+    const list = (cust?.additional_emails ?? []).map((e) => e.trim()).filter(Boolean);
+    addlEmailsRef.current = list;
+    setAddlEmails(list);
+    setKeptEmail(null);
+    setKeptEmailError(null);
+  }, [deal.customer_id, cust?.additional_emails]);
+
+  // EMAIL DRIFT IS ADDITIVE — a changed email never replaces the old one.
+  //
+  // When the lead's email is edited in GHL after this application was saved, we
+  // end up with two live addresses: the NEW one (customers.email — already the
+  // To: on every merchant send) and the OLD one frozen in the saved draft. The
+  // old one used to be silently dropped the moment a closer clicked "Use updated
+  // info". So instead of asking, we KEEP BOTH automatically: whichever of the
+  // pair is not already the primary and not already on file gets appended to
+  // customers.additional_emails (CC'd on every send). In practice that is the OLD
+  // address — the new one needs no help, it IS the primary — which is exactly the
+  // address that would otherwise have been lost.
+  //
+  // form.business_email is deliberately left alone: the application keeps the
+  // address it was built with.
+  useEffect(() => {
+    const to = (drift?.email ?? "").trim();
+    const from = (drift?.prevEmail ?? "").trim();
+    const customerId = deal.customer_id;
+    if (!to || !customerId) return;
+
+    const norm = (s: string) => s.trim().toLowerCase();
+    const key = `${customerId}|${norm(from)}|${norm(to)}`;
+    if (keptEmailRef.current.has(key)) return;
+    keptEmailRef.current.add(key);
+
+    const valid = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+    const primary = norm(cust?.email ?? "");
+    const seen = new Set(addlEmailsRef.current.map(norm));
+    const add: string[] = [];
+    for (const candidate of [to, from]) {
+      const n = norm(candidate);
+      if (!n || !valid(n) || n === primary || seen.has(n)) continue;
+      seen.add(n);
+      add.push(candidate.trim());
+    }
+
+    // Nothing new to store (both addresses already reachable) — still confirm,
+    // so the closer sees that the old address was not lost.
+    if (add.length === 0) { setKeptEmail({ from, to, added: [] }); return; }
+
+    const next = [...addlEmailsRef.current, ...add];
+    (async () => {
+      try {
+        await updateCustomerAdditionalEmails(customerId, next);
+        addlEmailsRef.current = next;
+        setAddlEmails(next);
+        setKeptEmail({ from, to, added: add });
+        setKeptEmailError(null);
+      } catch (e) {
+        // Never claim an address is on file when the write threw. Release the
+        // guard so re-opening the modal retries.
+        keptEmailRef.current.delete(key);
+        setKeptEmailError(e instanceof Error ? e.message : "Could not save the additional email.");
+      }
+    })();
+  }, [drift?.email, drift?.prevEmail, deal.customer_id, cust?.email]);
 
   function set<K extends keyof AppForm>(k: K, v: string) { setForm((f) => ({ ...f, [k]: v })); }
 
@@ -686,7 +786,7 @@ export default function MerchantApplicationModal({
       // Extra merchant addresses ride along as CC (the primary is the To:). The
       // e-sign document itself goes through GHL to the single contact email; only
       // this cover note can fan out. Server re-validates + caps the list.
-      const cc = (cust?.additional_emails ?? []).map((e) => e.trim()).filter(Boolean);
+      const cc = addlEmails.map((e) => e.trim()).filter(Boolean);
       const { data, error: fnErr } = await supabase.functions.invoke("send-merchant-email", {
         body: { dealId: deal.id, subject, body, regarding, cc },
       });
@@ -946,33 +1046,53 @@ export default function MerchantApplicationModal({
           </nav>
         </div>
 
-        {/* Stale-contact drift banner — the lead's email/phone was edited AFTER
-            this application was saved; one click pulls the fresh values in. */}
-        {drift && (
+        {/* EMAIL drift — no buttons, nothing to decide. Both addresses are on file
+            and both get every send; this is a receipt, not a prompt. */}
+        {keptEmail && (
+          <div className="mx-5 mt-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-[13px] text-amber-800 dark:text-amber-200">
+            ✓ The lead's email changed to <b>{keptEmail.to}</b>
+            {keptEmail.from ? (
+              <>
+                {" "}— <b>{keptEmail.from}</b>{" "}
+                {keptEmail.added.length > 0 ? "was kept as an additional email" : "is already on file as an additional email"}
+                . Both addresses are copied on every send; the application still shows <b>{keptEmail.from}</b>.
+              </>
+            ) : (
+              <>{keptEmail.added.length > 0 ? " and was added as an additional email." : " and is already on file."}</>
+            )}
+          </div>
+        )}
+        {keptEmailError && (
+          <div className="mx-5 mt-3 rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-[13px] text-red-800 dark:text-red-200">
+            ⚠ The lead's email changed, but the old address could NOT be saved as an additional email — it is not on file. {keptEmailError}
+          </div>
+        )}
+
+        {/* PHONE drift — the saved draft's number is stale; one click pulls the
+            fresh one in. (Email is handled additively above, never replaced.) */}
+        {drift?.phone && (
           <div className="mx-5 mt-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-[13px] text-amber-800 dark:text-amber-200 flex flex-wrap items-center gap-2">
             <span>
-              ⚠ The lead's contact info changed after this application was saved:
-              {drift.email && <> email is now <b>{drift.email}</b>{form.business_email ? <> (app still has <b>{form.business_email}</b>)</> : null}</>}
-              {drift.email && drift.phone && ";"}
-              {drift.phone && <> phone is now <b>{drift.phone}</b></>}
-              .
+              ⚠ The lead's phone changed after this application was saved: phone is now <b>{drift.phone}</b>
+              {form.business_phone ? <> (app still has <b>{form.business_phone}</b>)</> : null}.
             </span>
             <span className="ml-auto flex gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => {
-                  setForm((f) => ({
-                    ...f,
-                    ...(drift.email ? { business_email: drift.email, owner_email: drift.email } : {}),
-                    ...(drift.phone ? { business_phone: drift.phone, owner_phone: drift.phone } : {}),
-                  }));
-                  setDrift(null);
+                  const phone = drift.phone;
+                  if (phone) setForm((f) => ({ ...f, business_phone: phone, owner_phone: phone }));
+                  setDrift((d) => (d ? { ...d, phone: undefined } : d));
                 }}
                 className="px-2.5 py-1 rounded bg-amber-600 text-white font-semibold hover:bg-amber-700"
               >
                 Use updated info
               </button>
-              <button type="button" onClick={() => setDrift(null)} className="px-2 py-1 rounded text-amber-700 dark:text-amber-300 underline">
+              <button
+                type="button"
+                onClick={() => setDrift((d) => (d ? { ...d, phone: undefined } : d))}
+                className="px-2 py-1 rounded text-amber-700 dark:text-amber-300 underline"
+              >
                 keep as-is
               </button>
             </span>
