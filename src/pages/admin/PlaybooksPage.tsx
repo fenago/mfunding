@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizePhoneForStorage } from "@/lib/phone";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   MapIcon,
   ArrowRightIcon,
@@ -44,7 +44,6 @@ import DocumentChecklist from "../../components/admin/DocumentChecklist";
 import AIUnderwritingPanel from "../../components/shared/AIUnderwritingPanel";
 import MyDayQueue from "../../components/admin/MyDayQueue";
 import CompleteProfileNudge from "../../components/admin/CompleteProfileNudge";
-import NewLeadToast from "../../components/admin/NewLeadToast";
 import VendorEmailBanner from "../../components/admin/VendorEmailBanner";
 import DealAssistant from "../../components/admin/DealAssistant";
 import PipelineFlow from "../../components/shared/PipelineFlow";
@@ -63,7 +62,7 @@ import EnrichmentCard from "../../components/admin/EnrichmentCard";
 import AppSendButtons from "../../components/admin/AppSendButtons";
 import BookAppointmentControl from "../../components/admin/BookAppointmentControl";
 import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, updateExistingPositions, resyncDealPositions, setContactDnd, type CloserOption } from "../../services/dealService";
-import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
+import { useLeadAlerts } from "../../context/LeadAlertContext";
 import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
 import supabase from "../../supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -240,8 +239,13 @@ export default function PlaybooksPage() {
   //     /v2/location/{loc}/contacts/detail/{id} to the base link, so the contact
   //     id landed in ?x= (or on the path). Kept for back-compat so old links still
   //     resolve — same recovery SendAppPage uses.
-  // Runs exactly ONCE, then strips the params so a refresh can't re-fire it.
-  const deepLinkRan = useRef(false);
+  // Runs once PER LINK, then strips the params so a refresh can't re-fire it.
+  // Not once per mount: the app-wide new-lead toast navigates here with ?deal=,
+  // and a closer already sitting on the playbook doesn't remount — so this has to
+  // react to the search string changing, not just to mounting.
+  const handledDeepLink = useRef<string | null>(null);
+  const navigate = useNavigate();
+  const { search: deepLinkSearch } = useLocation();
   const [deepLink, setDeepLink] = useState<{ phase: "loading" | "error"; message?: string } | null>(null);
 
   // Resolve → load a merchant into the playbook. ONE path for both deep links
@@ -279,9 +283,7 @@ export default function PlaybooksPage() {
   }
 
   useEffect(() => {
-    if (deepLinkRan.current) return;
-    deepLinkRan.current = true;
-    const sp = new URLSearchParams(window.location.search);
+    const sp = new URLSearchParams(deepLinkSearch);
     const dealParam = sp.get("deal")?.trim() ?? "";
     const phoneParam = dialDigits(sp.get("phone") ?? "");
     let contactParam = sp.get("contact")?.trim() ?? "";
@@ -289,8 +291,16 @@ export default function PlaybooksPage() {
       const hay = `${sp.get("x") ?? ""} ${window.location.pathname}`;
       contactParam = hay.match(/\/contacts\/detail\/([^/?#\s]+)/)?.[1] ?? "";
     }
-    // the normal case — nothing to open
-    if (!dealParam && !contactParam && !phoneParam) return;
+    // The normal case — nothing to open. Clearing the guard here is what lets the
+    // SAME lead be opened from a toast twice (the URL is stripped in between).
+    if (!dealParam && !contactParam && !phoneParam) {
+      handledDeepLink.current = null;
+      return;
+    }
+    // Guards React's double-invoke in StrictMode without blocking the next link.
+    const key = `${dealParam}|${contactParam}|${phoneParam}`;
+    if (handledDeepLink.current === key) return;
+    handledDeepLink.current = key;
     void (async () => {
       try {
         await openMerchant(
@@ -301,11 +311,15 @@ export default function PlaybooksPage() {
               : { phone: phoneParam },
         );
       } finally {
-        // Clean URL: a refresh reopens the playbook, not the deep link.
-        window.history.replaceState({}, "", "/admin/playbooks");
+        // Clean URL: a refresh reopens the playbook, not the deep link. Routed
+        // through navigate (not history.replaceState) so react-router's own
+        // location clears too — otherwise a second toast for the same deal would
+        // look like "no change" and never re-run this effect.
+        navigate("/admin/playbooks", { replace: true });
       }
     })();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkSearch]);
 
   // (The visible "open by phone" box was removed — the "Revenue Playbook" link
   // custom field on the VibeReach contact card opens the merchant directly, and
@@ -338,16 +352,21 @@ export default function PlaybooksPage() {
   // amount) stays visible to everyone; this hides the personal payout math.
   const showEconomics = isAdmin || isSuperAdmin;
 
-  // Realtime alerts for the playbook: (1) the SECOND a live-transfer / real-time
-  // lead becomes a deal, chime + a persistent bottom-right toast; (2) when a
-  // Synergy vendor email dedupes into a deal, either the special in-playbook
-  // banner (if it's the deal on screen — it also auto-refreshes it) or a calm
-  // corner toast (if it's another deal). Clicking a corner card loads that deal
-  // (openAlertDeal below). My Day self-refreshes off the same realtime stream.
-  // openDealId + onRefreshOpenDeal are passed by ref inside the hook, so this
-  // doesn't resubscribe every time the loaded deal changes.
-  const { alerts, dismiss: dismissAlert, matchBanner, dismissBanner, desktopEnabled, enableDesktop } =
-    useNewLeadAlert({ openDealId: deal?.id ?? null, onRefreshOpenDeal: refreshDeal });
+  // Realtime lead alerts. The CORNER stack (new live-transfer / real-time lead,
+  // assignment-filtered) is mounted app-wide by AdminLayout — a closer must hear
+  // it on any screen, so it deliberately no longer lives here. What stays here is
+  // the SPECIAL in-playbook banner: a Synergy vendor email deduping into the deal
+  // currently on screen shows the mid-call strip and auto-refreshes the deal.
+  // We register that open deal with the shared stream rather than opening a
+  // second subscription, which would double every toast and chime.
+  const { matchBanner, dismissBanner, setOpenDeal } = useLeadAlerts();
+  useEffect(() => {
+    setOpenDeal(deal?.id ?? null, refreshDeal);
+    return () => setOpenDeal(null);
+    // refreshDeal is re-created each render and is held by ref inside the
+    // provider, so only the deal id belongs in the dependency list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deal?.id, setOpenDeal]);
 
   // Auto-dismiss the "deal closed" toast.
   useEffect(() => {
@@ -740,20 +759,6 @@ export default function PlaybooksPage() {
     refreshDeal(d.id);
   }
 
-  // Open a deal straight from a new-lead alert: fetch the full record, then route
-  // it through pickFromQueue so it lands on the RIGHT flow tab (live transfer /
-  // real-time) exactly as a My Day click would. Dismisses the alert immediately.
-  async function openAlertDeal(dealId: string) {
-    dismissAlert(dealId);
-    const res = await getDealById(dealId);
-    if (res) {
-      pickFromQueue(res.deal);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } else {
-      notify("Couldn't open that lead — it may have just changed. Find it in My Day.", "error");
-    }
-  }
-
   // Close a deal to a terminal state from the green context bar. updateDealStatus
   // allows terminal moves (backward-lock exempts declined/dead/nurture) and fires
   // the C/D GHL sequences; we then persist the reason/note, log it, and clear the
@@ -1136,14 +1141,8 @@ export default function PlaybooksPage() {
       {/* Confetti burst on funding — no dependency, self-removes */}
       {confetti && <Confetti />}
 
-      {/* Realtime new-lead alert stack — persists until clicked/dismissed */}
-      <NewLeadToast
-        alerts={alerts}
-        onOpen={openAlertDeal}
-        onDismiss={dismissAlert}
-        desktopEnabled={desktopEnabled}
-        onEnableDesktop={enableDesktop}
-      />
+      {/* The realtime new-lead alert stack is mounted app-wide in AdminLayout —
+          it must fire on every screen, not only here. */}
 
       {/* Confirm dialog — replaces window.confirm for stage moves / doc sends */}
       {confirmState && (
