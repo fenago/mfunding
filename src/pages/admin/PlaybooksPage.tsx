@@ -62,7 +62,7 @@ import LeadGradeChip from "../../components/admin/LeadGradeChip";
 import EnrichmentCard from "../../components/admin/EnrichmentCard";
 import AppSendButtons from "../../components/admin/AppSendButtons";
 import BookAppointmentControl from "../../components/admin/BookAppointmentControl";
-import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, updateExistingPositions, resyncDealPositions, type CloserOption } from "../../services/dealService";
+import { getDealStats, getAllDeals, getDealById, updateDealStatus, updateCustomerAdditionalEmails, updateCustomerAdditionalPhones, addDealNote, syncDealNoteToGhl, isHumanNoteSubject, CLOSER_NOTE_SUBJECT, listActiveCloserOptions, reassignDealCloser, updateDealProducts, fetchHandoffStates, setHandoffDropFlag, updateExistingPositions, resyncDealPositions, setContactDnd, type CloserOption } from "../../services/dealService";
 import { useNewLeadAlert } from "../../hooks/useNewLeadAlert";
 import { useDealPlaidItem } from "../../hooks/useDealPlaidItem";
 import supabase from "../../supabase";
@@ -2363,6 +2363,108 @@ function ConnectBankBarChip({ dealId, customerId }: { dealId: string; customerId
   );
 }
 
+// ── "🚫 Add to DND" for the sticky deal bar ──
+// The merchant says "take me off your list" MID-CALL. This is the one press that
+// honors it: set-contact-dnd flips `dnd` on the GHL contact, which is the durable
+// suppression the dialer actually enforces (WAVV/LeadConnector will not place a
+// call or send a text to a DND contact) — so we can no longer reach them, by
+// accident or otherwise. It does NOT close the deal; suppressing the contact and
+// dispositioning the opportunity are separate decisions.
+//
+// Two-step confirm INLINE (no browser popups — owner rule): first tap arms, second
+// tap fires, and an armed chip disarms itself after DISARM_MS so a stray tap can't
+// be completed by an unrelated one later.
+//
+// `alreadyDnd` is tri-state on purpose: `undefined` means the projection didn't
+// read the flag (UNREAD ≠ "not suppressed"), so we show the actionable button
+// rather than claiming they're callable. Firing on an already-DND contact is a
+// harmless no-op.
+const DND_DISARM_MS = 5000;
+
+function AddToDndChip({
+  dealId,
+  ghlContactId,
+  alreadyDnd,
+  onNotify,
+  onRefresh,
+}: {
+  dealId: string;
+  ghlContactId: string | null;
+  alreadyDnd: boolean | null | undefined;
+  onNotify: (text: string, tone?: "ok" | "error") => void;
+  onRefresh: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), DND_DISARM_MS);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  // Suppressed already (locally mirrored, or we just did it) — a muted, inert chip.
+  if (done || alreadyDnd === true) {
+    return (
+      <span
+        title="This contact is on DND — the dialer will not call or text them. Lift it in GHL if they ask back in."
+        className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full border border-gray-300 text-gray-500 bg-gray-100 dark:border-gray-600 dark:text-gray-400 dark:bg-gray-800"
+      >
+        🚫 On DND
+      </span>
+    );
+  }
+
+  const fire = async () => {
+    if (busy) return;
+    if (!armed) { setArmed(true); return; }
+    setBusy(true);
+    try {
+      const { mirrored } = await setContactDnd({ dealId, ghlContactId, reason: "Merchant asked not to be contacted" });
+      if (!alive.current) return;
+      setDone(true);
+      // The GHL flag is what stops the dialer, so that's the promise we make. A
+      // failed LOCAL mirror is still said out loud — it's the only reason this
+      // chip might not read "On DND" on the next open.
+      onNotify(
+        mirrored
+          ? "Added to DND — they won't be called"
+          : "Added to DND in GHL — they won't be called (local record didn't update)",
+        mirrored ? "ok" : "error",
+      );
+      onRefresh();
+    } catch (e) {
+      if (!alive.current) return;
+      onNotify(e instanceof Error ? e.message : "Could not add this contact to DND.", "error");
+    } finally {
+      if (alive.current) { setBusy(false); setArmed(false); }
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={fire}
+      disabled={busy || !ghlContactId}
+      title={
+        ghlContactId
+          ? "Stop all calls and texts to this contact. Sets Do-Not-Contact on their CRM record — the dialer will refuse to reach them. Does not close the deal."
+          : "No linked contact — nothing for the dialer to suppress yet"
+      }
+      className={`inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+        armed
+          ? "border-red-500 text-white bg-red-600 hover:bg-red-700 dark:border-red-500 dark:bg-red-600"
+          : "border-gray-300 text-gray-600 hover:bg-red-50 hover:text-red-700 hover:border-red-300 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-red-900/25 dark:hover:text-red-300 dark:hover:border-red-800"
+      }`}
+    >
+      {busy ? "🚫 …" : armed ? "🚫 Tap again to add to DND" : "🚫 Add to DND"}
+    </button>
+  );
+}
+
 // ─────────────────── Existing MCA positions (display + manual edit + re-sync) ───────────────────
 // The merchant's current open advances. Seeded from UCC for UCC-sourced leads, but
 // non-UCC leads (Google Ads, live transfers) arrive with nothing — so staff can enter
@@ -3232,6 +3334,16 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                   docs, but was too buried to find) — one tap mints + copies the
                   link to text; verifies revenue in ~60s. */}
               <ConnectBankBarChip dealId={deal.id} customerId={deal.customer_id} />
+              {/* "Take me off your list" — one press honors it. Flips DND on the
+                  GHL contact so the dialer can't call or text them again. Inline
+                  two-step confirm; does NOT close the deal. */}
+              <AddToDndChip
+                dealId={deal.id}
+                ghlContactId={deal.ghl_contact_id}
+                alreadyDnd={deal.customer?.do_not_contact}
+                onNotify={onNotify}
+                onRefresh={onRefresh}
+              />
               {/* Signature status at a glance — did they sign the disclosure + the
                   application? Fed by the bar's single ghl-docs-status fetch above. */}
               {deal.ghl_contact_id && <DocsBackChips groups={docGroups} />}

@@ -54,7 +54,8 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
         id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry,
         address_street, address_city, address_state, address_zip,
-        annual_revenue, employees, entity_type, owner_title, sic_code, website
+        annual_revenue, employees, entity_type, owner_title, sic_code, website,
+        do_not_contact
       ),
       closer:profiles!assigned_closer_id (
         id, first_name, last_name
@@ -154,7 +155,8 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
         id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry,
         address_street, address_city, address_state, address_zip,
-        annual_revenue, employees, entity_type, owner_title, sic_code, website
+        annual_revenue, employees, entity_type, owner_title, sic_code, website,
+        do_not_contact
       ),
       submissions:deal_submissions ( response_at, status )
     `)
@@ -338,7 +340,8 @@ export async function getDealById(id: string): Promise<{
         id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
         monthly_revenue, time_in_business, industry,
         address_street, address_city, address_state, address_zip,
-        annual_revenue, employees, entity_type, owner_title, sic_code, website
+        annual_revenue, employees, entity_type, owner_title, sic_code, website,
+        do_not_contact
       ),
       closer:profiles!assigned_closer_id (
         id, first_name, last_name
@@ -490,6 +493,39 @@ export async function syncDealNoteToGhl(
   } catch (e) {
     const { message } = await parseEdgeError(e, "GHL sync failed");
     return { synced: false, syncError: message };
+  }
+}
+
+/**
+ * Suppress a contact: sets `dnd` on their GHL contact via set-contact-dnd, so
+ * the dialer (WAVV/LeadConnector) can no longer call or text them, and mirrors
+ * `customers.do_not_contact` locally. Called from the Playbook when a merchant
+ * asks to be taken off the list — so it THROWS on failure rather than returning
+ * a quiet false: a setter who is shown "done" over a failed suppression will
+ * dial them again tomorrow.
+ *
+ * Pass the deal id (preferred — it carries the ownership check a closer needs);
+ * `ghlContactId` alone is admin-only server-side.
+ */
+export async function setContactDnd(
+  args: { dealId: string; ghlContactId?: string | null; reason?: string }
+    | { dealId?: null; ghlContactId: string; reason?: string },
+): Promise<{ dnd: true; mirrored: boolean }> {
+  try {
+    const { data, error } = await supabase.functions.invoke("set-contact-dnd", {
+      body: {
+        deal_id: args.dealId ?? undefined,
+        ghl_contact_id: args.ghlContactId ?? undefined,
+        reason: args.reason,
+      },
+    });
+    if (error) throw error;
+    const d = data as { ok?: boolean; error?: string; mirrored?: boolean } | null;
+    if (!d?.ok) throw new Error(d?.error || "Could not add this contact to DND.");
+    return { dnd: true, mirrored: d.mirrored === true };
+  } catch (e) {
+    const { message } = await parseEdgeError(e, "Could not add this contact to DND.");
+    throw new Error(message);
   }
 }
 

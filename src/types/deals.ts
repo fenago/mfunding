@@ -276,6 +276,10 @@ export interface DealWithCustomer extends Deal {
     owner_title: string | null;
     sic_code: string | null;
     website: string | null;
+    /** Local mirror of the GHL contact's DND flag (set by set-contact-dnd /
+     *  the wavv do-not-contact drain). Optional because not every deal
+     *  projection selects it — `undefined` means UNREAD, not "not suppressed". */
+    do_not_contact?: boolean | null;
   };
   closer?: {
     id: string;

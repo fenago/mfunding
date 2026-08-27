@@ -115,6 +115,11 @@ verify_jwt = true
 [functions.push-deal-note]
 verify_jwt = true
 
+# "Add to DND" from the Revenue Playbook — sets contact.dnd on the GHL contact so
+# the dialer stops calling/texting. Staff-only + closer-owns-deal enforced in code.
+[functions.set-contact-dnd]
+verify_jwt = true
+
 # Bulk CSV lead importer — ops-only. Runs service-role; JWT gate keeps it internal.
 [functions.bulk-lead-import]
 verify_jwt = true
