@@ -62,6 +62,7 @@ import {
   BoltIcon,
   BanknotesIcon,
   ClockIcon,
+  ClipboardDocumentListIcon,
 } from "@heroicons/react/24/outline";
 import {
   BarChart, Bar, ComposedChart, Line, XAxis, YAxis, CartesianGrid,
@@ -71,6 +72,7 @@ import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { DEAL_STAGES, type DealStatus } from "@/types/deals";
+import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** One row of public.v_wavv_outbound_setter_calls — an OUTBOUND call already
@@ -976,7 +978,7 @@ function hourLabel(h: number): string {
   return h < 12 ? `${h}a` : `${h - 12}p`;
 }
 
-type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "dispositions" | "trends" | "log" | "numbers";
+type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dispositions" | "trends" | "log" | "numbers";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
   { id: "setters",        label: "Setters",        icon: UserGroupIcon },
@@ -990,6 +992,10 @@ const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: bool
   // question (lead-source cohorts), so they read as a separate block.
   { id: "live_transfers", label: "Live Transfers", icon: ArrowsRightLeftIcon },
   { id: "realtime",       label: "Real-Time",      icon: BoltIcon },
+  // Sits right after the two lead-source tabs because it is the working end of
+  // them: those two say how a COHORT converted, this one hands the setter the
+  // individual merchants and the buttons to move them.
+  { id: "assignments",    label: "Assignments",    icon: ClipboardDocumentListIcon },
   { id: "numbers",        label: "Numbers",        icon: HashtagIcon, adminOnly: true },
 ];
 
@@ -1001,7 +1007,7 @@ function isSourceTab(t: TabId): t is "live_transfers" | "realtime" {
 }
 
 export default function SetterPerformancePage() {
-  const { isAdmin, isSuperAdmin } = useUserProfile();
+  const { isAdmin, isSuperAdmin, effectiveUserId } = useUserProfile();
   const canManageNumbers = isAdmin || isSuperAdmin;
 
   const [tab, setTab] = useState<TabId>("funnel");
@@ -2072,6 +2078,12 @@ export default function SetterPerformancePage() {
    *  suppressed on them. A stale dialer sync says nothing about a lead cohort,
    *  and showing it there would be a warning about the wrong data source. */
   const sourceTabActive = isSourceTab(tab);
+  /** Assignments also reads `deals`, so it too renders outside the WAVV gate and
+   *  suppresses the dialer banners. */
+  const dealsTabActive = sourceTabActive || tab === "assignments";
+  /** Managers see everyone's book behind a picker; a closer sees only their own.
+   *  A UI scope, not a permission — RLS is what actually governs the rows. */
+  const canSeeAllAssignments = isAdmin || isSuperAdmin;
 
   function sortBy(key: SortKey) {
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: key !== "name" }));
@@ -2153,8 +2165,8 @@ export default function SetterPerformancePage() {
         </span>
       </div>
 
-      {/* ── Banners (WAVV-side only — see sourceTabActive) ── */}
-      {!sourceTabActive && keyInvalid && (
+      {/* ── Banners (WAVV-side only — see dealsTabActive) ── */}
+      {!dealsTabActive && keyInvalid && (
         <div className="alert alert-error">
           <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
           <div>
@@ -2169,14 +2181,14 @@ export default function SetterPerformancePage() {
         </div>
       )}
 
-      {!sourceTabActive && loadError && (
+      {!dealsTabActive && loadError && (
         <div className="alert alert-error">
           <ExclamationTriangleIcon className="w-5 h-5" />
           <span>Could not read setter performance: {loadError}</span>
         </div>
       )}
 
-      {!sourceTabActive && !loading && neverSynced && !loadError && (
+      {!dealsTabActive && !loading && neverSynced && !loadError && (
         <div className="alert">
           <InformationCircleIcon className="w-5 h-5" />
           <span>
@@ -2186,7 +2198,7 @@ export default function SetterPerformancePage() {
         </div>
       )}
 
-      {!sourceTabActive && aggregateTruncated && (
+      {!dealsTabActive && aggregateTruncated && (
         <div className="alert alert-warning">
           <ExclamationTriangleIcon className="w-5 h-5" />
           <span>
@@ -2198,7 +2210,7 @@ export default function SetterPerformancePage() {
       )}
 
       {/* ── Attribution notice — permanent, not a bug to be fixed by a reparse ── */}
-      {!sourceTabActive && !loading && aggRows.length > 0 && !anyAttributed && (
+      {!dealsTabActive && !loading && aggRows.length > 0 && !anyAttributed && (
         <div className="alert alert-info">
           <InformationCircleIcon className="w-5 h-5 shrink-0" />
           <div className="text-sm">
@@ -2239,7 +2251,14 @@ export default function SetterPerformancePage() {
           so a slow or broken dialer sync must not blank them. */}
       {/* isSourceTab() is called inline (not via sourceTabActive) so TypeScript
           narrows `tab` for the lookups below — no casts. */}
-      {isSourceTab(tab) ? (
+      {tab === "assignments" ? (
+        /* Assignments — the per-setter WORKLIST, not a report. Reads `deals`, so
+           it renders here alongside the lead-source tabs rather than behind the
+           WAVV gate, and it deliberately ignores the date range above: a book is
+           not a window. Scope is enforced inside the panel (a closer sees only
+           their own assigned_closer_id) on top of the deals RLS. */
+        <AssignmentsPanel viewerId={effectiveUserId} canSeeAll={canSeeAllAssignments} />
+      ) : isSourceTab(tab) ? (
         <SourceFunnelPanel
           // Keyed by tab so the closer filter resets when you switch products —
           // a closer who works transfers may have no real-time leads at all.
