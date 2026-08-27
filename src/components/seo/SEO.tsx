@@ -18,7 +18,7 @@ const defaults = {
   siteName: 'Momentum Funding',
   titleTemplate: '%s | Momentum Funding',
   defaultTitle: 'Fast Business Funding When Banks Say No | Momentum Funding',
-  defaultDescription: 'Get $5K-$3M business funding in 24-48 hours. 93% approval rate. No collateral required. Merchant cash advance, business lines of credit & equipment financing.',
+  defaultDescription: 'Get $5K-$3M business funding in 24-48 hours. Flexible approvals for imperfect credit. No collateral required. Merchant cash advance, business lines of credit & equipment financing.',
   defaultKeywords: 'small business funding, merchant cash advance, business line of credit, equipment financing, fast business loans, working capital',
   siteUrl: 'https://mfunding.net',
   defaultImage: 'https://mfunding.net/og-image.jpg',
@@ -92,7 +92,7 @@ export default function SEO({
 export const HomePageSEO = () => (
   <SEO
     title="Fast Business Funding When Banks Say No"
-    description="Get $5K-$3M business funding in 24-48 hours. 93% approval rate. No collateral required. Merchant cash advance, business lines of credit & equipment financing for small business owners."
+    description="Get $5K-$3M business funding in 24-48 hours. Flexible approvals for imperfect credit. No collateral required. Merchant cash advance, business lines of credit & equipment financing for small business owners."
     keywords="small business funding, merchant cash advance, business line of credit, equipment financing, fast business loans, working capital, business funding bad credit, alternative business financing, MCA funding, quick business loans, same day business funding"
   />
 );

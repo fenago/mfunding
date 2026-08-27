@@ -118,7 +118,7 @@ export const creProducts: CREProduct[] = [
       {
         title: "Up to 80% LTV",
         description:
-          "Finance up to 80% of property value with strong credit and experience. Even with no credit check, you can access up to 65% LTV. The deal makes the loan.",
+          "Finance up to 80% of property value with strong credit and experience. Even with a lower credit score, property value drives approval — 50–65% LTV with only a soft credit review (no hard pull). The deal makes the loan.",
         icon: ChartBarIcon,
       },
       {
@@ -185,7 +185,7 @@ export const creProducts: CREProduct[] = [
       {
         question: "I have bad credit — can I still get a bridge loan?",
         answer:
-          "Yes. We have no-credit-check options available at 50-65% LTV. The loan is primarily underwritten based on the property value and the deal itself. That said, borrowers with 640+ credit scores and investor experience will qualify for better terms (up to 80% LTV and lower rates).",
+          "Yes. Strong property value can offset lower credit; a soft credit review (not a hard pull) is standard, with 50-65% LTV available. The loan is primarily underwritten based on the property value and the deal itself. That said, borrowers with 640+ credit scores and investor experience will qualify for better terms (up to 80% LTV and lower rates).",
       },
       {
         question: "How does cash-out refinancing work with a bridge loan?",

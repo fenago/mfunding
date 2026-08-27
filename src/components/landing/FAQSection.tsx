@@ -21,7 +21,7 @@ const faqs: FAQItem[] = [
   },
   {
     question: "Can I get business funding if the bank turned me down?",
-    answer: "Yes! We specialize in helping business owners who have been declined by traditional banks. Our 93% approval rate means we find solutions when others can't. We look at your business's current performance and cash flow, not just your past credit history. A bank rejection is where most of our customers start.",
+    answer: "Yes! We specialize in helping business owners who have been declined by traditional banks. Many businesses that meet baseline criteria get approved, though amounts and terms vary by your business profile. We look at your business's current performance and cash flow, not just your past credit history. A bank rejection is where most of our customers start.",
     keywords: ["business loan denied", "bank turned down", "alternative business financing"],
   },
   {

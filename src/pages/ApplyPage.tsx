@@ -85,7 +85,7 @@ export default function ApplyPage() {
     <div className="os-root">
       <style>{OS_CSS}</style>
       <style>{APPLY_CSS}</style>
-      <SEO title="Apply for Business Funding" description="Apply for business funding in minutes. Check your rate with no credit impact. $5K–$3M, funding in 24–48 hours, 93% approval. No upfront fees." keywords="apply for business funding, business funding application, merchant cash advance application" />
+      <SEO title="Apply for Business Funding" description="Apply for business funding in minutes. Check your rate with no credit impact. $5K–$3M, funding in 24–48 hours, fast funding decisions. No upfront fees." keywords="apply for business funding, business funding application, merchant cash advance application" />
       <ScrollToTop />
       <OSNav />
 

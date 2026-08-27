@@ -158,12 +158,12 @@ export const products: LoanProduct[] = [
       {
         title: "Simple Documentation",
         description:
-          "Just a loan application and 4-6 months of bank statements. No tax returns, no profit & loss statements, no accountant required.",
+          "Just an application and 4-6 months of bank statements. No tax returns, no profit & loss statements, no accountant required.",
         icon: DocumentTextIcon,
       },
     ],
     documents: [
-      "Business Loan Application",
+      "Business Funding Application",
       "4-6 Months of Business Bank Statements",
       "4-6 Months of Credit Card Processing/Merchant Statements (if applicable)",
     ],

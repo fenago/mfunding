@@ -117,14 +117,14 @@ export const COMPARISON_KEYWORDS = [
 
 // Meta description templates
 export const META_TEMPLATES = {
-  homepage: (stat: string) =>
-    `Get $25K-$500K business funding in 24-48 hours. ${stat}% approval rate. No collateral required. Merchant cash advance, business lines of credit & equipment financing.`,
+  homepage: () =>
+    `Get $25K-$500K business funding in 24-48 hours. Flexible approvals for imperfect credit. No collateral required. Merchant cash advance, business lines of credit & equipment financing.`,
 
   fundingPage: (type: string, amount: string) =>
     `${type} for small businesses. Get up to ${amount} in funding. Fast approval, no collateral required. Apply online in 5 minutes.`,
 
   industryPage: (industry: string) =>
-    `Business funding for ${industry} companies. Get $25K-$500K in 24-48 hours. 93% approval rate. Specialized financing solutions.`,
+    `Business funding for ${industry} companies. Get $25K-$500K in 24-48 hours. Fast funding decisions. Specialized financing solutions.`,
 
   locationPage: (city: string, state: string) =>
     `Small business funding in ${city}, ${state}. Merchant cash advance, lines of credit & more. Get funded in 24-48 hours. Apply now.`,
