@@ -359,6 +359,10 @@ interface PipeGroup {
   counts: PipeCounts;
 }
 
+/** Sentinel for "no closer filter" on the two lead-source tabs. Distinct from
+ *  UNASSIGNED_FILTER, which is a real bucket (deals nobody owns). */
+const ALL_CLOSERS = "__all_closers__";
+
 // The aggregate pass pulls raw rows and folds them in the browser. Bounded so a
 // wide range can never try to stream the whole view; hitting the cap is
 // REPORTED (see aggregateTruncated), never silently absorbed.
@@ -810,11 +814,13 @@ type TabId = "funnel" | "setters" | "live_transfers" | "realtime" | "disposition
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
   { id: "setters",        label: "Setters",        icon: UserGroupIcon },
-  { id: "live_transfers", label: "Live Transfers", icon: ArrowsRightLeftIcon },
-  { id: "realtime",       label: "Real-Time",      icon: BoltIcon },
   { id: "dispositions",   label: "Dispositions",   icon: ChartBarIcon },
   { id: "trends",         label: "Trends",         icon: ArrowTrendingUpIcon },
   { id: "log",            label: "Call log",       icon: ChatBubbleLeftRightIcon },
+  // The two DEALS-based tabs sit after the WAVV tabs — they answer a different
+  // question (lead-source cohorts), so they read as a separate block.
+  { id: "live_transfers", label: "Live Transfers", icon: ArrowsRightLeftIcon },
+  { id: "realtime",       label: "Real-Time",      icon: BoltIcon },
   { id: "numbers",        label: "Numbers",        icon: HashtagIcon, adminOnly: true },
 ];
 
@@ -1015,17 +1021,16 @@ export default function SetterPerformancePage() {
       setSourceDeals(rows);
       setSourceDealsTruncated(rows.length >= SOURCE_DEAL_CAP);
 
-      // Resolve setter names. RLS may hand back fewer rows than asked for (a
-      // non-super-admin reads only their own profile); every id that does not
-      // come back stays nameless and is rendered as such.
+      // Resolve setter names via staff_directory (staff-readable, names only) —
+      // NOT profiles, whose RLS hands a closer only their own row. The directory
+      // coalesces display_name/first+last into `name` server-side; a null name
+      // stays nameless and is rendered as such.
       const ids = [...new Set(rows.map((r) => r.assigned_closer_id).filter((v): v is string => !!v))];
       if (ids.length > 0) {
-        const { data: profs } = await supabase.from("profiles").select("id,display_name,first_name,last_name").in("id", ids);
+        const { data: profs } = await supabase.from("staff_directory").select("id,name").in("id", ids);
         const map: Record<string, string> = {};
-        for (const p of (profs ?? []) as { id: string; display_name: string | null; first_name: string | null; last_name: string | null }[]) {
-          // `||` not `??`: an all-null name joins to "", falsy but not nullish.
-          const name = p.display_name || [p.first_name, p.last_name].filter(Boolean).join(" ");
-          if (name) map[p.id] = name;
+        for (const p of (profs ?? []) as { id: string; name: string | null }[]) {
+          if (p.name) map[p.id] = p.name;
         }
         setCloserNames(map);
       } else {
@@ -1066,9 +1071,10 @@ export default function SetterPerformancePage() {
       const ids = closers.map((c) => c.user_id!);
       const nameById = new Map<string, string>();
       if (ids.length > 0) {
-        const { data: profs } = await supabase.from("profiles").select("id,display_name").in("id", ids);
-        for (const p of (profs ?? []) as { id: string; display_name: string | null }[]) {
-          if (p.display_name) nameById.set(p.id, p.display_name);
+        // staff_directory, not profiles: a closer can't read other profiles' rows.
+        const { data: profs } = await supabase.from("staff_directory").select("id,name").in("id", ids);
+        for (const p of (profs ?? []) as { id: string; name: string | null }[]) {
+          if (p.name) nameById.set(p.id, p.name);
         }
       }
       setSetterOptions(
@@ -1782,6 +1788,9 @@ export default function SetterPerformancePage() {
           narrows `tab` for the lookups below — no casts. */}
       {isSourceTab(tab) ? (
         <SourceFunnelPanel
+          // Keyed by tab so the closer filter resets when you switch products —
+          // a closer who works transfers may have no real-time leads at all.
+          key={tab}
           def={SOURCE_TABS[tab]}
           cohort={sourceCohorts[tab]}
           loading={sourceDealsLoading}
@@ -2889,20 +2898,58 @@ function SourceFunnelPanel({
   rangeLabel: string;
   anyNameUnknown: boolean;
 }) {
+  // Closer filter. Purely a view over the already-loaded cohort — no new query,
+  // and it never changes what was READ, only what is shown.
+  const [closerKey, setCloserKey] = useState<string>(ALL_CLOSERS);
+
+  /** The cohort narrowed to the picked closer. A closer's own group already
+   *  carries its deals and counts, so the filtered view is that one group —
+   *  the team funnel and the tiles can never disagree with the row. */
+  const view = useMemo(() => {
+    if (!cohort) return null;
+    if (closerKey === ALL_CLOSERS) return cohort;
+    const g = cohort.groups.find((x) => x.key === closerKey);
+    if (!g) return { deals: [], counts: computePipeline([]), groups: [] };
+    return { deals: g.deals, counts: g.counts, groups: [g] };
+  }, [cohort, closerKey]);
+
   const stages = useMemo(
-    () => (cohort ? pipelineStagesOf(cohort.counts, def.targetPrefix) : []),
-    [cohort, def.targetPrefix],
+    () => (view ? pipelineStagesOf(view.counts, def.targetPrefix) : []),
+    [view, def.targetPrefix],
   );
+
+  const filtered = closerKey !== ALL_CLOSERS;
+  const filteredName = filtered ? (view?.groups[0]?.name ?? "this closer") : null;
 
   const header = (
     <div className="card bg-base-100 border border-base-300 shadow-sm">
       <div className="card-body p-4 space-y-2">
-        <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-          {def.id === "live_transfers"
-            ? <ArrowsRightLeftIcon className="w-5 h-5 text-mint-green" />
-            : <BoltIcon className="w-5 h-5 text-mint-green" />}
-          {def.label} — pipeline outcomes
-        </h2>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            {def.id === "live_transfers"
+              ? <ArrowsRightLeftIcon className="w-5 h-5 text-mint-green" />
+              : <BoltIcon className="w-5 h-5 text-mint-green" />}
+            {def.label} — pipeline outcomes
+          </h2>
+          {cohort && cohort.groups.length > 0 && (
+            <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <span className="font-semibold text-gray-600 dark:text-gray-300">Closer:</span>
+              <select
+                className="select select-xs select-bordered"
+                value={closerKey}
+                onChange={(e) => setCloserKey(e.target.value)}
+                title="Narrows every number on this tab to one closer's deals. Applies on top of the date range."
+              >
+                <option value={ALL_CLOSERS}>All closers</option>
+                {cohort.groups.map((g) => (
+                  <option key={g.key} value={g.key}>
+                    {g.name} ({g.counts.received.toLocaleString()})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
         <p className="text-sm text-gray-500 dark:text-gray-400">{def.blurb}</p>
         <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
           <div>
@@ -2922,6 +2969,12 @@ function SourceFunnelPanel({
             Nurture / Declined / Dead is read at the last active stage it held before it was parked. The deepest of
             those readings wins, which is why a later stage can never out-count an earlier one.
           </div>
+          {filtered && (
+            <div className="text-emerald-700 dark:text-emerald-400">
+              <b>Filtered to {filteredName}.</b> Every tile, funnel step and row below counts only their {def.noun}s —
+              clear the filter to read the whole floor.
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -2944,7 +2997,7 @@ function SourceFunnelPanel({
     );
   }
 
-  if (loading || cohort === null) {
+  if (loading || cohort === null || view === null) {
     return (
       <div className="space-y-4">
         {header}
@@ -2955,7 +3008,7 @@ function SourceFunnelPanel({
     );
   }
 
-  const c = cohort.counts;
+  const c = view.counts;
 
   if (c.received === 0) {
     return (
@@ -2963,11 +3016,23 @@ function SourceFunnelPanel({
         {header}
         <div className="alert">
           <InformationCircleIcon className="w-5 h-5" />
-          <span>
-            No {def.noun}s were received in this range. The range filters when the lead <b>landed</b>, so widen it
-            to see {def.noun}s delivered earlier — work done today on an older {def.noun} shows up in that
-            {def.noun}'s own cohort, not this one.
-          </span>
+          {filtered ? (
+            // The cohort itself is not empty — the CLOSER FILTER emptied it. Said
+            // plainly so nobody reads a filtered view as a dead range.
+            <span>
+              This range has <b>{cohort.counts.received.toLocaleString()}</b> {def.noun}s, but none of them belong to
+              the closer you picked.{" "}
+              <button type="button" className="link link-hover font-semibold" onClick={() => setCloserKey(ALL_CLOSERS)}>
+                Show all closers
+              </button>
+            </span>
+          ) : (
+            <span>
+              No {def.noun}s were received in this range. The range filters when the lead <b>landed</b>, so widen it
+              to see {def.noun}s delivered earlier — work done today on an older {def.noun} shows up in that
+              {def.noun}'s own cohort, not this one.
+            </span>
+          )}
         </div>
       </div>
     );
@@ -3016,7 +3081,8 @@ function SourceFunnelPanel({
         <div className="card-body p-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-              <FunnelIcon className="w-5 h-5 text-mint-green" /> Combined pipeline funnel (team)
+              <FunnelIcon className="w-5 h-5 text-mint-green" />{" "}
+              {filtered ? `Pipeline funnel — ${filteredName}` : "Combined pipeline funnel (team)"}
             </h2>
             <RagLegend />
           </div>
@@ -3044,7 +3110,9 @@ function SourceFunnelPanel({
               <UserGroupIcon className="w-5 h-5 text-mint-green" /> Per-setter breakdown
             </h2>
             <span className="text-xs text-gray-400">
-              {cohort.groups.length.toLocaleString()} bucket{cohort.groups.length === 1 ? "" : "s"} · sorted by {def.noun}s received
+              {filtered
+                ? `1 of ${cohort.groups.length.toLocaleString()} bucket${cohort.groups.length === 1 ? "" : "s"} · filtered to ${filteredName}`
+                : `${cohort.groups.length.toLocaleString()} bucket${cohort.groups.length === 1 ? "" : "s"} · sorted by ${def.noun}s received`}
             </span>
           </div>
           <p className="text-xs text-gray-400 mt-1">
@@ -3076,15 +3144,19 @@ function SourceFunnelPanel({
                 </tr>
               </thead>
               <tbody className={TBODY}>
-                {cohort.groups.map((g) => (
+                {view.groups.map((g) => (
                   <PipeRow key={g.key} name={g.name} unassigned={g.unassigned} counts={g.counts} def={def} targetFor={targetFor} />
                 ))}
               </tbody>
-              <tfoot>
-                <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
-                  <PipeCells name="Team" counts={c} def={def} targetFor={targetFor} />
-                </tr>
-              </tfoot>
+              {/* One row and a Team footer of the same numbers reads as two
+                  findings, so the footer only appears unfiltered. */}
+              {!filtered && (
+                <tfoot>
+                  <tr className="font-semibold bg-base-200/60 dark:bg-gray-800/50 border-t-2 border-base-300">
+                    <PipeCells name="Team" counts={c} def={def} targetFor={targetFor} />
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
         </div>
