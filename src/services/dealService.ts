@@ -332,7 +332,7 @@ export async function getDealById(id: string): Promise<{
   deal: DealWithCustomer;
   submissions: DealSubmissionWithLender[];
 } | null> {
-  const { data: deal, error } = await supabase
+  const { data: direct, error } = await supabase
     .from("deals")
     .select(`
       *,
@@ -350,9 +350,19 @@ export async function getDealById(id: string): Promise<{
     .eq("id", id)
     .single();
 
-  if (error || !deal) {
-    console.error("Error fetching deal:", error);
-    return null;
+  // A setter's RLS on `deals` is own-book + unassigned (20260827_setter_deal_money_wall),
+  // so the direct read above returns nothing for a merchant another setter owns —
+  // which is exactly what the ?x= deep-link (playbook-open-contact) hands us when the
+  // dialed contact is already someone else's. Fall back to the masked RPC: same row,
+  // same shape, money columns NULL. Admins and the deal's own setter never reach here.
+  let deal = direct as unknown as DealWithCustomer | null;
+  if (!deal) {
+    const { data: lite, error: liteError } = await supabase.rpc("get_deal_lite", { p_deal_id: id });
+    if (liteError || !lite) {
+      console.error("Error fetching deal:", error ?? liteError);
+      return null;
+    }
+    deal = lite as unknown as DealWithCustomer;
   }
 
   const { data: submissions, error: subError } = await supabase
@@ -371,7 +381,7 @@ export async function getDealById(id: string): Promise<{
   }
 
   return {
-    deal: deal as unknown as DealWithCustomer,
+    deal,
     submissions: (submissions || []) as unknown as DealSubmissionWithLender[],
   };
 }

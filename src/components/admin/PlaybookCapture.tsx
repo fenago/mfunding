@@ -65,6 +65,23 @@ const PLAYBOOK_DEFAULTS: Record<
 // existing nurture" bug).
 const CLOSED_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "restructure_executed", "servicing"];
 
+// Every deal this customer has, newest first — via the masked RPC, NOT the table.
+// A setter's RLS on `deals` is own-book + unassigned (20260827_setter_deal_money_wall),
+// so a direct read here would MISS an open deal another setter owns and mint a
+// duplicate deal + a duplicate GHL opportunity. find_customer_deals_lite sees the
+// whole book and blanks the money columns on rows the caller doesn't own; on the
+// caller's own deals it returns the full row unchanged.
+async function customerDealsNewestFirst(customerId: string, dealType: "mca" | "vcf"): Promise<Deal[]> {
+  const { data, error } = await supabase.rpc("find_customer_deals_lite", {
+    p_customer_id: customerId,
+    p_deal_type: dealType,
+  });
+  if (error) throw error; // never fall through to create on a failed lookup
+  return (data ?? []) as Deal[];
+}
+
+const isOpenDeal = (d: Deal) => !CLOSED_STATUSES.includes(d.status);
+
 const emptyForm = {
   first_name: "",
   last_name: "",
@@ -193,29 +210,14 @@ export default function PlaybookCapture({
       // Look for an OPEN deal specifically — NOT just the latest deal. (Bug:
       // a customer whose newest deal was dead/declined but who still had an
       // older open deal got a duplicate created instead of a resume.)
-      const { data: openData, error: openErr } = await supabase
-        .from("deals")
-        .select("*")
-        .eq("customer_id", customerId)
-        .eq("deal_type", isVcf ? "vcf" : "mca")
-        .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (openErr) throw openErr; // never fall through to create on a failed lookup
-      const open = (openData?.[0] as Deal | undefined) ?? null;
+      const history = await customerDealsNewestFirst(customerId, isVcf ? "vcf" : "mca");
+      const open = history.find(isOpenDeal) ?? null;
       if (open) {
         onCreated?.(open); // resume the open deal
         return;
       }
       // No open deal → new deal, carrying attribution from their latest (closed) one.
-      const { data: lastData } = await supabase
-        .from("deals")
-        .select("lead_source, campaign_id, market, assigned_closer_id")
-        .eq("customer_id", customerId)
-        .eq("deal_type", isVcf ? "vcf" : "mca")
-        .order("created_at", { ascending: false })
-        .limit(1);
-      const last = lastData?.[0] as Partial<Deal> | undefined;
+      const last = history[0] as Partial<Deal> | undefined;
       const deal = await createDeal({
         customer_id: customerId,
         deal_type: isVcf ? "vcf" : "mca",
@@ -331,16 +333,9 @@ export default function PlaybookCapture({
       // bug — one click on an existing customer minted a second open deal and a
       // second GHL opportunity). Closed deals (funded/declined/dead) don't count:
       // a fresh deal there is correct (e.g. a renewal or a comeback).
-      const { data: openDeals } = await supabase
-        .from("deals")
-        .select("*")
-        .eq("customer_id", customerId)
-        .eq("deal_type", isVcf ? "vcf" : "mca")
-        .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (openDeals && openDeals.length > 0) {
-        const existing = openDeals[0] as Deal;
+      const existing =
+        (await customerDealsNewestFirst(customerId, isVcf ? "vcf" : "mca")).find(isOpenDeal) ?? null;
+      if (existing) {
         setForm({ ...emptyForm, lead_source: defaults.leadSource });
         setExistingId("");
         setCustomerSearch("");
