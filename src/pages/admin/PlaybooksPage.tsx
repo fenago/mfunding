@@ -189,8 +189,9 @@ export default function PlaybooksPage() {
   const [busyStep, setBusyStep] = useState<number | null>(null);
   // Bottom-right status notifications (deal closed, errors). Replaces the native
   // alert() calls this page used to fire.
-  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
-  const notify = (text: string, tone: "ok" | "error" = "ok") => setToast({ text, tone });
+  // "warn" = it worked, but not completely — the setter must not read it as clean.
+  const [toast, setToast] = useState<{ text: string; tone: "ok" | "warn" | "error" } | null>(null);
+  const notify = (text: string, tone: "ok" | "warn" | "error" = "ok") => setToast({ text, tone });
   // Bottom-center momentum toast + confetti for a stage advance / funding.
   const [celebrate, setCelebrate] = useState<string | null>(null);
   const [confetti, setConfetti] = useState(false);
@@ -277,6 +278,14 @@ export default function PlaybooksPage() {
   };
   const [bizCtx, setBizCtx] = useState<BizCtx | null>(null);
   const [bizBusy, setBizBusy] = useState<string | null>(null);
+  // customer_id → why the CRM refused that business its own opportunity. The
+  // backend returns `opportunity_warning` whenever it created the business but
+  // GHL would not mint the opportunity (routine on this location — duplicate
+  // opportunities are off). The business IS real and workable here, it just
+  // isn't in the CRM pipeline yet, and the setter has to be told that instead
+  // of getting a clean "added" toast. Session-local: it's what we learned at
+  // add time, and it clears with the workspace.
+  const [bizNoOpp, setBizNoOpp] = useState<Record<string, string>>({});
 
   // Ask the backend for every business behind this contact. Failure is shown on
   // the card (with a retry) — never swallowed into "this owner has one business".
@@ -464,10 +473,11 @@ export default function PlaybooksPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deal?.id, setOpenDeal]);
 
-  // Auto-dismiss the "deal closed" toast.
+  // Auto-dismiss the "deal closed" toast. A warning is longer and carries a
+  // consequence, so it stays up long enough to actually be read.
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 4500);
+    const t = setTimeout(() => setToast(null), toast.tone === "warn" ? 10000 : 4500);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -915,6 +925,20 @@ export default function PlaybooksPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deal?.id]);
 
+  // Record (or clear) "this business has no GHL opportunity" for one business.
+  // Called on every add/open response so a warning that goes away is dropped.
+  function noteOppWarning(customerId: string | undefined, warning: string | undefined) {
+    if (!customerId) return;
+    setBizNoOpp((prev) => {
+      const has = customerId in prev;
+      if (warning) return { ...prev, [customerId]: warning };
+      if (!has) return prev;
+      const next = { ...prev };
+      delete next[customerId];
+      return next;
+    });
+  }
+
   // Open one of the owner's businesses — resolve its deal, then load it into the
   // SAME playbook workspace any other deal uses.
   async function openBusiness(customerId: string) {
@@ -924,13 +948,18 @@ export default function PlaybooksPage() {
         body: { action: "open_business", customer_id: customerId },
       });
       if (error) await invokeThrow(error);
-      const res = data as { deal_id?: string; error?: string } | null;
+      const res = data as {
+        deal_id?: string; customer_id?: string; opportunity_warning?: string; error?: string;
+      } | null;
       if (res?.error) throw new Error(res.error);
       if (!res?.deal_id) throw new Error("Couldn't open that business — no deal came back.");
       const found = await getDealById(res.deal_id);
       if (!found) throw new Error("Couldn't load that business's deal — find it in My Day.");
       pickFromQueue(found.deal);
       window.scrollTo({ top: 0 });
+      // Same honesty as add_business: if opening it couldn't get it a CRM
+      // opportunity either, flag the row rather than looking clean.
+      noteOppWarning(res.customer_id ?? customerId, res.opportunity_warning);
     } catch (e) {
       notify(e instanceof Error ? e.message : "Couldn't open that business.", "error");
     } finally {
@@ -954,14 +983,27 @@ export default function PlaybooksPage() {
     };
     const { data, error } = await supabase.functions.invoke("playbook-open-contact", { body });
     if (error) await invokeThrow(error);
-    const res = data as { customer_id?: string; deal_id?: string; error?: string } | null;
+    const res = data as {
+      customer_id?: string; deal_id?: string; opportunity_warning?: string; error?: string;
+    } | null;
     if (res?.error) throw new Error(res.error);
     if (!res?.deal_id) throw new Error("The business was created but no deal came back — find it in My Day.");
     const found = await getDealById(res.deal_id);
     if (!found) throw new Error(`${businessName} was added, but its deal wouldn't load — find it in My Day.`);
     pickFromQueue(found.deal);
     window.scrollTo({ top: 0 });
-    notify(`${businessName} added — you're working it now.`);
+    // The CRM refusing the opportunity is a PARTIAL success, not a success —
+    // say so, and keep saying so on the business card. Silence here told the
+    // setter the business was fully in the CRM when it wasn't.
+    noteOppWarning(res.customer_id, res.opportunity_warning);
+    if (res.opportunity_warning) {
+      notify(
+        `${businessName} added and loaded — but it has NO CRM opportunity yet: ${res.opportunity_warning}. It's tracked here; the CRM opportunity is pending.`,
+        "warn",
+      );
+    } else {
+      notify(`${businessName} added — you're working it now.`);
+    }
     void loadBusinesses(ctx.key, ctx.ghlContactId, ctx.phone);
   }
 
@@ -970,6 +1012,7 @@ export default function PlaybooksPage() {
   function clearWorkspace() {
     setDeal(null);
     setBizCtx(null);
+    setBizNoOpp({});
   }
 
   // Close a deal to a terminal state from the green context bar. updateDealStatus
@@ -1150,6 +1193,7 @@ export default function PlaybooksPage() {
             onOpen={(customerId) => void openBusiness(customerId)}
             onAdd={addBusiness}
             busyCustomerId={bizBusy}
+            noOpportunity={bizNoOpp}
           />
         )}
 
@@ -1368,6 +1412,8 @@ export default function PlaybooksPage() {
         <div className="fixed bottom-6 right-6 z-50 max-w-sm rounded-lg bg-gray-900 dark:bg-gray-700 text-white shadow-xl px-4 py-3 flex items-start gap-3">
           {toast.tone === "error" ? (
             <ExclamationTriangleIcon className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+          ) : toast.tone === "warn" ? (
+            <ExclamationTriangleIcon className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
           ) : (
             <CheckCircleIcon className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
           )}

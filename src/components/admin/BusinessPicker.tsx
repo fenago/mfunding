@@ -42,6 +42,7 @@ export default function BusinessPicker({
   onOpen,
   onAdd,
   busyCustomerId,
+  noOpportunity,
 }: {
   businesses: PlaybookBusiness[];
   /** The business currently loaded in the playbook (highlighted, not clickable). */
@@ -57,6 +58,9 @@ export default function BusinessPicker({
   onAdd: (businessName: string) => Promise<void>;
   /** customer_id currently being opened — that row shows a spinner. */
   busyCustomerId: string | null;
+  /** customer_id → why that business has NO GHL opportunity yet. The business is
+   *  real and workable here; it just isn't in the CRM pipeline. Never hidden. */
+  noOpportunity?: Record<string, string>;
 }) {
   const [addOpen, setAddOpen] = useState(false);
   const [name, setName] = useState("");
@@ -64,6 +68,10 @@ export default function BusinessPicker({
   const [addError, setAddError] = useState<string | null>(null);
 
   const many = businesses.length > 1;
+  // Businesses that exist here but never got their own CRM opportunity. Shown
+  // as a chip on the row AND spelled out under the list — a setter who thinks
+  // it's in the pipeline will wait on a CRM that has nothing to give them.
+  const pendingOpp = businesses.filter((b) => noOpportunity?.[b.customer_id]);
 
   async function submitAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -150,6 +158,11 @@ export default function BusinessPicker({
                     no deal yet
                   </span>
                 )}
+                {noOpportunity?.[b.customer_id] && (
+                  <span className="text-[11px] shrink-0 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                    ⚠ no CRM opportunity
+                  </span>
+                )}
                 {typeof b.amount_requested === "number" && b.amount_requested > 0 && (
                   <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
                     {money0(b.amount_requested)}
@@ -169,6 +182,25 @@ export default function BusinessPicker({
           );
         })}
       </ul>
+
+      {pendingOpp.length > 0 && (
+        <div className="mt-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <p className="flex items-start gap-1.5 font-semibold">
+            <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              {pendingOpp.map((b) => b.business_name || "Unnamed business").join(", ")} —{" "}
+              <b>no GHL opportunity yet</b>. Work it here; the CRM opportunity is pending.
+            </span>
+          </p>
+          <ul className="mt-1 ml-5 list-disc space-y-0.5">
+            {pendingOpp.map((b) => (
+              <li key={b.customer_id}>
+                <b>{b.business_name || "Unnamed business"}</b>: {noOpportunity?.[b.customer_id]}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {addOpen && (
         <form onSubmit={submitAdd} className="mt-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">

@@ -354,6 +354,11 @@ async function resolveOpportunityId(db: SupabaseClient, contactId: string): Prom
  */
 async function opportunityForBusiness(
   db: SupabaseClient, contactId: string, businessName: string | null, ownerName: string | null,
+  /** MATCH-ONLY mode. `false` means: adopt an opportunity whose NAME is this
+   * business, or give up — never mint one. Used by the sibling backfill, which
+   * is repairing OTHER businesses' deals and has no business creating CRM records
+   * for them; leaving such a deal at NULL is the safe outcome there. */
+  allowCreate = true,
 ): Promise<{ id: string } | { error: string; degradable: boolean }> {
   let all: { id: string; name?: string }[];
   try {
@@ -386,7 +391,16 @@ async function opportunityForBusiness(
     if (hits.length === 1) return { id: hits[0].id };
   }
 
-  // Nothing matches this business — give it its own opportunity.
+  // Nothing matches this business by name.
+  if (!allowCreate) {
+    return {
+      error: `no unclaimed open MCA opportunity is named "${str(businessName) ?? ""}" ` +
+        `(${unclaimed.length} unclaimed of ${all.length} open on this contact)`,
+      degradable: true,
+    };
+  }
+
+  // Give it its own opportunity.
   const name = str(businessName) ?? str(ownerName) ?? "New business";
   try {
     const cfg = await getGhlConfig(db);
@@ -1225,14 +1239,34 @@ Deno.serve(async (req) => {
         // opportunities, resolveOpportunityId is (correctly) ambiguous and can
         // never fill that hole again, and a NULL-opp deal is what adoptOrphanDeal
         // cross-wires.
+        //
+        // BY NAME, ALWAYS. This used to call the NAME-BLIND resolveOpportunityId
+        // and stamp whatever single open opportunity the contact had onto whichever
+        // sibling came first — and `businesses` is ordered NEWEST-FIRST, while the
+        // one open opportunity is almost always the OLDEST business's. That is a
+        // cross-wire committed in the name of preventing one. Each sibling now gets
+        // only an opportunity NAMED after it, and never mints one (that is the
+        // repair of someone else's business — see allowCreate).
+        //
+        // A CLOSED DEAL IS NOT A TARGET. loadBusinesses falls back to the newest
+        // CLOSED deal when a business has no open one, so b.deal_id can be a funded
+        // or dead deal; stamping a LIVE opportunity onto it would mirror every
+        // future stage move onto a finished cycle. Guarded here and again in the
+        // WHERE clause.
         for (const b of businesses) {
           if (!b.deal_id || b.ghl_opportunity_id) continue;
-          const oppId = await resolveOpportunityId(db, contactId);
-          if (!oppId) break;
-          const { error } = await db.from("deals").update({ ghl_opportunity_id: oppId })
-            .eq("id", b.deal_id).is("ghl_opportunity_id", null);
+          if (b.status && CLOSED_STATUSES.includes(b.status)) continue;
+          const sib = await opportunityForBusiness(db, contactId, b.business_name, null, false);
+          if ("error" in sib) {
+            console.log("[playbook-open-contact] sibling deal", b.deal_id,
+              JSON.stringify(b.business_name ?? ""), "left with no opportunity id (safe):", sib.error);
+            continue;   // one sibling failing says nothing about the next
+          }
+          const { error } = await db.from("deals").update({ ghl_opportunity_id: sib.id })
+            .eq("id", b.deal_id).is("ghl_opportunity_id", null)
+            .not("status", "in", `(${CLOSED_STATUSES.join(",")})`);
           if (error) console.error("[playbook-open-contact] sibling opp backfill failed:", error.message);
-          else console.log("[playbook-open-contact] pre-linked sibling deal", b.deal_id, "to opportunity", oppId);
+          else console.log("[playbook-open-contact] pre-linked sibling deal", b.deal_id, "to opportunity", sib.id);
         }
 
         // SAFETY, STEP 2 — the new business's OWN opportunity, BEFORE its deal.
@@ -1446,10 +1480,19 @@ Deno.serve(async (req) => {
     // takes the original, never-creates path.
     // Returns the opportunity id the deal carries AFTER this ran, so the caller
     // can report it (null when there still isn't one — same as before).
+    //
+    // GATED ON scopedCustomerId ALONE. It used to also require `multiBusiness`,
+    // which is computed from the business set read BEFORE add_business inserts the
+    // new row — so adding business #2 to a one-business owner evaluated it as
+    // FALSE and fell back to the name-blind resolver, handing business #1's
+    // opportunity to business #2. scopedCustomerId is the honest signal: it is set
+    // exactly when the caller named WHICH business this is, which is exactly when
+    // the name must decide. It is null on the plain 'open' path, so a
+    // single-business open is untouched.
     async function backfillDealOpportunity(dealId: string, current: string | null): Promise<string | null> {
       if (current) return current;
       let oppId: string | null = null;
-      if (scopedCustomerId && multiBusiness) {
+      if (scopedCustomerId) {
         const r = await opportunityForBusiness(db, contactId, scopedBusinessName, null);
         if ("error" in r) {
           console.warn("[playbook-open-contact] per-business opp resolve failed (deal keeps no opp id):", r.error);
@@ -1682,10 +1725,12 @@ Deno.serve(async (req) => {
     // Null is fine (and is the old behavior) — never blocks deal creation.
     //
     // A NEW BUSINESS ALREADY HAS ITS OWN (pendingOppId, minted before this row
-    // existed precisely so this deal is never born NULL); a business-scoped open
-    // on a multi-business owner resolves by name. Everything else is unchanged.
+    // existed precisely so this deal is never born NULL); ANY business-scoped
+    // request resolves by name — see backfillDealOpportunity on why the old
+    // `&& multiBusiness` was stale exactly when it mattered. Everything else is
+    // unchanged: scopedCustomerId is null on the plain 'open' path.
     const newDealOppId = pendingOppId
-      ?? (scopedCustomerId && multiBusiness
+      ?? (scopedCustomerId
         ? await (async () => {
           const r = await opportunityForBusiness(db, contactId, scopedBusinessName, null);
           if ("error" in r) {

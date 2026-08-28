@@ -83,6 +83,9 @@ async function customerDealsNewestFirst(customerId: string, dealType: "mca" | "v
 
 const isOpenDeal = (d: Deal) => !CLOSED_STATUSES.includes(d.status);
 
+/** A customers row that belongs to the same OWNER (phone/email hit). */
+type OwnerRow = { id: string; first_name: string | null; last_name: string | null; business_name: string | null };
+
 const emptyForm = {
   first_name: "",
   last_name: "",
@@ -133,6 +136,12 @@ export default function PlaybookCapture({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [matchNotice, setMatchNotice] = useState<string | null>(null);
+  // Set when the typed business name doesn't match any of this owner's existing
+  // businesses — the inline "add anyway / use existing" confirm that stops a
+  // typo from forking a merchant into a second customer row.
+  const [forkChoice, setForkChoice] = useState<{ typed: string; siblings: OwnerRow[] } | null>(null);
+  // The one business name the closer has already confirmed IS new.
+  const forkArmedRef = useRef<string>("");
   const [saved, setSaved] = useState<Deal | null>(null);
   // Whether the closer has hand-picked a campaign. While false, the campaign
   // field re-derives its smart default as the lead source changes; once the
@@ -265,10 +274,13 @@ export default function PlaybookCapture({
   // Search is server-side now — the list is already filtered.
   const filteredCustomers = customers;
 
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
+  // Called by the form, and again (with no event) by "Add it as a new business"
+  // once the closer has confirmed the fork.
+  async function handleSave(e?: React.FormEvent) {
+    e?.preventDefault();
     setError(null);
     setMatchNotice(null);
+    setForkChoice(null);
 
     // Campaign attribution is effectively required — every manual lead must be
     // tracked. Block only when there's actually an active campaign to pick (never
@@ -311,7 +323,10 @@ export default function PlaybookCapture({
         const digits = form.phone.replace(/\D/g, "");
         const emailNorm = form.email.trim().toLowerCase();
         const wantBiz = normBusinessName(form.business_name);
-        let matched: { id: string; first_name: string | null; last_name: string | null; business_name: string | null } | null = null;
+        let matched: OwnerRow | null = null;
+        // Every customers row that IS this owner (phone/email hit), matched or
+        // not — needed to catch a typo forking a merchant, below.
+        let ownerRows: OwnerRow[] = [];
         try {
           const orClauses: string[] = [];
           if (emailNorm) orClauses.push(`email.ilike.${emailNorm}`);
@@ -329,6 +344,7 @@ export default function PlaybookCapture({
               const emailHit = !!emailNorm && (c.email ?? "").trim().toLowerCase() === emailNorm;
               return phoneHit || emailHit;
             });
+            ownerRows = owners;
             matched = !wantBiz
               // No business typed → unchanged behavior: the first owner row wins.
               ? owners[0] ?? null
@@ -337,6 +353,20 @@ export default function PlaybookCapture({
                 ?? null;
           }
         } catch { /* dedupe is best-effort — fall through to insert on lookup error */ }
+
+        // TYPO GUARD. The business match above is exact-on-normalized, so
+        // "Acme Truckng" does NOT match this owner's existing "Acme Trucking
+        // LLC" — it silently forks one real merchant into two customer rows.
+        // When the owner already has NAMED businesses and none of them matched,
+        // stop once and make the closer say which it is. Inline, two-step (no
+        // browser popups); arming it with this exact name lets the resubmit
+        // through, so a genuinely new business costs one extra click.
+        const namedSiblings = ownerRows.filter((o) => normBusinessName(o.business_name));
+        if (!matched && wantBiz && namedSiblings.length > 0 && forkArmedRef.current !== wantBiz) {
+          setForkChoice({ typed: form.business_name.trim(), siblings: namedSiblings });
+          setSaving(false);
+          return;
+        }
 
         if (matched) {
           customerId = matched.id;
@@ -373,6 +403,7 @@ export default function PlaybookCapture({
             return;
           }
           customerId = created.id;
+          forkArmedRef.current = ""; // spent — the next lead confirms its own name
         }
       } else if (!customerId) {
         setError("Pick an existing customer, or switch to “New lead”.");
@@ -507,6 +538,42 @@ export default function PlaybookCapture({
               {matchNotice && (
                 <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg text-sm text-amber-800 dark:text-amber-300">
                   {matchNotice}
+                </div>
+              )}
+
+              {/* Typo guard — this owner already has businesses, and the name
+                  typed isn't one of them. One click decides: same business
+                  (resume it) or a genuinely new one (fork on purpose). */}
+              {forkChoice && (
+                <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg text-sm text-amber-900 dark:text-amber-200 space-y-2">
+                  <p>
+                    This owner already has <b>{forkChoice.siblings.length === 1 ? "a business" : `${forkChoice.siblings.length} businesses`}</b> on file.
+                    You typed <b>{forkChoice.typed}</b> — <b>if that's a typo, pick the real one</b> instead of creating a second record.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {forkChoice.siblings.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        disabled={picking === s.id}
+                        onClick={() => void pickCustomer(s.id)}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-ocean-blue px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                      >
+                        {picking === s.id && <span className="loading loading-spinner loading-xs" />}
+                        Use “{s.business_name}”
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        forkArmedRef.current = normBusinessName(forkChoice.typed);
+                        void handleSave();
+                      }}
+                      className="rounded-lg border border-amber-500 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                    >
+                      No — “{forkChoice.typed}” is a different business, add it
+                    </button>
+                  </div>
                 </div>
               )}
 

@@ -976,8 +976,25 @@ const TERMINAL_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "re
  * row and, if the winner stamped THIS opportunity, carry on with it.
  *
  * Returns the adopted deal (in DEAL_MIRROR_COLS shape) for the normal mirror path
- * to update, or null when there is nothing to adopt.
+ * to update, or an outcome that says whether adoption was REFUSED — see AdoptResult.
  */
+
+/**
+ * The outcome of an adoption attempt.
+ *
+ * `refused` is the whole point: it separates "this contact has nothing to adopt"
+ * (safe — the caller may create a deal) from "this contact HAS an unlinked deal
+ * but nothing proved it belongs to this opportunity" (never safe to create — a
+ * created deal would be the SECOND deal for a merchant we are already tracking,
+ * plus a phantom customers row). In the refusal case the receipt written here is
+ * the record, and the opportunity is linked by hand.
+ */
+type AdoptResult = { deal: Record<string, unknown> | null; refused: boolean };
+/** Nothing on this contact to adopt — the caller's create path may run. */
+const NOTHING_TO_ADOPT: AdoptResult = { deal: null, refused: false };
+/** An unlinked deal exists but is not provably this opportunity's — create NOTHING. */
+const ADOPT_REFUSED: AdoptResult = { deal: null, refused: true };
+
 async function adoptOrphanDeal(
   db: DB,
   evt: Record<string, unknown>,
@@ -987,7 +1004,7 @@ async function adoptOrphanDeal(
   /** The opportunity's NAME, when the event carries one. The tiebreak when a
    * contact has more than one orphan deal — see the multi-business note below. */
   oppName: string | null,
-): Promise<Record<string, unknown> | null> {
+): Promise<AdoptResult> {
   const { data: candidates, error } = await db.from("deals")
     .select("id, deal_number, status, created_at, customers(business_name)")
     .eq("ghl_contact_id", contactId)
@@ -996,19 +1013,31 @@ async function adoptOrphanDeal(
     .not("status", "in", `(${TERMINAL_STATUSES.join(",")})`)
     .order("created_at", { ascending: false })
     .limit(10);
-  // Unreadable ≠ "nothing to adopt": say so, and let the caller's create path be
-  // the only thing that can still run (it is itself guarded).
+  // UNREADABLE ≠ "NOTHING TO ADOPT". This used to fall through to the caller's
+  // create path on the theory that it is "itself guarded" — it is not guarded
+  // against THIS. Every one of its guards asks a different question (cold pool,
+  // robot contact, which customer), and none of them can see the deal this failed
+  // read was supposed to find. So a transient DB error minted a second deal for a
+  // merchant we were already tracking: exactly the duplication this function
+  // exists to prevent, arrived at through its own failure.
+  //
+  // A missed create is retryable — GHL re-fires, and the next attempt reads the
+  // orphan and adopts it. A duplicate deal is data corruption: two deals split one
+  // merchant's commission attribution and someone has to unpick it by hand. Refuse.
   if (error) {
-    await logEvent(db, evt, evtTypeLabel(evt), "error", `adopt lookup failed: ${error.message}`);
-    return null;
+    await logEvent(db, evt, evtTypeLabel(evt), "error",
+      `adopt lookup failed: ${error.message} — created nothing (an unreadable contact is not an empty one); GHL will re-fire`);
+    return ADOPT_REFUSED;
   }
-  if (!candidates || candidates.length === 0) return null;
+  if (!candidates || candidates.length === 0) return NOTHING_TO_ADOPT;
 
   type Cand = {
     id: string; deal_number: string | null; status: string;
     customers?: { business_name?: string | null } | { business_name?: string | null }[] | null;
   };
   const cands = candidates as unknown as Cand[];
+  const nameOf = (c: Cand): string | null | undefined =>
+    (Array.isArray(c.customers) ? c.customers[0] : c.customers)?.business_name;
 
   // ── ONE OWNER, MANY BUSINESSES ────────────────────────────────────────────
   // A contact can now legitimately carry several open MCA deals — one per
@@ -1017,30 +1046,58 @@ async function adoptOrphanDeal(
   // business A's opportunity onto business B's deal: every later stage move,
   // funded timestamp and commission lands on the wrong merchant.
   //
-  // So with more than one candidate the opportunity's NAME decides — it is the
-  // business name we create opportunities under — and when the name settles
-  // nothing, we ADOPT NOTHING and say so on the receipt. A missed adoption is a
-  // deal that stays unlinked and can be linked by hand; a wrong adoption is two
-  // merchants silently merged.
+  // So the opportunity's NAME decides — it is the business name we create
+  // opportunities under — and when the name settles nothing, we ADOPT NOTHING and
+  // say so on the receipt. A missed adoption is a deal that stays unlinked and can
+  // be linked by hand; a wrong adoption is two merchants silently merged.
+  //
+  // ONE CANDIDATE IS NOT PROOF. This location has allowDuplicateOpportunity OFF,
+  // so business #2's deal is normally the ONLY orphan on the contact (business #1
+  // already holds its opportunity) — i.e. the cross-wire shape looks exactly like
+  // the safe single-business shape. The name is what tells them apart.
+  //
+  // BUT A NAME MISMATCH IS ONLY EVIDENCE WHEN THE OWNER HAS SEVERAL BUSINESSES.
+  // Opportunity names are not always business names: ghl-create-opportunities
+  // falls back to the CONTACT's name and then the email (opportunityName()), and
+  // plenty of customers rows carry no business_name at all. Refusing on a
+  // mismatch for a one-business owner would strand ordinary deals unlinked
+  // forever. So: the name must settle it whenever this owner could plausibly have
+  // two merchants on one contact — several orphan candidates, or several
+  // customers rows on the contact — and only a genuinely single-business contact
+  // keeps the old "the one candidate is it" behavior.
+  const want = normBusinessName(oppName);
+  const hits = want ? cands.filter((c) => normBusinessName(nameOf(c)) === want) : [];
+
   let target: Cand;
-  if (cands.length === 1) {
+  if (hits.length === 1) {
+    target = hits[0];                      // the name settles it
+  } else if (cands.length === 1 && hits.length === 0) {
+    // One orphan and the name did not match it (or there was no name). Safe only
+    // if this contact carries exactly one business.
+    const { data: owned, error: ownErr } = await db.from("customers")
+      .select("id, business_name").eq("ghl_contact_id", contactId).limit(50);
+    // Unreadable ≠ "one business" — that assumption is the cross-wire. Refuse.
+    if (ownErr) {
+      await logEvent(db, evt, evtTypeLabel(evt), "error",
+        `couldn't read this contact's businesses to check whether unlinked deal ${cands[0].deal_number ?? cands[0].id} ` +
+        `belongs to opportunity "${oppName ?? ""}" (${ownErr.message}) — adopted nothing and created nothing. Link it by hand.`);
+      return ADOPT_REFUSED;
+    }
+    if ((owned ?? []).length > 1) {
+      await logEvent(db, evt, evtTypeLabel(evt), "skipped",
+        `this contact runs ${(owned ?? []).length} businesses (${(owned ?? []).map((c) => c.business_name ?? "unnamed").join(", ")}) ` +
+        `and opportunity "${oppName ?? ""}" matches none of the ${cands.length} unlinked open ${dealType} deal(s) on it — ` +
+        `adopted NOTHING and created nothing, rather than weld this opportunity onto another business's deal. ` +
+        `Link it by hand: deal ${cands[0].deal_number ?? cands[0].id}.`);
+      return ADOPT_REFUSED;
+    }
     target = cands[0];
   } else {
-    const want = normBusinessName(oppName);
-    const hits = want
-      ? cands.filter((c) => {
-        const cu = Array.isArray(c.customers) ? c.customers[0] : c.customers;
-        return normBusinessName(cu?.business_name) === want;
-      })
-      : [];
-    if (hits.length !== 1) {
-      await logEvent(db, evt, evtTypeLabel(evt), "skipped",
-        `${cands.length} unlinked open ${dealType} deals on this contact (one owner, several businesses) and opportunity "${oppName ?? ""}" matches ` +
-        `${hits.length} of them — adopted NOTHING rather than risk linking this opportunity to the wrong business. ` +
-        `Link it by hand: deals ${cands.map((c) => c.deal_number ?? c.id).join(", ")}.`);
-      return null;
-    }
-    target = hits[0];
+    await logEvent(db, evt, evtTypeLabel(evt), "skipped",
+      `${cands.length} unlinked open ${dealType} deals on this contact (one owner, several businesses) and opportunity "${oppName ?? ""}" matches ` +
+      `${hits.length} of them — adopted NOTHING and created nothing, rather than risk linking this opportunity to the wrong business. ` +
+      `Link it by hand: deals ${cands.map((c) => c.deal_number ?? c.id).join(", ")}.`);
+    return ADOPT_REFUSED;
   }
   const { data: claimed, error: upErr } = await db.from("deals")
     .update({ ghl_opportunity_id: oppId })
@@ -1049,9 +1106,11 @@ async function adoptOrphanDeal(
     .select(DEAL_MIRROR_COLS)
     .maybeSingle();
   if (upErr) {
+    // We KNOW this opportunity's deal exists — the write is what failed. Falling
+    // through to create would mint the duplicate this whole path prevents.
     await logEvent(db, evt, evtTypeLabel(evt), "error",
-      `adopt of deal ${target.deal_number ?? target.id} failed: ${upErr.message}`);
-    return null;
+      `adopt of deal ${target.deal_number ?? target.id} failed: ${upErr.message} — created nothing; link it by hand`);
+    return ADOPT_REFUSED;
   }
 
   if (!claimed) {
@@ -1059,8 +1118,8 @@ async function adoptOrphanDeal(
     // THIS opportunity, the adoption already happened — use that row.
     const { data: after } = await db.from("deals").select(DEAL_MIRROR_COLS).eq("id", target.id).maybeSingle();
     const already = (after as Record<string, unknown> | null)?.ghl_opportunity_id;
-    if (already === oppId) return after as Record<string, unknown>;
-    return null;
+    if (already === oppId) return { deal: after as Record<string, unknown>, refused: false };
+    return NOTHING_TO_ADOPT;
   }
 
   await log(db, "deal", target.id, `ghl:${evtTypeLabel(evt)}:adopted`, {
@@ -1068,8 +1127,10 @@ async function adoptOrphanDeal(
   });
   await logEvent(db, evt, evtTypeLabel(evt), "adopted",
     `linked existing ${dealType} deal ${target.deal_number ?? target.id} (status "${target.status}") to this opportunity instead of creating a duplicate` +
-    (cands.length > 1 ? ` — matched by business name against opportunity "${oppName ?? ""}" (${cands.length} unlinked open deals on this contact)` : ""));
-  return claimed as Record<string, unknown>;
+    (hits.length === 1
+      ? ` — matched by business name against opportunity "${oppName ?? ""}" (${cands.length} unlinked open deal(s) on this contact)`
+      : ""));
+  return { deal: claimed as Record<string, unknown>, refused: false };
 }
 
 async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
@@ -1116,6 +1177,16 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     o.contactId ?? evt.contactId ?? cd.contactId ?? evt.contact_id ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
   );
 
+  // The opportunity's NAME — native (o.name), the flat workflow payload's
+  // opportunity_name, or customData's. It is the business name we create
+  // opportunities under, so it is what tells one business's deal from another's
+  // when an owner runs several. RESOLVED ONCE, here, because the adopt path and
+  // the create path below must agree on it: they used to read it from different
+  // sets of keys, so a customData-only name matched a business in adopt and then
+  // matched NOTHING in the create path's customer picker — minting a phantom
+  // second customers row for a merchant we already had.
+  const oppName = String(o.name ?? evt.opportunity_name ?? cd.opportunity_name ?? "").trim() || null;
+
   // ── Gap A0: ADOPT an orphaned deal instead of creating a second one ─────────
   // A deal born in playbook-open-contact (a setter opening the Revenue Playbook)
   // may carry NO ghl_opportunity_id, so the lookup above can't see it and this
@@ -1123,17 +1194,23 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   // owned by a different closer, splitting commission attribution. If this
   // contact already has an open deal of this type with no opportunity id, that IS
   // this opportunity's deal: link it and mirror onto it.
+  let adoptRefused = false;
   if (!deal && dealType && contactId) {
-    // The opportunity's name — native (o.name) or the flat workflow payload's
-    // opportunity_name. It is the business name we create opportunities under,
-    // so it is what tells one business's deal from another's when an owner runs
-    // several. Absent is fine: adopt then simply refuses to guess.
-    const oppName = String(o.name ?? evt.opportunity_name ?? cd.opportunity_name ?? "").trim() || null;
-    deal = await adoptOrphanDeal(db, evt, contactId, dealType, oppId, oppName);
+    const adopted = await adoptOrphanDeal(db, evt, contactId, dealType, oppId, oppName);
+    deal = adopted.deal;
+    adoptRefused = adopted.refused;
   }
 
   // ── Gap A: create the deal if this opportunity isn't linked to one yet ──
   if (!deal) {
+    // ADOPT SAID NO — AND "NO" MEANS NO. Refusal is not "there is nothing here",
+    // it is "there IS an unlinked deal on this contact and nothing proved it is
+    // this opportunity's". Creating here would give a merchant we are already
+    // tracking a SECOND deal (and a second customers row) — the exact duplication
+    // adopt exists to stop, arrived at from the other side. adoptOrphanDeal has
+    // already written the receipt naming the deals to link by hand.
+    if (adoptRefused) return;
+
     if (!dealType) return;
 
     // COLD-POOL GUARD (MCA only): a ~145K cold-dial import lands every opportunity
@@ -1200,7 +1277,8 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     const cust = (custs ?? []).length <= 1
       ? (custs ?? [])[0] ?? null
       : (() => {
-        const want = normBusinessName(o.name ?? evt.opportunity_name);
+        // Same name resolution as adopt, from the same variable — see oppName.
+        const want = normBusinessName(oppName);
         const hits = want
           ? (custs ?? []).filter((c) => normBusinessName(c.business_name) === want)
           : [];
@@ -1211,7 +1289,7 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     } else {
       if ((custs ?? []).length > 1) {
         console.log("[ghl-webhook] contact", contactId, "has", (custs ?? []).length,
-          "businesses and opportunity", JSON.stringify(String(o.name ?? evt.opportunity_name ?? "")),
+          "businesses and opportunity", JSON.stringify(oppName ?? ""),
           "matches none — creating a new business rather than attaching to the oldest");
       }
       const c = (evt.contact ?? {}) as Record<string, unknown>;
@@ -1229,8 +1307,8 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
         // OTHER business of theirs — the opportunity's name is the one that
         // identified this as new, so it wins there.
         business_name: ((custs ?? []).length > 1
-          ? (o.name ?? evt.opportunity_name ?? c.companyName ?? evt.company_name ?? null)
-          : (c.companyName ?? evt.company_name ?? o.name ?? evt.opportunity_name ?? null)) as string | null,
+          ? (oppName ?? c.companyName ?? evt.company_name ?? null)
+          : (c.companyName ?? evt.company_name ?? oppName ?? null)) as string | null,
         status: "lead",
         source: "other",
       }).select("id").maybeSingle();
