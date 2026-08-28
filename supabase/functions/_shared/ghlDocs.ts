@@ -197,14 +197,24 @@ export async function ingestGhlDocuments(
     }
   }
 
-  // Content-classify the "other"-typed docs (concurrently; best-effort — a
-  // classification hiccup must never fail the ingest). A corrected bank_statement
-  // updates the row before the underwriter reads it.
+  // Content-classify the "other"-typed docs (best-effort — a classification
+  // hiccup must never fail the ingest). A corrected bank_statement updates the
+  // row before the underwriter reads it.
+  // Bounded, NOT Promise.all: each reconcile downloads and base64-encodes a whole
+  // PDF, so fanning out over every untyped doc made peak memory scale with the
+  // merchant's document count. A 25+ document dump exceeded the edge worker's
+  // ceiling, which the runtime answers with an uncatchable SIGKILL surfaced as
+  // HTTP 546 — the caller gets no error message at all. 4 at a time is plenty.
   if (otherDocIds.length) {
     try {
-      const outcomes = await Promise.all(
-        otherDocIds.map((id) => reconcileDocumentType(db, { documentId: id, authority: "machine" })),
-      );
+      const outcomes: Awaited<ReturnType<typeof reconcileDocumentType>>[] = [];
+      const CLASSIFY_POOL = 4;
+      for (let i = 0; i < otherDocIds.length; i += CLASSIFY_POOL) {
+        outcomes.push(...await Promise.all(
+          otherDocIds.slice(i, i + CLASSIFY_POOL).map((id) =>
+            reconcileDocumentType(db, { documentId: id, authority: "machine" })),
+        ));
+      }
       // Count any that content promoted to bank_statement — the DB row is already
       // corrected; this only keeps the returned tally honest for the caller's log.
       for (const oc of outcomes) if (oc.changed && oc.to === "bank_statement") out.bankStatementsAdded++;

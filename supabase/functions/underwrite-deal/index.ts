@@ -26,8 +26,9 @@
 // platform invoke them server-side.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { base64FromBytes as sharedBase64 } from "../_shared/base64.ts";
 import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
-import { ingestGhlDocuments } from "../_shared/ghlDocs.ts";
+import { docTypeFor, ingestGhlDocuments } from "../_shared/ghlDocs.ts";
 import { reconcileDocumentType } from "../_shared/docClassify.ts";
 import { callAnthropicBlocks, callLLM } from "../_shared/llm.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
@@ -520,6 +521,55 @@ function jwtRole(token: string): string | null {
   }
 }
 
+// CPU BUDGET PROBE. Edge functions get ~2s of CPU time and the runtime ENFORCES it
+// by killing the worker (HTTP 546 / "CPU Time exceeded") — uncatchable, so the UI
+// gets no error message and there is no stack to read. The only way to see it
+// coming is to measure the synchronous hot spots, so these counters stay in: they
+// cost two performance.now() calls per document and they are what identified the
+// real culprit (base64 at 1060ms; now 26ms). If 546s reappear, read this line
+// first — a phase that has crept up is the cause.
+const PROF = { hashMs: 0, hashBytes: 0, b64Ms: 0, b64Bytes: 0 };
+function profLog(phase: string) {
+  const m = (Deno as unknown as { memoryUsage?: () => { rss: number; heapUsed: number } }).memoryUsage?.();
+  console.log(
+    `[underwrite-deal][PROF ${phase}] hash=${PROF.hashMs.toFixed(0)}ms/${(PROF.hashBytes / 1048576).toFixed(1)}MB ` +
+    `b64=${PROF.b64Ms.toFixed(0)}ms/${(PROF.b64Bytes / 1048576).toFixed(1)}MB ` +
+    `rss=${m ? (m.rss / 1048576).toFixed(0) : "?"}MB heap=${m ? (m.heapUsed / 1048576).toFixed(0) : "?"}MB ` +
+    `uptime=${performance.now().toFixed(0)}ms`,
+  );
+}
+
+// ── BOUNDED CONCURRENCY ──────────────────────────────────────────────────────
+// Every doc-reading phase here holds a whole PDF (bytes + base64) in memory per
+// in-flight task. `Promise.all(docs.map(...))` starts ALL of them at once, so
+// peak memory scaled with the merchant's document count — and a merchant who
+// dumps 25+ statements blew the edge worker's memory ceiling. That kill is a
+// runtime SIGKILL surfaced as HTTP 546: it cannot be caught, so the UI got an
+// opaque "non-2xx" instead of any error message. Bounding the pool makes peak
+// memory a function of the LIMIT, not of the document count.
+// Order-preserving, and (like the callers' own tasks) it never throws: a
+// rejected task is re-thrown from the awaited result exactly as Promise.all would.
+async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(lanes);
+  return out;
+}
+
+// How many documents may be resident (downloaded + base64-encoded) at once.
+// 4 keeps peak well under the worker's ceiling even for 2MB statements while
+// still cutting wall-clock ~4x versus serial.
+// A lane owns one document end-to-end (fetch → base64 → extract → release), so
+// this bounds both the downloads in flight and the extraction payloads resident.
+const DOC_POOL = 4;
+
 function safeParseJson(text: string): Any | null {
   try {
     return JSON.parse(text);
@@ -660,21 +710,52 @@ Deno.serve(async (req) => {
     try {
       const { data: otherDocs } = await db
         .from("customer_documents")
-        .select("id")
+        .select("id, filename")
         .eq("customer_id", deal.customer_id)
         .eq("document_type", "other");
       if (otherDocs && otherDocs.length) {
-        const outcomes = await Promise.all(
-          otherDocs.map((d) => reconcileDocumentType(db, { documentId: d.id as string, authority: "machine" })),
-        );
+        // FILENAME FIRST, model only for what the filename can't type. Reading a
+        // whole PDF costs a download + a base64 copy + an LLM call, and on a
+        // 29-document merchant that volume alone exhausted the edge worker
+        // (WORKER_RESOURCE_LIMIT → an uncatchable 546). A name like
+        // "URS_Westerra_Statement_9241_May_2026.pdf" needs no model to type, and
+        // deterministic beats an AI parse anyway — so docTypeFor settles the clear
+        // ones for free and only genuinely ambiguous names (e.g. "..._MTD_9941_..")
+        // reach the content classifier. Same end state, a fraction of the work.
+        const byName: { id: string; type: string }[] = [];
+        const ambiguous: { id: string }[] = [];
+        for (const d of otherDocs as Any[]) {
+          const guess = docTypeFor(String(d.filename ?? ""));
+          if (guess !== "other") byName.push({ id: d.id as string, type: guess });
+          else ambiguous.push({ id: d.id as string });
+        }
+        if (byName.length) {
+          // One statement per type — a handful of tiny updates, no downloads.
+          const types = [...new Set(byName.map((b) => b.type))];
+          await Promise.all(types.map((t) =>
+            db.from("customer_documents").update({ document_type: t })
+              .in("id", byName.filter((b) => b.type === t).map((b) => b.id))
+          ));
+        }
+        // Pooled, NOT Promise.all: each reconcile downloads and base64s a whole PDF.
+        const outcomes = ambiguous.length
+          ? await mapPool(ambiguous, DOC_POOL, (d) =>
+            reconcileDocumentType(db, { documentId: d.id, authority: "machine" }))
+          : [];
         const promoted = outcomes.filter((o) => o.changed);
-        if (promoted.length) {
-          const toBank = promoted.filter((o) => o.to === "bank_statement").length;
-          reclassifiedNote = `Content-corrected ${promoted.length} previously-"other" document(s) before underwriting` +
+        const corrected = promoted.length + byName.length;
+        if (corrected) {
+          const toBank = promoted.filter((o) => o.to === "bank_statement").length +
+            byName.filter((b) => b.type === "bank_statement").length;
+          reclassifiedNote = `Corrected ${corrected} previously-"other" document(s) before underwriting` +
             (toBank ? ` (${toBank} now bank statement${toBank === 1 ? "" : "s"})` : "") + ".";
-          console.log(`[underwrite-deal] preflight reclassify for deal ${deal.deal_number}: ${reclassifiedNote}`);
+          console.log(
+            `[underwrite-deal] preflight reclassify for deal ${deal.deal_number}: ${reclassifiedNote} ` +
+            `(${byName.length} by filename, ${ambiguous.length} read by model)`,
+          );
         }
       }
+      profLog("after-preflight");
     } catch (e) {
       console.warn("[underwrite-deal] preflight reclassify failed:", e instanceof Error ? e.message : e);
     }
@@ -786,45 +867,54 @@ Deno.serve(async (req) => {
     // trip's latency. Each task never throws (errors become an _error statement).
     const exSystem = extractionSystem(enabledCategories);
 
-    // Step 1: fetch each bank doc, compute a content hash, and base64-encode it —
-    // then DROP the raw bytes (keeping only the b64 string) to stay within the edge
-    // worker's memory wall on a many-statement deal. The hash lets us DEDUP
-    // byte-identical uploads BEFORE spending a Claude call: if a merchant uploads the
-    // exact same file twice (even renamed), we send it to Claude once and reuse the
-    // extraction for every copy.
-    const loadOne = async (d: Any): Promise<{ filename: string; hash: string | null; b64: string | null; err?: string }> => {
+    // Fetch → hash → base64 → extract → RELEASE, one document at a time per lane.
+    //
+    // This used to be two phases: load ALL statements (holding every base64 payload
+    // in a map), then fire every extraction at once. On a 25-statement merchant that
+    // retained ~17MB of base64 for the whole pass and stacked 25 concurrent request
+    // bodies on top of it — which, after the preflight had already churned the heap,
+    // exhausted the worker (WORKER_RESOURCE_LIMIT → an uncatchable 546 the function
+    // cannot turn into an error message). Fusing the phases means a statement's bytes
+    // and base64 are alive only while ITS OWN extraction is in flight, so peak memory
+    // tracks the pool size instead of the merchant's document count.
+    //
+    // Dedup semantics are unchanged: the byte hash still guarantees one Claude call
+    // per unique byte-set. A duplicate discovered later reuses the first extraction's
+    // promise instead of paying for a second call.
+    const extractions = new Map<string, Promise<PerStatement>>(); // hash → its one extraction
+    const members = new Map<string, string[]>(); // hash → every filename that resolved to it
+
+    const loadOne = async (d: Any): Promise<{ filename: string; hash: string | null; err?: string }> => {
       const filename = (d.filename as string) || "statement.pdf";
       const isPdf = /pdf/i.test((d.mime_type as string) || "") || /\.pdf$/i.test(filename);
-      if (!isPdf) return { filename, hash: null, b64: null, err: "not a PDF — skipped from extraction" };
+      if (!isPdf) return { filename, hash: null, err: "not a PDF — skipped from extraction" };
       const { data: signed } = await db.storage.from(DOC_BUCKET).createSignedUrl(d.storage_path, SIGNED_URL_TTL);
       const url = signed?.signedUrl;
-      if (!url) return { filename, hash: null, b64: null, err: "could not sign URL" };
+      if (!url) return { filename, hash: null, err: "could not sign URL" };
+      let b64: string;
+      let hash: string;
       try {
         const bin = await fetch(url);
-        if (!bin.ok) return { filename, hash: null, b64: null, err: `fetch ${bin.status}` };
+        if (!bin.ok) return { filename, hash: null, err: `fetch ${bin.status}` };
         const bytes = new Uint8Array(await bin.arrayBuffer());
-        if (!bytes.length) return { filename, hash: null, b64: null, err: "empty file" };
-        const hash = `${bytes.length}:${hashBytes(bytes)}`;
-        const b64 = base64FromBytes(bytes);
-        return { filename, hash, b64 }; // raw bytes go out of scope here.
+        if (!bytes.length) return { filename, hash: null, err: "empty file" };
+        hash = `${bytes.length}:${hashBytes(bytes)}`;
+        const seen = members.get(hash);
+        if (seen) { seen.push(filename); return { filename, hash }; } // dupe: bytes released, no 2nd call
+        members.set(hash, [filename]);
+        b64 = await base64FromBytes(bytes);
       } catch (e) {
-        return { filename, hash: null, b64: null, err: `fetch error: ${e instanceof Error ? e.message : e}` };
+        return { filename, hash: null, err: `fetch error: ${e instanceof Error ? e.message : e}` };
       }
+      // Await inside the lane so DOC_POOL bounds fetching AND extraction together —
+      // the base64 stays reachable only for the duration of its own Claude call.
+      const p = extractGroup(b64, filename);
+      extractions.set(hash, p);
+      await p;
+      return { filename, hash };
     };
-    const loaded = await Promise.all(bankDocs.map(loadOne));
 
-    // Group by the byte fingerprint. Byte-identical files share one Claude extraction;
-    // the result is fanned back to every copy.
-    const groups = new Map<string, { b64: string; filenames: string[] }>();
-    for (const l of loaded) {
-      if (!l.b64 || !l.hash) continue; // non-PDF / fetch errors: handled individually below.
-      const g = groups.get(l.hash);
-      if (g) g.filenames.push(l.filename);
-      else groups.set(l.hash, { b64: l.b64, filenames: [l.filename] });
-    }
-
-    const extractGroup = async (g: { b64: string; filenames: string[] }): Promise<PerStatement> => {
-      const filename = g.filenames[0];
+    const extractGroup = async (b64: string, filename: string): Promise<PerStatement> => {
       // Transient failures are common on real runs — the API overloads (HTTP 529/429)
       // or the model returns a JSON near-miss. One short retry recovers most of them
       // without pushing the whole (concurrent) run past the worker wall-clock/CPU wall.
@@ -836,7 +926,7 @@ Deno.serve(async (req) => {
             db,
             extractionModel,
             [
-              { type: "document", source: { type: "base64", media_type: "application/pdf", data: g.b64 } },
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } },
               { type: "text", text: "Extract this bank statement per your instructions and call the report_statement tool." },
             ],
             // A busy month has a long deposits/mca_debits array — 4096 tokens can
@@ -853,28 +943,40 @@ Deno.serve(async (req) => {
           );
           const parsed = safeParseJson(text);
           if (!parsed) { lastErr = "could not parse extraction JSON"; }
-          else {
-            const st = normalizeStatement(parsed, filename);
-            // A byte-identical duplicate uploaded twice yields the SAME result as once.
-            st._dupe_count = g.filenames.length;
-            st._filenames = [...g.filenames];
-            return st;
-          }
+          // _dupe_count/_filenames are stamped after ALL lanes finish: with the
+          // fused pass a duplicate may not be discovered until after this
+          // extraction has already returned.
+          else return normalizeStatement(parsed, filename);
         } catch (e) {
           lastErr = `extraction error: ${e instanceof Error ? e.message : e}`;
         }
         if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 600));
       }
-      // A whole byte-group that never extracted: every member is an error row.
-      return emptyStatement(filename, lastErr, g.filenames);
+      // A byte-set that never extracted: every member becomes an error row.
+      return emptyStatement(filename, lastErr, [filename]);
     };
 
-    // Extract one statement per unique byte-set, plus carry through the non-PDF /
-    // fetch-error docs as _error statements (so extraction_gaps still counts them).
+    profLog("before-extract");
+    const loaded = await mapPool(bankDocs, DOC_POOL, loadOne);
+    profLog("after-extract");
+
+    // Collect one result per unique byte-set and stamp the duplicate tally now that
+    // every copy is known — a byte-identical file uploaded twice yields the SAME
+    // result as once, exactly as the old group-then-extract pass did.
+    const extracted: PerStatement[] = [];
+    for (const [hash, p] of extractions) {
+      const st = await p;
+      const names = members.get(hash) ?? [st._filename ?? "statement.pdf"];
+      st._dupe_count = names.length;
+      st._filenames = [...names];
+      extracted.push(st);
+    }
+
+    // Non-PDF / fetch-error docs carry through as _error statements (so
+    // extraction_gaps still counts them).
     const errorStatements = loaded
-      .filter((l) => !l.b64)
+      .filter((l) => !l.hash)
       .map((l) => emptyStatement(l.filename, l.err ?? "could not load file", [l.filename]));
-    const extracted = await Promise.all(Array.from(groups.values()).map(extractGroup));
     let perStatement: PerStatement[] = [...extracted, ...errorStatements];
 
     // Post-extraction PERIOD dedup: even non-byte-identical files can be the same
@@ -2833,6 +2935,7 @@ Deno.serve(async (req) => {
     let aiProductSignals: string[] = [];
     let aiProfileReason = "";
     try {
+      profLog("before-judge");
       const judgeText = await callLLM(db, {
         system: judgeSystem,
         prompt: judgeUser,
@@ -4014,11 +4117,14 @@ function normalizeStatement(p: Any, filename: string): PerStatement {
 // FNV-1a hash over raw bytes → stable short hex. Used to detect BYTE-IDENTICAL
 // bank-statement uploads so the same file (even renamed) is sent to Claude once.
 function hashBytes(bytes: Uint8Array): string {
+  const t0 = performance.now();
   let h = 0x811c9dc5;
   for (let i = 0; i < bytes.length; i++) {
     h ^= bytes[i];
     h = Math.imul(h, 0x01000193);
   }
+  PROF.hashMs += performance.now() - t0;
+  PROF.hashBytes += bytes.length;
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
@@ -4078,14 +4184,19 @@ function trendOf(series: number[]): "up" | "flat" | "down" {
   return "flat";
 }
 
-// Base64-encode bytes without blowing the call stack on large PDFs (chunked).
-function base64FromBytes(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+// Base64-encode bytes. Delegates to std's native encoder rather than building a
+// binary STRING first: the old chunked `String.fromCharCode(...)` + `btoa` pass
+// materialized a UTF-16 string of one char per byte (2 bytes of heap per input
+// byte) plus rope garbage, on top of the base64 output. On a 25-statement deal
+// that intermediate alone was tens of MB and helped push the worker past its
+// memory ceiling (an uncatchable 546 kill). std's encoder writes the output
+// directly from the bytes — no intermediate.
+async function base64FromBytes(bytes: Uint8Array): Promise<string> {
+  const t0 = performance.now();
+  const out = await sharedBase64(bytes);
+  PROF.b64Ms += performance.now() - t0;
+  PROF.b64Bytes += bytes.length;
+  return out;
 }
 
 // ── PLAID BANK-FEED → per-month statement synthesis ──────────────────────────

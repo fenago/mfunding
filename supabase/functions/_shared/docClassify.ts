@@ -27,6 +27,7 @@
 // upload or an underwrite. Anything not in the DB enum collapses to "other".
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { base64FromBytes } from "./base64.ts";
 import { callAnthropicBlocks } from "./llm.ts";
 
 const DOC_BUCKET = "customer-documents";
@@ -55,17 +56,6 @@ export interface ClassifyResult {
 
 function nullResult(evidence: string, error: string): ClassifyResult {
   return { type: null, confidence: 0, evidence, bank_hint: null, error };
-}
-
-// Base64-encode bytes without blowing the call stack on large files (chunked) —
-// mirrors underwrite-deal's helper.
-function base64FromBytes(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
 }
 
 // Which Anthropic content-block do we send? PDFs → document block; images → image
@@ -147,7 +137,7 @@ export async function classifyDocument(
     const bytes = new Uint8Array(await bin.arrayBuffer());
     if (!bytes.length) return nullResult("Stored file was empty.", "empty file");
     if (bytes.length > MAX_BYTES) return nullResult("File is too large to classify by content.", "over size cap");
-    const b64 = base64FromBytes(bytes);
+    const b64 = await base64FromBytes(bytes);
 
     // Model: default to the cheap tier (Haiku). Only an EXPLICIT per-task override
     // (llm_settings.task_overrides['doc_classify']) changes it — we deliberately do
