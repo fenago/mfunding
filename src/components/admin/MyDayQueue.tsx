@@ -450,15 +450,6 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
 //   rank 8   🔧 In progress                           → followup
 const NEW_WORK_RANKS = new Set([0, 5.5, 6]);
 
-// The urgency cut-off for "this is a live demand, not just an old deal".
-// A card at or below this rank is something that has ALREADY come due — a
-// callback, a funder or merchant reply, a broken statements promise, stale
-// docs — so the My Day age filter ("Last 24h/48h", "Today", custom look-back)
-// never hides it. Ranks ABOVE it are the fresh-lead + parked tiers, which the
-// age window does trim. Bump this only if a new rank belongs on one side or
-// the other; it reads the SAME rank ladder documented directly above.
-const ATTENTION_RANK = 5;
-
 function laneOf(u: Urgency): Lane {
   return u.lane ?? (NEW_WORK_RANKS.has(u.rank) ? "new" : "followup");
 }
@@ -1183,10 +1174,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   // Pre-built filters (owner ask: "too difficult to find stuff in My Day").
   // Three independent axes that AND together; each is a one-click chip row.
   const [kindFilter, setKindFilter] = useState<"all" | "live_transfer" | "realtime_appt">("all");
-  // DEFAULT = the last 48 hours (rolling: now − 48h against created_at), per the
-  // owner. A closer opens the playbook onto fresh work, not the whole book. This
-  // is a DEFAULT, not a cap — "Any time" / "Today" / "Last 24h" and the custom
-  // look-back below all still override it, and "clear" resets to "all".
+  // Default to "Last 48h" — the same age chip that already existed, just preselected.
+  // Filters on created_at, exactly like every other chip; overrides still win.
   const [ageFilter, setAgeFilter] = useState<"all" | "today" | "24h" | "48h">("48h");
   const [needFilter, setNeedFilter] = useState<"all" | "untouched" | "missed_handoff" | "callback">("all");
   // Custom look-back: search ANY period ("2 weeks", "4 days"). When set (customN is
@@ -1239,42 +1228,18 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   // "showing N of M" can tell the truth about what the chips hid.
   const items = useMemo(() => {
     if (!filtersActive) return baseItems;
-    return baseItems.filter(({ deal: d, u }) => {
+    return baseItems.filter(({ deal: d }) => {
       if (kindFilter !== "all" && d.lead_source !== kindFilter) return false;
-      // The age axis measures LAST ACTIVITY (u.since — the timestamp that made
-      // this card appear: last_attempt_at / first_attempt_at / the reply / the
-      // stage stamp / updated_at / created_at), NOT when the lead was born. A
-      // three-week-old merchant who wrote back an hour ago is recent work.
-      //
-      // …but activity alone isn't enough, because the loudest chase cards are
-      // OLD BY DEFINITION: "⏰ Docs stale" only fires after 3 days of silence,
-      // "📤 Nudge funders" after 2, and a broken statements promise is measured
-      // in days past. Windowing those on activity would delete the entire chase
-      // lane — the exact opposite of what this filter is for. So a card that is
-      // a LIVE DEMAND is exempt from the window entirely; what stays windowed is
-      // the fresh-lead and parked tiers (5.5/6 new leads, 6.5 missed window, 6.8
-      // snoozed, 6.9 due-later, 7/8 stage nudges, 8.5 call-capped), which is what
-      // a "last 48h" default is actually meant to trim.
-      //
-      // Exempt = rank ≤ 5: 0 real-time / callback due · 1 funder replied ·
-      // 2 merchant replied · 2.5 stated window open · 3 present offers ·
-      // 3.5 promise broken · 4 docs stale · 4.5 promised today · 5 nudge funders.
-      const liveDemand = u.rank <= ATTENTION_RANK;
-      // Unparseable timestamp → NaN comparison is false → the card SHOWS. Failing
-      // open is deliberate: a bad date must never silently hide work.
-      const dormantFor = now - Date.parse(u.since);
-      if (liveDemand) {
-        /* always survives the age window — see above */
-      } else if (customActive) {
+      if (customActive) {
         // Custom look-back WINS over the age chips (never both). weeks = 7d, months = 30d.
         const unitMs = customUnit === "weeks" ? 7 * 86_400_000 : customUnit === "months" ? 30 * 86_400_000 : 86_400_000;
-        if (dormantFor > (customN as number) * unitMs) return false;
+        if (now - Date.parse(d.created_at) > (customN as number) * unitMs) return false;
       } else if (ageFilter === "today") {
         // "Today" is the EASTERN calendar day — the business clock, not the laptop's.
-        if (dateKeyET(u.since) !== dateKeyET(new Date(now))) return false;
+        if (dateKeyET(d.created_at) !== dateKeyET(new Date(now))) return false;
       } else if (ageFilter !== "all") {
         const hours = ageFilter === "24h" ? 24 : 48;
-        if (dormantFor > hours * 3600_000) return false;
+        if (now - Date.parse(d.created_at) > hours * 3600_000) return false;
       }
       if (needFilter === "untouched" && (d.first_attempt_at || d.contacted_at)) return false;
       // "Missed handoff" catches BOTH the machine-guessed miss and a closer-flagged
