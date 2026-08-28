@@ -756,6 +756,57 @@ export async function getEmailRecord(cfg: GhlConfig, emailMessageId: string) {
  * to it with 400 "Contact's email is invalid". */
 const UNDELIVERABLE_STATUSES = new Set(["failed", "bounced", "rejected", "undelivered"]);
 
+/**
+ * ── A FAILURE ABOUT *US* IS NOT A VERDICT ABOUT *THEM* ──
+ *
+ * A "failed" email record does not always mean the mailbox is dead. When our own
+ * ESP refuses to hand the message off — account suspended, sending-policy
+ * violation, rate/quota limit, unverified domain, temporary 4xx deferral — the
+ * message never reaches the recipient's mail server at all. Nobody has judged
+ * that mailbox. Recording it as a recipient hard bounce is a category error, and
+ * an expensive one: the verdict is sticky, so a sender-side incident permanently
+ * blocks every address that happened to be in the queue when it hit.
+ *
+ * Real incident (moek1962@gmail.com, H&R Logistic Services): during the Aug 15–16
+ * 2026 send flood our ESP clamped us mid-send. GHL wrote status "failed", error
+ * "You have violated our email sending policy. Your account has been suspended…",
+ * and `from: ""` — no sending identity, so it never left the building. That text
+ * was stamped onto the merchant as `email_bounce_reason`, and 12 days later the
+ * application send still refused the address. Gmail was never asked. Gmail does
+ * not bounce mail by telling you YOUR account is suspended.
+ *
+ * So: a sender-side failure is skipped, not scored. The scan falls through to the
+ * next-older outbound record looking for a genuine recipient verdict; if there
+ * isn't one, the outcome is "no verdict" (status null), which leaves the customer
+ * row untouched and blocks nothing.
+ *
+ * Deliberately conservative: only these explicit sender-side signatures are
+ * excused. Anything else with an undeliverable status is still a recipient bounce
+ * and still blocks — "mailbox not found", "user unknown", 550s and friends must
+ * keep working exactly as they do today.
+ */
+const SENDER_SIDE_FAILURE = new RegExp([
+  // our ESP/account was cut off or throttled — nothing to do with the recipient
+  "sending policy",
+  "account (has been |is |was )?(suspended|disabled|blocked|locked)",
+  "suspended for sending",
+  "contact support",
+  "rate.?limit", "too many (messages|emails|requests)",
+  "quota (exceeded|reached)", "(daily|hourly|sending) limit",
+  "insufficient (credits|balance)", "plan limit",
+  // we are not allowed to send AS this identity yet
+  "not authoriz", "unauthoriz", "domain (is )?not verified", "unverified (domain|sender)",
+  "no sending (domain|identity|address)", "missing (from|sender)",
+  // transient/deferred — a retry candidate, never a permanent verdict on a mailbox
+  "\\b4\\d\\d\\b(?![\\w.])", "\\b4\\.\\d\\.\\d\\b",
+  "temporar", "try again later", "deferred", "greylist", "throttl",
+].join("|"), "i");
+
+/** Is this failure about our sending account rather than the recipient's mailbox? */
+export function isSenderSideFailure(error: string | null | undefined): boolean {
+  return !!error && SENDER_SIDE_FAILURE.test(error);
+}
+
 export interface LastEmailOutcome {
   /** true when the most recent OUTBOUND email to this contact did not deliver. */
   bounced: boolean;
@@ -839,10 +890,25 @@ async function lastEmailOutcomeRaw(cfg: GhlConfig, contactId: string): Promise<L
       // Inbound records (merchant replies) say nothing about deliverability.
       if (String(em.direction ?? "").toLowerCase() !== "outbound") continue;
       const status = typeof em.status === "string" ? em.status : null;
+      const error = typeof em.error === "string" && em.error ? em.error : null;
+      const undeliverable = !!status && UNDELIVERABLE_STATUSES.has(status.toLowerCase());
+      // A failure caused by OUR sending account says nothing about this mailbox —
+      // the message never reached it. Skip the record entirely and keep looking for
+      // a real recipient verdict on an older send. (See SENDER_SIDE_FAILURE above.)
+      if (undeliverable && isSenderSideFailure(error)) {
+        console.log(JSON.stringify({
+          fn: "lastEmailFailure",
+          note: "sender-side failure ignored — our ESP refused the send; not a recipient bounce",
+          contactId, emailMessageId: em.id ?? id, status, error,
+          to: Array.isArray(em.to) && em.to.length ? String(em.to[0]) : null,
+          at: em.dateAdded ?? null,
+        }));
+        continue;
+      }
       return {
-        bounced: !!status && UNDELIVERABLE_STATUSES.has(status.toLowerCase()),
+        bounced: undeliverable,
         status,
-        error: typeof em.error === "string" && em.error ? em.error : null,
+        error,
         to: Array.isArray(em.to) && em.to.length ? String(em.to[0]) : null,
         emailMessageId: em.id ?? id,
         at: typeof em.dateAdded === "string" ? em.dateAdded : null,
