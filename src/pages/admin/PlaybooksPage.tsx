@@ -37,6 +37,7 @@ import {
 import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
+import BusinessPicker, { type PlaybookBusiness } from "../../components/admin/BusinessPicker";
 import MerchantApplicationModal from "../../components/admin/MerchantApplicationModal";
 import FunderPicker from "../../components/admin/FunderPicker";
 import FunderResponsesBoard from "../../components/admin/FunderResponsesBoard";
@@ -258,6 +259,63 @@ export default function PlaybooksPage() {
   const { search: deepLinkSearch } = useLocation();
   const [deepLink, setDeepLink] = useState<{ phase: "loading" | "error"; message?: string } | null>(null);
 
+  // ── One owner → many businesses ───────────────────────────────────────────
+  // A person (one GHL contact) can own several businesses; each is its own
+  // customer row with its own deal. `bizCtx` is "which contact are we working,
+  // and what does he/she own" — it drives the BusinessPicker at the top of the
+  // playbook. `key` is the contact identity (GHL id, else phone digits): the
+  // list is refetched when the KEY changes, not when the deal changes, so
+  // hopping between an owner's businesses costs nothing.
+  type BizCtx = {
+    key: string;
+    ghlContactId: string | null;
+    phone: string | null;
+    ownerLabel: string;
+    businesses: PlaybookBusiness[];
+    listState: "idle" | "loading" | "error";
+    listError: string | null;
+  };
+  const [bizCtx, setBizCtx] = useState<BizCtx | null>(null);
+  const [bizBusy, setBizBusy] = useState<string | null>(null);
+
+  // Ask the backend for every business behind this contact. Failure is shown on
+  // the card (with a retry) — never swallowed into "this owner has one business".
+  const loadBusinesses = useCallback(
+    async (key: string, ghlContactId: string | null, phone: string | null) => {
+      setBizCtx((c) => (c && c.key === key ? { ...c, listState: "loading", listError: null } : c));
+      try {
+        const body = ghlContactId
+          ? { action: "list_businesses", ghl_contact_id: ghlContactId }
+          : { action: "list_businesses", phone };
+        const { data, error } = await supabase.functions.invoke("playbook-open-contact", { body });
+        if (error) await invokeThrow(error);
+        const res = data as { businesses?: PlaybookBusiness[]; ghl_contact_id?: string | null; error?: string } | null;
+        if (res?.error) throw new Error(res.error);
+        const list = Array.isArray(res?.businesses) ? res.businesses : [];
+        setBizCtx((c) =>
+          c && c.key === key
+            ? {
+                ...c,
+                // Phone path: the list tells us the owner's contact id — hold it
+                // so a later "+ Add a business" goes by id, not by number.
+                ghlContactId: c.ghlContactId ?? res?.ghl_contact_id ?? null,
+                businesses: list.length ? list : c.businesses,
+                listState: "idle",
+                listError: null,
+              }
+            : c,
+        );
+      } catch (e) {
+        setBizCtx((c) =>
+          c && c.key === key
+            ? { ...c, listState: "error", listError: e instanceof Error ? e.message : null }
+            : c,
+        );
+      }
+    },
+    [],
+  );
+
   // Resolve → load a merchant into the playbook. ONE path for both deep links
   // (?contact= contact id and ?phone=), so they get the same spinner, the same error
   // banner, and the same "lands on the right flow tab" behavior.
@@ -274,7 +332,35 @@ export default function PlaybooksPage() {
           : { phone: lookup.phone };
         const { data, error } = await supabase.functions.invoke("playbook-open-contact", { body });
         if (error) await invokeThrow(error);
-        const res = data as { ok?: boolean; deal_id?: string; error?: string } | null;
+        const res = data as {
+          ok?: boolean;
+          deal_id?: string;
+          error?: string;
+          multiple_businesses?: boolean;
+          businesses?: PlaybookBusiness[];
+          ghl_contact_id?: string | null;
+        } | null;
+        // The owner owns more than one business → DON'T silently land on #1.
+        // Show the picker and let the setter choose which one they're working.
+        // This response carries NO deal_id, so it has to be handled before the
+        // deal_id guard below. The ?phone= path learns the owner's contact id
+        // here, which is what a later "+ Add a business" is keyed on.
+        if (res?.multiple_businesses && res.businesses?.length) {
+          const contactId = lookup.ghlContactId || res.ghl_contact_id || "";
+          setBizCtx({
+            key: contactId || dialDigits(lookup.phone ?? ""),
+            ghlContactId: contactId || null,
+            phone: lookup.phone ?? null,
+            ownerLabel: lookup.phone || "this contact",
+            businesses: res.businesses,
+            listState: "idle",
+            listError: null,
+          });
+          setDeal(null);
+          window.scrollTo({ top: 0 });
+          setDeepLink(null);
+          return true;
+        }
         if (!res?.ok || !res.deal_id) throw new Error(res?.error || "Couldn't open that merchant.");
         targetDealId = res.deal_id;
       }
@@ -419,6 +505,7 @@ export default function PlaybooksPage() {
     const lt = visiblePlaybooks.find((p) => p.id === "live-transfer");
     if (lt) setActive(lt);
     setDeal(null);
+    setBizCtx(null);
     setPickerOpen(false);
     setNewLeadSignal((n) => n + 1);
   }
@@ -792,6 +879,99 @@ export default function PlaybooksPage() {
     refreshDeal(d.id);
   }
 
+  // Whenever a deal lands in the workspace by ANY path (deep link, My Day, the
+  // resume picker, a fresh capture), figure out whose contact it belongs to and
+  // pull that owner's business list. Seeded with the loaded deal so the card is
+  // never empty while the list is in flight. Keyed on the CONTACT, so switching
+  // between an owner's businesses doesn't refetch.
+  useEffect(() => {
+    if (!deal) return;
+    const contactId = deal.ghl_contact_id ?? "";
+    const phone = deal.customer?.phone ?? "";
+    const key = contactId || dialDigits(phone);
+    if (!key || bizCtx?.key === key) return;
+    const label =
+      [deal.customer?.first_name, deal.customer?.last_name].filter(Boolean).join(" ") ||
+      phone ||
+      "this contact";
+    setBizCtx({
+      key,
+      ghlContactId: contactId || null,
+      phone: phone || null,
+      ownerLabel: label,
+      businesses: [
+        {
+          customer_id: deal.customer_id,
+          business_name: deal.customer?.business_name ?? null,
+          deal_id: deal.id,
+          status: deal.status,
+          amount_requested: deal.amount_requested,
+        },
+      ],
+      listState: "loading",
+      listError: null,
+    });
+    void loadBusinesses(key, contactId || null, phone || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deal?.id]);
+
+  // Open one of the owner's businesses — resolve its deal, then load it into the
+  // SAME playbook workspace any other deal uses.
+  async function openBusiness(customerId: string) {
+    setBizBusy(customerId);
+    try {
+      const { data, error } = await supabase.functions.invoke("playbook-open-contact", {
+        body: { action: "open_business", customer_id: customerId },
+      });
+      if (error) await invokeThrow(error);
+      const res = data as { deal_id?: string; error?: string } | null;
+      if (res?.error) throw new Error(res.error);
+      if (!res?.deal_id) throw new Error("Couldn't open that business — no deal came back.");
+      const found = await getDealById(res.deal_id);
+      if (!found) throw new Error("Couldn't load that business's deal — find it in My Day.");
+      pickFromQueue(found.deal);
+      window.scrollTo({ top: 0 });
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Couldn't open that business.", "error");
+    } finally {
+      setBizBusy(null);
+    }
+  }
+
+  // Add a SECOND (third, fourth…) business for the person already on screen and
+  // drop straight into it, so the setter can work/submit it without leaving this
+  // page. Throws on failure — BusinessPicker shows the reason inline.
+  async function addBusiness(businessName: string) {
+    const ctx = bizCtx;
+    if (!ctx || (!ctx.ghlContactId && !ctx.phone)) {
+      throw new Error("No contact loaded — open the merchant first.");
+    }
+    const body: Record<string, unknown> = {
+      action: "add_business",
+      business_name: businessName,
+      ...(ctx.ghlContactId ? { ghl_contact_id: ctx.ghlContactId } : { phone: ctx.phone }),
+      ...(deal?.lead_source ? { lead_source: deal.lead_source } : {}),
+    };
+    const { data, error } = await supabase.functions.invoke("playbook-open-contact", { body });
+    if (error) await invokeThrow(error);
+    const res = data as { customer_id?: string; deal_id?: string; error?: string } | null;
+    if (res?.error) throw new Error(res.error);
+    if (!res?.deal_id) throw new Error("The business was created but no deal came back — find it in My Day.");
+    const found = await getDealById(res.deal_id);
+    if (!found) throw new Error(`${businessName} was added, but its deal wouldn't load — find it in My Day.`);
+    pickFromQueue(found.deal);
+    window.scrollTo({ top: 0 });
+    notify(`${businessName} added — you're working it now.`);
+    void loadBusinesses(ctx.key, ctx.ghlContactId, ctx.phone);
+  }
+
+  // Clearing the workspace ("⇄ Switch lead", ✕, + New Lead, closing a deal) also
+  // drops the owner context — the next lead brings its own.
+  function clearWorkspace() {
+    setDeal(null);
+    setBizCtx(null);
+  }
+
   // Close a deal to a terminal state from the green context bar. updateDealStatus
   // allows terminal moves (backward-lock exempts declined/dead/nurture) and fires
   // the C/D GHL sequences; we then persist the reason/note, log it, and clear the
@@ -818,7 +998,7 @@ export default function PlaybooksPage() {
           .filter(Boolean)
           .join("\n"),
       });
-      setDeal(null);
+      clearWorkspace();
       notify(
         outcome === "nurture"
           ? `${name} moved to Nurture — the re-engage drip will keep working it.`
@@ -956,6 +1136,23 @@ export default function PlaybooksPage() {
           <span>{active.entry}</span>
         </div>
 
+        {/* One owner → many businesses. Sits ABOVE the deal so the setter picks
+            which business they're working instead of silently landing on #1 —
+            and can add a new one for the same person right here. */}
+        {bizCtx && bizCtx.businesses.length > 0 && (
+          <BusinessPicker
+            businesses={bizCtx.businesses}
+            activeCustomerId={deal?.customer_id ?? null}
+            ownerLabel={bizCtx.ownerLabel}
+            listState={bizCtx.listState}
+            listError={bizCtx.listError}
+            onRetryList={() => void loadBusinesses(bizCtx.key, bizCtx.ghlContactId, bizCtx.phone)}
+            onOpen={(customerId) => void openBusiness(customerId)}
+            onAdd={addBusiness}
+            busyCustomerId={bizBusy}
+          />
+        )}
+
         {/* Who you're working — capture a new lead, load one, or the pinned context */}
         {dealMatchesPlaybook && deal ? (<>
           {/* Floating escape hatch — deep in the steps there was no way to switch
@@ -973,7 +1170,7 @@ export default function PlaybooksPage() {
             </button>
             <button
               type="button"
-              onClick={() => { setDeal(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              onClick={() => { clearWorkspace(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               title="Clear this lead and pick another"
               className="rounded-full shadow-lg bg-ocean-blue px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
             >
@@ -992,7 +1189,7 @@ export default function PlaybooksPage() {
               deal={deal}
               pipeline={active.pipeline}
               campaign={dealCampaign}
-              onClear={() => setDeal(null)}
+              onClear={clearWorkspace}
               onAdvance={advanceDeal}
               onRefresh={() => refreshDeal(deal.id)}
               openCloseDeal={() => setShowCloseDeal(true)}
@@ -1035,7 +1232,7 @@ export default function PlaybooksPage() {
                   You're working <b>{dealName(deal)}</b> (a {pipelineOf(deal.deal_type).toUpperCase()} deal) — switch to
                   the {pipelineOf(deal.deal_type).toUpperCase()} playbook to log against it.
                 </span>
-                <button onClick={() => setDeal(null)} className="shrink-0 underline">Clear</button>
+                <button onClick={clearWorkspace} className="shrink-0 underline">Clear</button>
               </div>
             )}
             <div ref={captureRef} className="scroll-mt-4">

@@ -83,6 +83,28 @@ const RENEWAL_SPLIT = 30;
 
 // We auto-create deals for opportunities in these two pipelines.
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+
+// Business identity — the tiebreak when one owner runs several businesses off a
+// single GHL contact. THIRD COPY of the same rules: the other two are
+// normBusiness() in playbook-open-contact and normBusinessName() in
+// src/lib/businessName.ts. All three must agree; edge functions can't import from
+// src/ and _shared is the only place they could share, which this one line does
+// not earn. Change one, change all three.
+const BIZ_ENTITY_SUFFIXES = new Set([
+  "llc", "inc", "incorporated", "corp", "corporation", "co", "company",
+  "ltd", "limited", "lp", "llp", "pllc", "pc", "dba",
+]);
+function normBusinessName(v: unknown): string {
+  const s = String(v ?? "").toLowerCase()
+    .replace(/\bl\.?\s*l\.?\s*c\b/g, "llc")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return "";
+  const parts = s.split(" ");
+  while (parts.length > 1 && BIZ_ENTITY_SUFFIXES.has(parts[parts.length - 1])) parts.pop();
+  return parts.join(" ");
+}
 const VCF_PIPELINE_ID = "nsmH6jIeVA0SsZMMq4LC";
 
 // Stage id -> deal status (webhooks reliably include pipelineStageId).
@@ -962,15 +984,18 @@ async function adoptOrphanDeal(
   contactId: string,
   dealType: string,
   oppId: string,
+  /** The opportunity's NAME, when the event carries one. The tiebreak when a
+   * contact has more than one orphan deal — see the multi-business note below. */
+  oppName: string | null,
 ): Promise<Record<string, unknown> | null> {
   const { data: candidates, error } = await db.from("deals")
-    .select("id, deal_number, status, created_at")
+    .select("id, deal_number, status, created_at, customers(business_name)")
     .eq("ghl_contact_id", contactId)
     .eq("deal_type", dealType)
     .is("ghl_opportunity_id", null)
     .not("status", "in", `(${TERMINAL_STATUSES.join(",")})`)
     .order("created_at", { ascending: false })
-    .limit(2);
+    .limit(10);
   // Unreadable ≠ "nothing to adopt": say so, and let the caller's create path be
   // the only thing that can still run (it is itself guarded).
   if (error) {
@@ -979,7 +1004,44 @@ async function adoptOrphanDeal(
   }
   if (!candidates || candidates.length === 0) return null;
 
-  const target = candidates[0] as { id: string; deal_number: string | null; status: string };
+  type Cand = {
+    id: string; deal_number: string | null; status: string;
+    customers?: { business_name?: string | null } | { business_name?: string | null }[] | null;
+  };
+  const cands = candidates as unknown as Cand[];
+
+  // ── ONE OWNER, MANY BUSINESSES ────────────────────────────────────────────
+  // A contact can now legitimately carry several open MCA deals — one per
+  // business the owner runs (see playbook-open-contact's add_business). Taking
+  // "the newest orphan" there is not a tiebreak, it is a COIN FLIP that welds
+  // business A's opportunity onto business B's deal: every later stage move,
+  // funded timestamp and commission lands on the wrong merchant.
+  //
+  // So with more than one candidate the opportunity's NAME decides — it is the
+  // business name we create opportunities under — and when the name settles
+  // nothing, we ADOPT NOTHING and say so on the receipt. A missed adoption is a
+  // deal that stays unlinked and can be linked by hand; a wrong adoption is two
+  // merchants silently merged.
+  let target: Cand;
+  if (cands.length === 1) {
+    target = cands[0];
+  } else {
+    const want = normBusinessName(oppName);
+    const hits = want
+      ? cands.filter((c) => {
+        const cu = Array.isArray(c.customers) ? c.customers[0] : c.customers;
+        return normBusinessName(cu?.business_name) === want;
+      })
+      : [];
+    if (hits.length !== 1) {
+      await logEvent(db, evt, evtTypeLabel(evt), "skipped",
+        `${cands.length} unlinked open ${dealType} deals on this contact (one owner, several businesses) and opportunity "${oppName ?? ""}" matches ` +
+        `${hits.length} of them — adopted NOTHING rather than risk linking this opportunity to the wrong business. ` +
+        `Link it by hand: deals ${cands.map((c) => c.deal_number ?? c.id).join(", ")}.`);
+      return null;
+    }
+    target = hits[0];
+  }
   const { data: claimed, error: upErr } = await db.from("deals")
     .update({ ghl_opportunity_id: oppId })
     .eq("id", target.id)
@@ -1006,7 +1068,7 @@ async function adoptOrphanDeal(
   });
   await logEvent(db, evt, evtTypeLabel(evt), "adopted",
     `linked existing ${dealType} deal ${target.deal_number ?? target.id} (status "${target.status}") to this opportunity instead of creating a duplicate` +
-    (candidates.length > 1 ? " — NOTE: more than one unlinked open deal on this contact, took the newest" : ""));
+    (cands.length > 1 ? ` — matched by business name against opportunity "${oppName ?? ""}" (${cands.length} unlinked open deals on this contact)` : ""));
   return claimed as Record<string, unknown>;
 }
 
@@ -1062,7 +1124,12 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   // contact already has an open deal of this type with no opportunity id, that IS
   // this opportunity's deal: link it and mirror onto it.
   if (!deal && dealType && contactId) {
-    deal = await adoptOrphanDeal(db, evt, contactId, dealType, oppId);
+    // The opportunity's name — native (o.name) or the flat workflow payload's
+    // opportunity_name. It is the business name we create opportunities under,
+    // so it is what tells one business's deal from another's when an owner runs
+    // several. Absent is fine: adopt then simply refuses to guess.
+    const oppName = String(o.name ?? evt.opportunity_name ?? cd.opportunity_name ?? "").trim() || null;
+    deal = await adoptOrphanDeal(db, evt, contactId, dealType, oppId, oppName);
   }
 
   // ── Gap A: create the deal if this opportunity isn't linked to one yet ──
@@ -1112,12 +1179,41 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
 
     // Find the customer by ghl_contact_id; create a minimal one if missing
     // (a Contact event will enrich it later).
+    //
+    // ONE OWNER, MANY BUSINESSES: "the oldest customer on this contact" is only
+    // the right answer when the contact HAS one. An owner running several
+    // businesses (playbook-open-contact's add_business) has several customers
+    // here, and taking the oldest welds this opportunity's deal onto business #1 —
+    // a merchant it has nothing to do with. The opportunity's NAME is the business
+    // it belongs to, so it picks; and when it matches none of them, this is a
+    // business we have not seen, which is a NEW customer, not business #1.
     let customerId: string | null = null;
-    const { data: cust } = await db.from("customers").select("id").eq("ghl_contact_id", contactId)
-      .order("created_at", { ascending: true }).limit(1).maybeSingle();
+    const { data: custs, error: custReadErr } = await db.from("customers")
+      .select("id, business_name").eq("ghl_contact_id", contactId)
+      .order("created_at", { ascending: true }).limit(50);
+    // Unreadable ≠ "no customer": creating one here would duplicate the merchant.
+    if (custReadErr) {
+      await logEvent(db, evt, evtTypeLabel(evt), "error",
+        `customer lookup failed — no deal auto-created: ${custReadErr.message}`);
+      return;
+    }
+    const cust = (custs ?? []).length <= 1
+      ? (custs ?? [])[0] ?? null
+      : (() => {
+        const want = normBusinessName(o.name ?? evt.opportunity_name);
+        const hits = want
+          ? (custs ?? []).filter((c) => normBusinessName(c.business_name) === want)
+          : [];
+        return hits.length === 1 ? hits[0] : null;
+      })();
     if (cust) {
       customerId = cust.id;
     } else {
+      if ((custs ?? []).length > 1) {
+        console.log("[ghl-webhook] contact", contactId, "has", (custs ?? []).length,
+          "businesses and opportunity", JSON.stringify(String(o.name ?? evt.opportunity_name ?? "")),
+          "matches none — creating a new business rather than attaching to the oldest");
+      }
       const c = (evt.contact ?? {}) as Record<string, unknown>;
       const { data: created, error: custErr } = await db.from("customers").insert({
         ghl_contact_id: contactId,
@@ -1128,7 +1224,13 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
         last_name: (c.lastName ?? evt.last_name ?? "") as string,
         email: (c.email ?? evt.email ?? null) as string | null,
         phone: (c.phone ?? evt.phone ?? null) as string | null,
-        business_name: (c.companyName ?? evt.company_name ?? o.name ?? evt.opportunity_name ?? null) as string | null,
+        // Normally the CONTACT's company name; but when this is a new business
+        // under an owner we already know, the contact's company name is some
+        // OTHER business of theirs — the opportunity's name is the one that
+        // identified this as new, so it wins there.
+        business_name: ((custs ?? []).length > 1
+          ? (o.name ?? evt.opportunity_name ?? c.companyName ?? evt.company_name ?? null)
+          : (c.companyName ?? evt.company_name ?? o.name ?? evt.opportunity_name ?? null)) as string | null,
         status: "lead",
         source: "other",
       }).select("id").maybeSingle();

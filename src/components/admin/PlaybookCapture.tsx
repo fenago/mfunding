@@ -11,7 +11,8 @@ import {
   ExclamationTriangleIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
-import { mustWrite } from "@/supabase/writes";
+import { mustWrite, tryWrite } from "@/supabase/writes";
+import { normBusinessName } from "@/lib/businessName";
 import { createDeal } from "../../services/dealService";
 import { listCampaigns, defaultCampaignIdForSource, isOpenCampaign, type Campaign } from "../../services/campaignService";
 import { MARKET_CONFIG } from "../../types/deals";
@@ -297,8 +298,19 @@ export default function PlaybookCapture({
         // Dedupe: reuse an existing customer that matches on digits-only phone OR
         // lower(email) instead of minting a duplicate (merchant self-serve + manual
         // capture both create leads, so collisions are real). Non-blocking notice.
+        //
+        // BUT A PHONE IS AN OWNER, NOT A BUSINESS. One person can own several
+        // businesses and dial in from the same number for each — matching on phone
+        // alone collapsed business #2 into business #1's record forever. So when
+        // the closer typed a business name, the match must agree on the BUSINESS
+        // too: same owner + same business = reuse; same owner + a DIFFERENT
+        // business = a new customers row (which is legal — customers has no unique
+        // constraint on phone/email/ghl_contact_id). A candidate carrying no
+        // business name at all is still reused: that's the same owner before
+        // anyone named their business, and we fill the name in.
         const digits = form.phone.replace(/\D/g, "");
         const emailNorm = form.email.trim().toLowerCase();
+        const wantBiz = normBusinessName(form.business_name);
         let matched: { id: string; first_name: string | null; last_name: string | null; business_name: string | null } | null = null;
         try {
           const orClauses: string[] = [];
@@ -311,12 +323,18 @@ export default function PlaybookCapture({
               .or(orClauses.join(","))
               .order("created_at", { ascending: true })
               .limit(10);
-            matched = (candidates ?? []).find((c) => {
+            const owners = (candidates ?? []).filter((c) => {
               const cDigits = (c.phone ?? "").replace(/\D/g, "");
               const phoneHit = digits.length >= 10 && cDigits.length >= 10 && cDigits.slice(-10) === digits.slice(-10);
               const emailHit = !!emailNorm && (c.email ?? "").trim().toLowerCase() === emailNorm;
               return phoneHit || emailHit;
-            }) ?? null;
+            });
+            matched = !wantBiz
+              // No business typed → unchanged behavior: the first owner row wins.
+              ? owners[0] ?? null
+              : owners.find((c) => normBusinessName(c.business_name) === wantBiz)
+                ?? owners.find((c) => !normBusinessName(c.business_name))
+                ?? null;
           }
         } catch { /* dedupe is best-effort — fall through to insert on lookup error */ }
 
@@ -324,6 +342,15 @@ export default function PlaybookCapture({
           customerId = matched.id;
           const nm = [matched.first_name, matched.last_name].filter(Boolean).join(" ").trim() ||
             matched.business_name || "existing customer";
+          // Reused an owner row that had no business name yet — give it the one
+          // the closer just typed, or the merchant stays nameless on every screen.
+          if (wantBiz && !normBusinessName(matched.business_name)) {
+            // tryWrite: naming is cosmetic — a denial must never block the capture.
+            await tryWrite("name the business", supabase
+              .from("customers")
+              .update({ business_name: form.business_name.trim() })
+              .eq("id", matched.id));
+          }
           setMatchNotice(`Matched existing customer ${nm} — reusing their record instead of creating a duplicate.`);
         } else {
           let created: { id: string } | undefined;

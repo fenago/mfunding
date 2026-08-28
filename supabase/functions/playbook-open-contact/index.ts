@@ -3,8 +3,37 @@
 //
 //   POST { ghl_contact_id, lead_source? }
 //   POST { phone, lead_source? }                     (BY PHONE — see below)
-//        → { ok:true, deal_id, created, claimed, ghl_contact_id, matched_ucc? }  (200)
+//        → { ok:true, deal_id, created, claimed, ghl_contact_id, ghl_opportunity_id,
+//            customer_id, multiple_businesses:false, matched_ucc? }              (200)
 //        | { ok:false, error }                       (4xx/5xx)
+//
+// ONE OWNER, MANY BUSINESSES. A person can own several businesses and each is its
+// own merchant. The owner is the GHL CONTACT; a business is a `customers` row
+// under it, identified by normalized business_name (NEVER by EIN — it's missing on
+// ~98% of them). Four request shapes, and the default one is unchanged for an
+// owner with a single business:
+//
+//   { ghl_contact_id | phone }                                  action:'open' (default)
+//     one business  → exactly as before, plus multiple_businesses:false
+//     many          → { ok:true, multiple_businesses:true, businesses:[...] }
+//                     and NOTHING is created or claimed — the UI shows a picker.
+//
+//   { action:'list_businesses', ghl_contact_id | phone }
+//     → { ok:true, ghl_contact_id, multiple_businesses, businesses:[...] }
+//     PURE READ: no CRM contact upsert, no GHL spend, no writes.
+//
+//   { action:'open_business', customer_id, lead_source? }
+//     → resolve-or-create the deal for THAT business only.
+//
+//   { action:'add_business', ghl_contact_id | phone, business_name, lead_source? }
+//     → new customers row copying the OWNER's person fields + a new deal.
+//       Same owner + same normalized name RESUMES instead of duplicating.
+//
+//   businesses[] = { customer_id, business_name, deal_id, status, amount_requested,
+//                    ghl_opportunity_id, created_at }, newest business first.
+//                  amount_requested is masked to null for a setter who neither
+//                  owns nor created the deal (the money wall, honored by hand
+//                  because this runs as service_role).
 //
 // WHY a phone path: setters dial UCC leads from HotProspector, whose GHL deep
 // link is useless for them — those leads were CSV-imported into HP and have no
@@ -35,7 +64,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, getContact, upsertContact, ghlErrorMessage,
-  updateContactCustomFields, searchOpportunitiesByContact,
+  updateContactCustomFields, searchOpportunitiesByContact, createOpportunity,
 } from "../_shared/ghl.ts";
 import { UCC_OVERWRITABLE_OR_FILTER } from "../_shared/positionsSource.ts";
 import {
@@ -58,6 +87,173 @@ const CLOSED_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "rest
 // MCA_PIPELINE_ID in ghl-webhook (edge functions can't share consts across dirs
 // without _shared, and this is the only pipeline this function ever touches).
 const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+
+// "New Lead" in the MCA pipeline — the stage a brand-new business's opportunity
+// is born in. Mirrors STATUS_BY_STAGE_ID's "new" entry in ghl-webhook (same id,
+// so a stage move round-trips) and the stage mca-intake / live-transfer-intake
+// resolve by name.
+const MCA_NEW_LEAD_STAGE_ID = "d60d563a-9904-423f-9a8e-0d0df0b12976";
+
+// ── ONE OWNER, MANY BUSINESSES ───────────────────────────────────────────────
+//
+// A person can own several businesses and each one is its own merchant: its own
+// revenue, its own stack, its own advance. Until now "open this contact" resolved
+// exactly ONE deal per GHL contact, so business #2 was unreachable — the setter
+// landed back on business #1 forever.
+//
+// THE OWNER KEY IS THE GHL CONTACT. One human = one GHL contact = one phone we
+// dial. A BUSINESS is a `customers` row under that contact, identified by its
+// normalized business_name. NOT by EIN — EIN is missing on ~98% of businesses, so
+// keying on it would collapse almost every owner back to one business.
+//
+// customers has no unique constraint on ghl_contact_id (verified 2026-08-28:
+// customers_pkey is the only unique constraint, and zero contacts currently share
+// one), so many customers per contact needs no migration.
+//
+// SAFETY INVARIANT — EVERY BUSINESS OWNS ITS OWN GHL OPPORTUNITY. ghl-webhook's
+// adoptOrphanDeal keys on (ghl_contact_id, deal_type, ghl_opportunity_id IS NULL):
+// two NULL-opp MCA deals on one contact would let business A's opportunity be
+// adopted onto business B's deal and cross-wire the two merchants. So a deal born
+// for a second business is created ONLY after its own opportunity exists (see
+// opportunityForBusiness), and an existing sibling deal gets its id backfilled
+// first. GHL allows many opportunities per contact — that is exactly the shape we
+// use: contact stays one, opportunities/deals are per business.
+
+/** Entity suffixes that don't distinguish one business from another — "Acme
+ * Trucking" and "Acme Trucking LLC" are the same merchant to a setter. */
+const ENTITY_SUFFIXES = new Set([
+  "llc", "inc", "incorporated", "corp", "corporation", "co", "company",
+  "ltd", "limited", "lp", "llp", "pllc", "pc", "dba",
+]);
+
+/** Business identity: lowercased, punctuation-stripped, entity-suffix-trimmed.
+ * "" means "no usable name" and NEVER matches another business.
+ *
+ * TWIN: src/lib/businessName.ts normBusinessName(). The browser decides "is this
+ * a new business?" with that one and this decides add_business dedupe — they must
+ * stay identical, or the same typed name resumes on one path and duplicates on
+ * the other. Edge functions can't import from src/, hence the copy. */
+function normBusiness(v: unknown): string {
+  const s = String(v ?? "").toLowerCase()
+    .replace(/\bl\.?\s*l\.?\s*c\b/g, "llc")   // L.L.C. / L L C -> llc
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return "";
+  const parts = s.split(" ");
+  while (parts.length > 1 && ENTITY_SUFFIXES.has(parts[parts.length - 1])) parts.pop();
+  return parts.join(" ");
+}
+
+/** One business under an owner, as the picker renders it. */
+interface BusinessSummary {
+  customer_id: string;
+  business_name: string | null;
+  deal_id: string | null;
+  status: string | null;
+  /** Money — present only when the caller may see it (see the money wall note
+   * in loadBusinesses). null both when there is no deal and when it's masked. */
+  amount_requested: number | null;
+  ghl_opportunity_id: string | null;
+  created_at: string;
+}
+
+interface OwnerCustomer {
+  id: string; business_name: string | null; created_at: string;
+  first_name: string | null; last_name: string | null;
+  phone: string | null; email: string | null; source: string | null;
+  additional_phones: string[] | null; additional_emails: string[] | null;
+}
+
+const OWNER_COLS =
+  "id,business_name,created_at,first_name,last_name,phone,email,source,additional_phones,additional_emails";
+
+/**
+ * Every business under one owner, newest first, each with its current deal.
+ *
+ * The owner set is the UNION of two things, because either one alone misses real
+ * businesses: customers carrying this ghl_contact_id, plus the customers behind
+ * any deal on this contact (a deal can be linked to the contact while its
+ * customer row's link was never backfilled). When there is no contact id at all
+ * we fall back to the owner's PHONE, which is the identifier the dialer always
+ * has.
+ *
+ * MONEY WALL. This runs as service_role, so RLS cannot mask anything for us —
+ * 20260827_setter_deal_money_wall is a row/column rule on direct reads. We honor
+ * the same rule by hand: a setter sees amount_requested only on a deal they own,
+ * created, or that is unassigned (the claim pool). Ops staff see everything.
+ */
+async function loadBusinesses(
+  db: SupabaseClient,
+  contactId: string | null,
+  phoneDigits: string | null,
+  viewer: { id: string; isOps: boolean },
+): Promise<BusinessSummary[]> {
+  const byId = new Map<string, OwnerCustomer>();
+
+  if (contactId) {
+    const { data, error } = await db.from("customers").select(OWNER_COLS)
+      .eq("ghl_contact_id", contactId).order("created_at", { ascending: false });
+    if (error) throw new Error(`business lookup failed: ${error.message}`);
+    for (const c of (data ?? []) as unknown as OwnerCustomer[]) byId.set(c.id, c);
+
+    // Customers reachable only through a deal that carries the contact id.
+    const { data: dealCusts, error: dcErr } = await db.from("deals")
+      .select("customer_id").eq("ghl_contact_id", contactId).eq("deal_type", "mca")
+      .not("customer_id", "is", null).limit(200);
+    if (dcErr) throw new Error(`business lookup failed: ${dcErr.message}`);
+    const missing = [...new Set((dealCusts ?? []).map((d) => d.customer_id as string))]
+      .filter((id) => !byId.has(id));
+    if (missing.length) {
+      const { data: extra, error: exErr } = await db.from("customers").select(OWNER_COLS).in("id", missing);
+      if (exErr) throw new Error(`business lookup failed: ${exErr.message}`);
+      for (const c of (extra ?? []) as unknown as OwnerCustomer[]) byId.set(c.id, c);
+    }
+  } else if (phoneDigits) {
+    const { data, error } = await db.from("customers").select(OWNER_COLS)
+      .like("phone", `%${phoneDigits}`).order("created_at", { ascending: false }).limit(50);
+    if (error) throw new Error(`business lookup failed: ${error.message}`);
+    for (const c of (data ?? []) as unknown as OwnerCustomer[]) {
+      if (last10(c.phone) === phoneDigits) byId.set(c.id, c);
+    }
+  }
+
+  const owners = [...byId.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  if (!owners.length) return [];
+
+  // One query for every deal across every business; pick per business below.
+  const { data: deals, error: dErr } = await db.from("deals")
+    .select("id,customer_id,status,amount_requested,ghl_opportunity_id,assigned_closer_id,created_by,created_at")
+    .in("customer_id", owners.map((o) => o.id))
+    .eq("deal_type", "mca")
+    .order("created_at", { ascending: false });
+  if (dErr) throw new Error(`business deal lookup failed: ${dErr.message}`);
+
+  type DealRow = {
+    id: string; customer_id: string; status: string; amount_requested: number | null;
+    ghl_opportunity_id: string | null; assigned_closer_id: string | null; created_by: string | null;
+  };
+  const rows = (deals ?? []) as unknown as DealRow[];
+
+  return owners.map((o) => {
+    const mine = rows.filter((d) => d.customer_id === o.id);
+    // The OPEN deal is the one the setter works; fall back to the newest closed
+    // one so a fully-funded business still shows in the picker with its status.
+    const deal = mine.find((d) => !CLOSED_STATUSES.includes(d.status)) ?? mine[0] ?? null;
+    const maySeeMoney = !deal ? false
+      : viewer.isOps || deal.assigned_closer_id === null
+        || deal.assigned_closer_id === viewer.id || deal.created_by === viewer.id;
+    return {
+      customer_id: o.id,
+      business_name: o.business_name,
+      deal_id: deal?.id ?? null,
+      status: deal?.status ?? null,
+      amount_requested: deal && maySeeMoney ? deal.amount_requested : null,
+      ghl_opportunity_id: deal?.ghl_opportunity_id ?? null,
+      created_at: o.created_at,
+    };
+  });
+}
 
 /**
  * The GHL opportunity a brand-new playbook deal belongs to, or null.
@@ -126,6 +322,90 @@ async function resolveOpportunityId(db: SupabaseClient, contactId: string): Prom
     console.warn("[playbook-open-contact] opportunity lookup threw (deal will carry no opp id):",
       e instanceof Error ? e.message : String(e));
     return null;
+  }
+}
+
+/**
+ * The opportunity a SPECIFIC business's deal must own — matched by name, or
+ * created. Used ONLY when the owner has more than one business; a single-business
+ * contact keeps taking resolveOpportunityId's strictly-conservative path above,
+ * unchanged.
+ *
+ * WHY IT MAY CREATE. With two businesses on one contact, resolveOpportunityId
+ * refuses to pick (two open MCA opportunities is genuinely ambiguous) and returns
+ * null — which is precisely the NULL-opp state adoptOrphanDeal can cross-wire. So
+ * here the business's own NAME breaks the tie, and when nothing matches we mint
+ * the opportunity that business is missing rather than leave the hole open.
+ *
+ * UNREADABLE IS NOT EMPTY. If GHL can't be read, or the "is this opportunity
+ * already on a deal" check fails, this returns an ERROR — never a "create". A
+ * failed read that fell through to create would mint a duplicate opportunity on
+ * every retry. Those errors are `degradable:false` — the caller must abort.
+ *
+ * A failed CREATE is `degradable:true`: the read was good, we know no opportunity
+ * matches this business, and the caller may proceed with a deal that carries no
+ * opportunity id. THAT IS THE NORMAL CASE ON THIS LOCATION TODAY —
+ * `settings.allowDuplicateOpportunity` is FALSE (verified live 2026-08-28), so
+ * GHL answers a second opportunity on one contact with "Can not create duplicate
+ * opportunity for the contact". Until the owner turns that on, a second business
+ * simply has no opportunity of its own, and ghl-webhook's adopt path is what keeps
+ * that safe: with several unlinked deals on a contact it matches by business name
+ * and adopts NOTHING when the name doesn't settle it.
+ */
+async function opportunityForBusiness(
+  db: SupabaseClient, contactId: string, businessName: string | null, ownerName: string | null,
+): Promise<{ id: string } | { error: string; degradable: boolean }> {
+  let all: { id: string; name?: string }[];
+  try {
+    const cfg = await getGhlConfig(db);
+    const res = await searchOpportunitiesByContact(cfg, contactId);
+    if (!res.ok) {
+      return { error: `couldn't read this contact's opportunities from the CRM: ${ghlErrorMessage(res.error)} (HTTP ${res.status})`, degradable: false };
+    }
+    all = (res.data?.opportunities ?? [])
+      .filter((o) => o?.id && o.pipelineId === MCA_PIPELINE_ID
+        && String(o.status ?? "").toLowerCase() === "open")
+      .map((o) => ({ id: o.id, name: o.name }));
+  } catch (e) {
+    return { error: `couldn't read this contact's opportunities from the CRM: ${e instanceof Error ? e.message : String(e)}`, degradable: false };
+  }
+
+  // Never hand an opportunity another deal already owns.
+  let unclaimed = all;
+  if (all.length) {
+    const { data: taken, error } = await db.from("deals")
+      .select("ghl_opportunity_id").in("ghl_opportunity_id", all.map((o) => o.id));
+    if (error) return { error: `couldn't check which opportunities are already on a deal: ${error.message}`, degradable: false };
+    const claimed = new Set((taken ?? []).map((d) => d.ghl_opportunity_id as string));
+    unclaimed = all.filter((o) => !claimed.has(o.id));
+  }
+
+  const want = normBusiness(businessName);
+  if (want) {
+    const hits = unclaimed.filter((o) => normBusiness(o.name) === want);
+    if (hits.length === 1) return { id: hits[0].id };
+  }
+
+  // Nothing matches this business — give it its own opportunity.
+  const name = str(businessName) ?? str(ownerName) ?? "New business";
+  try {
+    const cfg = await getGhlConfig(db);
+    const created = await createOpportunity(cfg, {
+      pipelineId: MCA_PIPELINE_ID,
+      pipelineStageId: MCA_NEW_LEAD_STAGE_ID,
+      contactId,
+      name,
+      status: "open",
+    });
+    if (!created.ok) {
+      return { error: `couldn't create the CRM opportunity for "${name}": ${ghlErrorMessage(created.error)}`, degradable: true };
+    }
+    const id = created.data?.opportunity?.id;
+    if (!id) return { error: `the CRM didn't return an opportunity id for "${name}"`, degradable: true };
+    console.log("[playbook-open-contact] created opportunity", id, "for business", JSON.stringify(name), "on contact", contactId);
+    return { id };
+  } catch (e) {
+    return { error: `couldn't create the CRM opportunity for "${name}": ${e instanceof Error ? e.message : String(e)}`, degradable: true };
   }
 }
 
@@ -590,6 +870,9 @@ Deno.serve(async (req) => {
     }
     const isCloser = role === "closer";
 
+    const isOps = role === "admin" || role === "super_admin";
+    const viewer = { id: caller.id, isOps };
+
     const body = await req.json().catch(() => ({}));
     let ghlContactId = str(body?.ghl_contact_id ?? body?.contactId ?? body?.contact);
     const rawPhone = str(body?.phone);
@@ -598,9 +881,78 @@ Deno.serve(async (req) => {
     // wins when it says so; otherwise the lead's own type decides, and
     // "ph_setter" is the fallback rather than the answer.
     const leadSourceOverride = str(body?.lead_source);
-    if (!ghlContactId && !rawPhone) {
+
+    // ── ACTION (multi-business). Absent/"open" is the original contract and the
+    // original behavior; the three named actions are additive.
+    const action = (str(body?.action) ?? "open").toLowerCase();
+    if (!["open", "list_businesses", "open_business", "add_business"].includes(action)) {
+      return json({ ok: false, error: `Unknown action "${action}".` }, 400);
+    }
+    // The business the caller wants (open_business), and the name of the one they
+    // want created (add_business).
+    const bodyCustomerId = str(body?.customer_id);
+    const newBusinessName = str(body?.business_name);
+    if (action === "open_business" && !bodyCustomerId) {
+      return json({ ok: false, error: "customer_id is required for open_business" }, 400);
+    }
+    if (action === "add_business" && !newBusinessName) {
+      return json({ ok: false, error: "business_name is required for add_business" }, 400);
+    }
+
+    // open_business identifies the merchant by their customers row, so the
+    // contact/phone pair is optional there — it's recovered from the row below.
+    if (!ghlContactId && !rawPhone && action !== "open_business") {
       return json({ ok: false, error: "ghl_contact_id or phone is required" }, 400);
     }
+
+    // ── action:'list_businesses' — a PURE READ. Answered before anything can
+    // write, so rendering the picker never upserts a CRM contact or spends a GHL
+    // call. An unknown owner returns an empty list, not an error.
+    if (action === "list_businesses") {
+      const digits = ghlContactId ? null : last10(rawPhone);
+      if (!ghlContactId && !digits) {
+        return json({ ok: false, error: `"${rawPhone}" isn't a usable 10-digit phone number.` }, 400);
+      }
+      let ownerContactId = ghlContactId;
+      let businesses: BusinessSummary[];
+      try {
+        businesses = await loadBusinesses(db, ownerContactId, digits, viewer);
+        // Phone-only: the owner's contact id, if any of their rows carries one.
+        if (!ownerContactId && businesses.length) {
+          const { data: linked } = await db.from("customers")
+            .select("ghl_contact_id").in("id", businesses.map((b) => b.customer_id))
+            .not("ghl_contact_id", "is", null).limit(1).maybeSingle();
+          ownerContactId = str(linked?.ghl_contact_id);
+        }
+      } catch (e) {
+        return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+      }
+      return json({
+        ok: true,
+        ghl_contact_id: ownerContactId,
+        multiple_businesses: businesses.length > 1,
+        businesses,
+      });
+    }
+
+    // open_business: recover the owner's contact from the chosen business.
+    let forcedCustomer: OwnerCustomer | null = null;
+    if (action === "open_business") {
+      const { data: c, error: cErr } = await db.from("customers")
+        .select(`${OWNER_COLS},ghl_contact_id`).eq("id", bodyCustomerId!).maybeSingle();
+      if (cErr) return json({ ok: false, error: `customer lookup failed: ${cErr.message}` }, 500);
+      if (!c) return json({ ok: false, error: "That business no longer exists." }, 404);
+      forcedCustomer = c as unknown as OwnerCustomer;
+      ghlContactId = str((c as Record<string, unknown>).ghl_contact_id) ?? ghlContactId;
+      // A business with no CRM contact yet: the phone path below upserts one, the
+      // same way the by-phone deep link does.
+      if (!ghlContactId && !rawPhone && !str(forcedCustomer.phone)) {
+        return json({ ok: false, error: "That business has no CRM contact and no phone to create one from." }, 400);
+      }
+    }
+    // The number the phone path works from — the caller's, or (open_business with
+    // an unlinked business) the business's own.
+    const phoneForPath = rawPhone ?? (action === "open_business" ? str(forcedCustomer?.phone) : null);
 
     // ── 0) PHONE PATH: number → ph_ucc_leads identity → upserted GHL contact. ─
     // Everything downstream is then identical to the contact-id path.
@@ -614,9 +966,37 @@ Deno.serve(async (req) => {
     // found was being dropped on the floor. Set on the phone path, recovered by
     // ghl_contact_id on the deep-link path so BOTH entries enrich identically.
     let leadRow: LeadEnrich | null = null;
+
+    // open_business on a business that has no CRM contact yet: upsert one from
+    // THAT BUSINESS's own identity. Deliberately NOT the ph_ucc phone path below —
+    // that path seeds the company name from whatever lead the number matches,
+    // which for a second business would push business #1's name onto the contact.
+    if (!ghlContactId && action === "open_business" && forcedCustomer) {
+      const digits = last10(phoneForPath);
+      if (!digits) return json({ ok: false, error: "That business has no usable phone number to create a CRM contact from." }, 400);
+      try {
+        const cfg = await getGhlConfig(db);
+        const up = await upsertContact(cfg, {
+          ...(str(forcedCustomer.first_name) ? { firstName: str(forcedCustomer.first_name) } : {}),
+          lastName: str(forcedCustomer.last_name),
+          companyName: str(forcedCustomer.business_name),
+          email: str(forcedCustomer.email),
+          phone: `+1${digits}`,
+        });
+        if (!up.ok) return json({ ok: false, error: `Couldn't create the contact in the CRM: ${ghlErrorMessage(up.error)}` }, 502);
+        ghlContactId = str(up.data?.contact?.id);
+      } catch (e) {
+        return json({ ok: false, error: `Couldn't create the contact in the CRM: ${e instanceof Error ? e.message : String(e)}` }, 502);
+      }
+      if (!ghlContactId) return json({ ok: false, error: "The CRM didn't return a contact id for that business." }, 502);
+      const { error: linkErr } = await db.from("customers")
+        .update({ ghl_contact_id: ghlContactId }).eq("id", forcedCustomer.id);
+      if (linkErr) console.error("[playbook-open-contact] customer ghl link backfill failed:", linkErr.message);
+    }
+
     if (!ghlContactId) {
-      const digits = last10(rawPhone);
-      if (!digits) return json({ ok: false, error: `"${rawPhone}" isn't a usable 10-digit phone number.` }, 400);
+      const digits = last10(phoneForPath);
+      if (!digits) return json({ ok: false, error: `"${phoneForPath}" isn't a usable 10-digit phone number.` }, 400);
 
       // ph_ucc_leads stores bare 10-digit numbers; the trailing-match also picks
       // up any row written as +1XXXXXXXXXX or 1XXXXXXXXXX.
@@ -746,6 +1126,157 @@ Deno.serve(async (req) => {
       }
     }
 
+    // The GHL contact's tags — how a dial campaign claims this merchant. Declared
+    // up here because the EXISTING-DEAL path returns before the contact is ever
+    // re-read, so it stays empty there and attributeCampaign() falls back to what
+    // we pushed for this contact. (add_business may fill it early, when it has to
+    // read the owner's identity off the CRM.)
+    let contactTags: string[] = [];
+
+    // ── THE OWNER'S BUSINESS SET ─────────────────────────────────────────────
+    // One read, used by every action. On the plain-open path a count of 0 or 1 is
+    // the world as it was before this feature existed, and the code below takes
+    // exactly the same branches it always did.
+    let businesses: BusinessSummary[];
+    try {
+      businesses = await loadBusinesses(db, contactId, null, viewer);
+    } catch (e) {
+      // Unreadable is NOT "one business". Failing open here would resolve a
+      // multi-business owner down to business #1 — the exact bug this fixes.
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+    const multiBusiness = businesses.length > 1;
+
+    // ── action:'open' with MORE THAN ONE business → hand the UI the picker. ──
+    // No auto-pick: choosing for the setter is how business #2 became invisible.
+    // Nothing is created and nothing is claimed on this path.
+    if (action === "open" && multiBusiness) {
+      return json({
+        ok: true,
+        multiple_businesses: true,
+        ghl_contact_id: contactId,
+        matched_ucc: matchedUcc,
+        businesses,
+      });
+    }
+
+    // The business this request is scoped to (open_business, or add_business once
+    // it has resolved/created its customers row). Null = the owner-wide behavior
+    // this function has always had.
+    let scopedCustomerId: string | null = action === "open_business" ? bodyCustomerId : null;
+    // Its NAME — how its own GHL opportunity gets matched, or minted.
+    let scopedBusinessName: string | null = action === "add_business"
+      ? newBusinessName
+      : str(forcedCustomer?.business_name);
+    // An opportunity minted for a brand-new business, to be stamped on its deal.
+    let pendingOppId: string | null = null;
+    // Set when the business was added but the CRM would not give it its own
+    // opportunity — surfaced on the response so this is never silent.
+    let oppWarning: string | null = null;
+    // Skip UCC/lead backfills onto a customer we just created for a SECOND
+    // business — that intel belongs to the business the lead was harvested for.
+    let freshBusiness = false;
+
+    // ── action:'add_business' ────────────────────────────────────────────────
+    if (action === "add_business") {
+      const want = normBusiness(newBusinessName);
+      // SAME OWNER + SAME NAME = RESUME. Only a real name can match: an owner
+      // whose existing row has no business_name never blocks a named one.
+      const dupe = want ? businesses.find((b) => normBusiness(b.business_name) === want) : undefined;
+      if (dupe) {
+        scopedCustomerId = dupe.customer_id;
+      } else {
+        // The person fields the new business inherits — the owner's newest row.
+        const owner = businesses.length
+          ? await (async (): Promise<OwnerCustomer | null> => {
+            const { data } = await db.from("customers").select(OWNER_COLS)
+              .eq("id", businesses[0].customer_id).maybeSingle();
+            return (data as unknown as OwnerCustomer) ?? null;
+          })()
+          : null;
+
+        // Identity for an owner we have no customers row for at all — read it off
+        // the CRM contact rather than minting a nameless merchant.
+        let ownerFirst = str(owner?.first_name), ownerLast = str(owner?.last_name);
+        let ownerEmail = str(owner?.email), ownerPhone = str(owner?.phone);
+        if (!owner) {
+          if (seed) {
+            ownerFirst = seed.first; ownerLast = seed.last;
+            ownerEmail = seed.email; ownerPhone = seed.phone;
+          } else {
+            try {
+              const cfg = await getGhlConfig(db);
+              const got = await getContact(cfg, contactId);
+              if (!got.ok) throw new Error(`${ghlErrorMessage(got.error)} (HTTP ${got.status})`);
+              const c = (got.data?.contact ?? {}) as Record<string, unknown>;
+              ownerFirst = str(c.firstName) ?? (str(c.contactName)?.split(/\s+/)[0] ?? null);
+              ownerLast = str(c.lastName);
+              ownerEmail = str(c.email);
+              ownerPhone = str(c.phone);
+              if (Array.isArray(c.tags)) contactTags = (c.tags as unknown[]).map((t) => String(t));
+            } catch (e) {
+              return json({ ok: false, error: `Couldn't load the owner from the CRM: ${e instanceof Error ? e.message : String(e)}` }, 502);
+            }
+          }
+        }
+
+        // SAFETY, STEP 1 — give every EXISTING sibling deal its opportunity id
+        // BEFORE a second one exists. Once the contact carries two open MCA
+        // opportunities, resolveOpportunityId is (correctly) ambiguous and can
+        // never fill that hole again, and a NULL-opp deal is what adoptOrphanDeal
+        // cross-wires.
+        for (const b of businesses) {
+          if (!b.deal_id || b.ghl_opportunity_id) continue;
+          const oppId = await resolveOpportunityId(db, contactId);
+          if (!oppId) break;
+          const { error } = await db.from("deals").update({ ghl_opportunity_id: oppId })
+            .eq("id", b.deal_id).is("ghl_opportunity_id", null);
+          if (error) console.error("[playbook-open-contact] sibling opp backfill failed:", error.message);
+          else console.log("[playbook-open-contact] pre-linked sibling deal", b.deal_id, "to opportunity", oppId);
+        }
+
+        // SAFETY, STEP 2 — the new business's OWN opportunity, BEFORE its deal.
+        // Ordered this way on purpose: if the CRM can't give us one, we create
+        // nothing at all rather than leave a second NULL-opp deal on the contact.
+        const opp = await opportunityForBusiness(
+          db, contactId, newBusinessName,
+          [ownerFirst, ownerLast].filter(Boolean).join(" ") || null,
+        );
+        if ("error" in opp) {
+          // Couldn't even READ the CRM: stop. Guessing here would either duplicate
+          // an opportunity that already exists or create a business blind.
+          if (!opp.degradable) return json({ ok: false, error: `Couldn't add that business: ${opp.error}` }, 502);
+          // Read was good, the CREATE is what failed — on this location that is
+          // routine (allowDuplicateOpportunity is off). Go ahead with a deal that
+          // carries no opportunity id: ghl-webhook's adopt path now matches by
+          // business name across several unlinked deals and adopts nothing when
+          // the name doesn't settle it, so this can no longer cross-wire.
+          oppWarning = opp.error;
+          console.warn("[playbook-open-contact] add_business proceeding without an opportunity:", opp.error);
+        } else {
+          pendingOppId = opp.id;
+        }
+
+        const { data: created, error: cErr } = await db.from("customers").insert({
+          first_name: ownerFirst ?? "Merchant",
+          last_name: ownerLast ?? "",
+          business_name: newBusinessName,
+          email: ownerEmail,
+          phone: ownerPhone,
+          status: "lead",
+          source: str(owner?.source) ?? sourceFor(leadRow),
+          ghl_contact_id: contactId,
+          additional_phones: owner?.additional_phones ?? [],
+          additional_emails: owner?.additional_emails ?? [],
+        }).select("id").single();
+        if (cErr || !created) {
+          return json({ ok: false, error: `Couldn't add that business: ${cErr?.message ?? "unknown"}` }, 500);
+        }
+        scopedCustomerId = created.id;
+        freshBusiness = true;
+      }
+    }
+
     // GHL custom-field IDs are read from get_ghl_config() (decoupled handshake —
     // another agent persists the three ids into the config JSON). Absent keys are
     // skipped silently; nothing is ever hardcoded.
@@ -786,12 +1317,6 @@ Deno.serve(async (req) => {
     // on resume. A human/underwriter value (manual/application/bank_statements,
     // rank >= 2) is NEVER touched — the .or() filter is the race-safe DB guard that
     // mirrors the shared canWrite() precedence in _shared/positionsSource.ts.
-    // The GHL contact's tags — how a dial campaign claims this merchant. Declared
-    // here because the EXISTING-DEAL path returns before the contact is ever
-    // re-read, so it stays empty there and attributeCampaign() falls back to what
-    // we pushed for this contact.
-    let contactTags: string[] = [];
-
     async function refreshDealPositions(dealId: string): Promise<void> {
       // The harvester's richer signal wins; the Lead Machine file fills the gap
       // it leaves for purchased UCC leads.
@@ -912,27 +1437,52 @@ Deno.serve(async (req) => {
     // FILLS A NULL (the .is() filter makes the write idempotent and means a deal
     // that already carries an id is never re-pointed). Costs one GHL call, and
     // only on a setter-driven open, so it is nothing against the daily budget.
-    async function backfillDealOpportunity(dealId: string, current: string | null): Promise<void> {
-      if (current) return;
-      const oppId = await resolveOpportunityId(db, contactId);
-      if (!oppId) return;
+    //
+    // MULTI-BUSINESS: resolveOpportunityId deliberately refuses to pick when a
+    // contact has two open MCA opportunities, so on a business-scoped open we
+    // resolve by the BUSINESS's name instead (and mint one if nothing matches) —
+    // otherwise the second business's deal would sit at NULL forever, which is the
+    // one state adoptOrphanDeal can cross-wire. A single-business contact still
+    // takes the original, never-creates path.
+    // Returns the opportunity id the deal carries AFTER this ran, so the caller
+    // can report it (null when there still isn't one — same as before).
+    async function backfillDealOpportunity(dealId: string, current: string | null): Promise<string | null> {
+      if (current) return current;
+      let oppId: string | null = null;
+      if (scopedCustomerId && multiBusiness) {
+        const r = await opportunityForBusiness(db, contactId, scopedBusinessName, null);
+        if ("error" in r) {
+          console.warn("[playbook-open-contact] per-business opp resolve failed (deal keeps no opp id):", r.error);
+          return null;
+        }
+        oppId = r.id;
+      } else {
+        oppId = await resolveOpportunityId(db, contactId);
+      }
+      if (!oppId) return null;
       const { error } = await db.from("deals")
         .update({ ghl_opportunity_id: oppId })
         .eq("id", dealId)
         .is("ghl_opportunity_id", null);
-      if (error) console.error("[playbook-open-contact] opp id backfill failed:", error.message);
-      else console.log("[playbook-open-contact] linked deal", dealId, "to opportunity", oppId);
+      if (error) { console.error("[playbook-open-contact] opp id backfill failed:", error.message); return null; }
+      console.log("[playbook-open-contact] linked deal", dealId, "to opportunity", oppId);
+      return oppId;
     }
 
     // ── 1) IDEMPOTENT RESOLVE: newest OPEN mca deal already on this contact. ──
-    const { data: existingDeals, error: findErr } = await db
-      .from("deals")
-      .select("id, assigned_closer_id, status, customer_id, ghl_opportunity_id")
-      .eq("ghl_contact_id", contactId)
-      .eq("deal_type", "mca")
-      .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
-      .order("created_at", { ascending: false })
-      .limit(1);
+    // OWNER-WIDE, so it is skipped entirely on a business-scoped request — "the
+    // newest open deal on this contact" is the wrong answer when the caller named
+    // WHICH business they want. Those go straight to the per-customer resolve (2b).
+    const { data: existingDeals, error: findErr } = scopedCustomerId
+      ? { data: null, error: null }
+      : await db
+        .from("deals")
+        .select("id, assigned_closer_id, status, customer_id, ghl_opportunity_id")
+        .eq("ghl_contact_id", contactId)
+        .eq("deal_type", "mca")
+        .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
+        .order("created_at", { ascending: false })
+        .limit(1);
     if (findErr) return json({ ok: false, error: `deal lookup failed: ${findErr.message}` }, 500);
 
     if (existingDeals && existingDeals.length > 0) {
@@ -940,7 +1490,7 @@ Deno.serve(async (req) => {
         id: string; assigned_closer_id: string | null; customer_id: string | null;
         ghl_opportunity_id: string | null;
       };
-      await backfillDealOpportunity(d.id, d.ghl_opportunity_id);
+      const oppNow = await backfillDealOpportunity(d.id, d.ghl_opportunity_id);
       // Resume: refresh the auto-populated fields onto the existing deal + its
       // customer. Positions/score refresh from the latest UCC read when the deal's
       // source is a UCC estimate or unset (rank <= 1); a human/underwriter value is
@@ -957,17 +1507,22 @@ Deno.serve(async (req) => {
       // Enrichment, not creation — runs on an EXISTING deal too, because the
       // value is having every number in front of the setter on this call.
       const extras1 = d.customer_id ? await mergeCustomerExtras(db, d.customer_id, contactId) : null;
-      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1, ...(extras1 ? { customer_extras: extras1 } : {}) });
+      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, ghl_opportunity_id: oppNow, customer_id: d.customer_id, multiple_businesses: false, matched_ucc: matchedUcc, ...attr1, ...(extras1 ? { customer_extras: extras1 } : {}) });
     }
 
     // ── 2) Resolve/create the CUSTOMER for this GHL contact. ──────────────────
     // Reuse a customer already linked to this ghl contact; else pull the GHL
     // contact and dedupe by email / last-10 phone before minting a new one.
-    let customerId: string | null = null;
+    // A business-scoped request already named its customer — the owner-wide
+    // "first customer on this contact" lookup below is exactly the collapse this
+    // feature exists to undo, so it is skipped there.
+    let customerId: string | null = scopedCustomerId;
 
-    const { data: linkedCust } = await db
-      .from("customers").select("id").eq("ghl_contact_id", contactId).limit(1).maybeSingle();
-    if (linkedCust?.id) customerId = linkedCust.id;
+    if (!customerId) {
+      const { data: linkedCust } = await db
+        .from("customers").select("id").eq("ghl_contact_id", contactId).limit(1).maybeSingle();
+      if (linkedCust?.id) customerId = linkedCust.id;
+    }
 
     // Identity for the customer row. The phone path already knows it (from the
     // UCC lead we just upserted into GHL); the contact-id path reads it back off
@@ -979,7 +1534,9 @@ Deno.serve(async (req) => {
     // not merely when there is no seed at all. A phone-path open with no local
     // match used to skip this entirely, so a contact that already carried a
     // perfectly good name in GHL still produced a nameless customer.
-    if (!seed?.first) {
+    // (Skipped on a business-scoped request: the customer is already chosen, so
+    // this read would only spend a GHL call to fill fields nothing reads.)
+    if (!scopedCustomerId && !seed?.first) {
       try {
         const cfg = await getGhlConfig(db);
         const got = await getContact(cfg, contactId);
@@ -1068,7 +1625,11 @@ Deno.serve(async (req) => {
 
     // Existing customer (linked or deduped): backfill any NULL address columns
     // from the UCC lead — never overwrite a value a human already entered.
-    if (!customerCreated && customerId) {
+    // NOT for a business we just added: the UCC/Lead-Machine intel behind this
+    // contact was harvested for the OTHER business, and stamping its address,
+    // industry and revenue onto business #2 would invent facts about a merchant
+    // nobody has qualified yet.
+    if (!customerCreated && !freshBusiness && customerId) {
       await backfillCustomerAddress(customerId);
       await backfillCustomerFromLead(db, customerId, leadRow);
     }
@@ -1094,7 +1655,7 @@ Deno.serve(async (req) => {
         const { error: linkErr } = await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", d.id);
         if (linkErr) console.error("[playbook-open-contact] deal ghl link backfill failed:", linkErr.message);
       }
-      await backfillDealOpportunity(d.id, d.ghl_opportunity_id);
+      const oppNow2 = await backfillDealOpportunity(d.id, d.ghl_opportunity_id);
       // Resume: refresh existing positions onto this pre-existing open deal from
       // the latest UCC read (source rank <= 1 only — never overwrite a refined value).
       await refreshDealPositions(d.id);
@@ -1105,18 +1666,35 @@ Deno.serve(async (req) => {
       // Enrichment, not creation — runs on an EXISTING deal too, because the
       // value is having every number in front of the setter on this call.
       const extras1 = customerId ? await mergeCustomerExtras(db, customerId, contactId) : null;
-      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr1, ...(extras1 ? { customer_extras: extras1 } : {}) });
+      return json({ ok: true, deal_id: d.id, created: false, claimed, ghl_contact_id: contactId, ghl_opportunity_id: oppNow2, customer_id: customerId, multiple_businesses: false, matched_ucc: matchedUcc, ...attr1, ...(extras1 ? { customer_extras: extras1 } : {}) });
     }
 
     // ── 3) Create the DEAL, owned by the calling closer (if a closer). ────────
     // Auto-populate existing MCA positions from the backing UCC lead (no
     // overwrite risk — this is a brand-new deal).
-    const newDealPositions = await positionsPatch();
+    // (A business we just ADDED gets none of it — those liens were filed against
+    // the owner's OTHER business, and copying them here would put a stack on a
+    // merchant that may carry no advances at all.)
+    const newDealPositions = freshBusiness ? null : await positionsPatch();
     // The contact's open MCA opportunity, so this deal is VISIBLE to the
     // ghl-webhook stage mirror from the moment it exists. Without it the mirror
     // can't join the two and creates a duplicate deal on the next stage move.
     // Null is fine (and is the old behavior) — never blocks deal creation.
-    const newDealOppId = await resolveOpportunityId(db, contactId);
+    //
+    // A NEW BUSINESS ALREADY HAS ITS OWN (pendingOppId, minted before this row
+    // existed precisely so this deal is never born NULL); a business-scoped open
+    // on a multi-business owner resolves by name. Everything else is unchanged.
+    const newDealOppId = pendingOppId
+      ?? (scopedCustomerId && multiBusiness
+        ? await (async () => {
+          const r = await opportunityForBusiness(db, contactId, scopedBusinessName, null);
+          if ("error" in r) {
+            console.warn("[playbook-open-contact] per-business opp resolve failed (deal born with no opp id):", r.error);
+            return null;
+          }
+          return r.id;
+        })()
+        : await resolveOpportunityId(db, contactId));
     const { data: newDeal, error: dealErr } = await db
       .from("deals")
       .insert({
@@ -1134,13 +1712,15 @@ Deno.serve(async (req) => {
         created_by: caller.id,
         assigned_closer_id: isCloser ? caller.id : null,
         lead_qual: {
-          opened_from: seed ? "playbook_phone_link" : "playbook_deep_link",
+          opened_from: freshBusiness
+            ? "playbook_add_business"
+            : (seed ? "playbook_phone_link" : "playbook_deep_link"),
           ghl_contact_id: contactId,
-          ...(uccLeadId ? { ucc_lead_id: uccLeadId } : {}),
+          ...(freshBusiness ? {} : (uccLeadId ? { ucc_lead_id: uccLeadId } : {})),
         },
         ...(newDealPositions ?? {}),
         // Seed the UCC MCA quality score onto the brand-new deal (no overwrite risk).
-        ...(uccMcaScore != null ? { mca_score: uccMcaScore } : {}),
+        ...(!freshBusiness && uccMcaScore != null ? { mca_score: uccMcaScore } : {}),
       })
       .select("id")
       .single();
@@ -1148,7 +1728,7 @@ Deno.serve(async (req) => {
 
     const attr2 = await attributeCampaign(db, newDeal.id, contactId, contactTags);
     const extras2 = customerId ? await mergeCustomerExtras(db, customerId, contactId) : null;
-    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, ghl_opportunity_id: newDealOppId, matched_ucc: matchedUcc, ...attr2, ...(extras2 ? { customer_extras: extras2 } : {}) });
+    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, ghl_opportunity_id: newDealOppId, customer_id: customerId, business_name: scopedBusinessName ?? business, multiple_businesses: false, matched_ucc: matchedUcc, ...(oppWarning ? { opportunity_warning: oppWarning } : {}), ...attr2, ...(extras2 ? { customer_extras: extras2 } : {}) });
   } catch (e) {
     console.error("[playbook-open-contact] fatal:", e);
     return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
