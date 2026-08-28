@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { Link } from "react-router-dom";
 import {
@@ -99,11 +99,16 @@ const emptyForm = {
 export default function PlaybookCapture({
   playbook,
   onCreated,
+  newLeadSignal,
 }: {
   playbook: Playbook;
   /** When provided, the parent takes over after creation (loads the deal into
    * the guided workspace) and this component does NOT show its own success card. */
   onCreated?: (deal: Deal) => void;
+  /** Bumped by the page's "+ New Lead" button. Each bump forces this card open
+   * on the "+ New lead" capture form (blank, ready to type) — one click from
+   * anywhere on the playbook to a live-transfer intake. */
+  newLeadSignal?: number;
 }) {
   const isVcf = playbook.pipeline === "vcf";
   const defaults = PLAYBOOK_DEFAULTS[playbook.id];
@@ -152,6 +157,26 @@ export default function PlaybookCapture({
     setMode(allowsManualEntry ? (defaults.defaultMode ?? "new") : "existing");
     setExistingId("");
   }, [playbook.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // "+ New Lead" from the page header: expand this card and put it on the blank
+  // capture form so the closer types the caller's name immediately. Declared
+  // AFTER the playbook-switch reset above so that when the button changes BOTH
+  // the playbook and the mode in one go, this wins. Flows that never take a
+  // hand-typed lead (manualEntry:false) keep the existing-customer picker.
+  // Seeded with the CURRENT signal so a plain mount never counts as a click.
+  // (The page keys this component on playbook.id, so switching tabs remounts it
+  // with a non-zero signal — without this seed that remount would force the
+  // Website flow onto "+ New lead" instead of its own existing-customer default.)
+  const handledNewLeadSignal = useRef(newLeadSignal ?? 0);
+  useEffect(() => {
+    if (!newLeadSignal || handledNewLeadSignal.current === newLeadSignal) return;
+    handledNewLeadSignal.current = newLeadSignal;
+    setOpen(true);
+    setSaved(null);
+    setError(null);
+    setMatchNotice(null);
+    if (allowsManualEntry) setMode("new");
+  }, [newLeadSignal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Smart default: attach the newest active campaign that matches the lead
   // source (re-derives when the source changes), until the closer picks one.

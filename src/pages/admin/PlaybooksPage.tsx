@@ -17,6 +17,7 @@ import {
   CheckCircleIcon,
   UserCircleIcon,
   UserIcon,
+  UserPlusIcon,
   XMarkIcon,
   LockClosedIcon,
   PencilSquareIcon,
@@ -175,6 +176,15 @@ export default function PlaybooksPage() {
   const [flowOpen, setFlowOpen] = useState(false);
   // Flow picker (the grid of flow cards) is an accordion, DEFAULT CLOSED.
   const [pickerOpen, setPickerOpen] = useState(false);
+  // ── "+ New Lead" (header button) ──────────────────────────────────────────
+  // An inbound caller is ON THE PHONE. One click has to land the closer on the
+  // live-transfer intake form with the cursor ready — never "go to the Live
+  // Transfer tab first, then switch to + New lead". The counter is the signal
+  // PlaybookCapture watches (it re-fires even when we're already on the
+  // live-transfer tab, which a boolean couldn't do); captureRef scrolls the
+  // form into view past My Day.
+  const [newLeadSignal, setNewLeadSignal] = useState(0);
+  const captureRef = useRef<HTMLDivElement>(null);
   const [busyStep, setBusyStep] = useState<number | null>(null);
   // Bottom-right status notifications (deal closed, errors). Replaces the native
   // alert() calls this page used to fire.
@@ -400,6 +410,29 @@ export default function PlaybooksPage() {
       const bi = PLAYBOOK_TAB_ORDER.indexOf(b.id);
       return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
+
+  // One click from anywhere on this page → a blank live-transfer intake.
+  // Deselects the loaded deal (it is NOT deleted — it's still in My Day / the
+  // Resume picker, same as the "⇄ Switch lead" button), switches to the Live
+  // Transfer flow, and signals the capture card to open on "+ New lead".
+  function startNewLead() {
+    const lt = visiblePlaybooks.find((p) => p.id === "live-transfer");
+    if (lt) setActive(lt);
+    setDeal(null);
+    setPickerOpen(false);
+    setNewLeadSignal((n) => n + 1);
+  }
+
+  // Bring the capture form into view after it renders (My Day sits above it and
+  // can be tall). Two frames: one for the state flush, one for the remount that
+  // a playbook switch causes.
+  useEffect(() => {
+    if (!newLeadSignal) return;
+    const t = setTimeout(() => {
+      captureRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [newLeadSignal]);
 
   // Live Transfer: the greeting already happens IN the intake capture when the
   // closer creates the lead, so its step is removed from the data entirely — here
@@ -842,16 +875,30 @@ export default function PlaybooksPage() {
             </p>
           )}
         </div>
-        {/* The Pipeline Playbook is the stage-by-stage reference/onboarding map
-            (MCA web, MCA live-transfer, VCF) — kept as a companion to this
-            action console rather than duplicated here. */}
-        <Link
-          to="/admin/pipeline-playbook"
-          className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium text-ocean-blue hover:underline whitespace-nowrap"
-        >
-          Reference: full pipeline guide
-          <ArrowRightIcon className="w-4 h-4" />
-        </Link>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* Someone just called in — start typing immediately. Opens the
+              live-transfer intake form in one click, from any flow, deal loaded
+              or not. */}
+          <button
+            type="button"
+            onClick={startNewLead}
+            title="Someone's on the phone — open a blank live-transfer intake"
+            className="shrink-0 inline-flex items-center gap-2 rounded-lg bg-mint-green px-4 py-2.5 text-sm font-bold text-midnight-blue shadow-sm hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-mint-green/50"
+          >
+            <UserPlusIcon className="w-5 h-5" />
+            New Lead
+          </button>
+          {/* The Pipeline Playbook is the stage-by-stage reference/onboarding map
+              (MCA web, MCA live-transfer, VCF) — kept as a companion to this
+              action console rather than duplicated here. */}
+          <Link
+            to="/admin/pipeline-playbook"
+            className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium text-ocean-blue hover:underline whitespace-nowrap"
+          >
+            Reference: full pipeline guide
+            <ArrowRightIcon className="w-4 h-4" />
+          </Link>
+        </div>
       </div>
 
       {/* My Day — ranked work queue; a card loads that deal + switches the flow tab */}
@@ -991,11 +1038,14 @@ export default function PlaybooksPage() {
                 <button onClick={() => setDeal(null)} className="shrink-0 underline">Clear</button>
               </div>
             )}
-            <PlaybookCapture
-              key={active.id}
-              playbook={active}
-              onCreated={(d: Deal) => refreshDeal(d.id)}
-            />
+            <div ref={captureRef} className="scroll-mt-4">
+              <PlaybookCapture
+                key={active.id}
+                playbook={active}
+                onCreated={(d: Deal) => refreshDeal(d.id)}
+                newLeadSignal={newLeadSignal}
+              />
+            </div>
             <ResumePicker pipeline={active.pipeline} onPick={pickFromQueue} />
           </div>
         )}
