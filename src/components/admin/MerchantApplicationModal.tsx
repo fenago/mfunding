@@ -278,10 +278,14 @@ export default function MerchantApplicationModal({
   deal,
   onClose,
   onSent,
+  onSaved,
 }: {
   deal: DealWithCustomer;
   onClose: () => void;
   onSent: () => void;
+  /** Fired after a save that changed the DEAL (the ask / use of funds) so the
+   *  screen behind this modal re-reads it instead of showing the old number. */
+  onSaved?: () => void;
 }) {
   const [form, setForm] = useState<AppForm>(EMPTY);
   // A saved draft freezes contact info at save time. If the LEAD's email/phone
@@ -299,6 +303,14 @@ export default function MerchantApplicationModal({
   const [busy, setBusy] = useState<"save" | "send" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // The application saved, but mirroring the ask back onto the deal did not (RLS,
+  // or the row moved). Shown separately from `error` because the application IS
+  // saved — the only untrue thing would be letting the closer believe the Playbook
+  // now agrees with what they just typed.
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
+  // The saved draft's ask was older than the deal's, so the deal's number was
+  // loaded instead. Held so the closer is told which figure they're looking at.
+  const [askAdopted, setAskAdopted] = useState<{ from: number | null; to: number } | null>(null);
   // HALF-SEND RECOVERY: the e-sign document goes out FIRST (push-application-to-ghl
   // enrolls the merchant in the GHL doc workflow), the closer's cover note second.
   // When the cover note fails, the DOCUMENT IS ALREADY WITH THE MERCHANT — re-running
@@ -396,6 +408,24 @@ export default function MerchantApplicationModal({
           // Boolean columns are stored as true/false; the form uses "yes"/"no".
           next[k] = BOOLEAN_KEYS.includes(k) ? (v ? "yes" : "no") : String(v);
         }
+
+        /* THE ASK FOLLOWS THE DEAL, NOT THE FROZEN DRAFT.
+           A saved application is a SNAPSHOT of the ask; deals.amount_requested is
+           the ask. Since every save here writes the amount back to the deal, the
+           two can only diverge one way — the deal was edited AFTERWARDS (Edit lead
+           info). Re-hydrating the draft's number would put the stale figure back on
+           screen and, on the next save, write it straight back over the correction.
+           So the deal wins, and we SAY that it did rather than swapping a number
+           under the closer silently. */
+        const dealAsk = deal.amount_requested != null ? String(Number(deal.amount_requested)) : "";
+        const draftAsk = next.amount_requested === "" ? "" : String(Number(next.amount_requested));
+        if (dealAsk !== "" && dealAsk !== draftAsk) {
+          next.amount_requested = dealAsk;
+          setAskAdopted({ from: draftAsk === "" ? null : Number(draftAsk), to: Number(dealAsk) });
+        }
+        const dealUse = (deal.use_of_funds ?? "").trim();
+        if (dealUse !== "" && dealUse !== next.use_of_funds.trim()) next.use_of_funds = dealUse;
+
         setForm(next);
         // Drift check: the customer's CURRENT contact info vs what the saved
         // application row holds. (e.g. closer fixed the email via Edit lead info
@@ -587,6 +617,79 @@ export default function MerchantApplicationModal({
     return out;
   }
 
+  // ── ONE ASK, ONE NUMBER ────────────────────────────────────────────────
+  //
+  // The ask lives on `deals.amount_requested`. That single column is what the
+  // Playbook header ("asking $75K · 0.6×"), the "$ in play" commission chip, the
+  // underwriter, the funder matcher AND this modal's own prefill all read.
+  //
+  // This modal used to write the amount to `mca_applications` ONLY. So a closer
+  // who corrected the ask here — the one screen where they're actually asking the
+  // merchant "how much do you need?" — left the deal holding the old number, and
+  // the Playbook went on quoting a figure the merchant never asked for.
+  //
+  // So every save pushes the three fields the application SHARES with the record
+  // back to their canonical homes:
+  //   amount_requested → deals.amount_requested
+  //   use_of_funds     → deals.use_of_funds
+  //   monthly_revenue  → customers.monthly_revenue
+  //
+  // A blank input means "not captured here", never "erase what we know" — an
+  // empty field leaves the stored value alone. Unchanged values aren't written.
+  //
+  // Returns a human reason when a write did NOT land (RLS denial, no row) so the
+  // closer is TOLD the ask stayed behind rather than assuming it followed. It
+  // never throws: the application itself is already saved by the time we run, and
+  // a failed mirror must not roll that back or block a send.
+  async function syncSharedFieldsToDeal(): Promise<string | null> {
+    const num = (s: string): number | null => {
+      const t = String(s ?? "").replace(/[$,\s]/g, "").trim();
+      if (t === "") return null;
+      const n = Number(t);
+      return Number.isFinite(n) ? n : null;
+    };
+    // Compare as numbers — the deal's numeric column can arrive as a string.
+    const same = (a: number, b: number | null | undefined) =>
+      b !== null && b !== undefined && Number(b) === a;
+
+    const dealPatch: Record<string, unknown> = {};
+    const ask = num(form.amount_requested);
+    if (ask !== null && !same(ask, deal.amount_requested)) dealPatch.amount_requested = ask;
+    const use = form.use_of_funds.trim();
+    if (use !== "" && use !== (deal.use_of_funds ?? "").trim()) dealPatch.use_of_funds = use;
+
+    const rev = num(form.monthly_revenue);
+    const revChanged = rev !== null && !same(rev, cust?.monthly_revenue);
+
+    const failed: string[] = [];
+    if (Object.keys(dealPatch).length > 0) {
+      try {
+        await mustWrite(
+          "save the ask on the deal",
+          supabase.from("deals").update(dealPatch).eq("id", deal.id),
+        );
+      } catch (e) {
+        failed.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+    if (revChanged && deal.customer_id) {
+      try {
+        await mustWrite(
+          "save monthly revenue on the merchant",
+          supabase.from("customers").update({ monthly_revenue: rev }).eq("id", deal.customer_id),
+        );
+      } catch (e) {
+        failed.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+    if (failed.length > 0) {
+      return `The application saved, but the deal record did NOT take the new numbers — the Playbook still shows the old ask. ${failed.join(" ")}`;
+    }
+    // Only ask the parent to re-read when something actually changed.
+    if (Object.keys(dealPatch).length > 0 || revChanged) onSaved?.();
+    return null;
+  }
+
   // Upsert the application row (by deal_id). Returns the row id.
   async function persist(status: "draft" | "sent"): Promise<string> {
     const body = { ...payload(), status };
@@ -611,6 +714,9 @@ export default function MerchantApplicationModal({
     setError(null);
     try {
       await persist("draft");
+      // The ask/use-of-funds/revenue the closer just typed become the RECORD's
+      // numbers too — otherwise this draft and the Playbook disagree.
+      setSyncWarning(await syncSharedFieldsToDeal());
       setToast("Application saved.");
       setTimeout(() => setToast(null), 3000);
     } catch (e) {
@@ -653,6 +759,11 @@ export default function MerchantApplicationModal({
     setError(null);
     try {
       const id = await persist("sent");
+
+      // Mirror the ask onto the deal BEFORE the push: the pre-application path in
+      // push-application-to-ghl reads deals.amount_requested, so a stale deal would
+      // put a stale number on the merchant's document.
+      setSyncWarning(await syncSharedFieldsToDeal());
 
       // CRITICAL: push the application into the merchant's GHL contact custom
       // fields (the source the e-sign document MERGES from) BEFORE anything else.
@@ -1252,6 +1363,13 @@ export default function MerchantApplicationModal({
 
               {tab === "funding" && (
                 <div className="grid sm:grid-cols-2 gap-4">
+                  {askAdopted && (
+                    <div className="sm:col-span-2 rounded-lg border border-ocean-blue/40 bg-ocean-blue/5 dark:bg-ocean-blue/10 px-3 py-2 text-xs text-gray-700 dark:text-gray-200">
+                      Showing the ask from the lead record — <b>${askAdopted.to.toLocaleString()}</b>
+                      {askAdopted.from !== null && <> (this saved application had <b>${askAdopted.from.toLocaleString()}</b>)</>}.
+                      Save to bring the application back in step.
+                    </div>
+                  )}
                   <div><Label req>Amount requested ($)</Label>
                     <input type="number" className={inputCls} placeholder="50000" value={form.amount_requested} onChange={(e) => set("amount_requested", e.target.value)} /></div>
                   <div><Label req>Monthly revenue ($)</Label>
@@ -1358,6 +1476,11 @@ export default function MerchantApplicationModal({
           )}
 
           {error && <p className="text-sm text-red-600 mb-3 whitespace-pre-line">{error}</p>}
+          {syncWarning && (
+            <p className="text-sm mb-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-amber-800 dark:text-amber-300">
+              ⚠ {syncWarning}
+            </p>
+          )}
           {pendingNote && (
             <button
               type="button"

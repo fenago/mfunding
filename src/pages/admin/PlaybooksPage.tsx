@@ -1404,6 +1404,10 @@ export default function PlaybooksPage() {
           deal={deal}
           onClose={() => setShowApplication(false)}
           onSent={() => { setShowApplication(false); refreshDeal(deal.id); }}
+          /* A saved application can change the ASK (deals.amount_requested) — re-read
+             the deal WITHOUT closing the modal so the header behind it stops showing
+             the old number the moment the closer saves the new one. */
+          onSaved={() => refreshDeal(deal.id)}
         />
       )}
 
@@ -3902,6 +3906,15 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
      address the merchant gave us is ever silently dropped. */
   const [extraEmails, setExtraEmails] = useState<string[]>(c?.additional_emails ?? []);
   const [phone, setPhone] = useState(c?.phone ?? "");
+  /* THE ASK. One field, one column: deals.amount_requested — the same number the
+     header chip ("asking $75K"), the "$ in play" commission estimate, the funder
+     matcher, the underwriter and the merchant's application all read. It was
+     previously editable ONLY inside the application modal, so an owner who fixed
+     the ask anywhere else fixed nothing. Seeded from the deal, so a blank box is a
+     deliberate clear ("we don't know yet") and is saved as such. */
+  const [amountRequested, setAmountRequested] = useState(
+    deal.amount_requested != null ? String(deal.amount_requested) : "",
+  );
   // Advanced (deal) fields — these live on the DEAL, not the customer.
   const [market, setMarket] = useState<Market | "">((deal.market as Market | null) ?? "");
   const [leadSource, setLeadSource] = useState(deal.lead_source ?? "");
@@ -3987,7 +4000,14 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
           })
           .eq("id", deal.customer_id),
       );
-      // Attribution / routing → the DEAL (market, lead_source, campaign, closer).
+      // Attribution / routing + THE ASK → the DEAL.
+      const askRaw = amountRequested.replace(/[$,\s]/g, "").trim();
+      const askNum = askRaw === "" ? null : Number(askRaw);
+      if (askNum !== null && (!Number.isFinite(askNum) || askNum < 0)) {
+        setError("Requested amount must be a number (or blank).");
+        setSaving(false);
+        return;
+      }
       await mustWrite(
         "update deal routing",
         supabase
@@ -3997,6 +4017,7 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
             lead_source: leadSource || null,
             campaign_id: campaignId || null,
             assigned_closer_id: closerId || null,
+            amount_requested: askNum,
           })
           .eq("id", deal.id),
       );
@@ -4109,6 +4130,43 @@ function LeadQuickEditModal({ deal, onClose, onSaved }: { deal: DealWithCustomer
           <label className="block">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Cell phone <Req /></span>
             <input className="input-field w-full mt-1" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 123-4567" />
+          </label>
+
+          {/* THE ASK — the one place to change what the merchant is asking for.
+              Saves to deals.amount_requested, which every other surface reads. */}
+          <label className="block">
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+              Requested amount ($) <span className="text-gray-400">(optional)</span>
+            </span>
+            <input
+              className="input-field w-full mt-1"
+              type="number"
+              min="0"
+              step="1000"
+              value={amountRequested}
+              onChange={(e) => setAmountRequested(e.target.value)}
+              placeholder="50000"
+            />
+            <span className="mt-1 block text-[11px] text-gray-500 dark:text-gray-400">
+              {(() => {
+                const ask = Number(amountRequested.replace(/[$,\s]/g, "")) || 0;
+                const rev = Number(c?.monthly_revenue ?? 0);
+                if (ask > 0 && rev > 0) {
+                  const mult = ask / rev;
+                  const tone = mult <= 1.2 ? "text-emerald-600 dark:text-emerald-400"
+                    : mult <= 1.5 ? "text-amber-600 dark:text-amber-400"
+                    : "text-red-600 dark:text-red-400";
+                  return (
+                    <>
+                      <span className={tone}>{mult.toFixed(1)}× the ${Math.round(rev / 1000)}K/mo revenue{mult > 1.5 ? " — reset the ask" : ""}</span>
+                      {" · "}
+                    </>
+                  );
+                }
+                return null;
+              })()}
+              This is <b>the ask</b> — it drives "asking $X", the $-in-play estimate, the funder match and the application.
+            </span>
           </label>
 
           {/* Campaign — promoted OUT of "More details" so a deal that arrived

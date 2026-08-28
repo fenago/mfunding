@@ -135,7 +135,12 @@ export default function QualificationPanel({ deal }: { deal: QualificationDeal }
       {/* What-if criteria form */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {[
-          { key: "amount" as const, label: "Requested amount" },
+          /* "Requested amount" read exactly like the deal's real ask, so editing it
+             looked like editing the record — it never was. These five inputs are a
+             SCRATCHPAD: they seed from the deal, feed matchDeal(), and persist
+             nothing. The ask itself is edited on the Playbook ("Edit lead info") or
+             in the application. */
+          { key: "amount" as const, label: "Amount (what-if)" },
           { key: "credit_score" as const, label: "Credit score" },
           { key: "monthly_revenue" as const, label: "Avg monthly revenue" },
           { key: "annual_revenue" as const, label: "Annual revenue" },
@@ -166,7 +171,9 @@ export default function QualificationPanel({ deal }: { deal: QualificationDeal }
           Reset to deal values
         </button>
         <span className="text-xs text-gray-400">
-          Edit any value to run a what-if against the live funder matrix.
+          Scratchpad — edit any value to run a what-if against the live funder matrix.{" "}
+          <b className="font-semibold">Nothing here is saved</b>; to change the real ask, use
+          "Edit lead info" on the Playbook.
         </span>
       </div>
 
