@@ -35,7 +35,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, getContact, upsertContact, ghlErrorMessage,
-  updateContactCustomFields,
+  updateContactCustomFields, searchOpportunitiesByContact,
 } from "../_shared/ghl.ts";
 import { UCC_OVERWRITABLE_OR_FILTER } from "../_shared/positionsSource.ts";
 import {
@@ -53,6 +53,81 @@ function json(body: unknown, status = 200) {
 // MCA statuses that mean "this deal is done" — mirrors PlaybookCapture's
 // CLOSED_STATUSES so resolve-or-create matches the in-app "resume vs. new" rule.
 const CLOSED_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "restructure_executed", "servicing"];
+
+// The MCA pipeline every deal this function creates belongs to. Mirrors
+// MCA_PIPELINE_ID in ghl-webhook (edge functions can't share consts across dirs
+// without _shared, and this is the only pipeline this function ever touches).
+const MCA_PIPELINE_ID = "bG9ZEh4eP9x60E1CyaMx";
+
+/**
+ * The GHL opportunity a brand-new playbook deal belongs to, or null.
+ *
+ * WHY THIS EXISTS — duplicate deals. `deals.ghl_opportunity_id` is the ONLY
+ * deal-level join key between us and GHL. A deal born here used to carry NULL
+ * there, so it was invisible to the ghl-webhook stage mirror: the moment the
+ * setter advanced the opportunity in GHL (often minutes later), the mirror found
+ * no deal for that opportunity and minted a SECOND one — round-robin'd to a
+ * different closer, splitting commission attribution off the deal the setter was
+ * actually working. Stamping the opportunity id at birth closes that gap at the
+ * source. (ghl-webhook's adopt path is the second half of the same fix.)
+ *
+ * STRICTLY CONSERVATIVE — every uncertain case returns null, which is exactly
+ * today's behavior, so this can only ever remove a duplicate, never create a
+ * mis-link:
+ *   • only opportunities in the MCA pipeline count (a VCF opp is a different deal);
+ *   • only GHL status "open" counts — a won/lost/abandoned opportunity is a past
+ *     cycle, and wiring a fresh deal to it would mirror stale stage moves onto it;
+ *   • more than one open MCA opportunity → genuinely ambiguous → null + log;
+ *   • an opportunity ANOTHER deal already claims → null + log (two deals sharing
+ *     one opportunity id would break the mirror's .maybeSingle() lookup and cause
+ *     the very duplication this is here to prevent).
+ *
+ * Never throws and never blocks deal creation: a GHL outage degrades to null.
+ */
+async function resolveOpportunityId(db: SupabaseClient, contactId: string): Promise<string | null> {
+  try {
+    const cfg = await getGhlConfig(db);
+    const res = await searchOpportunitiesByContact(cfg, contactId);
+    if (!res.ok) {
+      console.warn("[playbook-open-contact] opportunity lookup failed (deal will carry no opp id):",
+        ghlErrorMessage(res.error), `HTTP ${res.status}`);
+      return null;
+    }
+    const all = res.data?.opportunities ?? [];
+    const mine = all.filter((o) => o?.id && o.pipelineId === MCA_PIPELINE_ID);
+    const open = mine.filter((o) => String(o.status ?? "").toLowerCase() === "open");
+    if (open.length === 0) {
+      console.log("[playbook-open-contact] no open MCA opportunity for contact", contactId,
+        `(${mine.length} in pipeline, ${all.length} total)`);
+      return null;
+    }
+    if (open.length > 1) {
+      console.warn("[playbook-open-contact] ambiguous — contact", contactId,
+        "has", open.length, "open MCA opportunities; leaving ghl_opportunity_id NULL:",
+        open.map((o) => o.id).join(", "));
+      return null;
+    }
+    const oppId = open[0].id;
+
+    // Never hand the same opportunity to two deals.
+    const { data: claimed, error: claimErr } = await db
+      .from("deals").select("id, deal_number").eq("ghl_opportunity_id", oppId).limit(1);
+    if (claimErr) {
+      console.warn("[playbook-open-contact] opp-claim check failed; leaving NULL:", claimErr.message);
+      return null;
+    }
+    if (claimed && claimed.length > 0) {
+      console.warn("[playbook-open-contact] opportunity", oppId, "is already on deal",
+        (claimed[0] as { deal_number: string | null }).deal_number, "— leaving ghl_opportunity_id NULL");
+      return null;
+    }
+    return oppId;
+  } catch (e) {
+    console.warn("[playbook-open-contact] opportunity lookup threw (deal will carry no opp id):",
+      e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
 
 const str = (v: unknown): string | null => {
   if (v === null || v === undefined) return null;
@@ -830,10 +905,29 @@ Deno.serve(async (req) => {
       return true;
     }
 
+    // Heal an EXISTING open deal that carries no opportunity id — either it was
+    // born before this fix, or its birth-time lookup came back empty. Same
+    // reason as resolveOpportunityId: a deal with a NULL opp id is invisible to
+    // the ghl-webhook stage mirror, which then mints a duplicate. Only ever
+    // FILLS A NULL (the .is() filter makes the write idempotent and means a deal
+    // that already carries an id is never re-pointed). Costs one GHL call, and
+    // only on a setter-driven open, so it is nothing against the daily budget.
+    async function backfillDealOpportunity(dealId: string, current: string | null): Promise<void> {
+      if (current) return;
+      const oppId = await resolveOpportunityId(db, contactId);
+      if (!oppId) return;
+      const { error } = await db.from("deals")
+        .update({ ghl_opportunity_id: oppId })
+        .eq("id", dealId)
+        .is("ghl_opportunity_id", null);
+      if (error) console.error("[playbook-open-contact] opp id backfill failed:", error.message);
+      else console.log("[playbook-open-contact] linked deal", dealId, "to opportunity", oppId);
+    }
+
     // ── 1) IDEMPOTENT RESOLVE: newest OPEN mca deal already on this contact. ──
     const { data: existingDeals, error: findErr } = await db
       .from("deals")
-      .select("id, assigned_closer_id, status, customer_id")
+      .select("id, assigned_closer_id, status, customer_id, ghl_opportunity_id")
       .eq("ghl_contact_id", contactId)
       .eq("deal_type", "mca")
       .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
@@ -842,7 +936,11 @@ Deno.serve(async (req) => {
     if (findErr) return json({ ok: false, error: `deal lookup failed: ${findErr.message}` }, 500);
 
     if (existingDeals && existingDeals.length > 0) {
-      const d = existingDeals[0] as { id: string; assigned_closer_id: string | null; customer_id: string | null };
+      const d = existingDeals[0] as {
+        id: string; assigned_closer_id: string | null; customer_id: string | null;
+        ghl_opportunity_id: string | null;
+      };
+      await backfillDealOpportunity(d.id, d.ghl_opportunity_id);
       // Resume: refresh the auto-populated fields onto the existing deal + its
       // customer. Positions/score refresh from the latest UCC read when the deal's
       // source is a UCC estimate or unset (rank <= 1); a human/underwriter value is
@@ -981,18 +1079,22 @@ Deno.serve(async (req) => {
     // backfill the contact id rather than minting a duplicate deal.
     const { data: custDeals } = await db
       .from("deals")
-      .select("id, assigned_closer_id, ghl_contact_id")
+      .select("id, assigned_closer_id, ghl_contact_id, ghl_opportunity_id")
       .eq("customer_id", customerId)
       .eq("deal_type", "mca")
       .not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
       .order("created_at", { ascending: false })
       .limit(1);
     if (custDeals && custDeals.length > 0) {
-      const d = custDeals[0] as { id: string; assigned_closer_id: string | null; ghl_contact_id: string | null };
+      const d = custDeals[0] as {
+        id: string; assigned_closer_id: string | null; ghl_contact_id: string | null;
+        ghl_opportunity_id: string | null;
+      };
       if (!d.ghl_contact_id) {
         const { error: linkErr } = await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", d.id);
         if (linkErr) console.error("[playbook-open-contact] deal ghl link backfill failed:", linkErr.message);
       }
+      await backfillDealOpportunity(d.id, d.ghl_opportunity_id);
       // Resume: refresh existing positions onto this pre-existing open deal from
       // the latest UCC read (source rank <= 1 only — never overwrite a refined value).
       await refreshDealPositions(d.id);
@@ -1010,12 +1112,18 @@ Deno.serve(async (req) => {
     // Auto-populate existing MCA positions from the backing UCC lead (no
     // overwrite risk — this is a brand-new deal).
     const newDealPositions = await positionsPatch();
+    // The contact's open MCA opportunity, so this deal is VISIBLE to the
+    // ghl-webhook stage mirror from the moment it exists. Without it the mirror
+    // can't join the two and creates a duplicate deal on the next stage move.
+    // Null is fine (and is the old behavior) — never blocks deal creation.
+    const newDealOppId = await resolveOpportunityId(db, contactId);
     const { data: newDeal, error: dealErr } = await db
       .from("deals")
       .insert({
         customer_id: customerId,
         deal_type: "mca",
         status: "new",
+        ...(newDealOppId ? { ghl_opportunity_id: newDealOppId } : {}),
         // The caller wins; else the lead's own type as `<type>_list` — including a
         // ph_ucc-harvested lead where the UCC signal, not a tag, names it 'ucc';
         // 'ph_setter' is the last-resort fallback, not the default answer.
@@ -1040,7 +1148,7 @@ Deno.serve(async (req) => {
 
     const attr2 = await attributeCampaign(db, newDeal.id, contactId, contactTags);
     const extras2 = customerId ? await mergeCustomerExtras(db, customerId, contactId) : null;
-    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, matched_ucc: matchedUcc, ...attr2, ...(extras2 ? { customer_extras: extras2 } : {}) });
+    return json({ ok: true, deal_id: newDeal.id, created: true, claimed: isCloser, ghl_contact_id: contactId, ghl_opportunity_id: newDealOppId, matched_ucc: matchedUcc, ...attr2, ...(extras2 ? { customer_extras: extras2 } : {}) });
   } catch (e) {
     console.error("[playbook-open-contact] fatal:", e);
     return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);

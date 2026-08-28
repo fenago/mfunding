@@ -921,6 +921,95 @@ async function triggerUnderwriting(customerId: string): Promise<void> {
   } catch { /* best-effort — underwriting must never break the webhook */ }
 }
 
+// Everything the stage-mirror reads off a deal. ONE definition so the adopt path
+// and the by-opportunity-id lookup can never return different shapes.
+const DEAL_MIRROR_COLS =
+  "id, status, customer_id, deal_number, amount_funded, amount_requested, assigned_closer_id, is_renewal, lead_source, ghl_opportunity_id, contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, offer_accepted_at, funded_at, declined_at, nurture_at";
+
+// Deal statuses that mean "this cycle is over" — mirrors CLOSED_STATUSES in
+// playbook-open-contact. A finished deal is never adopted onto a live
+// opportunity; that would resurrect a closed cycle.
+const TERMINAL_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "restructure_executed", "servicing"];
+
+/**
+ * ADOPT, DON'T DUPLICATE.
+ *
+ * `deals.ghl_opportunity_id` is the ONLY deal-level join key between us and GHL,
+ * and playbook-open-contact can create a deal before that id is knowable — so an
+ * OpportunityStageUpdate arriving minutes later found nothing, created a second
+ * deal for the same merchant, and the round-robin handed it to a different
+ * closer. Both deals then lived on, splitting commission attribution.
+ *
+ * So before creating anything: does this contact already have an OPEN deal of
+ * this type that carries no opportunity id? That deal is this opportunity's deal.
+ * Claim it.
+ *
+ * MATCHING IS DELIBERATELY NARROW — ghl_contact_id + deal_type + non-terminal
+ * status + ghl_opportunity_id IS NULL. Nothing looser (email, business name,
+ * phone) is used, so this can never pull in a different merchant's deal.
+ *
+ * IDEMPOTENT + RACE-SAFE: the write is filtered on `ghl_opportunity_id IS NULL`,
+ * so a re-fire (or a concurrent event) updates zero rows rather than re-pointing
+ * a deal. Losing that race is not a reason to create a duplicate — we re-read the
+ * row and, if the winner stamped THIS opportunity, carry on with it.
+ *
+ * Returns the adopted deal (in DEAL_MIRROR_COLS shape) for the normal mirror path
+ * to update, or null when there is nothing to adopt.
+ */
+async function adoptOrphanDeal(
+  db: DB,
+  evt: Record<string, unknown>,
+  contactId: string,
+  dealType: string,
+  oppId: string,
+): Promise<Record<string, unknown> | null> {
+  const { data: candidates, error } = await db.from("deals")
+    .select("id, deal_number, status, created_at")
+    .eq("ghl_contact_id", contactId)
+    .eq("deal_type", dealType)
+    .is("ghl_opportunity_id", null)
+    .not("status", "in", `(${TERMINAL_STATUSES.join(",")})`)
+    .order("created_at", { ascending: false })
+    .limit(2);
+  // Unreadable ≠ "nothing to adopt": say so, and let the caller's create path be
+  // the only thing that can still run (it is itself guarded).
+  if (error) {
+    await logEvent(db, evt, evtTypeLabel(evt), "error", `adopt lookup failed: ${error.message}`);
+    return null;
+  }
+  if (!candidates || candidates.length === 0) return null;
+
+  const target = candidates[0] as { id: string; deal_number: string | null; status: string };
+  const { data: claimed, error: upErr } = await db.from("deals")
+    .update({ ghl_opportunity_id: oppId })
+    .eq("id", target.id)
+    .is("ghl_opportunity_id", null)
+    .select(DEAL_MIRROR_COLS)
+    .maybeSingle();
+  if (upErr) {
+    await logEvent(db, evt, evtTypeLabel(evt), "error",
+      `adopt of deal ${target.deal_number ?? target.id} failed: ${upErr.message}`);
+    return null;
+  }
+
+  if (!claimed) {
+    // Someone stamped an opportunity id between the read and the write. If it was
+    // THIS opportunity, the adoption already happened — use that row.
+    const { data: after } = await db.from("deals").select(DEAL_MIRROR_COLS).eq("id", target.id).maybeSingle();
+    const already = (after as Record<string, unknown> | null)?.ghl_opportunity_id;
+    if (already === oppId) return after as Record<string, unknown>;
+    return null;
+  }
+
+  await log(db, "deal", target.id, `ghl:${evtTypeLabel(evt)}:adopted`, {
+    ghl_opportunity_id: oppId, ghl_contact_id: contactId, was_status: target.status,
+  });
+  await logEvent(db, evt, evtTypeLabel(evt), "adopted",
+    `linked existing ${dealType} deal ${target.deal_number ?? target.id} (status "${target.status}") to this opportunity instead of creating a duplicate` +
+    (candidates.length > 1 ? " — NOTE: more than one unlinked open deal on this contact, took the newest" : ""));
+  return claimed as Record<string, unknown>;
+}
+
 async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   const o = (evt.opportunity ?? evt) as Record<string, unknown>;
   const cd = (evt.customData ?? {}) as Record<string, unknown>;
@@ -941,15 +1030,43 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
 
   // Pull the fields the stage-mirror needs to (a) stamp timestamps only-if-null
   // and (b) create the funded commission with this deal's real splits.
-  const { data: deal } = await db.from("deals")
-    .select("id, status, customer_id, deal_number, amount_funded, amount_requested, assigned_closer_id, is_renewal, lead_source, contacted_at, qualified_at, application_sent_at, docs_collected_at, bank_statements_at, submitted_at, offer_received_at, offer_presented_at, offer_accepted_at, funded_at, declined_at, nurture_at")
+  const { data: dealFound, error: dealLookupErr } = await db.from("deals")
+    .select(DEAL_MIRROR_COLS)
     .eq("ghl_opportunity_id", oppId).maybeSingle();
+
+  // UNREADABLE IS NOT EMPTY. A failed/ambiguous lookup used to read as "no deal
+  // exists for this opportunity" and fall straight into the create path — i.e. a
+  // transient DB error (or two deals already sharing this opportunity id, which
+  // makes maybeSingle() error) would MINT A DUPLICATE. Park the event instead;
+  // the receipt says exactly what happened and GHL will re-fire.
+  if (dealLookupErr) {
+    await logEvent(db, evt, evtTypeLabel(evt), "error",
+      `deal lookup by ghl_opportunity_id failed — no deal created or updated: ${dealLookupErr.message}`);
+    return;
+  }
+  let deal = dealFound as Record<string, unknown> | null;
+
+  // Contact + pipeline are needed by BOTH the adopt and the create path below.
+  const pipelineId = String(o.pipelineId ?? evt.pipelineId ?? evt.pipeline_id ?? "");
+  // We only mirror the MCA and VCF pipelines; anything else is ignored.
+  const dealType = pipelineId === VCF_PIPELINE_ID ? "vcf" : pipelineId === MCA_PIPELINE_ID ? "mca" : null;
+  const contactId = String(
+    o.contactId ?? evt.contactId ?? cd.contactId ?? evt.contact_id ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
+  );
+
+  // ── Gap A0: ADOPT an orphaned deal instead of creating a second one ─────────
+  // A deal born in playbook-open-contact (a setter opening the Revenue Playbook)
+  // may carry NO ghl_opportunity_id, so the lookup above can't see it and this
+  // mirror used to create a SECOND deal for the same merchant minutes later —
+  // owned by a different closer, splitting commission attribution. If this
+  // contact already has an open deal of this type with no opportunity id, that IS
+  // this opportunity's deal: link it and mirror onto it.
+  if (!deal && dealType && contactId) {
+    deal = await adoptOrphanDeal(db, evt, contactId, dealType, oppId);
+  }
 
   // ── Gap A: create the deal if this opportunity isn't linked to one yet ──
   if (!deal) {
-    const pipelineId = String(o.pipelineId ?? evt.pipelineId ?? evt.pipeline_id ?? "");
-    // Auto-create for the MCA and VCF pipelines; ignore anything else.
-    const dealType = pipelineId === VCF_PIPELINE_ID ? "vcf" : pipelineId === MCA_PIPELINE_ID ? "mca" : null;
     if (!dealType) return;
 
     // COLD-POOL GUARD (MCA only): a ~145K cold-dial import lands every opportunity
@@ -969,9 +1086,6 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       return;
     }
 
-    const contactId = String(
-      o.contactId ?? evt.contactId ?? cd.contactId ?? evt.contact_id ?? (evt.contact as Record<string, unknown> | undefined)?.id ?? "",
-    );
     if (!contactId) return; // can't tie a deal to a merchant without a contact
 
     // ROBOT GUARD: never auto-create a deal for a lead-delivery mailbox contact
@@ -1005,19 +1119,31 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       customerId = cust.id;
     } else {
       const c = (evt.contact ?? {}) as Record<string, unknown>;
-      const { data: created } = await db.from("customers").insert({
+      const { data: created, error: custErr } = await db.from("customers").insert({
         ghl_contact_id: contactId,
-        first_name: (c.firstName ?? evt.first_name ?? null) as string | null,
-        last_name: (c.lastName ?? evt.last_name ?? null) as string | null,
+        // customers.first_name / last_name are NOT NULL. A payload with no name at
+        // all used to fail this insert, which then read as "no customer" and the
+        // whole event vanished without a trace. Default rather than lose the deal.
+        first_name: (c.firstName ?? evt.first_name ?? "Merchant") as string,
+        last_name: (c.lastName ?? evt.last_name ?? "") as string,
         email: (c.email ?? evt.email ?? null) as string | null,
         phone: (c.phone ?? evt.phone ?? null) as string | null,
         business_name: (c.companyName ?? evt.company_name ?? o.name ?? evt.opportunity_name ?? null) as string | null,
         status: "lead",
         source: "other",
       }).select("id").maybeSingle();
+      if (custErr) {
+        await logEvent(db, evt, evtTypeLabel(evt), "error",
+          `customer create failed — no deal auto-created: ${custErr.message}`);
+        return;
+      }
       customerId = created?.id ?? null;
     }
-    if (!customerId) return;
+    if (!customerId) {
+      await logEvent(db, evt, evtTypeLabel(evt), "error",
+        "could not resolve or create a customer for this contact — no deal auto-created");
+      return;
+    }
 
     const status = mapped ?? (dealType === "vcf" ? "new_distressed" : "new");
     const insert: Record<string, unknown> = {
@@ -1034,9 +1160,17 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     const createTsCol = STATUS_TIMESTAMP_MAP[status];
     if (createTsCol) insert[createTsCol] = new Date().toISOString();
     if (status === "funded" && monetary != null) insert.amount_funded = monetary;
-    const { data: newDeal } = await db.from("deals").insert(insert).select("id").maybeSingle();
-    if (newDeal) {
+    const { data: newDeal, error: insErr } = await db.from("deals").insert(insert).select("id, deal_number").maybeSingle();
+    if (insErr || !newDeal) {
+      await logEvent(db, evt, evtTypeLabel(evt), "error",
+        `deal auto-create failed: ${insErr?.message ?? "insert returned no row"}`);
+      return;
+    }
+    {
       await log(db, "deal", newDeal.id, `ghl:${evtTypeLabel(evt)}:created`, { stage: mapped, evt });
+      // Receipt: this event MINTED a deal (vs. "adopted" — see adoptOrphanDeal).
+      await logEvent(db, evt, evtTypeLabel(evt), "created",
+        `deal ${newDeal.deal_number ?? newDeal.id} auto-created for ${dealType} opportunity at stage "${status}" (no existing or adoptable deal for this contact)`);
       // An opportunity created straight at Funded still owes a commission.
       if (status === "funded") {
         await createCommissionForFundedDeal(db, {
@@ -1052,10 +1186,14 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     return;
   }
 
-  // ── Existing deal: mirror the stage change from GHL ──
+  // ── Existing deal (found by opportunity id, or just adopted): mirror the
+  // stage change from GHL. Identical for both — an adopted deal goes through the
+  // exact same status/timestamp/commission path as any other. ──
   const d = deal as Record<string, unknown>;
+  const dealId = String(d.id);
+  const dealStatus = d.status as string | null;
   const patch: Record<string, unknown> = {};
-  const movedStatus = mapped && mapped !== deal.status;
+  const movedStatus = mapped && mapped !== dealStatus;
   if (movedStatus) {
     patch.status = mapped;
     // Stamp the matching stage timestamp, but only if it's still null so an
@@ -1071,15 +1209,19 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   if (monetary != null) patch.amount_requested = monetary;
 
   if (Object.keys(patch).length) {
-    await db.from("deals").update(patch).eq("id", deal.id);
-    await log(db, "deal", deal.id, `ghl:${evtTypeLabel(evt)}`, { from: deal.status, to: patch.status, evt });
+    const { error: mirrorErr } = await db.from("deals").update(patch).eq("id", dealId);
+    if (mirrorErr) {
+      await logEvent(db, evt, evtTypeLabel(evt), "error", `stage mirror update failed: ${mirrorErr.message}`);
+      return;
+    }
+    await log(db, "deal", dealId, `ghl:${evtTypeLabel(evt)}`, { from: dealStatus, to: patch.status, evt });
   }
 
   // A deal dragged to Funded inside GHL owes a commission — the mirror used to
   // skip this entirely. Idempotent + best-effort; never breaks webhook processing.
   if (mapped === "funded") {
     await createCommissionForFundedDeal(db, {
-      id: deal.id as string,
+      id: dealId,
       amount_funded: (patch.amount_funded as number | null) ?? (d.amount_funded as number | null) ?? null,
       amount_requested: (d.amount_requested as number | null) ?? null,
       assigned_closer_id: (d.assigned_closer_id as string | null) ?? null,

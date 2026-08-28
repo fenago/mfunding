@@ -501,6 +501,37 @@ export async function updateOpportunity(cfg: GhlConfig, opportunityId: string, p
   return await ghlFetch<{ opportunity: { id: string } }>(cfg, "PUT", `/opportunities/${opportunityId}`, patch);
 }
 
+/** One opportunity as GHL returns it on GET /opportunities/search. `status` is
+ * GHL's own lifecycle word — "open" | "won" | "lost" | "abandoned" — NOT one of
+ * our deal statuses. */
+export interface GhlOpportunitySummary {
+  id: string;
+  name?: string;
+  pipelineId?: string;
+  pipelineStageId?: string;
+  status?: string;
+  contactId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Every opportunity attached to ONE contact, across all pipelines (one GHL call).
+ *
+ * This is the only way to answer "does this merchant already have an opportunity
+ * in the MCA pipeline?" — which is what stops a second, orphaned deal from being
+ * born. Verified live 2026-08-28 against the MFunding location: the endpoint
+ * takes snake_case query params (location_id / contact_id, NOT locationId) and
+ * returns { opportunities: [...] }. Callers must filter by pipelineId themselves.
+ */
+export async function searchOpportunitiesByContact(cfg: GhlConfig, contactId: string) {
+  return await ghlFetch<{ opportunities?: GhlOpportunitySummary[] }>(
+    cfg,
+    "GET",
+    `/opportunities/search?location_id=${cfg.locationId}&contact_id=${encodeURIComponent(contactId)}`,
+  );
+}
+
 /** List pipelines (used to resolve pipeline + stage IDs for the account). */
 export async function listPipelines(cfg: GhlConfig) {
   return await ghlFetch<{ pipelines: Array<{ id: string; name: string; stages: Array<{ id: string; name: string }> }> }>(
