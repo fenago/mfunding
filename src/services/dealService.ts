@@ -145,6 +145,27 @@ export const STIPS_PENDING_STATUSES = new Set([
  * Open deals for the "My Day" work queue, each with its funder submissions
  * (response_at + status) so the caller can rank funder-reply urgency. RLS scopes
  * what a closer can see; further Mine/All scoping happens client-side.
+ *
+ * DO-NOT-CONTACT IS EXCLUDED HERE, and this is a compliance rule, not a
+ * preference. My Day is not a report — every card on it is an instruction to call
+ * someone, with the phone number rendered as a one-click dial. A merchant who has
+ * asked us to stop (customers.do_not_contact) must therefore never appear on it;
+ * MF-2026-0270 (LONESTAR PDR) was being served as callable work with a red
+ * "make first contact" badge on it.
+ *
+ * Scoped to THIS function on purpose. It is the queue's only reader (My Day), and
+ * the other deal reads — getAllDeals, the Calendar, the Playbook — must keep
+ * returning DND merchants: an admin still has to be able to SEE the record, its
+ * history, and the fact that it is suppressed. Hiding it everywhere would look
+ * like the deal was deleted.
+ *
+ * The filter runs client-side rather than as an embedded PostgREST filter
+ * deliberately: filtering on an embedded column requires an `!inner` join, and
+ * then a customer row that RLS hides (or a deal whose customer read fails) would
+ * silently drop the deal out of the queue — work vanishing with no error is worse
+ * than one extra row crossing the wire. UNREADABLE is not DND: only an explicit
+ * `true` suppresses. A card with no readable customer carries no name and no
+ * phone, so it cannot be dialed from anyway.
  */
 export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
   const { data, error } = await supabase
@@ -167,7 +188,9 @@ export async function getOpenDealsForQueue(): Promise<QueueDeal[]> {
     console.error("Error fetching queue deals:", error);
     throw error;
   }
-  return (data || []) as unknown as QueueDeal[];
+  return ((data || []) as unknown as QueueDeal[]).filter(
+    (d) => d.customer?.do_not_contact !== true,
+  );
 }
 
 /**

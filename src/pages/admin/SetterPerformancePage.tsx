@@ -74,7 +74,7 @@ import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { DEAL_STAGES, type DealStatus } from "@/types/deals";
 import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
-import DialCeilingPanel from "@/components/admin/DialCeilingPanel";
+import DialCeilingPanel, { type ProductiveSetterRow } from "@/components/admin/DialCeilingPanel";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** One row of public.v_wavv_outbound_setter_calls — an OUTBOUND call already
@@ -197,6 +197,104 @@ interface SourceDeal {
   funded_at: string | null;
   appointment_at: string | null;
   amount_funded: number | null;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PRODUCTIVE CONTACTS — the PIPELINE-side positive
+// ═════════════════════════════════════════════════════════════════════════════
+// THE PROBLEM THIS EXISTS TO FIX. Every dial-side number on this page is built
+// out of DISPOSITIONS, so a setter who does the work and does not log it scores
+// zero. That is not hypothetical: on 2026-08-28 a 7-minute live call to H&R
+// Logistic Services was dispositioned "None", and the same setter then created
+// the deal, qualified it and SENT THE APPLICATION. The dial side recorded a
+// nothing; the pipeline recorded the best kind of day.
+//
+// So this reads the OTHER system of record — public.deals — and counts the
+// stage stamps a setter actually put on merchants inside the range.
+//
+// ── FOUR RULES THIS DELIBERATELY OBEYS ──────────────────────────────────────
+// 1. IT IS NEVER BLENDED INTO THE DIAL FUNNEL. Dial-side and pipeline-side are
+//    two different measurements of two different things, and the GAP between
+//    them is the finding — a setter with 4 positives and 12 productive contacts
+//    is under-dispositioning, which is exactly what a manager must see. Adding
+//    them together, or quietly substituting one for the other, would erase it.
+// 2. NO lead_source FILTER. The two Synergy tabs deliberately scope to
+//    live_transfer / realtime_appt; this must NOT, because the setters' main
+//    book is `ucc_list` and every one of those merchants would vanish.
+// 3. ATTRIBUTION IS coalesce(assigned_closer_id, created_by). A setter who
+//    creates a deal off their own dial owns it even before assignment lands.
+//    Neither → the deal belongs to nobody and is counted under "unattributed",
+//    never folded into whoever is busiest.
+// 4. IT IS A RANGE OF ACTIVITY, NOT A COHORT. Each timestamp is tested against
+//    the range separately (the same shape loadDeals uses), so this answers
+//    "what did this person MOVE in this window", not "what landed in it".
+const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,appointment_at,appointment_promised_at,funded_at";
+/** Same reasoning as SOURCE_DEAL_CAP — must not exceed PostgREST max-rows, or
+ *  the `>= CAP` truncation test can never fire and the tab under-reports in
+ *  silence. */
+const PRODUCTIVE_DEAL_CAP = 1000;
+
+interface ProductiveDeal {
+  id: string;
+  deal_number: string | null;
+  status: string | null;
+  lead_source: string | null;
+  assigned_closer_id: string | null;
+  created_by: string | null;
+  ghl_contact_id: string | null;
+  contacted_at: string | null;
+  qualified_at: string | null;
+  application_sent_at: string | null;
+  appointment_at: string | null;
+  appointment_promised_at: string | null;
+  funded_at: string | null;
+}
+
+/** The bucket for a deal with no assigned closer AND no creator. A real bucket,
+ *  not a person: work nobody owns is shown as such rather than credited to
+ *  whoever happens to be busiest. */
+const UNATTRIBUTED_OWNER = "__no_owner__";
+
+/** Who a deal's pipeline work belongs to. Null = nobody — an honest bucket. */
+function productiveOwner(d: ProductiveDeal): string | null {
+  return d.assigned_closer_id ?? d.created_by ?? null;
+}
+
+/** An appointment counts off the real booking when there is one, and off the
+ *  PROMISE otherwise (wavv-disposition-sync raises appointment_promised_at when
+ *  a disposition agrees to a meeting with no time attached). The promise is a
+ *  weaker fact than a booking, so it is only ever the fallback. */
+function productiveAppointmentAt(d: ProductiveDeal): string | null {
+  return d.appointment_at ?? d.appointment_promised_at;
+}
+
+interface ProductiveCounts {
+  /** Distinct deals carrying at least one in-range stamp — the headline. */
+  deals: number;
+  contacted: number;
+  qualified: number;
+  appsSent: number;
+  appointments: number;
+  funded: number;
+}
+
+function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): ProductiveCounts {
+  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appointments: 0, funded: 0 };
+  for (const d of deals) {
+    const contacted = inRange(d.contacted_at, from, to);
+    const qualified = inRange(d.qualified_at, from, to);
+    const appSent = inRange(d.application_sent_at, from, to);
+    const appt = inRange(productiveAppointmentAt(d), from, to);
+    const funded = inRange(d.funded_at, from, to);
+    if (!(contacted || qualified || appSent || appt || funded)) continue;
+    c.deals++;
+    if (contacted) c.contacted++;
+    if (qualified) c.qualified++;
+    if (appSent) c.appsSent++;
+    if (appt) c.appointments++;
+    if (funded) c.funded++;
+  }
+  return c;
 }
 
 /** The MCA ladder in the app's OWN order — DEAL_STAGES from types/deals.ts, the
@@ -398,8 +496,19 @@ const TOOLTIP_STYLE = {
 
 /** Dispositions that mean the conversation went somewhere. Exact strings as WAVV
  *  reports them — anything not on this list is neutral or negative, never
- *  fuzzy-matched into "positive". */
-const POSITIVE_DISPOSITIONS = ["Interested", "Appointment Set", "Full Application", "Callback"];
+ *  fuzzy-matched into "positive".
+ *
+ *  LISTED IN THE OWNER'S 8/22 OUTCOME LADDER ORDER, best first. "Full App +
+ *  Statements" is the TOP of that ladder — `wavv-disposition-sync` maps its tag
+ *  to DOCS COLLECTED, the deepest rung any disposition reaches — and it scored
+ *  ZERO here until 2026-08-28 because the rename added the value in WAVV and
+ *  nobody added it to this list. Verified against the live mirror before it was
+ *  hardcoded: the exact string is "Full App + Statements" (spaces around the +).
+ *  The SAME vocabulary is duplicated server-side in setter_dial_ceiling /
+ *  setter_dial_ceiling_daily (one `dispo` CTE each) — change both together. */
+const POSITIVE_DISPOSITIONS = [
+  "Full App + Statements", "Full Application", "Appointment Set", "Interested", "Callback",
+];
 
 // ── What counts as a real conversation ───────────────────────────────────────
 // NOT duration, and NOT WAVV's `human` flag. Both are unreliable here and the
@@ -417,10 +526,41 @@ const POSITIVE_DISPOSITIONS = ["Interested", "Appointment Set", "Full Applicatio
 // HONESTY CAVEAT, stated in the UI too: this measures DISPOSITIONED talks. A
 // setter who does not disposition their calls under-reports conversations.
 const CONVERSATION_DISPOSITIONS = [
-  "Interested", "Not Interested", "Appointment Set", "Callback", "Full Application", "Do Not Contact",
+  "Full App + Statements", "Full Application", "Interested", "Not Interested",
+  "Appointment Set", "Callback", "Do Not Contact",
 ];
 const CONVERSATION_HELP =
-  "Conversation = the setter reached a live person and dispositioned the call (Interested · Not Interested · Appointment Set · Callback · Full Application · Do Not Contact). Voicemails are excluded. Undispositioned calls are not counted, so under-dispositioning under-reports this.";
+  `Conversation = the setter reached a live person and dispositioned the call (${CONVERSATION_DISPOSITIONS.join(" · ")}). Voicemails are excluded. Undispositioned calls — including WAVV's literal "None" — are not counted, so under-dispositioning under-reports this.`;
+
+// ── "None" IS NOT AN OUTCOME, AND IS NOT SILENTLY ABSORBED ───────────────────
+// WAVV ships a literal "None" disposition and the 8/22 outcome-ladder rename
+// stranded it: 466 ANSWERED calls carry it over 14 days, including 7-minute
+// talks that produced a signed application. It is deliberately absent from BOTH
+// lists above, and must stay absent:
+//   • not POSITIVE — nothing is claimed, because nothing was recorded;
+//   • not a CONVERSATION — the whole basis of CONVERSATION_DISPOSITIONS is that
+//     a human had to CHOOSE the value after speaking to someone. Folding "None"
+//     in would convert a logging gap into a performance number and destroy the
+//     one honest signal on the dial side.
+// DO NOT re-absorb it. These calls have a home: the DISPOSITION REVIEW tab,
+// which pairs each of them with what the PIPELINE says actually happened, so a
+// real talk that was never dispositioned is visible instead of scoring zero.
+const UNDISPOSITIONED_VALUES = ["None", "Agent Canceled"] as const;
+/** How long an answered call must run before "no disposition" is worth a
+ *  manager's attention. Short answered blips are dialer noise, not talks. */
+const REVIEW_MIN_SECONDS = 60;
+
+function isUndispositioned(r: Pick<SetterCall, "disposition">): boolean {
+  return !r.disposition || (UNDISPOSITIONED_VALUES as readonly string[]).includes(r.disposition);
+}
+
+/** A REAL TALK WITH NO HONEST OUTCOME: answered, nothing about it says machine,
+ *  it ran long enough to be a conversation, and it was left un-dispositioned.
+ *  reachedHuman() already requires the answer, so this is a strict subset of
+ *  Humans — never of Dials. */
+function needsDispositionReview(r: SetterCall): boolean {
+  return reachedHuman(r) && (r.seconds ?? 0) >= REVIEW_MIN_SECONDS && isUndispositioned(r);
+}
 
 /** Outcomes WAVV reports for a machine or an unanswered line. NO_CALLBACK is on
  *  the list on purpose: those rows average 8 seconds and are flagged human. */
@@ -1000,7 +1140,7 @@ function hourLabel(h: number): string {
   return h < 12 ? `${h}a` : `${h - 12}p`;
 }
 
-type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "trends" | "log" | "numbers";
+type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
   { id: "setters",        label: "Setters",        icon: UserGroupIcon },
@@ -1008,6 +1148,9 @@ const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: bool
   // raises: the scorecard says who DIALS most, this one says who TALKS most.
   { id: "talk_time",      label: "Talk Time",      icon: ClockIcon },
   { id: "dispositions",   label: "Dispositions",   icon: ChartBarIcon },
+  // Immediately after Dispositions because it is that tab's exception list: the
+  // calls that were real talks and came back with no honest outcome.
+  { id: "review",         label: "Disposition Review", icon: ExclamationTriangleIcon },
   { id: "trends",         label: "Trends",         icon: ArrowTrendingUpIcon },
   { id: "log",            label: "Call log",       icon: ChatBubbleLeftRightIcon },
   // The two DEALS-based tabs sit after the WAVV tabs — they answer a different
@@ -1065,6 +1208,20 @@ export default function SetterPerformancePage() {
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   const [dealRows, setDealRows] = useState<DealRow[] | null>(null);
   const [dealsError, setDealsError] = useState<string | null>(null);
+  // Productive contacts (the pipeline-side positive). null = UNREADABLE, which
+  // renders as an error — never as "this setter produced nothing".
+  const [productiveDeals, setProductiveDeals] = useState<ProductiveDeal[] | null>(null);
+  const [productiveError, setProductiveError] = useState<string | null>(null);
+  const [productiveLoading, setProductiveLoading] = useState(true);
+  const [productiveTruncated, setProductiveTruncated] = useState(false);
+  /** profiles.id → name, for every setter on EITHER side of the union (dials or
+   *  pipeline). Resolved via staff_directory, the staff-readable source. */
+  const [staffNames, setStaffNames] = useState<Record<string, string>>({});
+  // Disposition Review: the pipeline state of the contacts behind the flagged
+  // calls, keyed by ghl_contact_id. null = not read yet / unreadable.
+  const [reviewDeals, setReviewDeals] = useState<Record<string, ProductiveDeal> | null>(null);
+  const [reviewDealsError, setReviewDealsError] = useState<string | null>(null);
+  const [reviewDealsLoading, setReviewDealsLoading] = useState(false);
   // Synergy lead cohorts (Live Transfers / Real-Time tabs). null = UNREADABLE,
   // which renders as an error, never as an empty cohort.
   const [sourceDeals, setSourceDeals] = useState<SourceDeal[] | null>(null);
@@ -1281,6 +1438,46 @@ export default function SetterPerformancePage() {
   }, [fromIso, toIso]);
 
   useEffect(() => { void loadDeals(); }, [loadDeals]);
+
+  // ── Productive contacts (see the PRODUCTIVE CONTACTS block up top) ─────────
+  // A SEPARATE query from loadDeals() on purpose, even though the two overlap.
+  // loadDeals feeds the Setters tab's three pipeline columns and is scoped the
+  // way that table has always been scoped (assigned_closer_id only, three
+  // timestamps). This one is the honest "did real work happen" read: SIX
+  // timestamps, coalesce(assigned_closer_id, created_by), and NO lead_source
+  // filter so the setters' `ucc_list` book is included. Bending either query
+  // into the other's shape would silently change a number somebody already
+  // reads, which is precisely what must not happen here.
+  const loadProductiveDeals = useCallback(async () => {
+    setProductiveLoading(true);
+    setProductiveError(null);
+    try {
+      const { data, error } = await supabase
+        .from("deals")
+        .select(PRODUCTIVE_DEAL_COLS)
+        .or(
+          `and(contacted_at.gte.${fromIso},contacted_at.lt.${toIso}),` +
+          `and(qualified_at.gte.${fromIso},qualified_at.lt.${toIso}),` +
+          `and(application_sent_at.gte.${fromIso},application_sent_at.lt.${toIso}),` +
+          `and(appointment_at.gte.${fromIso},appointment_at.lt.${toIso}),` +
+          `and(appointment_promised_at.gte.${fromIso},appointment_promised_at.lt.${toIso}),` +
+          `and(funded_at.gte.${fromIso},funded_at.lt.${toIso})`,
+        )
+        .limit(PRODUCTIVE_DEAL_CAP);
+      if (error) throw new Error(error.message);
+      const rows = (data ?? []) as ProductiveDeal[];
+      setProductiveDeals(rows);
+      setProductiveTruncated(rows.length >= PRODUCTIVE_DEAL_CAP);
+    } catch (e) {
+      // null, not [] — unreadable is not "nobody produced anything".
+      setProductiveDeals(null);
+      setProductiveTruncated(false);
+      setProductiveError(e instanceof Error ? e.message : "Failed to read productive contacts");
+    }
+    setProductiveLoading(false);
+  }, [fromIso, toIso]);
+
+  useEffect(() => { void loadProductiveDeals(); }, [loadProductiveDeals]);
 
   // ── Shift clock, for occupancy on the Talk Time tab ───────────────────────
   // RLS on public.time_entries is "your own row, or super admin". A plain admin
@@ -1766,6 +1963,146 @@ export default function SetterPerformancePage() {
   }, [setterRows, sort]);
 
   const anyAttributed = setterRows.some((r) => r.attributed);
+
+  // ── PRODUCTIVE CONTACTS: the per-setter union ─────────────────────────────
+  // Rows come from the UNION of (setters with dials in range) and (setters with
+  // pipeline movement in range). The union is the point: keying off the dial
+  // side alone would drop a setter who moved merchants without a mapped line,
+  // and keying off deals alone would drop the dial-side context that makes the
+  // logging gap visible. A deal nobody owns lands in its own "unattributed"
+  // row — never folded into whoever happens to be busiest.
+  const productiveByOwner = useMemo(() => {
+    if (!productiveDeals) return null;
+    const byOwner = new Map<string, ProductiveDeal[]>();
+    for (const d of productiveDeals) {
+      const key = productiveOwner(d) ?? UNATTRIBUTED_OWNER;
+      const list = byOwner.get(key);
+      if (list) list.push(d);
+      else byOwner.set(key, [d]);
+    }
+    return byOwner;
+  }, [productiveDeals]);
+
+  /** Every profiles.id that needs a display name, from EITHER side. */
+  const namedSetterIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of setterRows) if (r.attributed) ids.add(r.key);
+    for (const key of productiveByOwner?.keys() ?? []) if (key !== UNATTRIBUTED_OWNER) ids.add(key);
+    return [...ids].sort();
+  }, [setterRows, productiveByOwner]);
+
+  // staff_directory is the staff-readable name source (profiles RLS hands a
+  // closer only their own row). An id it cannot name keeps an id fragment and is
+  // FLAGGED as unnamed — never given a guessed name.
+  const namedSetterKey = namedSetterIds.join(",");
+  useEffect(() => {
+    const ids = namedSetterKey ? namedSetterKey.split(",") : [];
+    if (ids.length === 0) { setStaffNames({}); return; }
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase.from("staff_directory").select("id,name").in("id", ids);
+      if (cancelled) return;
+      const map: Record<string, string> = {};
+      for (const p of (data ?? []) as { id: string; name: string | null }[]) {
+        if (p.name) map[p.id] = p.name;
+      }
+      setStaffNames(map);
+    })();
+    return () => { cancelled = true; };
+  }, [namedSetterKey]);
+
+  const productiveRows = useMemo((): ProductiveSetterRow[] | null => {
+    if (!productiveByOwner) return null;
+    /** Dial-side context, by profiles.id. Only ATTRIBUTED rows have one. */
+    const dialBySetter = new Map(setterRows.filter((r) => r.attributed).map((r) => [r.key, r]));
+    const keys = new Set<string>([...dialBySetter.keys(), ...productiveByOwner.keys()]);
+    const rows: ProductiveSetterRow[] = [];
+    for (const key of keys) {
+      const dial = dialBySetter.get(key) ?? null;
+      const counts = computeProductive(productiveByOwner.get(key) ?? [], range.from, range.to);
+      // A setter with neither dials nor pipeline movement is not a row.
+      if (!dial && counts.deals === 0) continue;
+      const unattributed = key === UNATTRIBUTED_OWNER;
+      const named = staffNames[key];
+      rows.push({
+        setterId: key,
+        name: unattributed
+          ? "Unassigned (no owner on the deal)"
+          : named ?? dial?.name ?? `Setter ${key.slice(0, 8)}`,
+        nameUnknown: !unattributed && !named && !dial?.name,
+        dials: dial ? dial.dials : null,
+        positivesLogged: dial ? dial.positives : null,
+        deals: counts.deals,
+        contacted: counts.contacted,
+        qualified: counts.qualified,
+        appsSent: counts.appsSent,
+        appointments: counts.appointments,
+        funded: counts.funded,
+      });
+    }
+    return rows.sort((a, b) => b.deals - a.deals || (b.dials ?? -1) - (a.dials ?? -1));
+  }, [productiveByOwner, setterRows, staffNames, range]);
+
+  /** The floor's productive total — the pipeline twin of `funnel`, kept beside
+   *  it on the Funnel tab and never summed into it. */
+  const productiveTotals = useMemo(
+    () => (productiveDeals ? computeProductive(productiveDeals, range.from, range.to) : null),
+    [productiveDeals, range],
+  );
+
+  // ── DISPOSITION REVIEW: real talks with no honest outcome ─────────────────
+  // Built from the SAME aggRows every other WAVV tab folds — no extra call
+  // query — so this list cannot drift from the funnel it is the exception list
+  // for. Newest first: a manager works today's misses, not last week's.
+  const reviewCalls = useMemo(
+    () => aggRows.filter(needsDispositionReview).sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? "")),
+    [aggRows],
+  );
+
+  const reviewContactKey = useMemo(
+    () => [...new Set(reviewCalls.map((r) => r.contact_id).filter((v): v is string => !!v))].sort().join(","),
+    [reviewCalls],
+  );
+
+  // The pipeline state of those contacts. A TARGETED read by ghl_contact_id, not
+  // a reuse of productiveDeals: a flagged call's merchant may well have a deal
+  // whose stamps all fall OUTSIDE the range, and that deal is exactly what the
+  // manager needs to see ("7-minute talk, app sent, dispositioned None").
+  // Only fetched while the tab is open — it is the one query on this page that
+  // nothing else needs.
+  const reviewTabActive = tab === "review";
+  useEffect(() => {
+    if (!reviewTabActive) return;
+    const ids = reviewContactKey ? reviewContactKey.split(",") : [];
+    if (ids.length === 0) { setReviewDeals({}); setReviewDealsError(null); return; }
+    let cancelled = false;
+    setReviewDealsLoading(true);
+    setReviewDealsError(null);
+    void (async () => {
+      const { data, error } = await supabase
+        .from("deals")
+        .select(PRODUCTIVE_DEAL_COLS)
+        .in("ghl_contact_id", ids)
+        .order("created_at", { ascending: false });
+      if (cancelled) return;
+      if (error) {
+        // null, not {} — "we could not read the pipeline" must never render as
+        // "this merchant has no deal", which is the opposite conclusion.
+        setReviewDeals(null);
+        setReviewDealsError(error.message);
+      } else {
+        const map: Record<string, ProductiveDeal> = {};
+        for (const d of (data ?? []) as ProductiveDeal[]) {
+          // Newest deal per contact wins (ordered above); a merchant with two
+          // deals is shown by their current one, not by an old closed cycle.
+          if (d.ghl_contact_id && !map[d.ghl_contact_id]) map[d.ghl_contact_id] = d;
+        }
+        setReviewDeals(map);
+      }
+      setReviewDealsLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [reviewTabActive, reviewContactKey]);
 
   // ── Talk time: the per-LINE clock, and the hour-of-day grid ───────────────
   // Grouped on caller_id — the LINE — because the lines are shared by several
@@ -2380,6 +2717,14 @@ export default function SetterPerformancePage() {
           toIso={toIso}
           rangeLabel={RANGE_LABELS[rangeKey]}
           targetFor={targetFor}
+          // The pipeline half. Computed ON THIS PAGE and handed down so the
+          // Funnel tab and this tab read the same rows; the panel re-derives
+          // nothing. It renders as its OWN card below the dial-side sections
+          // and is never summed into them.
+          productive={productiveRows}
+          productiveError={productiveError}
+          productiveLoading={productiveLoading}
+          productiveTruncated={productiveTruncated}
         />
       ) : isSourceTab(tab) ? (
         <SourceFunnelPanel
@@ -2403,8 +2748,13 @@ export default function SetterPerformancePage() {
         <>
           {/* ═══════════════ FUNNEL ═══════════════ */}
           {tab === "funnel" && (
-            emptyRange ? <EmptyRange total={totalRowsEver} /> : (
-              <div className="space-y-5">
+            /* The productive-contacts card sits OUTSIDE the emptyRange branch:
+               it reads `deals`, not WAVV, so a range with no mirrored dials can
+               still hold real pipeline work — and "no dials" must never blank
+               the one panel that would prove it. */
+            <div className="space-y-5">
+            {emptyRange ? <EmptyRange total={totalRowsEver} /> : (
+              <>
                 {/* Floor totals */}
                 <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                   {[
@@ -2652,8 +3002,151 @@ export default function SetterPerformancePage() {
                     </div>
                   </div>
                 )}
+              </>
+            )}
+
+            {/* ── PRODUCTIVE CONTACTS — the pipeline-side positive ──────────
+                Placed directly under the dial funnel and deliberately NOT
+                merged into it. The dial funnel counts dispositions; this counts
+                stage stamps on real merchants. The GAP between them is the
+                finding, so the two are shown side by side and never summed. */}
+            <div className="card bg-base-100 border border-base-300 shadow-sm">
+              <div className="card-body p-4 space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                      <ClipboardDocumentListIcon className="w-5 h-5 text-mint-green" />
+                      Productive contacts (pipeline)
+                    </h2>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-3xl">
+                      Read from <code>deals</code>, not from dispositions. A setter who holds a real
+                      conversation and never dispositions it scores <b>zero</b> in the funnel above and still
+                      shows here, because the merchant moved. Owned by <code>assigned_closer_id</code> falling
+                      back to <code>created_by</code>, with <b>no lead-source filter</b> — the setters' main
+                      book is <code>ucc_list</code> and filtering would erase it.
+                    </p>
+                  </div>
+                  {productiveTotals && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { label: "contacts", n: productiveTotals.deals },
+                        { label: "contacted", n: productiveTotals.contacted },
+                        { label: "qualified", n: productiveTotals.qualified },
+                        { label: "app sent", n: productiveTotals.appsSent },
+                        { label: "appts", n: productiveTotals.appointments },
+                        { label: "funded", n: productiveTotals.funded },
+                      ].map((k) => (
+                        <span
+                          key={k.label}
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
+                            k.n > 0 ? RAG_CHIP.green : RAG_CHIP.none
+                          }`}
+                        >
+                          {k.label}
+                          <b className="tabular-nums">{k.n.toLocaleString()}</b>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {productiveError ? (
+                  <div className="alert alert-error text-sm">
+                    <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                    <span>
+                      <b>Productive contacts unreadable</b> — this is not "nobody produced anything".{" "}
+                      {productiveError}
+                    </span>
+                  </div>
+                ) : productiveLoading && !productiveRows ? (
+                  <div className="flex items-center gap-2 text-gray-400 text-sm py-3">
+                    <span className="loading loading-spinner loading-sm" /> Loading productive contacts…
+                  </div>
+                ) : !productiveRows || productiveRows.length === 0 ? (
+                  <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-3 text-sm text-gray-500 dark:text-gray-400">
+                    <b className="text-gray-700 dark:text-gray-200">
+                      No deal carried a stage stamp in this range.
+                    </b>{" "}
+                    The read succeeded — this is a genuinely quiet window on the pipeline side, not a failed
+                    query.
+                  </div>
+                ) : (
+                  <>
+                    <div className={TABLE_WRAP}>
+                      <table className={TABLE}>
+                        <thead className={THEAD}>
+                          <tr>
+                            <th className={TH}>Setter</th>
+                            <th className={TH_NUM} title="Dials in range on the WAVV side — context, never added to the pipeline columns">
+                              Dials
+                            </th>
+                            <th className={TH_NUM} title="Positive dispositions the setter LOGGED — the dial-side score">
+                              Positives logged
+                            </th>
+                            <th className={`${TH_NUM} ${GROUP_EDGE}`} title="Distinct deals with at least one stage stamp in this range">
+                              Productive contacts
+                            </th>
+                            <th className={TH_NUM}>Contacted</th>
+                            <th className={TH_NUM}>Qualified</th>
+                            <th className={TH_NUM}>App sent</th>
+                            <th className={TH_NUM} title="A booked appointment, or a promised one where no time is on the calendar yet">
+                              Appts
+                            </th>
+                            <th className={TH_NUM}>Funded</th>
+                          </tr>
+                        </thead>
+                        <tbody className={TBODY}>
+                          {productiveRows.map((r) => (
+                            <tr key={r.setterId} className={TR}>
+                              <td className={`${TD} font-medium text-gray-900 dark:text-white`}>
+                                {r.name}
+                                {r.nameUnknown && (
+                                  <div className="text-[10px] text-amber-600 dark:text-amber-400">
+                                    name not readable — shown by id
+                                  </div>
+                                )}
+                                {r.dials === null && (
+                                  <div className="text-[10px] text-gray-400">no dials in this range</div>
+                                )}
+                              </td>
+                              <td className={`${TD_NUM} text-gray-500 dark:text-gray-400`}>
+                                {r.dials === null ? <Metric value={null} /> : r.dials.toLocaleString()}
+                              </td>
+                              <td className={`${TD_NUM} text-gray-500 dark:text-gray-400`}>
+                                {r.positivesLogged === null ? <Metric value={null} /> : r.positivesLogged.toLocaleString()}
+                              </td>
+                              <td className={`${TD_NUM} ${GROUP_EDGE} font-semibold text-base`}>
+                                {r.deals.toLocaleString()}
+                              </td>
+                              <td className={TD_NUM}>{r.contacted.toLocaleString()}</td>
+                              <td className={TD_NUM}>{r.qualified.toLocaleString()}</td>
+                              <td className={`${TD_NUM} font-semibold`}>{r.appsSent.toLocaleString()}</td>
+                              <td className={TD_NUM}>{r.appointments.toLocaleString()}</td>
+                              <td className={TD_NUM}>{r.funded.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      Rows are the <b>union</b> of setters with dials and setters with pipeline movement, so a
+                      setter with zero dials in range still appears. <b>Dials</b> and <b>positives logged</b>{" "}
+                      read “—” for a setter with no dial rows — unknown, not zero.{" "}
+                      <b>Read the gap</b>: far more productive contacts than positives logged means the talks
+                      are happening and not being dispositioned. The un-dispositioned calls behind that gap are
+                      listed on the <b>Disposition Review</b> tab.
+                      {productiveTruncated && (
+                        <span className="text-amber-600 dark:text-amber-400">
+                          {" "}This range hit the {PRODUCTIVE_DEAL_CAP.toLocaleString()}-deal read cap, so these
+                          counts are a floor, not a total — narrow the range.
+                        </span>
+                      )}
+                    </p>
+                  </>
+                )}
               </div>
-            )
+            </div>
+            </div>
           )}
 
           {/* ═══════════════ SETTERS ═══════════════ */}
@@ -3289,6 +3782,188 @@ export default function SetterPerformancePage() {
                 ))}
               </div>
             )
+          )}
+
+          {/* ═══════════════ DISPOSITION REVIEW ═══════════════ */}
+          {/* The exception list for the Dispositions tab: calls that WERE real
+              talks and came back with no honest outcome, each shown next to what
+              the PIPELINE says happened to that merchant. This is the tab that
+              makes "7-minute talk → deal created → application sent →
+              dispositioned None" visible instead of scoring it a zero.
+
+              The filter is deliberately narrow, so this stays a worklist and not
+              a second call log: answered, reachedHuman() (nothing about the call
+              says machine), at least REVIEW_MIN_SECONDS of connected time, and a
+              disposition that is null / "None" / "Agent Canceled". */}
+          {tab === "review" && (
+            <div className="space-y-4">
+              <div className="card bg-base-100 border border-base-300 shadow-sm">
+                <div className="card-body p-4 space-y-2">
+                  <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                    <ExclamationTriangleIcon className="w-5 h-5 text-amber-500" />
+                    Real talks with no honest outcome
+                  </h2>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 max-w-3xl">
+                    Every call below was <b>answered</b>, shows none of the machine tells, ran at least{" "}
+                    <b>{REVIEW_MIN_SECONDS} seconds</b>, and was left un-dispositioned — WAVV's literal{" "}
+                    <code>None</code>, <code>Agent Canceled</code>, or nothing at all. Those calls score{" "}
+                    <b>zero</b> everywhere else on this page. Next to each one is what the{" "}
+                    <b>pipeline</b> says about that merchant, so a talk that produced an application is
+                    visible even though the dial record claims nothing happened.
+                  </p>
+                  <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+                    <b>This is a coaching queue, not a metric.</b> A row here is a question — "what actually
+                    happened on this call?" — and the answer is the recording, on the Call log tab. Nothing on
+                    this tab is counted as a positive or a conversation anywhere else: an un-dispositioned
+                    call stays un-dispositioned until a human says otherwise.
+                  </div>
+                </div>
+              </div>
+
+              {emptyRange ? (
+                <EmptyRange total={totalRowsEver} />
+              ) : reviewCalls.length === 0 ? (
+                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                  <div className="card-body p-8 text-center">
+                    <CheckCircleIcon className="w-10 h-10 mx-auto text-emerald-500/70" />
+                    <p className="mt-2 text-sm font-semibold text-gray-700 dark:text-gray-200">
+                      Nothing to review in this range.
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-lg mx-auto">
+                      Every answered call over {REVIEW_MIN_SECONDS} seconds that reached a human carries a real
+                      disposition. That is the good outcome — the floor is logging what it hears.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="card bg-base-100 border border-base-300 shadow-sm">
+                  <div className="card-body p-4 space-y-3">
+                    {reviewDealsError && (
+                      <div className="alert alert-warning text-sm">
+                        <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                        <span>
+                          <b>Pipeline column unreadable this load</b> ({reviewDealsError}) — it shows “—”,
+                          which means <b>unknown</b>, never "this merchant has no deal".
+                        </span>
+                      </div>
+                    )}
+                    <div className={TABLE_WRAP}>
+                      <table className={TABLE}>
+                        <thead className={THEAD}>
+                          <tr>
+                            <th className={TH}>Time (ET)</th>
+                            <th className={TH}>Setter</th>
+                            <th className={TH}>Merchant</th>
+                            <th className={TH_NUM}>Talk</th>
+                            <th className={TH}>Dispositioned</th>
+                            <th className={TH}>What the pipeline says</th>
+                            <th className={TH} />
+                          </tr>
+                        </thead>
+                        <tbody className={TBODY}>
+                          {reviewCalls.map((r) => {
+                            // UNREADABLE vs ABSENT, kept apart: null map = the
+                            // read failed; a missing key = read fine, no deal.
+                            const deal = reviewDeals === null
+                              ? undefined
+                              : (r.contact_id ? reviewDeals[r.contact_id] : undefined);
+                            const unreadable = reviewDeals === null || (reviewDealsLoading && !reviewDeals);
+                            const stage = deal?.status
+                              ? (DEAL_STAGES.find((s) => s.key === deal.status)?.label ?? deal.status)
+                              : null;
+                            return (
+                              <tr key={r.wavv_call_id} className={TR}>
+                                <td className={`${TD} whitespace-nowrap`} title={localTimeTitle(r.started_at)}>
+                                  {etStamp(r.started_at)}
+                                </td>
+                                <td className={TD}>
+                                  <div className="flex items-center gap-2">
+                                    <span className="truncate">{attributionName(r)}</span>
+                                    {!r.setter_id && (
+                                      <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                                        unassigned
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className={TD}>
+                                  <Text value={r.contact_name} />
+                                  <div className="text-xs text-gray-400 tabular-nums">{prettyPhone(r.phone)}</div>
+                                </td>
+                                <td className={`${TD_NUM} font-semibold`} title={`${r.seconds ?? 0} connected seconds`}>
+                                  {hms(r.seconds ?? 0)}
+                                </td>
+                                <td className={TD}>
+                                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.amber}`}>
+                                    {r.disposition ?? "not set"}
+                                  </span>
+                                </td>
+                                <td className={TD}>
+                                  {unreadable ? (
+                                    <Metric value={null} />
+                                  ) : !r.contact_id ? (
+                                    <span className="text-gray-300 dark:text-gray-600" title="WAVV did not tie this dial to a contact, so there is nothing to look the pipeline up by">
+                                      —
+                                    </span>
+                                  ) : !deal ? (
+                                    <span className="text-gray-500 dark:text-gray-400 text-xs">
+                                      no deal for this contact
+                                    </span>
+                                  ) : (
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <span className="inline-flex items-center rounded-full border border-base-300 bg-base-200/60 dark:bg-gray-800/50 px-2 py-0.5 text-xs">
+                                        {stage ?? "stage unknown"}
+                                      </span>
+                                      {deal.application_sent_at && (
+                                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.green}`}>
+                                          app sent {etStamp(deal.application_sent_at)}
+                                        </span>
+                                      )}
+                                      {productiveAppointmentAt(deal) && (
+                                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.green}`}>
+                                          {deal.appointment_at ? "appt booked" : "appt promised"}
+                                        </span>
+                                      )}
+                                      {deal.funded_at && (
+                                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.green}`}>
+                                          funded
+                                        </span>
+                                      )}
+                                      {deal.deal_number && (
+                                        <span className="text-xs text-gray-400">{deal.deal_number}</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className={`${TD} text-right whitespace-nowrap`}>
+                                  {r.contact_id ? (
+                                    <Link
+                                      to={`/admin/playbooks?contact=${encodeURIComponent(r.contact_id)}`}
+                                      className="text-mint-green hover:underline underline-offset-2 font-medium"
+                                      title="Open this merchant in the Revenue Playbook"
+                                    >
+                                      Open →
+                                    </Link>
+                                  ) : (
+                                    <span className="text-gray-300 dark:text-gray-600">—</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {reviewCalls.length.toLocaleString()} call{reviewCalls.length === 1 ? "" : "s"} in this
+                      range were real talks with no outcome recorded, newest first. A row with a{" "}
+                      <b>green pipeline chip</b> is the case that matters most: the work demonstrably happened
+                      and the dial record says it did not. Times are US Eastern; hover for your own clock.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* ═══════════════ TRENDS ═══════════════ */}

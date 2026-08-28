@@ -111,6 +111,7 @@ export interface Playbook {
     | "aged-transfer"
     | "realtime"
     | "cold-email"
+    | "cold-dial"
     | "vcf"
     | "renewal";
   name: string;
@@ -234,6 +235,74 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
   },
 ];
 
+// ─────────────────────────── COLD-DIAL OPENER COPY ───────────────────────────
+// ONE source of truth for cold-dial openers: the Cold Dial playbook's step 2 AND
+// the Opening-script card on the Playbooks page both read from here, so the two
+// can never drift into two different scripts for the same call.
+//
+// COMPLIANCE RULES BAKED INTO THIS COPY — keep them if you edit it:
+//  · An MCA is a PURCHASE OF FUTURE RECEIVABLES, never a loan. Say "funding",
+//    "working capital", "capital", "advance". Never "loan".
+//  · A cold dial NEVER claims the merchant contacted us. No "you requested",
+//    "you applied", "you filled out a form", "thanks for replying".
+//  · The UCC opener says a public filing EXISTS. It never names the funder and
+//    never states an amount or balance — a UCC filing carries neither, and a
+//    filed position may already be paid off.
+export type ColdDialVariant = "ucc" | "trigger" | "aged" | "neutral";
+
+/** UCC / filing lead — we know a funding position was filed, nothing more. */
+export function uccColdOpener(firstName: string, business: string, you: string): string {
+  return (
+    `Hi, is this ${firstName}? This is ${you} with Momentum Funding — we haven't spoken before, ` +
+    `I'm reaching out directly. I work with business owners on working capital, and public business ` +
+    `filings show ${business} has a funding position on record. Owners already carrying an advance are ` +
+    `usually the ones who can qualify for additional capital, and we help you compare what options are ` +
+    `available so you can make the best choice for your business. Do you have sixty seconds?`
+  );
+}
+
+/** Trigger / intent data — they shopped for financing somewhere, not with us. */
+export function triggerColdOpener(firstName: string, business: string, you: string): string {
+  return (
+    `Hi, is this ${firstName}? This is ${you} with Momentum Funding. You recently looked into financing ` +
+    `options for ${business}, so I wanted to reach out directly — we help owners get working capital fast. ` +
+    `Have a quick second?`
+  );
+}
+
+/** Aged purchased list — they raised a hand for funding once, months ago. */
+export function agedColdOpener(firstName: string, business: string, you: string): string {
+  return (
+    `Hi, is this ${firstName}? This is ${you} with Momentum Funding. You reached out a little while back ` +
+    `about working capital for ${business}, so I'm circling back — we've got some new funding programs ` +
+    `that may be a better fit now. Do you have a quick minute?`
+  );
+}
+
+/** Origin genuinely unknown (GHL contact, list with no provenance). Assert
+ *  NOTHING about how they got here — ask, and let them tell you. */
+export function neutralColdOpener(firstName: string, business: string, you: string): string {
+  return (
+    `Hi, is this ${firstName}? This is ${you} with Momentum Funding — I work with business owners on ` +
+    `working capital. Before I take up your time: have you looked into funding for ${business} recently, ` +
+    `or is this the first you're hearing from us?`
+  );
+}
+
+export const COLD_DIAL_VARIANT_LABEL: Record<ColdDialVariant, string> = {
+  ucc: "UCC",
+  trigger: "Trigger",
+  aged: "Aged",
+  neutral: "Unknown",
+};
+
+export function coldDialOpener(v: ColdDialVariant, firstName: string, business: string, you: string): string {
+  if (v === "ucc") return uccColdOpener(firstName, business, you);
+  if (v === "trigger") return triggerColdOpener(firstName, business, you);
+  if (v === "aged") return agedColdOpener(firstName, business, you);
+  return neutralColdOpener(firstName, business, you);
+}
+
 // Which playbook a deal opens into, keyed by its lead_source (mirrors
 // inbound_lead_sources.playbook_id). A deal from a real-time lead opens the
 // realtime intake; a purchased web lead opens the web-lead intake; etc.
@@ -250,17 +319,35 @@ export const LEAD_SOURCE_TO_PLAYBOOK: Record<string, Playbook["id"]> = {
   cold_email: "cold-email",
   cold_email_landing: "cold-email",
   renewal: "renewal",
-  /* DELIBERATELY UNMAPPED: ph_setter, ucc_lead, cold_call.
-     These are COLD DIALS — nobody contacted us — and every playbook here opens by
-     asserting the merchant did: "you just requested" (website), "you requested
-     about [amount]" (web-lead), "thanks for replying" (cold-email), "we connected
-     a little while back" (aged-transfer). Pointing a cold dial at any of them
-     swaps the loud falsehood for a quieter one, and telling a merchant they asked
-     us to call when they didn't is a compliance problem, not just an awkward
-     opener. They need a cold-dial playbook that does not exist yet; that's an
-     owner content decision, not a mapping. Until it exists they fall through —
-     see the note in PlaybooksPage where the fallback is chosen. */
+
+  /* COLD DIALS — nobody contacted us. These used to be deliberately unmapped
+     (no cold-dial playbook existed), which meant they fell through to the
+     "website" fallback and opened with "you just requested working capital" —
+     a flat falsehood on a recorded line, and a compliance problem rather than
+     just an awkward opener. The Cold Dial playbook below now says out loud that
+     the merchant did NOT contact us, so they all map to it.
+
+     STRING NOTE: the DB writes `ucc_list` (Lead Machine / UCC harvester). The
+     singular `ucc_lead` this map used to anticipate is written by nothing — the
+     mismatch is exactly why UCC leads, the setters' main book, silently landed
+     on the website script. Both keys are mapped so neither can fall through. */
+  ucc_list: "cold-dial",
+  ucc_lead: "cold-dial",
+  trigger_list: "cold-dial",
+  cold_call: "cold-dial",
+  ph_setter: "cold-dial",
+
+  /* Created by the GHL webhook with no origin pinned — we genuinely do not know
+     how this merchant got here. So they get the flow whose script ASKS ("have
+     you looked into funding recently, or is this the first you're hearing from
+     us?") instead of one that asserts a website form-fill they never filled. */
+  ghl_other: "cold-dial",
 };
+
+/* Where an UNMAPPED MCA lead_source lands. Must be a flow whose opener asserts
+   NOTHING about how the lead arrived — an unknown source is, by definition, one
+   we cannot make a claim about. Cold Dial's neutral opener asks instead. */
+export const FALLBACK_PLAYBOOK_ID: Playbook["id"] = "cold-dial";
 
 export function playbookIdForLeadSource(leadSource?: string | null): Playbook["id"] | undefined {
   return leadSource ? LEAD_SOURCE_TO_PLAYBOOK[leadSource] : undefined;
@@ -619,6 +706,102 @@ export const PLAYBOOKS: Playbook[] = [
           "Set expectations: e-sign app + secure upload link.",
         ],
         say: "Great — you qualify. Give me two minutes and I'll send your application pre-filled; all you do is tap to sign.",
+      },
+      ...MCA_CLOSE_STEPS,
+    ],
+  },
+
+  // ─────────────────────────────── COLD DIAL (UCC / list data) ───────────────────────────────
+  {
+    id: "cold-dial",
+    name: "Cold Dial (UCC / List)",
+    tagline: "Public filing data — the merchant has never spoken to us. Earn the first sixty seconds, then qualify from scratch.",
+    pipeline: "mca",
+    revenue: "≈ $4,000 avg commission · list cost ≈ $0–$0.05/record (UCC data is free government record)",
+    entry: "UCC / trigger list load → deal at New (COLD). The merchant did not call us, did not fill out a form, and is not expecting us.",
+    workFrom: {
+      screen: "THIS page — dial from the New-Lead pipeline, then work the merchant right here",
+      route: "/admin/playbooks",
+      appNote:
+        "This is the setters' main book. The merchant came from a PUBLIC UCC FILING — when a business takes funding, a notice gets filed with the state, and that's the whole reason we have their name. The load already mapped their address and, when the filing named a funder, their existing positions onto this deal. What it did NOT give you: any dollar amount, balance, or proof the position is still open — UCC filings carry no numbers, ever. So: the record tells you they've taken funding before, and nothing else. You qualify everything from scratch on the call, and you never tell them they asked us to call.",
+    },
+    steps: [
+      {
+        n: 1,
+        title: "Before you dial — know what you actually know",
+        stageKey: "new",
+        do: [
+          "Read the bar above first. The address and the Existing MCA positions card are prefilled from the UCC filing — that's your entire edge on this call.",
+          "Know the limits of it: the filing shows a funder was granted a position. It does NOT show the amount, the balance, or whether it's still open. Never state or imply a number you don't have.",
+          "Check the Source chip. UCC / Trigger = you have filing data. Unknown / GHL = you have nothing, so use the neutral opener in step 2.",
+          "Confirm you're the assigned closer and set the Campaign so this dial counts toward ROI.",
+          "DNC: if the record is flagged Do-Not-Call, do not dial it. Move to the next one.",
+        ],
+        route: { to: "/admin/playbooks", label: "Work the merchant on this page" },
+        note: "This merchant did not request a call, has never heard of us, and owes us nothing. Every line below is written so you never have to pretend otherwise — the moment a script claims they contacted us, it stops being a bad opener and becomes a compliance problem on a recorded line.",
+      },
+      {
+        n: 2,
+        title: "Dial — the honest cold open (60 seconds)",
+        stageKey: "contacted",
+        automation: "MCA 02 — No Answer Nurture (fires if they go dark)",
+        sla: "3 attempts across different day-parts before it drops to nurture",
+        tone: "speed",
+        do: [
+          "Read the opener below. Never say “you requested”, “you applied”, “you filled out a form”, or “thanks for replying” — none of it is true here.",
+          "Use the FILING line only when this deal actually carries UCC data. No filing data (Source = Unknown / GHL)? Use the neutral variant and let them tell you how they got here.",
+          "Aged- or trigger-list lead instead? The Opening script card above auto-selects that variant — read it from there.",
+          "Reached them → save this step to move Status → Contacted, and log what happened in the Activity tab.",
+          "No answer → log the attempt. MCA 02 picks up the nurture; redial at a different hour of the day, not the same one.",
+        ],
+        say:
+          "UCC / filing lead — you know a position was filed:\n" +
+          `“${uccColdOpener("[First Name]", "[Business Name]", "[Closer]")}”\n\n` +
+          "Unknown origin — no filing data. Assert nothing, ask instead:\n" +
+          `“${neutralColdOpener("[First Name]", "[Business Name]", "[Closer]")}”`,
+        howto: {
+          title: "“Where did you get my information?” — answer it straight",
+          steps: [
+            "“UCC filings are public record. When a business takes funding, a notice gets filed with the state — that's public, and that's how your name came up.”",
+            "“I don't have your balance or your payment; the filing doesn't show any of that. That's exactly why I'm asking you.”",
+            "“Not interested” / “stop calling” → “Understood, I'll take you off the list.” Then set the DND toggle on this deal and move on. Do not re-dial.",
+          ],
+          warn: "Never name the funder from the filing and never guess an amount. You'd be quoting a document that doesn't contain the numbers, and the moment you're wrong the call is over.",
+        },
+      },
+      {
+        n: 3,
+        title: "Qualify from scratch (BANT-F) — positions is the branch",
+        stageKey: "qualifying",
+        automation: "MCA 03 — Qualifying",
+        explain: [{
+          label: "What's BANT-F?",
+          intro: "They filled out nothing, so you know nothing. Run all 5 before you invest the pitch:",
+          rows: [
+            ["B — Budget", "Can they support payments?", "“Roughly what are the monthly deposits?” ($15K+ min)"],
+            ["A — Authority", "Talking to the decision-maker?", "“Are you the owner?”"],
+            ["N — Need", "What's the money actually for?", "“How much would actually move the needle, and what for?”"],
+            ["T — Timeline", "How urgent is it?", "“How soon do you need it?”"],
+            ["F — Fundability", "Can a funder approve them?", "6+ months in business · industry not prohibited · HOW MANY open positions (≥2 → route to VCF)"],
+          ],
+        }, APPROVAL_SIZING_EXPLAIN],
+        do: [
+          "Run the full BANT-F conversationally and type each answer into the fields below as they say it.",
+          "POSITIONS IS THE BRANCH THAT MATTERS HERE: this merchant is on the list precisely BECAUSE they've taken funding. 1 open position is normal and fundable. 2+ open, or they describe daily debits they can't carry, → tag route-to-vcf on the deal and switch to the VCF playbook.",
+          "Correct the Existing MCA positions card above with what they actually tell you — the UCC-seeded version is a guess about the past, their answer is the present.",
+          "Saving this step moves Status → Qualifying.",
+        ],
+        say: "Let me ask you a handful of quick questions so I'm not wasting your time. How long has the business been running? Roughly what are the monthly deposits? How much capital are you actually looking for, and what's it for? And how many advances are you carrying right now — is anybody pulling daily or weekly?",
+        collect: [
+          "Time in business (6+ months)",
+          "Monthly revenue ($15K+ min, $20K+ preferred)",
+          "Amount needed + use of funds",
+          "Industry (no cannabis / adult / firearms / nonprofit)",
+          "OPEN positions right now (≥2 → route to VCF)",
+        ],
+        fields: MCA_QUALIFY_FIELDS,
+        tone: "branch",
+        note: "Under 6 months or under $15K/mo → exit politely and tag soft-no (it routes to nurture). A cold dial that qualifies is worth exactly as much as a website lead that qualifies — from step 4 on, this is the same close as every other MCA.",
       },
       ...MCA_CLOSE_STEPS,
     ],

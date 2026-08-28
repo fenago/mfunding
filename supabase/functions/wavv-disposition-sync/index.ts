@@ -80,12 +80,23 @@ type Action =
 // actions below are idempotent BACKSTOPS for calls WAVV misses; the sweep's
 // real jobs are the DNC hard-suppression and the POSITIVE forward moves
 // (WAVV does not advance stages — we do).
-// OWNER RULING 8/22 (outcome-ladder dispositions): the WAVV dispositions
-// "None" and "Interested" were repurposed to the two application outcomes —
+// OWNER RULING 8/22 (outcome-ladder dispositions): the two application outcomes
 // "Full App + Statements" (tag wavv-full-app-statements) → Docs Collected and
-// "Full Application" (tag wavv-full-application) → Application Sent. The old
-// wavv-interested mapping stays as a legacy drain for tags stamped before the
-// rename; wavv-none never had an action and still doesn't.
+// "Full Application" (tag wavv-full-application) → Application Sent were added
+// at the TOP of the ladder. wavv-interested stays mapped as a legacy drain.
+//
+// ⚠️ CORRECTION, measured against the live mirror on 2026-08-28: this note used
+// to say "None" and "Interested" were REPURPOSED into those two outcomes. They
+// were not — WAVV ADDED the new values and kept the old ones. All four are
+// still being written: over the 14 days to 8/28 the mirror holds 466 "None",
+// 5 "Interested", 2 "Full App + Statements" and 1 "Full Application". So:
+//   • wavv-interested is NOT dead and its mapping must stay;
+//   • "None" is not a retired value, it is 466 ANSWERED calls with no outcome
+//     recorded — including 7-minute talks that produced a signed application.
+//     It correctly has NO action here (we cannot guess what happened on a call
+//     nobody dispositioned), and it must NEVER be given one. Those calls are
+//     surfaced for a human on Setter Performance → Disposition Review, which
+//     pairs each one with what the pipeline says actually happened.
 const MAPPING: Array<{ tag: string; action: Action }> = [
   { tag: "wavv-not-interested", action: { kind: "lost" } },
   { tag: "wavv-bad-number", action: { kind: "lost" } },

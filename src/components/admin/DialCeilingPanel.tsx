@@ -498,12 +498,54 @@ const DIALING_FILL = "#00C49A";
 const IDLE_FILL = "#9CA3AF";
 
 // ═════════════════════════════════════════════════════════════════════════════
+// PRODUCTIVE CONTACTS — passed IN, never derived here
+// ═════════════════════════════════════════════════════════════════════════════
+// Everything above this line is DIAL-SIDE and comes from the two RPCs, grouped
+// by LINE. This block is the other half of the picture and it is a different
+// shape in every way that matters:
+//   • its unit is a PERSON (profiles.id), not a line;
+//   • its source is public.deals, not wavv_calls;
+//   • its owner rule is coalesce(assigned_closer_id, created_by);
+//   • it carries NO lead_source filter, so the `ucc_list` book is included.
+// It is computed once on the page (so the Funnel tab and this tab can never
+// disagree) and handed down. NOTHING here re-derives it.
+//
+// THE TWO SIDES ARE NEVER ADDED TOGETHER. The gap between "positives logged"
+// above and "productive contacts" here IS the finding: a setter with more
+// pipeline movement than logged positives is under-dispositioning, and blending
+// the columns would hide the exact thing this section was added to show.
+export interface ProductiveSetterRow {
+  setterId: string;
+  name: string;
+  /** True when staff_directory could not name this id — the row is titled with
+   *  an id fragment rather than an invented person. */
+  nameUnknown: boolean;
+  /** Dials in range from the WAVV side. NULL means this setter has no dials at
+   *  all in range (they appear here purely on pipeline work) — never 0, which
+   *  would read as "dialed nothing" rather than "no line mapped to them". */
+  dials: number | null;
+  deals: number;
+  contacted: number;
+  qualified: number;
+  appsSent: number;
+  appointments: number;
+  funded: number;
+  /** Positive dispositions logged on the dial side, for the side-by-side gap.
+   *  NULL when this setter has no dial rows to have logged anything on. */
+  positivesLogged: number | null;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 
 export default function DialCeilingPanel({
   fromIso,
   toIso,
   rangeLabel,
   targetFor,
+  productive,
+  productiveError = null,
+  productiveLoading = false,
+  productiveTruncated = false,
 }: {
   /** The page's active range, as UTC instants. Same picker as every other tab. */
   fromIso: string;
@@ -512,6 +554,13 @@ export default function DialCeilingPanel({
   /** The page's threshold lookup. Optional: without it every band on this tab
    *  is the built-in one, which is exactly what the · marker says. */
   targetFor?: (key: string) => { target: CeilingTarget | null; isDefault: boolean };
+  /** Pipeline-side productive contacts, computed on the page. `null` means the
+   *  read FAILED or has not happened — the section says so rather than drawing
+   *  an empty table that reads as "nobody produced anything". */
+  productive?: ProductiveSetterRow[] | null;
+  productiveError?: string | null;
+  productiveLoading?: boolean;
+  productiveTruncated?: boolean;
 }) {
   const [rows, setRows] = useState<CeilingRow[] | null>(null);
   const [days, setDays] = useState<CeilingDay[] | null>(null);
@@ -1368,9 +1417,179 @@ export default function DialCeilingPanel({
           </div>
         </>
       ) : null}
+
+      {/* ═══════════ PIPELINE SIDE — PRODUCTIVE CONTACTS ═══════════
+          Rendered OUTSIDE the `rows ?` gate on purpose. Everything above depends
+          on the dial-side RPCs; this does not. A setter who dialed from an
+          unmapped line — or did not dial at all in this range and still moved
+          three merchants down the pipeline — must still appear, and would be
+          invisible if this sat inside a block that only renders when the dial
+          side came back with rows. */}
+      <ProductiveSection
+        rows={productive ?? null}
+        error={productiveError}
+        loading={productiveLoading}
+        truncated={productiveTruncated}
+        rangeLabel={rangeLabel}
+      />
     </div>
   );
 }
+
+// ── Productive contacts — the pipeline half of "is this setter working?" ─────
+// Deliberately its own card, below and visually separate from every dial-side
+// number on this tab. See the ProductiveSetterRow block for why the two sides
+// are never summed.
+function ProductiveSection({
+  rows,
+  error,
+  loading,
+  truncated,
+  rangeLabel,
+}: {
+  rows: ProductiveSetterRow[] | null;
+  error: string | null;
+  loading: boolean;
+  truncated: boolean;
+  rangeLabel: string;
+}) {
+  const sorted = useMemo(
+    () => (rows ? [...rows].sort((a, b) => b.deals - a.deals || b.appsSent - a.appsSent) : null),
+    [rows],
+  );
+
+  return (
+    <div className={CARD}>
+      <div className="card-body p-4 space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+            Productive contacts — what the PIPELINE says the setter did{" "}
+            <span className="font-normal text-gray-400">({rangeLabel})</span>
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-3xl">
+            Every number above this line comes from <b>dispositions</b>, so a setter who does the work and
+            does not log it scores zero. This row set comes from <code>deals</code> instead: stage stamps the
+            setter actually put on merchants in this range, owned by{" "}
+            <code>assigned_closer_id</code> falling back to <code>created_by</code>, with{" "}
+            <b>no lead-source filter</b> so the <code>ucc_list</code> book is included.
+          </p>
+        </div>
+
+        {/* The reason both columns are on screen at once. */}
+        <div className="rounded-lg border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2.5 text-xs text-gray-600 dark:text-gray-300 flex items-start gap-2">
+          <InformationCircleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            <b>These two sides are never added together.</b> Read the gap: a setter with far more{" "}
+            <b>productive contacts</b> than <b>positives logged</b> is talking and not dispositioning — their
+            dial-side score is under-reported, not low. The reverse (positives with no pipeline movement) is
+            the other problem entirely. Blending the columns would hide both.
+          </span>
+        </div>
+
+        {error ? (
+          <div className="rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-3 text-sm text-red-700 dark:text-red-300 flex items-start gap-2">
+            <ExclamationTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
+            <span>
+              <b>Couldn't read productive contacts</b> — unreadable, not "nobody produced anything".
+              <br />
+              <span className="text-xs font-mono opacity-80">{error}</span>
+            </span>
+          </div>
+        ) : loading && !sorted ? (
+          <div className="flex items-center gap-2 text-gray-400 text-sm py-4">
+            <span className="loading loading-spinner loading-sm" /> Loading productive contacts…
+          </div>
+        ) : !sorted ? (
+          <p className="text-sm text-gray-400">Productive contacts have not been read for this range.</p>
+        ) : sorted.length === 0 ? (
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            The read <b>succeeded</b> and no deal carried a stage stamp in this range — a genuinely quiet
+            window on the pipeline side, not a failed query.
+          </p>
+        ) : (
+          <>
+            <div className={TABLE_WRAP}>
+              <table className={TABLE}>
+                <thead className={THEAD}>
+                  <tr>
+                    <th className={TH}>Setter</th>
+                    <th className={TH_NUM} title="Dials in range from the WAVV side — context only, never added to the columns on its right">
+                      Dials
+                    </th>
+                    <th className={TH_NUM} title="Positive dispositions the setter LOGGED on the dial side">
+                      Positives logged
+                    </th>
+                    <th className={`${TH_NUM} border-l border-base-300`} title="Distinct deals carrying at least one stage stamp in this range">
+                      Productive contacts
+                    </th>
+                    <th className={TH_NUM}>Contacted</th>
+                    <th className={TH_NUM}>Qualified</th>
+                    <th className={TH_NUM} title="application_sent_at stamped in this range">
+                      App sent
+                    </th>
+                    <th className={TH_NUM} title="A booked appointment, or a promised one when no time is on the calendar yet">
+                      Appts
+                    </th>
+                    <th className={TH_NUM}>Funded</th>
+                  </tr>
+                </thead>
+                <tbody className={TBODY}>
+                  {sorted.map((r) => (
+                    <tr key={r.setterId} className={TR}>
+                      <td className={`${TD} font-semibold text-gray-900 dark:text-white`}>
+                        {r.name}
+                        {r.nameUnknown && (
+                          <div className="text-[10px] font-normal text-amber-600 dark:text-amber-400">
+                            name not readable — shown by id
+                          </div>
+                        )}
+                        {r.dials === null && (
+                          <div className="text-[10px] font-normal text-gray-400">no dials in range</div>
+                        )}
+                      </td>
+                      <td className={`${TD_NUM} text-gray-500 dark:text-gray-400`}>
+                        <Plain value={r.dials} />
+                      </td>
+                      <td className={`${TD_NUM} text-gray-500 dark:text-gray-400`}>
+                        <Plain value={r.positivesLogged} />
+                      </td>
+                      <td className={`${TD_NUM} border-l border-base-300 font-semibold text-base`}>
+                        {r.deals.toLocaleString()}
+                      </td>
+                      <td className={TD_NUM}>{r.contacted.toLocaleString()}</td>
+                      <td className={TD_NUM}>{r.qualified.toLocaleString()}</td>
+                      <td className={`${TD_NUM} font-semibold`}>{r.appsSent.toLocaleString()}</td>
+                      <td className={TD_NUM}>{r.appointments.toLocaleString()}</td>
+                      <td className={TD_NUM}>{r.funded.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+              Rows are the <b>union</b> of setters with dials and setters with pipeline movement, so a setter
+              with zero dials in range still appears. <b>Dials</b> and <b>positives logged</b> read “—” for a
+              setter with no dial rows at all — unknown, not zero.
+              {truncated && (
+                <>
+                  {" "}
+                  <span className="text-amber-600 dark:text-amber-400">
+                    This range hit the {PRODUCTIVE_ROW_CAP_LABEL}-deal read cap, so the counts below it are a
+                    floor, not a total — narrow the range.
+                  </span>
+                </>
+              )}
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Mirrors PRODUCTIVE_DEAL_CAP on the page — shown only inside the truncation
+ *  warning, so the number a manager reads matches the cap that produced it. */
+const PRODUCTIVE_ROW_CAP_LABEL = "1,000";
 
 // ── Section heading ──────────────────────────────────────────────────────────
 function SectionHead({ n, title, blurb }: { n: number; title: string; blurb: ReactNode }) {

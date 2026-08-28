@@ -20,6 +20,7 @@ import {
 import DealCreateModal from "./DealCreateModal";
 import { expectedCommissionInPlay } from "../../../types/commissions";
 import LeadGradeChip from "../../../components/admin/LeadGradeChip";
+import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "../../../lib/sourceLabel";
 
 // Sentinel for the closer <select>: "" already means "All Closers", so the
 // unassigned-only view needs its own value (a real profile id can never collide).
@@ -418,6 +419,12 @@ export default function DealListPage() {
                   <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3">
                     Closer
                   </th>
+                  <th
+                    className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3"
+                    title="Where the lead came from (deals.lead_source), named by the shared source map"
+                  >
+                    Source
+                  </th>
                   <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3">
                     Date
                   </th>
@@ -517,6 +524,18 @@ export default function DealListPage() {
                             Unassigned
                           </Link>
                         )}
+                      </td>
+                      {/* Source — how this lead reached us. Sits next to Closer so
+                          the two attribution facts (who owns it, where it came
+                          from) read together. Blank means the column really is
+                          empty on the row, which "Unknown" says out loud. */}
+                      <td className="px-6 py-4">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 text-xs font-semibold rounded-full ${SOURCE_TONE_CLASS[sourceMeta(deal.lead_source).tone]}`}
+                          title={deal.lead_source ? `lead_source = ${deal.lead_source}` : "No lead_source recorded on this deal"}
+                        >
+                          {sourceLabel(deal.lead_source)}
+                        </span>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
                         {new Date(deal.created_at).toLocaleDateString()}

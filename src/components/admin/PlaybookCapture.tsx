@@ -48,6 +48,10 @@ const PLAYBOOK_DEFAULTS: Record<
   "aged-transfer": { leadSource: "aged_transfer", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   realtime: { leadSource: "realtime_appt", startStatus: "new", isLiveTransfer: true, manualEntry: false },
   "cold-email": { leadSource: "cold_email", startStatus: "new", isLiveTransfer: false, manualEntry: false },
+  // Cold dial (UCC / trigger / unknown-origin list). The lead ALWAYS already
+  // exists — it came from a bulk list load, nobody types one of these by hand —
+  // so manual entry is hidden, same as the other import paths.
+  "cold-dial": { leadSource: "ucc_list", startStatus: "new", isLiveTransfer: false, manualEntry: false },
   vcf: { leadSource: "referral", startStatus: "new_distressed", isLiveTransfer: false },
   // Renewal deals get is_renewal=true so commissions calculate at 6 points.
   renewal: { leadSource: "renewal", startStatus: "new", isLiveTransfer: false, isRenewal: true },

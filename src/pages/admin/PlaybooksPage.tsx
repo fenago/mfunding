@@ -34,7 +34,8 @@ import {
   BuildingOfficeIcon,
   BanknotesIcon,
 } from "@heroicons/react/24/outline";
-import { PLAYBOOKS, playbookIdForLeadSource, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
+import { PLAYBOOKS, playbookIdForLeadSource, FALLBACK_PLAYBOOK_ID, coldDialOpener, COLD_DIAL_VARIANT_LABEL, type ColdDialVariant, type Playbook, type PlaybookStep, type StepField } from "../../data/playbooks";
+import { sourceMeta, SOURCE_TONE_CLASS } from "../../lib/sourceLabel";
 import { MCA_PIPELINE, VCF_PIPELINE, PIPELINES } from "../../data/pipelines";
 import PlaybookCapture from "../../components/admin/PlaybookCapture";
 import BusinessPicker, { type PlaybookBusiness } from "../../components/admin/BusinessPicker";
@@ -80,7 +81,7 @@ import { CalculatorIcon } from "@heroicons/react/24/outline";
 
 // The NEW lead-path playbooks (Synergy imports/email + cold email). Only these
 // fold their shared close steps when browsing; the original flows are untouched.
-const NEW_LEAD_PLAYBOOKS = new Set(["web-lead", "aged-transfer", "realtime", "cold-email"]);
+const NEW_LEAD_PLAYBOOKS = new Set(["web-lead", "aged-transfer", "realtime", "cold-email", "cold-dial"]);
 
 const STAGE_LABELS: Record<"mca" | "vcf", Record<string, string>> = {
   mca: Object.fromEntries(MCA_PIPELINE.stages.map((s) => [s.key, s.label])),
@@ -867,12 +868,16 @@ export default function PlaybooksPage() {
   // default).
   function pickFromQueue(d: DealWithCustomer) {
     const pipe = pipelineOf(d.deal_type);
-    // Fallback for an UNMAPPED lead source must be deliberate — the generic
-    // inbound flow ("website") for MCA — NOT "the first tab in the sorted list".
-    // (When Live Transfer became the first/default tab, the old first-tab
-    // fallback silently rendered unmapped website_apply deals as live transfers.)
+    // Fallback for an UNMAPPED lead source must be deliberate — NOT "the first
+    // tab in the sorted list". (When Live Transfer became the first/default tab,
+    // the old first-tab fallback silently rendered unmapped website_apply deals
+    // as live transfers.) It also must not be "website": an unknown source is by
+    // definition one we can make NO claim about, and the website opener asserts
+    // "you just requested working capital" — which is how the whole ucc_list
+    // book ended up being read a false script. Cold Dial's opener asks how they
+    // came in instead of telling them. See FALLBACK_PLAYBOOK_ID.
     let target =
-      (pipe === "mca" ? visiblePlaybooks.find((p) => p.id === "website") : undefined) ??
+      (pipe === "mca" ? visiblePlaybooks.find((p) => p.id === FALLBACK_PLAYBOOK_ID) : undefined) ??
       visiblePlaybooks.find((p) => p.pipeline === pipe) ??
       active;
     // Prefer the playbook that matches the deal's lead_source (real-time, web
@@ -3189,22 +3194,20 @@ function MerchantFirmographics({ customer }: { customer: DealWithCustomer["custo
 
 // ───────────────────────── Opening script (setter cold-dial) ─────────────────
 // Setters dial cold LIST leads (Aged / UCC / Trigger) from the New-Lead pipeline,
-// answer, then open the merchant here. Those lead sources are DELIBERATELY unmapped
-// to a playbook (see LEAD_SOURCE_TO_PLAYBOOK) because they're cold — nobody
-// contacted us — so no playbook step carries their opener. THIS card is that
-// opener: it reads the deal's lead_source, auto-selects the matching script, and
-// still lets the setter flip to another variant by hand.
+// answer, then open the merchant here. Those sources now DO map to a playbook —
+// the Cold Dial flow — and this card is the same opener in quick-toggle form,
+// interpolated with the real merchant's name: it reads the deal's lead_source,
+// auto-selects the matching variant, and still lets the setter flip by hand.
 //
-// COMPLIANCE (owner will refine wording; run past the compliance agent before heavy
-// use): an MCA is a PURCHASE OF FUTURE RECEIVABLES, never a loan — the copy says
-// "funding / working capital / advance", never "loan". A cold dial never claims the
-// merchant contacted us, and the UCC opener never discloses a specific funder or
-// amount from the public filing.
-type LeadType = "aged" | "ucc" | "trigger";
+// The opener copy itself lives in src/data/playbooks.ts (coldDialOpener) so this
+// card and the Cold Dial playbook's step 2 can never drift into two different
+// scripts for the same call. Edit it THERE, and read the compliance rules baked
+// into that block before you do.
+type LeadType = ColdDialVariant;
 
 /** Which cold-dial script a deal's lead_source calls for — null for inbound /
- * live-transfer / mapped sources that carry their OWN step-1 opener (we never
- * double up, and never assert cold outreach on an inbound lead). */
+ * live-transfer sources that carry their OWN step-1 opener (we never double up,
+ * and never assert cold outreach on an inbound lead). */
 function coldDialLeadType(src: string | null | undefined): LeadType | null {
   const s = (src ?? "").trim().toLowerCase();
   if (!s) return null;
@@ -3215,6 +3218,9 @@ function coldDialLeadType(src: string | null | undefined): LeadType | null {
   }
   if (s === "ucc_lead") return "ucc";
   if (s === "ph_setter" || s === "cold_call") return "ucc"; // generic cold dial → UCC opener
+  // Origin unknown (GHL-created contact). We can't claim a filing we don't have,
+  // so this gets the opener that ASKS how they came in.
+  if (s === "ghl_other") return "neutral";
   return null;
 }
 
@@ -3223,13 +3229,11 @@ interface ScriptCopy { label: string; opener: string; qualify: string[]; transit
 /** STARTER copy — a starting point, not final. [YOU] = the setter's name. */
 function buildScripts(firstName: string, business: string): Record<LeadType, ScriptCopy> {
   const you = "[YOU]";
+  const opener = (v: ColdDialVariant) => coldDialOpener(v, firstName, business, you);
   return {
     aged: {
-      label: "Aged",
-      opener:
-        `Hi, is this ${firstName}? This is ${you} with Momentum Funding. You reached out a little while `
-        + `back about working capital for ${business}, so I'm circling back — we've got some new funding `
-        + `programs that may be a better fit now. Do you have a quick minute?`,
+      label: COLD_DIAL_VARIANT_LABEL.aged,
+      opener: opener("aged"),
       qualify: [
         `Is the business still looking for additional working capital?`,
         `Roughly what are the monthly deposits running these days?`,
@@ -3241,11 +3245,8 @@ function buildScripts(firstName: string, business: string): Record<LeadType, Scr
         + `to see what you qualify for.`,
     },
     ucc: {
-      label: "UCC",
-      opener:
-        `Hi, is this ${firstName}? This is ${you} with Momentum Funding. We help business owners line up `
-        + `additional working capital, and it looks like ${business} may already have some funding in place — a `
-        + `lot of owners in that spot qualify for more. Do you have a quick minute?`,
+      label: COLD_DIAL_VARIANT_LABEL.ucc,
+      opener: opener("ucc"),
       qualify: [
         `Are you open to additional working capital right now?`,
         `About how many advances or positions are you carrying at the moment?`,
@@ -3257,11 +3258,8 @@ function buildScripts(firstName: string, business: string): Record<LeadType, Scr
         + `to see the offers.`,
     },
     trigger: {
-      label: "Trigger",
-      opener:
-        `Hi, is this ${firstName}? This is ${you} with Momentum Funding. You recently looked into financing `
-        + `options for ${business}, so I wanted to reach out directly — we help owners get working capital fast. `
-        + `Have a quick second?`,
+      label: COLD_DIAL_VARIANT_LABEL.trigger,
+      opener: opener("trigger"),
       qualify: [
         `What would the capital be for — growth, equipment, payroll, covering a gap?`,
         `What are the monthly deposits running right now?`,
@@ -3270,6 +3268,18 @@ function buildScripts(firstName: string, business: string): Record<LeadType, Scr
       transition:
         `Perfect — that's exactly what we do. The fastest path is a quick application plus your last few months `
         + `of bank statements; most owners see options within 24–48 hours, and checking has no impact on your credit.`,
+    },
+    neutral: {
+      label: COLD_DIAL_VARIANT_LABEL.neutral,
+      opener: opener("neutral"),
+      qualify: [
+        `Are you looking for working capital for the business right now?`,
+        `How long has it been running, and roughly what are the monthly deposits?`,
+        `Are you carrying any advances at the moment — anybody pulling daily or weekly?`,
+      ],
+      transition:
+        `Got it — that's exactly what we do. The next step is a short application and your last few months of `
+        + `bank statements; there's no impact to your credit just to see what you qualify for.`,
     },
   };
 }
@@ -3566,6 +3576,24 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
             {/* Who gets paid for this deal. Unassigned = nobody, so it's a red
                 chip with the fix RIGHT HERE — a closer never leaves this screen. */}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {/* WHERE THIS LEAD CAME FROM — first chip in the row, because it
+                  decides which script is truthful. A UCC lead is a cold dial
+                  (they never contacted us); a website lead did request funding.
+                  Reading the wrong one at a merchant is a compliance problem, so
+                  the setter can always see which they're holding. One canonical
+                  map (src/lib/sourceLabel.ts) so this can't drift from My Day. */}
+              {(() => {
+                const src = sourceMeta(deal.lead_source);
+                return (
+                  <span
+                    className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full ${SOURCE_TONE_CLASS[src.tone]}`}
+                    title={`Lead source: ${deal.lead_source || "not set"} — it decides which opening script is truthful for this merchant`}
+                  >
+                    {src.label}
+                  </span>
+                );
+              })()}
+
               {deal.assigned_closer_id ? (
                 <span
                   className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
@@ -4840,7 +4868,11 @@ function StepCard({
         {step.say && (
           <div className="mt-3 flex gap-2 rounded-md bg-ocean-blue/5 dark:bg-ocean-blue/10 border-l-4 border-ocean-blue px-3 py-2">
             <ChatBubbleLeftRightIcon className="w-4 h-4 text-ocean-blue shrink-0 mt-0.5" />
-            <p className="text-sm italic text-gray-700 dark:text-gray-200">"{step.say}"</p>
+            {/* whitespace-pre-line: a few steps carry LABELLED script variants
+                separated by newlines (renewal paydown tiers, the cold-dial
+                filing-vs-unknown openers). Without this they collapsed into one
+                unreadable run-on paragraph. */}
+            <p className="text-sm italic text-gray-700 dark:text-gray-200 whitespace-pre-line">"{step.say}"</p>
           </div>
         )}
 

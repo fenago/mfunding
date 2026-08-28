@@ -53,6 +53,7 @@ import {
 } from "@/services/dealService";
 import { DEAL_STAGES, DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
 import { dateTimeET } from "@/utils/time";
+import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
 import BookAppointmentControl from "./BookAppointmentControl";
 import MerchantApplicationModal from "./MerchantApplicationModal";
 
@@ -165,16 +166,12 @@ function stageLabel(status: string | null): string {
   return DEAL_STATUS_CONFIG[status as DealStatus]?.label ?? status;
 }
 
-function sourceLabel(src: string | null): string {
-  if (src === "live_transfer") return "Live transfer";
-  if (src === "realtime_appt") return "Real-time";
-  return src ?? "—";
-}
+// Source label + chip colour both come from the SHARED map (src/lib/sourceLabel.ts).
+// The local version here only knew the two Synergy products, so a ucc_list row
+// printed its raw column value and every other source printed raw too.
 
 function sourceChipCls(src: string | null): string {
-  if (src === "live_transfer") return "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300";
-  if (src === "realtime_appt") return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
-  return "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300";
+  return SOURCE_TONE_CLASS[sourceMeta(src).tone];
 }
 
 /** The bucket the Source filter uses. Anything that is not one of the two Synergy

@@ -8,11 +8,16 @@ import type { QueueDeal } from "../services/dealService";
 // STARRED card looks identical whether the deal is still in the live queue or has
 // moved on (funded/parked). Deliberately NOT status-filtered: a bookmark must
 // survive the deal leaving the queue, so we pull the row whatever its status.
+// do_not_contact is in this list for a COMPLIANCE reason, not a display one: the
+// starred group is the one path onto My Day that does NOT go through
+// getOpenDealsForQueue (which filters DND out), so without this column a merchant
+// who asked us to stop could still be rendered as a card with a one-click dial on
+// it, and nothing on the row would even say so.
 const PINNED_DEAL_SELECT = `
   *,
   customer:customers!customer_id (
     id, first_name, last_name, business_name, email, additional_emails, phone, additional_phones,
-    monthly_revenue, time_in_business, industry
+    monthly_revenue, time_in_business, industry, do_not_contact
   ),
   submissions:deal_submissions ( response_at, status )
 `;
@@ -29,6 +34,14 @@ export interface UseDealPins {
    * appear here — the bookmark row still exists, we just can't show what we can't read.
    */
   pinnedDeals: QueueDeal[];
+  /**
+   * How many of the user's pins were WITHHELD from `pinnedDeals` because the
+   * merchant is marked do-not-contact. Reported rather than swallowed: the card
+   * is suppressed on purpose, and a star that just vanishes with no explanation
+   * is the kind of silence that gets read as a bug (or as the deal being gone).
+   * The caller states the count; it never renders the merchant.
+   */
+  dncSuppressed: number;
   /** Optimistic star/un-star. Reverts + throws (loud) on failure. */
   togglePin: (dealId: string) => Promise<void>;
   loading: boolean;
@@ -49,6 +62,7 @@ export function useDealPins(): UseDealPins {
 
   const [pins, setPins] = useState<{ deal_id: string; created_at: string }[]>([]);
   const [pinnedDeals, setPinnedDeals] = useState<QueueDeal[]>([]);
+  const [dncSuppressed, setDncSuppressed] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Guards a fetch race: an optimistic toggle bumps this, and a slower in-flight
@@ -59,6 +73,7 @@ export function useDealPins(): UseDealPins {
     if (!userId) {
       setPins([]);
       setPinnedDeals([]);
+      setDncSuppressed(0);
       setLoading(false);
       return;
     }
@@ -72,6 +87,7 @@ export function useDealPins(): UseDealPins {
         if (pinErr) {
           setPins([]);
           setPinnedDeals([]);
+          setDncSuppressed(0);
           setLoading(false);
           return;
         }
@@ -80,12 +96,26 @@ export function useDealPins(): UseDealPins {
         const ids = rows.map((r) => r.deal_id);
         if (ids.length === 0) {
           setPinnedDeals([]);
+          setDncSuppressed(0);
           setLoading(false);
           return;
         }
         const { data: deals } = await supabase.from("deals").select(PINNED_DEAL_SELECT).in("id", ids);
         if (gen !== genRef.current) return;
-        setPinnedDeals(((deals ?? []) as unknown) as QueueDeal[]);
+        const all = ((deals ?? []) as unknown) as QueueDeal[];
+        // DO NOT CONTACT — withheld from the starred group, same compliance rule
+        // getOpenDealsForQueue applies to the queue: a My Day card is an
+        // instruction to call someone, with the phone rendered as a one-click
+        // dial, and a merchant who asked us to stop must not be handed to a
+        // closer that way. A star does not override the merchant's request.
+        //
+        // Only an explicit `true` suppresses. UNREADABLE IS NOT DND: a null (or a
+        // customer the read couldn't resolve) means we do not know, and guessing
+        // "suppress" there would quietly eat bookmarks on rows that are perfectly
+        // callable. The count is surfaced so the suppression is stated, not silent.
+        const keep = all.filter((d) => d.customer?.do_not_contact !== true);
+        setPinnedDeals(keep);
+        setDncSuppressed(all.length - keep.length);
         setLoading(false);
       });
   }, [userId]);
@@ -156,5 +186,5 @@ export function useDealPins(): UseDealPins {
     [userId, pinnedIds, load],
   );
 
-  return { pinnedIds, pinnedAt, pinnedDeals, togglePin, loading, error, reload: load };
+  return { pinnedIds, pinnedAt, pinnedDeals, dncSuppressed, togglePin, loading, error, reload: load };
 }

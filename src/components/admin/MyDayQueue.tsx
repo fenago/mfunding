@@ -7,6 +7,7 @@ import { useDealPins } from "../../hooks/useDealPins";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import supabase from "../../supabase";
 import { dateKeyET, timeET } from "../../utils/time";
+import { sourceMeta, SOURCE_TONE_CLASS, type SourceTone } from "../../lib/sourceLabel";
 import LeadGradeChip from "./LeadGradeChip";
 
 const HOUR = 3_600_000;
@@ -563,26 +564,39 @@ function slaMs(rank: number): number | null {
   return null;
 }
 
-// Color-code each card by HOW the lead arrived, so the queue reads at a glance:
-// live transfers pop red (they're the time-critical ones), web-form leads blue,
-// etc. Left edge carries the color; a tiny chip names the source.
-const SOURCE_STYLE: Record<string, { edge: string; chip: string; label: string }> = {
-  // The two Synergy products must never look alike — one means "pick up the phone,
-  // they're already there", the other means "you have 5 minutes to dial". Same color
-  // for both is how a closer treats a warm handoff like a callback, and loses it.
-  live_transfer: { edge: "border-l-red-500", chip: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300", label: "📞 Live transfer — on the line" },
-  realtime_appt: { edge: "border-l-fuchsia-500", chip: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300", label: "⏱ Real-time — email in 5 min" },
-  website: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
-  website_apply: { edge: "border-l-blue-500", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300", label: "Web form" },
-  web_purchased: { edge: "border-l-amber-500", chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300", label: "Web lead" },
-  aged_transfer: { edge: "border-l-orange-500", chip: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300", label: "Aged" },
-  cold_email: { edge: "border-l-purple-500", chip: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300", label: "Cold email" },
-  cold_email_landing: { edge: "border-l-purple-500", chip: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300", label: "Cold email" },
-  renewal: { edge: "border-l-emerald-500", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300", label: "Renewal" },
-  referral: { edge: "border-l-teal-500", chip: "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300", label: "Referral" },
+// Color-code each card by HOW the lead arrived, so the queue reads at a glance.
+// The label and the tone both come from the SHARED map (src/lib/sourceLabel.ts) —
+// this file used to carry its own partial copy with no key for ucc_list, ghl_other
+// or ph_setter, so 72 of the ~199 open deals rendered as a meaningless "Other" and
+// the closer could not tell a cold UCC record from a merchant who filled in a form.
+// Everything below is derived from the shared tone, so it can never drift again.
+const EDGE_BY_TONE: Record<SourceTone, string> = {
+  transfer: "border-l-red-500",
+  ucc: "border-l-violet-500",
+  aged: "border-l-amber-500",
+  web: "border-l-blue-500",
+  email: "border-l-purple-500",
+  setter: "border-l-teal-500",
+  renewal: "border-l-emerald-500",
+  referral: "border-l-indigo-500",
+  ghl: "border-l-gray-400",
+  neutral: "border-l-gray-300 dark:border-l-gray-600",
 };
-const SOURCE_FALLBACK = { edge: "border-l-gray-300 dark:border-l-gray-600", chip: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300", label: "Other" };
-const sourceStyle = (d: QueueDeal) => SOURCE_STYLE[d.lead_source ?? ""] ?? SOURCE_FALLBACK;
+
+// What the source MEANS for the next action — the part a label alone can't carry.
+// Lives on the chip's tooltip so the chip itself stays one scannable word.
+const TONE_HINT: Record<SourceTone, string> = {
+  transfer: "A Synergy transfer — the merchant was (or is) live on the phone. Speed is the whole product.",
+  ucc: "Purchased UCC-filing data. COLD — this merchant never contacted us and does not know who we are.",
+  aged: "A purchased lead that once raised its hand. Warm at best; lead with why you're calling now.",
+  web: "They came to us — an inbound website/apply-form lead. The warmest kind.",
+  email: "Cold outbound. Expect no recognition.",
+  setter: "Sourced by a PH setter — check their notes before you dial.",
+  renewal: "An existing funded merchant coming back for more capital.",
+  referral: "Sent by a partner. Name the referrer in the first sentence.",
+  ghl: "Created by the GHL webhook — the real origin has not been pinned down yet.",
+  neutral: "The lead source on this deal is not one we have a description for — shown exactly as it is stored.",
+};
 
 // ── Was the warm handoff actually taken? ──
 // A live transfer means a human was mid-phone-call the moment this deal was born.
@@ -750,6 +764,7 @@ type QueueItem = { deal: QueueDeal; u: Urgency };
  * countdown, same overdue flag, same onPick. Lifted out so both lanes render it. */
 function QueueCard({
   deal, u, now, onPick, onTouched, flagged, longInbound, onFlag, pinned, onTogglePin,
+  showCloser, closerNames,
 }: QueueItem & {
   now: number;
   onPick: (d: QueueDeal) => void;
@@ -761,8 +776,13 @@ function QueueCard({
   /** Per-user star: is this deal bookmarked, and the optimistic toggle. */
   pinned: boolean;
   onTogglePin: (dealId: string) => Promise<void>;
+  /** "All" scope — the board is showing other people's work, so every card has to
+   *  say WHOSE it is. In "Mine" it's redundant (every card is yours) and omitted. */
+  showCloser: boolean;
+  /** profiles.id → display name, resolved from staff_directory. */
+  closerNames: Record<string, string>;
 }) {
-  const src = sourceStyle(deal);
+  const src = sourceMeta(deal.lead_source);
   const amount = amountOf(deal);
   const sla = slaMs(u.rank);
   const overdue = sla !== null && now - Date.parse(u.since) > sla;
@@ -815,7 +835,7 @@ function QueueCard({
       onClick={() => onPick(deal)}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onPick(deal); }}
       title={`Load ${nameOf(deal)} into the playbook`}
-      className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${src.edge} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3 cursor-pointer`}
+      className={`group shrink-0 w-72 text-left rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 ${EDGE_BY_TONE[src.tone]} bg-gray-50 dark:bg-gray-900 hover:border-ocean-blue hover:shadow-md hover:-translate-y-0.5 transition p-3 cursor-pointer`}
     >
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <span className="flex items-center gap-1.5 min-w-0">
@@ -852,6 +872,52 @@ function QueueCard({
           </p>
         );
       })()}
+      {/* DO NOT CONTACT — the one chip on this card that is a STOP, not a nudge.
+          getOpenDealsForQueue already keeps these off the queue, so this is the
+          backstop for every other way a card can reach the board (a star/bookmark
+          on a merchant who opted out afterwards). Solid red, spelled out, no
+          abbreviation to misread: the whole card above it is telling someone to
+          dial, and this has to beat that. */}
+      {deal.customer?.do_not_contact && (
+        <p className="mt-1">
+          <span
+            className="inline-flex items-center gap-1 text-[11px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white"
+            title="This merchant asked not to be contacted (customers.do_not_contact). Do not call, text, or email them — work another card."
+          >
+            🚫 DO NOT CONTACT
+          </span>
+        </p>
+      )}
+      {/* WHOSE card is this. Only in "All" scope, where the board is everyone's
+          book: an owner scanning it needs the name attached to the work, and an
+          ownerless lead needs to say so out loud rather than reading as nobody's
+          problem. Names come from staff_directory (profiles RLS hands a closer
+          only their own row, so the profiles embed renders every teammate as
+          blank/Unknown — wrong for setters especially). A id the directory can't
+          name keeps its id fragment; an invented name would be worse. */}
+      {showCloser && (
+        <p className="mt-1">
+          {deal.assigned_closer_id ? (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300"
+              title="The closer this deal is assigned to"
+            >
+              🧑‍💼 {closerNames[deal.assigned_closer_id] ?? (
+                <span className="font-mono opacity-80" title="staff_directory could not name this user id">
+                  {deal.assigned_closer_id.slice(0, 8)}
+                </span>
+              )}
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+              title="Nobody owns this deal. It shows on everyone's board and gets worked by no one — assign it."
+            >
+              🧑‍💼 Unassigned
+            </span>
+          )}
+        </p>
+      )}
       {/* THE GLANCEABLE VERDICT: have we ACTUALLY had a conversation? spoke_at is the
           honest signal (a human disposition or a ≥120s call) — unlike the "reached"
           line below, which reads contacted_at (any ≥30s pickup, voicemail included).
@@ -988,7 +1054,12 @@ function QueueCard({
 
       <div className="flex items-center justify-between gap-2 mt-1.5">
         <span className="flex items-center gap-1.5 min-w-0">
-          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${src.chip}`}>{src.label}</span>
+          <span
+            className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${SOURCE_TONE_CLASS[src.tone]}`}
+            title={TONE_HINT[src.tone]}
+          >
+            {src.label}
+          </span>
           {(() => {
             const isLive = deal.lead_source === "live_transfer";
             // Human flag is the truth of record — when set it REPLACES the machine
@@ -1033,6 +1104,7 @@ function QueueCard({
  * order (or its own empty state). */
 function LaneSection({
   title, hint, icon, countTone, items, empty, now, onPick, onTouched, handoff, onFlag, pinnedIds, onTogglePin,
+  showCloser, closerNames,
 }: {
   title: string;
   hint: string;
@@ -1050,6 +1122,9 @@ function LaneSection({
   /** Per-user stars: which deals are pinned + the optimistic toggle. */
   pinnedIds: Set<string>;
   onTogglePin: (dealId: string) => Promise<void>;
+  /** Show the owner chip on each card (All scope only) + the name lookup. */
+  showCloser: boolean;
+  closerNames: Record<string, string>;
 }) {
   return (
     <section>
@@ -1078,6 +1153,8 @@ function LaneSection({
                 onFlag={onFlag}
                 pinned={pinnedIds.has(it.deal.id)}
                 onTogglePin={onTogglePin}
+                showCloser={showCloser}
+                closerNames={closerNames}
               />
             );
           })}
@@ -1097,7 +1174,7 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   const { effectiveUserId, isAdmin, isSuperAdmin } = useUserProfile();
   // Per-user stars — pinned merchants surface in a dedicated ⭐ group at the very
   // top, immune to the age/kind/need filters below.
-  const { pinnedIds, pinnedAt, pinnedDeals, togglePin, error: pinError } = useDealPins();
+  const { pinnedIds, pinnedAt, pinnedDeals, dncSuppressed, togglePin, error: pinError } = useDealPins();
   // Admins/super-admins can flip Mine/All; a pure closer (no admin role) is
   // always scoped to their own book + unassigned. Default All for super_admin,
   // Mine for everyone else.
@@ -1113,11 +1190,33 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   // the call ledger via a closer-safe RPC. Optimistic taps mutate this locally; each
   // load() reconciles it against the server.
   const [handoff, setHandoff] = useState<Map<string, HandoffState>>(new Map());
+  // profiles.id → display name for the owner chip on each card. Read from
+  // staff_directory, NOT the profiles embed: profiles RLS gives a closer only
+  // their own row, so an embed names every teammate "Unknown" — which is exactly
+  // wrong on the All board, whose whole job is showing other people's work.
+  const [closerNames, setCloserNames] = useState<Record<string, string>>({});
 
   const load = useCallback(() => {
     getOpenDealsForQueue()
       .then((d) => {
         setDeals(d);
+        // Names for whoever owns the loaded deals. Best-effort and MERGED, never
+        // replaced: a failed read must not blank names we already resolved (an
+        // ownerless-looking card is the bug we're fixing, not one to reintroduce).
+        const closerIds = [...new Set(d.map((x) => x.assigned_closer_id).filter((v): v is string => !!v))];
+        if (closerIds.length > 0) {
+          void supabase
+            .from("staff_directory")
+            .select("id,name")
+            .in("id", closerIds)
+            .then(({ data }) => {
+              const map: Record<string, string> = {};
+              for (const p of (data ?? []) as { id: string; name: string | null }[]) {
+                if (p.name) map[p.id] = p.name;
+              }
+              setCloserNames((prev) => ({ ...prev, ...map }));
+            });
+        }
         // Only live transfers can carry a handoff flag — keep the read cheap.
         const ltIds = d.filter((x) => x.lead_source === "live_transfer").map((x) => x.id);
         return fetchHandoffStates(ltIds);
@@ -1284,6 +1383,11 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   // header line.
   const laneOrder: Lane[] = ["new", "followup"];
 
+  // In "Mine" every card is yours, so the owner chip would be noise on all of
+  // them. In "All" it is the missing fact: the board is everyone's book and the
+  // cards said nothing about whose.
+  const showCloser = canToggle && scope === "all";
+
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
@@ -1429,6 +1533,19 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
         </div>
       )}
 
+      {/* A star does not override a merchant's request to be left alone — useDealPins
+          withholds those rows from the starred group. Say so, quietly. Deliberately
+          OUTSIDE the branch below: if the only pin a user has is a DND merchant, the
+          board reads "Queue clear" and their bookmark would otherwise appear to have
+          silently disappeared. Names nobody — a count and the reason. */}
+      {!collapsed && dncSuppressed > 0 && (
+        <p className="mb-3 text-[11px] text-gray-500 dark:text-gray-400">
+          🚫 <b>{dncSuppressed} starred merchant{dncSuppressed === 1 ? "" : "s"}</b>{" "}
+          {dncSuppressed === 1 ? "is" : "are"} hidden here — they asked not to be contacted. The record is
+          still on <b>/admin/deals</b>; it just isn't callable work.
+        </p>
+      )}
+
       {!collapsed && (loading ? (
         <p className="text-sm text-gray-400 py-2">Loading your queue…</p>
       ) : items.length === 0 && starredItems.length === 0 && filtersActive ? (
@@ -1472,6 +1589,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
               onFlag={setFlagLocal}
               pinnedIds={pinnedIds}
               onTogglePin={togglePin}
+              showCloser={showCloser}
+              closerNames={closerNames}
             />
           )}
           {laneOrder.map((lane) =>
@@ -1491,6 +1610,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 onFlag={setFlagLocal}
                 pinnedIds={pinnedIds}
                 onTogglePin={togglePin}
+                showCloser={showCloser}
+                closerNames={closerNames}
               />
             ) : (
               <LaneSection
@@ -1508,6 +1629,8 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
                 onFlag={setFlagLocal}
                 pinnedIds={pinnedIds}
                 onTogglePin={togglePin}
+                showCloser={showCloser}
+                closerNames={closerNames}
               />
             )
           )}
