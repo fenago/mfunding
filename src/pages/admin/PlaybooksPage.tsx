@@ -3599,7 +3599,7 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
                   className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                   title="The closer this deal is attributed to — drives commission and analytics"
                 >
-                  {isMine ? "Yours" : `Closer: ${closerName || "Assigned"}`}
+                  🧑‍💼 {`Closer: ${closerName || "Assigned"}`}{isMine ? " · you" : ""}
                 </span>
               ) : (
                 <span
