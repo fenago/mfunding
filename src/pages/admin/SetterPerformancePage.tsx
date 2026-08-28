@@ -664,6 +664,11 @@ type RangeKey = "today" | "yesterday" | "7d" | "30d" | "custom";
 const RANGE_LABELS: Record<RangeKey, string> = {
   today: "Today", yesterday: "Yesterday", "7d": "Last 7 days", "30d": "Last 30 days", custom: "Custom",
 };
+/** Ranges that are ONE day wide. A trend drawn over one of these is a single
+ *  dot — true, but useless — so the Trends tab widens away from them. */
+const SINGLE_DAY_RANGES: RangeKey[] = ["today", "yesterday"];
+/** What Trends widens TO. */
+const TRENDS_RANGE: RangeKey = "7d";
 
 /** Stamped in US Eastern, and LABELLED as Eastern in the header, because the
  *  floor runs on an Eastern clock while the managers reading this do not all
@@ -1043,6 +1048,13 @@ export default function SetterPerformancePage() {
   const [rangeKey, setRangeKey] = useState<RangeKey>("today");
   const [customFrom, setCustomFrom] = useState<string>(ymd(localDayStart(6)));
   const [customTo, setCustomTo] = useState<string>(ymd(localDayStart(0)));
+  /** Set the moment the manager picks a range themselves. Once set, the Trends
+   *  auto-widen below never fires again for the session — an explicit choice is
+   *  never overridden, and never silently undone. */
+  const [rangePinned, setRangePinned] = useState(false);
+  /** The single-day range Trends widened away from, held so leaving Trends can
+   *  put it back. Null means "we did not touch the range". */
+  const [widenedFrom, setWidenedFrom] = useState<RangeKey | null>(null);
 
   const [aggRows, setAggRows] = useState<SetterCall[]>([]);
   const [aggregateTruncated, setAggregateTruncated] = useState(false);
@@ -1130,6 +1142,30 @@ export default function SetterPerformancePage() {
       }
     }
   }, [rangeKey, customFrom, customTo]);
+
+  // ── Trends needs more than one day to BE a trend ──────────────────────────
+  // Every other tab is a shift monitor ("how is the floor doing right now"), so
+  // Today is the right default for them and stays. Trends is the one tab whose
+  // whole job is the shape over time, and Today renders it as a single point.
+  // So: opening Trends from an untouched single-day range widens to Last 7 days
+  // and leaving Trends puts the old range back — Funnel/Setters still open on
+  // Today. Any explicit pill click pins the range and retires this for good.
+  useEffect(() => {
+    if (rangePinned) return;
+    if (tab === "trends") {
+      if (widenedFrom === null && SINGLE_DAY_RANGES.includes(rangeKey)) {
+        setWidenedFrom(rangeKey);
+        setRangeKey(TRENDS_RANGE);
+      }
+    } else if (widenedFrom !== null) {
+      setRangeKey(widenedFrom);
+      setWidenedFrom(null);
+    }
+  }, [tab, rangeKey, rangePinned, widenedFrom]);
+
+  /** True while the chart is showing a window the manager did not ask for. It
+   *  is labelled on the card rather than applied invisibly. */
+  const trendAutoWidened = widenedFrom !== null;
 
   const fromIso = range.from.toISOString();
   const toIso = range.to.toISOString();
@@ -2211,7 +2247,7 @@ export default function SetterPerformancePage() {
                 key={k}
                 type="button"
                 aria-pressed={active}
-                onClick={() => setRangeKey(k)}
+                onClick={() => { setRangePinned(true); setWidenedFrom(null); setRangeKey(k); }}
                 className={`rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${
                   active
                     ? "bg-mint-green text-gray-900 shadow-sm"
@@ -2227,10 +2263,10 @@ export default function SetterPerformancePage() {
         {rangeKey === "custom" && (
           <div className="flex items-center gap-2">
             <input type="date" className="input input-sm input-bordered" value={customFrom}
-              onChange={(e) => setCustomFrom(e.target.value)} />
+              onChange={(e) => { setRangePinned(true); setCustomFrom(e.target.value); }} />
             <span className="text-xs text-gray-400">to</span>
             <input type="date" className="input input-sm input-bordered" value={customTo}
-              onChange={(e) => setCustomTo(e.target.value)} />
+              onChange={(e) => { setRangePinned(true); setCustomTo(e.target.value); }} />
           </div>
         )}
 
@@ -3260,12 +3296,26 @@ export default function SetterPerformancePage() {
             emptyRange ? <EmptyRange total={totalRowsEver} /> : (
               <div className="card bg-base-100 border border-base-300 shadow-sm">
                 <div className="card-body p-4">
-                  <h2 className="font-semibold text-gray-900 dark:text-white">Daily activity</h2>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-semibold text-gray-900 dark:text-white">Daily activity</h2>
+                    <span className="badge badge-sm bg-base-200 dark:bg-gray-700 border-0 text-gray-600 dark:text-gray-300">
+                      {trend.length} {trend.length === 1 ? "day" : "days"} plotted
+                    </span>
+                    {trendAutoWidened && (
+                      <span
+                        className="badge badge-sm bg-mint-green/20 border border-mint-green/40 text-gray-700 dark:text-mint-green"
+                        title={`A one-day range draws one point, so Trends opened on ${RANGE_LABELS[TRENDS_RANGE]}. Pick any range pill to override — your choice sticks.`}
+                      >
+                        auto-widened to {RANGE_LABELS[TRENDS_RANGE]}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-400">
                     Dials, connects, human contacts and conversations from WAVV (outbound); appointments from Deals by
                     <code className="mx-1">appointment_at</code>. Days with no calls simply do not appear —
                     the axis is the days that had activity, not a zero-filled calendar. Humans exclude voicemails,
                     and a conversation is a call the setter dispositioned as a real talk.
+                    {trendAutoWidened && " Trends opens on a multi-day window because one day is a single point; pick any range pill to override."}
                   </p>
                   {trend.length === 0 ? (
                     <p className="text-sm text-gray-400 py-6">No activity in this range.</p>
