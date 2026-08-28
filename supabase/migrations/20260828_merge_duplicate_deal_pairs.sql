@@ -257,10 +257,366 @@ select (select count(*) from mirror_clear) m, (select count(*) from setter_set) 
 -- a multi-row match makes that call fail, so every GHL stage move for this
 -- opportunity is currently being dropped. Out of scope for this pass (the
 -- survivor is a live_transfer deal, not the playbook signature) — flagged for
--- explicit go-ahead.
+-- explicit go-ahead.  >>> RESOLVED BELOW (pair 6), authorized by the owner.
 --
 -- ROOT CAUSE, still unfixed: playbook-open-contact mints a deal without an
 -- ghl_opportunity_id, and ghl-webhook's Gap-A create matches on that column
 -- alone. Until Gap-A also looks up an existing unlinked deal by
 -- ghl_contact_id + deal_type (and adopts it instead of inserting), this class
 -- of duplicate will keep reappearing.
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- PAIR 6 — "Nothing But Waste" — applied 2026-08-28, owner-authorized.
+-- Survivor MF-2026-0033. This one is NOT the same shape as pairs 1-5; read
+-- the analysis before assuming it was.
+--
+-- WHAT WAS ACTUALLY WRONG
+-- THREE deal rows carried the same ghl_opportunity_id 'bVn0qtZMfDvYnROOrc4A':
+--   MF-2026-0033  application_sent  live_transfer  created_by Carlos Marquez
+--                 customer a90524b1 "Nothing But Waste"        owner E!
+--   MF-2026-0242  application_sent  ghl_other      created_by NULL
+--                 customer a90524b1 "Nothing But Waste"        owner Carlos (round-robin)
+--   MF-2026-0034  dead              live_transfer  created_by NULL
+--                 customer f952e666 "Nothin' But Waste"        owner Carlos (round-robin)
+-- Because ghl-webhook does .eq('ghl_opportunity_id', oppId).maybeSingle(), a
+-- three-row match ERRORED on every event, so this merchant's GHL stage moves
+-- had been silently dropped since 2026-08-20.
+--
+-- TWO FINDINGS THAT CHANGED THE PLAN (neither was visible in the first pass)
+--  1. MF-2026-0034 sits on a DIFFERENT customer row (f952e666) than 0033/0242.
+--     Both customer rows share ghl_contact_id lX1bVpV2ilYESkQx9yzH and the same
+--     human (Shontea Jones Taylor, same phone; business name and email differ by
+--     one letter). So this is a duplicate CUSTOMER, not just a duplicate deal.
+--  2. MF-2026-0034 had ALREADY been merged into 0033 on 2026-07-14 — its
+--     activity_log still carries the original "duplicate merged" note ("same
+--     merchant, phone stored with/without +1. Call ledger and telemetry moved").
+--     That merge simply never cleared the opportunity id. 0034 was residue.
+--
+-- WHAT WAS DONE
+--   MF-2026-0242 — full merge, identical to pairs 1-5: opp id cleared, status
+--     'dead', lost_reason 'duplicate', closed_note + tombstone naming 0033, and
+--     its 2 activity_log rows + 1 lead_score_event re-pointed onto 0033. Same
+--     customer, so the re-point is clean.
+--   MF-2026-0034 — already 'dead'; left dead. Stale opp id cleared,
+--     lost_reason 'duplicate' and a tombstone note added.
+--
+-- WHAT WAS DELIBERATELY *NOT* DONE, AND WHY
+--   0034's child records were NOT re-pointed onto 0033. The brief said to move
+--   them; that instruction predated finding #1 above. Moving them would have
+--   caused real damage:
+--     * 0034's 4 deal_doc_requests are an EXACT duplicate of 0033's 4 (same
+--       doc_types, same labels) — the survivor would end up with 8 checklist
+--       items, 4 of them phantom duplicates.
+--     * deal_doc_requests and synergy_intake_log both carry their own
+--       customer_id, still pointing at f952e666. Re-pointing only deal_id would
+--       leave rows whose deal belongs to customer A while customer_id says B.
+--   Left in place on 0034 (soft-retired, NOT orphaned): 4 activity_log,
+--   4 deal_doc_requests, 7 lead_score_events, 1 lead_intake_claims,
+--   1 synergy_intake_log. Nothing was deleted. The webhook fix did not depend
+--   on moving them — clearing the opp id was sufficient.
+--
+-- OWNER — kept as E! on MF-2026-0033, per the "if ambiguous, keep current" rule.
+--   The evidence genuinely cuts both ways: created_by is Carlos Marquez, but
+--   0033's own activity_log says "Auto-assigned to Ernesto Lee (round-robin)"
+--   AND the only outbound calls on the deal were placed by E!. created_by is a
+--   weak signal here (Carlos is stamped on just 7 of 75 live_transfer deals).
+--   Status left at application_sent — no status change, so no trigger fired and
+--   no merchant notification was possible.
+
+with retire_0242 as (
+  update deals set ghl_opportunity_id = null, status = 'dead', lost_reason = 'duplicate',
+    closed_note = 'Merged into MF-2026-0033 (duplicate mirror deal). Retired 2026-08-28.',
+    updated_at = now()
+  where id = '09c2e1f1-d3ad-45f7-8507-3cd62f8f1a88' returning id),
+clear_0034 as (
+  update deals set ghl_opportunity_id = null, lost_reason = 'duplicate',
+    closed_note = 'Duplicate of MF-2026-0033; merged 2026-07-14. Stale ghl_opportunity_id cleared 2026-08-28.',
+    updated_at = now()
+  where id = '09337fba-62da-473b-9fa5-89dafcfb44ac' returning id, status),
+mv_act as (
+  update activity_log set entity_id = 'be81ff5d-28ae-4c09-b2f2-a7b6139aa1bd'
+  where entity_type = 'deal' and entity_id = '09c2e1f1-d3ad-45f7-8507-3cd62f8f1a88' returning id),
+mv_score as (
+  update lead_score_events set deal_id = 'be81ff5d-28ae-4c09-b2f2-a7b6139aa1bd'
+  where deal_id = '09c2e1f1-d3ad-45f7-8507-3cd62f8f1a88' returning id),
+note_0242 as (
+  insert into activity_log (entity_type, entity_id, interaction_type, subject, content)
+  values ('deal','09c2e1f1-d3ad-45f7-8507-3cd62f8f1a88','note','deal:merged',
+    'merged into MF-2026-0033 — duplicate from playbook/GHL opp-id gap. GHL opportunity bVn0qtZMfDvYnROOrc4A now lives only on MF-2026-0033; this row retired (status dead, lost_reason duplicate).')
+  returning id),
+note_0034 as (
+  insert into activity_log (entity_type, entity_id, interaction_type, subject, content)
+  values ('deal','09337fba-62da-473b-9fa5-89dafcfb44ac','note','deal:merged',
+    'merged into MF-2026-0033 — confirmed still retired. This row was already merged 2026-07-14 but kept a stale ghl_opportunity_id, which made the opportunity match THREE deal rows and broke ghl-webhook''s .maybeSingle() lookup. Opp id cleared 2026-08-28. Child records deliberately NOT re-pointed — see the merge note on MF-2026-0033.')
+  returning id),
+note_live as (
+  insert into activity_log (entity_type, entity_id, interaction_type, subject, content)
+  values ('deal','be81ff5d-28ae-4c09-b2f2-a7b6139aa1bd','note','deal:merged',
+    'absorbed duplicate MF-2026-0242 and reclaimed sole ownership of GHL opportunity bVn0qtZMfDvYnROOrc4A. MF-2026-0034 was stripped of the stale opp id but its child records were LEFT IN PLACE on purpose (second customer row + duplicate doc-request set). Owner kept as E!. Status unchanged at application_sent.')
+  returning id)
+select (select count(*) from retire_0242) retired_0242,     -- 1
+       (select count(*) from clear_0034) cleared_0034,       -- 1
+       (select status from clear_0034) status_0034,          -- 'dead'
+       (select count(*) from mv_act) activity_moved,         -- 2
+       (select count(*) from mv_score) score_moved,          -- 1
+       (select count(*) from note_0242) + (select count(*) from note_0034)
+         + (select count(*) from note_live) notes_added;     -- 3
+
+-- ── PAIR 6 VERIFICATION (all passed 2026-08-28) ─────────────────────────────
+--   * MF-2026-0033: application_sent, owner E!, opp bVn0qtZMfDvYnROOrc4A.
+--   * MF-2026-0242: dead, lost_reason duplicate, opp NULL.
+--   * MF-2026-0034: dead, lost_reason duplicate, opp NULL.
+--   * ZERO deal rows in the ENTIRE table now share a ghl_opportunity_id:
+--       select ghl_opportunity_id from deals where ghl_opportunity_id is not null
+--        group by 1 having count(*) > 1;            -- => 0 rows
+--   * Customer a90524b1 has exactly 1 non-terminal MCA deal and it carries the
+--     opp id (MF-2026-0033 = bVn0qtZMfDvYnROOrc4A).
+--   * Zero child rows left on MF-2026-0242 across every deals-FK table plus
+--     activity_log, apart from its 'deal:merged' tombstone.
+--   * Survivor MF-2026-0033 still has exactly 4 deal_doc_requests (not 8) —
+--     confirming 0034's duplicate checklist was correctly left alone.
+
+-- ── STILL OPEN AFTER PAIR 6 ─────────────────────────────────────────────────
+-- DUPLICATE CUSTOMER, not fixed (needs an owner decision — customer-level merge
+-- was outside the authorized scope):
+--   a90524b1-af9a-4432-aa85-92a6a9541eb3  "Nothing But Waste"  user_id NULL
+--   f952e666-06ed-4b5d-a0d7-3fa3f7bd73d2  "Nothin' But Waste"  user_id 7c31d3a5-…
+-- Same person, same phone, same ghl_contact_id. The merchant's PORTAL LOGIN is
+-- attached to the SECOND row — the one holding only the dead MF-2026-0034 — so
+-- if this merchant signs in to the portal today they will not see the live deal
+-- MF-2026-0033. Merging the customers (and moving user_id onto the survivor) is
+-- the fix; it was not authorized here.
+--   >>> RESOLVED BELOW (customer merge), authorized by the owner.
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- CUSTOMER MERGE — "Nothing But Waste" — applied 2026-08-28, owner-authorized.
+-- Survivor customer a90524b1 (holds live MF-2026-0033).
+-- Retired  customer f952e666 (held only the dead MF-2026-0034).
+--
+-- GOAL: the merchant's portal login was attached to the WRONG customer row, so
+-- signing in showed her only a dead deal. Moving user_id onto the survivor makes
+-- the live deal visible — the portal scopes deals through
+--   get_my_portal_deals() → where d.customer_id in
+--     (select c.id from customers c where c.user_id = auth.uid())
+--
+-- WHAT WAS DONE
+--   1. Portal login user_id 7c31d3a5-… moved a90524b1 ← f952e666.
+--      The `and user_id is null` predicate on the survivor's UPDATE IS the
+--      collision guard: if the survivor had already had a login the update
+--      would touch 0 rows and the assert in the final SELECT aborts the whole
+--      statement. (customers.user_id has only a plain index, no UNIQUE, and an
+--      FK to auth.users ON DELETE SET NULL — so nothing enforces this for us.)
+--   2. 5 `messages` rows (her portal notifications) re-pointed to the survivor.
+--      The inbox itself keys on to_user_id, so this is for admin-side coherence.
+--   3. f952e666.ghl_contact_id CLEARED. This was not cosmetic: FOUR call sites
+--      resolve a customer with `.eq("ghl_contact_id", …).maybeSingle()` and NO
+--      .limit(1) — set-contact-dnd:121, _shared/application-fields.ts:633,
+--      ghl-email-open-sweep:170, ph-send-packet:118 — every one of which ERRORS
+--      on a two-row match. Same failure class as the triple opportunity id.
+--      (ghl-webhook:862 and :1116 were already safe: .order(created_at).limit(1).)
+--   4. f952e666 soft-retired: do_not_contact = true + reason, tag
+--      'merged-duplicate', a full merge record in notes, and a 'customer:merged'
+--      activity_log tombstone naming the survivor. NEVER hard-deleted.
+--      (customer_status enum has no 'merged'/'dead' value and 'declined' would
+--      have polluted funnel counts, so retirement is expressed via the DNC flag
+--      + tag rather than by corrupting the status.)
+--
+-- DEVIATION FROM THE BRIEF — deliberate, and the brief's own goal required it.
+-- The instruction was to move MF-2026-0034 and its child rows onto the survivor
+-- while keeping 0034's 4 duplicate deal_doc_requests attached to 0034, "just
+-- make their customer_id consistent with wherever the deal lands". That cannot
+-- be done without causing the exact harm the same instruction was avoiding:
+-- the merchant's document checklist is loaded CUSTOMER-scoped, across all deals,
+-- with no deal filter and no status filter —
+--     src/services/portalService.ts getMyDocRequests():
+--       .from("deal_doc_requests").eq("customer_id", customerId)
+-- so setting those 4 rows' customer_id to the survivor would have shown Shontea
+-- EIGHT checklist items: her 4 real ones from MF-2026-0033 plus 4 phantom asks
+-- for the identical document types. There is no status that hides them either —
+-- deal_doc_requests_status_check allows only requested/uploaded/under_review/
+-- approved/rejected, and marking never-supplied documents 'approved' would
+-- falsify a compliance record.
+-- RESOLUTION: MF-2026-0034 and ALL of its own child rows (4 deal_doc_requests,
+-- 1 synergy_intake_log) were LEFT TOGETHER on the retired customer f952e666.
+-- Nothing is orphaned and nothing straddles the boundary — which also satisfies
+-- the brief's literal verification ("no child row left with a customer_id
+-- pointing at f952e666 while its deal points at a90524b1": 0 such rows, because
+-- deal 0034 stayed put too).
+
+with move_login as (
+  update customers set user_id = '7c31d3a5-4dfa-4b43-b20f-aff2af8b0def', updated_at = now()
+  where id = 'a90524b1-af9a-4432-aa85-92a6a9541eb3' and user_id is null returning id),
+retire_dupe as (
+  update customers set
+    user_id = null,
+    ghl_contact_id = null,
+    do_not_contact = true,
+    do_not_contact_reason = 'Merged into customer a90524b1 (Nothing But Waste) 2026-08-28 — duplicate record.',
+    tags = array(select distinct unnest(coalesce(tags,'{}'::text[]) || array['merged-duplicate'])),
+    notes = concat_ws(E'\n', nullif(notes,''),
+      'MERGED 2026-08-28 into customer a90524b1-af9a-4432-aa85-92a6a9541eb3 ("Nothing But Waste"), which holds the live deal MF-2026-0033.',
+      'Portal login user_id 7c31d3a5-4dfa-4b43-b20f-aff2af8b0def moved to the survivor so the merchant sees her live deal.',
+      'ghl_contact_id was lX1bVpV2ilYESkQx9yzH — cleared here so the contact resolves to exactly one customer row.',
+      'Retained on this row on purpose: dead deal MF-2026-0034 plus its own 4 deal_doc_requests and 1 synergy_intake_log. Do not re-point them; see the merge note.'),
+    updated_at = now()
+  where id = 'f952e666-06ed-4b5d-a0d7-3fa3f7bd73d2' returning id),
+move_messages as (
+  update messages set related_customer_id = 'a90524b1-af9a-4432-aa85-92a6a9541eb3'
+  where related_customer_id = 'f952e666-06ed-4b5d-a0d7-3fa3f7bd73d2' returning id),
+note_dupe as (
+  insert into activity_log (entity_type, entity_id, interaction_type, subject, content)
+  values ('customer','f952e666-06ed-4b5d-a0d7-3fa3f7bd73d2','note','customer:merged',
+    'merged into customer a90524b1 ("Nothing But Waste") 2026-08-28 — duplicate record for the same merchant. Portal login moved to the survivor; ghl_contact_id cleared; 5 portal messages re-pointed. Dead deal MF-2026-0034 and its own child rows deliberately LEFT on this row. Soft-retired, never deleted.')
+  returning id),
+note_survivor as (
+  insert into activity_log (entity_type, entity_id, interaction_type, subject, content)
+  values ('customer','a90524b1-af9a-4432-aa85-92a6a9541eb3','note','customer:merged',
+    'absorbed duplicate customer f952e666 ("Nothin'' But Waste") 2026-08-28. Adopted the merchant portal login so signing in now shows the LIVE deal MF-2026-0033. The retired row keeps dead deal MF-2026-0034 and its 4 deal_doc_requests, because the portal loads the checklist by customer_id across ALL deals with no status filter.')
+  returning id)
+select (select count(*) from move_login)    survivor_updated,   -- 1
+       (select count(*) from retire_dupe)   dupe_retired,       -- 1
+       (select count(*) from move_messages) messages_moved,     -- 5
+       (select count(*) from note_dupe) + (select count(*) from note_survivor) notes_added,
+       (select case when (select count(*) from move_login) = 1 then 'ok'
+                    else (select 'ABORT'::text where false) end) assert_login_moved;
+
+-- ── CUSTOMER MERGE VERIFICATION (all passed 2026-08-28) ─────────────────────
+--   * Exactly ONE customer row now holds ghl_contact_id lX1bVpV2ilYESkQx9yzH
+--     (a90524b1). The four unguarded .maybeSingle() lookups can no longer error.
+--   * Exactly ONE customer row holds portal login 7c31d3a5 → a90524b1.
+--   * Simulating the portal RLS for that login returns MF-2026-0033
+--     (application_sent, opp bVn0qtZMfDvYnROOrc4A) — the merchant now sees her
+--     LIVE deal. This was the whole point of the merge.
+--   * Her document checklist returns exactly 4 items, all from MF-2026-0033.
+--     No phantoms. (Cross-checked ANDRADE'S STONE, the other merged-pair
+--     customer with a portal login: also exactly 4, all from MF-2026-0255.)
+--   * Still zero deals anywhere in the table sharing a ghl_opportunity_id.
+--   * f952e666 retains only: 1 dead deal, its 4 deal_doc_requests, its 1
+--     synergy_intake_log. 0 messages, 0 portal login, 0 ghl_contact_id.
+--     (The deal and the synergy row were moved to the survivor in the follow-up
+--      step below; only the 4 deal_doc_requests remain by design.)
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- CUSTOMER MERGE, FOLLOW-UP — applied 2026-08-28, owner-authorized.
+-- Finishes emptying the retired customer row f952e666.
+--
+-- Only THREE tables actually carry a customer_id that pointed at f952e666:
+-- deals, deal_doc_requests, synergy_intake_log. activity_log, lead_score_events
+-- and lead_intake_claims have NO customer_id column at all — they hang off the
+-- deal, so they followed MF-2026-0034 automatically and needed no update.
+--
+--   MOVED to a90524b1:  MF-2026-0034 (deal.customer_id) + its 1 synergy_intake_log
+--   LEFT on f952e666:   the 4 deal_doc_requests — the single deliberate exception
+--
+-- WHY THE 4 DOC REQUESTS STAY PUT (this is load-bearing, do not "tidy" it):
+-- Keeping them attached to the dead deal 0034 does NOT hide them, because the
+-- merchant's checklist is read CUSTOMER-scoped, across every deal, with no deal
+-- filter and no status filter:
+--     src/services/portalService.ts getMyDocRequests():
+--       .from("deal_doc_requests").eq("customer_id", customerId)
+-- So the deal's status is irrelevant — the moment those rows carry the survivor's
+-- customer_id, Shontea's portal lists EIGHT outstanding document requests: the 4
+-- real ones she owes on MF-2026-0033 plus 4 phantom duplicates of the identical
+-- doc types. There is no status that suppresses them either
+-- (deal_doc_requests_status_check allows only requested / uploaded /
+-- under_review / approved / rejected, and marking never-supplied documents
+-- 'approved' would falsify a compliance record).
+-- The resulting inconsistency — 4 child rows whose customer_id is the retired
+-- row while their deal sits on the survivor — is invisible everywhere: the admin
+-- panel reads them by deal_id (components/admin/DealDocRequests.tsx), and the
+-- merchant cannot see them at all. That is strictly the lesser evil.
+--
+-- TO OVERRIDE (accepting that the merchant will then see 8 checklist items):
+--   update deal_doc_requests set customer_id = 'a90524b1-af9a-4432-aa85-92a6a9541eb3'
+--    where customer_id = 'f952e666-06ed-4b5d-a0d7-3fa3f7bd73d2';
+
+with move_deal as (
+  update deals set customer_id = 'a90524b1-af9a-4432-aa85-92a6a9541eb3', updated_at = now()
+  where id = '09337fba-62da-473b-9fa5-89dafcfb44ac'
+    and customer_id = 'f952e666-06ed-4b5d-a0d7-3fa3f7bd73d2' returning deal_number, status),
+move_synergy as (
+  update synergy_intake_log set customer_id = 'a90524b1-af9a-4432-aa85-92a6a9541eb3'
+  where customer_id = 'f952e666-06ed-4b5d-a0d7-3fa3f7bd73d2' returning ghl_email_record_id),
+note as (
+  insert into activity_log (entity_type, entity_id, interaction_type, subject, content)
+  values ('deal','09337fba-62da-473b-9fa5-89dafcfb44ac','note','deal:merged',
+    'customer re-pointed f952e666 -> a90524b1 (2026-08-28) as part of the customer merge; this deal stays dead. Its 4 deal_doc_requests keep customer_id f952e666 ON PURPOSE: the merchant portal loads the document checklist customer-scoped across ALL deals with no status filter, so re-pointing them would show the merchant 4 phantom document requests on top of the 4 real ones she owes on MF-2026-0033.')
+  returning id)
+select (select count(*) from move_deal) deal_moved,                     -- 1
+       (select deal_number||' / '||status from move_deal) deal_after,   -- MF-2026-0034 / dead
+       (select count(*) from move_synergy) synergy_moved,               -- 1
+       (select count(*) from note) notes_added;                         -- 1
+
+-- Only status/paydown changes fire trg_deals_merchant_notify, and this UPDATE
+-- touches neither — so re-pointing the deal sent the merchant nothing.
+
+-- ── FOLLOW-UP VERIFICATION (all passed 2026-08-28) ──────────────────────────
+--   * user_id 7c31d3a5 resolves to exactly one row: a90524b1 "Nothing But Waste".
+--   * f952e666.user_id IS NULL.
+--   * a90524b1 now holds MF-2026-0033 (application_sent), MF-2026-0034 (dead),
+--     MF-2026-0242 (dead).
+--   * f952e666 holds ZERO deals, ZERO synergy_intake_log, ZERO messages.
+--     Remaining: the 4 deal_doc_requests (by design) + its customer:merged
+--     tombstone.
+--   * MF-2026-0033 still has exactly 4 deal_doc_requests, and the merchant sees
+--     exactly 4. No phantoms.
+--   * Exactly ONE customer row holds ghl_contact_id lX1bVpV2ilYESkQx9yzH.
+--   * Still zero deals anywhere in the table sharing a ghl_opportunity_id.
+
+-- ── PRODUCT GAP — FIXED 2026-08-28, owner-authorized (see foot of file) ────
+-- get_my_portal_deals() has NO terminal-status filter:
+--     from public.deals d
+--     where d.customer_id in (select c.id from customers c where c.user_id = auth.uid())
+--     order by d.created_at desc;
+-- and PortalDashboardPage renders every row it returns. So a merchant whose
+-- customer carries a soft-retired duplicate deal sees a dead deal card in their
+-- portal. TWO live merchants are in that state right now, both as a direct
+-- result of these merges:
+--     ANDRADE'S STONE INC  → MF-2026-0255 (application_sent) + MF-2026-0256 (dead)
+--     Nothing But Waste    → MF-2026-0033 (application_sent) + MF-2026-0242 (dead)
+-- Note merchant_step_key('mca','dead') returns NULL, so the dead card has no
+-- step label — it renders as an unlabelled stub.
+-- SUGGESTED FIX (one line, but it changes merchant-facing behaviour for EVERY
+-- merchant, so it was not applied unilaterally):
+--     and d.status not in ('dead','declined')
+-- Deliberately excludes 'nurture' — a parked deal is still a real deal the
+-- merchant should be able to see.
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- PORTAL RPC FIX — APPLIED 2026-08-28, owner-authorized.
+--
+-- The gap described immediately above is now CLOSED. The DDL lives in its own
+-- migration so it sits in the schema history where it belongs, rather than
+-- buried inside this data-fix record:
+--
+--     repo:   supabase/migrations/20260828_portal_deals_hide_terminal_duplicates.sql
+--     remote: 20260828155725_portal_deals_hide_terminal_duplicates
+--
+-- The change is exactly the one-liner suggested above, added to
+-- get_my_portal_deals() and nothing else:
+--
+--     and d.status not in ('dead', 'declined')
+--
+-- 'nurture' was deliberately NOT added. Measured before applying: ~52 merchants
+-- with portal logins have a 'nurture' deal as their ONLY deal, so excluding it
+-- would have blanked their portal dashboard entirely.
+--
+-- Signature, column list, STABLE SECURITY DEFINER and search_path = public are
+-- unchanged; CREATE OR REPLACE preserved the ACL and ownership.
+--
+-- BEFORE → AFTER, replaying the function's own WHERE clause per merchant:
+--   ANDRADE'S STONE INC   0256 dead + 0255 application_sent → 0255 only
+--   Nothing But Waste     0242 dead + 0034 dead + 0033 application_sent → 0033 only
+--   Allman Homes LLC      0031 nurture                      → 0031 nurture (KEPT)
+-- Fleet regression: ZERO merchants with a portal login are left seeing no deals.
+-- get_advisors(security): no new warning attributable to the change.
+--
+-- NOTE FOR WHOEVER APPLIES THIS FILE: the statements ABOVE this banner are a
+-- record of data mutations already applied on 2026-08-28. They are written
+-- against specific row ids whose state has since moved, so re-running this file
+-- is a no-op rather than a rollback — it is documentation, not a replayable
+-- migration. The portal RPC fix is the only DDL, and it lives in its own file.
