@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { ExclamationTriangleIcon } from "@heroicons/react/24/outline";
+import { ExclamationTriangleIcon, ArrowLeftIcon } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import usePlaybookContact from "@/hooks/usePlaybookContact";
 import BusinessPicker from "@/components/admin/BusinessPicker";
@@ -7,6 +7,7 @@ import SetterHeaderBar from "@/components/admin/setter/SetterHeaderBar";
 import SetterActionRail from "@/components/admin/setter/SetterActionRail";
 import SetterCommsPanel from "@/components/admin/setter/SetterCommsPanel";
 import SetterMerchantSearch from "@/components/admin/setter/SetterMerchantSearch";
+import SetterDealList from "@/components/admin/setter/SetterDealList";
 
 /**
  * SetterOpsTab — the setter's single-screen Operations console, mounted as a tab
@@ -37,13 +38,29 @@ export default function SetterOpsTab() {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
-  // Manual pull-up delegate — SetterMerchantSearch resolves the lookup (dealId or
-  // phone) and hands it here; the hook does the actual load.
+  // "Back to my deals" — when a deal is loaded, this flips the console back to the
+  // idle view (search + my-deals list) WITHOUT clearing the hook's loaded deal, so
+  // returning is instant. Opening any new merchant clears it again (see pullUp).
+  const [showList, setShowList] = useState(false);
+
+  // Manual pull-up delegate — both SetterMerchantSearch and SetterDealList resolve
+  // a lookup (dealId or phone) and hand it here; the hook does the actual load.
+  // Leaving the list is implicit in opening a merchant, so drop the override.
   const pullUp = useCallback(
     (lookup: Parameters<typeof openMerchant>[0]) => {
+      setShowList(false);
       void openMerchant(lookup);
     },
     [openMerchant],
+  );
+
+  // The default idle view: search ANY merchant on top, the signed-in setter's own
+  // book below it. Shown when nothing is loaded, and re-shown by "Back to my deals".
+  const idleView = (
+    <div className="space-y-4">
+      <SetterMerchantSearch onOpen={pullUp} />
+      <SetterDealList onOpen={pullUp} />
+    </div>
   );
 
   // BusinessPicker wiring — one owner, many businesses. `pickBusiness` opens the
@@ -111,7 +128,7 @@ export default function SetterOpsTab() {
             <div className="mt-0.5">{error || "Something went wrong resolving the contact."}</div>
           </div>
         </div>
-        <SetterMerchantSearch onOpen={pullUp} />
+        {idleView}
       </div>
     );
   } else if (bizCtx && !deal) {
@@ -129,20 +146,30 @@ export default function SetterOpsTab() {
         busyCustomerId={busyCustomerId}
       />
     );
-  } else if (deal) {
+  } else if (deal && !showList) {
     // Loaded — the single-screen console. Application-first: the action rail's
     // primary is "Fill out application", and it auto-opens the first time a deal
-    // resolves so capture leads.
+    // resolves so capture leads. The "Back to my deals" affordance returns to the
+    // idle list without losing the loaded merchant.
     body = (
       <div className="space-y-4">
+        <button
+          type="button"
+          onClick={() => setShowList(true)}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-ocean-blue"
+          title="Return to your book — the search box and your assigned deals"
+        >
+          <ArrowLeftIcon className="w-3.5 h-3.5" /> Back to my deals
+        </button>
         <SetterHeaderBar deal={deal} onRefresh={reload} notify={notify} />
         <SetterActionRail deal={deal} onRefresh={reload} autoOpen />
         <SetterCommsPanel deal={deal} onRefresh={reload} />
       </div>
     );
   } else {
-    // Idle, no deep link — manual pull-up (search by business, name, or phone).
-    body = <SetterMerchantSearch onOpen={pullUp} />;
+    // Idle (no deep link) OR "Back to my deals" — the default view: search any
+    // merchant on top, the setter's own book below.
+    body = idleView;
   }
 
   return (
