@@ -66,6 +66,7 @@ import AdminProtectedRoute from "./AdminProtectedRoute.tsx";
 import SuperAdminProtectedRoute from "./SuperAdminProtectedRoute.tsx";
 import AdminOnlyProtectedRoute from "./AdminOnlyProtectedRoute.tsx";
 import RenewalsProtectedRoute from "./RenewalsProtectedRoute.tsx";
+import SetterPlaybookGuard from "./SetterPlaybookGuard.tsx";
 import Providers from "../Providers.tsx";
 
 // Admin pages
@@ -748,10 +749,16 @@ export const routes: RouteObject[] = [
                 path: "pipeline-playbook",
                 element: <PipelinePlaybookPage />,
               },
-              // Revenue Playbooks (all staff) — the 3 money flows, step by step
+              // Revenue Playbooks (closers + managers) — the 3 money flows, step by
+              // step. PURE setters are bounced by SetterPlaybookGuard to the Setter
+              // Operations tab (deep-link params preserved); closers/managers stay.
               {
                 path: "playbooks",
-                element: <PlaybooksPage />,
+                element: (
+                  <SetterPlaybookGuard>
+                    <PlaybooksPage />
+                  </SetterPlaybookGuard>
+                ),
               },
               // PH Setter Playbook — the outbound-setter console (a NEW playbook,
               // separate from the MCA/VCF flows). Admin + super_admin only, so it
