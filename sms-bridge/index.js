@@ -10,6 +10,18 @@
  * Customer linking and STOP/opt-out handling live in DB triggers on sms_messages.
  * The bridge only inserts the raw message — do not duplicate that logic here.
  *
+ * ── SECOND CHANNEL: the JMP/Cheogram ACCOUNT BOT (bare JID cheogram.com) ──────
+ * Alongside merchant SMS, this bridge also relays the owner's READ-ONLY account
+ * commands to the JMP account bot and mirrors its replies. That traffic is the
+ * BARE gateway JID `cheogram.com` (no "+number@" user part) and is kept entirely
+ * separate from merchant SMS:
+ *   bot inbound  : a message FROM cheogram.com -> insert jmp_bot_messages
+ *                  {direction:'inbound', status:'received'}   (NOT sms_messages)
+ *   bot outbound : poll jmp_bot_messages status='queued' -> XMPP chat to
+ *                  cheogram.com -> 'sent' | 'failed'
+ * Merchant/phone traffic (from +number@cheogram.com) is untouched by this — it
+ * still flows to sms_messages exactly as before.
+ *
  * ── SINGLE ACCOUNT, LINE-AWARE ───────────────────────────────────────────────
  * This process holds ONE xmpp.chat session (XMPP_JID) and therefore serves ONE
  * company number — the public.sms_lines row whose `jid` equals XMPP_JID. That id
@@ -58,6 +70,7 @@ for (const k of ["XMPP_JID", "XMPP_PASSWORD", "SUPABASE_URL", "SUPABASE_SERVICE_
 
 const TABLE = "sms_messages";
 const LINES_TABLE = "sms_lines";
+const BOT_TABLE = "jmp_bot_messages"; // console channel with the JMP account bot (bare JID cheogram.com)
 const GATEWAY = "cheogram.com";
 const STUCK_MS = 120_000; // a 'sending' row we don't hold gets re-queued after this
 const [username, domain] = XMPP_JID.split("@");
@@ -153,9 +166,25 @@ xmpp.on("stanza", async (stanza) => {
     const oob = stanza.getChild("x", "jabber:x:oob");
     const mediaUrl = oob ? oob.getChildText("url") : null;
 
-    // system messages from the gateway itself (no "+number@")
+    // ── ACCOUNT BOT reply (bare JID cheogram.com, no "+number@" user part) ──────
+    // This is the JMP/Cheogram ACCOUNT BOT answering a console command (info,
+    // cdrs, …), NOT a merchant text. It goes to jmp_bot_messages, never
+    // sms_messages, so it can never touch the customer-link / STOP triggers or
+    // the merchant inbox. Merchant traffic (from +number@cheogram.com) never
+    // reaches this branch and is handled below unchanged.
     if (from.split("/")[0] === GATEWAY) {
-      log("gateway message:", body);
+      if (!body) {
+        log("gateway non-text stanza (ignored)"); // typing indicator / receipt / presence echo
+        return;
+      }
+      const { error } = await db.from(BOT_TABLE).insert({
+        direction: "inbound",
+        body,
+        status: "received",
+      });
+      // A failed insert means a real bot reply was DROPPED — never silent.
+      if (error) log("BOT DB INSERT FAILED (reply lost):", error.message);
+      else log("bot reply:", JSON.stringify(body));
       return;
     }
     if (!from.endsWith(`@${GATEWAY}`) && !from.includes(`@${GATEWAY}/`)) return;
@@ -330,6 +359,76 @@ async function pump() {
   }
 }
 
+// ---------- outbound: JMP account-bot commands ----------
+//
+// A separate, tiny pump for the console channel. It sends queued rows from
+// jmp_bot_messages (written by the jmp-command edge fn) to the BARE gateway JID
+// so the JMP account bot answers; the reply comes back through the inbound
+// handler above. Only READ-ONLY commands ever reach this queue — the edge fn
+// enforces the allowlist, the bridge just relays whatever body it was handed.
+
+let botPumping = false; // single-flight guard (one bridge process, one interval)
+
+async function pumpBot() {
+  if (botPumping || xmpp.status !== "online") return;
+  botPumping = true;
+  try {
+    const { data: rows, error } = await db
+      .from(BOT_TABLE)
+      .select("id, body, command")
+      .eq("status", "queued")
+      .order("created_at", { ascending: true })
+      .limit(5);
+
+    // An unreadable queue is NOT an empty queue — log it, don't treat as idle.
+    if (error) {
+      log("BOT poll FAILED (queue UNREADABLE):", error.message);
+      return;
+    }
+
+    for (const row of rows ?? []) {
+      const body = String(row.body ?? "").trim();
+      if (!body) {
+        // Nothing to send — fail it so it can't spin in the queue forever.
+        await db.from(BOT_TABLE).update({ status: "failed" }).eq("id", row.id).eq("status", "queued");
+        continue;
+      }
+      // Claim by flipping queued -> sent up front so a re-entrant pump can't
+      // double-send the same command to the account bot. If the XMPP send then
+      // throws, downgrade to 'failed'. Re-sending a read-only command would be
+      // harmless anyway, but this keeps the log honest.
+      const { data: claimed, error: claimErr } = await db
+        .from(BOT_TABLE)
+        .update({ status: "sent", sent_at: new Date().toISOString() })
+        .eq("id", row.id)
+        .eq("status", "queued")
+        .select("id")
+        .maybeSingle();
+      if (claimErr) {
+        log("BOT claim FAILED:", row.id, claimErr.message);
+        continue;
+      }
+      if (!claimed) continue; // another pass already took it
+
+      try {
+        await xmpp.send(
+          xml("message", { to: GATEWAY, type: "chat", id: row.id }, xml("body", {}, body)),
+        );
+        log("bot command sent ->", JSON.stringify(row.command ?? body));
+      } catch (e) {
+        const { error: upErr } = await db
+          .from(BOT_TABLE)
+          .update({ status: "failed" })
+          .eq("id", row.id);
+        if (upErr) log("BOT mark-failed FAILED:", row.id, upErr.message);
+        log("BOT send failed ->", row.command ?? body, e.message);
+      }
+    }
+  } finally {
+    botPumping = false;
+  }
+}
+
 // ---------- start / stop ----------
 
 async function main() {
@@ -351,7 +450,14 @@ async function main() {
 
   await requeueOrphansAtStartup();
 
+  // Non-fatal probe of the console channel: a missing/unreadable bot table must
+  // NOT take down merchant SMS, so unlike the sms_messages probe this only warns.
+  const { error: botProbeErr } = await db.from(BOT_TABLE).select("id").limit(1);
+  if (botProbeErr) log(`WARN: cannot read ${BOT_TABLE} (${botProbeErr.message}); JMP console relay is OFF until it resolves`);
+  else log(`${BOT_TABLE} reachable`);
+
   setInterval(() => pump().catch((e) => log("pump error:", e.message)), Number(POLL_MS));
+  setInterval(() => pumpBot().catch((e) => log("bot pump error:", e.message)), Number(POLL_MS));
 
   await xmpp.start();
 }
