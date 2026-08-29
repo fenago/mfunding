@@ -31,6 +31,7 @@ import {
   MagnifyingGlassIcon,
   NoSymbolIcon,
   PhotoIcon,
+  PaperClipIcon,
   XMarkIcon,
   TrashIcon,
 } from "@heroicons/react/24/outline";
@@ -49,8 +50,11 @@ import {
   SMS_MEDIA_ACCEPT,
   smsMediaObjectPath,
   smsMediaRejectReason,
+  uploadSmsDoc,
+  SMS_DOCS_ACCEPT,
   type SmsContact,
   type SmsMessage,
+  type SmsDocAttachment,
 } from "@/lib/sms";
 import { loadActiveSmsLines, defaultLine, type SmsLine } from "@/lib/smsLines";
 
@@ -107,6 +111,11 @@ export default function TextMessagesPage() {
   // preview. Uploaded to the sms-media bucket only at send time.
   const [attachment, setAttachment] = useState<{ file: File; preview: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Documents attached as SECURE LINKS (not MMS): each upload appends its public
+  // sms-docs URL to the body (sends as plain text) and shows a removable chip.
+  const [docChips, setDocChips] = useState<SmsDocAttachment[]>([]);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const docInputRef = useRef<HTMLInputElement>(null);
   // Which company number we send FROM. Architected for several; falls back to the
   // one known JMP line if sms_lines isn't populated yet (see loadActiveSmsLines).
   const [lines, setLines] = useState<SmsLine[]>([]);
@@ -336,6 +345,34 @@ export default function TextMessagesPage() {
     });
   }
 
+  // ── Attach a document (secure link, NOT MMS) ───────────────────────────────
+  // A PDF/Word/Excel doc can't ride an MMS reliably, so a document is shared as a
+  // public sms-docs link dropped into the body — it sends as ordinary text. The
+  // chip is just a removable indicator; the body is the source of truth for send.
+  async function attachDoc(file: File | undefined) {
+    if (!file) return;
+    setSendError(null);
+    setUploadingDoc(true);
+    try {
+      const res = await uploadSmsDoc(file);
+      if ("error" in res) {
+        setSendError(res.error);
+        return;
+      }
+      // One space between the message and the pasted link — never glue them.
+      setBody((prev) => (prev && !/\s$/.test(prev) ? `${prev} ${res.url}` : `${prev}${res.url}`));
+      setDocChips((prev) => [...prev, { name: res.name, url: res.url }]);
+    } finally {
+      setUploadingDoc(false);
+      if (docInputRef.current) docInputRef.current.value = "";
+    }
+  }
+
+  function removeDocChip(url: string) {
+    setDocChips((prev) => prev.filter((d) => d.url !== url));
+    setBody((prev) => prev.replace(url, "").replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").trim());
+  }
+
   // Revoke the last preview object-URL on unmount so the composer doesn't leak.
   useEffect(() => {
     return () => {
@@ -401,6 +438,7 @@ export default function TextMessagesPage() {
       }
       setBody("");
       clearAttachment();
+      setDocChips([]);
       // The draft number now has history — it's a real conversation.
       if (draftPhone) {
         setSelected(draftPhone);
@@ -690,6 +728,26 @@ export default function TextMessagesPage() {
                     </button>
                   </div>
                 )}
+                {docChips.length > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {docChips.map((d) => (
+                      <span
+                        key={d.url}
+                        className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 max-w-[16rem]"
+                        title={`${d.name} — secure link added to the message`}
+                      >
+                        <span className="truncate">📎 {d.name}</span>
+                        <button
+                          onClick={() => removeDocChip(d.url)}
+                          title="Remove this document's link"
+                          className="shrink-0 hover:text-red-600"
+                        >
+                          <XMarkIcon className="w-3.5 h-3.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="flex gap-2 items-end">
                   <input
                     ref={fileInputRef}
@@ -700,6 +758,13 @@ export default function TextMessagesPage() {
                       pickAttachment(e.target.files?.[0]);
                     }}
                   />
+                  <input
+                    ref={docInputRef}
+                    type="file"
+                    accept={SMS_DOCS_ACCEPT}
+                    className="hidden"
+                    onChange={(e) => void attachDoc(e.target.files?.[0])}
+                  />
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={sending}
@@ -707,6 +772,18 @@ export default function TextMessagesPage() {
                     className="inline-flex items-center justify-center p-2.5 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40"
                   >
                     <PhotoIcon className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => docInputRef.current?.click()}
+                    disabled={sending || uploadingDoc}
+                    title="Attach a document (PDF/Word/Excel/image) — sends as a secure link in the text, not an MMS"
+                    className="inline-flex items-center justify-center p-2.5 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40"
+                  >
+                    {uploadingDoc ? (
+                      <span className="w-5 h-5 rounded-full border-2 border-gray-300 border-t-gray-500 animate-spin" />
+                    ) : (
+                      <PaperClipIcon className="w-5 h-5" />
+                    )}
                   </button>
                   <textarea
                     value={body}

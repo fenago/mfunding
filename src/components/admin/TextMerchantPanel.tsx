@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChatBubbleLeftRightIcon,
   PaperAirplaneIcon,
+  PaperClipIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { useUserProfile } from "@/context/UserProfileContext";
@@ -10,7 +12,12 @@ import { logContactAttempt } from "@/services/dealService";
 import { parseEdgeError } from "@/lib/edgeError";
 import { mintConnectBankLink } from "@/lib/connectBank";
 import { normalizePhoneForStorage } from "@/lib/phone";
-import { prettyPhone } from "@/lib/sms";
+import {
+  prettyPhone,
+  uploadSmsDoc,
+  SMS_DOCS_ACCEPT,
+  type SmsDocAttachment,
+} from "@/lib/sms";
 import { loadActiveSmsLines, defaultLine, type SmsLine } from "@/lib/smsLines";
 
 /**
@@ -158,6 +165,12 @@ export default function TextMerchantPanel({
   const [text, setText] = useState(prefill ?? "");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // Documents attached as secure links. Each upload drops its public URL into the
+  // body (it sends as plain text through sms-send) AND is tracked here so the
+  // operator sees a chip and can pull it back out before sending.
+  const [docChips, setDocChips] = useState<SmsDocAttachment[]>([]);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const docInputRef = useRef<HTMLInputElement>(null);
   // Inline two-step confirm — no browser popups (owner rule), same armOrFire as
   // AdHocSendMenu. Disarms after 5s so a walked-away-from arm can't fire later.
   const [armed, setArmed] = useState(false);
@@ -281,6 +294,35 @@ export default function TextMerchantPanel({
     }
   };
 
+  /** Upload a document to the public sms-docs bucket and drop its link into the
+   *  body as plain text (NOT an MMS). A PDF/Word doc can't ride an MMS reliably,
+   *  so the link IS the delivery. Shows a chip so it's removable pre-send. */
+  const attachDoc = async (file: File | undefined) => {
+    if (!file) return;
+    setResult(null);
+    setUploadingDoc(true);
+    try {
+      const res = await uploadSmsDoc(file);
+      if ("error" in res) {
+        setResult({ ok: false, text: res.error });
+        return;
+      }
+      insertAtCursor(res.url);
+      setDocChips((prev) => [...prev, { name: res.name, url: res.url }]);
+    } finally {
+      setUploadingDoc(false);
+      if (docInputRef.current) docInputRef.current.value = "";
+    }
+  };
+
+  /** Remove an attached document's link from the body (best-effort string strip)
+   *  and drop its chip. The body stays the source of truth for what sends. */
+  const removeDocChip = (url: string) => {
+    setDocChips((prev) => prev.filter((d) => d.url !== url));
+    setText((prev) => prev.replace(url, "").replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").trim());
+    setArmed(false);
+  };
+
   const uploadLink = uploadFormUrl
     ? merchantEmail
       ? `${uploadFormUrl}?email=${encodeURIComponent(merchantEmail)}`
@@ -322,6 +364,7 @@ export default function TextMerchantPanel({
 
       setResult({ ok: true, text: `Sent to ${prettyPhone(phone)}.` });
       setText("");
+      setDocChips([]);
     } catch (e) {
       const { message } = await parseEdgeError(e, "Could not send the text.");
       setResult({ ok: false, text: message });
@@ -482,6 +525,44 @@ export default function TextMerchantPanel({
               )}
             </>
           )}
+
+          {/* ── Attach a document (secure link, not MMS) ── */}
+          <input
+            ref={docInputRef}
+            type="file"
+            accept={SMS_DOCS_ACCEPT}
+            className="hidden"
+            onChange={(e) => void attachDoc(e.target.files?.[0])}
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              disabled={uploadingDoc}
+              onClick={() => docInputRef.current?.click()}
+              className={quickCls}
+              title="Upload a PDF/Word/Excel/image and drop a secure link into the message — sends as normal text (documents can't ride an MMS)"
+            >
+              <PaperClipIcon className="w-3 h-3 inline -mt-0.5" />{" "}
+              {uploadingDoc ? "Uploading…" : "Attach a document"}
+            </button>
+            {docChips.map((d) => (
+              <span
+                key={d.url}
+                className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 max-w-[12rem]"
+                title={`${d.name} — link inserted into the message`}
+              >
+                <span className="truncate">📎 {d.name}</span>
+                <button
+                  type="button"
+                  onClick={() => removeDocChip(d.url)}
+                  title="Remove this document's link"
+                  className="shrink-0 hover:text-red-600"
+                >
+                  <XMarkIcon className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+          </div>
 
           {/* ── Message ── */}
           <textarea

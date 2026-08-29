@@ -9,6 +9,8 @@
 // (TextMerchantPanel → `textmagic-send`). Different carrier, different number,
 // different table. Don't merge them.
 
+import supabase from "@/supabase";
+
 export type SmsDirection = "inbound" | "outbound";
 export type SmsStatus = "received" | "queued" | "sending" | "sent" | "failed";
 
@@ -127,9 +129,9 @@ export function shortWhen(iso: string): string {
 /** The dedicated public bucket for outbound SMS/MMS media. */
 export const SMS_MEDIA_BUCKET = "sms-media";
 
-/** Client-side upload ceiling. Mirrors the bucket's file_size_limit (5MB). MMS
+/** Client-side upload ceiling. Mirrors the bucket's file_size_limit (10MB). MMS
  *  carriers transcode down hard, so this is a generous upper bound, not a target. */
-export const SMS_MEDIA_MAX_BYTES = 5 * 1024 * 1024;
+export const SMS_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
 
 /** Image types the bucket accepts (must stay in sync with allowed_mime_types). */
 export const SMS_MEDIA_MIME = [
@@ -161,9 +163,119 @@ export function smsMediaRejectReason(file: File): string | null {
     return "Only images can be attached (JPG, PNG, GIF, WebP, HEIC).";
   }
   if (file.size > SMS_MEDIA_MAX_BYTES) {
-    return `That image is ${(file.size / 1_048_576).toFixed(1)}MB — the limit is 5MB.`;
+    return `That image is ${(file.size / 1_048_576).toFixed(1)}MB — the limit is 10MB.`;
   }
   return null;
+}
+
+// ── Document links (secure, unauthenticated HTTPS — NOT MMS) ─────────────────
+// MMS can't reliably carry a PDF/Word/Excel doc, so "attach a document" on the
+// SMS composers is a different path from a picture message: upload the file to a
+// dedicated PUBLIC bucket, then drop a shareable HTTPS link into the message BODY.
+// It sends as ordinary text through sms-send (no media_url), and a merchant with
+// no login taps the link to open the file. See migration 20260829n_sms_docs_bucket.
+
+/** The dedicated public bucket for outbound merchant-shared documents. */
+export const SMS_DOCS_BUCKET = "sms-docs";
+
+/** Client-side upload ceiling. Mirrors the bucket's file_size_limit (15MB). */
+export const SMS_DOCS_MAX_BYTES = 15 * 1024 * 1024;
+
+/** File extensions we accept for a texted document, mapped to the content-type
+ *  the bucket's allowed_mime_types will accept. file.type is unreliable for Office
+ *  docs and CSVs (browsers report it blank or as an Excel alias), so we key off
+ *  the extension and pass a KNOWN-GOOD content-type on upload — otherwise the
+ *  bucket would reject an application/octet-stream the browser handed us. Keep
+ *  this in sync with allowed_mime_types in the migration. */
+export const SMS_DOCS_EXT_MIME: Record<string, string> = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  csv: "text/csv",
+  txt: "text/plain",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
+};
+
+/** `accept` attribute for the document file input — extension-based, because
+ *  file.type is unreliable for the very formats we most want (docx/xlsx/csv). */
+export const SMS_DOCS_ACCEPT = Object.keys(SMS_DOCS_EXT_MIME)
+  .map((ext) => `.${ext}`)
+  .join(",");
+
+/** Lowercased, sanitized extension of a filename (no dot), or "". */
+export function smsDocFileExt(fileName: string): string {
+  return (fileName.split(".").pop() || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** The content-type to store a document under — always a value the bucket allows,
+ *  derived from the extension rather than the browser's unreliable file.type. */
+export function smsDocContentType(fileName: string): string {
+  return SMS_DOCS_EXT_MIME[smsDocFileExt(fileName)] ?? "application/octet-stream";
+}
+
+/** An UNGUESSABLE object key for a shared document. The link is unauthenticated,
+ *  so the key IS the access control: two UUIDs (64 hex chars) make it impossible
+ *  to enumerate. Grouped by month so the bucket stays browsable; the extension is
+ *  preserved so the merchant's browser opens the file with the right handler. */
+export function smsDocsObjectPath(fileName: string): string {
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const a = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const b = crypto.randomUUID?.() ?? `${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+  const rand = `${a}${b}`.replace(/-/g, "");
+  const ext = smsDocFileExt(fileName);
+  return `outbound/${yyyy}/${mm}/${rand}${ext ? `.${ext}` : ""}`;
+}
+
+/** Human-readable reason a file can't be shared as a document link, or null. */
+export function smsDocsRejectReason(file: File): string | null {
+  const ext = smsDocFileExt(file.name);
+  if (!ext || !(ext in SMS_DOCS_EXT_MIME)) {
+    return "Attach a PDF, Word, Excel, CSV, text, or image file.";
+  }
+  if (file.size > SMS_DOCS_MAX_BYTES) {
+    return `That file is ${(file.size / 1_048_576).toFixed(1)}MB — the limit is 15MB.`;
+  }
+  return null;
+}
+
+/** A document attached to a composer: its display name and its public link. */
+export interface SmsDocAttachment {
+  name: string;
+  url: string;
+}
+
+/** Upload a document to the public sms-docs bucket and return its public URL.
+ *  Validates first (returns the reason on a rejected file). Used by BOTH SMS
+ *  composers so the upload + public-URL logic lives in exactly one place. The
+ *  returned URL is meant to be inserted into the message BODY as plain text — it
+ *  is NOT an MMS media_url and must not be passed as one. */
+export async function uploadSmsDoc(
+  file: File,
+): Promise<{ url: string; name: string } | { error: string }> {
+  const reason = smsDocsRejectReason(file);
+  if (reason) return { error: reason };
+  const path = smsDocsObjectPath(file.name);
+  const { error: upErr } = await supabase.storage
+    .from(SMS_DOCS_BUCKET)
+    .upload(path, file, {
+      contentType: smsDocContentType(file.name),
+      upsert: false,
+    });
+  if (upErr) return { error: `Upload failed — nothing was attached. ${upErr.message}` };
+  const { data: pub } = supabase.storage.from(SMS_DOCS_BUCKET).getPublicUrl(path);
+  const url = pub?.publicUrl ?? null;
+  if (!url) return { error: "The file uploaded but its public link couldn't be resolved." };
+  return { url, name: file.name };
 }
 
 /** The JMP account this line runs on — static reference, straight from the
