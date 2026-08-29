@@ -32,8 +32,10 @@ import {
   NoSymbolIcon,
   PhotoIcon,
   XMarkIcon,
+  TrashIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
+import { useUserProfile } from "@/context/UserProfileContext";
 import { parseEdgeError } from "@/lib/edgeError";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import {
@@ -53,7 +55,7 @@ import {
 import { loadActiveSmsLines, defaultLine, type SmsLine } from "@/lib/smsLines";
 
 const SELECT =
-  "id,direction,phone,body,media_url,status,error,customer_id,created_by,created_at,sent_at";
+  "id,direction,phone,body,media_url,status,error,customer_id,created_by,created_at,sent_at,deleted_at";
 
 /** How much history the inbox holds in memory. The line is conversational
  *  (support volume, not campaign volume), so the whole recent book fits. */
@@ -83,6 +85,11 @@ interface Conversation {
 }
 
 export default function TextMessagesPage() {
+  // Deleting a text is a super-admin-only, reversible soft delete (the row is
+  // kept for TCPA/compliance). The trash control is hidden for everyone else,
+  // and the RPC rejects them regardless of the UI.
+  const { isSuperAdmin } = useUserProfile();
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [messages, setMessages] = useState<SmsMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -111,6 +118,10 @@ export default function TextMessagesPage() {
     const { data, error } = await supabase
       .from("sms_messages")
       .select(SELECT)
+      // Soft-deleted rows (super-admin removed) are hidden everywhere: they drop
+      // out of the conversation list AND the thread, since both derive from this
+      // one query. The row is retained server-side for compliance/reversal.
+      .is("deleted_at", null)
       .order("created_at", { ascending: false })
       .limit(HISTORY);
     if (error) {
@@ -403,6 +414,23 @@ export default function TextMessagesPage() {
     }
   }
 
+  // Super-admin soft-delete of a single message. On success the row vanishes
+  // (optimistic drop + refetch; realtime also fires). Returns whether it stuck,
+  // so the bubble's arm/fire control knows whether to stay disarmed.
+  async function deleteMessage(id: string): Promise<boolean> {
+    setDeleteError(null);
+    const { error } = await supabase.rpc("sms_delete_message", { p_id: id });
+    if (error) {
+      // The RPC's own refusal ("super_admin only", "not found") is the answer.
+      setDeleteError(error.message);
+      return false;
+    }
+    // Optimistically drop it so it disappears immediately; load() reconciles.
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+    void load();
+    return true;
+  }
+
   function startNew() {
     const normalized = normalizePhoneForStorage(newNumber);
     if (!/^\+\d{10,15}$/.test(normalized)) {
@@ -591,12 +619,22 @@ export default function TextMessagesPage() {
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {deleteError && (
+                  <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
+                    <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Message not deleted.</strong> {deleteError}
+                    </span>
+                  </div>
+                )}
                 {activeThread.length === 0 ? (
                   <p className="text-sm text-gray-400">
                     No history with this number yet — your first text starts the thread.
                   </p>
                 ) : (
-                  activeThread.map((m) => <Bubble key={m.id} m={m} />)
+                  activeThread.map((m) => (
+                    <Bubble key={m.id} m={m} canDelete={isSuperAdmin} onDelete={deleteMessage} />
+                  ))
                 )}
                 <div ref={threadEndRef} />
               </div>
@@ -775,10 +813,41 @@ function ConversationRow({
   );
 }
 
-function Bubble({ m }: { m: SmsMessage }) {
+function Bubble({
+  m,
+  canDelete,
+  onDelete,
+}: {
+  m: SmsMessage;
+  canDelete: boolean;
+  onDelete: (id: string) => Promise<boolean>;
+}) {
   const out = m.direction === "outbound";
+  // Inline two-step arm/fire — NO browser confirm() popups (owner rule; mirrors
+  // AdHocSendMenu's armOrFire). First tap arms ("tap again to delete"), second
+  // tap fires; auto-disarms after 5s so it can't sit hot.
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 5000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  async function handleDelete() {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setArmed(false);
+    setBusy(true);
+    try {
+      await onDelete(m.id);
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
-    <div className={`flex ${out ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex ${out ? "justify-end" : "justify-start"}`}>
       <div className="max-w-[80%]">
         <div
           className={`px-3.5 py-2.5 rounded-2xl text-sm whitespace-pre-wrap break-words ${
@@ -809,6 +878,22 @@ function Bubble({ m }: { m: SmsMessage }) {
           <span className={`px-1.5 py-0.5 rounded-full font-semibold ${STATUS_CHIP[m.status]}`}>
             {STATUS_LABEL[m.status]}
           </span>
+          {canDelete && (
+            <button
+              type="button"
+              onClick={() => void handleDelete()}
+              disabled={busy}
+              title={armed ? "Tap again to delete this message" : "Delete this message (super-admin, reversible)"}
+              className={`inline-flex items-center gap-1 rounded px-1 py-0.5 transition-opacity disabled:opacity-40 ${
+                armed
+                  ? "text-amber-600 dark:text-amber-400 font-semibold"
+                  : "text-gray-400 hover:text-red-600 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100"
+              }`}
+            >
+              <TrashIcon className="w-3.5 h-3.5" />
+              {busy ? "Deleting…" : armed ? "Tap again to delete" : ""}
+            </button>
+          )}
         </div>
         {m.status === "failed" && m.error && (
           <p className={`mt-0.5 text-[11px] text-red-600 dark:text-red-400 ${out ? "text-right" : ""}`}>

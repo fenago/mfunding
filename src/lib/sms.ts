@@ -24,6 +24,12 @@ export interface SmsMessage {
   created_by: string | null;
   created_at: string;
   sent_at: string | null;
+  /** Soft-delete markers (super-admin only, reversible). A row with deleted_at
+   *  set is hidden from the inbox and dropped from the unread count; the row is
+   *  retained for TCPA/compliance. The inbox query filters deleted_at IS NULL,
+   *  so these are effectively always null on rows the page holds. */
+  deleted_at?: string | null;
+  deleted_by?: string | null;
 }
 
 /** How a merchant reads as a name once their customer row resolves.
