@@ -171,12 +171,19 @@ export function smsMediaRejectReason(file: File): string | null {
 // ── Document links (secure, unauthenticated HTTPS — NOT MMS) ─────────────────
 // MMS can't reliably carry a PDF/Word/Excel doc, so "attach a document" on the
 // SMS composers is a different path from a picture message: upload the file to a
-// dedicated PUBLIC bucket, then drop a shareable HTTPS link into the message BODY.
-// It sends as ordinary text through sms-send (no media_url), and a merchant with
-// no login taps the link to open the file. See migration 20260829n_sms_docs_bucket.
+// dedicated PRIVATE bucket, then drop a 7-day SIGNED HTTPS link into the message
+// BODY. It sends as ordinary text through sms-send (no media_url), and a merchant
+// with no login taps the link to open the file — until the link expires 7 days
+// later, at which point it 400s (intended, for compliance: a shared link must not
+// work forever). See migrations 20260829n_sms_docs_bucket + 20260829o_sms_docs_private_signed.
 
-/** The dedicated public bucket for outbound merchant-shared documents. */
+/** The dedicated private bucket for outbound merchant-shared documents.
+ *  Links into it are 7-day signed URLs, not permanent public URLs. */
 export const SMS_DOCS_BUCKET = "sms-docs";
+
+/** How long a texted document link stays valid, in seconds (7 days). After this
+ *  the signed URL 400s so a shared/forwarded link can't be opened forever. */
+export const SMS_DOCS_SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 /** Client-side upload ceiling. Mirrors the bucket's file_size_limit (15MB). */
 export const SMS_DOCS_MAX_BYTES = 15 * 1024 * 1024;
@@ -248,17 +255,19 @@ export function smsDocsRejectReason(file: File): string | null {
   return null;
 }
 
-/** A document attached to a composer: its display name and its public link. */
+/** A document attached to a composer: its display name and its 7-day signed link. */
 export interface SmsDocAttachment {
   name: string;
   url: string;
 }
 
-/** Upload a document to the public sms-docs bucket and return its public URL.
+/** Upload a document to the private sms-docs bucket and return a 7-day SIGNED URL.
  *  Validates first (returns the reason on a rejected file). Used by BOTH SMS
- *  composers so the upload + public-URL logic lives in exactly one place. The
+ *  composers so the upload + signed-URL logic lives in exactly one place. The
  *  returned URL is meant to be inserted into the message BODY as plain text — it
- *  is NOT an MMS media_url and must not be passed as one. */
+ *  is NOT an MMS media_url and must not be passed as one. The link expires after
+ *  7 days (SMS_DOCS_SIGNED_URL_TTL_SECONDS); if signing fails we return an error
+ *  and NEVER a broken/empty url. */
 export async function uploadSmsDoc(
   file: File,
 ): Promise<{ url: string; name: string } | { error: string }> {
@@ -272,9 +281,17 @@ export async function uploadSmsDoc(
       upsert: false,
     });
   if (upErr) return { error: `Upload failed — nothing was attached. ${upErr.message}` };
-  const { data: pub } = supabase.storage.from(SMS_DOCS_BUCKET).getPublicUrl(path);
-  const url = pub?.publicUrl ?? null;
-  if (!url) return { error: "The file uploaded but its public link couldn't be resolved." };
+  const { data: signed, error: signErr } = await supabase.storage
+    .from(SMS_DOCS_BUCKET)
+    .createSignedUrl(path, SMS_DOCS_SIGNED_URL_TTL_SECONDS);
+  const url = signed?.signedUrl ?? null;
+  if (signErr || !url) {
+    return {
+      error: `The file uploaded but its secure link couldn't be created${
+        signErr ? ` — ${signErr.message}` : ""
+      }. Nothing was attached.`,
+    };
+  }
   return { url, name: file.name };
 }
 
