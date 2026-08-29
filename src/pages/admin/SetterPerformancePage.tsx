@@ -75,6 +75,7 @@ import { useUserProfile } from "@/context/UserProfileContext";
 import { DEAL_STAGES, type DealStatus } from "@/types/deals";
 import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
 import DialCeilingPanel, { type ProductiveSetterRow } from "@/components/admin/DialCeilingPanel";
+import TextMerchantPanel from "@/components/admin/TextMerchantPanel";
 import {
   BenchmarkChip, BenchmarkTile, BenchmarkLegend, IndustryComparisonCard,
   type BenchmarkValues,
@@ -3309,19 +3310,34 @@ export default function SetterPerformancePage() {
                                     </span>
                                   </td>
                                   <td className={`${TD} text-right whitespace-nowrap`}>
-                                    {r.contact_id ? (
-                                      <Link
-                                        to={`/admin/playbooks?contact=${encodeURIComponent(r.contact_id)}`}
-                                        className="text-mint-green hover:underline underline-offset-2 font-medium"
-                                        title="Open this merchant in the Revenue Playbook"
-                                      >
-                                        Open →
-                                      </Link>
-                                    ) : (
-                                      <span className="text-gray-300 dark:text-gray-600" title="WAVV did not tie this dial to a contact record, so there is nothing to open">
-                                        —
-                                      </span>
-                                    )}
+                                    <div className="inline-flex items-center gap-3">
+                                      {/* Text the merchant on the company line without
+                                          leaving the scorecard — same JMP send path
+                                          (sms-send) as the playbook. Only shown when
+                                          WAVV carried a number to text. */}
+                                      {r.phone && (
+                                        <TextMerchantPanel
+                                          merchantPhone={r.phone}
+                                          merchantFirstName={(r.contact_name ?? "").trim().split(/\s+/)[0] || undefined}
+                                          businessName={money.businessName}
+                                          buttonLabel="Text"
+                                          buttonClassName="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-300 hover:underline underline-offset-2 font-medium"
+                                        />
+                                      )}
+                                      {r.contact_id ? (
+                                        <Link
+                                          to={`/admin/playbooks?contact=${encodeURIComponent(r.contact_id)}`}
+                                          className="text-mint-green hover:underline underline-offset-2 font-medium"
+                                          title="Open this merchant in the Revenue Playbook"
+                                        >
+                                          Open →
+                                        </Link>
+                                      ) : !r.phone ? (
+                                        <span className="text-gray-300 dark:text-gray-600" title="WAVV did not tie this dial to a contact record, so there is nothing to open">
+                                          —
+                                        </span>
+                                      ) : null}
+                                    </div>
                                   </td>
                                 </tr>
                                 );

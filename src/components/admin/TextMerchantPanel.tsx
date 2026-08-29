@@ -1,51 +1,50 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChatBubbleLeftRightIcon,
-  ArrowTopRightOnSquareIcon,
-  EyeIcon,
-  EyeSlashIcon,
-  ClipboardIcon,
-  CheckIcon,
   PaperAirplaneIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { useUserProfile } from "@/context/UserProfileContext";
-import { getCompanyVoice, getSetting, type CompanyVoice } from "@/services/platformService";
+import { getSetting } from "@/services/platformService";
 import { logContactAttempt } from "@/services/dealService";
 import { parseEdgeError } from "@/lib/edgeError";
 import { mintConnectBankLink } from "@/lib/connectBank";
 import { normalizePhoneForStorage } from "@/lib/phone";
+import { prettyPhone } from "@/lib/sms";
+import { loadActiveSmsLines, defaultLine, type SmsLine } from "@/lib/smsLines";
 
 /**
- * Text the merchant, from inside the playbook, on any deal, at any step.
+ * Text a merchant on the company line — an inline compose that goes out through
+ * our real JMP send path (`sms-send`), reusable on ANY page.
  *
- * This chip used to be a LOGIN affordance — it opened the shared Google Voice tab
- * and revealed the team password. Texting therefore meant leaving the playbook,
- * finding the thread, and typing the link from memory. Now the chip IS the send:
- * an inline compose that goes out through TextMagic (`textmagic-send`), with the
- * links a closer actually texts one tap away. The Google Voice sign-in is still
- * here, at the bottom of the panel, because the shared line is also how we CALL.
+ * This USED to open the shared Google Voice tab, reveal the team password, and
+ * send through TextMagic — none of which we use anymore. Both are gone. Sending
+ * is now the one gate every SMS screen uses:
  *
- * The quick-insert links are NOT new flows — every one of them reuses the exact
- * builder the email/copy paths already use, so a texted link is byte-identical to
- * an emailed one:
- *   · Upload documents  → platform_settings.adhoc_docs.upload_form_url + ?email=
- *                         (the same URL AdHocSendMenu copies)
- *   · Connect bank      → plaid-mint-link via mintConnectBankLink() (the same fn
- *                         behind the Connect-Bank chip and the Send-docs menu)
- *   · Application / agreements → the merchant's OWN per-recipient signing URLs,
- *                         read from ghl-docs-status — the same source as the
- *                         Send-docs menu's "Their signing links". These exist only
- *                         once a document has been sent, so the panel says so
- *                         plainly rather than inventing a token flow.
- *   · Blank form links  → adhoc_docs[].public_link, as-is.
+ *   supabase.functions.invoke("sms-send", { to, body, customer_id?, line_id? })
+ *
+ * `sms-send` (staff JWT) enforces suppression / DND (fail-closed), the rate cap,
+ * E.164, and the MCA "loan" compliance block. Its refusal IS the answer, not an
+ * app bug, so we surface it verbatim. FROM-line comes from `loadActiveSmsLines()`
+ * — one line today (the JMP number +1 786 504-1159), architected for more; a
+ * selector appears only when there is more than one.
+ *
+ * REUSABLE: the only thing required to text is a `merchantPhone`. Everything else
+ * is optional enrichment:
+ *   · `customerId`  threads the outbound text to the merchant in Text Messages.
+ *   · `dealId`      enables the Connect-bank quick-insert (mints the merchant's
+ *                   /connect-bank link) and stamps a contact-attempt touch.
+ *   · `ghlContactId`+`merchantEmail` enable the "their signing links" / upload
+ *                   quick-inserts. Absent → those chips simply don't render.
+ * Drop it into a table cell with a compact `buttonLabel`, or into the playbook
+ * contact bar with its default pill — same component either way.
  *
  * NO browser popups (owner rule): Send is an inline two-step — first tap arms
- * ("tap again to send to +1…"), second tap fires, disarming after 5s.
+ * ("tap again to send to (xxx) …"), second tap fires, disarming after 5s.
  *
  * COMPLIANCE: an MCA is a purchase of future receivables, NEVER a loan. The
- * templates below say funding / working capital / advance, and the edge function
- * refuses outright to transmit a message containing the word "loan".
+ * templates say funding / working capital / advance, and `sms-send` refuses
+ * outright to transmit a body containing the word "loan".
  */
 
 interface AdhocDocDef {
@@ -57,25 +56,11 @@ interface AdhocDocDef {
 /** A document already sent to this merchant, with their own signing URL. */
 interface SentDocLink { name: string; signed: boolean; url: string | null }
 
-interface Props {
-  dealId: string;
-  merchantPhone?: string | null;
-  /** customers.additional_phones — selectable alternates. */
-  additionalPhones?: string[] | null;
-  merchantEmail?: string | null;
-  merchantFirstName?: string | null;
-  businessName?: string | null;
-  /** Enables the "their signing links" quick-inserts. */
-  ghlContactId?: string | null;
-  /** Fired after a successful send — the host refetches (this was a touch). */
-  onSent?: () => void;
-}
-
-const MAX_CHARS = 1600;
-
 interface Ctx { first: string; business: string; closerFirst: string }
 
-const TEMPLATES: { id: string; label: string; body: (c: Ctx) => string }[] = [
+export interface TextTemplate { id: string; label: string; body: (c: Ctx) => string }
+
+const DEFAULT_TEMPLATES: TextTemplate[] = [
   {
     id: "intro",
     label: "Intro + application",
@@ -99,14 +84,51 @@ const TEMPLATES: { id: string; label: string; body: (c: Ctx) => string }[] = [
   { id: "blank", label: "Blank", body: () => "" },
 ];
 
+const MAX_CHARS = 1600;
+
+interface Props {
+  /** The merchant's primary number. The ONE thing needed to text. */
+  merchantPhone?: string | null;
+  /** customers.additional_phones — selectable alternates. */
+  additionalPhones?: string[] | null;
+  /** Threads the outbound text to the merchant in Text Messages. */
+  customerId?: string | null;
+  /** Deal-scoped features: Connect-bank quick-insert + contact-attempt stamp. */
+  dealId?: string | null;
+  /** Enables the "their signing links" quick-inserts. */
+  ghlContactId?: string | null;
+  /** Enables the prefilled upload-form quick-insert (?email=). */
+  merchantEmail?: string | null;
+  merchantFirstName?: string | null;
+  businessName?: string | null;
+  /** Initial compose body (overrides a template until one is picked). */
+  prefill?: string;
+  /** Override the template chips; pass [] to hide them entirely. */
+  templates?: TextTemplate[];
+  /** The trigger button's label. Default: "Text — company line". */
+  buttonLabel?: string;
+  /** Override the trigger button's classes (e.g. a compact table pill). */
+  buttonClassName?: string;
+  /** Fired after a successful send — the host refetches (this was a touch). */
+  onSent?: () => void;
+}
+
+const DEFAULT_BUTTON_CLS =
+  "inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-200 dark:hover:bg-indigo-900/60 transition-colors";
+
 export default function TextMerchantPanel({
-  dealId,
   merchantPhone,
   additionalPhones,
+  customerId,
+  dealId,
+  ghlContactId,
   merchantEmail,
   merchantFirstName,
   businessName,
-  ghlContactId,
+  prefill,
+  templates,
+  buttonLabel = "Text — company line",
+  buttonClassName,
   onSent,
 }: Props) {
   const { profile } = useUserProfile();
@@ -114,7 +136,9 @@ export default function TextMerchantPanel({
   const wrapRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── Compose state ──
+  const TEMPLATES = templates ?? DEFAULT_TEMPLATES;
+
+  // ── To ──
   const phoneOptions = useMemo(() => {
     const all = [merchantPhone, ...(additionalPhones ?? [])]
       .map((p) => (p ?? "").trim())
@@ -131,7 +155,7 @@ export default function TextMerchantPanel({
     closerFirst: (profile?.first_name || "").trim() || "your rep",
   }), [merchantFirstName, businessName, profile]);
 
-  const [text, setText] = useState("");
+  const [text, setText] = useState(prefill ?? "");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   // Inline two-step confirm — no browser popups (owner rule), same armOrFire as
@@ -142,6 +166,25 @@ export default function TextMerchantPanel({
     const t = setTimeout(() => setArmed(false), 5000);
     return () => clearTimeout(t);
   }, [armed]);
+
+  // ── From-line (the company number). Falls back to the one known JMP line if
+  //    sms_lines isn't populated yet (see loadActiveSmsLines). ──
+  const [lines, setLines] = useState<SmsLine[]>([]);
+  const [lineId, setLineId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void loadActiveSmsLines().then((ls) => {
+      if (cancelled) return;
+      setLines(ls);
+      setLineId((prev) => prev ?? defaultLine(ls).id);
+    });
+    return () => { cancelled = true; };
+  }, [open]);
+  const selectedLine = useMemo(
+    () => lines.find((l) => l.id === lineId) ?? lines[0],
+    [lines, lineId],
+  );
 
   // ── Link sources (fetched when the panel opens) ──
   const [uploadFormUrl, setUploadFormUrl] = useState<string | null>(null);
@@ -171,30 +214,28 @@ export default function TextMerchantPanel({
     return () => { cancelled = true; };
   }, [open, ghlContactId]);
 
-  // ── Google Voice sign-in (the panel's footer — the shared CALLING line) ──
-  const [creds, setCreds] = useState<CompanyVoice | null>(null);
-  const [revealed, setRevealed] = useState(false);
-  const [copied, setCopied] = useState<"user" | "pass" | null>(null);
-  useEffect(() => { void getCompanyVoice().then(setCreds); }, []);
-  const copy = useCallback(async (which: "user" | "pass", value: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(which);
-      setTimeout(() => setCopied(null), 1500);
-    } catch { /* clipboard blocked — nothing to do */ }
-  }, []);
-
+  // ── Close on outside click ──
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
         setOpen(false);
-        setRevealed(false);
         setArmed(false);
       }
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  // ── Keep the panel on-screen: if opening left-anchored would spill past the
+  //    right edge, anchor it to the right so it opens INWARD. Measured on open. ──
+  const [dropRight, setDropRight] = useState(false);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const panelW = Math.min(416, window.innerWidth * 0.92); // 26rem cap
+    setDropRight(rect.left + panelW > window.innerWidth - 8);
   }, [open]);
 
   /** Insert text at the caret (or append), keeping the caret after it. */
@@ -228,6 +269,7 @@ export default function TextMerchantPanel({
   };
 
   const insertConnectBank = async () => {
+    if (!dealId) return;
     setMinting(true);
     setResult(null);
     try {
@@ -249,22 +291,36 @@ export default function TextMerchantPanel({
     setSending(true);
     setResult(null);
     try {
-      const { data, error } = await supabase.functions.invoke("textmagic-send", {
-        body: { deal_id: dealId, phone, message: text.trim() },
+      const { error } = await supabase.functions.invoke("sms-send", {
+        body: {
+          to: phone,
+          body: text.trim(),
+          ...(customerId ? { customer_id: customerId } : {}),
+          // Only a real sms_lines row carries an id; the hardcoded fallback line
+          // sends without one (single-line path).
+          ...(selectedLine?.id ? { line_id: selectedLine.id } : {}),
+        },
       });
-      if (error) throw error;
-      const d = data as { ok?: boolean; error?: string } | null;
-      if (d?.error || d?.ok === false) throw new Error(d?.error || "The text was not sent.");
+      if (error) {
+        // The edge function's own refusal ("Do-Not-Contact", "rate limit", "not
+        // a valid E.164 number", "message mentions 'loan'") is the useful
+        // message — surface it verbatim.
+        const { message } = await parseEdgeError(error, "The text was not sent.");
+        setResult({ ok: false, text: message });
+        return;
+      }
 
-      // A sent text IS a touch — bank the SLA stamp without inflating the contact
-      // rate (an unanswered text is not a conversation). Best-effort: a stamp
-      // failure must never make a SENT text look unsent.
-      try {
-        await logContactAttempt(dealId, { outcome: "attempted", channel: "sms" });
-        onSent?.();
-      } catch { /* the text went out; the stamp is bookkeeping */ }
+      // A sent text IS a touch — bank the SLA stamp when we're on a deal, without
+      // inflating the contact rate. Best-effort: a stamp failure must never make
+      // a SENT text look unsent.
+      if (dealId) {
+        try {
+          await logContactAttempt(dealId, { outcome: "attempted", channel: "sms" });
+        } catch { /* the text went out; the stamp is bookkeeping */ }
+      }
+      onSent?.();
 
-      setResult({ ok: true, text: `Sent to ${phone}.` });
+      setResult({ ok: true, text: `Sent to ${prettyPhone(phone)}.` });
       setText("");
     } catch (e) {
       const { message } = await parseEdgeError(e, "Could not send the text.");
@@ -279,8 +335,7 @@ export default function TextMerchantPanel({
   const segments = chars === 0 ? 0 : Math.ceil(chars / 160);
   const noPhone = !phone;
   const canSend = !noPhone && text.trim() !== "" && chars <= MAX_CHARS && !sending;
-  const url = creds?.url || "https://voice.google.com";
-  const hasLogin = !!(creds?.username || creds?.password);
+  const lineNumber = selectedLine ? prettyPhone(selectedLine.phone) : prettyPhone("+17865041159");
 
   const quickCls =
     "text-[10px] font-semibold px-2 py-1 rounded-full border border-ocean-blue/40 text-ocean-blue hover:bg-ocean-blue hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
@@ -290,112 +345,142 @@ export default function TextMerchantPanel({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title="Text the merchant on the company line — compose and send without leaving the deal"
-        className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-200 dark:hover:bg-indigo-900/60 transition-colors"
+        title="Text the merchant on the company line — compose and send without leaving the page"
+        className={buttonClassName ?? DEFAULT_BUTTON_CLS}
       >
-        <ChatBubbleLeftRightIcon className="w-3 h-3" /> Text — company line
+        <ChatBubbleLeftRightIcon className="w-3 h-3" /> {buttonLabel}
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1.5 w-[26rem] max-w-[92vw] rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3">
-          {/* ── To ── */}
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wide text-gray-400 flex-shrink-0">To</span>
-            {phoneOptions.length === 0 ? (
-              <span className="text-[11px] text-amber-600 dark:text-amber-400">
-                No mobile on file — add one in the deal's contact details.
+        <div
+          className={`absolute ${dropRight ? "right-0" : "left-0"} top-full z-30 mt-1.5 w-[26rem] max-w-[92vw] max-h-[80vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3`}
+        >
+          {/* ── To / From ── */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+            <span className="inline-flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-wide text-gray-400 flex-shrink-0">To</span>
+              {phoneOptions.length === 0 ? (
+                <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                  No mobile on file — add one to text.
+                </span>
+              ) : phoneOptions.length === 1 ? (
+                <span className="text-[11px] font-mono text-gray-800 dark:text-gray-200">{prettyPhone(phone)}</span>
+              ) : (
+                <select
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className="text-[11px] font-mono rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-1.5 py-0.5"
+                >
+                  {phoneOptions.map((p) => <option key={p} value={p}>{prettyPhone(p)}</option>)}
+                </select>
+              )}
+            </span>
+            {selectedLine && (
+              <span className="inline-flex items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wide text-gray-400 flex-shrink-0">From</span>
+                {lines.length > 1 ? (
+                  <select
+                    value={lineId ?? ""}
+                    onChange={(e) => setLineId(e.target.value || null)}
+                    title="The company number this text is sent from"
+                    className="text-[11px] rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-1.5 py-0.5"
+                  >
+                    {lines.map((l) => (
+                      <option key={l.id ?? l.phone} value={l.id ?? ""}>
+                        {prettyPhone(l.phone)} · {l.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-[11px] font-mono text-gray-700 dark:text-gray-200">
+                    {prettyPhone(selectedLine.phone)}
+                  </span>
+                )}
               </span>
-            ) : phoneOptions.length === 1 ? (
-              <span className="text-[11px] font-mono text-gray-800 dark:text-gray-200">{phone}</span>
-            ) : (
-              <select
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="text-[11px] font-mono rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-1.5 py-0.5"
-              >
-                {phoneOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
             )}
           </div>
 
           {/* ── Templates ── */}
-          <div className="mt-2 flex flex-wrap gap-1">
-            {TEMPLATES.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => applyTemplate(t.id)}
-                className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue transition-colors"
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
+          {TEMPLATES.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {TEMPLATES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => applyTemplate(t.id)}
+                  className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue transition-colors"
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* ── Quick-insert links — every one reuses an existing builder ── */}
-          <p className="mt-2 text-[10px] uppercase tracking-wide text-gray-400">Insert a link</p>
-          <div className="mt-1 flex flex-wrap gap-1">
-            <button
-              type="button"
-              disabled={minting}
-              onClick={() => void insertConnectBank()}
-              className={quickCls}
-              title="Mints this merchant's /connect-bank link (plaid-mint-link) — 60 seconds to verify revenue and pull statements"
-            >
-              {minting ? "Minting…" : "🔗 Connect bank"}
-            </button>
+          {(dealId || uploadLink || ghlContactId || docs.some((d) => d.public_link)) && (
+            <>
+              <p className="mt-2 text-[10px] uppercase tracking-wide text-gray-400">Insert a link</p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {dealId && (
+                  <button
+                    type="button"
+                    disabled={minting}
+                    onClick={() => void insertConnectBank()}
+                    className={quickCls}
+                    title="Mints this merchant's /connect-bank link (plaid-mint-link) — 60 seconds to verify revenue and pull statements"
+                  >
+                    {minting ? "Minting…" : "🔗 Connect bank"}
+                  </button>
+                )}
 
-            <button
-              type="button"
-              disabled={!uploadLink}
-              onClick={() => uploadLink && insertAtCursor(uploadLink)}
-              className={quickCls}
-              title={uploadLink
-                ? "The secure upload form, prefilled with their email so files attach to this merchant"
-                : "No upload form is configured in platform_settings.adhoc_docs"}
-            >
-              📤 Upload documents
-            </button>
+                <button
+                  type="button"
+                  disabled={!uploadLink}
+                  onClick={() => uploadLink && insertAtCursor(uploadLink)}
+                  className={quickCls}
+                  title={uploadLink
+                    ? "The secure upload form, prefilled with their email so files attach to this merchant"
+                    : "No upload form is configured in platform_settings.adhoc_docs"}
+                >
+                  📤 Upload documents
+                </button>
 
-            {/* Their OWN application / agreement links — only real once something
-                has been sent. Same source as the Send-docs menu's signing links. */}
-            {ghlContactId && sentLinks === null && (
-              <span className="text-[10px] text-gray-400 self-center">checking their documents…</span>
-            )}
-            {(sentLinks ?? []).map((l, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => insertAtCursor(l.url!)}
-                className={quickCls}
-                title={`This merchant's own link for ${l.name}${l.signed ? " (already signed — view link)" : ""}`}
-              >
-                📄 {l.name}{l.signed ? " ✓" : ""}
-              </button>
-            ))}
+                {/* Their OWN application / agreement links — only real once something
+                    has been sent. Same source as the Send-docs menu's signing links. */}
+                {ghlContactId && sentLinks === null && (
+                  <span className="text-[10px] text-gray-400 self-center">checking their documents…</span>
+                )}
+                {(sentLinks ?? []).map((l, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => insertAtCursor(l.url!)}
+                    className={quickCls}
+                    title={`This merchant's own link for ${l.name}${l.signed ? " (already signed — view link)" : ""}`}
+                  >
+                    📄 {l.name}{l.signed ? " ✓" : ""}
+                  </button>
+                ))}
 
-            {/* Public blank-form links (broker agreement, etc.) — textable as-is. */}
-            {docs.filter((d) => d.public_link).map((d) => (
-              <button
-                key={d.key}
-                type="button"
-                onClick={() => insertAtCursor(d.public_link!)}
-                className={quickCls}
-                title={`Public blank form link for ${d.label}`}
-              >
-                📝 {d.label}
-              </button>
-            ))}
-          </div>
-          {ghlContactId && sentLinks?.length === 0 && (
-            <p className="mt-1 text-[10px] text-gray-400">
-              No application sent yet — send it from <b>Send docs</b> and its link appears here to text.
-            </p>
-          )}
-          {!ghlContactId && (
-            <p className="mt-1 text-[10px] text-gray-400">
-              No GHL contact on this deal yet, so there are no application links to insert.
-            </p>
+                {/* Public blank-form links (broker agreement, etc.) — textable as-is. */}
+                {docs.filter((d) => d.public_link).map((d) => (
+                  <button
+                    key={d.key}
+                    type="button"
+                    onClick={() => insertAtCursor(d.public_link!)}
+                    className={quickCls}
+                    title={`Public blank form link for ${d.label}`}
+                  >
+                    📝 {d.label}
+                  </button>
+                ))}
+              </div>
+              {ghlContactId && sentLinks?.length === 0 && (
+                <p className="mt-1 text-[10px] text-gray-400">
+                  No application sent yet — send it from <b>Send docs</b> and its link appears here to text.
+                </p>
+              )}
+            </>
           )}
 
           {/* ── Message ── */}
@@ -408,7 +493,7 @@ export default function TextMerchantPanel({
             className="mt-2 w-full text-[12px] rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1.5 resize-y"
           />
           <div className="mt-1 flex items-center justify-between gap-2">
-            <span className={`text-[10px] ${chars > MAX_CHARS ? "text-red-600 dark:text-red-400 font-semibold" : "text-gray-400"}`}>
+            <span className={`text-[10px] tabular-nums ${chars > MAX_CHARS ? "text-red-600 dark:text-red-400 font-semibold" : "text-gray-400"}`}>
               {chars}/{MAX_CHARS}{segments > 0 && ` · ${segments} segment${segments === 1 ? "" : "s"}`}
             </span>
             <button
@@ -424,11 +509,11 @@ export default function TextMerchantPanel({
               ) : (
                 <PaperAirplaneIcon className="w-3.5 h-3.5" />
               )}
-              {sending ? "Sending…" : armed ? `Tap again — send to ${phone}` : "Send text"}
+              {sending ? "Sending…" : armed ? `Tap again — send to ${prettyPhone(phone)}` : "Send text"}
             </button>
           </div>
           <p className="mt-1 text-[10px] text-gray-400">
-            Goes out on the company line via TextMagic and lands on the deal's activity trail.
+            Goes out on the company line {lineNumber} and lands in Text Messages.
             Keep it "funding" / "working capital" — an advance is never a loan.
           </p>
 
@@ -437,74 +522,6 @@ export default function TextMerchantPanel({
               {result.text}
             </p>
           )}
-
-          {/* ── The shared Google Voice line — still how we CALL, so the sign-in
-                stays exactly where closers already look for it. ── */}
-          <div className="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700">
-            <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1.5">Company Google Voice line (calling)</p>
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold px-2 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors"
-            >
-              <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" /> Open Google Voice
-            </a>
-
-            {hasLogin ? (
-              <div className="mt-2 space-y-1.5">
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-gray-400">Username</p>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] font-mono text-gray-800 dark:text-gray-200 truncate flex-1">
-                      {creds?.username || "—"}
-                    </span>
-                    {creds?.username && (
-                      <button
-                        type="button"
-                        onClick={() => void copy("user", creds.username)}
-                        title="Copy username"
-                        className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded"
-                      >
-                        {copied === "user" ? <CheckIcon className="w-3.5 h-3.5 text-emerald-500" /> : <ClipboardIcon className="w-3.5 h-3.5" />}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-gray-400">Password</p>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] font-mono text-gray-800 dark:text-gray-200 truncate flex-1">
-                      {creds?.password ? (revealed ? creds.password : "•".repeat(Math.min(creds.password.length, 12))) : "—"}
-                    </span>
-                    {creds?.password && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => setRevealed((r) => !r)}
-                          title={revealed ? "Hide password" : "Reveal password"}
-                          className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded"
-                        >
-                          {revealed ? <EyeSlashIcon className="w-3.5 h-3.5" /> : <EyeIcon className="w-3.5 h-3.5" />}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void copy("pass", creds.password)}
-                          title="Copy password"
-                          className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded"
-                        >
-                          {copied === "pass" ? <CheckIcon className="w-3.5 h-3.5 text-emerald-500" /> : <ClipboardIcon className="w-3.5 h-3.5" />}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">No shared login on file yet.</p>
-            )}
-          </div>
         </div>
       )}
     </div>

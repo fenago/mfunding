@@ -3674,12 +3674,12 @@ function DealContextBar({ deal, pipeline, campaign, onClear, onAdvance, onRefres
               {deal.ghl_contact_id && <DocsBackChips groups={docGroups} />}
 
               {/* TEXT the merchant without leaving the deal — inline compose that
-                  sends through TextMagic, with the connect-bank / upload / signing
-                  links one tap from the message body (same builders the email and
-                  copy paths use). The shared Google Voice sign-in — still how we
-                  CALL on the company number — lives in the panel's footer. */}
+                  sends through our real JMP path (sms-send), with the connect-bank
+                  / upload / signing links one tap from the message body (same
+                  builders the email and copy paths use). */}
               <TextMerchantPanel
                 dealId={deal.id}
+                customerId={deal.customer?.id}
                 merchantPhone={deal.customer?.phone}
                 additionalPhones={deal.customer?.additional_phones ?? []}
                 merchantEmail={deal.customer?.email}
