@@ -1,11 +1,12 @@
 import { useCallback, useState } from "react";
-import { ExclamationTriangleIcon, PhoneArrowUpRightIcon } from "@heroicons/react/24/outline";
+import { ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import usePlaybookContact from "@/hooks/usePlaybookContact";
 import BusinessPicker from "@/components/admin/BusinessPicker";
 import SetterHeaderBar from "@/components/admin/setter/SetterHeaderBar";
 import SetterActionRail from "@/components/admin/setter/SetterActionRail";
 import SetterCommsPanel from "@/components/admin/setter/SetterCommsPanel";
+import SetterMerchantSearch from "@/components/admin/setter/SetterMerchantSearch";
 
 /**
  * SetterOpsTab — the setter's single-screen Operations console, mounted as a tab
@@ -36,14 +37,14 @@ export default function SetterOpsTab() {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
-  // Manual pull-up: the setter pastes whatever the dialer shows.
-  const [phoneInput, setPhoneInput] = useState("");
-  const submitPhone = (e: React.FormEvent) => {
-    e.preventDefault();
-    const p = phoneInput.trim();
-    if (!p) return;
-    void openMerchant({ phone: p });
-  };
+  // Manual pull-up delegate — SetterMerchantSearch resolves the lookup (dealId or
+  // phone) and hands it here; the hook does the actual load.
+  const pullUp = useCallback(
+    (lookup: Parameters<typeof openMerchant>[0]) => {
+      void openMerchant(lookup);
+    },
+    [openMerchant],
+  );
 
   // BusinessPicker wiring — one owner, many businesses. `pickBusiness` opens the
   // chosen one into the SAME workspace; a row shows a spinner while it loads.
@@ -110,7 +111,7 @@ export default function SetterOpsTab() {
             <div className="mt-0.5">{error || "Something went wrong resolving the contact."}</div>
           </div>
         </div>
-        <ContactEntry value={phoneInput} onChange={setPhoneInput} onSubmit={submitPhone} />
+        <SetterMerchantSearch onOpen={pullUp} />
       </div>
     );
   } else if (bizCtx && !deal) {
@@ -140,8 +141,8 @@ export default function SetterOpsTab() {
       </div>
     );
   } else {
-    // Idle, no deep link — manual pull-up.
-    body = <ContactEntry value={phoneInput} onChange={setPhoneInput} onSubmit={submitPhone} />;
+    // Idle, no deep link — manual pull-up (search by business, name, or phone).
+    body = <SetterMerchantSearch onOpen={pullUp} />;
   }
 
   return (
@@ -159,49 +160,5 @@ export default function SetterOpsTab() {
         </div>
       )}
     </div>
-  );
-}
-
-/** The manual pull-up: paste the dialer's number, open the merchant. */
-function ContactEntry({
-  value,
-  onChange,
-  onSubmit,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: (e: React.FormEvent) => void;
-}) {
-  return (
-    <form
-      onSubmit={onSubmit}
-      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 max-w-xl"
-    >
-      <div className="flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white">
-        <PhoneArrowUpRightIcon className="w-5 h-5 text-mint-green" />
-        Pull up a merchant
-      </div>
-      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-        Paste the number the dialer shows — any format works. Or open a merchant from a contact link and
-        you'll land straight here.
-      </p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <input
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="(305) 555-0134"
-          inputMode="tel"
-          className="flex-1 min-w-[14rem] rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-ocean-blue/40"
-        />
-        <button
-          type="submit"
-          disabled={!value.trim()}
-          className="inline-flex items-center gap-2 rounded-lg bg-ocean-blue px-4 py-2 text-sm font-bold text-white hover:bg-ocean-blue/90 disabled:opacity-50"
-        >
-          <PhoneArrowUpRightIcon className="w-4 h-4" />
-          Open merchant
-        </button>
-      </div>
-    </form>
   );
 }
