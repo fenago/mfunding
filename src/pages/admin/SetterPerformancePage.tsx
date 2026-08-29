@@ -233,7 +233,21 @@ interface SourceDeal {
 // 4. IT IS A RANGE OF ACTIVITY, NOT A COHORT. Each timestamp is tested against
 //    the range separately (the same shape loadDeals uses), so this answers
 //    "what did this person MOVE in this window", not "what landed in it".
-const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,appointment_at,appointment_promised_at,funded_at";
+//
+// ── WHY amount_requested AND THE CUSTOMER EMBED RIDE ALONG ──────────────────
+// The Positive-dispositions list folds these same rows to show what the merchant
+// ASKED FOR and what they DO a month (see positiveMoney). Both come off this one
+// query rather than a per-row fetch.
+//
+// MONEY WALL (20260827_setter_deal_money_wall): the wall on `deals` is a ROW
+// wall, not a column mask — a setter's SELECT policy returns only their own
+// deals plus the unassigned pool. So amount_requested is safe to select here:
+// another setter's deal is not in `data` at all, and the fold below therefore
+// renders "—" for it. Ops staff read every row and see the real figure.
+// customers is deliberately whole-book (qualification data a setter must see to
+// qualify), so monthly_revenue embeds cleanly — but it still only surfaces for a
+// deal row the caller could read.
+const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(monthly_revenue,phone)";
 /** Same reasoning as SOURCE_DEAL_CAP — must not exceed PostgREST max-rows, or
  *  the `>= CAP` truncation test can never fire and the tab under-reports in
  *  silence. */
@@ -253,6 +267,10 @@ interface ProductiveDeal {
   appointment_at: string | null;
   appointment_promised_at: string | null;
   funded_at: string | null;
+  /** Masked to absent for a setter looking at someone else's deal — the row
+   *  itself is not returned, so this is null/undefined rather than 0. */
+  amount_requested: number | null;
+  customer: { monthly_revenue: number | null; phone: string | null } | null;
 }
 
 /** The bucket for a deal with no assigned closer AND no creator. A real bucket,
@@ -1503,7 +1521,9 @@ export default function SetterPerformancePage() {
         )
         .limit(PRODUCTIVE_DEAL_CAP);
       if (error) throw new Error(error.message);
-      const rows = (data ?? []) as ProductiveDeal[];
+      // `as unknown as` because the generated types model a to-one embed as an
+      // array; PostgREST returns the single object (same cast MoneyInPlay uses).
+      const rows = (data ?? []) as unknown as ProductiveDeal[];
       setProductiveDeals(rows);
       setProductiveTruncated(rows.length >= PRODUCTIVE_DEAL_CAP);
     } catch (e) {
@@ -1896,6 +1916,51 @@ export default function SetterPerformancePage() {
     });
   }, [aggRows]);
 
+  // ── What each positive-disposition merchant asked for, and what they do ────
+  // Folded out of productiveDeals — the rows this page ALREADY loaded — so the
+  // two money columns cost no extra query and no per-row fetch. Nothing is
+  // scanned book-wide: a merchant whose deal has no stage stamp inside the range
+  // simply has no entry here and renders "—".
+  //
+  // MATCHING. Primary key is the call's GHL contact_id → deals.ghl_contact_id,
+  // the same tie the Disposition Review tab uses. Phone (last 10 digits, off the
+  // embedded customer) is the fallback for a deal that never got a contact id.
+  // A merchant with several deals in range resolves to the most ADVANCED one
+  // (app sent > qualified > contacted, latest stamp wins), so the figure shown
+  // is the live cycle rather than whichever row PostgREST returned first.
+  //
+  // MONEY WALL. amount_requested arrives null-or-absent for any deal the caller
+  // could not read (see PRODUCTIVE_DEAL_COLS) — a setter gets no row at all for
+  // another setter's merchant, which lands as "—". Never 0, never a leak.
+  const positiveMoney = useMemo(() => {
+    const byContact = new Map<string, ProductiveDeal>();
+    const byPhone = new Map<string, ProductiveDeal>();
+    /** How far down the pipeline a deal is, for picking between two of them. */
+    const rank = (d: ProductiveDeal) =>
+      d.application_sent_at ?? d.qualified_at ?? d.contacted_at ?? "";
+    const better = (next: ProductiveDeal, prev: ProductiveDeal | undefined) =>
+      !prev || rank(next) > rank(prev);
+
+    for (const d of productiveDeals ?? []) {
+      if (d.ghl_contact_id && better(d, byContact.get(d.ghl_contact_id))) {
+        byContact.set(d.ghl_contact_id, d);
+      }
+      const digits = (d.customer?.phone ?? "").replace(/\D/g, "").slice(-10);
+      if (digits.length === 10 && better(d, byPhone.get(digits))) byPhone.set(digits, d);
+    }
+
+    return (r: { contact_id: string | null; phone: string | null }) => {
+      const digits = (r.phone ?? "").replace(/\D/g, "").slice(-10);
+      const deal =
+        (r.contact_id ? byContact.get(r.contact_id) : undefined) ??
+        (digits.length === 10 ? byPhone.get(digits) : undefined);
+      return {
+        amountRequested: deal?.amount_requested ?? null,
+        monthlyRevenue: deal?.customer?.monthly_revenue ?? null,
+      };
+    };
+  }, [productiveDeals]);
+
   const positiveCounts = useMemo(() => {
     const counts = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
     for (const r of positiveCalls) counts.set(r.disposition!, (counts.get(r.disposition!) ?? 0) + 1);
@@ -2212,7 +2277,7 @@ export default function SetterPerformancePage() {
         setReviewDealsError(error.message);
       } else {
         const map: Record<string, ProductiveDeal> = {};
-        for (const d of (data ?? []) as ProductiveDeal[]) {
+        for (const d of (data ?? []) as unknown as ProductiveDeal[]) {
           // Newest deal per contact wins (ordered above); a merchant with two
           // deals is shown by their current one, not by an old closed cycle.
           if (d.ghl_contact_id && !map[d.ghl_contact_id]) map[d.ghl_contact_id] = d;
@@ -3096,12 +3161,16 @@ export default function SetterPerformancePage() {
                                 <th className={TH}>Setter</th>
                                 <th className={TH}>Merchant</th>
                                 <th className={TH}>Phone</th>
+                                <th className={TH}>Amount requested</th>
+                                <th className={TH}>Monthly revenue</th>
                                 <th className={TH}>Disposition</th>
                                 <th className={TH} />
                               </tr>
                             </thead>
                             <tbody className={TBODY}>
-                              {positiveCalls.map((r) => (
+                              {positiveCalls.map((r) => {
+                                const money = positiveMoney(r);
+                                return (
                                 <tr key={r.wavv_call_id} className={TR}>
                                   <td className={`${TD} whitespace-nowrap`} title={localTimeTitle(r.started_at)}>
                                     {etStamp(r.started_at)}
@@ -3118,6 +3187,32 @@ export default function SetterPerformancePage() {
                                   </td>
                                   <td className={TD}><Text value={r.contact_name} /></td>
                                   <td className={`${TD} tabular-nums whitespace-nowrap`}>{prettyPhone(r.phone)}</td>
+                                  <td className={`${TD} tabular-nums whitespace-nowrap`}>
+                                    {money.amountRequested != null ? (
+                                      <b className="text-gray-900 dark:text-white">{usd(money.amountRequested)}</b>
+                                    ) : (
+                                      <span
+                                        className="text-gray-300 dark:text-gray-600"
+                                        title="No amount on a deal we can read for this merchant in this range"
+                                      >
+                                        —
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className={`${TD} tabular-nums whitespace-nowrap`}>
+                                    {money.monthlyRevenue != null ? (
+                                      <span className="text-gray-700 dark:text-gray-200">
+                                        {usd(money.monthlyRevenue)}<span className="text-gray-400">/mo</span>
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className="text-gray-300 dark:text-gray-600"
+                                        title="No stated monthly revenue on a deal we can read for this merchant in this range"
+                                      >
+                                        —
+                                      </span>
+                                    )}
+                                  </td>
                                   <td className={TD}>
                                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.green}`}>
                                       {r.disposition}
@@ -3139,7 +3234,8 @@ export default function SetterPerformancePage() {
                                     )}
                                   </td>
                                 </tr>
-                              ))}
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -3147,6 +3243,13 @@ export default function SetterPerformancePage() {
                           {positiveCalls.length.toLocaleString()} call{positiveCalls.length === 1 ? "" : "s"} in this range
                           carried a positive disposition, newest first inside each type. <b>Open →</b> takes you straight
                           into that merchant's Revenue Playbook. Times are US Eastern; hover a time for your own clock.
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          <b className="text-gray-500 dark:text-gray-300">Amount requested</b> and{" "}
+                          <b className="text-gray-500 dark:text-gray-300">Monthly revenue</b> are read off the merchant's
+                          deal, matched on the dialed contact. A <b>—</b> means no deal we can read carries the figure —
+                          the merchant has no stage stamp in this range, the field was never filled, or the deal belongs
+                          to another setter (setters see the money only on their own book). It never means zero.
                         </p>
                       </>
                     )}
