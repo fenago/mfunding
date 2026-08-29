@@ -54,6 +54,7 @@ import PortalAccessChip from "../../components/admin/PortalAccessChip";
 import PortalInviteButton from "../../components/admin/PortalInviteButton";
 import { DealDocumentsButton } from "../../components/admin/DealDocumentsModal";
 import TextMerchantPanel from "../../components/admin/TextMerchantPanel";
+import PlaybookTextSend from "../../components/admin/PlaybookTextSend";
 import AdHocSendMenu from "../../components/admin/AdHocSendMenu";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import { dateTimeET } from "../../utils/time";
@@ -4865,15 +4866,19 @@ function StepCard({
           ))}
         </ul>
 
+        {/* The verbatim script — now sendable. The read-aloud box is unchanged;
+            a "Send as a text" affordance fires the same words to the merchant
+            through sms-send (DND / suppression / E.164 / "loan" all gated there).
+            Editable before it goes out, and disabled with a clear note when no
+            merchant (browse mode) or no number is on file. */}
         {step.say && (
-          <div className="mt-3 flex gap-2 rounded-md bg-ocean-blue/5 dark:bg-ocean-blue/10 border-l-4 border-ocean-blue px-3 py-2">
-            <ChatBubbleLeftRightIcon className="w-4 h-4 text-ocean-blue shrink-0 mt-0.5" />
-            {/* whitespace-pre-line: a few steps carry LABELLED script variants
-                separated by newlines (renewal paydown tiers, the cold-dial
-                filing-vs-unknown openers). Without this they collapsed into one
-                unreadable run-on paragraph. */}
-            <p className="text-sm italic text-gray-700 dark:text-gray-200 whitespace-pre-line">"{step.say}"</p>
-          </div>
+          <PlaybookTextSend
+            script={step.say}
+            merchantPhone={deal?.customer?.phone}
+            additionalPhones={deal?.customer?.additional_phones ?? []}
+            customerId={deal?.customer_id}
+            interactive={interactive && !!deal}
+          />
         )}
 
         {step.note && (
