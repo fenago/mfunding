@@ -27,6 +27,8 @@ import {
   BoltIcon,
   MagnifyingGlassIcon,
   NoSymbolIcon,
+  PhotoIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { parseEdgeError } from "@/lib/edgeError";
@@ -38,6 +40,10 @@ import {
   customerNames,
   STATUS_CHIP,
   STATUS_LABEL,
+  SMS_MEDIA_BUCKET,
+  SMS_MEDIA_ACCEPT,
+  smsMediaObjectPath,
+  smsMediaRejectReason,
   type SmsContact,
   type SmsMessage,
 } from "@/lib/sms";
@@ -87,6 +93,10 @@ export default function TextMessagesPage() {
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // A picture message staged in the composer: the File plus a local object-URL
+  // preview. Uploaded to the sms-media bucket only at send time.
+  const [attachment, setAttachment] = useState<{ file: File; preview: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // Which company number we send FROM. Architected for several; falls back to the
   // one known JMP line if sms_lines isn't populated yet (see loadActiveSmsLines).
   const [lines, setLines] = useState<SmsLine[]>([]);
@@ -278,18 +288,80 @@ export default function TextMessagesPage() {
     );
   }, [conversations, contacts, search]);
 
+  // ── Attachment (picture message) ────────────────────────────────────────────
+  function clearAttachment() {
+    setAttachment((prev) => {
+      if (prev) URL.revokeObjectURL(prev.preview);
+      return null;
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function pickAttachment(file: File | undefined) {
+    if (!file) return;
+    const reason = smsMediaRejectReason(file);
+    if (reason) {
+      setSendError(reason);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setSendError(null);
+    setAttachment((prev) => {
+      if (prev) URL.revokeObjectURL(prev.preview);
+      return { file, preview: URL.createObjectURL(file) };
+    });
+  }
+
+  // Revoke the last preview object-URL on unmount so the composer doesn't leak.
+  useEffect(() => {
+    return () => {
+      setAttachment((prev) => {
+        if (prev) URL.revokeObjectURL(prev.preview);
+        return null;
+      });
+    };
+  }, []);
+
   // ── Send ──────────────────────────────────────────────────────────────────
+  const canSend = !!activePhone && !sending && (!!body.trim() || !!attachment) && body.length <= MAX_CHARS;
+
   async function send() {
     const to = activePhone;
     const text = body.trim();
-    if (!to || !text || sending || text.length > MAX_CHARS) return;
+    // A send needs a destination and EITHER text OR an image. Media-only is fine.
+    if (!to || sending || (!text && !attachment) || text.length > MAX_CHARS) return;
     setSending(true);
     setSendError(null);
     try {
+      // If an image is staged, upload it to the public sms-media bucket first and
+      // hand sms-send its public URL. A failed upload must abort the send loudly —
+      // never silently send text-only when the operator attached a picture.
+      let mediaUrl: string | null = null;
+      if (attachment) {
+        const path = smsMediaObjectPath(attachment.file.name);
+        const { error: upErr } = await supabase.storage
+          .from(SMS_MEDIA_BUCKET)
+          .upload(path, attachment.file, {
+            contentType: attachment.file.type || "application/octet-stream",
+            upsert: false,
+          });
+        if (upErr) {
+          setSendError(`Image upload failed — nothing was sent. ${upErr.message}`);
+          return;
+        }
+        const { data: pub } = supabase.storage.from(SMS_MEDIA_BUCKET).getPublicUrl(path);
+        mediaUrl = pub?.publicUrl ?? null;
+        if (!mediaUrl) {
+          setSendError("Image uploaded but its public URL could not be resolved — nothing was sent.");
+          return;
+        }
+      }
+
       const { error } = await supabase.functions.invoke("sms-send", {
         body: {
           to,
           body: text,
+          ...(mediaUrl ? { media_url: mediaUrl } : {}),
           ...(activeContact?.customerId ? { customer_id: activeContact.customerId } : {}),
           // Which company number to send FROM. Only a real sms_lines row has an
           // id; the hardcoded fallback line sends without one (single-line path).
@@ -304,6 +376,7 @@ export default function TextMessagesPage() {
         return;
       }
       setBody("");
+      clearAttachment();
       // The draft number now has history — it's a real conversation.
       if (draftPhone) {
         setSelected(draftPhone);
@@ -544,7 +617,46 @@ export default function TextMessagesPage() {
                     )}
                   </div>
                 )}
+                {attachment && (
+                  <div className="mb-2 flex items-center gap-2 p-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-900/40">
+                    <img
+                      src={attachment.preview}
+                      alt="Attachment preview"
+                      className="w-14 h-14 object-cover rounded-md shrink-0"
+                    />
+                    <span className="text-xs text-gray-600 dark:text-gray-300 truncate flex-1">
+                      {attachment.file.name}
+                      <span className="block text-[11px] text-gray-400">
+                        {(attachment.file.size / 1024).toFixed(0)} KB · sends as a picture message
+                      </span>
+                    </span>
+                    <button
+                      onClick={clearAttachment}
+                      title="Remove image"
+                      className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
                 <div className="flex gap-2 items-end">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={SMS_MEDIA_ACCEPT}
+                    className="hidden"
+                    onChange={(e) => {
+                      pickAttachment(e.target.files?.[0]);
+                    }}
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={sending}
+                    title="Attach an image (picture message)"
+                    className="inline-flex items-center justify-center p-2.5 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40"
+                  >
+                    <PhotoIcon className="w-5 h-5" />
+                  </button>
                   <textarea
                     value={body}
                     onChange={(e) => setBody(e.target.value)}
@@ -552,16 +664,20 @@ export default function TextMessagesPage() {
                       // Enter sends; Shift+Enter (or ⌘/Ctrl+Enter) inserts a newline.
                       if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                         e.preventDefault();
-                        if (!sending && body.trim() && body.length <= MAX_CHARS) void send();
+                        if (canSend) void send();
                       }
                     }}
                     rows={2}
-                    placeholder={`Text ${prettyPhone(activePhone)}…`}
+                    placeholder={
+                      attachment
+                        ? `Add a caption (optional) for ${prettyPhone(activePhone)}…`
+                        : `Text ${prettyPhone(activePhone)}…`
+                    }
                     className="flex-1 text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white resize-y"
                   />
                   <button
                     onClick={() => void send()}
-                    disabled={sending || !body.trim() || body.length > MAX_CHARS}
+                    disabled={!canSend}
                     className="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-lg bg-mint-green text-gray-900 hover:opacity-90 disabled:opacity-40"
                   >
                     <PaperAirplaneIcon className="w-4 h-4" />
@@ -658,17 +774,20 @@ function Bubble({ m }: { m: SmsMessage }) {
               : "bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-bl-sm"
           }`}
         >
-          {m.body}
           {m.media_url && (
-            <a
-              href={m.media_url}
-              target="_blank"
-              rel="noreferrer"
-              className={`block mt-1.5 text-xs underline ${out ? "text-white/90" : "text-ocean-blue"}`}
-            >
-              View attachment
+            <a href={m.media_url} target="_blank" rel="noreferrer" className="block mb-1.5">
+              <img
+                src={m.media_url}
+                alt="Picture message"
+                loading="lazy"
+                className="max-w-full max-h-64 rounded-lg object-contain bg-black/5"
+              />
+              <span className={`block mt-0.5 text-[11px] underline ${out ? "text-white/90" : "text-ocean-blue"}`}>
+                Open full size
+              </span>
             </a>
           )}
+          {m.body}
         </div>
         <div
           className={`mt-1 flex items-center gap-1.5 text-[11px] text-gray-400 ${out ? "justify-end" : ""}`}

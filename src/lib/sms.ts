@@ -113,6 +113,53 @@ export function shortWhen(iso: string): string {
   return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// ── Picture messages (MMS) ───────────────────────────────────────────────────
+// Outbound media is uploaded to a dedicated PUBLIC Supabase bucket so the JMP/
+// Cheogram gateway can fetch it over plain HTTPS and transcode it into an MMS.
+// sms-send validates the URL is an object in exactly this bucket before queueing.
+
+/** The dedicated public bucket for outbound SMS/MMS media. */
+export const SMS_MEDIA_BUCKET = "sms-media";
+
+/** Client-side upload ceiling. Mirrors the bucket's file_size_limit (5MB). MMS
+ *  carriers transcode down hard, so this is a generous upper bound, not a target. */
+export const SMS_MEDIA_MAX_BYTES = 5 * 1024 * 1024;
+
+/** Image types the bucket accepts (must stay in sync with allowed_mime_types). */
+export const SMS_MEDIA_MIME = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+] as const;
+
+/** `accept` attribute for the file input. */
+export const SMS_MEDIA_ACCEPT = SMS_MEDIA_MIME.join(",");
+
+/** A collision-resistant object path for an outbound image. Grouped by date so
+ *  the bucket stays browsable; the random suffix avoids clobbering. */
+export function smsMediaObjectPath(fileName: string): string {
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const rand = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const ext = (fileName.split(".").pop() || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8);
+  return `outbound/${yyyy}/${mm}/${rand}${ext ? `.${ext}` : ""}`;
+}
+
+/** Human-readable reason a file can't be sent as a picture message, or null. */
+export function smsMediaRejectReason(file: File): string | null {
+  if (!(SMS_MEDIA_MIME as readonly string[]).includes(file.type)) {
+    return "Only images can be attached (JPG, PNG, GIF, WebP, HEIC).";
+  }
+  if (file.size > SMS_MEDIA_MAX_BYTES) {
+    return `That image is ${(file.size / 1_048_576).toFixed(1)}MB — the limit is 5MB.`;
+  }
+  return null;
+}
+
 /** The JMP account this line runs on — static reference, straight from the
  *  setup guide. Shown on the ops page so nobody has to hunt for it mid-outage. */
 export const JMP_ACCOUNT = {

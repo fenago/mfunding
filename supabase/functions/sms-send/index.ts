@@ -5,9 +5,17 @@
 // rows and hands them to JMP over XMPP. Everything here is the gate in front of
 // that queue.
 //
-//   POST { to, body, customer_id?, line_id? }
+//   POST { to, body, customer_id?, line_id?, media_url? }
 //        → { ok:true, id, status:'queued', phone, customer_id, line_id }   (200)
 //        | { ok:false, error, code }                                       (4xx/5xx)
+//
+// `media_url` is OPTIONAL and turns this into a picture message (MMS). It must be
+// an https URL to an object in OUR OWN sms-media storage bucket — the gateway
+// (Cheogram) fetches it to build the MMS, so a foreign URL would make us hand an
+// arbitrary third-party fetch target to the carrier. When media_url is present the
+// body may be empty (media-only send); the body, when present, rides along as the
+// MMS caption. The URL is validated against SUPABASE_URL + the sms-media bucket
+// path and stored on the queued row for the bridge to attach via jabber:x:oob.
 //
 // `customer_id` is ADVISORY. It is never written and never decides anything about
 // suppression — the returned customer_id is whatever the DB trigger resolved from
@@ -108,6 +116,40 @@ function toE164(raw: string): string | null {
   if (digits.length !== 10) return null;
   if (!/^[2-9]\d{2}[2-9]\d{6}$/.test(digits)) return null;
   return `+1${digits}`;
+}
+
+/** Validate an outbound picture-message URL.
+ *
+ *  MMS on this line works by handing Cheogram an HTTPS URL it fetches and
+ *  transcodes. That makes the URL an SSRF-shaped input: whatever we accept, the
+ *  gateway will go retrieve. So we accept ONLY objects in our own public
+ *  sms-media bucket — same host as SUPABASE_URL and under the bucket's public
+ *  path — and reject anything else. Returns the normalized URL or an error string. */
+function validateMediaUrl(raw: string): { url: string } | { error: string } {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return { error: "media_url is not a valid URL." };
+  }
+  if (u.protocol !== "https:") {
+    return { error: "media_url must be an https URL." };
+  }
+  const base = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/+$/, "");
+  let baseHost = "";
+  try {
+    baseHost = new URL(base).host;
+  } catch {
+    return { error: "server is misconfigured (SUPABASE_URL unreadable)." };
+  }
+  if (u.host !== baseHost) {
+    return { error: `media_url must be hosted on ${baseHost} (our storage), not ${u.host}.` };
+  }
+  // Public object route for the dedicated SMS media bucket.
+  if (!u.pathname.startsWith("/storage/v1/object/public/sms-media/")) {
+    return { error: "media_url must be an object in the sms-media storage bucket." };
+  }
+  return { url: u.toString() };
 }
 
 interface CustomerRow {
@@ -377,7 +419,7 @@ Deno.serve(async (req) => {
 
   // ── Input. ONE message. There is no array form by design. ──
   const payload = (await req.json().catch(() => null)) as
-    | { to?: string; body?: string; customer_id?: string; line_id?: string }
+    | { to?: string; body?: string; customer_id?: string; line_id?: string; media_url?: string }
     | null;
   if (!payload) return fail("bad_request", "Invalid JSON body", 400);
 
@@ -385,14 +427,28 @@ Deno.serve(async (req) => {
   const body = (payload.body ?? "").trim();
   const customerId = (payload.customer_id ?? "").trim() || null;
   const requestedLineId = (payload.line_id ?? "").trim() || null;
+  const rawMediaUrl = (payload.media_url ?? "").trim() || null;
 
-  if (!body) return fail("empty_body", "Write a message first — nothing was queued.", 400);
+  // media_url turns this into a picture message and is validated hard (it becomes
+  // a gateway fetch target). A media-only send is allowed, so the empty-body
+  // refusal only fires when there is NEITHER text NOR media.
+  let mediaUrl: string | null = null;
+  if (rawMediaUrl) {
+    const v = validateMediaUrl(rawMediaUrl);
+    if ("error" in v) return fail("bad_media", `Not queued — ${v.error}`, 400);
+    mediaUrl = v.url;
+  }
+
+  if (!body && !mediaUrl) {
+    return fail("empty_body", "Write a message or attach an image first — nothing was queued.", 400);
+  }
   if (body.length > MAX_CHARS) {
     return fail("too_long",
       `That message is ${body.length} characters — the limit is ${MAX_CHARS}.`, 400);
   }
 
   // COMPLIANCE GATE. An MCA is not a loan; the word cannot go out on our line.
+  // (A caption on a picture message is still merchant-facing text.)
   if (/\bloans?\b/i.test(body)) {
     return fail("compliance",
       'Not queued: an MCA is a purchase of future receivables, never a "loan". ' +
@@ -471,6 +527,7 @@ Deno.serve(async (req) => {
       direction: "outbound",
       phone,
       body,
+      media_url: mediaUrl,
       status: "queued",
       created_by: caller.id,
       line_id: line.lineId,
@@ -496,7 +553,7 @@ Deno.serve(async (req) => {
       entity_id: linkedCustomerId,
       interaction_type: "sms",
       subject: `merchant:sms — ${phone}`,
-      content: `${body.slice(0, MAX_CHARS)}\n[jmp:queued sms_message:${inserted.id}]`,
+      content: `${body.slice(0, MAX_CHARS)}${mediaUrl ? `${body ? "\n" : ""}[image: ${mediaUrl}]` : ""}\n[jmp:queued sms_message:${inserted.id}]`,
       logged_by: caller.id,
     }).then(() => {}, () => {});
   }

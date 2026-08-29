@@ -133,6 +133,30 @@ function toE164(input) {
   return /^\+[1-9]\d{7,14}$/.test(e164) ? e164 : null;
 }
 
+/** Pull an inbound MMS media URL out of a merchant stanza, best-effort.
+ *
+ *  Cheogram delivers inbound MMS media as an XEP-0066 (jabber:x:oob) URL. Some
+ *  gateway paths instead put a bare HTTPS URL in the body. We capture either, and
+ *  NEVER drop the message: if the shape is unexpected (an <x> oob element with no
+ *  <url> child) we log loudly and return null so the text/body still inserts.
+ *  Returns the URL string, or null when there is no media. */
+function extractInboundMediaUrl(stanza, body) {
+  const oob = stanza.getChild("x", "jabber:x:oob");
+  if (oob) {
+    const url = (oob.getChildText("url") || "").trim();
+    if (url) return url;
+    // An OOB element with no usable <url> is a shape we didn't expect — say so
+    // loudly rather than silently losing an attachment. The body still inserts.
+    log("WARN: inbound jabber:x:oob with no <url> child — media may be lost:", stanza.toString());
+  }
+  // Fallback: a gateway that ships the media as a lone HTTPS URL in the body.
+  // Only treat the body as media when it is EXACTLY a single https URL, so a
+  // normal text that merely mentions a link is not misfiled as an image.
+  const trimmed = (body || "").trim();
+  if (/^https:\/\/\S+$/i.test(trimmed)) return trimmed;
+  return null;
+}
+
 // ---------- inbound ----------
 
 xmpp.on("error", (e) => log("xmpp error:", e.message));
@@ -163,8 +187,7 @@ xmpp.on("stanza", async (stanza) => {
 
     const from = stanza.attrs.from || "";
     const body = stanza.getChildText("body") || "";
-    const oob = stanza.getChild("x", "jabber:x:oob");
-    const mediaUrl = oob ? oob.getChildText("url") : null;
+    const mediaUrl = extractInboundMediaUrl(stanza, body);
 
     // ── ACCOUNT BOT reply (bare JID cheogram.com, no "+number@" user part) ──────
     // This is the JMP/Cheogram ACCOUNT BOT answering a console command (info,
@@ -296,7 +319,7 @@ async function pump() {
     // this needs the moment a second bridge runs.
     const { data: rows, error } = await db
       .from(TABLE)
-      .select("id, phone, body, line_id")
+      .select("id, phone, body, media_url, line_id")
       .eq("status", "queued")
       .order("created_at", { ascending: true })
       .limit(10);
@@ -335,18 +358,39 @@ async function pump() {
         const phone = toE164(row.phone);
         if (!phone) throw new Error(`phone is not E.164: ${row.phone}`);
         const body = String(row.body ?? "");
-        if (!body.trim()) throw new Error("empty body");
+        const mediaUrl = row.media_url ? String(row.media_url).trim() : "";
+        // A row must carry SOMETHING to send. A media-only row (no body) is valid;
+        // an empty row with neither is not and would send a blank stanza.
+        if (!body.trim() && !mediaUrl) throw new Error("empty body and no media");
 
-        await xmpp.send(
-          xml("message", { to: toJid(phone), type: "chat", id: row.id }, xml("body", {}, body)),
-        );
+        if (mediaUrl) {
+          // PICTURE MESSAGE. Cheogram turns an outbound message into an MMS when
+          // it carries an XEP-0066 (jabber:x:oob) URL it can fetch. The body
+          // doubles as the MMS caption; when there is no caption, send the URL as
+          // the body too (the conventional OOB shape, and a graceful fallback for
+          // any client that ignores the oob element).
+          const caption = body.trim() || mediaUrl;
+          await xmpp.send(
+            xml(
+              "message",
+              { to: toJid(phone), type: "chat", id: row.id },
+              xml("body", {}, caption),
+              xml("x", { xmlns: "jabber:x:oob" }, xml("url", {}, mediaUrl)),
+            ),
+          );
+        } else {
+          // TEXT-ONLY — unchanged.
+          await xmpp.send(
+            xml("message", { to: toJid(phone), type: "chat", id: row.id }, xml("body", {}, body)),
+          );
+        }
 
         const { error: upErr } = await db
           .from(TABLE)
           .update({ status: "sent", sent_at: new Date().toISOString() })
           .eq("id", row.id);
         if (upErr) log("mark-sent FAILED (row stays 'sending'):", row.id, upErr.message);
-        else log("sent ->", phone, JSON.stringify(body));
+        else log("sent ->", phone, mediaUrl ? `(media ${mediaUrl})` : JSON.stringify(body));
       } catch (e) {
         await markFailed(row.id, e.message);
         log("send failed ->", row.phone, e.message);
