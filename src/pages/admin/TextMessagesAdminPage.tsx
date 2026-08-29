@@ -25,8 +25,15 @@ import {
   ChatBubbleLeftRightIcon,
   ShieldCheckIcon,
   PhoneArrowUpRightIcon,
+  CommandLineIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
+import {
+  READ_ONLY_COMMANDS,
+  runJmpCommand,
+  loadJmpBotMessages,
+  type JmpBotMessage,
+} from "@/lib/jmpConsole";
 import {
   isOptOut,
   prettyPhone,
@@ -103,6 +110,13 @@ export default function TextMessagesAdminPage() {
   const [unsupPhone, setUnsupPhone] = useState("");
   const [unsupBusy, setUnsupBusy] = useState(false);
   const [unsupMsg, setUnsupMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // ── JMP command console (read-only account-bot commands) ──
+  const [botRows, setBotRows] = useState<JmpBotMessage[]>([]);
+  const [botError, setBotError] = useState<string | null>(null);
+  const [botLoading, setBotLoading] = useState(true);
+  const [botBusy, setBotBusy] = useState<string | null>(null); // command currently being queued
+  const [botNotice, setBotNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   // ── Health ────────────────────────────────────────────────────────────────
   const loadHealth = useCallback(async () => {
@@ -194,11 +208,39 @@ export default function TextMessagesAdminPage() {
     void loadOptOuts();
   }, [unsupPhone, loadOptOuts]);
 
+  // ── JMP console ─────────────────────────────────────────────────────────────
+  const loadBot = useCallback(async () => {
+    setBotLoading(true);
+    const { rows, error } = await loadJmpBotMessages(supabase, 40);
+    setBotError(error);
+    setBotRows(rows);
+    setBotLoading(false);
+  }, []);
+
+  // Queue a read-only command to the account bot, then refresh so the outbound
+  // row shows immediately; the reply lands via realtime when the bot answers.
+  const runCommand = useCallback(
+    async (command: string) => {
+      setBotBusy(command);
+      setBotNotice(null);
+      const res = await runJmpCommand(supabase, command);
+      setBotBusy(null);
+      if (!res.ok) {
+        setBotNotice({ ok: false, text: res.error ?? "The command was refused." });
+        return;
+      }
+      setBotNotice({ ok: true, text: `Sent "${command}" to the JMP bot — waiting for its reply…` });
+      void loadBot();
+    },
+    [loadBot],
+  );
+
   const reloadAll = useCallback(() => {
     void loadHealth();
     void loadLog();
     void loadOptOuts();
-  }, [loadHealth, loadLog, loadOptOuts]);
+    void loadBot();
+  }, [loadHealth, loadLog, loadOptOuts, loadBot]);
 
   useEffect(() => {
     void loadHealth();
@@ -207,6 +249,24 @@ export default function TextMessagesAdminPage() {
   useEffect(() => {
     void loadLog();
   }, [loadLog]);
+
+  // Console: initial load + live updates. jmp_bot_messages is in the realtime
+  // publication (RLS still gates it to super_admin per subscriber), so a queued
+  // command and the bot's reply both appear without a manual refresh.
+  useEffect(() => {
+    void loadBot();
+    const channel = supabase
+      .channel("jmp_bot_messages_console")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "jmp_bot_messages" },
+        () => void loadBot(),
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadBot]);
 
   // ── Verdicts ──────────────────────────────────────────────────────────────
   const inboundVerdict = useMemo(() => verdictInbound(health), [health]);
@@ -403,6 +463,115 @@ export default function TextMessagesAdminPage() {
             <strong>both</strong> stores the gate checks, and is <strong>written to the audit
             trail</strong> in <code>activity_log</code>.
           </Guard>
+        </div>
+      </section>
+
+      {/* ── JMP console (read-only account-bot commands) ── */}
+      <section className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+        <h2 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+          <CommandLineIcon className="w-5 h-5 text-mint-green" /> JMP console
+        </h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-4">
+          Run a <strong>read-only</strong> command against the JMP/Cheogram account bot. Each button
+          queues one command through the bridge; the bot's reply appears below when it lands. Billing
+          and account-changing commands are intentionally not here — see the runbook below.
+        </p>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+          {READ_ONLY_COMMANDS.map((c) => (
+            <button
+              key={c.cmd}
+              onClick={() => void runCommand(c.cmd)}
+              disabled={botBusy !== null}
+              title={c.desc}
+              className="flex flex-col items-start text-left rounded-lg border border-gray-200 dark:border-gray-700 p-3 hover:border-mint-green hover:bg-mint-green/5 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <span className="flex items-center gap-1.5 font-semibold text-sm text-gray-900 dark:text-white">
+                {c.label}
+                {botBusy === c.cmd && <ArrowPathIcon className="w-3.5 h-3.5 animate-spin" />}
+              </span>
+              <code className="text-[11px] text-gray-400 mt-0.5">{c.cmd}</code>
+            </button>
+          ))}
+        </div>
+
+        {botNotice && (
+          <p
+            className={`text-xs mb-3 ${
+              botNotice.ok
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-red-600 dark:text-red-400"
+            }`}
+          >
+            {botNotice.text}
+          </p>
+        )}
+
+        <div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-gray-400">
+              Recent bot conversation
+            </h3>
+            <button
+              onClick={() => void loadBot()}
+              className="inline-flex items-center gap-1 text-xs text-ocean-blue hover:underline"
+            >
+              <ArrowPathIcon className="w-3.5 h-3.5" /> Refresh
+            </button>
+          </div>
+          {botError ? (
+            <div className="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
+              <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+              <div>
+                <strong>Couldn't read the bot log.</strong> This is a failed read, not an empty
+                result.
+                <span className="block text-xs mt-0.5 opacity-80">{botError}</span>
+              </div>
+            </div>
+          ) : botLoading && botRows.length === 0 ? (
+            <p className="text-sm text-gray-400">Loading…</p>
+          ) : botRows.length === 0 ? (
+            <p className="text-sm text-gray-400">
+              No commands run yet. Click one above to query the account bot.
+            </p>
+          ) : (
+            <ul className="space-y-2 max-h-80 overflow-y-auto">
+              {botRows.map((m) => (
+                <li
+                  key={m.id}
+                  className={`flex ${m.direction === "outbound" ? "justify-end" : "justify-start"}`}
+                >
+                  <div
+                    className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                      m.direction === "outbound"
+                        ? "bg-mint-green/15 text-gray-900 dark:text-white"
+                        : "bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wide text-gray-400">
+                        {m.direction === "outbound"
+                          ? `You → bot${m.command ? ` · ${m.command}` : ""}`
+                          : "Bot"}
+                      </span>
+                      {m.direction === "outbound" && m.status === "failed" && (
+                        <span className="text-[10px] font-semibold text-red-500">failed</span>
+                      )}
+                      {m.direction === "outbound" && m.status === "queued" && (
+                        <span className="text-[10px] font-semibold text-amber-500">queued…</span>
+                      )}
+                    </div>
+                    <pre className="whitespace-pre-wrap font-sans text-sm break-words">
+                      {m.body ?? ""}
+                    </pre>
+                    <div className="text-[10px] text-gray-400 mt-1">
+                      {new Date(m.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </section>
 
