@@ -549,7 +549,11 @@ export default function TextMessagesPage() {
                     value={body}
                     onChange={(e) => setBody(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send();
+                      // Enter sends; Shift+Enter (or ⌘/Ctrl+Enter) inserts a newline.
+                      if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+                        e.preventDefault();
+                        if (!sending && body.trim() && body.length <= MAX_CHARS) void send();
+                      }
                     }}
                     rows={2}
                     placeholder={`Text ${prettyPhone(activePhone)}…`}
@@ -566,7 +570,7 @@ export default function TextMessagesPage() {
                 </div>
                 <div className="mt-1.5 flex items-center gap-2 text-[11px] text-gray-400">
                   <span>
-                    ⌘/Ctrl + Enter sends. Goes to {prettyPhone(activePhone)}
+                    Enter sends · Shift+Enter for a new line. Goes to {prettyPhone(activePhone)}
                     {selectedLine ? ` from ${prettyPhone(selectedLine.phone)}` : " from the company line"}.
                   </span>
                   <span
