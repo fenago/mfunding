@@ -1,0 +1,18 @@
+[Unit]
+Description=JMP SMS bridge (XMPP <-> Supabase sms_messages)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bridge
+WorkingDirectory=/opt/sms-bridge
+EnvironmentFile=/opt/sms-bridge/.env
+ExecStart=/usr/bin/node /opt/sms-bridge/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

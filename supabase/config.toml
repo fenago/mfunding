@@ -417,3 +417,21 @@ verify_jwt = true
 # verify_jwt = true PLUS an in-code admin/super_admin check.
 [functions.dial-campaign]
 verify_jwt = true
+
+# sms-send: queues ONE outbound SMS on the JMP.chat line by inserting a single
+# public.sms_messages row (status 'queued'); a droplet bridge polls and sends. No
+# carrier call happens here. verify_jwt = true PLUS an in-code staff role check
+# (closer/employee/admin/super_admin) — there is deliberately NO cron/shared-secret
+# path, because nothing automated should be able to text a merchant from a consumer
+# line. Guards, all fail-closed and all keyed on the DESTINATION NUMBER: refusal
+# against public.sms_opt_outs (the phone-keyed suppression list, and the only record
+# of an opt-out from a number with no customer row) + customers.do_not_contact +
+# the GHL contact's dnd/dndSettings.SMS; rate caps at three scopes (per destination /
+# per user / line-wide); and the "loan" compliance gate. Customers are matched on the
+# LAST 10 DIGITS, same rule as sms_messages_link_customer() — a literal match let a
+# do_not_contact merchant through whose phone was stored with punctuation.
+# customer_id is advisory: never written (the trigger resolves linkage from the
+# phone), never decides suppression, refused if it contradicts the number.
+# One message per call — no broadcast form exists.
+[functions.sms-send]
+verify_jwt = true

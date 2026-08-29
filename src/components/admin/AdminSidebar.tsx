@@ -51,6 +51,7 @@ import {
   UserCircleIcon,
   LifebuoyIcon,
   ClockIcon,
+  DevicePhoneMobileIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
@@ -116,6 +117,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/ph-ucc", // PH UCC Harvester (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
   "/admin/lead-machine", // Lead Machine (roles: ADMIN) — purchased-list upload → tag → VibeReach push; pure closers excluded via roles
   "/admin/setter-performance", // Setter Performance (roles: ADMIN) — WAVV per-rep scorecard; pure closers excluded via roles
+  "/admin/text-messages", // 💬 Text Messages — the shared SMS line's two-way inbox, every staff role
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — the lists→WAVV one-pager, every staff role
   "/admin/ucc-machine-guide", // 🔗 How the UCC Harvester Works — the sibling one-pager, every staff role
   "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
@@ -184,6 +186,11 @@ const navGroups: NavGroup[] = [
       { name: "Funder Contacts", path: "/admin/funder-contacts", icon: UserGroupIcon, roles: ADMIN },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
+      // Text Messages — the shared company SMS line (JMP.chat), two-way. Sits
+      // next to Comms because they're the two merchant-conversation surfaces;
+      // OPS + in the closer lens, the same audience as Setter Performance. The
+      // ops half of it lives under System → Text Message Administration.
+      { name: "Text Messages", path: "/admin/text-messages", icon: DevicePhoneMobileIcon, roles: OPS },
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
       { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
       { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
@@ -266,6 +273,10 @@ const navGroups: NavGroup[] = [
       { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: SUPER },
       { name: "Plaid", path: "/admin/plaid", icon: BanknotesIcon, roles: SUPER },
       { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: SUPER },
+      // Text Message Administration — bridge health, full message log, opt-out
+      // audit for the SMS line. Owner-only: it's the "is the droplet bridge
+      // dead" screen, not floor work.
+      { name: "Text Message Administration", path: "/admin/text-messages/admin", icon: DevicePhoneMobileIcon, roles: SUPER },
       { name: "Underwriting Settings", path: "/admin/underwriting-settings", icon: AdjustmentsHorizontalIcon, roles: SUPER },
       { name: "Platform Config", path: "/admin/platform-config", icon: Cog6ToothIcon, roles: SUPER },
       { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: SUPER },
@@ -320,7 +331,10 @@ export default function AdminSidebar() {
       item.path !== "/admin/setter-guide" &&
       item.path !== "/admin/cheat-sheet" &&
       item.path !== "/admin/calendar" &&
-      item.path !== "/admin/setter-performance"
+      item.path !== "/admin/setter-performance" &&
+      // Text Messages: the shared line is how merchants text back. A setter who
+      // can't see the reply can't work it, so it's on the setter's short list.
+      item.path !== "/admin/text-messages"
     )
       return false;
     // Closer lens: only the daily operating links, regardless of group.

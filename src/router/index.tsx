@@ -100,6 +100,8 @@ const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSette
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
 const LeadMachinePage = lazyWithReload(() => import("../pages/admin/LeadMachinePage.tsx"));
 const SetterPerformancePage = lazyWithReload(() => import("../pages/admin/SetterPerformancePage.tsx"));
+const TextMessagesPage = lazyWithReload(() => import("../pages/admin/TextMessagesPage.tsx"));
+const TextMessagesAdminPage = lazyWithReload(() => import("../pages/admin/TextMessagesAdminPage.tsx"));
 const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
 const UccMachineGuidePage = lazyWithReload(() => import("../pages/admin/UccMachineGuidePage.tsx"));
 const SetterGuidePage = lazyWithReload(() => import("../pages/admin/SetterGuidePage.tsx"));
@@ -786,6 +788,27 @@ export const routes: RouteObject[] = [
               {
                 path: "setter-performance",
                 element: <SetterPerformancePage />,
+              },
+              // Text Messages — the two-way SMS inbox on the shared company line
+              // (JMP.chat). SAME AUDIENCE AS SETTER PERFORMANCE: every staff role
+              // works this inbox, so no extra guard — AdminProtectedRoute's isStaff
+              // check (closer + employee + admin + super_admin) is exactly right,
+              // and merchants (role `user`) are bounced. sms_messages RLS is the
+              // real gate on the data.
+              //
+              // The nested "admin" child is the OPS view (bridge health, full log,
+              // opt-out audit) and is owner-only — SuperAdminProtectedRoute, so a
+              // closer can't reach it even by typing the URL.
+              {
+                path: "text-messages",
+                children: [
+                  { index: true, element: <TextMessagesPage /> },
+                  {
+                    path: "admin",
+                    element: <SuperAdminProtectedRoute />,
+                    children: [{ index: true, element: <TextMessagesAdminPage /> }],
+                  },
+                ],
               },
               // Lead Tools management (operational — all staff)
               {
