@@ -64,6 +64,7 @@ import {
   ClockIcon,
   ClipboardDocumentListIcon,
   ScaleIcon,
+  PhoneArrowUpRightIcon,
 } from "@heroicons/react/24/outline";
 import {
   BarChart, Bar, ComposedChart, Line, XAxis, YAxis, CartesianGrid,
@@ -75,6 +76,7 @@ import { useUserProfile } from "@/context/UserProfileContext";
 import { DEAL_STAGES, type DealStatus } from "@/types/deals";
 import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
 import DialCeilingPanel, { type ProductiveSetterRow } from "@/components/admin/DialCeilingPanel";
+import SetterOpsTab from "@/components/admin/setter/SetterOpsTab";
 import TextMerchantPanel from "@/components/admin/TextMerchantPanel";
 import {
   BenchmarkChip, BenchmarkTile, BenchmarkLegend, IndustryComparisonCard,
@@ -1210,7 +1212,7 @@ function hourLabel(h: number): string {
   return h < 12 ? `${h}a` : `${h - 12}p`;
 }
 
-type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers";
+type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers" | "operations";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
   { id: "setters",        label: "Setters",        icon: UserGroupIcon },
@@ -1231,6 +1233,10 @@ const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: bool
   // them: those two say how a COHORT converted, this one hands the setter the
   // individual merchants and the buttons to move them.
   { id: "assignments",    label: "Assignments",    icon: ClipboardDocumentListIcon },
+  // The single-merchant working surface: Assignments hands over the book, this
+  // opens ONE merchant into the setter console (deep-linked from a contact link
+  // or pulled up by phone). Renders outside the WAVV gate — it reads `deals`.
+  { id: "operations",     label: "Operations",     icon: PhoneArrowUpRightIcon },
   // Immediately right of Assignments: it answers the OTHER half of "how is this
   // setter doing". The scorecard tabs count dials; this one asks how much of the
   // shift produced them (occupancy) and how much of the "talking" is real.
@@ -1250,6 +1256,23 @@ export default function SetterPerformancePage() {
   const canManageNumbers = isAdmin || isSuperAdmin;
 
   const [tab, setTab] = useState<TabId>("funnel");
+  // A setter contact link (?deal / ?contact / ?phone / legacy ?x=) or an explicit
+  // ?tab=operations must land on the Operations console, not the Funnel default.
+  // Runs once on mount — usePlaybookContact (inside SetterOpsTab) then parses and
+  // strips those same params, so this reads them before they're gone.
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    if (
+      sp.get("tab") === "operations" ||
+      sp.has("deal") ||
+      sp.has("contact") ||
+      sp.has("phone") ||
+      sp.has("x")
+    ) {
+      setTab("operations");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   /** Sub-toggle INSIDE the Funnel panel — not a page tab. Combined is default. */
   const [funnelView, setFunnelView] = useState<FunnelView>("combined");
   /** Scroll target for the funnel's clickable "Positive dispositions" count. */
@@ -2952,7 +2975,14 @@ export default function SetterPerformancePage() {
           so a slow or broken dialer sync must not blank them. */}
       {/* isSourceTab() is called inline (not via sourceTabActive) so TypeScript
           narrows `tab` for the lookups below — no casts. */}
-      {tab === "assignments" ? (
+      {tab === "operations" ? (
+        /* Operations — the setter's single-merchant console. It resolves ONE
+           merchant (deep link or manual phone) via usePlaybookContact and reads
+           `deals`, so it renders here OUTSIDE the WAVV loading gate: a slow or
+           broken dialer sync must not blank the working screen, and the WAVV
+           sync banners say nothing about it. It ignores the date range entirely. */
+        <SetterOpsTab />
+      ) : tab === "assignments" ? (
         /* Assignments — the per-setter WORKLIST, not a report. Reads `deals`, so
            it renders here alongside the lead-source tabs rather than behind the
            WAVV gate, and it deliberately ignores the date range above: a book is

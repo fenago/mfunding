@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PencilSquareIcon } from "@heroicons/react/24/outline";
 import MerchantApplicationModal from "../MerchantApplicationModal";
 import AdHocSendMenu from "../AdHocSendMenu";
@@ -15,16 +15,32 @@ import type { DealWithCustomer } from "../../../types/deals";
  *   3. Appointment           → BookAppointmentControl (30-min GHL calendar book)
  *
  * Everything binds to the single already-loaded deal — nothing re-fetches it.
+ *
+ * `autoOpen` (application-first): when set, the application modal pops the FIRST
+ * time each deal resolves, so capture leads. It fires once per deal id — reopening
+ * after the setter closes it would be a nuisance — and never overrides a manual
+ * close.
  */
 export default function SetterActionRail({
   deal,
   onRefresh,
+  autoOpen = false,
 }: {
   deal: DealWithCustomer;
   onRefresh: () => void;
+  autoOpen?: boolean;
 }) {
   const { effectiveUserId } = useUserProfile();
   const [showApp, setShowApp] = useState(false);
+  // One auto-open per deal id: hold the id we've already popped for so switching
+  // merchants re-arms it, but a close on the same deal stays closed.
+  const autoOpenedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (autoOpen && deal.id && autoOpenedFor.current !== deal.id) {
+      autoOpenedFor.current = deal.id;
+      setShowApp(true);
+    }
+  }, [autoOpen, deal.id]);
   // BookAppointmentControl requires an onNotify; a lightweight local toast keeps
   // this component self-contained (the host only needs to hand us the deal).
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
