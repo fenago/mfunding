@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
-    "@xmpp/client": "^0.13.1",
+    "@xmpp/client": "^0.14.0",
     "dotenv": "^16.4.5"
   }
 }
