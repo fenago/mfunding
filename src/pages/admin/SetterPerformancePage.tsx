@@ -247,7 +247,7 @@ interface SourceDeal {
 // customers is deliberately whole-book (qualification data a setter must see to
 // qualify), so monthly_revenue embeds cleanly — but it still only surfaces for a
 // deal row the caller could read.
-const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(monthly_revenue,phone)";
+const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,monthly_revenue,phone)";
 /** Same reasoning as SOURCE_DEAL_CAP — must not exceed PostgREST max-rows, or
  *  the `>= CAP` truncation test can never fire and the tab under-reports in
  *  silence. */
@@ -270,8 +270,14 @@ interface ProductiveDeal {
   /** Masked to absent for a setter looking at someone else's deal — the row
    *  itself is not returned, so this is null/undefined rather than 0. */
   amount_requested: number | null;
-  customer: { monthly_revenue: number | null; phone: string | null } | null;
+  customer: { business_name: string | null; monthly_revenue: number | null; phone: string | null } | null;
 }
+
+/** Deal statuses that must never be the one a merchant is represented by while a
+ *  live cycle exists alongside them. A duplicate killed in favour of the real
+ *  deal keeps its own (usually empty) amount, and picking it would render "—"
+ *  next to a merchant who very much did state a number. */
+const TERMINAL_DEAL_STATUSES = ["dead", "declined"];
 
 /** The bucket for a deal with no assigned closer AND no creator. A real bucket,
  *  not a person: work nobody owns is shown as such rather than credited to
@@ -1278,6 +1284,11 @@ export default function SetterPerformancePage() {
   const [reviewDeals, setReviewDeals] = useState<Record<string, ProductiveDeal> | null>(null);
   const [reviewDealsError, setReviewDealsError] = useState<string | null>(null);
   const [reviewDealsLoading, setReviewDealsLoading] = useState(false);
+  // Positive dispositions: the merchants behind those calls, read by contact id
+  // and NOT bounded by the range (see the block above the fetch). [] = read and
+  // empty; null = never read / unreadable, which renders "—" like any unknown.
+  const [positiveDeals, setPositiveDeals] = useState<ProductiveDeal[] | null>(null);
+  const [positiveDealsError, setPositiveDealsError] = useState<string | null>(null);
   // Synergy lead cohorts (Live Transfers / Real-Time tabs). null = UNREADABLE,
   // which renders as an error, never as an empty cohort.
   const [sourceDeals, setSourceDeals] = useState<SourceDeal[] | null>(null);
@@ -1916,32 +1927,80 @@ export default function SetterPerformancePage() {
     });
   }, [aggRows]);
 
+  /** The GHL contact ids behind the positive calls — a bounded, deduped key that
+   *  only changes when the list of positive merchants does, so the fetch below
+   *  does not re-run on every render of the same list. */
+  const positiveContactKey = useMemo(
+    () => [...new Set(positiveCalls.map((r) => r.contact_id).filter((v): v is string => !!v))].sort().join(","),
+    [positiveCalls],
+  );
+
+  // The merchants behind those calls. A TARGETED read by ghl_contact_id and
+  // deliberately NOT bounded by the range: the call happened in range, the DEAL
+  // was very likely stage-stamped days earlier. Reusing productiveDeals (which
+  // is range-scoped) rendered "—" for exactly the merchants who converted —
+  // ANDRADE'S STONE INC, positive call Aug 28, deal stamped Aug 25, $20,000 —
+  // which reads as "asked for nothing" when the truth is "asked earlier".
+  //
+  // COST. One `.in()` on the handful of contact ids actually shown, never a
+  // book-wide scan, and only while the funnel tab is open.
+  const positivesTabActive = tab === "funnel";
+  useEffect(() => {
+    if (!positivesTabActive) return;
+    const ids = positiveContactKey ? positiveContactKey.split(",") : [];
+    if (ids.length === 0) { setPositiveDeals([]); setPositiveDealsError(null); return; }
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from("deals")
+        .select(PRODUCTIVE_DEAL_COLS)
+        .in("ghl_contact_id", ids);
+      if (cancelled) return;
+      // null, not [] — "we could not read the pipeline" must render as unknown
+      // ("—"), never as "this merchant asked for nothing". And it SAYS so, rather
+      // than degrading into a table full of quiet dashes.
+      setPositiveDeals(error ? null : ((data ?? []) as unknown as ProductiveDeal[]));
+      setPositiveDealsError(error ? error.message : null);
+    })();
+    return () => { cancelled = true; };
+  }, [positivesTabActive, positiveContactKey]);
+
   // ── What each positive-disposition merchant asked for, and what they do ────
-  // Folded out of productiveDeals — the rows this page ALREADY loaded — so the
-  // two money columns cost no extra query and no per-row fetch. Nothing is
-  // scanned book-wide: a merchant whose deal has no stage stamp inside the range
-  // simply has no entry here and renders "—".
+  // Folded out of the targeted read above, with the page's range-scoped
+  // productiveDeals behind it as a second source — so a dial WAVV never tied to
+  // a contact record can still resolve on phone.
   //
   // MATCHING. Primary key is the call's GHL contact_id → deals.ghl_contact_id,
   // the same tie the Disposition Review tab uses. Phone (last 10 digits, off the
   // embedded customer) is the fallback for a deal that never got a contact id.
-  // A merchant with several deals in range resolves to the most ADVANCED one
-  // (app sent > qualified > contacted, latest stamp wins), so the figure shown
-  // is the live cycle rather than whichever row PostgREST returned first.
+  // A merchant with several deals resolves to the LIVE one: terminal rows (dead,
+  // declined) lose to any non-terminal row, and among equals the most ADVANCED
+  // wins (app sent > qualified > contacted, latest stamp). Andrade has two deals
+  // on one contact id — dead MF-2026-0256 (amount null) and live MF-2026-0255
+  // ($20,000) — and this picks the live one.
   //
   // MONEY WALL. amount_requested arrives null-or-absent for any deal the caller
   // could not read (see PRODUCTIVE_DEAL_COLS) — a setter gets no row at all for
-  // another setter's merchant, which lands as "—". Never 0, never a leak.
-  const positiveMoney = useMemo(() => {
+  // another setter's merchant, which lands as "—". Never 0, never a leak. The
+  // targeted query above changes nothing about that: it is the same RLS-bound
+  // `deals` SELECT, just keyed on contact id instead of on a date window.
+  const positiveMerchant = useMemo(() => {
     const byContact = new Map<string, ProductiveDeal>();
     const byPhone = new Map<string, ProductiveDeal>();
+    const terminal = (d: ProductiveDeal) => TERMINAL_DEAL_STATUSES.includes(d.status ?? "");
     /** How far down the pipeline a deal is, for picking between two of them. */
     const rank = (d: ProductiveDeal) =>
       d.application_sent_at ?? d.qualified_at ?? d.contacted_at ?? "";
-    const better = (next: ProductiveDeal, prev: ProductiveDeal | undefined) =>
-      !prev || rank(next) > rank(prev);
+    const better = (next: ProductiveDeal, prev: ProductiveDeal | undefined) => {
+      if (!prev) return true;
+      // Live always beats dead, however far along the dead one got.
+      if (terminal(next) !== terminal(prev)) return !terminal(next);
+      return rank(next) > rank(prev);
+    };
 
-    for (const d of productiveDeals ?? []) {
+    // Targeted rows first, then the range-scoped ones — `better` decides, so the
+    // order only matters as a tie-break and both sources get a fair look.
+    for (const d of [...(positiveDeals ?? []), ...(productiveDeals ?? [])]) {
       if (d.ghl_contact_id && better(d, byContact.get(d.ghl_contact_id))) {
         byContact.set(d.ghl_contact_id, d);
       }
@@ -1955,11 +2014,12 @@ export default function SetterPerformancePage() {
         (r.contact_id ? byContact.get(r.contact_id) : undefined) ??
         (digits.length === 10 ? byPhone.get(digits) : undefined);
       return {
+        businessName: deal?.customer?.business_name?.trim() || null,
         amountRequested: deal?.amount_requested ?? null,
         monthlyRevenue: deal?.customer?.monthly_revenue ?? null,
       };
     };
-  }, [productiveDeals]);
+  }, [positiveDeals, productiveDeals]);
 
   const positiveCounts = useMemo(() => {
     const counts = new Map<string, number>(POSITIVE_DISPOSITIONS.map((d) => [d, 0]));
@@ -3153,6 +3213,16 @@ export default function SetterPerformancePage() {
                       </div>
                     ) : (
                       <>
+                        {positiveDealsError && (
+                          <div className="alert alert-warning text-sm">
+                            <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                            <span>
+                              <b>Merchant columns unreadable this load</b> ({positiveDealsError}) — Business,
+                              Amount requested and Monthly revenue show “—”, which means <b>unknown</b>, never
+                              "this merchant asked for nothing".
+                            </span>
+                          </div>
+                        )}
                         <div className={TABLE_WRAP}>
                           <table className={TABLE}>
                             <thead className={THEAD}>
@@ -3160,6 +3230,7 @@ export default function SetterPerformancePage() {
                                 <th className={TH}>Time (ET)</th>
                                 <th className={TH}>Setter</th>
                                 <th className={TH}>Merchant</th>
+                                <th className={TH}>Business</th>
                                 <th className={TH}>Phone</th>
                                 <th className={TH}>Amount requested</th>
                                 <th className={TH}>Monthly revenue</th>
@@ -3169,7 +3240,7 @@ export default function SetterPerformancePage() {
                             </thead>
                             <tbody className={TBODY}>
                               {positiveCalls.map((r) => {
-                                const money = positiveMoney(r);
+                                const money = positiveMerchant(r);
                                 return (
                                 <tr key={r.wavv_call_id} className={TR}>
                                   <td className={`${TD} whitespace-nowrap`} title={localTimeTitle(r.started_at)}>
@@ -3186,6 +3257,18 @@ export default function SetterPerformancePage() {
                                     </div>
                                   </td>
                                   <td className={TD}><Text value={r.contact_name} /></td>
+                                  <td className={TD}>
+                                    {money.businessName ? (
+                                      <span className="text-gray-900 dark:text-white">{money.businessName}</span>
+                                    ) : (
+                                      <span
+                                        className="text-gray-300 dark:text-gray-600"
+                                        title="No business name on a deal we can read for this merchant"
+                                      >
+                                        —
+                                      </span>
+                                    )}
+                                  </td>
                                   <td className={`${TD} tabular-nums whitespace-nowrap`}>{prettyPhone(r.phone)}</td>
                                   <td className={`${TD} tabular-nums whitespace-nowrap`}>
                                     {money.amountRequested != null ? (
@@ -3193,7 +3276,7 @@ export default function SetterPerformancePage() {
                                     ) : (
                                       <span
                                         className="text-gray-300 dark:text-gray-600"
-                                        title="No amount on a deal we can read for this merchant in this range"
+                                        title="No amount on a deal we can read for this merchant"
                                       >
                                         —
                                       </span>
@@ -3207,7 +3290,7 @@ export default function SetterPerformancePage() {
                                     ) : (
                                       <span
                                         className="text-gray-300 dark:text-gray-600"
-                                        title="No stated monthly revenue on a deal we can read for this merchant in this range"
+                                        title="No stated monthly revenue on a deal we can read for this merchant"
                                       >
                                         —
                                       </span>
@@ -3245,11 +3328,13 @@ export default function SetterPerformancePage() {
                           into that merchant's Revenue Playbook. Times are US Eastern; hover a time for your own clock.
                         </p>
                         <p className="text-xs text-gray-400">
+                          <b className="text-gray-500 dark:text-gray-300">Business</b>,{" "}
                           <b className="text-gray-500 dark:text-gray-300">Amount requested</b> and{" "}
                           <b className="text-gray-500 dark:text-gray-300">Monthly revenue</b> are read off the merchant's
-                          deal, matched on the dialed contact. A <b>—</b> means no deal we can read carries the figure —
-                          the merchant has no stage stamp in this range, the field was never filled, or the deal belongs
-                          to another setter (setters see the money only on their own book). It never means zero.
+                          live deal, matched on the dialed contact — <b>whenever that deal was worked</b>, not only inside
+                          this range, and a dead duplicate never wins over the live cycle. A <b>—</b> means no deal we can
+                          read carries the figure — the field was never filled, or the deal belongs to another setter
+                          (setters see the money only on their own book). It never means zero.
                         </p>
                       </>
                     )}
