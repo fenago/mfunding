@@ -81,6 +81,11 @@ export default function TextMessagesAdminPage() {
   const [optOutError, setOptOutError] = useState<string | null>(null);
   const [optOutLoading, setOptOutLoading] = useState(true);
 
+  // ── Re-enable a number (admin override to lift a suppression) ──
+  const [unsupPhone, setUnsupPhone] = useState("");
+  const [unsupBusy, setUnsupBusy] = useState(false);
+  const [unsupMsg, setUnsupMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
   // ── Health ────────────────────────────────────────────────────────────────
   const loadHealth = useCallback(async () => {
     setHealthLoading(true);
@@ -179,6 +184,29 @@ export default function TextMessagesAdminPage() {
     }
     setOptOutLoading(false);
   }, []);
+
+  // Super-admin override: lift a suppression so the number can be texted again.
+  // Calls the SECURITY DEFINER RPC (which itself enforces super_admin), then
+  // refreshes the audit so the change is visible immediately.
+  const unsuppress = useCallback(async () => {
+    const phone = unsupPhone.trim();
+    if (!phone) return;
+    setUnsupBusy(true);
+    setUnsupMsg(null);
+    const { data, error } = await supabase.rpc("sms_admin_unsuppress", { p_phone: phone });
+    setUnsupBusy(false);
+    if (error) {
+      setUnsupMsg({ ok: false, text: error.message });
+      return;
+    }
+    const d = (data ?? {}) as { phone: string; optout_deleted: number; customers_cleared: number };
+    setUnsupMsg({
+      ok: true,
+      text: `${prettyPhone(d.phone)} can be texted again — removed ${d.optout_deleted} suppression row(s) and cleared do_not_contact on ${d.customers_cleared} customer(s).`,
+    });
+    setUnsupPhone("");
+    void loadOptOuts();
+  }, [unsupPhone, loadOptOuts]);
 
   const reloadAll = useCallback(() => {
     void loadHealth();
@@ -315,6 +343,47 @@ export default function TextMessagesAdminPage() {
             linked merchant actually got flipped to <code>do_not_contact</code>. A STOP with no flip
             is a compliance hole — fix it on the customer record.
           </p>
+        </div>
+
+        {/* Super-admin override — re-enable texting for a number */}
+        <div className="p-4 border-b border-gray-100 dark:border-gray-700 bg-amber-50/60 dark:bg-amber-900/10">
+          <label className="block text-xs font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400 mb-1">
+            Super-admin override — re-enable texting
+          </label>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 max-w-2xl">
+            Lifts the suppression and clears <code>do_not_contact</code> for a number. Use only when
+            the merchant re-consents or to undo a false STOP — this overrides a TCPA opt-out, so it's
+            super-admin only and written to the audit trail.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={unsupPhone}
+              onChange={(e) => setUnsupPhone(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void unsuppress();
+              }}
+              placeholder="(305) 555-1234"
+              className="input-field w-56 font-mono text-sm"
+            />
+            <button
+              onClick={() => void unsuppress()}
+              disabled={unsupBusy || !unsupPhone.trim()}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-mint-green text-white text-sm font-semibold disabled:opacity-50"
+            >
+              <CheckCircleIcon className="w-4 h-4" /> {unsupBusy ? "Re-enabling…" : "Re-enable"}
+            </button>
+          </div>
+          {unsupMsg && (
+            <p
+              className={`text-xs mt-2 ${
+                unsupMsg.ok
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-red-600 dark:text-red-400"
+              }`}
+            >
+              {unsupMsg.text}
+            </p>
+          )}
         </div>
         {optOutError ? (
           <ReadFailed message={optOutError} what="opt-outs" />

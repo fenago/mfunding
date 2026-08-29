@@ -135,6 +135,12 @@ const navGroups: NavGroup[] = [
     title: "Daily",
     items: [
       { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
+      // Text Messages — the shared company SMS line (JMP.chat), two-way. Owner
+      // wants it directly under the Revenue Playbook: a setter working a merchant
+      // in the Playbook reaches for the text line next. OPS + in the closer lens,
+      // the same audience as Setter Performance. The ops half of it lives under
+      // System → Text Message Administration.
+      { name: "Text Messages", path: "/admin/text-messages", icon: DevicePhoneMobileIcon, roles: OPS },
       // PH Setter Playbook — the outbound-setter console. Admin + super_admin
       // (matches R&D); admins with a closer row see it through the lens.
       { name: "PH Setters", path: "/admin/ph-setters", icon: PhoneArrowUpRightIcon, roles: ADMIN },
@@ -186,11 +192,6 @@ const navGroups: NavGroup[] = [
       { name: "Funder Contacts", path: "/admin/funder-contacts", icon: UserGroupIcon, roles: ADMIN },
       { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
       { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
-      // Text Messages — the shared company SMS line (JMP.chat), two-way. Sits
-      // next to Comms because they're the two merchant-conversation surfaces;
-      // OPS + in the closer lens, the same audience as Setter Performance. The
-      // ops half of it lives under System → Text Message Administration.
-      { name: "Text Messages", path: "/admin/text-messages", icon: DevicePhoneMobileIcon, roles: OPS },
       { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
       { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
       { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
