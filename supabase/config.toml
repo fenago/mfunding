@@ -423,15 +423,27 @@ verify_jwt = true
 # carrier call happens here. verify_jwt = true PLUS an in-code staff role check
 # (closer/employee/admin/super_admin) — there is deliberately NO cron/shared-secret
 # path, because nothing automated should be able to text a merchant from a consumer
-# line. Guards, all fail-closed and all keyed on the DESTINATION NUMBER: refusal
-# against public.sms_opt_outs (the phone-keyed suppression list, and the only record
-# of an opt-out from a number with no customer row) + customers.do_not_contact +
-# the GHL contact's dnd/dndSettings.SMS; rate caps at three scopes (per destination /
-# per user / line-wide); and the "loan" compliance gate. Customers are matched on the
-# LAST 10 DIGITS, same rule as sms_messages_link_customer() — a literal match let a
-# do_not_contact merchant through whose phone was stored with punctuation.
-# customer_id is advisory: never written (the trigger resolves linkage from the
-# phone), never decides suppression, refused if it contradicts the number.
-# One message per call — no broadcast form exists.
+# line. Guards, all fail-closed and all keyed on the DESTINATION NUMBER: one call to
+# public.sms_suppression_check(), which consults BOTH the phone-keyed sms_opt_outs
+# list AND the person-keyed customers.do_not_contact flag (neither is a superset:
+# the first is the only record for a number with no customer row, the second the
+# only one that catches a merchant who opted out from a different number) and
+# compares primary + additional_phones in canonical form; plus the GHL contact's
+# dnd/dndSettings.SMS; rate caps at three scopes (per destination / per user /
+# line-wide); and the "loan" compliance gate. Phone identity is the DB's job —
+# hand-rolled literal matching here once let a do_not_contact merchant through
+# whose phone was stored with punctuation. customer_id is advisory: never written
+# (the trigger resolves linkage from the phone), never decides suppression, refused
+# if it contradicts the number. One message per call — no broadcast form exists.
 [functions.sms-send]
+verify_jwt = true
+
+# jmp-command: queues ONE read-only command to the JMP/Cheogram ACCOUNT BOT by
+# inserting a single public.jmp_bot_messages row (status 'queued'); the droplet
+# bridge's bot pump relays it to the bare JID cheogram.com and mirrors the reply.
+# verify_jwt = true PLUS an in-code SUPER_ADMIN check — no cron/shared-secret path
+# (human-only console). SAFETY: an exact-match allowlist of six READ-ONLY commands
+# (info / cdrs / transactions / plan settings / referral codes / sims); billing and
+# account-changing commands are refused and never queued.
+[functions.jmp-command]
 verify_jwt = true
