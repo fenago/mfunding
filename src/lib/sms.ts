@@ -26,11 +26,34 @@ export interface SmsMessage {
   sent_at: string | null;
 }
 
-/** How a merchant reads as a name once their customer row resolves. */
+/** How a merchant reads as a name once their customer row resolves.
+ *  A merchant can have BOTH a business name ("Acme Corp") and a person name
+ *  ("Khalil Lyons"); the inbox shows both when both exist. `label` is the
+ *  combined string used for the search filter and the single-line fallback. */
 export interface SmsContact {
   customerId: string | null;
+  business: string | null;
+  person: string | null;
   label: string;
   doNotContact: boolean;
+}
+
+/** Split a customer row into its business and person names, plus a combined
+ *  `label` for search / single-line display. Both null → "Unnamed contact". */
+export function customerNames(c: {
+  business_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+}): { business: string | null; person: string | null; label: string } {
+  const business = c.business_name?.trim() || null;
+  const person =
+    [c.first_name, c.last_name]
+      .map((x) => x?.trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim() || null;
+  const label = [business, person].filter(Boolean).join(" · ") || "Unnamed contact";
+  return { business, person, label };
 }
 
 /** Chip styling per delivery status. Failed is the only red — it's the only one

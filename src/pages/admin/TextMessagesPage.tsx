@@ -35,11 +35,13 @@ import {
   prettyPhone,
   phoneVariants,
   shortWhen,
+  customerNames,
   STATUS_CHIP,
   STATUS_LABEL,
   type SmsContact,
   type SmsMessage,
 } from "@/lib/sms";
+import { loadActiveSmsLines, defaultLine, type SmsLine } from "@/lib/smsLines";
 
 const SELECT =
   "id,direction,phone,body,media_url,status,error,customer_id,created_by,created_at,sent_at";
@@ -85,6 +87,10 @@ export default function TextMessagesPage() {
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // Which company number we send FROM. Architected for several; falls back to the
+  // one known JMP line if sms_lines isn't populated yet (see loadActiveSmsLines).
+  const [lines, setLines] = useState<SmsLine[]>([]);
+  const [lineId, setLineId] = useState<string | null>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
 
   // ── Load ──────────────────────────────────────────────────────────────────
@@ -109,6 +115,19 @@ export default function TextMessagesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Load the sending lines once. Default to the flagged/first line.
+  useEffect(() => {
+    let cancelled = false;
+    void loadActiveSmsLines().then((ls) => {
+      if (cancelled) return;
+      setLines(ls);
+      setLineId((prev) => prev ?? defaultLine(ls).id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Realtime, with a poll behind it. `live` drives both the poll interval and
   // the badge in the header, so the operator always knows which one is running.
@@ -181,9 +200,12 @@ export default function TextMessagesPage() {
         if (!m.customer_id) continue;
         const c = byId.get(m.customer_id);
         if (!c || next[m.phone]) continue;
+        const nm = customerNames(c);
         next[m.phone] = {
           customerId: m.customer_id,
-          label: nameOf(c),
+          business: nm.business,
+          person: nm.person,
+          label: nm.label,
           doNotContact: !!c.do_not_contact,
         };
       }
@@ -205,7 +227,14 @@ export default function TextMessagesPage() {
         for (const p of unresolved) {
           const c = byDigits.get(p.replace(/\D/g, "").slice(-10));
           if (!c) continue;
-          next[p] = { customerId: c.id, label: nameOf(c), doNotContact: !!c.do_not_contact };
+          const nm = customerNames(c);
+          next[p] = {
+            customerId: c.id,
+            business: nm.business,
+            person: nm.person,
+            label: nm.label,
+            doNotContact: !!c.do_not_contact,
+          };
         }
       }
       if (!cancelled) setContacts(next);
@@ -228,6 +257,10 @@ export default function TextMessagesPage() {
     [conversations, activePhone],
   );
   const activeContact = activePhone ? contacts[activePhone] : undefined;
+  const selectedLine = useMemo(
+    () => lines.find((l) => l.id === lineId) ?? lines[0],
+    [lines, lineId],
+  );
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ block: "end" });
@@ -258,6 +291,9 @@ export default function TextMessagesPage() {
           to,
           body: text,
           ...(activeContact?.customerId ? { customer_id: activeContact.customerId } : {}),
+          // Which company number to send FROM. Only a real sms_lines row has an
+          // id; the hardcoded fallback line sends without one (single-line path).
+          ...(selectedLine?.id ? { line_id: selectedLine.id } : {}),
         },
       });
       if (error) {
@@ -390,7 +426,8 @@ export default function TextMessagesPage() {
             {draftPhone && (
               <ConversationRow
                 phone={draftPhone}
-                label={contacts[draftPhone]?.label}
+                business={contacts[draftPhone]?.business}
+                person={contacts[draftPhone]?.person}
                 preview="New message — nothing sent yet"
                 when=""
                 active
@@ -412,7 +449,8 @@ export default function TextMessagesPage() {
                 <ConversationRow
                   key={c.phone}
                   phone={c.phone}
-                  label={contacts[c.phone]?.label}
+                  business={contacts[c.phone]?.business}
+                  person={contacts[c.phone]?.person}
                   dnc={contacts[c.phone]?.doNotContact}
                   preview={
                     (c.last.direction === "outbound" ? "You: " : "") +
@@ -440,19 +478,28 @@ export default function TextMessagesPage() {
             </div>
           ) : (
             <>
-              <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex flex-wrap items-center gap-2">
-                <span className="font-bold text-gray-900 dark:text-white">
-                  {activeContact?.label ?? prettyPhone(activePhone)}
-                </span>
-                {activeContact?.label && (
-                  <span className="text-xs text-gray-400">{prettyPhone(activePhone)}</span>
-                )}
-                {activeContact?.doNotContact && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
-                    <NoSymbolIcon className="w-3.5 h-3.5" /> do-not-contact
-                  </span>
-                )}
-                <span className="text-xs text-gray-400 ml-auto">
+              <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex flex-wrap items-start gap-2">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold text-gray-900 dark:text-white">
+                      {activeContact?.business || activeContact?.person || prettyPhone(activePhone)}
+                    </span>
+                    {activeContact?.doNotContact && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                        <NoSymbolIcon className="w-3.5 h-3.5" /> do-not-contact
+                      </span>
+                    )}
+                  </div>
+                  {activeContact?.business && activeContact?.person && (
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">
+                      {activeContact.person}
+                    </span>
+                  )}
+                  {(activeContact?.business || activeContact?.person) && (
+                    <span className="block text-xs text-gray-400">{prettyPhone(activePhone)}</span>
+                  )}
+                </div>
+                <span className="text-xs text-gray-400 ml-auto shrink-0">
                   {activeThread.length} message{activeThread.length === 1 ? "" : "s"}
                 </span>
               </div>
@@ -473,6 +520,29 @@ export default function TextMessagesPage() {
                   <p className="mb-2 text-sm text-red-600 dark:text-red-400 flex items-start gap-1.5">
                     <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" /> {sendError}
                   </p>
+                )}
+                {selectedLine && (
+                  <div className="mb-2 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                    <span className="shrink-0">From</span>
+                    {lines.length > 1 ? (
+                      <select
+                        value={lineId ?? ""}
+                        onChange={(e) => setLineId(e.target.value || null)}
+                        title="The company number this text is sent from"
+                        className="text-xs px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white"
+                      >
+                        {lines.map((l) => (
+                          <option key={l.id ?? l.phone} value={l.id ?? ""}>
+                            {prettyPhone(l.phone)} · {l.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="font-semibold text-gray-700 dark:text-gray-200">
+                        {prettyPhone(selectedLine.phone)} · {selectedLine.label}
+                      </span>
+                    )}
+                  </div>
                 )}
                 <div className="flex gap-2 items-end">
                   <textarea
@@ -496,7 +566,8 @@ export default function TextMessagesPage() {
                 </div>
                 <div className="mt-1.5 flex items-center gap-2 text-[11px] text-gray-400">
                   <span>
-                    ⌘/Ctrl + Enter sends. Goes to {prettyPhone(activePhone)} from the company line.
+                    ⌘/Ctrl + Enter sends. Goes to {prettyPhone(activePhone)}
+                    {selectedLine ? ` from ${prettyPhone(selectedLine.phone)}` : " from the company line"}.
                   </span>
                   <span
                     className={`ml-auto tabular-nums ${body.length > MAX_CHARS ? "text-red-600 dark:text-red-400 font-semibold" : ""}`}
@@ -513,21 +584,10 @@ export default function TextMessagesPage() {
   );
 }
 
-function nameOf(c: {
-  business_name?: string | null;
-  first_name?: string | null;
-  last_name?: string | null;
-}): string {
-  return (
-    c.business_name?.trim() ||
-    [c.first_name, c.last_name].filter(Boolean).join(" ").trim() ||
-    "Unnamed contact"
-  );
-}
-
 function ConversationRow({
   phone,
-  label,
+  business,
+  person,
   dnc,
   preview,
   when,
@@ -536,7 +596,8 @@ function ConversationRow({
   onClick,
 }: {
   phone: string;
-  label?: string;
+  business?: string | null;
+  person?: string | null;
   dnc?: boolean;
   preview: string;
   when: string;
@@ -544,6 +605,11 @@ function ConversationRow({
   active: boolean;
   onClick: () => void;
 }) {
+  const primary = business || person || prettyPhone(phone);
+  const hasName = !!(business || person);
+  // Show the person as a second line only when the business is the primary — so
+  // "Acme Corp" is the headline and "Khalil Lyons" sits under it.
+  const secondaryPerson = business && person ? person : null;
   return (
     <button
       onClick={onClick}
@@ -553,11 +619,16 @@ function ConversationRow({
     >
       <div className="flex items-center gap-2">
         <span className="font-semibold text-sm text-gray-900 dark:text-white truncate">
-          {label ?? prettyPhone(phone)}
+          {primary}
         </span>
         {dnc && <NoSymbolIcon className="w-3.5 h-3.5 text-red-500 shrink-0" />}
         <span className="text-[11px] text-gray-400 ml-auto shrink-0">{when}</span>
       </div>
+      {secondaryPerson && (
+        <span className="block text-xs text-gray-600 dark:text-gray-300 truncate">
+          {secondaryPerson}
+        </span>
+      )}
       <div className="flex items-center gap-1.5">
         <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{preview || "—"}</span>
         {failed && (
@@ -566,7 +637,7 @@ function ConversationRow({
           </span>
         )}
       </div>
-      {label && <span className="block text-[11px] text-gray-400">{prettyPhone(phone)}</span>}
+      {hasName && <span className="block text-[11px] text-gray-400">{prettyPhone(phone)}</span>}
     </button>
   );
 }

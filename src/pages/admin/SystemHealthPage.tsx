@@ -9,6 +9,14 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { getPlaidHealth, type PlaidHealth } from "@/services/plaidStatusService";
+import {
+  loadSmsHealth,
+  verdictInbound,
+  verdictOutbound,
+  worstTone,
+  type Health as SmsHealth,
+  type Tone as SmsTone,
+} from "@/lib/smsHealth";
 
 // ── Types (mirror the live DB contract) ──────────────────────────────────────
 type Status = "up" | "degraded" | "down";
@@ -257,6 +265,92 @@ function PlaidHealthCard({ health, error }: { health: PlaidHealth | null; error:
   );
 }
 
+// ── SMS bridge card ─────────────────────────────────────────────────────────
+// The JMP.chat line has no system_health_state row — its health is inferred from
+// sms_messages (last inbound went stale = receive path down; outbound stuck in
+// the queue = send path down). Verdicts + thresholds come from @/lib/smsHealth so
+// this card and the Text Message Administration page never disagree. UNREADABLE
+// renders as "unknown" (grey), never as a green tick.
+const SMS_TONE_TO_STATUS: Record<SmsTone, Status | null> = {
+  ok: "up",
+  warn: "degraded",
+  bad: "down",
+  unknown: null,
+};
+const SMS_ROW_COLOR: Record<SmsTone, string> = {
+  ok: "text-emerald-600 dark:text-emerald-400",
+  warn: "text-amber-600 dark:text-amber-400",
+  bad: "text-red-600 dark:text-red-400",
+  unknown: "text-gray-500 dark:text-gray-400",
+};
+
+function SmsBridgeCard({ health }: { health: SmsHealth | null }) {
+  if (!health) {
+    return (
+      <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+        <h2 className="font-bold text-gray-900 dark:text-white mb-1">SMS bridge (JMP.chat)</h2>
+        <p className="text-sm text-gray-400">Checking the SMS bridge…</p>
+      </div>
+    );
+  }
+  const inbound = verdictInbound(health);
+  const outbound = verdictOutbound(health);
+  const roll = worstTone(inbound.tone, outbound.tone);
+  const pill = SMS_TONE_TO_STATUS[roll];
+  const rows = [
+    { title: "Receiving (inbound)", v: inbound },
+    { title: "Sending (outbound)", v: outbound },
+  ];
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-bold text-gray-900 dark:text-white">SMS bridge (JMP.chat)</h2>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            Company text line, bridged over XMPP by a droplet — it fails silently, so status is
+            inferred from message flow.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-wide ${
+              pill
+                ? PILL[pill]
+                : "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300"
+            }`}
+          >
+            {pill === "up" ? "healthy" : pill === "degraded" ? "attention" : pill === "down" ? "down" : "unknown"}
+          </span>
+          <a
+            href="/admin/text-messages/admin"
+            className="text-xs text-ocean-blue hover:underline whitespace-nowrap"
+          >
+            Open SMS admin →
+          </a>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {rows.map(({ title, v }) => (
+          <div key={title} className="rounded-lg border border-gray-100 dark:border-gray-700 p-3">
+            <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">{title}</p>
+            <p className={`flex items-start gap-2 font-semibold text-sm ${SMS_ROW_COLOR[v.tone]}`}>
+              {v.tone === "ok" ? (
+                <CheckCircleIcon className="w-5 h-5 shrink-0" />
+              ) : (
+                <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+              )}
+              {v.headline}
+            </p>
+            {v.detail && (
+              <p className="mt-1 text-xs text-gray-600 dark:text-gray-400 pl-7">{v.detail}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Status colors ─────────────────────────────────────────────────────────────
 const PILL: Record<Status, string> = {
   up: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
@@ -312,6 +406,7 @@ export default function SystemHealthPage() {
   const [runMsg, setRunMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [plaid, setPlaid] = useState<PlaidHealth | null>(null);
   const [plaidError, setPlaidError] = useState<string | null>(null);
+  const [smsHealth, setSmsHealth] = useState<SmsHealth | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -320,6 +415,9 @@ export default function SystemHealthPage() {
     getPlaidHealth()
       .then((h) => { setPlaid(h); setPlaidError(null); })
       .catch((e: unknown) => { setPlaid(null); setPlaidError(e instanceof Error ? e.message : String(e)); });
+    // SMS bridge health is derived from sms_messages via the shared @/lib/smsHealth
+    // verdicts (same source of truth as the Text Message Administration page).
+    loadSmsHealth(supabase).then(setSmsHealth).catch(() => setSmsHealth(null));
     const sevenDaysAgo = new Date(Date.now() - WINDOW_MS["7d"]).toISOString();
     const [stateRes, checkRes, incidentRes] = await Promise.all([
       supabase
@@ -528,6 +626,9 @@ export default function SystemHealthPage() {
           })}
         </div>
       )}
+
+      {/* ── SMS bridge (JMP.chat) ────────────────────────────────────────────── */}
+      <SmsBridgeCard health={smsHealth} />
 
       {/* ── Plaid integration detail ─────────────────────────────────────────── */}
       <PlaidHealthCard health={plaid} error={plaidError} />

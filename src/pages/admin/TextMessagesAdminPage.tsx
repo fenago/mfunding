@@ -12,7 +12,7 @@
 //
 // UNREADABLE ≠ HEALTHY: every read that fails renders as an explicit "couldn't
 // read" state, never as a zero or a green tick.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   Cog6ToothIcon,
@@ -23,6 +23,8 @@ import {
   ArrowTopRightOnSquareIcon,
   NoSymbolIcon,
   ChatBubbleLeftRightIcon,
+  ShieldCheckIcon,
+  PhoneArrowUpRightIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import {
@@ -35,30 +37,46 @@ import {
   type SmsMessage,
   type SmsStatus,
 } from "@/lib/sms";
+import {
+  ALL_STATUSES,
+  loadSmsHealth,
+  verdictInbound,
+  verdictOutbound,
+  type Health,
+  type Tone,
+  type Verdict,
+} from "@/lib/smsHealth";
 
 const SELECT =
   "id,direction,phone,body,media_url,status,error,customer_id,created_by,created_at,sent_at";
 
-const ALL_STATUSES: SmsStatus[] = ["received", "queued", "sending", "sent", "failed"];
-/** Outbound sitting this long without leaving is a stuck queue, not slowness. */
-const STUCK_MINUTES = 5;
-/** No inbound for this long on a live consumer line is worth flagging. */
-const QUIET_HOURS = 24;
 const PAGE = 100;
 
-/** A number we tried to read. `value: undefined` means the read FAILED — which
- *  must never render as 0. */
-interface Reading<T> {
-  value: T | undefined;
-  error: string | null;
-}
-
-interface Health {
-  counts: Record<SmsStatus, Reading<number>>;
-  lastInbound: Reading<string | null>;
-  lastOutbound: Reading<string | null>;
-  oldestPending: Reading<string | null>;
-}
+/** The Cheogram bot command menu the owner uses to manage / pay / add numbers.
+ *  `subaccount` (add a new number) is the one that matters for this runbook. */
+const BOT_COMMANDS: { cmd: string; desc: string; highlight?: boolean }[] = [
+  { cmd: "info", desc: "Show account info" },
+  { cmd: "cdrs", desc: "Call logs" },
+  { cmd: "transactions", desc: "Show transactions" },
+  { cmd: "configure calls", desc: "Call routing settings" },
+  { cmd: "ogm", desc: "Record voicemail greeting" },
+  { cmd: "credit cards", desc: "Card settings" },
+  { cmd: "top up", desc: "Buy credit by card" },
+  { cmd: "alt top up", desc: "Bitcoin / Mail / Interac" },
+  { cmd: "plan settings", desc: "Manage plan / overage" },
+  { cmd: "referral codes", desc: "Referral codes" },
+  { cmd: "sims", desc: "(e)SIM details" },
+  {
+    cmd: "subaccount",
+    desc: "Create a new phone number linked to this balance",
+    highlight: true,
+  },
+  { cmd: "reset sip account", desc: "Reset SIP account" },
+  { cmd: "lnp", desc: "Port in a number" },
+  { cmd: "set-port-out-pin", desc: "Set port-out PIN" },
+  { cmd: "change jabber id", desc: "Change Jabber ID" },
+  { cmd: "register", desc: "Register" },
+];
 
 export default function TextMessagesAdminPage() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -89,41 +107,9 @@ export default function TextMessagesAdminPage() {
   // ── Health ────────────────────────────────────────────────────────────────
   const loadHealth = useCallback(async () => {
     setHealthLoading(true);
-    const counts = {} as Record<SmsStatus, Reading<number>>;
-    await Promise.all(
-      ALL_STATUSES.map(async (s) => {
-        const { count, error } = await supabase
-          .from("sms_messages")
-          .select("id", { count: "exact", head: true })
-          .eq("status", s);
-        counts[s] = { value: error ? undefined : (count ?? 0), error: error?.message ?? null };
-      }),
-    );
-
-    const newest = async (direction: SmsDirection): Promise<Reading<string | null>> => {
-      const { data, error } = await supabase
-        .from("sms_messages")
-        .select("created_at")
-        .eq("direction", direction)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (error) return { value: undefined, error: error.message };
-      return { value: data?.[0]?.created_at ?? null, error: null };
-    };
-
-    const oldestPending = await (async (): Promise<Reading<string | null>> => {
-      const { data, error } = await supabase
-        .from("sms_messages")
-        .select("created_at")
-        .in("status", ["queued", "sending"])
-        .order("created_at", { ascending: true })
-        .limit(1);
-      if (error) return { value: undefined, error: error.message };
-      return { value: data?.[0]?.created_at ?? null, error: null };
-    })();
-
-    const [lastInbound, lastOutbound] = await Promise.all([newest("inbound"), newest("outbound")]);
-    setHealth({ counts, lastInbound, lastOutbound, oldestPending });
+    // Verdict logic + thresholds live in @/lib/smsHealth so this page and the
+    // System Health page render the same answer from the same reads.
+    setHealth(await loadSmsHealth(supabase));
     setHealthLoading(false);
   }, []);
 
@@ -330,6 +316,191 @@ export default function TextMessagesAdminPage() {
           this number gets it carrier-filtered within hours and puts us back on an A2P registration
           we don't have. Bulk outreach stays on the registered channels.
         </p>
+      </section>
+
+      {/* ── TCPA guardrails (what the system actually enforces) ── */}
+      <section className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+        <h2 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+          <ShieldCheckIcon className="w-5 h-5 text-mint-green" /> TCPA guardrails
+        </h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-4">
+          Every control the send path <strong>actually enforces</strong> — read from the{" "}
+          <code>sms-send</code> edge function and the SMS migrations, not a wish-list. The theme
+          throughout: <strong>an unreadable check refuses</strong>, it never passes.
+        </p>
+
+        <div className="space-y-3 text-sm text-gray-700 dark:text-gray-300">
+          <Guard label="Inbound opt-out → auto-suppress">
+            An inbound <strong>STOP / STOPALL / UNSUBSCRIBE / CANCEL / QUIT / END / OPTOUT</strong>{" "}
+            (whole message), a leading <strong>STOP/UNSUBSCRIBE/OPTOUT/REMOVE</strong>, or a phrase
+            like “remove me”, “take me off”, “do not text”, “stop texting” trips a DB trigger that
+            writes <code>sms_opt_outs</code> for the number{" "}
+            <strong>whether or not it matches a customer</strong>, and additionally flips{" "}
+            <code>customers.do_not_contact</code> + logs to <code>activity_log</code> when it does.
+            The trigger <strong>does not swallow errors</strong> — a failed opt-out fails the insert
+            so the bridge retries.{" "}
+            <span className="text-gray-500 dark:text-gray-400">
+              (Word-boundary matching on purpose: “Stopped by your office” and “End of month…” do{" "}
+              <strong>not</strong> misfire.)
+            </span>
+          </Guard>
+
+          <Guard label="Send-time suppression gate — checks BOTH lists, fails closed">
+            Every send calls <code>sms_suppression_check()</code>, which consults{" "}
+            <strong>both</strong> <code>sms_opt_outs</code> (phone-level, the only record for the
+            purchased/UCC book) <strong>and</strong> <code>customers.do_not_contact</code>{" "}
+            (person-level) across the <strong>primary phone AND every additional_phones entry</strong>
+            , all in canonical E.164. An unparseable number <strong>raises</strong> rather than
+            reporting “clear”; any read error <strong>refuses the send</strong>. GHL contact DND is
+            also read per send and refuses on an unreadable answer (a genuinely deleted contact is
+            the only “no record, proceed” case).
+          </Guard>
+
+          <Guard label="Rate caps — five scopes, each fails closed">
+            <span className="flex flex-wrap gap-1.5 mt-1">
+              <Cap>this number: 4 / 5 min</Cap>
+              <Cap>you: 8 / min</Cap>
+              <Cap>you: 60 / hour</Cap>
+              <Cap>the line: 30 / hour</Cap>
+              <Cap>the line: 200 / day</Cap>
+            </span>
+            <span className="block mt-1.5">
+              Counted by rows over <code>created_at</code>; an <strong>uncountable</strong> cap is
+              treated as over-limit and refuses. A row-immutability trigger freezes{" "}
+              <code>created_at/direction/phone/body/created_by</code> so the caps can't be silently
+              defeated by rewriting history.
+            </span>
+          </Guard>
+
+          <Guard label="One message per call · no bulk">
+            The function accepts <strong>a single message</strong> — there is deliberately no array
+            form and no loop. It is a consumer line; a blast gets it carrier-filtered.
+          </Guard>
+
+          <Guard label="MCA compliance + valid destination">
+            A body containing the word <strong>“loan”</strong> is refused (an MCA is a purchase of
+            future receivables). Destinations must be a valid <strong>NANP E.164</strong> number;
+            structurally impossible / non-US-Canada numbers are rejected before anything is queued.
+          </Guard>
+
+          <Guard label="Auth — a real staff session only">
+            <code>verify_jwt</code> plus an in-code role check (
+            <code>closer / employee / admin / super_admin</code>). A <code>service_role</code> bearer
+            is <strong>rejected</strong> — nothing automated can text a merchant from this line.
+          </Guard>
+
+          <Guard label="The ONLY automatic unlock: an inbound START">
+            SMS suppression lifts on its own <strong>only</strong> when the merchant texts an exact{" "}
+            <strong>START / UNSTOP / YES</strong>. That clears <code>do_not_contact</code>{" "}
+            <strong>only if</strong> the reason was our own SMS STOP — a manual DND, merge, or
+            litigation flag stays put. Opt-in matching is exact on purpose; a loose match would
+            resurrect someone who asked us to stop.
+          </Guard>
+
+          <Guard label="The ONLY manual unlock: the super-admin override below">
+            The <strong>“Re-enable texting”</strong> control on this page is the sole manual path. It
+            is <strong>super-admin only</strong> (enforced inside the RPC), clears{" "}
+            <strong>both</strong> stores the gate checks, and is <strong>written to the audit
+            trail</strong> in <code>activity_log</code>.
+          </Guard>
+        </div>
+      </section>
+
+      {/* ── Adding another phone number (runbook) ── */}
+      <section className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+        <h2 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+          <PhoneArrowUpRightIcon className="w-5 h-5 text-ocean-blue" /> Adding another phone number
+        </h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-4">
+          The line runs on <strong>JMP.chat</strong> (the SMS service) managed through{" "}
+          <strong>Cheogram</strong> (the XMPP client / gateway bot). Numbers are added by texting the
+          Cheogram bot, then registered here as a new <code>sms_lines</code> row.
+        </p>
+
+        <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm mb-4">
+          <RefItem label="Account JID" value={JMP_ACCOUNT.jid} />
+          <RefItem label="Current number" value={JMP_ACCOUNT.number} />
+          <RefItem label="Client / gateway" value="Cheogram" />
+          <div>
+            <dt className="text-xs text-gray-400 uppercase tracking-wide">Support</dt>
+            <dd className="mt-0.5 font-mono text-gray-900 dark:text-white break-all">
+              xmpp:+14169938000@cheogram.com
+            </dd>
+          </div>
+        </dl>
+
+        <p className="text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 mb-4">
+          <strong>Credentials are not shown here.</strong> The JMP/XMPP login and bridge secrets live
+          in the droplet’s <code>.env</code> and the Supabase vault — read them there, never paste
+          them into a page or a message.
+        </p>
+
+        <div className="mb-4">
+          <h3 className="text-xs font-bold uppercase tracking-wide text-gray-400 mb-2">
+            Cheogram bot commands (text these to the bot to manage the account)
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+            {BOT_COMMANDS.map((c) => (
+              <div key={c.cmd} className="flex gap-2">
+                <code
+                  className={`shrink-0 px-1.5 py-0.5 rounded text-[12px] ${
+                    c.highlight
+                      ? "bg-mint-green/20 text-emerald-700 dark:text-emerald-300 font-bold"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200"
+                  }`}
+                >
+                  {c.cmd}
+                </code>
+                <span
+                  className={
+                    c.highlight
+                      ? "text-gray-900 dark:text-white font-semibold"
+                      : "text-gray-600 dark:text-gray-300"
+                  }
+                >
+                  {c.desc}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <h3 className="text-xs font-bold uppercase tracking-wide text-gray-400 mb-2">
+            End-to-end: add a number
+          </h3>
+          <ol className="list-decimal list-inside space-y-1.5 text-sm text-gray-700 dark:text-gray-300">
+            <li>
+              Text <code>subaccount</code> to the JMP bot to{" "}
+              <strong>create a new number linked to this balance</strong>, and provision it.
+            </li>
+            <li>
+              A super-admin adds an <code>sms_lines</code> row — <strong>label + phone + jid</strong>{" "}
+              (and mark <code>is_default</code> if it should be the primary send-from).
+            </li>
+            <li>
+              Put the new number’s credentials on the droplet’s <code>.env</code>.
+            </li>
+            <li>
+              <strong>Restart the bridge</strong> so it holds the new XMPP session.
+            </li>
+            <li>
+              It then appears as a <strong>selectable line</strong> in the inbox compose row —
+              no code change.
+            </li>
+          </ol>
+          <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+            Status page:{" "}
+            <a
+              href={JMP_ACCOUNT.statusUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 font-mono text-ocean-blue hover:underline"
+            >
+              status.jmp.chat <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
+            </a>
+          </p>
+        </div>
       </section>
 
       {/* ── Opt-out audit ── */}
@@ -603,84 +774,7 @@ export default function TextMessagesAdminPage() {
   );
 }
 
-// ── Verdict plumbing ────────────────────────────────────────────────────────
-
-type Tone = "ok" | "warn" | "bad" | "unknown";
-interface Verdict {
-  tone: Tone;
-  headline: string;
-  detail: string;
-}
-
-function hoursSince(iso: string): number {
-  return (Date.now() - new Date(iso).getTime()) / 3_600_000;
-}
-
-function verdictInbound(h: Health | null): Verdict {
-  if (!h) return { tone: "unknown", headline: "Not checked yet", detail: "" };
-  if (h.lastInbound.error)
-    return {
-      tone: "unknown",
-      headline: "Couldn't read the inbound log",
-      detail: `This is NOT a healthy verdict — the check itself failed. ${h.lastInbound.error}`,
-    };
-  const last = h.lastInbound.value;
-  if (!last)
-    return {
-      tone: "unknown",
-      headline: "No inbound message has ever been recorded",
-      detail:
-        "Either nobody has texted the line yet, or the bridge has never successfully delivered a message inbound. Send a test text to the number.",
-    };
-  const hrs = hoursSince(last);
-  const when = new Date(last).toLocaleString();
-  if (hrs > QUIET_HOURS)
-    return {
-      tone: "warn",
-      headline: `No inbound for ${Math.floor(hrs)}h`,
-      detail: `Last received message was ${when}. On a live line that usually means the droplet bridge is down — check ${JMP_ACCOUNT.statusUrl} and the bridge process.`,
-    };
-  return { tone: "ok", headline: `Last inbound ${Math.round(hrs * 60)} min ago`, detail: when };
-}
-
-function verdictOutbound(h: Health | null): Verdict {
-  if (!h) return { tone: "unknown", headline: "Not checked yet", detail: "" };
-  if (h.oldestPending.error || h.lastOutbound.error)
-    return {
-      tone: "unknown",
-      headline: "Couldn't read the outbound queue",
-      detail: `This is NOT a healthy verdict — the check itself failed. ${h.oldestPending.error ?? h.lastOutbound.error}`,
-    };
-  const pending = h.oldestPending.value;
-  if (pending) {
-    const mins = (Date.now() - new Date(pending).getTime()) / 60_000;
-    if (mins > STUCK_MINUTES)
-      return {
-        tone: "bad",
-        headline: `Queue stuck — oldest unsent message is ${Math.floor(mins)} min old`,
-        detail:
-          "Messages are being accepted but never leaving. The send side of the bridge is down; nothing queued has reached a merchant.",
-      };
-    return {
-      tone: "ok",
-      headline: "Sending normally",
-      detail: `${Math.round(mins)} min in the queue — within the normal window.`,
-    };
-  }
-  const last = h.lastOutbound.value;
-  if (!last)
-    return {
-      tone: "unknown",
-      headline: "Nothing has ever been sent from this line",
-      detail: "No outbound message on record yet.",
-    };
-  const failed = h.counts.failed.value ?? 0;
-  return {
-    tone: failed > 0 ? "warn" : "ok",
-    headline: failed > 0 ? `Queue clear, but ${failed} message(s) have failed` : "Queue clear",
-    detail: `Last outbound ${new Date(last).toLocaleString()}.${failed > 0 ? " Filter the log by status = failed to see why." : ""}`,
-  };
-}
+// ── Verdict styling (verdict logic itself lives in @/lib/smsHealth) ──────────
 
 const TONE_STYLE: Record<Tone, { box: string; icon: typeof CheckCircleIcon; color: string }> = {
   ok: {
@@ -716,6 +810,25 @@ function VerdictCard({ title, v }: { title: string; v: Verdict }) {
       </p>
       {v.detail && <p className="mt-1 text-xs text-gray-600 dark:text-gray-400 pl-7">{v.detail}</p>}
     </div>
+  );
+}
+
+function Guard({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-gray-100 dark:border-gray-700 p-3">
+      <p className="flex items-start gap-2 font-semibold text-gray-900 dark:text-white">
+        <CheckCircleIcon className="w-4 h-4 shrink-0 mt-0.5 text-mint-green" /> {label}
+      </p>
+      <div className="mt-1 pl-6 text-sm text-gray-600 dark:text-gray-300">{children}</div>
+    </div>
+  );
+}
+
+function Cap({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+      {children}
+    </span>
   );
 }
 
