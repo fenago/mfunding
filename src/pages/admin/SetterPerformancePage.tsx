@@ -75,6 +75,11 @@ import { useUserProfile } from "@/context/UserProfileContext";
 import { DEAL_STAGES, type DealStatus } from "@/types/deals";
 import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
 import DialCeilingPanel, { type ProductiveSetterRow } from "@/components/admin/DialCeilingPanel";
+import {
+  BenchmarkChip, BenchmarkTile, BenchmarkLegend, IndustryComparisonCard,
+  type BenchmarkValues,
+} from "@/components/admin/IndustryBenchmarks";
+import { INDUSTRY_BENCHMARKS, type BenchmarkId } from "@/data/industryBenchmarks";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** One row of public.v_wavv_outbound_setter_calls — an OUTBOUND call already
@@ -448,6 +453,12 @@ function pipelineStagesOf(c: PipeCounts, targetPrefix: string): FunnelStage[] {
       help: "Funded: a funded_at stamp, or a current status of Funded",
       count: c.funded, stepLabel: "of applications", stepShort: "of apps",
       stepPct: pct(c.funded, c.appsSent), targetKey: key("fund_rate_pct"),
+      // Both lead-source tabs are VENDOR-DELIVERED warm leads (a live transfer
+      // or a real-time lead the merchant asked for), so the app→fund band that
+      // applies here is the warm one — 20–30% — not the 8–15% cold band. A warm
+      // source converting like a cold dial is exactly the finding this tab is
+      // for, and holding it to the cold band would hide it.
+      benchmark: { id: "app_to_fund_warm", basis: "step" },
     },
   ];
 }
@@ -509,6 +520,15 @@ const TOOLTIP_STYLE = {
 const POSITIVE_DISPOSITIONS = [
   "Full App + Statements", "Full Application", "Appointment Set", "Interested", "Callback",
 ];
+
+/** The subset of positives that is actually an APPLICATION — the numerator for
+ *  the industry "app rate per conversation" band (2–4%).
+ *
+ *  Deliberately NOT all five positives. "Interested", "Callback" and even
+ *  "Appointment Set" are wins, but none of them is an application, and counting
+ *  them against a band that means applications would flatter the comparison by
+ *  a multiple. Same string discipline as the list above — exact WAVV values. */
+const APPLICATION_DISPOSITIONS = ["Full App + Statements", "Full Application"];
 
 // ── What counts as a real conversation ───────────────────────────────────────
 // NOT duration, and NOT WAVV's `human` flag. Both are unreliable here and the
@@ -685,6 +705,15 @@ interface FunnelStage {
   stepShort: string;
   stepPct: number | null;
   targetKey: string | null;
+  /** An INDUSTRY band pinned to this rung, and which of the stage's two
+   *  percentages it is actually comparable to:
+   *    "ofTotal" — the "% of dials / % of leads" line (share of stage 0)
+   *    "step"    — the conditional step rate in the chip
+   *  Attached only where the denominators genuinely match. The industry
+   *  cold-dial contact rate is a share of DIALS, so pinning it to the human
+   *  stage's step rate (which is a share of ANSWERS) would compare two
+   *  different things and call it a verdict. */
+  benchmark?: { id: BenchmarkId; basis: "ofTotal" | "step" } | null;
 }
 
 function funnelStagesOf(f: FunnelCounts): FunnelStage[] {
@@ -705,6 +734,9 @@ function funnelStagesOf(f: FunnelCounts): FunnelStage[] {
       help: "Answered, and nothing about the call says machine: outcome is not VOICEMAIL / NO_VOICEMAIL / NO_ANSWER / NO_CALLBACK, the setter did not disposition it 'Voice Message' or 'No Answer', and no 'Played voicemail' note. WAVV's own human flag is NOT used — it marks voicemails as human.",
       count: f.humans, stepLabel: "of answers were human", stepShort: "were human",
       stepPct: pct(f.humans, f.connects), targetKey: "human_rate_pct",
+      // The industry cold-dial CONTACT rate is humans as a share of DIALS,
+      // which is exactly this stage's "% of dials" line — not its step rate.
+      benchmark: { id: "contact_rate", basis: "ofTotal" },
     },
     {
       key: "conversations", label: "Conversations", short: "Conversations", help: CONVERSATION_HELP,
@@ -749,6 +781,12 @@ interface FunnelGroup {
 type TargetLookup = (key: string) => { target: KpiTarget | null; isDefault: boolean };
 
 const UNASSIGNED_FILTER = "__unassigned__";
+
+/** The shortest range from which a MONTHLY per-rep funding pace may be
+ *  extrapolated. The industry band is "4–8 funded a month"; scaling a single
+ *  day up by thirty to meet it would manufacture a verdict out of one deal, so
+ *  below this the comparison is withheld and the reason is printed. */
+const PACE_MIN_DAYS = 14;
 
 // ── Table chrome ─────────────────────────────────────────────────────────────
 // One set of classes for every table on the page. DaisyUI's table-sm/table-xs
@@ -2050,6 +2088,88 @@ export default function SetterPerformancePage() {
     [productiveDeals, range],
   );
 
+  /** Calls dispositioned as an actual APPLICATION — the numerator for the
+   *  industry app-per-conversation band, and shown next to it so the rate never
+   *  appears without the count behind it. */
+  const applicationDispositions = useMemo(
+    () => aggRows.reduce((n, r) => n + (r.disposition && APPLICATION_DISPOSITIONS.includes(r.disposition) ? 1 : 0), 0),
+    [aggRows],
+  );
+
+  /** How many days the active range covers, as a float. */
+  const rangeDays = useMemo(
+    () => Math.max((range.to.getTime() - range.from.getTime()) / 86_400_000, 0),
+    [range],
+  );
+
+  /** Funded advances per rep per 30 days — the shop's side of the "4–8 a month"
+   *  band. NULL on a short range ON PURPOSE: multiplying one day of funding by
+   *  thirty is not a monthly pace, it is a guess wearing a decimal point. The
+   *  page opens on TODAY, so this is null far more often than not, and the UI
+   *  says why instead of drawing a number nobody should act on. */
+  const repMonthlyPace = useMemo(() => {
+    if (!productiveRows || rangeDays < PACE_MIN_DAYS) return null;
+    const reps = productiveRows.filter((r) => r.setterId !== UNATTRIBUTED_OWNER);
+    if (reps.length === 0) return null;
+    const funded = reps.reduce((n, r) => n + r.funded, 0);
+    return funded / reps.length / (rangeDays / 30.4);
+  }, [productiveRows, rangeDays]);
+
+  /** WHY there is no pace, when there is none. An absence with a reason beats a
+   *  blank cell: "too short a range" and "the pipeline read failed" need
+   *  completely different responses from the reader. */
+  const paceUnavailableReason = useMemo((): string | null => {
+    if (repMonthlyPace !== null) return null;
+    if (!productiveRows) return "The pipeline side is unreadable this load — unknown, not zero.";
+    if (rangeDays < PACE_MIN_DAYS) {
+      const d = Math.round(rangeDays);
+      return `This range covers ${rangeDays < 1 ? "under a day" : `${d} day${d === 1 ? "" : "s"}`} — too short to read a monthly pace from. Widen it to 30 days to compare against the band.`;
+    }
+    return "No readable per-rep funding in this range, so there is nothing to compare — unknown, not zero.";
+  }, [repMonthlyPace, productiveRows, rangeDays]);
+
+  // ── INDUSTRY COMPARISON: the shop's side of the benchmarks ────────────────
+  // DISPLAY ONLY. Every value below is folded from rows the page has ALREADY
+  // loaded — no extra query, no book-wide scan. A value the loaded rows cannot
+  // support is `null`, which the chip draws grey and labels "no comparable
+  // number", never 0 and never a silently-substituted near-miss.
+  //
+  // The denominators are the whole point of this block, so each one is named:
+  //   • contact rate      = humans ÷ DIALS   (the industry band is per dial,
+  //                         not per answer — the page's own human_rate_pct is
+  //                         per answer and is a different metric)
+  //   • app / conversation= application dispositions ÷ conversations
+  //   • app → fund        = pipeline funded ÷ pipeline apps sent, both counted
+  //                         IN RANGE, which is a cohort mismatch stated in the
+  //                         UI: the deals funded this week are usually not the
+  //                         deals that applied this week.
+  //   • average advance   = amount_funded summed ÷ funded deals, from the SAME
+  //                         dealRows fold the Setters tab already uses.
+  const industryValues = useMemo((): BenchmarkValues => {
+    const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
+
+    // Average advance. dealRows null = UNREADABLE, which must stay null rather
+    // than collapsing to "$0 average".
+    let avgAdvance: number | null = null;
+    if (dealRows) {
+      let amount = 0, count = 0;
+      for (const d of dealRows) {
+        if (d.status !== "funded" || !inRange(d.funded_at, range.from, range.to)) continue;
+        count++;
+        amount += d.amount_funded ?? 0;
+      }
+      avgAdvance = count > 0 ? amount / count : null;
+    }
+
+    return {
+      contact_rate: pct(funnel.humans, funnel.dials),
+      app_per_conversation: pct(applicationDispositions, funnel.conversations),
+      app_to_fund_cold: productiveTotals ? pct(productiveTotals.funded, productiveTotals.appsSent) : null,
+      avg_advance: avgAdvance,
+      deals_per_rep_month: repMonthlyPace,
+    };
+  }, [applicationDispositions, funnel, dealRows, productiveTotals, range, repMonthlyPace]);
+
   // ── DISPOSITION REVIEW: real talks with no honest outcome ─────────────────
   // Built from the SAME aggRows every other WAVV tab folds — no extra call
   // query — so this list cannot drift from the funnel it is the exception list
@@ -2725,6 +2845,11 @@ export default function SetterPerformancePage() {
           productiveError={productiveError}
           productiveLoading={productiveLoading}
           productiveTruncated={productiveTruncated}
+          // Same rule as `productive`: the industry read is computed ONCE on
+          // this page and handed down, so the Funnel tab and this tab can never
+          // print two different per-rep paces.
+          repMonthlyPace={repMonthlyPace}
+          paceUnavailableReason={paceUnavailableReason}
         />
       ) : isSourceTab(tab) ? (
         <SourceFunnelPanel
@@ -2867,6 +2992,66 @@ export default function SetterPerformancePage() {
                     </>
                   )
                 )}
+
+                {/* ── HOW THE FUNNEL COMPARES TO THE INDUSTRY ──────────────
+                    The funnel above is measured; these are the outside bands
+                    it can be read against. They are a SECOND OPINION, not a
+                    target: nothing here recolours a KPI, and the palette is
+                    deliberately narrower (green/amber/grey, never red) so a
+                    rule of thumb is never mistaken for the owner's threshold.
+                    Every tile is folded from rows already loaded — no query
+                    was added to draw this. */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                      <ScaleIcon className="w-5 h-5 text-mint-green" /> This funnel vs the industry
+                    </h2>
+                    <BenchmarkLegend />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                    <BenchmarkTile
+                      id="contact_rate"
+                      value={industryValues.contact_rate ?? null}
+                      label="Contact rate (cold dial)"
+                      basis={`${funnel.humans.toLocaleString()} humans reached ÷ ${funnel.dials.toLocaleString()} dials. Per DIAL — not the per-answer human rate in the funnel above.`}
+                    />
+                    <BenchmarkTile
+                      id="app_per_conversation"
+                      value={industryValues.app_per_conversation ?? null}
+                      label="Applications per conversation"
+                      basis={`${applicationDispositions.toLocaleString()} call${applicationDispositions === 1 ? "" : "s"} dispositioned ${APPLICATION_DISPOSITIONS.join(" / ")} ÷ ${funnel.conversations.toLocaleString()} conversations.`}
+                      caveat={
+                        applicationDispositions === 0 && funnel.conversations > 0
+                          ? "No application disposition in range — an app taken and logged as something else scores zero here."
+                          : undefined
+                      }
+                    />
+                    <BenchmarkTile
+                      id="app_to_fund_cold"
+                      value={industryValues.app_to_fund_cold ?? null}
+                      label="Application → funded"
+                      basis={
+                        productiveTotals
+                          ? `${productiveTotals.funded.toLocaleString()} funded ÷ ${productiveTotals.appsSent.toLocaleString()} applications sent, both stamped in this range.`
+                          : "Pipeline read unavailable this load."
+                      }
+                      caveat="Different deals: what funded this range mostly applied earlier. Read it over a long range, never over a day."
+                    />
+                    <BenchmarkTile
+                      id="avg_advance"
+                      value={industryValues.avg_advance ?? null}
+                      label="Average advance"
+                      basis="Sum of amount_funded ÷ deals funded in this range."
+                      caveat={dealsError ? "Deals unreadable this load — unknown, not $0." : undefined}
+                    />
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    <b>The industry's #1 leak is the same as this shop's:</b>{" "}
+                    {INDUSTRY_BENCHMARKS.statements_leakage.band.toLowerCase()} — merchants who apply and then
+                    never send bank statements. That loss lands between the two middle tiles, and the deals
+                    sitting in it are worked from <b>Doc Review</b> and the Revenue Playbook, not from here.
+                  </p>
+                </div>
 
                 {/* ── Positive dispositions, call by call ── */}
                 <div
@@ -3144,8 +3329,45 @@ export default function SetterPerformancePage() {
                     </p>
                   </>
                 )}
+
+                {/* Rep economics, against the industry band. Per-rep MONTHLY
+                    pace cannot be honestly extrapolated from a short window, so
+                    on a short range the band is shown alone and the reason is
+                    printed rather than a scaled-up guess. */}
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 border-t border-base-300 pt-2">
+                  <span className="font-semibold text-gray-600 dark:text-gray-300">Rep economics:</span>
+                  <BenchmarkChip id="deals_per_rep_month" value={industryValues.deals_per_rep_month ?? null} />
+                  {repMonthlyPace === null ? (
+                    <span>{paceUnavailableReason}</span>
+                  ) : (
+                    <span>
+                      This floor is funding{" "}
+                      <b className="text-gray-700 dark:text-gray-200">{repMonthlyPace.toFixed(1)}</b> advances per rep
+                      per 30 days, across{" "}
+                      {(productiveRows ?? []).filter((r) => r.setterId !== UNATTRIBUTED_OWNER).length} rep
+                      {(productiveRows ?? []).filter((r) => r.setterId !== UNATTRIBUTED_OWNER).length === 1 ? "" : "s"}{" "}
+                      with work in range, scaled from {Math.round(rangeDays)} days.
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
+
+            {/* The full nine, folded away. Reference content collapses; the
+                measured work above stays open. */}
+            <IndustryComparisonCard
+              values={industryValues}
+              rangeLabel={RANGE_LABELS[rangeKey]}
+              basis={{
+                contact_rate: `${funnel.humans.toLocaleString()} humans ÷ ${funnel.dials.toLocaleString()} dials`,
+                app_per_conversation: `${applicationDispositions.toLocaleString()} app dispositions ÷ ${funnel.conversations.toLocaleString()} conversations`,
+                app_to_fund_cold: productiveTotals
+                  ? `${productiveTotals.funded.toLocaleString()} funded ÷ ${productiveTotals.appsSent.toLocaleString()} apps sent (in-range stamps, different deals)`
+                  : "pipeline unreadable",
+                avg_advance: "sum of amount_funded ÷ deals funded in range",
+                deals_per_rep_month: `funded per rep, scaled from ${Math.round(rangeDays)} days`,
+              }}
+            />
             </div>
           )}
 
@@ -3160,6 +3382,23 @@ export default function SetterPerformancePage() {
                         <UserGroupIcon className="w-5 h-5 text-mint-green" /> Per-setter scorecard
                       </h2>
                       <RagLegend />
+                    </div>
+                    {/* The two industry bands the PIPELINE half of this table
+                        can be read against. Both hang off the Funded column —
+                        the dialing half has no per-dial industry counterpart
+                        here, because Answer% and Human% are per-answer rates
+                        and the industry contact band is per dial (it is shown
+                        against the right denominator on the Funnel tab). */}
+                    <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-gray-400">
+                      <span className="font-semibold text-gray-600 dark:text-gray-300">Funded column vs industry:</span>
+                      <BenchmarkChip id="avg_advance" value={industryValues.avg_advance ?? null} />
+                      <BenchmarkChip id="deals_per_rep_month" value={industryValues.deals_per_rep_month ?? null} />
+                      <span>
+                        {industryValues.avg_advance
+                          ? <>Average advance this range is <b className="text-gray-600 dark:text-gray-300">{usd(Math.round(industryValues.avg_advance))}</b>.</>
+                          : <>No funded advance in this range to average — unknown, not $0.</>}
+                        {repMonthlyPace === null && rangeDays < PACE_MIN_DAYS && " Per-rep monthly pace needs a 14-day range or longer."}
+                      </span>
                     </div>
                     <p className="text-xs text-gray-400 mt-1">
                       Left half = dialing, attributed by the number dialed FROM. Right half = pipeline, from
@@ -4496,7 +4735,14 @@ function StageBars({
             const { target, isDefault } = s.targetKey ? targetFor(s.targetKey) : { target: null, isDefault: false };
             const rag = ragOf(s.stepPct, target);
             const widthPct = total > 0 ? Math.max((s.count / total) * 100, s.count > 0 ? 1.5 : 0) : 0;
-            const ofDials = total > 0 ? `${((s.count / total) * 100).toFixed(1)}% ${ofLabel}` : "—";
+            const sharePct = total > 0 ? (s.count / total) * 100 : null;
+            const ofDials = sharePct === null ? "—" : `${sharePct.toFixed(1)}% ${ofLabel}`;
+            // The industry chip goes next to whichever percentage it is
+            // actually comparable to — see FunnelStage.benchmark.
+            const bmValue = s.benchmark ? (s.benchmark.basis === "step" ? s.stepPct : sharePct) : null;
+            const bmChip = s.benchmark ? (
+              <BenchmarkChip id={s.benchmark.id} value={bmValue} compact={compact} />
+            ) : null;
             const bar = (
               <div className={`${compact ? "h-4" : "h-7"} w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden`}>
                 <div
@@ -4533,15 +4779,23 @@ function StageBars({
                     {countNode}
                   </div>
                   {bar}
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] text-gray-400 truncate">{ofDials}</span>
+                  <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                    {/* min-w-0 + an inner truncate: the chip must never be the
+                        thing the ellipsis eats. */}
+                    <span className="inline-flex items-center gap-1 min-w-0 text-[10px] text-gray-400">
+                      <span className="truncate">{ofDials}</span>
+                      {s.benchmark?.basis === "ofTotal" && bmChip}
+                    </span>
                     {i === 0 ? (
                       <span className="text-[10px] text-gray-400 shrink-0">start</span>
                     ) : (
-                      <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${RAG_CHIP[rag]}`}>
-                        <RagPct value={s.stepPct} target={target} digits={0} />
-                        <span className="opacity-70">{s.stepShort}</span>
-                        {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
+                      <span className="shrink-0 inline-flex items-center gap-1">
+                        <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${RAG_CHIP[rag]}`}>
+                          <RagPct value={s.stepPct} target={target} digits={0} />
+                          <span className="opacity-70">{s.stepShort}</span>
+                          {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
+                        </span>
+                        {s.benchmark?.basis === "step" && bmChip}
                       </span>
                     )}
                   </div>
@@ -4553,18 +4807,24 @@ function StageBars({
               <div key={s.key} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
                 <div className="w-full sm:w-52 shrink-0">
                   <div className="text-sm font-medium text-gray-900 dark:text-white" title={s.help}>{s.label}</div>
-                  <div className="text-xs text-gray-400">{ofDials}</div>
+                  <div className="text-xs text-gray-400 flex flex-wrap items-center gap-1.5">
+                    {ofDials}
+                    {s.benchmark?.basis === "ofTotal" && bmChip}
+                  </div>
                 </div>
                 <div className="flex-1 min-w-0">{bar}</div>
-                <div className="w-full sm:w-56 shrink-0 flex items-center justify-between sm:justify-end gap-3">
+                <div className="w-full sm:w-56 shrink-0 flex flex-wrap items-center justify-between sm:justify-end gap-x-3 gap-y-1">
                   {countNode}
                   {i === 0 ? (
                     <span className="text-xs text-gray-400">start</span>
                   ) : (
-                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP[rag]}`}>
-                      <RagPct value={s.stepPct} target={target} />
-                      <span className="opacity-70">{s.stepLabel}</span>
-                      {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP[rag]}`}>
+                        <RagPct value={s.stepPct} target={target} />
+                        <span className="opacity-70">{s.stepLabel}</span>
+                        {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
+                      </span>
+                      {s.benchmark?.basis === "step" && bmChip}
                     </span>
                   )}
                 </div>
@@ -4989,13 +5249,30 @@ function SourceFunnelPanel({
     );
   }
 
-  const tiles: { label: string; value: string; help: string }[] = [
+  /** Average advance for THIS cohort — the industry band's own denominator
+   *  (dollars funded ÷ deals funded), not dollars per lead. Null when nothing
+   *  in the cohort funded, which is "nothing to average", never $0. */
+  const cohortAvgAdvance = c.funded > 0 ? c.fundedAmount / c.funded : null;
+
+  const tiles: { label: string; value: string; help: string; sub?: ReactNode }[] = [
     { label: "Received", value: c.received.toLocaleString(), help: `${def.noun}s delivered in this range` },
     { label: "Contacted", value: c.contacted.toLocaleString(), help: "Reached at-or-past the Contacted rung" },
     { label: "Appointments", value: c.appointments.toLocaleString(), help: "Leads in this cohort with a booked appointment (deals.appointment_at). A callback is not an appointment and is not counted." },
     { label: "Apps sent", value: c.appsSent.toLocaleString(), help: "Reached at-or-past Application Sent" },
     { label: "Funded", value: c.funded.toLocaleString(), help: "Funded deals from this cohort" },
-    { label: "Funded $", value: c.fundedAmount > 0 ? usd(c.fundedAmount) : "$0", help: "Sum of amount_funded across this cohort's funded deals" },
+    {
+      label: "Funded $",
+      value: c.fundedAmount > 0 ? usd(c.fundedAmount) : "$0",
+      help: "Sum of amount_funded across this cohort's funded deals",
+      sub: (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <BenchmarkChip id="avg_advance" value={cohortAvgAdvance} compact />
+          <span className="text-[11px] text-gray-500 dark:text-gray-400">
+            {cohortAvgAdvance === null ? "no funded deal to average" : `avg ${usd(Math.round(cohortAvgAdvance))}`}
+          </span>
+        </span>
+      ),
+    },
   ];
 
   return (
@@ -5022,6 +5299,7 @@ function SourceFunnelPanel({
                 {t.label}
               </div>
               <div className="text-xl font-semibold text-gray-900 dark:text-white tabular-nums">{t.value}</div>
+              {t.sub}
             </div>
           </div>
         ))}
@@ -5050,6 +5328,23 @@ function SourceFunnelPanel({
               ? "Live transfers are held to their own thresholds: a warm transfer that converts like a cold call is the problem worth seeing."
               : "Real-time leads are held to their own thresholds — they arrive by email, so they should not be measured against a warm transfer."}
           </p>
+
+          {/* The industry band on the last rung. These leads are VENDOR-WARM,
+              so the 20–30% warm band applies here — not the 8–15% cold band
+              the outbound floor is read against on the Funnel tab. */}
+          <div className="flex flex-wrap items-center gap-2 border-t border-base-300 pt-2">
+            <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">Application → funded:</span>
+            <BenchmarkChip
+              id="app_to_fund_warm"
+              value={c.appsSent > 0 ? (c.funded / c.appsSent) * 100 : null}
+            />
+            <span className="text-[11px] text-gray-500 dark:text-gray-400">
+              {c.appsSent === 0
+                ? "No application sent in this cohort yet, so there is nothing to divide by — not a 0% conversion."
+                : <>Warm band, because these {def.noun}s were <b>delivered</b> rather than cold-dialed. Cold-originated applications are held to the lower 8–15% band on the Funnel tab.</>}
+            </span>
+          </div>
+          <BenchmarkLegend />
         </div>
       </div>
 

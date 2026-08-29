@@ -80,6 +80,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import supabase from "@/supabase";
+import { BenchmarkChip } from "@/components/admin/IndustryBenchmarks";
 
 // ── Contract ─────────────────────────────────────────────────────────────────
 // Exactly the columns setter_dial_ceiling / setter_dial_ceiling_daily return.
@@ -546,6 +547,8 @@ export default function DialCeilingPanel({
   productiveError = null,
   productiveLoading = false,
   productiveTruncated = false,
+  repMonthlyPace = null,
+  paceUnavailableReason = null,
 }: {
   /** The page's active range, as UTC instants. Same picker as every other tab. */
   fromIso: string;
@@ -561,6 +564,12 @@ export default function DialCeilingPanel({
   productiveError?: string | null;
   productiveLoading?: boolean;
   productiveTruncated?: boolean;
+  /** Funded advances per rep per 30 days, COMPUTED ON THE PAGE — same rule as
+   *  `productive` above: this panel re-derives nothing, so the number here and
+   *  the one on the Funnel tab can never disagree. Null = not extrapolatable,
+   *  and `paceUnavailableReason` says which of the reasons it is. */
+  repMonthlyPace?: number | null;
+  paceUnavailableReason?: string | null;
 }) {
   const [rows, setRows] = useState<CeilingRow[] | null>(null);
   const [days, setDays] = useState<CeilingDay[] | null>(null);
@@ -1431,6 +1440,8 @@ export default function DialCeilingPanel({
         loading={productiveLoading}
         truncated={productiveTruncated}
         rangeLabel={rangeLabel}
+        repMonthlyPace={repMonthlyPace}
+        paceUnavailableReason={paceUnavailableReason}
       />
     </div>
   );
@@ -1446,12 +1457,16 @@ function ProductiveSection({
   loading,
   truncated,
   rangeLabel,
+  repMonthlyPace,
+  paceUnavailableReason,
 }: {
   rows: ProductiveSetterRow[] | null;
   error: string | null;
   loading: boolean;
   truncated: boolean;
   rangeLabel: string;
+  repMonthlyPace: number | null;
+  paceUnavailableReason: string | null;
 }) {
   const sorted = useMemo(
     () => (rows ? [...rows].sort((a, b) => b.deals - a.deals || b.appsSent - a.appsSent) : null),
@@ -1580,6 +1595,20 @@ function ProductiveSection({
                 </>
               )}
             </p>
+
+            {/* The industry band on the Funded column. Same rule the rest of
+                this panel obeys: the pace is HANDED IN, not re-derived, and a
+                range too short to extrapolate from gets the reason printed
+                rather than a scaled-up guess. */}
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400 border-t border-base-300 pt-2">
+              <span className="font-semibold text-gray-600 dark:text-gray-300">Funded vs industry:</span>
+              <BenchmarkChip id="deals_per_rep_month" value={repMonthlyPace} />
+              <span>
+                {repMonthlyPace === null
+                  ? paceUnavailableReason ?? "No monthly pace for this range — the band is shown for reference."
+                  : `This floor is funding ${repMonthlyPace.toFixed(1)} advances per rep per 30 days.`}
+              </span>
+            </div>
           </>
         )}
       </div>
