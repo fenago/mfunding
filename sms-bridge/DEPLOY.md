@@ -195,6 +195,86 @@ ssh root@DROPLET_IP "chown bridge:bridge /opt/sms-bridge/index.js && systemctl r
 
 ---
 
+## Adding another number
+
+The data layer is multi-line: `public.sms_lines` is the registry of company
+numbers and every `sms_messages` row carries a `line_id`. Adding a number is an
+**operational** task — a new JMP subaccount, a new `sms_lines` row, and a
+**second copy of this bridge**. It is *not* a code change: one bridge process
+holds exactly one xmpp.chat session, so a second number means a second service,
+not a second session inside this one (see the "TO ADD A 2ND NUMBER" block at the
+top of `index.js`).
+
+**1. Create the JMP subaccount.** From the phone/app already logged into the JMP
+bot, text **`subaccount`** to the JMP bot number. It provisions a new JMP number
+and returns a new Jabber ID (JID) and a password for it. Note both — the JID
+looks like `something@xmpp.chat` (or the subaccount JID JMP hands you), and it is
+what the new bridge logs in as.
+
+**2. Insert the `sms_lines` row.** Supabase → SQL Editor. Set `jid` to the new
+account's JID **exactly** — the bridge binds itself to its line by matching
+`jid = XMPP_JID`, so a mismatch leaves inbound rows unstamped. Keep
+`is_default = false` (the Main line stays the fallback):
+
+```sql
+insert into public.sms_lines (phone, label, provider, jid, is_active, is_default)
+values (
+  '+1XXXXXXXXXX',        -- the new JMP number, E.164
+  'Second line',         -- whatever staff should see it called
+  'jmp',
+  'subaccount@xmpp.chat',-- the JID JMP returned in step 1 (must match the new .env XMPP_JID)
+  true,                  -- is_active
+  false                  -- is_default: leave the Main line as default
+);
+```
+
+> To instead make the new line the **default**, clear the old one first — a
+> partial unique index (`sms_lines_one_default_idx`) allows only one default:
+> ```sql
+> update public.sms_lines set is_default = false where is_default = true;
+> update public.sms_lines set is_default = true  where phone = '+1XXXXXXXXXX';
+> ```
+
+**3. Stand up a second bridge on the droplet.** Copy the app to a second dir and
+give it its own `.env` with the new account's creds:
+
+```bash
+# on the droplet
+cp -r /opt/sms-bridge /opt/sms-bridge-2
+nano /opt/sms-bridge-2/.env      # XMPP_JID + XMPP_PASSWORD = the new account; same SUPABASE_* 
+```
+
+The `.env` differs from the Main line's in exactly two lines:
+
+```
+XMPP_JID=subaccount@xmpp.chat
+XMPP_PASSWORD=change-me
+SUPABASE_URL=https://ehibjeonqpqskhcvizow.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<same service_role key>
+POLL_MS=2000
+```
+
+Install it as a **separate** systemd unit (copy `sms-bridge.service` to
+`sms-bridge-2.service`, point `WorkingDirectory`/`ExecStart` at `/opt/sms-bridge-2`,
+change the `Description`), then enable + start it and watch it bind:
+
+```bash
+journalctl -u sms-bridge-2 -f
+# expect: serving sms_lines <uuid> (jid subaccount@xmpp.chat)
+```
+
+**4. Make the pump line-safe — REQUIRED once a second bridge runs.** With one
+bridge the outbound pump claims the whole queue; with two, both would race for
+the same `queued` rows and could send from the wrong number. Before starting the
+second bridge, add `.eq("line_id", MY_LINE_ID)` to the three outbound queries in
+`index.js` flagged by the "TO ADD A 2ND NUMBER" block — `pump()` (the queued
+select **and** the atomic claim), `requeueStuck()`, and
+`requeueOrphansAtStartup()` — then re-ship `index.js` to **both** dirs and
+restart both services. Inbound needs no change: each JMP account only receives
+its own texts, and each bridge already stamps its own `MY_LINE_ID`.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |

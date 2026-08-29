@@ -9,6 +9,32 @@
  *
  * Customer linking and STOP/opt-out handling live in DB triggers on sms_messages.
  * The bridge only inserts the raw message — do not duplicate that logic here.
+ *
+ * ── SINGLE ACCOUNT, LINE-AWARE ───────────────────────────────────────────────
+ * This process holds ONE xmpp.chat session (XMPP_JID) and therefore serves ONE
+ * company number — the public.sms_lines row whose `jid` equals XMPP_JID. That id
+ * is resolved once at startup into MY_LINE_ID and stamped on every inbound row;
+ * outbound rows already carry line_id (sms-send stamps it). Today exactly one
+ * line exists, so MY_LINE_ID is the default line and the outbound pump claims the
+ * whole queue.
+ *
+ * ┌─ TO ADD A 2ND NUMBER: ─────────────────────────────────────────────────────┐
+ * │ Do NOT teach this process to hold two XMPP sessions — xmpp.chat allows one   │
+ * │ session per account, and one dead account would stall the other's queue.     │
+ * │ Instead run a SECOND copy of this bridge as its own systemd service with its │
+ * │ own .env (its own XMPP_JID + password). Steps are in DEPLOY.md → "Adding     │
+ * │ another number": text `subaccount` to the JMP bot, insert an sms_lines row    │
+ * │ (with jid = the new account), drop the new creds in a second .env, start it.  │
+ * │                                                                              │
+ * │ THE ONE CODE CHANGE that unlocks >1 bridge: each bridge must claim ONLY its  │
+ * │ own line, or two bridges race for the same queued rows and send from the     │
+ * │ wrong number. Once MY_LINE_ID is guaranteed set, add `.eq("line_id",         │
+ * │ MY_LINE_ID)` to all three outbound queries below:                            │
+ * │   • pump()                    — the queued select AND the atomic claim        │
+ * │   • requeueStuck()            — the 'sending' select                          │
+ * │   • requeueOrphansAtStartup() — the 'sending' -> 'queued' update              │
+ * │ Inbound needs no change: each JMP account only ever receives its own texts.  │
+ * └────────────────────────────────────────────────────────────────────────────┘
  */
 
 import "dotenv/config";
@@ -31,6 +57,7 @@ for (const k of ["XMPP_JID", "XMPP_PASSWORD", "SUPABASE_URL", "SUPABASE_SERVICE_
 }
 
 const TABLE = "sms_messages";
+const LINES_TABLE = "sms_lines";
 const GATEWAY = "cheogram.com";
 const STUCK_MS = 120_000; // a 'sending' row we don't hold gets re-queued after this
 const [username, domain] = XMPP_JID.split("@");
@@ -40,6 +67,33 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+
+// The sms_lines row this bridge serves (jid = XMPP_JID). Resolved at startup.
+// Stamped on inbound rows. NULL only if the row is missing/unreadable — inbound
+// still inserts (line_id null) rather than DROP a real text; the send caps and
+// customer link do not depend on it. Warned about loudly at startup.
+let MY_LINE_ID = null;
+
+/** Bind this bridge to its own sms_lines row by JID. Today that row is also the
+ *  default line. Never throws: a failure leaves MY_LINE_ID null and is logged. */
+async function resolveMyLine() {
+  const { data, error } = await db
+    .from(LINES_TABLE)
+    .select("id, is_default, is_active")
+    .eq("jid", XMPP_JID)
+    .limit(1);
+  if (error) {
+    log(`WARN: could not read ${LINES_TABLE} for jid ${XMPP_JID} (${error.message}); inbound line_id will be NULL until this resolves`);
+    return;
+  }
+  const row = data?.[0];
+  if (!row) {
+    log(`WARN: no ${LINES_TABLE} row has jid = ${XMPP_JID}. Add one (see DEPLOY.md "Adding another number"); inbound line_id will be NULL.`);
+    return;
+  }
+  MY_LINE_ID = row.id;
+  log(`serving ${LINES_TABLE} ${MY_LINE_ID} (jid ${XMPP_JID}${row.is_default ? ", default" : ""}${row.is_active ? "" : ", INACTIVE"})`);
+}
 
 const xmpp = client({
   service: domain, // SRV lookup -> xmpp.chat's server
@@ -114,6 +168,7 @@ xmpp.on("stanza", async (stanza) => {
       body,
       media_url: mediaUrl,
       status: "received",
+      line_id: MY_LINE_ID, // which company number received it; NULL only if unresolved (still inserted, never dropped)
     });
     // A failed insert means a real text was DROPPED — never let it pass silently.
     if (error) log("DB INSERT FAILED (message lost):", phone, error.message);
@@ -206,9 +261,13 @@ async function pump() {
   try {
     await requeueStuck();
 
+    // line_id is read here so the pump is line-aware. Today one line exists, so
+    // the whole queue belongs to this bridge and there is no line filter — see
+    // the "TO ADD A 2ND NUMBER" block up top for the .eq("line_id", MY_LINE_ID)
+    // this needs the moment a second bridge runs.
     const { data: rows, error } = await db
       .from(TABLE)
-      .select("id, phone, body")
+      .select("id, phone, body, line_id")
       .eq("status", "queued")
       .order("created_at", { ascending: true })
       .limit(10);
@@ -285,6 +344,10 @@ async function main() {
     process.exit(1);
   }
   log(`${TABLE} reachable`);
+
+  // Resolve which line this bridge serves before we touch the queue, so inbound
+  // rows get stamped from the first message on.
+  await resolveMyLine();
 
   await requeueOrphansAtStartup();
 
