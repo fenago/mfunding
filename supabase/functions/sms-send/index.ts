@@ -23,8 +23,9 @@
 //   • volume that looks like a blast — the number gets filtered, and the fix is
 //     going back to A2P registration, which is weeks.
 // So: one message per call (there is deliberately no array form and no loop),
-// a hard refusal against the phone-keyed suppression list public.sms_opt_outs and
-// customers.do_not_contact and GHL's contact DND, and rate caps at three scopes.
+// a hard refusal via public.sms_suppression_check() — which consults BOTH the
+// phone-keyed sms_opt_outs list and the person-keyed customers.do_not_contact
+// flag — plus GHL's contact DND, and rate caps at three scopes.
 //
 // ── UNREADABLE IS NOT "CLEAR" ────────────────────────────────────────────────
 // Every guard below FAILS CLOSED. If we cannot read the DND state, or cannot
@@ -99,40 +100,6 @@ function toE164(raw: string): string | null {
   return `+1${digits}`;
 }
 
-/** Exact stored forms, used only for the additional_phones array overlap (an
- *  array-element LIKE is not expressible through PostgREST). */
-function phoneVariants(e164: string): string[] {
-  const d = e164.slice(2); // strip +1
-  return [e164, `1${d}`, d, `+1 ${d}`];
-}
-
-/** Last 10 digits — the identity rule public.sms_messages_link_customer() uses to
- *  decide whether a number belongs to a customer. Every match below is settled
- *  with this, so our answer and the trigger's cannot diverge. */
-function last10(raw: string | null): string {
-  return (raw ?? "").replace(/\D/g, "").slice(-10);
-}
-
-/** A LIKE pattern that survives any separator layout: '2025550177',
- *  '202-555-0177', '(202) 555-0177' and '+1 202.555.0177' all match
- *  '%202%555%0177'.
- *
- *  WHY THIS EXISTS. This started as a list of literal spellings, which silently
- *  failed to match a stored '(202) 555-0177' — and a customer-lookup miss is not
- *  a neutral outcome here, it reads as "nobody has opted out". That bug was
- *  reproduced live: a do_not_contact=true merchant whose phone carried
- *  punctuation was queued for a send. The pattern only NARROWS candidates; every
- *  hit is then verified digit-exactly with last10(), so being loose costs
- *  nothing and being literal cost a merchant. */
-function loosePhonePattern(e164: string): string {
-  const d = e164.slice(2);
-  return `%${d.slice(0, 3)}%${d.slice(3, 6)}%${d.slice(6)}`;
-}
-
-/** Upper bound on candidates we will verify. Hitting it means the pattern was
- *  too broad to settle safely, which is UNREADABLE — never "no match". */
-const MAX_CANDIDATES = 200;
-
 interface CustomerRow {
   id: string;
   do_not_contact: boolean | null;
@@ -151,134 +118,90 @@ interface DndVerdict {
   reason?: string;
 }
 
-/** Is this destination opted out?
+/** Is this destination suppressed?
  *
  *  THE PHONE IS THE SUBJECT, NOT THE customer_id. An earlier version let a
  *  caller-supplied customer_id drive this check, which meant a request whose
  *  customer_id did not own the number got its opt-out decision made about the
  *  WRONG PERSON — and filed the message on that person's thread. The number being
- *  texted is the only thing that identifies who is about to receive a message, so
- *  every source below is keyed on it.
+ *  texted is the only thing that identifies who is about to receive a message.
  *
- *  NEITHER OF THE FIRST TWO SOURCES IS A SUPERSET OF THE OTHER, so both are always
- *  consulted and either one blocks:
- *   1. public.sms_opt_outs is keyed by PHONE. It is the only record that exists
- *      for the purchased/UCC book, where there is no customers row at all.
- *      sms_messages_stop_optout() inserts here unconditionally on an inbound
- *      opt-out and DELETES here on START/UNSTOP/YES, so re-subscribes work.
- *      Looked up with the DB's own sms_normalize_phone() — see below.
- *   2. customers.do_not_contact is keyed by PERSON. It is the only thing that
- *      catches a merchant who opted out from one of their numbers while we are
- *      texting a different one. Dropping it in favour of the phone table would
- *      reopen the same hole pointed the other way.
- *      Written by set-contact-dnd, the wavv disposition drain, and the STOP
- *      trigger.
- *   3. the GHL contact's dnd / dndSettings.SMS — the durable suppression the
- *      dialer enforces. One GHL call per send; volume is human-scale (one-off
- *      texts typed by a person), so this is noise against the 200k/day cap — see
- *      the ghl-standing-consumers-ledger. This is not a sweep.
+ *  ── THE VERDICT IS THE DATABASE'S, NOT OURS ─────────────────────────────────
+ *  public.sms_suppression_check(phone) answers this in one call. It consults BOTH
+ *  suppression records, because neither is a superset of the other:
+ *    • sms_opt_outs is keyed by PHONE — the only record that exists for a number
+ *      with no customers row, which is most of the purchased/UCC book.
+ *    • customers.do_not_contact is keyed by PERSON — the only thing that catches
+ *      a merchant who opted out from one of their numbers while we text another.
+ *  It compares the primary phone AND every additional_phones entry in canonical
+ *  form via sms_normalize_phone(), and resolves ties toward suppressed.
  *
- *  Any source saying "suppressed" blocks. Any source being UNREADABLE blocks too,
- *  with a distinct message — we cannot prove the merchant did not opt out, so we
- *  do not send. */
+ *  This replaced hand-rolled matching in this function, and the reason is worth
+ *  keeping: that version compared literal phone spellings, so a merchant stored
+ *  as '(202) 555-0177' matched nothing — and "no customer found" reads as "nobody
+ *  opted out". A do_not_contact merchant was queued for a send in testing. Phone
+ *  identity is the database's job; every spelling question now has exactly one
+ *  answer, and it is not ours to get wrong.
+ *
+ *  It RAISES on an unparseable number rather than reporting "not suppressed", so
+ *  a normalization failure surfaces as an error here and refuses. Do not soften
+ *  that into an allow.
+ *
+ *  GHL's contact dnd / dndSettings.SMS is checked separately below — it is the
+ *  durable suppression the dialer enforces and lives outside our DB. One GHL call
+ *  per send; volume is human-scale, so this is noise against the 200k/day cap
+ *  (see the ghl-standing-consumers-ledger). This is not a sweep. */
 async function checkDnd(
   db: SupabaseClient,
   phone: string,
   explicitCustomerId: string | null,
 ): Promise<DndVerdict> {
-  const variants = phoneVariants(phone);
-
-  // ── The structural suppression list. Checked FIRST and keyed on nothing but
-  //    the number, so it works for a number we have never seen before.
-  //
-  // THE LOOKUP KEY COMES FROM THE DATABASE, NOT FROM US. sms_opt_outs.phone is
-  // written by sms_messages_stop_optout() through public.sms_normalize_phone(),
-  // so that function defines the spelling of a suppressed number. Our own
-  // toE164() agrees with it for every NANP input today — verified — but agreeing
-  // today is not the same as being the same function. If the two ever diverge,
-  // a locally-spelled key silently misses and we text someone who said STOP;
-  // there is no error, just a send. So we ask the DB to spell it. One extra
-  // round-trip buys away an entire class of silent compliance failure.
-  const { data: normalized, error: eN } = await db
-    .rpc("sms_normalize_phone", { p: phone });
-  const suppressionKey = (normalized as string | null) ?? null;
-  if (eN || !suppressionKey) {
-    return {
-      blocked: true,
-      unreadable: `couldn't normalize ${phone} for the opt-out lookup` +
-        (eN ? `: ${eN.message}` : " (normalizer returned null)"),
-    };
+  const { data: verdictRows, error: vErr } = await db
+    .rpc("sms_suppression_check", { p_phone: phone });
+  if (vErr) {
+    return { blocked: true, unreadable: `suppression check failed: ${vErr.message}` };
+  }
+  const verdict = (Array.isArray(verdictRows) ? verdictRows[0] : verdictRows) as
+    | { suppressed: boolean; reason: string | null; customer_id: string | null }
+    | undefined;
+  if (!verdict) {
+    return { blocked: true, unreadable: "suppression check returned no verdict" };
   }
 
-  const { data: optOut, error: e0 } = await db
-    .from("sms_opt_outs").select("phone, opted_out_at, source")
-    .eq("phone", suppressionKey).maybeSingle();
-  if (e0) return { blocked: true, unreadable: `opt-out list lookup failed: ${e0.message}` };
-  if (optOut) {
-    const when = (optOut as { opted_out_at?: string }).opted_out_at;
-    return {
-      blocked: true,
-      reason: `${phone} is on the SMS suppression list` +
-        (when ? ` (opted out ${when.slice(0, 10)})` : "") +
-        ". That opt-out stands whether or not the number is attached to a customer " +
-        "record, and only an inbound START from the merchant lifts it.",
-    };
+  // The owner of the NUMBER, as the database resolved it — returned whether or
+  // not the number is suppressed, so it also serves the GHL and mismatch checks.
+  const ownerId = verdict.customer_id ?? null;
+  let row: CustomerRow | null = null;
+  if (ownerId) {
+    const { data: c, error: cErr } = await db
+      .from("customers").select(CUSTOMER_COLS).eq("id", ownerId).maybeSingle();
+    if (cErr) return { blocked: true, unreadable: `customer lookup failed: ${cErr.message}` };
+    row = (c as CustomerRow | null) ?? null;
   }
 
-  // ── Who owns this NUMBER? (never "who did the caller name?") ──
-  // Two candidate queries — a separator-tolerant LIKE on the primary phone, and
-  // an exact overlap on additional_phones — then digit-exact verification of
-  // every hit. Two queries rather than one `or(...)` because the array overlap
-  // operator does not compose with `.or()` cleanly, and a silently-malformed
-  // filter here would read as "no DND row found", i.e. as permission to send.
-  const cols = `${CUSTOMER_COLS}, phone, additional_phones`;
-  type Candidate = CustomerRow & { phone: string | null; additional_phones: string[] | null };
-  const [primary, alt] = await Promise.all([
-    db.from("customers").select(cols).ilike("phone", loosePhonePattern(phone)).limit(MAX_CANDIDATES),
-    db.from("customers").select(cols).overlaps("additional_phones", variants).limit(MAX_CANDIDATES),
-  ]);
-  if (primary.error) return { blocked: true, unreadable: `phone lookup failed: ${primary.error.message}` };
-  if (alt.error) return { blocked: true, unreadable: `alt-phone lookup failed: ${alt.error.message}` };
-  if ((primary.data?.length ?? 0) >= MAX_CANDIDATES || (alt.data?.length ?? 0) >= MAX_CANDIDATES) {
-    return {
-      blocked: true,
-      unreadable: `too many customer records match ${phone} to check them all safely`,
-    };
-  }
-
-  const target = phone.slice(2); // the 10 significant digits
-  const owners = ([...(primary.data ?? []), ...(alt.data ?? [])] as Candidate[])
-    .filter((c) =>
-      last10(c.phone) === target ||
-      (c.additional_phones ?? []).some((p) => last10(p) === target));
-
-  // When a number appears on more than one record the SUPPRESSED one wins — a
-  // duplicate that has not been marked must never override an opt-out.
-  const row: CustomerRow | null =
-    owners.find((c) => c.do_not_contact) ?? owners[0] ?? null;
-
-  if (row?.do_not_contact) {
-    return {
-      blocked: true,
-      reason: row.do_not_contact_reason?.trim() ||
-        `${row.business_name ?? "This contact"} is marked do-not-contact.`,
-    };
+  if (verdict.suppressed) {
+    const detail = verdict.reason === "opted_out"
+      ? `${phone} is on the SMS suppression list. That opt-out stands whether or ` +
+        "not the number is attached to a customer record, and only an inbound " +
+        "START from the merchant lifts it."
+      : row?.do_not_contact_reason?.trim() ||
+        `${row?.business_name ?? "This contact"} is marked do-not-contact.`;
+    return { blocked: true, reason: detail };
   }
 
   // ── A caller-supplied customer_id is ADVISORY ONLY ──
-  // It no longer picks the row's linkage (the BEFORE INSERT trigger does that from
-  // the phone) and it deliberately does NOT feed any check above: letting it name
-  // the subject is what previously made the opt-out decision about the wrong
-  // person. The one thing still done with it is refusing a request that
-  // CONTRADICTS the number — a number that demonstrably belongs to someone else
-  // means the caller is on the wrong thread, and that is worth saying out loud
-  // rather than silently texting whoever `to` actually is.
-  if (explicitCustomerId && row && row.id !== explicitCustomerId) {
+  // It does not pick the row's linkage (the BEFORE INSERT trigger does that from
+  // the phone) and it deliberately feeds no check above: letting it name the
+  // subject is what previously made the opt-out decision about the wrong person.
+  // The one thing still done with it is refusing a request that CONTRADICTS the
+  // number — that means the caller is on the wrong thread, and it is worth saying
+  // out loud rather than silently texting whoever `to` actually is.
+  if (explicitCustomerId && ownerId && ownerId !== explicitCustomerId) {
     const { data: named } = await db
       .from("customers").select("id, business_name").eq("id", explicitCustomerId).maybeSingle();
     return {
       blocked: true,
-      mismatch: `${phone} belongs to a different customer (${row.business_name ?? row.id}) ` +
+      mismatch: `${phone} belongs to a different customer (${row?.business_name ?? ownerId}) ` +
         `than the customer_id you sent (${(named as { business_name?: string } | null)?.business_name ?? explicitCustomerId}).`,
     };
   }
