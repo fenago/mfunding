@@ -79,7 +79,7 @@ import {
   BenchmarkChip, BenchmarkTile, BenchmarkLegend, IndustryComparisonCard,
   type BenchmarkValues,
 } from "@/components/admin/IndustryBenchmarks";
-import { INDUSTRY_BENCHMARKS, type BenchmarkId } from "@/data/industryBenchmarks";
+import { INDUSTRY_BENCHMARKS, benchmarkRag, benchmarkVerdict, type BenchmarkId } from "@/data/industryBenchmarks";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** One row of public.v_wavv_outbound_setter_calls — an OUTBOUND call already
@@ -736,7 +736,12 @@ interface FunnelStage {
    *  Attached only where the denominators genuinely match. The industry
    *  cold-dial contact rate is a share of DIALS, so pinning it to the human
    *  stage's step rate (which is a share of ANSWERS) would compare two
-   *  different things and call it a verdict. */
+   *  different things and call it a verdict.
+   *
+   *  `basis` also decides which number the rung's COLOUR sits on: a rung
+   *  carrying a band is coloured by that band, on that band's denominator, and
+   *  the other percentage demotes to a plain uncoloured stat. See the
+   *  precedence note in StageBars. */
   benchmark?: { id: BenchmarkId; basis: "ofTotal" | "step" } | null;
 }
 
@@ -760,6 +765,8 @@ function funnelStagesOf(f: FunnelCounts): FunnelStage[] {
       stepPct: pct(f.humans, f.connects), targetKey: "human_rate_pct",
       // The industry cold-dial CONTACT rate is humans as a share of DIALS,
       // which is exactly this stage's "% of dials" line — not its step rate.
+      // So "% of dials" is the number that carries this rung's colour, and
+      // "of answers were human" rides along as a plain secondary stat.
       benchmark: { id: "contact_rate", basis: "ofTotal" },
     },
     {
@@ -4921,16 +4928,91 @@ function StageBars({
         <div className={compact ? "space-y-2.5" : "space-y-3"}>
           {stages.map((s, i) => {
             const { target, isDefault } = s.targetKey ? targetFor(s.targetKey) : { target: null, isDefault: false };
-            const rag = ragOf(s.stepPct, target);
             const widthPct = total > 0 ? Math.max((s.count / total) * 100, s.count > 0 ? 1.5 : 0) : 0;
             const sharePct = total > 0 ? (s.count / total) * 100 : null;
             const ofDials = sharePct === null ? "—" : `${sharePct.toFixed(1)}% ${ofLabel}`;
             // The industry chip goes next to whichever percentage it is
             // actually comparable to — see FunnelStage.benchmark.
+            const bm = s.benchmark ? INDUSTRY_BENCHMARKS[s.benchmark.id] : null;
             const bmValue = s.benchmark ? (s.benchmark.basis === "step" ? s.stepPct : sharePct) : null;
+            const bmRag = bm ? benchmarkRag(bmValue, bm) : "none";
             const bmChip = s.benchmark ? (
               <BenchmarkChip id={s.benchmark.id} value={bmValue} compact={compact} />
             ) : null;
+
+            // ── PRECEDENCE: a rung that SHOWS an industry band is COLOURED by
+            // that band, judged on the band's OWN denominator.
+            //
+            // This rung used to be coloured by ragOf(stepPct, target) no matter
+            // what the chip beside it was comparing. On "Reached a human" that
+            // meant the line read "13.0% of dials", the chip read "industry
+            // 3–5% of dials", and the pill went amber — because it was quietly
+            // grading 15.5% of ANSWERS against a built-in 30/15 default. Three
+            // numbers, one colour, and the colour belonged to none of the two
+            // things on screen. Now the metric shown, the band, and the colour
+            // are one comparison. Rungs with NO band keep the KPI-target
+            // behaviour untouched.
+            //
+            // Amber, never red: an industry rule of thumb has not earned red —
+            // see the palette note in industryBenchmarks.ts.
+            const judgedByBenchmark = bmRag !== "none";
+            const rag: Rag = judgedByBenchmark
+              ? (bmRag === "green" ? "green" : "amber")
+              : ragOf(s.stepPct, target);
+            /** True when the band's denominator is the "% of <ofLabel>" line, so
+             *  THAT is the number wearing the colour and the step rate demotes to
+             *  a plain, uncoloured secondary stat. */
+            const judgedShare = judgedByBenchmark && s.benchmark?.basis === "ofTotal";
+            const judgedTitle = bm
+              ? `Judged against the industry band — ${bm.band}: ${benchmarkVerdict(bmRag, bm)}`
+              : undefined;
+
+            const stepPctText = s.stepPct !== null && Number.isFinite(s.stepPct)
+              ? `${s.stepPct.toFixed(compact ? 0 : 1)}%`
+              : null;
+
+            // The step rate: a plain secondary stat when the band judges the
+            // share instead, otherwise the rung's coloured pill.
+            const stepNode = judgedShare ? (
+              <span
+                className={`inline-flex items-center gap-1 ${compact ? "text-[10px]" : "text-xs"} text-gray-500 dark:text-gray-400`}
+                title="Secondary stat — a different denominator from the industry band on this rung, so it does not colour it"
+              >
+                {stepPctText === null
+                  ? <Metric value={null} />
+                  : <span className="font-semibold tabular-nums">{stepPctText}</span>}
+                <span className="opacity-70">{compact ? s.stepShort : s.stepLabel}</span>
+              </span>
+            ) : (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border ${compact ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-0.5 text-xs"} ${RAG_CHIP[rag]}`}
+                title={judgedTitle}
+              >
+                {judgedByBenchmark
+                  ? (stepPctText === null
+                      ? <Metric value={null} />
+                      : <span className={`font-semibold tabular-nums ${RAG_TEXT[rag]}`}>{stepPctText}</span>)
+                  : <RagPct value={s.stepPct} target={target} digits={compact ? 0 : 1} />}
+                <span className="opacity-70">{compact ? s.stepShort : s.stepLabel}</span>
+                {isDefault && !judgedByBenchmark && (
+                  <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>
+                )}
+              </span>
+            );
+
+            // The "% of dials" line: a coloured pill when the band judges it,
+            // otherwise the plain grey line it has always been.
+            const shareNode = judgedShare ? (
+              <span
+                className={`inline-flex items-center gap-1 shrink-0 rounded-full border ${compact ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-0.5 text-xs"} ${RAG_CHIP[rag]}`}
+                title={judgedTitle}
+              >
+                <span className="font-semibold tabular-nums">{sharePct === null ? "—" : `${sharePct.toFixed(1)}%`}</span>
+                <span className="opacity-70">{ofLabel}</span>
+              </span>
+            ) : (
+              <span className={compact ? "truncate" : undefined}>{ofDials}</span>
+            );
             const bar = (
               <div className={`${compact ? "h-4" : "h-7"} w-full rounded bg-base-200 dark:bg-gray-700/40 overflow-hidden`}>
                 <div
@@ -4971,18 +5053,14 @@ function StageBars({
                     {/* min-w-0 + an inner truncate: the chip must never be the
                         thing the ellipsis eats. */}
                     <span className="inline-flex items-center gap-1 min-w-0 text-[10px] text-gray-400">
-                      <span className="truncate">{ofDials}</span>
+                      {shareNode}
                       {s.benchmark?.basis === "ofTotal" && bmChip}
                     </span>
                     {i === 0 ? (
                       <span className="text-[10px] text-gray-400 shrink-0">start</span>
                     ) : (
                       <span className="shrink-0 inline-flex items-center gap-1">
-                        <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${RAG_CHIP[rag]}`}>
-                          <RagPct value={s.stepPct} target={target} digits={0} />
-                          <span className="opacity-70">{s.stepShort}</span>
-                          {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
-                        </span>
+                        {stepNode}
                         {s.benchmark?.basis === "step" && bmChip}
                       </span>
                     )}
@@ -4996,7 +5074,7 @@ function StageBars({
                 <div className="w-full sm:w-52 shrink-0">
                   <div className="text-sm font-medium text-gray-900 dark:text-white" title={s.help}>{s.label}</div>
                   <div className="text-xs text-gray-400 flex flex-wrap items-center gap-1.5">
-                    {ofDials}
+                    {shareNode}
                     {s.benchmark?.basis === "ofTotal" && bmChip}
                   </div>
                 </div>
@@ -5007,11 +5085,7 @@ function StageBars({
                     <span className="text-xs text-gray-400">start</span>
                   ) : (
                     <span className="inline-flex items-center gap-1.5">
-                      <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP[rag]}`}>
-                        <RagPct value={s.stepPct} target={target} />
-                        <span className="opacity-70">{s.stepLabel}</span>
-                        {isDefault && <span title="Judged against a built-in default — no threshold stored in ph_dialer_kpi_targets">·</span>}
-                      </span>
+                      {stepNode}
                       {s.benchmark?.basis === "step" && bmChip}
                     </span>
                   )}

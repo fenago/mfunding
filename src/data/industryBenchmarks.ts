@@ -9,8 +9,15 @@
 // ── WHAT THESE ARE, AND WHAT THEY ARE NOT ────────────────────────────────────
 // They are RULES OF THUMB for the industry, not this shop's targets. The page's
 // own thresholds live in platform_settings.ph_dialer_kpi_targets and remain the
-// only thing that colours a KPI red. A benchmark can only ever paint an extra,
-// separately-labelled chip, and it uses a DELIBERATELY DIFFERENT palette rule:
+// only thing that colours a KPI red, and the only thing that colours a metric
+// carrying no band at all.
+//
+// Where a band IS shown next to a metric, it takes precedence for that metric's
+// colour — a rung that displays "13.0% of dials" beside "industry 3–5% of
+// dials" must not then be painted amber by a built-in default grading a
+// different denominator. The band, the number on screen and the colour are one
+// comparison or they are a lie. The palette rule stays DELIBERATELY DIFFERENT
+// from the KPI one:
 //
 //   green = the shop meets or beats the industry band
 //   amber = the shop is below it
