@@ -5,14 +5,24 @@
 // rows and hands them to JMP over XMPP. Everything here is the gate in front of
 // that queue.
 //
-//   POST { to, body, customer_id? }
-//        → { ok:true, id, status:'queued', phone, customer_id }      (200)
-//        | { ok:false, error, code }                                 (4xx/5xx)
+//   POST { to, body, customer_id?, line_id? }
+//        → { ok:true, id, status:'queued', phone, customer_id, line_id }   (200)
+//        | { ok:false, error, code }                                       (4xx/5xx)
 //
 // `customer_id` is ADVISORY. It is never written and never decides anything about
 // suppression — the returned customer_id is whatever the DB trigger resolved from
 // the phone. Supplying one that contradicts the number is refused (409), because
 // that means the caller is on the wrong thread.
+//
+// `line_id` is ADVISORY too, and OPTIONAL: it names which company SMS line
+// (public.sms_lines) the message goes out from. Omit it and it resolves to the
+// active default line. A line that does not exist, or exists but is inactive, is
+// REFUSED — never silently swapped for the default — because "send from the line I
+// picked" and "send from whatever's default" are different intents, and a line was
+// deactivated for a reason. The resolved line_id is stamped on the queued row so
+// the bridge, the thread view, and the rate history all agree on which number it
+// belongs to. Today exactly one line exists (the default), so an omitted line_id
+// is the whole world; this is the seam multi-line grows into.
 //
 // ── WHY THE GATE IS THIS STRICT ──────────────────────────────────────────────
 // JMP.chat is a CONSUMER line, not an A2P 10DLC campaign. It has no carrier
@@ -291,6 +301,59 @@ async function underCap(
   return { over: false };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Resolve which sms_lines row this send belongs to. FAILS CLOSED like every
+ *  other guard: a read error is UNREADABLE (not "use the default"), and a
+ *  requested line that is missing or inactive is REFUSED, never silently
+ *  substituted.
+ *
+ *  Requested line: must exist AND be is_active. Omitted line: the one row that is
+ *  is_default AND is_active. If the default line has been deactivated and no
+ *  replacement default set, there is no line to send from and this refuses —
+ *  better a visible "no active line" than a queued row the bridge can't attribute. */
+async function resolveLine(
+  db: SupabaseClient,
+  requestedLineId: string | null,
+): Promise<{ lineId: string } | { code: string; error: string; status: number }> {
+  if (requestedLineId) {
+    if (!UUID_RE.test(requestedLineId)) {
+      return { code: "bad_line", error: `"${requestedLineId}" isn't a valid line id.`, status: 400 };
+    }
+    const { data, error } = await db
+      .from("sms_lines").select("id, is_active, label, phone").eq("id", requestedLineId).maybeSingle();
+    if (error) {
+      return { code: "line_unreadable", error: `couldn't verify the SMS line (${error.message})`, status: 503 };
+    }
+    if (!data) {
+      return { code: "line_not_found", error: `SMS line ${requestedLineId} doesn't exist.`, status: 400 };
+    }
+    if (!(data as { is_active: boolean }).is_active) {
+      const d = data as { label: string | null; phone: string };
+      return {
+        code: "line_inactive",
+        error: `The line you picked (${d.label ?? d.phone}) is inactive — pick an active line.`,
+        status: 400,
+      };
+    }
+    return { lineId: (data as { id: string }).id };
+  }
+
+  const { data, error } = await db
+    .from("sms_lines").select("id").eq("is_default", true).eq("is_active", true).maybeSingle();
+  if (error) {
+    return { code: "line_unreadable", error: `couldn't resolve the default SMS line (${error.message})`, status: 503 };
+  }
+  if (!data) {
+    return {
+      code: "no_active_line",
+      error: "No active default SMS line is configured, so there's nothing to send from.",
+      status: 503,
+    };
+  }
+  return { lineId: (data as { id: string }).id };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return fail("method", "Method not allowed", 405);
@@ -314,13 +377,14 @@ Deno.serve(async (req) => {
 
   // ── Input. ONE message. There is no array form by design. ──
   const payload = (await req.json().catch(() => null)) as
-    | { to?: string; body?: string; customer_id?: string }
+    | { to?: string; body?: string; customer_id?: string; line_id?: string }
     | null;
   if (!payload) return fail("bad_request", "Invalid JSON body", 400);
 
   const rawTo = (payload.to ?? "").trim();
   const body = (payload.body ?? "").trim();
   const customerId = (payload.customer_id ?? "").trim() || null;
+  const requestedLineId = (payload.line_id ?? "").trim() || null;
 
   if (!body) return fail("empty_body", "Write a message first — nothing was queued.", 400);
   if (body.length > MAX_CHARS) {
@@ -380,6 +444,14 @@ Deno.serve(async (req) => {
     if (c.over) return fail("rate_limited", c.message ?? "Rate limit reached.", 429);
   }
 
+  // ── Guard 3: which line does this go out from? Fails closed on an unreadable
+  //    lookup, and refuses a missing/inactive line rather than swapping in the
+  //    default. Resolved LAST so a blocked send never touches the line registry. ──
+  const line = await resolveLine(db, requestedLineId);
+  if ("error" in line) {
+    return fail(line.code, `Not queued — ${line.error}`, line.status);
+  }
+
   // ── Queue it. ONE row. The bridge picks it up from here. ──
   //
   // customer_id is NEVER passed. The BEFORE INSERT trigger
@@ -401,8 +473,9 @@ Deno.serve(async (req) => {
       body,
       status: "queued",
       created_by: caller.id,
+      line_id: line.lineId,
     })
-    .select("id, status, customer_id")
+    .select("id, status, customer_id, line_id")
     .single();
 
   if (insErr) {
@@ -434,5 +507,6 @@ Deno.serve(async (req) => {
     status: inserted.status ?? "queued",
     phone,
     customer_id: linkedCustomerId,
+    line_id: (inserted.line_id as string | null) ?? line.lineId,
   });
 });
