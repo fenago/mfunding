@@ -4,8 +4,11 @@ import supabase from "@/supabase";
 import usePlaybookContact from "@/hooks/usePlaybookContact";
 import BusinessPicker from "@/components/admin/BusinessPicker";
 import SetterHeaderBar from "@/components/admin/setter/SetterHeaderBar";
+import SetterSnapshot from "@/components/admin/setter/SetterSnapshot";
 import SetterActionRail from "@/components/admin/setter/SetterActionRail";
 import SetterCommsPanel from "@/components/admin/setter/SetterCommsPanel";
+import SetterCallOutcome from "@/components/admin/setter/SetterCallOutcome";
+import SetterNotes from "@/components/admin/setter/SetterNotes";
 import SetterMerchantSearch from "@/components/admin/setter/SetterMerchantSearch";
 import SetterDealList from "@/components/admin/setter/SetterDealList";
 
@@ -162,8 +165,18 @@ export default function SetterOpsTab() {
           <ArrowLeftIcon className="w-3.5 h-3.5" /> Back to my deals
         </button>
         <SetterHeaderBar deal={deal} onRefresh={reload} notify={notify} />
+        {/* Context BEFORE action: the merchant facts strip sits right under the
+            header so a setter reads the stack/revenue/ask before they dial. */}
+        <SetterSnapshot deal={deal} onRefresh={reload} />
         <SetterActionRail deal={deal} onRefresh={reload} autoOpen />
         <SetterCommsPanel deal={deal} onRefresh={reload} />
+        {/* Log-the-call and Notes side by side below the action/comms panels —
+            two columns on large screens, stacked on mobile; both are self-contained
+            and re-read the loaded deal through the same reload. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <SetterCallOutcome deal={deal} onRefresh={reload} />
+          <SetterNotes deal={deal} onRefresh={reload} />
+        </div>
       </div>
     );
   } else {

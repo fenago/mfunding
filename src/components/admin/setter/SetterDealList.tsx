@@ -11,7 +11,7 @@ import { useUserProfile } from "@/context/UserProfileContext";
 import type { PlaybookLookup } from "@/hooks/usePlaybookContact";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
-import { dateTimeET } from "@/utils/time";
+import { dateTimeET, etWallClockToUtcIso } from "@/utils/time";
 
 /**
  * SetterDealList — the setter's own book, rendered under the search box as the
@@ -165,6 +165,71 @@ function nextStep(
   return null;
 }
 
+/**
+ * QUEUE FILTERS — the setter narrows their own book without leaving Operations.
+ * Every filter is applied IN the Supabase query (not client-side), so the
+ * {count:'exact'} banner and the DEAL_CAP truncation stay truthful about the
+ * whole matching set, not just what came back.
+ */
+type QueueFilter =
+  | { kind: "all" }
+  | { kind: "callbacks" } // callback_at within today, ET
+  | { kind: "never" } // never contacted (no contacted_at / no spoke_at / 0 attempts)
+  | { kind: "stage"; stage: DealStatus };
+
+/** Today's ET midnight → tomorrow's ET midnight as UTC ISO bounds. Uses the app's
+ *  Eastern wall-clock converter so a setter in ANY browser timezone sees the same
+ *  "today" the callbacks were booked against. */
+function etTodayBoundsUtc(): { start: string; end: string } {
+  const p: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date())) {
+    p[part.type] = part.value;
+  }
+  const y = +p.year,
+    m = +p.month,
+    d = +p.day;
+  return { start: etWallClockToUtcIso(y, m, d, 0, 0), end: etWallClockToUtcIso(y, m, d + 1, 0, 0) };
+}
+
+/** Empty-state copy per filter. The second line always reasserts the read
+ *  succeeded, so an empty queue is never mistaken for an unreadable book. */
+function emptyCopy(f: QueueFilter): { title: string; body: string } {
+  switch (f.kind) {
+    case "callbacks":
+      return {
+        title: "No callbacks due today.",
+        body: "This read succeeded — none of your deals have a callback scheduled for today (ET).",
+      };
+    case "never":
+      return {
+        title: "No never-contacted deals.",
+        body: "This read succeeded — every deal in your book has at least one logged touch.",
+      };
+    case "stage":
+      return {
+        title: `No deals in "${stageLabel(f.stage)}" right now.`,
+        body: "This read succeeded — nothing of yours sits in that stage. Try another filter.",
+      };
+    default:
+      return {
+        title: "No deals assigned to you yet — search above to pull one up.",
+        body: "This read succeeded, so this is a real empty book. New leads land here the moment they're assigned to you.",
+      };
+  }
+}
+
+// The stages offered in the "By stage" dropdown, in pipeline order — the existing
+// DEAL_STATUS_CONFIG is the single source of truth for labels.
+const STAGE_OPTIONS = (Object.keys(DEAL_STATUS_CONFIG) as DealStatus[]).map((s) => ({
+  value: s,
+  label: DEAL_STATUS_CONFIG[s].label,
+}));
+
 export default function SetterDealList({
   onOpen,
 }: {
@@ -172,6 +237,7 @@ export default function SetterDealList({
 }) {
   const { effectiveUserId } = useUserProfile();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const [filter, setFilter] = useState<QueueFilter>({ kind: "all" });
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -186,12 +252,31 @@ export default function SetterDealList({
       return;
     }
     try {
-      const { data, error, count } = await supabase
+      let query = supabase
         .from("deals")
         .select(DEAL_COLS, { count: "exact" })
-        .eq("assigned_closer_id", effectiveUserId)
-        .order("updated_at", { ascending: false, nullsFirst: false })
-        .limit(DEAL_CAP);
+        .eq("assigned_closer_id", effectiveUserId);
+
+      // Filters applied in-query so {count:'exact'} + the cap stay truthful.
+      if (filter.kind === "callbacks") {
+        const { start, end } = etTodayBoundsUtc();
+        query = query.not("callback_at", "is", null).gte("callback_at", start).lt("callback_at", end);
+      } else if (filter.kind === "never") {
+        query = query
+          .is("contacted_at", null)
+          .is("spoke_at", null)
+          .or("contact_attempts.is.null,contact_attempts.eq.0");
+      } else if (filter.kind === "stage") {
+        query = query.eq("status", filter.stage);
+      }
+
+      // Callbacks are most useful soonest-first; every other view is newest-touch first.
+      query =
+        filter.kind === "callbacks"
+          ? query.order("callback_at", { ascending: true, nullsFirst: false })
+          : query.order("updated_at", { ascending: false, nullsFirst: false });
+
+      const { data, error, count } = await query.limit(DEAL_CAP);
       if (error) throw new Error(error.message);
       const rows = (data ?? []) as unknown as DealRow[];
       setState({ kind: "ready", rows, total: count ?? rows.length });
@@ -202,7 +287,7 @@ export default function SetterDealList({
         message: e instanceof Error ? e.message : "Failed to load your deals.",
       });
     }
-  }, [effectiveUserId]);
+  }, [effectiveUserId, filter]);
 
   useEffect(() => {
     void load();
@@ -244,8 +329,67 @@ export default function SetterDealList({
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 max-w-xl">
       {header}
       <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-        The merchants assigned to you, most-recently-active first — click one to load it into the console.
+        {filter.kind === "callbacks"
+          ? "Your deals with a callback scheduled for today (ET), soonest first — click one to load it."
+          : "The merchants assigned to you, most-recently-active first — click one to load it into the console."}
       </p>
+
+      {/* Queue filters — narrow your own book. All are applied in-query. */}
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        {(
+          [
+            { key: "all", label: "All", active: filter.kind === "all", next: { kind: "all" } as QueueFilter },
+            {
+              key: "callbacks",
+              label: "Callbacks today",
+              active: filter.kind === "callbacks",
+              next: { kind: "callbacks" } as QueueFilter,
+            },
+            {
+              key: "never",
+              label: "Never contacted",
+              active: filter.kind === "never",
+              next: { kind: "never" } as QueueFilter,
+            },
+          ] as const
+        ).map((chip) => (
+          <button
+            key={chip.key}
+            type="button"
+            onClick={() => setFilter(chip.next)}
+            aria-pressed={chip.active}
+            className={`text-xs font-semibold px-2.5 py-1 rounded-full border transition-colors ${
+              chip.active
+                ? "border-ocean-blue bg-ocean-blue/10 text-ocean-blue"
+                : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600"
+            }`}
+          >
+            {chip.label}
+          </button>
+        ))}
+        {/* By stage — the dropdown IS its own filter; empty value returns to All. */}
+        <select
+          value={filter.kind === "stage" ? filter.stage : ""}
+          onChange={(e) =>
+            setFilter(e.target.value ? { kind: "stage", stage: e.target.value as DealStatus } : { kind: "all" })
+          }
+          aria-label="Filter by stage"
+          className={`text-xs font-semibold px-2 py-1 rounded-full border bg-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-ocean-blue ${
+            filter.kind === "stage"
+              ? "border-ocean-blue bg-ocean-blue/10 text-ocean-blue"
+              : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600"
+          }`}
+        >
+          <option value="" className="text-gray-900 dark:bg-gray-800 dark:text-white">
+            By stage…
+          </option>
+          {STAGE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value} className="text-gray-900 dark:bg-gray-800 dark:text-white">
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <div className="mt-3">
         {state.kind === "loading" && (
@@ -276,12 +420,9 @@ export default function SetterDealList({
           <div className="py-8 text-center">
             <BuildingStorefrontIcon className="w-9 h-9 mx-auto text-gray-300 dark:text-gray-600" />
             <p className="mt-2 text-sm font-semibold text-gray-700 dark:text-gray-200">
-              No deals assigned to you yet — search above to pull one up.
+              {emptyCopy(filter).title}
             </p>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              This read succeeded, so this is a real empty book. New leads land here the moment they're
-              assigned to you.
-            </p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{emptyCopy(filter).body}</p>
           </div>
         )}
 
@@ -289,7 +430,9 @@ export default function SetterDealList({
           <>
             {truncated && (
               <div className="mb-2 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 text-[11px] text-amber-800 dark:text-amber-300">
-                ⚠ Showing your {DEAL_CAP} most-recently-active — search above to reach the rest.
+                ⚠ Showing your first {DEAL_CAP}
+                {filter.kind === "callbacks" ? " by callback time" : " most-recently-active"} — narrow with a
+                filter or search above to reach the rest.
               </div>
             )}
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
