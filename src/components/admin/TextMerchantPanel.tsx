@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ChatBubbleLeftRightIcon,
   PaperAirplaneIcon,
@@ -116,6 +117,17 @@ interface Props {
   buttonLabel?: string;
   /** Override the trigger button's classes (e.g. a compact table pill). */
   buttonClassName?: string;
+  /**
+   * How the compose panel is presented when opened.
+   *   · "inline"  (DEFAULT) — an absolutely-positioned dropdown anchored to the
+   *                trigger. The original behavior; used by the playbook contact
+   *                bar and the Setter Operations comms panel. Unchanged.
+   *   · "modal"  — render through a portal to <body> as a centered overlay with a
+   *                click-outside backdrop and a high z-index. Use this inside a
+   *                table with horizontal-scroll/overflow so the panel can't be
+   *                clipped by the scroll container or render under later rows.
+   */
+  presentation?: "inline" | "modal";
   /** Fired after a successful send — the host refetches (this was a touch). */
   onSent?: () => void;
 }
@@ -136,9 +148,11 @@ export default function TextMerchantPanel({
   templates,
   buttonLabel = "Text — company line",
   buttonClassName,
+  presentation = "inline",
   onSent,
 }: Props) {
   const { profile } = useUserProfile();
+  const isModal = presentation === "modal";
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -227,9 +241,12 @@ export default function TextMerchantPanel({
     return () => { cancelled = true; };
   }, [open, ghlContactId]);
 
-  // ── Close on outside click ──
+  // ── Close on outside click (inline only) ──
+  // In modal mode the panel lives in a portal OUTSIDE wrapRef, so this native
+  // document listener would treat every in-panel click as "outside" and close
+  // it. The modal's own backdrop handles click-outside instead.
   useEffect(() => {
-    if (!open) return;
+    if (!open || isModal) return;
     const onDown = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -238,6 +255,19 @@ export default function TextMerchantPanel({
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
+  }, [open, isModal]);
+
+  // ── Close on Escape ──
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setArmed(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
   // ── Keep the panel on-screen: if opening left-anchored would spill past the
@@ -383,22 +413,11 @@ export default function TextMerchantPanel({
   const quickCls =
     "text-[10px] font-semibold px-2 py-1 rounded-full border border-ocean-blue/40 text-ocean-blue hover:bg-ocean-blue hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
 
-  return (
-    <div ref={wrapRef} className="relative inline-block" onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        title="Text the merchant on the company line — compose and send without leaving the page"
-        className={buttonClassName ?? DEFAULT_BUTTON_CLS}
-      >
-        <ChatBubbleLeftRightIcon className="w-3 h-3" /> {buttonLabel}
-      </button>
-
-      {open && (
-        <div
-          className={`absolute ${dropRight ? "right-0" : "left-0"} top-full z-30 mt-1.5 w-[26rem] max-w-[92vw] max-h-[80vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3`}
-        >
-          {/* ── To / From ── */}
+  // The compose body — identical in both presentations. Only its wrapper (an
+  // inline dropdown vs. a portalled modal overlay) differs below.
+  const panelBody = (
+    <>
+      {/* ── To / From ── */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
             <span className="inline-flex items-center gap-2">
               <span className="text-[10px] uppercase tracking-wide text-gray-400 flex-shrink-0">To</span>
@@ -598,12 +617,61 @@ export default function TextMerchantPanel({
             Keep it "funding" / "working capital" — an advance is never a loan.
           </p>
 
-          {result && (
-            <p className={`mt-1.5 text-[11px] ${result.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
-              {result.text}
-            </p>
-          )}
+      {result && (
+        <p className={`mt-1.5 text-[11px] ${result.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+          {result.text}
+        </p>
+      )}
+    </>
+  );
+
+  return (
+    <div ref={wrapRef} className="relative inline-block" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Text the merchant on the company line — compose and send without leaving the page"
+        className={buttonClassName ?? DEFAULT_BUTTON_CLS}
+      >
+        <ChatBubbleLeftRightIcon className="w-3 h-3" /> {buttonLabel}
+      </button>
+
+      {/* ── Inline dropdown (default) — anchored to the trigger ── */}
+      {open && !isModal && (
+        <div
+          className={`absolute ${dropRight ? "right-0" : "left-0"} top-full z-30 mt-1.5 w-[26rem] max-w-[92vw] max-h-[80vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-xl p-3`}
+        >
+          {panelBody}
         </div>
+      )}
+
+      {/* ── Modal overlay — portalled to <body> so it floats above the table's
+             overflow/stacking context and can never be clipped or hidden under
+             later rows. Backdrop click / Escape close it. ── */}
+      {open && isModal && createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:items-center"
+          onMouseDown={() => { setOpen(false); setArmed(false); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="relative my-8 w-[26rem] max-w-[92vw] max-h-[85vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-2xl p-3"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setArmed(false); }}
+              title="Close"
+              className="absolute top-2 right-2 rounded-full p-1 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            >
+              <XMarkIcon className="w-4 h-4" />
+            </button>
+            <div className="pr-6">{panelBody}</div>
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

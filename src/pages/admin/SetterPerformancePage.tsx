@@ -3352,6 +3352,7 @@ export default function SetterPerformancePage() {
                                           businessName={money.businessName}
                                           buttonLabel="Text"
                                           buttonClassName="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-300 hover:underline underline-offset-2 font-medium"
+                                          presentation="modal"
                                         />
                                       )}
                                       {r.contact_id ? (
