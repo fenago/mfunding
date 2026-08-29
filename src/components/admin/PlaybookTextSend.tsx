@@ -56,6 +56,11 @@ interface Props {
   customerId?: string | null;
   /** True once a real deal/merchant is loaded. False while browsing the flow. */
   interactive: boolean;
+  /** Gates the composer. TRUE on genuinely SMS-appropriate steps (step.smsSend):
+   *  the "Send as a text" affordance + composer render. FALSE on live phone /
+   *  talk-track scripts: only the plain read-aloud script card shows, exactly as
+   *  it did before this feature — no button, no composer. */
+  sendable: boolean;
   /** Fired after a successful send — the host can refetch (a text is a touch). */
   onSent?: () => void;
 }
@@ -66,6 +71,7 @@ export default function PlaybookTextSend({
   additionalPhones,
   customerId,
   interactive,
+  sendable,
   onSent,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -171,7 +177,10 @@ export default function PlaybookTextSend({
         <p className="text-sm italic text-gray-700 dark:text-gray-200 whitespace-pre-line">"{script}"</p>
       </div>
 
-      {/* ── Text-it affordance ── */}
+      {/* ── Text-it affordance — only on SMS-appropriate steps (step.smsSend).
+             On a live phone / talk-track script this whole block is absent, so
+             the card is a plain read-aloud script exactly as it was before. ── */}
+      {sendable && (
       <div className="flex flex-wrap items-center gap-2 px-3 pb-2">
         <button
           type="button"
@@ -199,9 +208,10 @@ export default function PlaybookTextSend({
           </span>
         )}
       </div>
+      )}
 
       {/* ── Composer ── */}
-      {open && interactive && (
+      {sendable && open && interactive && (
         <div className="border-t border-ocean-blue/20 dark:border-ocean-blue/30 px-3 py-3 space-y-2">
           {/* To / From */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-gray-500 dark:text-gray-400">

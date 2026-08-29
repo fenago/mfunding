@@ -4866,11 +4866,12 @@ function StepCard({
           ))}
         </ul>
 
-        {/* The verbatim script — now sendable. The read-aloud box is unchanged;
-            a "Send as a text" affordance fires the same words to the merchant
-            through sms-send (DND / suppression / E.164 / "loan" all gated there).
-            Editable before it goes out, and disabled with a clear note when no
-            merchant (browse mode) or no number is on file. */}
+        {/* The verbatim script. The read-aloud box always renders. On steps
+            flagged step.smsSend (stips/link requests, appointment & referral
+            texts) a "Send as a text" affordance fires the same words to the
+            merchant through sms-send (DND / suppression / E.164 / "loan" all
+            gated there). On live phone-opener / talk-track steps the flag is
+            off, so it stays a plain read-aloud card with NO composer. */}
         {step.say && (
           <PlaybookTextSend
             script={step.say}
@@ -4878,6 +4879,7 @@ function StepCard({
             additionalPhones={deal?.customer?.additional_phones ?? []}
             customerId={deal?.customer_id}
             interactive={interactive && !!deal}
+            sendable={!!step.smsSend}
           />
         )}
 

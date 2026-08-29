@@ -70,6 +70,14 @@ export interface PlaybookStep {
   sla?: string;
   do: string[]; // what the closer does — with exact app locations
   say?: string; // verbatim script (email/phone)
+  /** Gate for the "Send as a text" composer on this step's script card.
+   * TRUE only on genuinely SMS-appropriate steps — stips/document requests,
+   * "here's your secure upload link", appointment/confirmation texts,
+   * breakup/re-engagement texts, and Google-review / referral asks. Leave
+   * absent/false on live phone-opener, rapport, and qualification talk-tracks:
+   * those render as a plain read-aloud script card with NO composer. When in
+   * doubt, leave it OFF — a call script should not get a text box. */
+  smsSend?: boolean;
   collect?: string[]; // docs / info to gather
   fields?: StepField[]; // structured inputs captured inline at this step
   route?: { to: string; label: string }; // primary screen for this step
@@ -162,6 +170,7 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
     automation: "MCA 06 — Bank Statements (Sequence A) ⭐",
     sla: "14-day email chase — stop the instant statements arrive",
     tone: "leak",
+    smsSend: true, // stips/statements chase + secure upload link — text-appropriate
     do: [
       "Get the stips + last 4 months of bank statements via the secure 'Bank Statements & Documents Upload' link.",
       "Review what's in via Admin → Doc Review (/admin/documents) and the deal's Documents tab.",
@@ -222,6 +231,7 @@ const MCA_CLOSE_STEPS: PlaybookStep[] = [
     stageKey: "funded",
     automation: "MCA 11 — Funded → Renewal",
     tone: "win",
+    smsSend: true, // congrats + referral ask — text-appropriate
     do: [
       "When the funder confirms the deposit, move Status → Funded. Commission auto-calculates (see Admin → Commissions).",
       "The Day-1 congrats + Google review + referral-ask email fires automatically.",
@@ -612,6 +622,7 @@ export const PLAYBOOKS: Playbook[] = [
         automation: "MCA 01 — Speed to Lead",
         sla: "Email out < 5 minutes · call at the merchant's stated best time",
         tone: "speed",
+        smsSend: true, // written first-touch confirming their stated call time — a sendable text, not a spoken opener
         do: [
           "Send the intro email NOW — by hand, from the deal's Comms tab. Five minutes is the window, and an email never ambushes anyone.",
           "Then look at 'They asked to be called at …' on the My Day card. That is the merchant's OWN answer to Synergy. Call THEN.",
@@ -865,6 +876,7 @@ export const PLAYBOOKS: Playbook[] = [
         stageKey: "positions_analysis",
         automation: "VCF 03 — Positions & Balances Analysis",
         sla: "Chase 14 days by email",
+        smsSend: true, // secure upload link + document/statements request — text-appropriate
         do: [
           "Email the secure upload link. Collect every current MCA agreement + 2–3 months of statements showing the debits.",
           "Track what's in via the deal's Documents tab / Admin → Doc Review; move Status → Positions Analysis. Tally every position, balance, and daily/weekly debit.",
@@ -928,6 +940,7 @@ export const PLAYBOOKS: Playbook[] = [
         stageKey: "restructure_executed",
         automation: "VCF 07 — Restructure Executed · VCF 08 — Servicing & Monitoring",
         tone: "win",
+        smsSend: true, // congrats + referral ask — text-appropriate
         do: [
           "When VCF confirms execution, move Status → Restructured. The congrats + review + referral-ask email fires.",
           "Move to Servicing for ongoing check-ins; watch for when they're healthy enough for new funding.",
@@ -1018,6 +1031,7 @@ export const PLAYBOOKS: Playbook[] = [
         automation: "MCA 06 — Bank Statements (Sequence A)",
         sla: "Short chase — most of the file already exists",
         tone: "leak",
+        smsSend: true, // stips request + secure upload link — text-appropriate
         cta: "Send the upload link (moves to Bank Statements)",
         do: [
           "The incumbent funder already has the original application and history, so a renewal typically needs just the 1–2 MOST RECENT months of statements to show current activity — not a fresh 4-month package.",
@@ -1054,6 +1068,7 @@ export const PLAYBOOKS: Playbook[] = [
         stageKey: "funded",
         automation: "MCA 11 — Funded → Renewal",
         tone: "win",
+        smsSend: true, // renewal congrats + repeat referral ask — text-appropriate
         do: [
           "When the funder confirms the deposit, move Status → Funded. Commission auto-calculates at 6 points × the renewal split (see Admin → Commissions) — because this deal is flagged is_renewal.",
           "The Day-1 congrats + Google review + referral-ask email fires automatically — ask for the referral AGAIN; repeat renewers are your best referral source.",
