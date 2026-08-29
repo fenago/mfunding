@@ -16,7 +16,10 @@
 // a failed row prints its error. Nothing here implies a merchant received a text
 // that didn't actually go out.
 //
-// This is NOT the playbook's TextMerchantPanel (TextMagic, a different number).
+// Shares the JMP line with the playbook's TextMerchantPanel — that panel now
+// sends through this SAME number via the sms-send edge function, so a text a
+// setter fires from the Playbook lands in this inbox's thread (and vice-versa).
+// (It is NOT a separate TextMagic number anymore.)
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChatBubbleLeftRightIcon,
@@ -275,6 +278,16 @@ export default function TextMessagesPage() {
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ block: "end" });
   }, [activeThread.length, activePhone]);
+
+  // Mark the open thread READ once per open. The line is shared, so this clears
+  // the unread state ORG-WIDE (sms_mark_read flips read_at on this number's unread
+  // inbound rows) — the sidebar badge then drops for everyone via realtime. Cheap
+  // and idempotent: it only touches read_at IS NULL rows, so a re-open or a draft
+  // number with no history is a 0-row no-op that fires no realtime event.
+  useEffect(() => {
+    if (!activePhone) return;
+    void supabase.rpc("sms_mark_read", { p_phone: activePhone });
+  }, [activePhone]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

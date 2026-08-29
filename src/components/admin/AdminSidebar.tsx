@@ -55,6 +55,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
+import { useUnreadSms } from "../../hooks/useUnreadSms";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
 import Logo from "../ui/Logo";
@@ -294,6 +295,8 @@ export default function AdminSidebar() {
   const { profile, isSuperAdmin } = useUserProfile();
   const { canSeeRenewals, loading: renewalsLoading } = useRenewalsAccess();
   const { isCloserLens } = useCloserLens();
+  // Org-wide unread count for the shared SMS line → badge on "Text Messages".
+  const unreadSms = useUnreadSms();
   const { mode, cycleMode } = useTheme();
   const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
   const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
@@ -409,11 +412,14 @@ export default function AdminSidebar() {
                 {items.map((item) => {
                   const Icon = item.icon;
                   const active = isActive(item.path);
+                  // Unread badge, only on the shared-line Text Messages item, only
+                  // when there's something waiting. Org-wide count (see useUnreadSms).
+                  const badge = item.path === "/admin/text-messages" ? unreadSms : 0;
                   return (
                     <Link
                       key={item.path}
                       to={item.path}
-                      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
+                      className={`relative flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
                         active
                           ? "bg-mint-green/10 text-mint-green dark:text-mint-green"
                           : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white"
@@ -426,6 +432,24 @@ export default function AdminSidebar() {
                           {item.name}
                         </span>
                       )}
+                      {badge > 0 &&
+                        (isCollapsed ? (
+                          // Collapsed rail: a compact dot on the icon corner — the
+                          // label is hidden, so a full pill has nowhere to sit.
+                          <span
+                            className="absolute top-1.5 right-1.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none tabular-nums"
+                            title={`${badge} unread text${badge === 1 ? "" : "s"}`}
+                          >
+                            {badge > 99 ? "99+" : badge}
+                          </span>
+                        ) : (
+                          <span
+                            className="ml-auto min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold tabular-nums"
+                            title={`${badge} unread text${badge === 1 ? "" : "s"}`}
+                          >
+                            {badge > 99 ? "99+" : badge}
+                          </span>
+                        ))}
                     </Link>
                   );
                 })}
