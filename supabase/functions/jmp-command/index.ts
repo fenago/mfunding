@@ -6,18 +6,29 @@
 // `cheogram.com`. The bot's reply comes back through the bridge as an inbound
 // jmp_bot_messages row. Everything here is the gate in front of that queue.
 //
-//   POST { command }
+//   POST { command }                 ← the six-button allowlist path (UNCHANGED)
 //        → { ok:true, id, command, status:'queued' }   (200)
 //        | { ok:false, error, code }                    (4xx/5xx)
 //
-// ── SAFETY: READ-ONLY ALLOWLIST ──────────────────────────────────────────────
-// Only the SIX read-only account commands are executable here. Billing commands
-// (top up, alt top up, credit cards) and account-changing commands (subaccount,
-// reset sip account, lnp, set-port-out-pin, change jabber id, register) are
-// deliberately NOT accepted — they stay documented-only in the runbook. Anything
-// off the allowlist is refused; nothing is queued. The allowlist is exact-match
-// (trimmed, lowercased) — no prefixes, no free text — so a typo can't reach the
-// bot with a longer/dangerous command word.
+//   POST { text }                    ← the owner's FREE-FORM command box
+//        → { ok:true, id, command:null, status:'queued' } (200)
+//        | { ok:false, error, code }                       (4xx/5xx)
+//
+// ── TWO PATHS, ONE GATE ──────────────────────────────────────────────────────
+// `command` (the six buttons) stays EXACTLY as it was: exact-match against the
+// read-only allowlist below, so a stray button/typo can never reach the bot with
+// a dangerous word. `text` is the owner's free-form box: any non-empty trimmed
+// string (length-capped) is queued verbatim — because the account bot itself is
+// the authority on what is/isn't a valid command, and the owner typing a command
+// here is identical to typing it in the Cheogram app. BOTH paths are still gated
+// by the same super_admin session check; nothing changes about who may call this.
+// If both keys are present, `command` (the safer allowlisted path) wins.
+//
+// ── SAFETY NOTE ON THE FREE-FORM PATH ────────────────────────────────────────
+// The free-form box CAN reach billing / account-changing commands (top up,
+// subaccount, …) — that is the point, the owner asked for it. The UI carries the
+// caution; there is no server-side allowlist on `text` by design. It is still a
+// human-only, super_admin-only console: no cron/shared-secret path exists.
 //
 // ── AUTH ─────────────────────────────────────────────────────────────────────
 // verify_jwt = true at the gateway PLUS an in-code SUPER_ADMIN check against
@@ -38,6 +49,10 @@ const ALLOWED_COMMANDS = [
   "referral codes",
   "sims",
 ] as const;
+
+// A sane upper bound on a free-form command so a paste accident can't queue a
+// megabyte into the bridge. Real bot commands are short; this is generous.
+const MAX_TEXT_LEN = 1000;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -70,28 +85,49 @@ Deno.serve(async (req) => {
     return fail("forbidden", "Super-admin access required", 403);
   }
 
-  // ── Input: ONE command, exact-match against the read-only allowlist. ──
-  const payload = (await req.json().catch(() => null)) as { command?: string } | null;
+  // ── Input: EITHER an allowlisted `command` (buttons) OR free-form `text`. ──
+  const payload = (await req.json().catch(() => null)) as
+    | { command?: string; text?: string }
+    | null;
   if (!payload) return fail("bad_request", "Invalid JSON body", 400);
 
-  const command = String(payload.command ?? "").trim().toLowerCase();
-  if (!command) return fail("bad_request", "Missing command", 400);
-  if (!(ALLOWED_COMMANDS as readonly string[]).includes(command)) {
-    return fail(
-      "not_allowed",
-      `"${command}" is not a permitted command. Only read-only commands are executable: ${ALLOWED_COMMANDS.join(", ")}.`,
-      400,
-    );
+  // What actually gets queued: `command` (the allowlisted word) is stamped only on
+  // the button path; the free-form path leaves it null and carries the text in body.
+  let command: string | null = null;
+  let body: string;
+
+  const hasCommand = payload.command !== undefined && payload.command !== null;
+  if (hasCommand) {
+    // ── PATH 1 (unchanged): ONE command, exact-match against the read-only allowlist.
+    const cmd = String(payload.command ?? "").trim().toLowerCase();
+    if (!cmd) return fail("bad_request", "Missing command", 400);
+    if (!(ALLOWED_COMMANDS as readonly string[]).includes(cmd)) {
+      return fail(
+        "not_allowed",
+        `"${cmd}" is not a permitted command. Only read-only commands are executable: ${ALLOWED_COMMANDS.join(", ")}.`,
+        400,
+      );
+    }
+    command = cmd;
+    body = cmd; // for these commands the body IS the command word
+  } else {
+    // ── PATH 2 (new): free-form text — any non-empty trimmed string, length-capped.
+    const text = String(payload.text ?? "").trim();
+    if (!text) return fail("bad_request", "Missing command text", 400);
+    if (text.length > MAX_TEXT_LEN) {
+      return fail("too_long", `Command is too long (max ${MAX_TEXT_LEN} characters).`, 400);
+    }
+    command = null; // no allowlisted word — the body carries the exact text
+    body = text;
   }
 
-  // Queue it. The bridge's bot pump sends `body` verbatim to the account bot; for
-  // these commands the body IS the command word.
+  // Queue it. The bridge's bot pump sends `body` verbatim to the account bot.
   const { data: row, error: insErr } = await db
     .from("jmp_bot_messages")
     .insert({
       direction: "outbound",
       command,
-      body: command,
+      body,
       status: "queued",
       created_by: caller.id,
     })

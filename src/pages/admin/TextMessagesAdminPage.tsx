@@ -26,12 +26,20 @@ import {
   ShieldCheckIcon,
   PhoneArrowUpRightIcon,
   CommandLineIcon,
+  PaperAirplaneIcon,
+  KeyIcon,
+  EyeIcon,
+  EyeSlashIcon,
+  ClipboardDocumentIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import {
   READ_ONLY_COMMANDS,
   runJmpCommand,
+  runJmpText,
   loadJmpBotMessages,
+  getJmpAccountKey,
+  saveJmpAccountKey,
   type JmpBotMessage,
 } from "@/lib/jmpConsole";
 import {
@@ -117,6 +125,15 @@ export default function TextMessagesAdminPage() {
   const [botLoading, setBotLoading] = useState(true);
   const [botBusy, setBotBusy] = useState<string | null>(null); // command currently being queued
   const [botNotice, setBotNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [freeText, setFreeText] = useState(""); // owner's free-form command box
+  const [freeBusy, setFreeBusy] = useState(false);
+
+  // ── JMP account key (vault-backed secret, super-admin only) ──
+  const [keyValue, setKeyValue] = useState<string | null>(null); // revealed plaintext; null = hidden
+  const [keyBusy, setKeyBusy] = useState<null | "reveal" | "save">(null);
+  const [keyEditing, setKeyEditing] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   // ── Health ────────────────────────────────────────────────────────────────
   const loadHealth = useCallback(async () => {
@@ -234,6 +251,69 @@ export default function TextMessagesAdminPage() {
     },
     [loadBot],
   );
+
+  // Send the owner's free-form command. NOT allowlisted — this can start real
+  // billing/account flows, same as typing in the Cheogram app. Nothing auto-sends.
+  const sendFreeText = useCallback(async () => {
+    const text = freeText.trim();
+    if (!text) return;
+    setFreeBusy(true);
+    setBotNotice(null);
+    const res = await runJmpText(supabase, text);
+    setFreeBusy(false);
+    if (!res.ok) {
+      setBotNotice({ ok: false, text: res.error ?? "The command was refused." });
+      return;
+    }
+    setBotNotice({ ok: true, text: `Sent "${text}" to the JMP bot — waiting for its reply…` });
+    setFreeText("");
+    void loadBot();
+  }, [freeText, loadBot]);
+
+  // ── Account key ──
+  const revealKey = useCallback(async () => {
+    setKeyBusy("reveal");
+    setKeyMsg(null);
+    const res = await getJmpAccountKey(supabase);
+    setKeyBusy(null);
+    if (!res.ok) {
+      setKeyMsg({ ok: false, text: res.error ?? "Couldn't read the account key." });
+      return;
+    }
+    setKeyValue(res.value ?? "");
+    if (!res.hasValue) {
+      setKeyMsg({ ok: true, text: "No account key is stored yet — click Edit to set one." });
+    }
+  }, []);
+
+  const copyKey = useCallback(async () => {
+    if (keyValue == null) return;
+    try {
+      await navigator.clipboard.writeText(keyValue);
+      setKeyMsg({ ok: true, text: "Copied to clipboard." });
+    } catch {
+      setKeyMsg({ ok: false, text: "Copy failed — reveal the value and copy it manually." });
+    }
+  }, [keyValue]);
+
+  const saveKey = useCallback(async () => {
+    if (!keyDraft.trim()) {
+      setKeyMsg({ ok: false, text: "Enter a value to save." });
+      return;
+    }
+    setKeyBusy("save");
+    setKeyMsg(null);
+    const res = await saveJmpAccountKey(supabase, keyDraft);
+    setKeyBusy(null);
+    if (!res.ok) {
+      setKeyMsg({ ok: false, text: res.error ?? "Couldn't save the account key." });
+      return;
+    }
+    setKeyMsg({ ok: true, text: "Saved to the vault." });
+    setKeyEditing(false);
+    setKeyDraft("");
+    setKeyValue(null); // force a fresh Reveal to see the new value
+  }, [keyDraft]);
 
   const reloadAll = useCallback(() => {
     void loadHealth();
@@ -370,6 +450,117 @@ export default function TextMessagesAdminPage() {
             </dd>
           </div>
         </dl>
+
+        {/* ── Account key (vault-backed secret; super-admin only) ── */}
+        <div className="mt-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+          <div className="flex items-center gap-2 mb-1">
+            <KeyIcon className="w-4 h-4 text-mint-green" />
+            <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Account key (JMP / Cheogram password)
+            </h3>
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 max-w-2xl">
+            Stored <strong>securely in the Supabase vault</strong> (encrypted at rest), never in the
+            app or the repo. It starts empty — click <strong>Edit</strong> to set it. Reveal fetches
+            the decrypted value on demand; this control is super-admin only.
+          </p>
+
+          {keyEditing ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={keyDraft}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                placeholder="Paste the JMP account key…"
+                autoComplete="off"
+                className="input-field flex-1 min-w-[16rem] font-mono text-sm"
+                disabled={keyBusy === "save"}
+              />
+              <button
+                onClick={() => void saveKey()}
+                disabled={keyBusy === "save" || !keyDraft.trim()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-mint-green text-white text-sm font-semibold disabled:opacity-50"
+              >
+                {keyBusy === "save" ? (
+                  <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CheckCircleIcon className="w-4 h-4" />
+                )}
+                {keyBusy === "save" ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={() => {
+                  setKeyEditing(false);
+                  setKeyDraft("");
+                  setKeyMsg(null);
+                }}
+                disabled={keyBusy === "save"}
+                className="text-sm text-ocean-blue hover:underline"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="px-2.5 py-2 rounded-lg bg-gray-100 dark:bg-gray-900 font-mono text-sm text-gray-900 dark:text-white min-w-[12rem]">
+                {keyValue == null ? "••••••••••••" : keyValue === "" ? "(not set)" : keyValue}
+              </code>
+              {keyValue == null ? (
+                <button
+                  onClick={() => void revealKey()}
+                  disabled={keyBusy === "reveal"}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:border-mint-green disabled:opacity-50"
+                >
+                  {keyBusy === "reveal" ? (
+                    <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <EyeIcon className="w-4 h-4" />
+                  )}
+                  Reveal
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setKeyValue(null)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:border-mint-green"
+                  >
+                    <EyeSlashIcon className="w-4 h-4" /> Hide
+                  </button>
+                  {keyValue !== "" && (
+                    <button
+                      onClick={() => void copyKey()}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:border-mint-green"
+                    >
+                      <ClipboardDocumentIcon className="w-4 h-4" /> Copy
+                    </button>
+                  )}
+                </>
+              )}
+              <button
+                onClick={() => {
+                  setKeyEditing(true);
+                  setKeyDraft("");
+                  setKeyMsg(null);
+                }}
+                className="text-sm text-ocean-blue hover:underline"
+              >
+                Edit
+              </button>
+            </div>
+          )}
+          {keyMsg && (
+            <p
+              className={`text-xs mt-2 ${
+                keyMsg.ok
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-red-600 dark:text-red-400"
+              }`}
+            >
+              {keyMsg.text}
+            </p>
+          )}
+        </div>
+
         <p className="mt-4 text-xs text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
           <strong>Compliance — this is a consumer line.</strong> Conversational and support texting
           only: replies to merchants we're already working with. <u>No bulk sending.</u> Blasting
@@ -493,6 +684,49 @@ export default function TextMessagesAdminPage() {
               <code className="text-[11px] text-gray-400 mt-0.5">{c.cmd}</code>
             </button>
           ))}
+        </div>
+
+        {/* Free-form command box — NOT allowlisted; the owner types any command. */}
+        <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10 p-3 mb-4">
+          <label
+            htmlFor="jmp-free-command"
+            className="block text-xs font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400 mb-1"
+          >
+            Type a command to the account bot
+          </label>
+          <p className="text-xs text-gray-600 dark:text-gray-300 mb-2 max-w-2xl">
+            <strong>Caution:</strong> these run against the <strong>real JMP account</strong>. Unlike
+            the read-only buttons above, anything you type is sent verbatim — billing and
+            account-changing commands (<code>top up</code>, <code>subaccount</code>, …){" "}
+            <strong>start real flows</strong>, exactly as if you typed them in the Cheogram app.
+            Nothing auto-sends: type, then click Send. The bot's reply appears in the transcript
+            below.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              id="jmp-free-command"
+              value={freeText}
+              onChange={(e) => setFreeText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void sendFreeText();
+              }}
+              placeholder="e.g. balance, help, subaccount…"
+              className="input-field flex-1 min-w-[16rem] font-mono text-sm"
+              disabled={freeBusy}
+            />
+            <button
+              onClick={() => void sendFreeText()}
+              disabled={freeBusy || !freeText.trim()}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-mint-green text-white text-sm font-semibold disabled:opacity-50"
+            >
+              {freeBusy ? (
+                <ArrowPathIcon className="w-4 h-4 animate-spin" />
+              ) : (
+                <PaperAirplaneIcon className="w-4 h-4" />
+              )}
+              {freeBusy ? "Sending…" : "Send"}
+            </button>
+          </div>
         </div>
 
         {botNotice && (

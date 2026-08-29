@@ -447,3 +447,11 @@ verify_jwt = true
 # account-changing commands are refused and never queued.
 [functions.jmp-command]
 verify_jwt = true
+
+# jmp-account-key: SECURE read/write of the JMP/Cheogram account password, stored
+# in the Supabase vault (never in the repo). verify_jwt = true PLUS an in-code
+# SUPER_ADMIN check — human-only, no cron/shared-secret path. GET reveals the
+# decrypted value; POST { value } stores it. Reads/writes go through the
+# service_role-only RPCs get_jmp_account_key / set_jmp_account_key.
+[functions.jmp-account-key]
+verify_jwt = true

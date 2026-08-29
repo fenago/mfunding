@@ -6,10 +6,16 @@
 // droplet bridge (which relays it and mirrors the reply). It is entirely separate
 // from merchant SMS (sms_messages) — do not conflate the two.
 //
-// ⚠️ READ-ONLY. Only the six account-query commands below are executable. Billing
-// and account-changing commands stay documented-only in the runbook card and are
-// NOT exposed here. This list must stay in sync with the edge function's
-// ALLOWED_COMMANDS (supabase/functions/jmp-command/index.ts).
+// TWO WAYS TO REACH THE BOT:
+//   · runJmpCommand — the six read-only account queries below (buttons). Kept
+//     allowlisted client- and server-side; this list must stay in sync with the
+//     edge function's ALLOWED_COMMANDS (supabase/functions/jmp-command/index.ts).
+//   · runJmpText — the owner's FREE-FORM box. NOT allowlisted (any string), so it
+//     can reach billing/account-changing commands too — same as typing in the
+//     Cheogram app. Both paths are super-admin-only at the edge fn.
+//
+// Also here: getJmpAccountKey / saveJmpAccountKey — the vault-backed JMP account
+// password (jmp-account-key edge fn), never stored in the repo.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -49,6 +55,21 @@ export interface RunResult {
   id?: string;
 }
 
+/** Pull the edge function's own JSON `error` out of a failed invoke — supabase-js
+ *  wraps a non-2xx as a FunctionsHttpError whose `context` is the Response. */
+async function invokeErrorDetail(error: { message: string; context?: Response }): Promise<string> {
+  try {
+    const ctx = error.context;
+    if (ctx && typeof ctx.json === "function") {
+      const body = (await ctx.json()) as { error?: string };
+      if (body?.error) return body.error;
+    }
+  } catch {
+    // fall through to the generic message
+  }
+  return error.message;
+}
+
 /** Queue one read-only command to the bot via the jmp-command edge function.
  *  Refuses client-side too if the command is off the allowlist — the edge fn is
  *  the real gate, this is just a guard against a coding slip. */
@@ -64,23 +85,78 @@ export async function runJmpCommand(
     body: { command: cmd },
   });
   if (error) {
-    // Surface the edge function's own JSON error body when present — invoke wraps
-    // a non-2xx as a FunctionsHttpError whose context is the Response.
-    let detail = error.message;
-    try {
-      const ctx = (error as { context?: Response }).context;
-      if (ctx && typeof ctx.json === "function") {
-        const body = (await ctx.json()) as { error?: string };
-        if (body?.error) detail = body.error;
-      }
-    } catch {
-      // keep the generic message
-    }
-    return { ok: false, error: detail };
+    return { ok: false, error: await invokeErrorDetail(error as { message: string; context?: Response }) };
   }
   const d = (data ?? {}) as { ok?: boolean; error?: string; id?: string };
   if (!d.ok) return { ok: false, error: d.error ?? "The command was refused." };
   return { ok: true, id: d.id };
+}
+
+/** Queue a FREE-FORM command to the bot via the jmp-command edge function's `text`
+ *  path. Unlike runJmpCommand this is NOT allowlisted — the owner types an
+ *  arbitrary command, exactly as if typing it in the Cheogram app. Still
+ *  super-admin gated by the edge fn. */
+export async function runJmpText(
+  supabase: SupabaseClient,
+  text: string,
+): Promise<RunResult> {
+  const body = text.trim();
+  if (!body) return { ok: false, error: "Type a command to send." };
+  const { data, error } = await supabase.functions.invoke("jmp-command", {
+    body: { text: body },
+  });
+  if (error) {
+    return { ok: false, error: await invokeErrorDetail(error as { message: string; context?: Response }) };
+  }
+  const d = (data ?? {}) as { ok?: boolean; error?: string; id?: string };
+  if (!d.ok) return { ok: false, error: d.error ?? "The command was refused." };
+  return { ok: true, id: d.id };
+}
+
+// ── JMP account key (vault-backed secret; super-admin only) ───────────────────
+
+export interface KeyReadResult {
+  ok: boolean;
+  value?: string;
+  hasValue?: boolean;
+  error?: string;
+}
+
+export interface KeyWriteResult {
+  ok: boolean;
+  error?: string;
+}
+
+/** Reveal the JMP account key — GET the decrypted value from the vault via the
+ *  jmp-account-key edge function. Returns the plaintext (super-admin only). */
+export async function getJmpAccountKey(supabase: SupabaseClient): Promise<KeyReadResult> {
+  const { data, error } = await supabase.functions.invoke("jmp-account-key", {
+    method: "GET",
+  });
+  if (error) {
+    return { ok: false, error: await invokeErrorDetail(error as { message: string; context?: Response }) };
+  }
+  const d = (data ?? {}) as { ok?: boolean; value?: string; hasValue?: boolean; error?: string };
+  if (!d.ok) return { ok: false, error: d.error ?? "Couldn't read the account key." };
+  return { ok: true, value: d.value ?? "", hasValue: !!d.hasValue };
+}
+
+/** Save the JMP account key — POST the value to the vault via the jmp-account-key
+ *  edge function. The value is stored encrypted at rest; never in the repo. */
+export async function saveJmpAccountKey(
+  supabase: SupabaseClient,
+  value: string,
+): Promise<KeyWriteResult> {
+  if (!value.trim()) return { ok: false, error: "Enter a value to save." };
+  const { data, error } = await supabase.functions.invoke("jmp-account-key", {
+    body: { value },
+  });
+  if (error) {
+    return { ok: false, error: await invokeErrorDetail(error as { message: string; context?: Response }) };
+  }
+  const d = (data ?? {}) as { ok?: boolean; error?: string };
+  if (!d.ok) return { ok: false, error: d.error ?? "Couldn't save the account key." };
+  return { ok: true };
 }
 
 /** Load recent bot-channel messages, returned OLDEST → NEWEST so the panel reads
