@@ -1215,6 +1215,11 @@ function hourLabel(h: number): string {
 type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers" | "operations";
 const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
+  // Right of Funnel (owner-specified): the setter's single-merchant working
+  // surface — opens ONE merchant into the ops console (deep-linked from a contact
+  // link, or searched by business / name / phone / email). Renders outside the
+  // WAVV gate — it reads `deals`, not the dialer sync.
+  { id: "operations",     label: "Operations",     icon: PhoneArrowUpRightIcon },
   { id: "setters",        label: "Setters",        icon: UserGroupIcon },
   // Sits next to Setters because it answers the follow-up question that table
   // raises: the scorecard says who DIALS most, this one says who TALKS most.
@@ -1233,10 +1238,6 @@ const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: bool
   // them: those two say how a COHORT converted, this one hands the setter the
   // individual merchants and the buttons to move them.
   { id: "assignments",    label: "Assignments",    icon: ClipboardDocumentListIcon },
-  // The single-merchant working surface: Assignments hands over the book, this
-  // opens ONE merchant into the setter console (deep-linked from a contact link
-  // or pulled up by phone). Renders outside the WAVV gate — it reads `deals`.
-  { id: "operations",     label: "Operations",     icon: PhoneArrowUpRightIcon },
   // Immediately right of Assignments: it answers the OTHER half of "how is this
   // setter doing". The scorecard tabs count dials; this one asks how much of the
   // shift produced them (occupancy) and how much of the "talking" is real.
