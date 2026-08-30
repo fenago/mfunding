@@ -765,17 +765,23 @@ function funnelStagesOf(f: FunnelCounts): FunnelStage[] {
       key: "human", label: "Reached a human", short: "Humans",
       help: "Answered, and nothing about the call says machine: outcome is not VOICEMAIL / NO_VOICEMAIL / NO_ANSWER / NO_CALLBACK, the setter did not disposition it 'Voice Message' or 'No Answer', and no 'Played voicemail' note. WAVV's own human flag is NOT used — it marks voicemails as human.",
       count: f.humans, stepLabel: "of answers were human", stepShort: "were human",
-      stepPct: pct(f.humans, f.connects), targetKey: "human_rate_pct",
-      // The industry cold-dial CONTACT rate is humans as a share of DIALS,
-      // which is exactly this stage's "% of dials" line — not its step rate.
-      // So "% of dials" is the number that carries this rung's colour, and
-      // "of answers were human" rides along as a plain secondary stat.
-      benchmark: { id: "contact_rate", basis: "ofTotal" },
+      stepPct: pct(f.humans, f.connects), targetKey: null,
+      // Deliberately UNCOLOURED (grey). Reaching a human is a diagnostic count
+      // between Connects and Conversations — there is no reliable MCA industry
+      // standard for raw human-pickup, and the 3–5% "contact rate" band is a
+      // real-CONVERSATION rate, not a human-answered rate, so it lives on the
+      // Conversations rung below. Never a false green.
+      benchmark: null,
     },
     {
       key: "conversations", label: "Conversations", short: "Conversations", help: CONVERSATION_HELP,
       count: f.conversations, stepLabel: "of humans dispositioned as a talk", stepShort: "of humans talked",
       stepPct: pct(f.conversations, f.humans), targetKey: "conversation_rate_pct",
+      // The industry "3–5% of dials" cold-dial CONTACT rate is a real-conversation
+      // rate (reached a live decision-maker and talked), NOT a raw human-pickup
+      // rate — so the band lives here, judged against this rung's "% of dials"
+      // line (conversations ÷ dials). Below 3% reads amber, honestly.
+      benchmark: { id: "contact_rate", basis: "ofTotal" },
     },
     {
       key: "positives", label: "Positive dispositions", short: "Positives",
@@ -983,7 +989,7 @@ const DEFAULT_TARGETS: Record<string, KpiTarget> = {
   answer_rate_pct:       { label: "Answer rate",       direction: "higher", green: 35, amber: 20, unit: "%" },
   human_rate_pct:        { label: "Reached a human",   direction: "higher", green: 30, amber: 15, unit: "%" },
   conversation_rate_pct: { label: "Conversation rate", direction: "higher", green: 15, amber: 7,  unit: "%" },
-  positive_rate_pct:     { label: "Positive rate",     direction: "higher", green: 20, amber: 10, unit: "%" },
+  positive_rate_pct:     { label: "Positive rate",     direction: "higher", green: 25, amber: 15, unit: "%" },
 };
 
 function ragOf(value: number | null, t: KpiTarget | null): Rag {
