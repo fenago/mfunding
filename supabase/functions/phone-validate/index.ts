@@ -188,7 +188,10 @@ function realPhoneValidationProvider(token: string): Provider {
         result: {
           line_type: iscell === "Y" ? "mobile" : iscell === "N" ? "landline" : null,
           carrier: clean(b?.carrier),
-          reachable: status === "connected",
+          // RPV returns confidence-suffixed variants ("connected", "connected-75"),
+          // so match the PREFIX — an exact === "connected" would mislabel most live
+          // numbers as unreachable.
+          reachable: /^connected/.test(status),
           disconnected: /^disconnected/.test(status),
         },
       };
