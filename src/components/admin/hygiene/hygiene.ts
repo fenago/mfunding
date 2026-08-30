@@ -59,22 +59,64 @@ export const SOURCE_META: Record<
   ph_ucc: {
     label: "UCC leads",
     table: "ph_ucc_leads",
-    blurb: "Merchants with an existing advance on file (the UCC Harvester book).",
+    blurb: "Merchants with an existing advance on file, harvested from UCC filings (the UCC Harvester book).",
     chip: "bg-ocean-blue/10 text-ocean-blue",
   },
   lead_records: {
     label: "Purchased lists",
     table: "lead_records",
-    blurb: "Uploaded aged / UCC / trigger lists (the Lead Machine book).",
+    blurb: "Aged / UCC / trigger lists you uploaded (the Lead Machine book).",
     chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
   },
   customers: {
     label: "Customers (CRM)",
     table: "customers",
-    blurb: "The CRM pipeline — leads through funded merchants.",
+    blurb: "Your CRM pipeline — leads through funded merchants.",
     chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
   },
 };
+
+/* US states for the forgiving state picker. `state` is stored as the 2-LETTER
+   code in both ph_ucc_leads and lead_records (e.g. 'FL', never 'Florida'), so a
+   dropdown keyed on the code is what keeps a search from silently returning 0.
+   normalizeState() accepts a full name OR a code and returns the stored code. */
+export const US_STATES: { code: string; name: string }[] = [
+  { code: "AL", name: "Alabama" }, { code: "AK", name: "Alaska" }, { code: "AZ", name: "Arizona" },
+  { code: "AR", name: "Arkansas" }, { code: "CA", name: "California" }, { code: "CO", name: "Colorado" },
+  { code: "CT", name: "Connecticut" }, { code: "DE", name: "Delaware" }, { code: "DC", name: "District of Columbia" },
+  { code: "FL", name: "Florida" }, { code: "GA", name: "Georgia" }, { code: "HI", name: "Hawaii" },
+  { code: "ID", name: "Idaho" }, { code: "IL", name: "Illinois" }, { code: "IN", name: "Indiana" },
+  { code: "IA", name: "Iowa" }, { code: "KS", name: "Kansas" }, { code: "KY", name: "Kentucky" },
+  { code: "LA", name: "Louisiana" }, { code: "ME", name: "Maine" }, { code: "MD", name: "Maryland" },
+  { code: "MA", name: "Massachusetts" }, { code: "MI", name: "Michigan" }, { code: "MN", name: "Minnesota" },
+  { code: "MS", name: "Mississippi" }, { code: "MO", name: "Missouri" }, { code: "MT", name: "Montana" },
+  { code: "NE", name: "Nebraska" }, { code: "NV", name: "Nevada" }, { code: "NH", name: "New Hampshire" },
+  { code: "NJ", name: "New Jersey" }, { code: "NM", name: "New Mexico" }, { code: "NY", name: "New York" },
+  { code: "NC", name: "North Carolina" }, { code: "ND", name: "North Dakota" }, { code: "OH", name: "Ohio" },
+  { code: "OK", name: "Oklahoma" }, { code: "OR", name: "Oregon" }, { code: "PA", name: "Pennsylvania" },
+  { code: "RI", name: "Rhode Island" }, { code: "SC", name: "South Carolina" }, { code: "SD", name: "South Dakota" },
+  { code: "TN", name: "Tennessee" }, { code: "TX", name: "Texas" }, { code: "UT", name: "Utah" },
+  { code: "VT", name: "Vermont" }, { code: "VA", name: "Virginia" }, { code: "WA", name: "Washington" },
+  { code: "WV", name: "West Virginia" }, { code: "WI", name: "Wisconsin" }, { code: "WY", name: "Wyoming" },
+];
+
+const STATE_NAME_TO_CODE: Record<string, string> = US_STATES.reduce(
+  (acc, s) => {
+    acc[s.name.toLowerCase()] = s.code;
+    acc[s.code.toLowerCase()] = s.code;
+    return acc;
+  },
+  {} as Record<string, string>,
+);
+
+/* Accept a full state name OR a 2-letter code and return the stored 2-letter
+   code ('Florida' → 'FL', 'fl' → 'FL'). Returns "" when the input is blank or
+   unrecognized so the caller can skip the filter rather than match nothing. */
+export function normalizeState(input: string): string {
+  const key = input.trim().toLowerCase();
+  if (!key) return "";
+  return STATE_NAME_TO_CODE[key] ?? "";
+}
 
 /* The columns each source needs SELECTed to build a member snapshot. */
 export const SNAPSHOT_SELECT: Record<Exclude<SmartListSource, "mixed">, string> = {
