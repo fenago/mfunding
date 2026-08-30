@@ -9,6 +9,7 @@ import {
   Cog6ToothIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
   ArrowLeftOnRectangleIcon,
   CalculatorIcon,
   RectangleGroupIcon,
@@ -125,168 +126,150 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
 ]);
 
+// NOTE: Grouping / order / collapsibility only. Every item keeps its exact
+// `path` and `roles` — the closer-lens (CLOSER_LENS_PATHS), the pure-setter
+// whitelist in canSee(), and all role gating are unchanged by the regroup.
 const navGroups: NavGroup[] = [
   {
-    title: "Home",
-    items: [
-      // Home link for managers only; the closer lens lands on the Revenue Playbook.
-      { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: ADMIN },
-    ],
-  },
-  {
+    // Daily — the everyday work surface. A pure setter (role "closer") sees their
+    // whole world in this one group (Playbook, Texts, Setter Perf, Setter Guide,
+    // Calendar, Cheat Sheet, My Profile); everyone else gets the full set.
     title: "Daily",
     items: [
       { name: "Revenue Playbook", path: "/admin/playbooks", icon: MapIcon, roles: OPS },
-      // Text Messages — the shared company SMS line (JMP.chat), two-way. Owner
-      // wants it directly under the Revenue Playbook: a setter working a merchant
-      // in the Playbook reaches for the text line next. OPS + in the closer lens,
-      // the same audience as Setter Performance. The ops half of it lives under
-      // System → Text Message Administration.
+      // Shared company SMS line (two-way). OPS + closer lens — a setter working a
+      // merchant in the Playbook reaches for the text line next. The ops half
+      // lives under System → Text Message Administration.
       { name: "Text Messages", path: "/admin/text-messages", icon: DevicePhoneMobileIcon, roles: OPS },
-      // PH Setter Playbook — the outbound-setter console. Admin + super_admin
-      // (matches R&D); admins with a closer row see it through the lens.
-      { name: "PH Setters", path: "/admin/ph-setters", icon: PhoneArrowUpRightIcon, roles: ADMIN },
-      // UCC Harvester — outbound UCC lead engine dashboard. Directly after PH
-      // Setters (owner-specified order); same ADMIN gating + closer lens.
-      { name: "UCC Harvester", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
-      // Lead Machine — the purchased-list pipeline (upload a bought CSV, filter
-      // it, tag it, push it into VibeReach for the dialer). Sits next to the UCC
-      // Machine because both feed the same dial floor; same ADMIN gating + lens.
-      { name: "Lead Machine", path: "/admin/lead-machine", icon: DocumentArrowUpIcon, roles: ADMIN },
-      // Data Hygiene — build a saved audience (smart list) from any lead book, then
-      // clean it (skip-trace / enrich / phone validation) before it hits the floor.
-      // Sits next to the Lead Machine + UCC Harvester; same ADMIN gating + lens.
+      // Data Hygiene — smart lists + skip-trace / enrich / phone validation before
+      // a book hits the floor. ADMIN (managers); also visible through the lens.
       { name: "Data Hygiene", path: "/admin/data-hygiene", icon: CircleStackIcon, roles: ADMIN },
-      // Setter Performance — the dial-floor scorecard, reading WAVV (the dialer
-      // the setters actually use). The only per-rep scorecard now: the old
-      // HotProspector one at /admin/dialer was deleted with the rest of the HP
-      // teardown. Same ADMIN gating + closer lens as the other PH consoles.
+      // Setter Performance — the dial-floor scorecard (reads WAVV). OPS + lens.
       { name: "Setter Performance", path: "/admin/setter-performance", icon: ChartBarSquareIcon, roles: OPS },
-      // How the Dialing Machine Works — the lists→dialer pipeline one-pager.
-      // Back to OPS: the SOP was rewritten for VibeReach + WAVV, so setters can
-      // read it again. It's the manager-side companion to the Setter Guide —
-      // same flow, but from "how does a list become a dialed lead".
-      { name: "Dialing Machine", path: "/admin/dialing-machine", icon: ShareIcon, roles: OPS },
-      // How the UCC Harvester Works — the sibling one-pager (Source → Match →
-      // Build → Skip-Trace → Activate). The owner wants the two explainers
-      // adjacent, so it sits immediately after Dialing Machine. Same OPS gating:
-      // it's reference material every staff role reads, and it's the EXPLAINER —
-      // the operational console is "UCC Harvester" (/admin/ph-ucc) above.
-      {
-        name: "UCC Harvester — Guide",
-        path: "/admin/ucc-machine-guide",
-        icon: CircleStackIcon,
-        roles: OPS,
-      },
-      // Setter Onboarding Guide — the day-one read for a brand-new setter (Chrome
-      // + same-session login, both profiles, the dialer, the on-call flow,
-      // compliance, troubleshooting). Sits with the other PH explainers. OPS, and
-      // pure setters reach it too (canSee carries an explicit exception): this is
-      // the one doc they have to read before their first live call.
+      // Setter Guide — day-one onboarding read; pure setters reach it via a canSee
+      // exception (the one doc they must open before their first live call).
       { name: "Setter Guide", path: "/admin/setter-guide", icon: LifebuoyIcon, roles: OPS },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
-      // (every staff role, closers included) and in the closer lens: it's the
-      // reference they work off on every submission.
+      // (closers included) + lens: the reference they work off on every submission.
       { name: "Funder Cheat Sheet", path: "/admin/cheat-sheet", icon: PuzzlePieceIcon, roles: OPS },
-      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
-      // Directly under Lenders — owner-specified order.
-      { name: "Lender Catalog", path: "/admin/lender-catalog", icon: RectangleStackIcon, roles: ADMIN },
-      { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: ADMIN },
-      { name: "Funder Approval Matrix", path: "/admin/funder-matrix", icon: TableCellsIcon, roles: ADMIN },
-      { name: "Funder Contacts", path: "/admin/funder-contacts", icon: UserGroupIcon, roles: ADMIN },
-      { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
-      { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
-      { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
-      { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
-      { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
-      // Documentation — every staff role reads it. OPS here also covers `employee`,
-      // which is mapped onto the "admin" NavRole below.
-      { name: "Documentation", path: "/admin/docs", icon: AcademicCapIcon, roles: OPS },
-      // Strategy — sales doctrine. Closers NEED it, so OPS + in the closer lens.
-      { name: "Strategy", path: "/admin/strategy", icon: LightBulbIcon, roles: OPS },
-      // R&D — the owner's strategic build-out game plan. Managers only (ADMIN),
-      // not the closer lens: it's operation-building, not floor work.
-      { name: "R&D", path: "/admin/rnd", icon: BeakerIcon, roles: ADMIN },
+      // My Profile — self-service name/address/1099 edit. Kept in Daily so a pure
+      // setter sees a single clean group; also reachable from the user card below.
+      { name: "My Profile", path: "/admin/my-profile", icon: UserCircleIcon, roles: OPS },
     ],
   },
   {
-    title: "Leads & Marketing",
+    // Lead Gen — every lead-sourcing console + tool (import / campaign / outreach).
+    title: "Lead Gen",
     items: [
+      // PH Setters — the outbound-setter console. ADMIN + super; admins with a
+      // closer row see it through the lens.
+      { name: "PH Setters", path: "/admin/ph-setters", icon: PhoneArrowUpRightIcon, roles: ADMIN },
+      // UCC Harvester — the outbound UCC lead engine dashboard (operational
+      // console; its explainer is "UCC Harvester — Guide" below).
+      { name: "UCC Harvester", path: "/admin/ph-ucc", icon: RectangleStackIcon, roles: ADMIN },
+      // Lead Machine — purchased-list pipeline (upload CSV → filter → tag → push to
+      // VibeReach for the dialer). Feeds the same dial floor as the UCC Harvester.
+      { name: "Lead Machine", path: "/admin/lead-machine", icon: DocumentArrowUpIcon, roles: ADMIN },
+      // Dialing Machine — the lists→dialer one-pager. OPS: rewritten for
+      // VibeReach + WAVV, so setters can read it again.
+      { name: "Dialing Machine", path: "/admin/dialing-machine", icon: ShareIcon, roles: OPS },
+      // UCC Harvester — Guide — the sibling explainer (Source → Match → Build →
+      // Skip-Trace → Activate). OPS reference material every staff role reads.
+      { name: "UCC Harvester — Guide", path: "/admin/ucc-machine-guide", icon: CircleStackIcon, roles: OPS },
       { name: "Lead Partner (Synergy)", path: "/admin/lead-partner", icon: BuildingOffice2Icon, roles: ADMIN },
-      { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
       { name: "Email (Instantly)", path: "/admin/email", icon: EnvelopeIcon, roles: ADMIN },
       { name: "Cold Email Planner", path: "/admin/cold-email", icon: RocketLaunchIcon, roles: ADMIN },
-      { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
-      { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
-      { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
       { name: "Lead Import", path: "/admin/lead-import", icon: ArrowUpTrayIcon, roles: ADMIN },
-      { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
       { name: "Campaigns", path: "/admin/campaigns", icon: MegaphoneIcon, roles: ADMIN },
-      { name: "Budget Planner", path: "/admin/lead-budget", icon: CalculatorIcon, roles: SUPER },
       { name: "Sequences", path: "/admin/sequences", icon: ArrowPathRoundedSquareIcon, roles: OPS },
       { name: "Lead Tools", path: "/admin/lead-tools", icon: WrenchScrewdriverIcon, roles: OPS },
       { name: "Referrals", path: "/admin/referrals", icon: UserPlusIcon, roles: ADMIN },
     ],
   },
   {
-    title: "Pipeline Ops",
+    // Funder Network — the funder relationships (ADMIN manage these even with a
+    // closer row; pure closers never see them via the roles array).
+    title: "Funder Network",
     items: [
+      { name: "Lenders", path: "/admin/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Lender Catalog", path: "/admin/lender-catalog", icon: RectangleStackIcon, roles: ADMIN },
+      { name: "Funder Directory", path: "/admin/funder-directory", icon: BuildingLibraryIcon, roles: ADMIN },
+      { name: "Funder Approval Matrix", path: "/admin/funder-matrix", icon: TableCellsIcon, roles: ADMIN },
+      { name: "Funder Contacts", path: "/admin/funder-contacts", icon: UserGroupIcon, roles: ADMIN },
+    ],
+  },
+  {
+    // Pipeline & Comms — the active-deal work surface.
+    title: "Pipeline & Comms",
+    items: [
+      { name: "Customers", path: "/admin/customers", icon: UsersIcon, roles: OPS },
+      { name: "Comms", path: "/admin/comms", icon: ChatBubbleLeftRightIcon, roles: OPS },
+      { name: "Doc Review", path: "/admin/documents", icon: DocumentMagnifyingGlassIcon, roles: OPS },
       { name: "Renewals", path: "/admin/renewals", icon: ArrowPathIcon, roles: OPS },
-    ],
-  },
-  {
-    title: "Team & Money",
-    items: [
-      { name: "My Earnings", path: "/admin/my-earnings", icon: BanknotesIcon, roles: OPS },
-      // My Profile — self-service edit of the signed-in user's own name,
-      // mailing address, and 1099 business/tax details. Every staff role, and
-      // reachable by pure setters (see canSee exception above).
-      { name: "My Profile", path: "/admin/my-profile", icon: UserCircleIcon, roles: OPS },
-      // OPS, not SUPER: a closer opens this to read and e-sign their own docs.
-      // The manager view (every closer's status) only renders for admin/super.
+      { name: "Task Board", path: "/admin/todos", icon: ClipboardDocumentListIcon, roles: ADMIN },
+      // Closer Documents — OPS + lens: a closer opens this to read/e-sign their OWN
+      // docs; the manager view (every closer's status) renders only for admin/super.
       { name: "Closer Documents", path: "/admin/closer-docs", icon: DocumentTextIcon, roles: OPS },
-      { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
-      { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
-      { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },
-      // Owner-only: the weekly payroll run — everyone's hours, hourly rates, and
-      // what has actually been paid out. Sits next to Commissions because it's
-      // the other half of "what the team costs".
-      { name: "Time & Pay", path: "/admin/time-pay", icon: ClockIcon, roles: SUPER },
-      // Owner-only: pipeline + funded commission, and measured funnel conversion vs target.
-      { name: "Revenue & Commission", path: "/admin/revenue", icon: ReceiptPercentIcon, roles: SUPER },
     ],
   },
   {
-    title: "Modeling & Insights",
+    // Insights — dashboards, analytics + all money/commission reporting.
+    title: "Insights",
     items: [
+      // Dashboard — managers only; the closer lens lands on the Revenue Playbook.
+      { name: "Dashboard", path: "/admin", icon: HomeIcon, roles: ADMIN },
       { name: "Analytics", path: "/admin/analytics", icon: ChartBarSquareIcon, roles: SUPER },
       { name: "Funder Performance", path: "/admin/analytics/lenders", icon: BuildingLibraryIcon, roles: ADMIN },
       { name: "Real-Time", path: "/admin/analytics/realtime", icon: SignalIcon, roles: SUPER },
       { name: "Unit Economics (MCA)", path: "/admin/unit-economics", icon: CalculatorIcon, roles: SUPER },
       { name: "Unit Economics (VCF)", path: "/admin/unit-economics-vcf", icon: CalculatorIcon, roles: SUPER },
       { name: "Live Transfer ROI", path: "/admin/live-transfer-roi", icon: PhoneArrowUpRightIcon, roles: SUPER },
+      // Owner-only: pipeline + funded commission, measured funnel conversion vs target.
+      { name: "Revenue & Commission", path: "/admin/revenue", icon: ReceiptPercentIcon, roles: SUPER },
+      { name: "Commissions", path: "/admin/commissions", icon: BanknotesIcon, roles: SUPER },
+      // Personal money views (OPS + lens): a closer checks their own book/comp.
+      { name: "My Earnings", path: "/admin/my-earnings", icon: BanknotesIcon, roles: OPS },
       { name: "Closer Comp", path: "/admin/closer-comp", icon: ReceiptPercentIcon, roles: OPS },
-      { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: SUPER },
     ],
   },
   {
+    // System — super-admin config, team/network admin, marketing-vendor admin, and
+    // the reference/training library. (Resources/Documentation/Strategy are OPS and
+    // in the lens; R&D is ADMIN + lens — the rest are super-admin only.)
     title: "System",
     items: [
       { name: "System Health", path: "/admin/system", icon: HeartIcon, roles: ADMIN },
+      { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: SUPER },
+      { name: "Platform Config", path: "/admin/platform-config", icon: Cog6ToothIcon, roles: SUPER },
+      { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: SUPER },
+      { name: "Underwriting Settings", path: "/admin/underwriting-settings", icon: AdjustmentsHorizontalIcon, roles: SUPER },
+      { name: "Plaid", path: "/admin/plaid", icon: BanknotesIcon, roles: SUPER },
       { name: "Users", path: "/admin/users", icon: UsersIcon, roles: SUPER },
       { name: "Compliance", path: "/admin/compliance", icon: ShieldExclamationIcon, roles: SUPER },
-      { name: "Integrations", path: "/admin/settings/integrations", icon: ArrowsRightLeftIcon, roles: SUPER },
-      { name: "Plaid", path: "/admin/plaid", icon: BanknotesIcon, roles: SUPER },
       { name: "GHL Sync Log", path: "/admin/sync-log", icon: SignalIcon, roles: SUPER },
-      // Text Message Administration — bridge health, full message log, opt-out
-      // audit for the SMS line. Owner-only: it's the "is the droplet bridge
-      // dead" screen, not floor work.
+      // Text Message Administration — bridge health / message log / opt-out audit.
       { name: "Text Message Administration", path: "/admin/text-messages/admin", icon: DevicePhoneMobileIcon, roles: SUPER },
-      { name: "Underwriting Settings", path: "/admin/underwriting-settings", icon: AdjustmentsHorizontalIcon, roles: SUPER },
-      { name: "Platform Config", path: "/admin/platform-config", icon: Cog6ToothIcon, roles: SUPER },
-      { name: "Settings", path: "/admin/settings", icon: Cog6ToothIcon, roles: SUPER },
+      { name: "Lead Sources", path: "/admin/lead-sources", icon: SignalIcon, roles: SUPER },
+      { name: "Marketing Vendors", path: "/admin/marketing", icon: MegaphoneIcon, roles: SUPER },
+      { name: "Vendor Scorecard", path: "/admin/marketing/scorecard", icon: ChartBarSquareIcon, roles: SUPER },
+      { name: "Live Transfer Leads", path: "/admin/marketing/live-transfers", icon: PhoneArrowUpRightIcon, roles: SUPER },
+      { name: "Lead Lists & Data", path: "/admin/marketing/lead-lists", icon: WrenchScrewdriverIcon, roles: SUPER },
+      { name: "Budget Planner", path: "/admin/lead-budget", icon: CalculatorIcon, roles: SUPER },
+      { name: "Business Model", path: "/admin/bmc", icon: RectangleGroupIcon, roles: SUPER },
+      { name: "Closers", path: "/admin/closers", icon: UserGroupIcon, roles: SUPER },
+      { name: "Sub-ISOs", path: "/admin/sub-isos", icon: BuildingOffice2Icon, roles: SUPER },
+      // Owner-only: the weekly payroll run — hours, hourly rates, what's been paid.
+      { name: "Time & Pay", path: "/admin/time-pay", icon: ClockIcon, roles: SUPER },
+      { name: "Resources", path: "/admin/resources", icon: BookOpenIcon, roles: OPS },
+      // Documentation — every staff role reads it. OPS also covers `employee`,
+      // which is mapped onto the "admin" NavRole below.
+      { name: "Documentation", path: "/admin/docs", icon: AcademicCapIcon, roles: OPS },
+      // Strategy — sales doctrine. Closers NEED it, so OPS + in the lens.
+      { name: "Strategy", path: "/admin/strategy", icon: LightBulbIcon, roles: OPS },
+      // R&D — the owner's strategic build-out game plan. ADMIN + lens.
+      { name: "R&D", path: "/admin/rnd", icon: BeakerIcon, roles: ADMIN },
     ],
   },
 ];
@@ -296,6 +279,19 @@ export default function AdminSidebar() {
     const saved = localStorage.getItem("adminSidebarCollapsed");
     return saved ? JSON.parse(saved) : false;
   });
+  // Per-group expand/collapse (manager view only). Persisted so it survives
+  // reloads. Shape: { [groupTitle]: true } means COLLAPSED; absent/false =
+  // expanded. Default {} → every group expanded.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem("adminSidebarGroups");
+      return saved ? (JSON.parse(saved) as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
+  const toggleGroup = (title: string) =>
+    setCollapsedGroups((prev) => ({ ...prev, [title]: !prev[title] }));
   const location = useLocation();
   const { profile, isSuperAdmin } = useUserProfile();
   const { canSeeRenewals, loading: renewalsLoading } = useRenewalsAccess();
@@ -309,6 +305,10 @@ export default function AdminSidebar() {
   useEffect(() => {
     localStorage.setItem("adminSidebarCollapsed", JSON.stringify(isCollapsed));
   }, [isCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("adminSidebarGroups", JSON.stringify(collapsedGroups));
+  }, [collapsedGroups]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -404,15 +404,31 @@ export default function AdminSidebar() {
         {navGroups.map((group) => {
           const items = group.items.filter(canSee);
           if (items.length === 0) return null;
+          const groupCollapsed = !!collapsedGroups[group.title];
+          // In the collapsed icon rail there is no header to click, so groups
+          // always render their items (divider-separated) — preserves the
+          // existing rail behavior. Only the expanded sidebar folds groups.
+          const showItems = isCollapsed || !groupCollapsed;
           return (
             <div key={group.title} className="mb-2">
               {!isCollapsed ? (
-                <p className="px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                  {group.title}
-                </p>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.title)}
+                  aria-expanded={!groupCollapsed}
+                  className="w-full flex items-center justify-between px-3 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  <span>{group.title}</span>
+                  <ChevronDownIcon
+                    className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${
+                      groupCollapsed ? "-rotate-90" : ""
+                    }`}
+                  />
+                </button>
               ) : (
                 <div className="my-2 mx-2 border-t border-gray-100 dark:border-gray-700" />
               )}
+              {showItems && (
               <div className="space-y-1">
                 {items.map((item) => {
                   const Icon = item.icon;
@@ -459,6 +475,7 @@ export default function AdminSidebar() {
                   );
                 })}
               </div>
+              )}
             </div>
           );
         })}
