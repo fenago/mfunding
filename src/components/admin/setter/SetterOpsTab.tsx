@@ -18,6 +18,8 @@ import SetterContactsEditor from "@/components/admin/setter/SetterContactsEditor
 import SetterDealMeta from "@/components/admin/setter/SetterDealMeta";
 import SetterConnectBank from "@/components/admin/setter/SetterConnectBank";
 import SetterChecklist from "@/components/admin/setter/SetterChecklist";
+import ProcessorBoard from "@/components/admin/setter/ProcessorBoard";
+import useIsProcessor from "@/hooks/useIsProcessor";
 
 /**
  * SetterOpsTab — the setter's single-screen Operations console, mounted as a tab
@@ -39,6 +41,11 @@ import SetterChecklist from "@/components/admin/setter/SetterChecklist";
  */
 export default function SetterOpsTab() {
   const { deal, bizCtx, phase, error, openMerchant, pickBusiness, reload } = usePlaybookContact();
+
+  // Is the signed-in user a PROCESSOR (a closer with the whole-board capability)?
+  // Gates the ProcessorBoard mounted at the bottom of the console. Fail-closed:
+  // an unreadable capability keeps the board hidden.
+  const { isProcessor } = useIsProcessor();
 
   // ONE toast, shared by the whole console (SetterHeaderBar's stage moves report
   // through it; the action rail keeps its own for modal/appointment feedback).
@@ -216,6 +223,11 @@ export default function SetterOpsTab() {
   return (
     <div className="space-y-4">
       {body}
+      {/* PROCESSOR BOARD — whole-pipeline hunt list, pinned to the very BOTTOM of
+          the console (below everything else) and visible ONLY to processors. It
+          loads a chosen merchant into the console above via pullUp (which clears
+          the "back to my deals" list state so the loaded deal shows). */}
+      {isProcessor && <ProcessorBoard onOpen={pullUp} />}
       {toast && (
         <div
           className={`text-sm font-medium ${
