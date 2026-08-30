@@ -94,7 +94,7 @@ function payloadFor(r: Row): Record<string, unknown> | null {
     if (v !== null && v !== undefined && v !== "") cf.push({ id, value: v });
   };
 
-  push(F.playbook_link, `${APP_URL}/admin/setter-performance?tab=operations&contact=${r.ghl_contact_id}`);
+  push(F.playbook_link, `${APP_URL}/admin/playbooks?contact=${r.ghl_contact_id}`);
   push(F.owner_title, clean(r.title));
   push(F.industry_doc, clean(r.sic_description));
   push(F.sic_code, clean(r.sic_code));

@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
     }
 
     for (const [contactId, dealIds] of byContact) {
-      const value = `${APP_URL}/admin/setter-performance?tab=operations&contact=${contactId}`;
+      const value = `${APP_URL}/admin/playbooks?contact=${contactId}`;
       const res = await ghlFetch(cfg, "PUT", `/contacts/${contactId}`, {
         customFields: [{ id: PLAYBOOK_FIELD_ID, value }],
       });
