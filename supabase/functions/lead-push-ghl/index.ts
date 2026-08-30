@@ -464,7 +464,7 @@ const APP_URL = (Deno.env.get("APP_PUBLIC_URL") ?? "https://mfunding.net").repla
  * NANP last-10, which is exactly what dialDigits/the resolver match on.
  */
 function playbookLink(lead: LeadRow): string | null {
-  return lead.phone ? `${APP_URL}/admin/playbooks?phone=${lead.phone}` : null;
+  return lead.phone ? `${APP_URL}/admin/setter-performance?tab=operations&phone=${lead.phone}` : null;
 }
 
 function tagsFor(lead: LeadRow, batchTag: string | undefined, userTags: string[]): string[] {
