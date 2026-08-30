@@ -34,7 +34,11 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
+import {
+  corsHeaders, serviceClient,
+  getGhlConfig, getContact, listCustomFields, findFieldByName, updateContactCustomFields,
+  type GhlConfig, type GhlCustomField,
+} from "../_shared/ghl.ts";
 
 const BATCH_BASE = "https://api.batchdata.com/api/v1";
 const WALLET_PATH = "/wallet/balance";
@@ -235,14 +239,12 @@ function aggregate(persons: Person[]) {
   return { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones, bestPhone, bestPhoneType, bestPhoneDnc, bestEmail, primaryName, tcpaLitigator, status, statusReason };
 }
 
-// Mirror a lead's aggregated skip-trace result onto any smart_list_members that point
-// at it (source='ph_ucc', source_id = lead.id as text). Keeps the member view rich AND
-// captures the raw persons array on the member, so enrichment survives the smart_list
-// cascade. Best-effort, LOUD on failure — never blocks the lead write.
-async function mirrorSkiptraceToMembers(
-  db: SupabaseClient, leadId: string, persons: Person[], agg: ReturnType<typeof aggregate>, nowIso: string,
-) {
-  const { error } = await db.from("smart_list_members").update({
+// The exact smart_list_members patch for an aggregated skip-trace result. ONE builder
+// shared by the ph_ucc lead mirror (matched by source/source_id) and the generalized
+// member path (matched by member id), so the member view can never drift from the lead
+// view. Captures the raw persons array too, so enrichment survives the smart_list cascade.
+function skiptraceMemberPatch(persons: Person[], agg: ReturnType<typeof aggregate>, nowIso: string) {
+  return {
     skiptrace_raw: persons.map((p) => p.raw),
     best_phone: agg.bestPhone,
     best_phone_type: agg.bestPhoneType,
@@ -254,8 +256,288 @@ async function mirrorSkiptraceToMembers(
     tcpa_litigator: agg.tcpaLitigator,
     dnc_suppressed_count: agg.dncPhones.length,
     skiptraced_at: nowIso,
-  }).eq("source", "ph_ucc").eq("source_id", leadId);
+  };
+}
+
+// Mirror a lead's aggregated skip-trace result onto any smart_list_members that point
+// at it (source='ph_ucc', source_id = lead.id as text). Best-effort, LOUD on failure —
+// never blocks the lead write.
+async function mirrorSkiptraceToMembers(
+  db: SupabaseClient, leadId: string, persons: Person[], agg: ReturnType<typeof aggregate>, nowIso: string,
+) {
+  const { error } = await db.from("smart_list_members")
+    .update(skiptraceMemberPatch(persons, agg, nowIso))
+    .eq("source", "ph_ucc").eq("source_id", leadId);
   if (error) console.error("[ph-ucc-skiptrace] smart_list_members mirror failed", JSON.stringify({ lead_id: leadId, error: error.message }));
+}
+
+// Persist a ph_ucc lead's skip-trace result to its DURABLE rows: replace ph_ucc_contacts,
+// update ph_ucc_leads, and mirror onto any smart_list_members. SHARED by the lead-book
+// trace loop and the smart-list member path (source='ph_ucc'), so a ph_ucc member trace
+// writes back exactly like a lead trace — no drift between the two entry points.
+async function persistLeadTrace(
+  db: SupabaseClient, leadId: string, persons: Person[], agg: ReturnType<typeof aggregate>, nowIso: string,
+): Promise<{ ok: boolean; error?: string }> {
+  // Replace any prior contact rows for this lead (idempotent re-trace on force).
+  await db.from("ph_ucc_contacts").delete().eq("lead_id", leadId);
+  if (persons.length > 0) {
+    const rows = persons.map((p, i) => ({
+      lead_id: leadId,
+      person_name: p.person_name,
+      is_primary: i === 0,
+      phones: p.phones,
+      emails: p.emails,
+      trace_match: !!(p.person_name || p.phones.length || p.emails.length),
+      provider: "batchdata",
+      raw: p.raw,
+      traced_at: nowIso,
+    }));
+    const { error: cErr } = await db.from("ph_ucc_contacts").insert(rows);
+    if (cErr) return { ok: false, error: `contacts insert: ${cErr.message}` };
+  }
+  const { error: uErr } = await db.from("ph_ucc_leads").update({
+    phone: agg.bestPhone,           // NON-DNC only, or null
+    email: agg.bestEmail,
+    person_name: agg.primaryName,
+    traced_at: nowIso,
+    trace_match: agg.anyPerson,
+    tcpa_litigator: agg.tcpaLitigator,        // person-level litigator / dnc.tcpa (now queryable)
+    dnc_suppressed_count: agg.dncPhones.length, // # of DNC numbers pulled & suppressed
+    status: agg.status,
+    status_reason: agg.statusReason,
+  }).eq("id", leadId);
+  if (uErr) return { ok: false, error: `lead update: ${uErr.message}` };
+
+  await mirrorSkiptraceToMembers(db, leadId, persons, agg, nowIso);
+  return { ok: true };
+}
+
+// ── Generalized smart-list member path (any source) ─────────────────────────────
+// The Data Hygiene smart list can hold members from FOUR sources. Skip-trace needs a
+// mailing ADDRESS, so the enrichment INPUT is resolved from each member's real SOURCE
+// row (not the thin snapshot), then BatchData runs on that address. Results are written
+// to the member row AND written back durably to the source (ph_ucc_leads/contacts,
+// lead_records.skiptrace_raw, customers.skiptrace_raw, or the GHL contact's custom fields).
+
+type MemberRow = { id: string; source: string; source_id: string; snapshot: Record<string, unknown> | null; skiptraced_at: string | null };
+type Addr = { name: string | null; street: string | null; city: string | null; state: string | null; zip: string | null };
+
+// Lazily-resolved GHL context: cfg (for reading a source='ghl' contact's address) plus
+// the REUSED custom-field ids for write-back (never creates fields, per ghl-custom-field-traps).
+type GhlSkipCtx = {
+  cfg: GhlConfig | null;
+  ids: { best_phone?: string; best_email?: string; person_name?: string; dnc?: string; tcpa?: string };
+  matched: Record<string, string>;
+  missing: string[];
+  error: string | null;
+};
+
+async function resolveGhlSkipCtx(db: SupabaseClient): Promise<GhlSkipCtx> {
+  const ctx: GhlSkipCtx = { cfg: null, ids: {}, matched: {}, missing: [], error: null };
+  try { ctx.cfg = await getGhlConfig(db); } catch (e) { ctx.error = e instanceof Error ? e.message : String(e); return ctx; }
+  const res = await listCustomFields(ctx.cfg);
+  if (!res.ok || !res.data) { ctx.error = `listCustomFields failed: ${res.error ?? res.status}`; return ctx; }
+  const fields: GhlCustomField[] = res.data.customFields ?? [];
+  const find = (...terms: string[]): GhlCustomField | undefined => {
+    for (const t of terms) { const f = findFieldByName(fields, t); if (f) return f; }
+    return undefined;
+  };
+  const put = (key: keyof GhlSkipCtx["ids"], f: GhlCustomField | undefined) => {
+    if (f) { ctx.ids[key] = f.id; ctx.matched[key] = f.name; } else ctx.missing.push(key);
+  };
+  put("best_phone", find("best phone", "skip trace phone", "skiptrace phone"));
+  put("best_email", find("best email", "skip trace email", "skiptrace email"));
+  put("person_name", find("owner name", "person name", "contact name"));
+  put("dnc", find("do not call", "dnc"));
+  put("tcpa", find("litigator", "tcpa"));
+  return ctx;
+}
+
+async function writeGhlSkipContact(
+  ctx: GhlSkipCtx, contactId: string, agg: ReturnType<typeof aggregate>,
+): Promise<{ ok: boolean; error: string | null }> {
+  if (!ctx.cfg) return { ok: false, error: ctx.error ?? "GHL not configured" };
+  const fields: Array<{ id: string; value: string | number }> = [];
+  if (ctx.ids.best_phone && agg.bestPhone != null) fields.push({ id: ctx.ids.best_phone, value: agg.bestPhone });
+  if (ctx.ids.best_email && agg.bestEmail != null) fields.push({ id: ctx.ids.best_email, value: agg.bestEmail });
+  if (ctx.ids.person_name && agg.primaryName != null) fields.push({ id: ctx.ids.person_name, value: agg.primaryName });
+  if (ctx.ids.dnc && agg.dncPhones.length > 0) fields.push({ id: ctx.ids.dnc, value: "true" });
+  if (ctx.ids.tcpa && agg.tcpaLitigator != null) fields.push({ id: ctx.ids.tcpa, value: agg.tcpaLitigator ? "true" : "false" });
+  if (fields.length === 0) return { ok: true, error: null };
+  const res = await updateContactCustomFields(ctx.cfg, contactId, fields);
+  if (!res.ok) return { ok: false, error: res.error ?? `status ${res.status}` };
+  return { ok: true, error: null };
+}
+
+// Resolve the skip-trace INPUT (name + mailing address) from a member's real source row.
+// Returns null when the source row is gone. Missing street is left null (caller reports no_address).
+async function resolveSkiptraceInput(db: SupabaseClient, m: MemberRow, ghlCfg: GhlConfig | null): Promise<Addr | null> {
+  const sid = m.source_id;
+  if (m.source === "ph_ucc") {
+    const { data } = await db.from("ph_ucc_leads")
+      .select("debtor_name,debtor_address,debtor_city,debtor_state,debtor_zip").eq("id", sid).maybeSingle();
+    if (!data) return null;
+    return { name: clean(data.debtor_name), street: clean(data.debtor_address), city: clean(data.debtor_city), state: clean(data.debtor_state), zip: clean(data.debtor_zip) };
+  }
+  if (m.source === "lead_records") {
+    const { data } = await db.from("lead_records")
+      .select("first_name,last_name,company,address,city,state,zip").eq("id", sid).maybeSingle();
+    if (!data) return null;
+    return {
+      name: clean([data.first_name, data.last_name].filter(Boolean).join(" ")) ?? clean(data.company),
+      street: clean(data.address), city: clean(data.city), state: clean(data.state), zip: clean(data.zip),
+    };
+  }
+  if (m.source === "customers") {
+    const { data } = await db.from("customers")
+      .select("first_name,last_name,business_name,address_street,address_city,address_state,address_zip").eq("id", sid).maybeSingle();
+    if (!data) return null;
+    return {
+      name: clean([data.first_name, data.last_name].filter(Boolean).join(" ")) ?? clean(data.business_name),
+      street: clean(data.address_street), city: clean(data.address_city), state: clean(data.address_state), zip: clean(data.address_zip),
+    };
+  }
+  if (m.source === "ghl") {
+    if (!ghlCfg) return null;
+    const got = await getContact(ghlCfg, sid);
+    const c = got.data?.contact as Record<string, unknown> | undefined;
+    if (!c) return null;
+    const name = clean([c.firstName, c.lastName].filter(Boolean).join(" ")) ?? clean(c.contactName) ?? clean(c.companyName);
+    return { name, street: clean(c.address1), city: clean(c.city), state: clean(c.state), zip: clean(c.postalCode) };
+  }
+  return null;
+}
+
+// Skip-trace an EXACT set of smart_list_members across ANY source. Same spend controls
+// as the lead path (wallet floor + BUDGET_MS budget + idempotent skiptraced_at guard +
+// the HARD_MAX cap the caller already applied). Never spends on a member without a
+// resolvable street address (no_address), and never re-charges an already-traced member
+// unless force. Returns the JSON Response.
+async function traceMembers(
+  db: SupabaseClient, apiKey: string, memberIds: string[], force: boolean, started: number,
+): Promise<Response> {
+  // 1) Wallet gate — abort loudly if we can't afford to spend.
+  const w0 = await getBalance(apiKey);
+  if (!w0.ok) return json({ ok: false, error: "wallet lookup failed before trace", status: w0.status, raw: w0.raw }, 502);
+  if (w0.balance == null) return json({ ok: false, error: "could not parse wallet balance — aborting for safety", raw: w0.raw }, 502);
+  if (w0.balance < MIN_BALANCE_USD) {
+    return json({ ok: false, error: `BatchData wallet balance $${w0.balance} is below the $${MIN_BALANCE_USD} floor — top up before tracing.`, balance: w0.balance }, 402);
+  }
+
+  // 2) Select the members. Idempotent: never re-trace one that already has skiptraced_at
+  // unless force. (Selection is by member id; the caller already hard-capped the set.)
+  let mq = db.from("smart_list_members")
+    .select("id,source,source_id,snapshot,skiptraced_at")
+    .in("id", memberIds);
+  if (!force) mq = mq.is("skiptraced_at", null);
+  const { data: memberData, error: memberErr } = await mq;
+  if (memberErr) return json({ ok: false, error: `member select failed: ${memberErr.message}` }, 500);
+  const members = (memberData as MemberRow[]) ?? [];
+  if (members.length === 0) {
+    return json({ ok: true, traced: 0, message: "No members matched (already traced, or ids not found).", balance_before: w0.balance });
+  }
+
+  // Resolve the GHL context ONCE up front — but only if a source='ghl' member is present
+  // (avoids a GHL round-trip for pure-DB batches). Needed both to READ a GHL contact's
+  // address and to WRITE the verdict back to its REUSED custom fields.
+  const ghlResolved = members.some((m) => m.source === "ghl");
+  const ghlCtx: GhlSkipCtx | null = ghlResolved ? await resolveGhlSkipCtx(db) : null;
+  if (ghlCtx?.error) console.error("[ph-ucc-skiptrace] GHL context unavailable", JSON.stringify({ error: ghlCtx.error }));
+
+  const perMember: Record<string, unknown>[] = [];
+  let traced = 0, ready = 0, emailOnly = 0, noMatch = 0, noAddress = 0, errored = 0;
+  let srcWriteback = 0, ghlWriteback = 0;
+
+  for (const m of members) {
+    if (Date.now() - started > BUDGET_MS) break; // leave the rest for the next call
+
+    const addr = await resolveSkiptraceInput(db, m, ghlCtx?.cfg ?? null);
+    if (!addr || !addr.street) {
+      // Never spend on an un-trace-able record.
+      noAddress++;
+      perMember.push({ member_id: m.id, source: m.source, skipped: "no_address" });
+      continue;
+    }
+
+    const propertyAddress: Record<string, string> = { street: addr.street };
+    if (addr.city) propertyAddress.city = addr.city;
+    if (addr.state) propertyAddress.state = addr.state;
+    if (addr.zip) propertyAddress.zip = addr.zip;
+
+    const r = await batch(apiKey, "POST", SKIPTRACE_PATH, { requests: [{ propertyAddress }] });
+    if (!r.ok) {
+      errored++;
+      perMember.push({ member_id: m.id, source: m.source, error: `skip-trace ${r.status}`, detail: r.body });
+      continue;
+    }
+
+    const persons = normalizePersons(r.body);
+    const agg = aggregate(persons);
+    const nowIso = new Date().toISOString();
+
+    if (m.source === "ph_ucc") {
+      // Durable ph_ucc rows + member mirror, exactly like the lead path.
+      const res = await persistLeadTrace(db, m.source_id, persons, agg, nowIso);
+      if (!res.ok) { errored++; perMember.push({ member_id: m.id, source: m.source, error: res.error }); continue; }
+      srcWriteback++;
+    } else {
+      // Write the member row directly (by id).
+      const { error: mErr } = await db.from("smart_list_members")
+        .update(skiptraceMemberPatch(persons, agg, nowIso)).eq("id", m.id);
+      if (mErr) { errored++; perMember.push({ member_id: m.id, source: m.source, error: `member update: ${mErr.message}` }); continue; }
+
+      // Durable write-back to the source row (survives the smart_list cascade).
+      if (m.source === "lead_records") {
+        const { error: lErr } = await db.from("lead_records").update({ skiptrace_raw: persons.map((p) => p.raw) }).eq("id", m.source_id);
+        if (lErr) console.error("[ph-ucc-skiptrace] lead_records write-back failed", JSON.stringify({ id: m.source_id, error: lErr.message }));
+        else srcWriteback++;
+      } else if (m.source === "customers") {
+        const { error: lErr } = await db.from("customers").update({ skiptrace_raw: persons.map((p) => p.raw) }).eq("id", m.source_id);
+        if (lErr) console.error("[ph-ucc-skiptrace] customers write-back failed", JSON.stringify({ id: m.source_id, error: lErr.message }));
+        else srcWriteback++;
+      } else if (m.source === "ghl") {
+        // GHL is the CRM system of record — write key skip-trace fields to REUSED custom
+        // fields (never create fields). source_id is the ghl_contact_id.
+        if (ghlCtx) {
+          const w = await writeGhlSkipContact(ghlCtx, m.source_id, agg);
+          if (!w.ok) console.error("[ph-ucc-skiptrace] GHL contact write-back failed", JSON.stringify({ contact_id: m.source_id, error: w.error }));
+          else ghlWriteback++;
+        }
+      }
+    }
+
+    if (agg.status === "ready") ready++;
+    else if (agg.status === "email_only") emailOnly++;
+    else noMatch++;
+    traced++;
+    perMember.push({
+      member_id: m.id, source: m.source, person: agg.primaryName, persons: persons.length,
+      phones_total: agg.allPhones.length, dialable: agg.usablePhones.length,
+      dnc_suppressed: agg.dncPhones.length, tcpa_suppressed: agg.tcpaPhones.length,
+      emails: agg.allEmails.length, status: agg.status,
+    });
+  }
+
+  // Cost = actual wallet delta this run; distribute as a per-member estimate for the
+  // response. NOT stamped onto smart_list_members.validation_cost — that column is the
+  // phone-validation lookup cost (phone-validate owns it) and must not be clobbered here.
+  const w1 = await getBalance(apiKey);
+  const runSpend = w0.balance != null && w1.balance != null ? Math.max(0, Math.round((w0.balance - w1.balance) * 10000) / 10000) : null;
+  const perLeadCost = runSpend != null && traced > 0 ? Math.round((runSpend / traced) * 10000) / 10000 : null;
+
+  return json({
+    ok: true,
+    provider: "batchdata",
+    mode: "members",
+    requested_ids: memberIds.length,
+    candidates: members.length,
+    traced, ready, email_only: emailOnly, no_match: noMatch, no_address: noAddress, errored,
+    source_writeback: srcWriteback, ghl_writeback: ghlWriteback,
+    ghl_field_map: ghlResolved ? (ghlCtx && ghlCtx.cfg ? { matched: ghlCtx.matched, missing_skipped: ghlCtx.missing } : { unavailable: ghlCtx?.error }) : null,
+    balance_before: w0.balance, balance_after: w1.balance, run_spend_usd: runSpend, per_lead_cost_est: perLeadCost,
+    elapsed_ms: Date.now() - started,
+    per_member: perMember,
+  });
 }
 
 // ── Lead selection: fresh-first, high-score-first, spend-capped ────────────────
@@ -463,6 +745,23 @@ Deno.serve(async (req) => {
     return json({ ok: true, skipped: true, reason: "ph_settings.skiptrace_enabled is false — stage paused by owner. Pass force:true to override." });
   }
 
+  // ── Generalized member path: skip-trace an EXACT set of smart_list_members of ANY
+  // source (ph_ucc, lead_records, customers, ghl). Hard-capped to HARD_MAX_LIMIT here
+  // too, so no caller can push more than the ceiling into a single call. Same wallet /
+  // budget / idempotency / no-address safety as the lead path (all inside traceMembers).
+  const memberIdsRaw = (payload as { smart_list_member_ids?: unknown }).smart_list_member_ids;
+  const memberIds = Array.isArray(memberIdsRaw)
+    ? memberIdsRaw.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, HARD_MAX_LIMIT)
+    : null;
+  if (memberIds && memberIds.length) {
+    try {
+      return await traceMembers(db, apiKey, memberIds, force, started);
+    } catch (e) {
+      console.error("[ph-ucc-skiptrace] member path FAILED", e instanceof Error ? e.message : String(e));
+      return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
+
   // Explicit id set (from the filtered lead book). Hard-capped to 100 here too, so
   // no caller can ever push more than the ceiling into a single call.
   const leadIdsRaw = (payload as { lead_ids?: unknown }).lead_ids;
@@ -516,47 +815,17 @@ Deno.serve(async (req) => {
       const persons = normalizePersons(r.body);
       // Shared aggregation: DNC + TCPA-litigator both suppress a number from becoming dialable.
       const agg = aggregate(persons);
-      const { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones,
-              bestPhone, bestEmail, primaryName, tcpaLitigator, status, statusReason } = agg;
+      const { allPhones, allEmails, usablePhones, dncPhones, tcpaPhones, primaryName, status } = agg;
       if (status === "ready") ready++;
       else if (status === "email_only") emailOnly++;
       else noMatch++;
 
       const nowIso = new Date().toISOString();
 
-      // Replace any prior contact rows for this lead (idempotent re-trace on force).
-      await db.from("ph_ucc_contacts").delete().eq("lead_id", lead.id);
-      if (persons.length > 0) {
-        const rows = persons.map((p, i) => ({
-          lead_id: lead.id,
-          person_name: p.person_name,
-          is_primary: i === 0,
-          phones: p.phones,
-          emails: p.emails,
-          trace_match: !!(p.person_name || p.phones.length || p.emails.length),
-          provider: "batchdata",
-          raw: p.raw,
-          traced_at: nowIso,
-        }));
-        const { error: cErr } = await db.from("ph_ucc_contacts").insert(rows);
-        if (cErr) { errored++; perLead.push({ lead_id: lead.id, debtor: lead.debtor_name, error: `contacts insert: ${cErr.message}` }); continue; }
-      }
-
-      const { error: uErr } = await db.from("ph_ucc_leads").update({
-        phone: bestPhone,           // NON-DNC only, or null
-        email: bestEmail,
-        person_name: primaryName,
-        traced_at: nowIso,
-        trace_match: anyPerson,
-        tcpa_litigator: tcpaLitigator,        // person-level litigator / dnc.tcpa (now queryable)
-        dnc_suppressed_count: dncPhones.length, // # of DNC numbers pulled & suppressed
-        status,
-        status_reason: statusReason,
-      }).eq("id", lead.id);
-      if (uErr) { errored++; perLead.push({ lead_id: lead.id, debtor: lead.debtor_name, error: `lead update: ${uErr.message}` }); continue; }
-
-      // Mirror the enrichment onto any smart_list_members pointing at this lead.
-      await mirrorSkiptraceToMembers(db, lead.id, persons, agg, nowIso);
+      // Persist to the durable ph_ucc rows + mirror onto any smart_list_members. SHARED
+      // with the member path via persistLeadTrace, so the two entry points never drift.
+      const res = await persistLeadTrace(db, lead.id, persons, agg, nowIso);
+      if (!res.ok) { errored++; perLead.push({ lead_id: lead.id, debtor: lead.debtor_name, error: res.error }); continue; }
 
       traced++;
       perLead.push({
