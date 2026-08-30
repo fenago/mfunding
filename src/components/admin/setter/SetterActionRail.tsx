@@ -4,6 +4,7 @@ import MerchantApplicationModal from "../MerchantApplicationModal";
 import AdHocSendMenu from "../AdHocSendMenu";
 import BookAppointmentControl from "../BookAppointmentControl";
 import { useUserProfile } from "../../../context/UserProfileContext";
+import { ensureDealStageAtLeast } from "../../../services/dealService";
 import type { DealWithCustomer } from "../../../types/deals";
 
 /**
@@ -95,11 +96,19 @@ export default function SetterActionRail({
         <MerchantApplicationModal
           deal={deal}
           onClose={() => setShowApp(false)}
-          onSent={() => {
+          onSent={async () => {
             setShowApp(false);
+            // The modal's send paths already set application_sent; this is a
+            // forward-only safety net (no-op if already there), then refresh.
+            await ensureDealStageAtLeast(deal, "application_sent");
             onRefresh();
           }}
-          onSaved={onRefresh}
+          onSaved={async () => {
+            // Draft/save = the setter WORKED the application → advance to at least
+            // Qualifying (forward-only). NOT fired on the modal merely opening.
+            await ensureDealStageAtLeast(deal, "qualifying");
+            onRefresh();
+          }}
         />
       )}
     </div>

@@ -1,5 +1,6 @@
 import TextMerchantPanel from "../TextMerchantPanel";
 import EmailMerchantPanel from "../EmailMerchantPanel";
+import { ensureDealStageAtLeast } from "../../../services/dealService";
 import type { DealWithCustomer } from "../../../types/deals";
 
 /**
@@ -24,6 +25,14 @@ export default function SetterCommsPanel({
     "best_time"
   ] as string | undefined;
 
+  // A sent text/email = the setter has engaged the merchant → advance to at least
+  // Contacted (forward-only; no-op if already past it), then re-read the deal so
+  // the pipeline rail + snapshot reflect the new stage.
+  const onSent = async () => {
+    await ensureDealStageAtLeast(deal, "contacted");
+    onRefresh();
+  };
+
   return (
     <div className="flex flex-wrap items-center gap-3">
       {/* TEXT the merchant — inline compose through the real JMP path (sms-send),
@@ -37,7 +46,7 @@ export default function SetterCommsPanel({
         merchantFirstName={deal.customer?.first_name}
         businessName={deal.customer?.business_name}
         ghlContactId={deal.ghl_contact_id}
-        onSent={onRefresh}
+        onSent={onSent}
       />
       {/* EMAIL the merchant — same panel the playbook uses, templates + Blank
           built in; CC rides on additional_emails. */}
@@ -49,7 +58,7 @@ export default function SetterCommsPanel({
         businessName={deal.customer?.business_name}
         leadSource={deal.lead_source}
         bestTime={bestTime}
-        onSent={onRefresh}
+        onSent={onSent}
       />
     </div>
   );

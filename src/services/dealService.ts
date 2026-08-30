@@ -783,6 +783,79 @@ export async function updateDealStatus(id: string, newStatus: DealStatus): Promi
   return deal as Deal;
 }
 
+// Terminal / done statuses that ensureDealStageAtLeast must NEVER touch. A deal
+// that's funded, parked, or already through a pipeline's end has finished its
+// forward journey — a setter's stray action on it (a late text, a reopened app
+// modal) must not drag it anywhere.
+const AUTO_ADVANCE_TERMINAL: DealStatus[] = [
+  "funded",
+  "renewal_eligible",
+  "restructure_executed",
+  "servicing",
+  ...PARKED_STATUSES,
+];
+
+// MCA stage key → nearest VCF equivalent, for the rare VCF deal a setter works.
+// The Operations action callbacks always pass MCA target keys (contacted /
+// qualifying / application_sent). Setters are overwhelmingly MCA; a VCF target
+// with no clean equivalent is simply a no-op (undefined here).
+const MCA_TO_VCF_STAGE: Partial<Record<DealStatus, DealStatus>> = {
+  contacted: "hardship_consult",
+  qualifying: "hardship_consult",
+  application_sent: "agreement_sent",
+};
+
+/**
+ * Action-based, FORWARD-ONLY auto-advance for the Setter Operations console.
+ *
+ * When a setter WORKS a deal (sends a text/email/docs, saves the application),
+ * nudge the pipeline to at least `target` — but ONLY if the deal is currently
+ * EARLIER than target and not in a terminal/parked stage. Never moves a deal
+ * backward, never touches a finished deal, and never re-stamps a deal already
+ * at/after target. All the real work (forward gate, stage timestamps, GHL
+ * pipeline sync, commission hooks) is delegated to updateDealStatus — this only
+ * decides WHETHER to call it.
+ *
+ * `target` is expressed in MCA stage keys; a VCF deal is mapped to its nearest
+ * VCF equivalent (or no-ops when there's no clean one — setters are mostly MCA).
+ *
+ * Best-effort by contract: the caller's real action (the send/save) has ALREADY
+ * succeeded before this runs, so an auto-advance failure is swallowed and logged.
+ * It must NEVER throw back into the user's action.
+ */
+export async function ensureDealStageAtLeast(
+  deal: DealWithCustomer,
+  target: DealStatus,
+): Promise<void> {
+  try {
+    const isVcf = deal.deal_type === "vcf";
+    // Resolve the target into the deal's own pipeline vocabulary.
+    const effectiveTarget = isVcf ? MCA_TO_VCF_STAGE[target] : target;
+    if (!effectiveTarget) return; // no clean VCF equivalent → no-op
+
+    const current = deal.status as DealStatus;
+    if (current === effectiveTarget) return;
+
+    // Never touch a finished/parked deal.
+    if (AUTO_ADVANCE_TERMINAL.includes(current)) return;
+
+    const stageOrder = PIPELINES[isVcf ? "vcf" : "mca"].stages.map((s) => s.key);
+    const fromIdx = stageOrder.indexOf(current);
+    const toIdx = stageOrder.indexOf(effectiveTarget);
+
+    // Target isn't a real forward stage in this pipeline, or the deal is already
+    // at/after it → nothing to do. (fromIdx === -1 means the current status isn't
+    // an active pipeline stage — e.g. a shared outcome — so we don't advance it.)
+    if (toIdx === -1 || fromIdx === -1) return;
+    if (toIdx <= fromIdx) return;
+
+    await updateDealStatus(deal.id, effectiveTarget);
+  } catch (e) {
+    // The setter's actual action already succeeded — auto-advance is a courtesy.
+    console.warn("ensureDealStageAtLeast: auto-advance skipped (non-fatal):", e);
+  }
+}
+
 // Active MCA stages, in order, for inferring where a reactivated deal should land.
 const ACTIVE_MCA_STAGES: DealStatus[] = [
   "new", "contacted", "qualifying", "application_sent", "docs_collected",
