@@ -5,8 +5,15 @@
 // dials and NEVER loads to GHL — it only stamps the validation_* columns.
 //
 // PROVIDER SEAM: PROVIDER (default 'twilio') selects a lookup(e164) implementation
-// returning { line_type, carrier, reachable, disconnected }. realphonevalidation
-// and ipqs are left as clearly-marked stubs.
+// returning { line_type, carrier, reachable, disconnected }. Two providers are wired:
+//   • twilio (DEFAULT) — Lookup v2 Line Type Intelligence; reachable = `valid`,
+//     disconnected UNKNOWN (null) — see caveat below.
+//   • realphonevalidation — RealValidation.com Scrub product. Reports TRUE
+//     disconnection: status='connected' → reachable; status starting 'disconnected'
+//     → disconnected. iscell 'Y'/'N'/'' → mobile/landline/null. Token via the vault
+//     RPC get_rpv_token(); no balance API exists for this product (all balance
+//     endpoints 404), so balance reports available:false with a reason — never faked.
+// ipqs is left as a clearly-marked stub.
 //
 // ⚠️ TWILIO CAVEAT — reachable ≠ connected. Twilio Lookup "Line Type Intelligence"
 // returns line type + carrier + a top-level `valid` (the number is a well-formed,
@@ -47,9 +54,11 @@ const BUDGET_MS = 55_000;                    // stop starting new lookups past t
 // authoritative balance is read live from the provider.
 const COST_PER_LOOKUP: Record<string, number> = {
   twilio: 0.008,
-  realphonevalidation: 0.0,
+  realphonevalidation: 0.006, // RealValidation Scrub list price (~$0.006/lookup)
   ipqs: 0.0,
 };
+
+const RPV_SCRUB_URL = "https://api.realvalidation.com/rpvWebService/RealPhoneValidationScrub.php";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -62,6 +71,13 @@ const clean = (s: unknown): string | null => {
   const v = (s ?? "").toString().trim();
   return v.length ? v : null;
 };
+
+// Provider-aware "add the credential" message for the gated (unkeyed) path.
+function gateMsg(provider: string): string {
+  return provider === "realphonevalidation"
+    ? "Add REALPHONEVALIDATION_TOKEN to the vault"
+    : "Add TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN to the vault";
+}
 
 // Normalize a raw phone to E.164 (US default). Returns null when it can't be made
 // into a plausible E.164 number, so an unusable string is skipped, never charged.
@@ -138,6 +154,53 @@ function twilioProvider(sid: string, token: string): Provider {
   };
 }
 
+// -- RealPhoneValidation (RealValidation.com Scrub product) ----------------------
+// Scrub takes a 10-digit US number (digits only) + token and returns
+// { status, error_text, iscell, carrier }. Unlike Twilio it reports TRUE line
+// status: 'connected' = live, 'disconnected'/'disconnected-<code>' = dead, plus
+// busy / unreachable / 'invalid phone' / restricted. iscell 'Y'/'N'/'' maps to
+// mobile/landline/unknown. No balance/credits endpoint exists (all 404) → balance
+// reports available:false, never a fabricated number.
+function realPhoneValidationProvider(token: string): Provider {
+  return {
+    name: "realphonevalidation",
+    async lookup(e164) {
+      // Scrub wants 10 digits (US domestic). Take the last 10 of the E.164 digits.
+      const digits = e164.replace(/\D/g, "");
+      const ten = digits.length >= 10 ? digits.slice(-10) : digits;
+      const url = `${RPV_SCRUB_URL}?output=json&phone=${encodeURIComponent(ten)}&token=${encodeURIComponent(token)}`;
+      const res = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+      const text = await res.text();
+      let b: any = {};
+      try { b = text ? JSON.parse(text) : {}; } catch { b = { _raw: text.slice(0, 300) }; }
+      if (!res.ok) {
+        return { ok: false, status: res.status, error: (b?.error_text ?? text ?? "").toString().slice(0, 300) };
+      }
+      const status = (b?.status ?? "").toString().trim().toLowerCase();
+      // An empty/absent status means the API returned something odd — surface it.
+      if (!status) {
+        return { ok: false, status: res.status, error: `RPV returned no status: ${JSON.stringify(b).slice(0, 200)}` };
+      }
+      const iscell = (b?.iscell ?? "").toString().trim().toUpperCase();
+      return {
+        ok: true,
+        status: res.status,
+        result: {
+          line_type: iscell === "Y" ? "mobile" : iscell === "N" ? "landline" : null,
+          carrier: clean(b?.carrier),
+          reachable: status === "connected",
+          disconnected: /^disconnected/.test(status),
+        },
+      };
+    },
+    async balance() {
+      // RealValidation exposes NO credit/balance endpoint for the Scrub product
+      // (every candidate endpoint 404s). Report unavailable rather than fabricate.
+      return { ok: false, status: 501, balance: null, currency: null, error: "RealValidation exposes no credit/balance API endpoint for the Scrub product" };
+    },
+  };
+}
+
 // -- Stubs for future providers (clearly marked; not wired) --------------------
 function unimplementedProvider(name: string): Provider {
   const err = `phone-validation provider '${name}' is not implemented yet — only 'twilio' is wired`;
@@ -148,12 +211,14 @@ function unimplementedProvider(name: string): Provider {
   };
 }
 
-function makeProvider(name: string, creds: { sid: string | null; token: string | null }): Provider | null {
+function makeProvider(name: string, creds: { sid: string | null; token: string | null; rpvToken: string | null }): Provider | null {
   switch (name) {
     case "twilio":
       if (!creds.sid || !creds.token) return null;   // unkeyed → gated
       return twilioProvider(creds.sid, creds.token);
-    case "realphonevalidation":  // TODO: RealPhoneValidation Turbo/Scrub — reports true disconnected
+    case "realphonevalidation":
+      if (!creds.rpvToken) return null;              // unkeyed → gated
+      return realPhoneValidationProvider(creds.rpvToken);
     case "ipqs":                 // TODO: IPQualityScore phone validation — reports active/leaked/fraud
       return unimplementedProvider(name);
     default:
@@ -235,11 +300,20 @@ Deno.serve(async (req) => {
   const started = Date.now();
   const costPer = COST_PER_LOOKUP[providerName] ?? 0;
 
-  // ── Credentials from the vault (the gate). Null pair = not keyed yet. ──
+  // ── Credentials from the vault (the gate). Null = not keyed yet. Each provider
+  // reads its OWN credential: Twilio the SID/token pair, RealPhoneValidation the
+  // Scrub token. Only fetch the RPV token when it's the chosen provider. ──
   const { data: creds } = await db.rpc("get_phone_validation_key");
   const sid = clean((creds as any)?.account_sid);
   const authToken = clean((creds as any)?.auth_token);
-  const gated = providerName === "twilio" && (!sid || !authToken);
+  let rpvToken: string | null = null;
+  if (providerName === "realphonevalidation") {
+    const { data: rpv } = await db.rpc("get_rpv_token");
+    rpvToken = clean(rpv);
+  }
+  const gated = providerName === "realphonevalidation"
+    ? !rpvToken
+    : providerName === "twilio" && (!sid || !authToken);
 
   // ── preview: no spend, no key required. Count members + estimate cost. ──
   if (action === "preview") {
@@ -259,19 +333,26 @@ Deno.serve(async (req) => {
 
   // ── balance: provider account balance. Gated when unkeyed. ──
   if (action === "balance") {
-    if (gated) return json({ ok: false, gated: true, action: "balance", provider: providerName, error: "Add TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN to the vault" });
-    const provider = makeProvider(providerName, { sid, token: authToken });
+    if (gated) return json({ ok: false, gated: true, action: "balance", provider: providerName, error: gateMsg(providerName) });
+    const provider = makeProvider(providerName, { sid, token: authToken, rpvToken });
     if (!provider) return json({ ok: false, action: "balance", provider: providerName, error: `unknown provider '${providerName}'` }, 400);
     const b = await provider.balance();
-    if (!b.ok) return json({ ok: false, action: "balance", provider: providerName, status: b.status, error: b.error ?? "balance lookup failed" }, 502);
-    return json({ ok: true, action: "balance", provider: providerName, balance: b.balance, currency: b.currency });
+    // RPV (and any provider with no balance API) reports available:false with a
+    // reason rather than a fabricated number — this is not an error state.
+    if (!b.ok) {
+      if (providerName === "realphonevalidation") {
+        return json({ ok: true, action: "balance", provider: providerName, available: false, balance: null, currency: null, reason: b.error ?? "no balance API" });
+      }
+      return json({ ok: false, action: "balance", provider: providerName, status: b.status, error: b.error ?? "balance lookup failed" }, 502);
+    }
+    return json({ ok: true, action: "balance", provider: providerName, available: true, balance: b.balance, currency: b.currency });
   }
 
   // ── validate: the spend path ──
   if (action !== "validate") return json({ ok: false, error: `unknown action '${action}'` }, 400);
 
   // Gate 1: credentials.
-  if (gated) return json({ ok: false, gated: true, error: "Add TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN to the vault" });
+  if (gated) return json({ ok: false, gated: true, error: gateMsg(providerName) });
 
   // Gate 2: owner enable flag (default off), overridable with force:true.
   const { data: phSettings } = await db.from("platform_settings").select("value").eq("key", "ph_settings").maybeSingle();
@@ -280,7 +361,7 @@ Deno.serve(async (req) => {
     return json({ ok: true, skipped: true, reason: "ph_settings.phone_validate_enabled is not true — stage paused by owner. Pass force:true to override." });
   }
 
-  const provider = makeProvider(providerName, { sid, token: authToken });
+  const provider = makeProvider(providerName, { sid, token: authToken, rpvToken });
   if (!provider) return json({ ok: false, error: `provider '${providerName}' not available` }, 400);
 
   const rawLimit = Number(payload.limit ?? url.searchParams.get("limit"));

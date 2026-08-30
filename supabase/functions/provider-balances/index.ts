@@ -16,6 +16,10 @@
 //     is visible only in the Apollo web dashboard / CSV export, not the API.)
 //   • Phone validation — Twilio Balance API when keyed; otherwise gated:true (the
 //     TWILIO_* vault entries aren't set yet).
+//   • RealPhoneValidation — the SECOND phone-validation provider. RealValidation.com
+//     exposes NO credit/balance endpoint for the Scrub product (every candidate 404s),
+//     so we report available:false with the reason rather than fabricate a number.
+//     gated:true until REALPHONEVALIDATION_TOKEN is present in the vault.
 //
 // AUTH (copied from ph-ucc-skiptrace): trusted cron via ?secret=<GHL webhook secret>
 // + anon-key Bearer, OR a signed-in staff user (closer/admin/super_admin).
@@ -89,6 +93,19 @@ async function twilioBalance(db: SupabaseClient) {
   }
 }
 
+// RealPhoneValidation: token-gated, but no balance API exists — so a present token
+// resolves to available:false with a reason, an absent token to gated:true.
+async function realPhoneValidationBalance(db: SupabaseClient) {
+  const { data: token, error } = await db.rpc("get_rpv_token");
+  if (error) {
+    return { provider: "realphonevalidation", available: false, balance: null, currency: null, ok: false, error: `vault read failed: ${error.message}` };
+  }
+  if (!token || typeof token !== "string") {
+    return { provider: "realphonevalidation", available: false, balance: null, currency: null, ok: false, gated: true, reason: "Add REALPHONEVALIDATION_TOKEN to the vault" };
+  }
+  return { provider: "realphonevalidation", available: false, balance: null, currency: null, ok: true, reason: "RealValidation exposes no credit/balance API endpoint for the Scrub product" };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST" && req.method !== "GET") return json({ error: "Method not allowed" }, 405);
@@ -115,10 +132,11 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Fetch the three in parallel (BatchData + Twilio are independent network hops).
-  const [batchdata, phone_validation] = await Promise.all([
+  // Fetch in parallel (each is an independent network / vault hop).
+  const [batchdata, phone_validation, realphonevalidation] = await Promise.all([
     batchdataBalance(db),
     twilioBalance(db),
+    realPhoneValidationBalance(db),
   ]);
 
   const apollo = {
@@ -126,5 +144,5 @@ Deno.serve(async (req) => {
     reason: "Apollo API exposes no credit/usage balance endpoint",
   };
 
-  return json({ ok: true, batchdata, apollo, phone_validation });
+  return json({ ok: true, batchdata, apollo, phone_validation, realphonevalidation });
 });

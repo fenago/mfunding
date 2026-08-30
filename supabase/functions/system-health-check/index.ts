@@ -363,6 +363,61 @@ async function checkTwilio(db: SupabaseClient): Promise<CheckResult> {
   }
 }
 
+/** RealValidation (the SECOND phone-validation provider): probe the Scrub product
+ * with a fixed valid US test number + the vault token. A normal status verdict
+ * (connected / disconnected / busy / unreachable / invalid phone / restricted)
+ * proves the token is authorized and Scrub lookups are live → up. An "unauthorized"
+ * body or an HTTP error = down; an empty/odd status = degraded. If the token isn't
+ * staged (get_rpv_token null) that is a GATE, not an outage → no_data (grey, silent).
+ * Creds come from the vault via get_rpv_token() — the same source phone-validate uses.
+ * This is the auth/uptime MONITOR; RealValidation has no balance API to strip. */
+async function checkRealValidation(db: SupabaseClient): Promise<CheckResult> {
+  const svc = "realvalidation";
+  const t0 = Date.now();
+  let token: string | null = null;
+  try {
+    const { data, error } = await db.rpc("get_rpv_token");
+    if (error) {
+      return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `vault read failed: ${error.message}` };
+    }
+    token = (data ?? "").toString().trim() || null;
+  } catch (e) {
+    return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `vault read threw: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (!token) {
+    return {
+      service: svc, status: "no_data", http_status: null, latency_ms: Date.now() - t0,
+      detail: "Add the RealValidation token — REALPHONEVALIDATION_TOKEN not staged in the vault (get_rpv_token returned null). This provider is gated until then.",
+    };
+  }
+  try {
+    // Fixed valid US test number; ?output=json. A normal status = the token works.
+    const url = `https://api.realvalidation.com/rpvWebService/RealPhoneValidationScrub.php?output=json&phone=5619005500&token=${encodeURIComponent(token)}`;
+    const res = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) });
+    const latency = Date.now() - t0;
+    const text = await res.text().catch(() => "");
+    let body: unknown = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    const b = body as { status?: string; error_text?: string } | null;
+    if (!res.ok) {
+      return { service: svc, status: "down", http_status: res.status, latency_ms: latency, detail: `Scrub HTTP ${res.status}: ${String(text).slice(0, 160)}` };
+    }
+    const status = (b?.status ?? "").toString().trim().toLowerCase();
+    // An "unauthorized" / "not authorized" body is RPV's 200-with-error auth failure.
+    if (/unauthorized|not authorized|invalid token|access denied/.test(status) || /unauthorized|not authorized|invalid token/.test((b?.error_text ?? "").toLowerCase())) {
+      return { service: svc, status: "down", http_status: res.status, latency_ms: latency, detail: `token rejected — check REALPHONEVALIDATION_TOKEN in the vault (status="${status || b?.error_text}").` };
+    }
+    const known = /^(connected|disconnected|busy|unreachable|invalid phone|restricted)/.test(status);
+    if (known) {
+      return { service: svc, status: "up", http_status: res.status, latency_ms: latency, detail: `authenticated · Scrub lookups live (probe number status="${status}").` };
+    }
+    // 200 but a status we don't recognize (or empty) — reachable but odd.
+    return { service: svc, status: "degraded", http_status: res.status, latency_ms: latency, detail: `Scrub returned an unexpected status="${status || "(empty)"}": ${String(text).slice(0, 140)}` };
+  } catch (e) {
+    return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `unreachable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
 /** A public site should answer 200. A non-2xx = degraded (reachable, wrong);
  * a network throw/timeout = down (unreachable). */
 async function checkSite(service: string, url: string): Promise<CheckResult> {
@@ -631,6 +686,7 @@ const LABELS: Record<string, string> = {
   plaid: "Plaid (bank connection)",
   hotprospector: "HotProspector (PowerDialer)",
   twilio: "Twilio (phone validation)",
+  realvalidation: "RealValidation (phone validation)",
   "site:mfunding.net": "Website (mfunding.net)",
   "site:my.mfunding.net": "Merchant portal (my.mfunding.net)",
   "edge-runtime": "Supabase edge runtime",
@@ -739,7 +795,7 @@ Deno.serve(async (req) => {
 
   // ── Run every probe (in parallel where independent) ──
   const results: CheckResult[] = [];
-  const [instantly, ghl, llm, plaid, hotprospector, wavv, twilio, site1, site2, cron, egress] = await Promise.all([
+  const [instantly, ghl, llm, plaid, hotprospector, wavv, twilio, realvalidation, site1, site2, cron, egress] = await Promise.all([
     checkInstantly(db),
     checkGhl(cfg, cfgErr),
     checkLlm(db),
@@ -747,12 +803,13 @@ Deno.serve(async (req) => {
     checkHotProspector(db),
     checkWavv(db),
     checkTwilio(db),
+    checkRealValidation(db),
     checkSite("site:mfunding.net", "https://mfunding.net"),
     checkSite("site:my.mfunding.net", "https://my.mfunding.net"),
     checkCron(db),
     checkSupabaseEgress(db),
   ]);
-  results.push(instantly, ghl, llm, plaid, hotprospector, wavv, twilio, site1, site2, cron, egress);
+  results.push(instantly, ghl, llm, plaid, hotprospector, wavv, twilio, realvalidation, site1, site2, cron, egress);
   // Edge-runtime self-check: if this line runs, the function + its scheduler are alive.
   results.push({ service: "edge-runtime", status: "up", http_status: null, latency_ms: null, detail: `edge function executed at ${new Date().toISOString()}.` });
 

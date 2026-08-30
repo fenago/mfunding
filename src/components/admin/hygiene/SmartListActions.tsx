@@ -83,8 +83,45 @@ async function filterTraceEligible(ids: string[]): Promise<string[]> {
   return eligible;
 }
 
+type PhoneProvider = "twilio" | "realphonevalidation";
+const PHONE_PROVIDERS: { id: PhoneProvider; label: string; spendChip: string }[] = [
+  { id: "twilio", label: "Twilio", spendChip: "spends Twilio balance" },
+  { id: "realphonevalidation", label: "RealValidation", spendChip: "spends RealValidation credits" },
+];
+
 export default function SmartListActions({ list, onChanged }: { list: SmartList; onChanged: () => void }) {
   const isUcc = list.source === "ph_ucc";
+
+  // ── Phone-validation provider picker (Twilio default / RealValidation) ──
+  const [phoneProvider, setPhoneProvider] = useState<PhoneProvider>("twilio");
+  // Ready/gated state per provider, read once from provider-balances (one call
+  // returns both). ready=null while loading. gated ⇒ the vault key isn't staged.
+  const [providerReady, setProviderReady] = useState<Record<PhoneProvider, boolean | null>>({
+    twilio: null,
+    realphonevalidation: null,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.functions.invoke("provider-balances", { body: {} });
+        const r = (data as Record<string, unknown>) ?? {};
+        const pv = (r.phone_validation as Record<string, unknown>) ?? {};
+        const rpv = (r.realphonevalidation as Record<string, unknown>) ?? {};
+        if (cancelled) return;
+        setProviderReady({
+          twilio: pv.gated !== true,
+          realphonevalidation: rpv.gated !== true,
+        });
+      } catch {
+        if (!cancelled) setProviderReady({ twilio: false, realphonevalidation: false });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── BatchData skip-trace preview ──
   const previewTrace = useCallback(async (): Promise<PreviewResult> => {
@@ -179,10 +216,12 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
     [list.id, onChanged],
   );
 
-  // ── Phone validation preview (Twilio; gated until the key is added) ──
+  const providerLabel = phoneProvider === "realphonevalidation" ? "RealValidation" : "Twilio";
+
+  // ── Phone validation preview (chosen provider; gated until its key is added) ──
   const previewPhone = useCallback(async (): Promise<PreviewResult> => {
     const { data, error } = await supabase.functions.invoke("phone-validate", {
-      body: { action: "preview", smart_list_id: list.id },
+      body: { action: "preview", smart_list_id: list.id, provider: phoneProvider },
     });
     if (error) throw new Error(await fnErrorMessage(error));
     const r = (data as Record<string, unknown>) ?? {};
@@ -193,9 +232,9 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       count: needing,
       costUsd: r.est_cost_usd != null ? Number(r.est_cost_usd) || 0 : Math.round(needing * per * 10000) / 10000,
       gated: r.gated === true,
-      note: r.gated === true ? "Add the Twilio key to enable phone validation." : undefined,
+      note: r.gated === true ? `Add the ${providerLabel} key to enable phone validation.` : undefined,
     };
-  }, [list.id]);
+  }, [list.id, phoneProvider, providerLabel]);
 
   const runPhone: Runner = useCallback(
     async (onProgress) => {
@@ -212,11 +251,11 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       onProgress(0, PHONE_TARGET);
       while (looked < PHONE_TARGET) {
         const { data, error } = await supabase.functions.invoke("phone-validate", {
-          body: { action: "validate", smart_list_id: list.id, limit: 200 },
+          body: { action: "validate", smart_list_id: list.id, limit: 200, provider: phoneProvider },
         });
         if (error) throw new Error(await fnErrorMessage(error));
         const r = (data as Record<string, unknown>) ?? {};
-        if (r.gated === true) return "Add the Twilio key to enable phone validation.";
+        if (r.gated === true) return `Add the ${providerLabel} key to enable phone validation.`;
         if (r.skipped === true) return "Phone validation is paused in Settings (phone_validate_enabled = OFF). Turn it on to run.";
         if (r.ok === false) throw new Error(String(r.error || "validation failed"));
         const candidates = Number(r.candidates ?? 0) || 0;
@@ -233,14 +272,17 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         if (candidates === 0 || v === 0) break; // drained, or no forward progress
       }
       onChanged();
-      // Balance-after (best-effort; separate cheap read).
+      // Balance-after (best-effort; separate cheap read). Only Twilio exposes a
+      // balance API — RealValidation has none, so we skip the read for it.
       let bal = "";
-      try {
-        const { data: b } = await supabase.functions.invoke("phone-validate", { body: { action: "balance" } });
-        const br = (b as Record<string, unknown>) ?? {};
-        if (br.ok === true && typeof br.balance === "number") bal = ` · Twilio now $${(br.balance as number).toFixed(2)}`;
-      } catch {
-        /* balance is a nicety; never fail the run over it */
+      if (phoneProvider === "twilio") {
+        try {
+          const { data: b } = await supabase.functions.invoke("phone-validate", { body: { action: "balance", provider: phoneProvider } });
+          const br = (b as Record<string, unknown>) ?? {};
+          if (br.ok === true && typeof br.balance === "number") bal = ` · Twilio now $${(br.balance as number).toFixed(2)}`;
+        } catch {
+          /* balance is a nicety; never fail the run over it */
+        }
       }
       const extras = [
         mobile ? `${mobile} mobile` : "",
@@ -254,7 +296,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         .join(" · ");
       return `Validated ${validated.toLocaleString()}${extras ? " · " + extras : ""}${bal}`;
     },
-    [list.id, onChanged],
+    [list.id, onChanged, phoneProvider, providerLabel],
   );
 
   return (
@@ -282,14 +324,55 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         confirmVerb="Enrich"
       />
       <ActionPanel
+        // Remount on provider switch so a stale preview/gated verdict never carries
+        // across providers (each has its own key gate).
+        key={`phone-${phoneProvider}`}
         title="Phone validation"
         icon={<PhoneIcon className="w-4 h-4" />}
         accent="mint-green"
-        spendChip="spends Twilio balance"
+        spendChip={PHONE_PROVIDERS.find((p) => p.id === phoneProvider)?.spendChip ?? "spends provider credits"}
         enabled
         previewFn={previewPhone}
         runFn={runPhone}
         confirmVerb="Validate"
+        extra={
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Provider</p>
+            <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 gap-0.5">
+              {PHONE_PROVIDERS.map((p) => {
+                const ready = providerReady[p.id];
+                const selected = phoneProvider === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPhoneProvider(p.id)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium inline-flex items-center gap-1.5 transition-colors ${
+                      selected
+                        ? "bg-mint-green/15 text-mint-green ring-1 ring-mint-green/40"
+                        : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
+                    }`}
+                    title={ready === false ? `${p.label}: key not staged (gated)` : ready === true ? `${p.label}: ready` : `${p.label}: checking…`}
+                  >
+                    <span
+                      className={`inline-block w-1.5 h-1.5 rounded-full ${
+                        ready === true ? "bg-emerald-500" : ready === false ? "bg-amber-500" : "bg-gray-300 dark:bg-gray-600"
+                      }`}
+                    />
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+              {providerReady[phoneProvider] === false
+                ? `${providerLabel} not configured — key not staged in the vault.`
+                : providerReady[phoneProvider] === true
+                  ? `${providerLabel} ready.`
+                  : "Checking provider status…"}
+            </p>
+          </div>
+        }
       />
     </div>
   );
@@ -306,6 +389,7 @@ function ActionPanel({
   previewFn,
   runFn,
   confirmVerb,
+  extra,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -316,6 +400,7 @@ function ActionPanel({
   previewFn: () => Promise<PreviewResult>;
   runFn: Runner;
   confirmVerb: string;
+  extra?: React.ReactNode;
 }) {
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -386,6 +471,7 @@ function ActionPanel({
         <p className="text-xs text-gray-500 dark:text-gray-400">{disabledReason}</p>
       ) : (
         <>
+          {extra}
           <button onClick={doPreview} disabled={previewing || running} className="btn-ghost btn-sm inline-flex items-center gap-1.5">
             <MagnifyingGlassIcon className="w-4 h-4" /> {previewing ? "Counting…" : "Preview count & cost"}
           </button>
@@ -412,7 +498,7 @@ function ActionPanel({
 
           {gated && (
             <button disabled className="btn-primary btn-sm w-full opacity-50 cursor-not-allowed">
-              Add the Twilio key to enable
+              Add the key to enable
             </button>
           )}
 
