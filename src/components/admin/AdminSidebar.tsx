@@ -117,6 +117,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/ph-setters", // PH Setter Playbook (roles: ADMIN) — same lens treatment as R&D; pure closers excluded via roles
   "/admin/ph-ucc", // PH UCC Harvester (roles: ADMIN) — same lens treatment as PH Setters; pure closers excluded via roles
   "/admin/lead-machine", // Lead Machine (roles: ADMIN) — purchased-list upload → tag → VibeReach push; pure closers excluded via roles
+  "/admin/data-hygiene", // Data Hygiene (roles: ADMIN) — smart lists + skip-trace/enrich/validate; pure closers excluded via roles
   "/admin/setter-performance", // Setter Performance (roles: ADMIN) — WAVV per-rep scorecard; pure closers excluded via roles
   "/admin/text-messages", // 💬 Text Messages — the shared SMS line's two-way inbox, every staff role
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — the lists→WAVV one-pager, every staff role
@@ -152,6 +153,10 @@ const navGroups: NavGroup[] = [
       // it, tag it, push it into VibeReach for the dialer). Sits next to the UCC
       // Machine because both feed the same dial floor; same ADMIN gating + lens.
       { name: "Lead Machine", path: "/admin/lead-machine", icon: DocumentArrowUpIcon, roles: ADMIN },
+      // Data Hygiene — build a saved audience (smart list) from any lead book, then
+      // clean it (skip-trace / enrich / phone validation) before it hits the floor.
+      // Sits next to the Lead Machine + UCC Harvester; same ADMIN gating + lens.
+      { name: "Data Hygiene", path: "/admin/data-hygiene", icon: CircleStackIcon, roles: ADMIN },
       // Setter Performance — the dial-floor scorecard, reading WAVV (the dialer
       // the setters actually use). The only per-rep scorecard now: the old
       // HotProspector one at /admin/dialer was deleted with the rest of the HP

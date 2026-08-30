@@ -8,6 +8,7 @@ import {
   SignalSlashIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
+import ProviderBalanceStrip from "@/components/admin/hygiene/ProviderBalanceStrip";
 import { getPlaidHealth, type PlaidHealth } from "@/services/plaidStatusService";
 import {
   loadSmsHealth,
@@ -632,6 +633,10 @@ export default function SystemHealthPage() {
 
       {/* ── Plaid integration detail ─────────────────────────────────────────── */}
       <PlaidHealthCard health={plaid} error={plaidError} />
+
+      {/* ── Provider balances (shared with Data Hygiene) — catch low enrichment
+          credit before a run fails. Green/amber/red on a low-balance threshold. ── */}
+      <ProviderBalanceStrip variant="health" />
 
       {/* ── Uptime history ───────────────────────────────────────────────────── */}
       {sortedStates.length > 0 && (

@@ -99,6 +99,7 @@ const PlaybooksPage = lazyWithReload(() => import("../pages/admin/PlaybooksPage.
 const PhSetterPlaybookPage = lazyWithReload(() => import("../pages/admin/PhSetterPlaybookPage.tsx"));
 const PhUccMachinePage = lazyWithReload(() => import("../pages/admin/PhUccMachinePage.tsx"));
 const LeadMachinePage = lazyWithReload(() => import("../pages/admin/LeadMachinePage.tsx"));
+const DataHygienePage = lazyWithReload(() => import("../pages/admin/DataHygienePage.tsx"));
 const SetterPerformancePage = lazyWithReload(() => import("../pages/admin/SetterPerformancePage.tsx"));
 const TextMessagesPage = lazyWithReload(() => import("../pages/admin/TextMessagesPage.tsx"));
 const TextMessagesAdminPage = lazyWithReload(() => import("../pages/admin/TextMessagesAdminPage.tsx"));
@@ -776,6 +777,15 @@ export const routes: RouteObject[] = [
                 path: "lead-machine",
                 element: <AdminOnlyProtectedRoute />,
                 children: [{ index: true, element: <LeadMachinePage /> }],
+              },
+              // Data Hygiene — build saved audiences (smart lists) from the UCC /
+              // purchased / CRM books, then clean them (skip-trace, enrich, phone
+              // validation). Same admin-only guard + closer-lens treatment as the
+              // Lead Machine it sits beside; pure closers excluded via ADMIN roles.
+              {
+                path: "data-hygiene",
+                element: <AdminOnlyProtectedRoute />,
+                children: [{ index: true, element: <DataHygienePage /> }],
               },
               // Setter Performance — the WAVV per-rep scorecard. Owner ruling
               // 2026-08-26: "everybody in the company needs to see this page" — so
