@@ -112,8 +112,48 @@ const PHONE_PROVIDERS: { id: PhoneProvider; label: string; spendChip: string }[]
   { id: "realphonevalidation", label: "RealValidation", spendChip: "spends RealValidation credits" },
 ];
 
+type CapCounts = {
+  total: number;
+  with_phone: number;
+  with_company_or_email: number;
+  with_address: number;
+  ghl_members: number;
+};
+
 export default function SmartListActions({ list, onChanged }: { list: SmartList; onChanged: () => void }) {
   const isUcc = list.source === "ph_ucc";
+
+  // Per-list capability counts → grey a provider out when the list holds nothing
+  // for it to work on (before the user spends a click). null = still loading;
+  // on error we leave all providers enabled (fail-open, never block on a read).
+  const [caps, setCaps] = useState<CapCounts | null>(null);
+  const [capsErr, setCapsErr] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc("smart_list_capability_counts", { p_list_id: list.id });
+        if (cancelled) return;
+        if (error) {
+          setCapsErr(true);
+          return;
+        }
+        setCaps(data as CapCounts);
+      } catch {
+        if (!cancelled) setCapsErr(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [list.id]);
+
+  // Address availability is known for the three DB books; for VibeReach it's only
+  // knowable via a GHL call, so any ghl members keep skip-trace enabled (the edge
+  // fn skips no-address members at no charge). Fail-open while loading / on error.
+  const hasAddresses = caps === null || capsErr ? true : caps.with_address > 0 || caps.ghl_members > 0;
+  const hasBusiness = caps === null || capsErr ? true : caps.with_company_or_email > 0;
+  const hasPhones = caps === null || capsErr ? true : caps.with_phone > 0;
 
   // ── Phone-validation provider picker (Twilio default / RealValidation) ──
   const [phoneProvider, setPhoneProvider] = useState<PhoneProvider>("twilio");
@@ -347,20 +387,24 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
       <ActionPanel
         title="BatchData skip-trace"
+        blurb="Takes a name + mailing address and appends fresh phone numbers and emails for the owner — plus a DNC / TCPA-litigator flag on each phone. Best on UCC and Customer lists (they carry addresses)."
         icon={<MagnifyingGlassIcon className="w-4 h-4" />}
         accent="ocean-blue"
         spendChip="spends BatchData wallet"
-        enabled
+        enabled={hasAddresses}
+        disabledReason="No mailing addresses in this list — skip-trace needs an address. Try phone validation or Apollo instead."
         previewFn={previewTrace}
         runFn={runTrace}
         confirmVerb="Skip-trace"
       />
       <ActionPanel
         title="Apollo enrich"
+        blurb="Takes a company name or email and fills in business firmographics — title, industry, employee count, annual revenue, website and LinkedIn — plus a verified business email where available."
         icon={<SparklesIcon className="w-4 h-4" />}
         accent="violet-600"
         spendChip="spends Apollo credits"
-        enabled
+        enabled={hasBusiness}
+        disabledReason="No company names or emails in this list — Apollo has nothing to match on."
         previewFn={previewApollo}
         runFn={runApollo}
         confirmVerb="Enrich"
@@ -370,10 +414,12 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         // across providers (each has its own key gate).
         key={`phone-${phoneProvider}`}
         title="Phone validation"
+        blurb="Checks each phone against the carrier network — is it live or disconnected, mobile / landline / VoIP, which carrier — so the floor only dials numbers that ring. Twilio or RealValidation."
         icon={<PhoneIcon className="w-4 h-4" />}
         accent="mint-green"
         spendChip={PHONE_PROVIDERS.find((p) => p.id === phoneProvider)?.spendChip ?? "spends provider credits"}
-        enabled
+        enabled={hasPhones}
+        disabledReason="No phone numbers in this list — nothing to validate. Skip-trace or Apollo can append phones first."
         previewFn={previewPhone}
         runFn={runPhone}
         confirmVerb="Validate"
@@ -424,6 +470,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
 /* One provider action: preview → two-step confirm → run with progress. */
 function ActionPanel({
   title,
+  blurb,
   icon,
   accent,
   spendChip,
@@ -435,6 +482,7 @@ function ActionPanel({
   extra,
 }: {
   title: string;
+  blurb: string;
   icon: React.ReactNode;
   accent: string;
   spendChip: string;
@@ -510,8 +558,11 @@ function ActionPanel({
         </span>
       </div>
 
+      {/* What this provider does — always visible, enabled or not. */}
+      <p className="text-xs leading-snug text-gray-500 dark:text-gray-400">{blurb}</p>
+
       {!enabled ? (
-        <p className="text-xs text-gray-500 dark:text-gray-400">{disabledReason}</p>
+        <p className="text-xs font-medium text-amber-600 dark:text-amber-400">{disabledReason}</p>
       ) : (
         <>
           {extra}
