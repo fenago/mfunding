@@ -11,9 +11,16 @@
 // STATEMENTS-FIRST STRATEGY: statement PDFs are what the EXISTING underwriter
 // pipeline already consumes (customer_documents, document_type 'bank_statement'). If
 // /statements/list works on our access, we save the PDFs there and re-run the
-// underwriter unchanged. If it doesn't (Limited Production may not include the
-// Statements product), we fall back to storing parsed transactions in
-// plaid_transactions and record that underwriter-from-transactions is a phase-2 item.
+// underwriter unchanged (still the preferred, highest-fidelity path).
+//
+// TRANSACTIONS PATH (no statement PDFs needed): after /transactions/sync we ALSO
+// build/update a bank_analyses row (source 'plaid') straight from plaid_transactions —
+// avg monthly deposits/revenue, NSF count, recurring daily/weekly financing debits
+// (MCA stacking) — and then trigger underwrite-deal. That closes the old gap where a
+// transactions-only connection (Limited Production may not include Statements) never
+// underwrote: the deal now advances past doc collection on the connected feed alone.
+// (underwrite-deal itself reads plaid_transactions directly and synthesizes per-month
+// figures; the bank_analyses row is the workbench's single "one source" snapshot.)
 //
 // Compliance: MCA = purchase of future receivables, NOT a loan. No merchant copy here.
 
@@ -141,7 +148,20 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── 4) Update the item row ──
+  // ── 4) Transactions → bank_analyses (the underwriting workbench's "one source").
+  //       Built from the connected feed so a transactions-only merchant (no statement
+  //       PDFs) still gets underwritten. Resolve the deal once and reuse for the row
+  //       and the underwriter trigger. Never throws — a failure here must not sink the
+  //       pull (transactions are already stored and underwrite-deal reads them anyway).
+  const resolvedDealId = await resolveDealId(db, (item.deal_id as string | null) ?? null, customerId);
+  let bankAnalysisBuilt = false;
+  try {
+    bankAnalysisBuilt = await buildBankAnalysisFromPlaid(db, item.id as string, customerId, resolvedDealId, item.institution_name as string | null, notes);
+  } catch (e) {
+    notes.push(`bank_analyses build error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // ── 5) Update the item row ──
   await db.from("plaid_items").update({
     accounts,
     status: productNotReady ? "pending" : "active",
@@ -151,12 +171,13 @@ Deno.serve(async (req) => {
     updated_at: new Date().toISOString(),
   }).eq("id", item.id);
 
-  // ── 5) If we produced a bank-statement doc, run the underwriter (same path as
-  //       merchant/GHL uploads). Without statements, transactions live in
-  //       plaid_transactions for analytics; feeding them to the underwriter is phase 2.
+  // ── 6) Run the underwriter. Statement PDFs are the preferred trigger (same path as
+  //       merchant/GHL uploads), but a transactions-only connection that produced a
+  //       bank_analyses row now ALSO triggers it — underwrite-deal reads
+  //       plaid_transactions directly, so the deal advances even without PDFs.
   let underwriteTriggered = false;
-  if (bankStatementDocMade) {
-    underwriteTriggered = await triggerUnderwriting(db, customerId, (item.deal_id as string | null) ?? null);
+  if (bankStatementDocMade || bankAnalysisBuilt) {
+    underwriteTriggered = await triggerUnderwriting(db, customerId, resolvedDealId);
   }
 
   // ── 6) Audit ──
@@ -175,6 +196,7 @@ Deno.serve(async (req) => {
     transactions: txCount,
     statements: statementsCount,
     statements_available: statementsAvailable,
+    bank_analysis_built: bankAnalysisBuilt,
     underwrite_triggered: underwriteTriggered,
     notes,
   });
@@ -247,8 +269,8 @@ async function tryStatements(
   if (!allStatements.length) return { available: true, saved: 0, note: "statements API available but no statements returned yet" };
 
   let saved = 0;
-  // Cap at the 6 most recent to bound work.
-  const recent = allStatements.slice().sort((a, b) => `${b.year}${b.month}`.localeCompare(`${a.year}${a.month}`)).slice(0, 6);
+  // Cap at the 4 most recent to bound work.
+  const recent = allStatements.slice().sort((a, b) => `${b.year}${b.month}`.localeCompare(`${a.year}${a.month}`)).slice(0, 4);
   for (const s of recent) {
     // Dedupe by statement_id marker in the description.
     const marker = `plaid_stmt:${s.statement_id}`;
@@ -340,6 +362,159 @@ async function emailOwnerStatementsEnabled(db: SupabaseClient): Promise<void> {
     "Statement PDFs are now filed automatically as bank statements and fed to the underwriter — no action needed.</p>" +
     "<p>Recorded on the Integrations page: /admin/settings/integrations.</p>";
   await sendEmailToContact(cfg, contactId, "Plaid Statements product is now enabled", html, { emailFrom: FROM_EMAIL });
+}
+
+// ── TRANSACTIONS → bank_analyses ─────────────────────────────────────────────
+// Everything below derives the workbench's "one source" row from plaid_transactions.
+// SIGN CONVENTION (matches plaid-pull's /transactions/sync store + underwrite-deal's
+// buildPlaidStatements): amount is POSITIVE for money OUT (debit) and NEGATIVE for
+// money IN (deposit/credit).
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// Transfer-like deposit descriptors — excluded from TRUE revenue (mirrors the
+// classified_type:'transfer' test in underwrite-deal.buildPlaidStatements).
+const TRANSFER_NAME_RE = /transfer|zelle|venmo|cashapp|xfer|wire|p2p/i;
+// NSF / overdraft / returned-item fee descriptors (same set underwrite-deal uses).
+const NSF_NAME_RE = /\b(nsf|overdraft|insufficient|returned\s*item|od\s*fee|nsf\s*fee|uncollected\s*funds|return(ed)?\s*fee)\b/i;
+// Names that read like a financing remittance (MCA / loan / lease / etc.). Mirrors
+// underwrite-deal.FINANCING_NAME_RE.
+const FINANCING_NAME_RE =
+  /\b(fund|funding|capital|advance|mca|remit|holdback|financ|lending|kapital|receivabl|ondeck|kabbage|bluevine|credibly|libertas|forward\s*financ|rapid\s*financ|fox\s*capital|kalamata|cfg\s*merchant|square\s*capital|paypal\s*working|working\s*capital|sba|eidl|term\s*loan|\bloan\b|lease|leasing|marlin|lendmark|installment)\b/i;
+
+interface PlaidTxRow { date: string | null; amount: number | null; name: string | null; merchant_name: string | null }
+const txName = (t: PlaidTxRow): string => (t.merchant_name || t.name || "").toString().trim();
+// Normalize a counterparty for grouping recurring debits within ONE merchant's feed:
+// lowercase, drop digits/punctuation, collapse whitespace.
+const normFunder = (name: string): string => name.toLowerCase().replace(/[0-9]+/g, " ").replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+const monthLabel = (iso: string): string | null => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+};
+
+/** Resolve the deal this pull belongs to: the item's deal_id, else the customer's most
+ * recently updated deal (same fallback triggerUnderwriting used). Null if none. */
+async function resolveDealId(db: SupabaseClient, itemDealId: string | null, customerId: string): Promise<string | null> {
+  if (itemDealId) return itemDealId;
+  const { data: deal } = await db.from("deals").select("id").eq("customer_id", customerId)
+    .order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  return (deal?.id as string | null) ?? null;
+}
+
+/** Build (or update) the source:'plaid' bank_analyses row for this deal from the
+ * customer's synced transactions. Returns true when a row was written (⇒ there is
+ * enough signal to underwrite). One row per deal: updates the existing plaid row in
+ * place rather than piling a new one on every pull. Never invents columns — writes
+ * only the bank_analyses fields defined in the 20260626_002 migration. */
+async function buildBankAnalysisFromPlaid(
+  db: SupabaseClient,
+  plaidItemPk: string,
+  customerId: string,
+  dealId: string | null,
+  institution: string | null,
+  notes: string[],
+): Promise<boolean> {
+  const { data: txData } = await db.from("plaid_transactions")
+    .select("date, amount, name, merchant_name")
+    .eq("plaid_item_pk", plaidItemPk)
+    .order("date", { ascending: true });
+  const rows = ((txData ?? []) as PlaidTxRow[]).filter((t) => t.date && Number.isFinite(Number(t.amount)));
+  if (!rows.length) { notes.push("bank_analyses skipped (no transactions)"); return false; }
+
+  const credits = rows.filter((t) => Number(t.amount) < 0); // money IN
+  const debits = rows.filter((t) => Number(t.amount) > 0);   // money OUT
+  if (!credits.length) { notes.push("bank_analyses skipped (no deposits in feed)"); return false; }
+
+  // Distinct months that actually carry deposits (skip partial boundary months so the
+  // monthly averages aren't dragged toward a fabricated $0 month — same rule as
+  // buildPlaidStatements).
+  const monthsWithDeposits = new Set<string>();
+  for (const t of credits) { const m = monthLabel(t.date!); if (m) monthsWithDeposits.add(m); }
+  const monthsAnalyzed = Math.max(1, monthsWithDeposits.size);
+
+  let totalDeposits = 0, totalRevenue = 0, largestDeposit = 0;
+  for (const t of credits) {
+    const amt = Math.abs(Number(t.amount));
+    totalDeposits += amt;
+    if (amt > largestDeposit) largestDeposit = amt;
+    if (!TRANSFER_NAME_RE.test(txName(t))) totalRevenue += amt; // exclude transfers from true revenue
+  }
+
+  let nsfCount = 0;
+  for (const t of debits) if (NSF_NAME_RE.test(txName(t))) nsfCount += 1;
+
+  // Recurring financing debits (MCA stacking): group by (normalized counterparty,
+  // rounded amount); a group qualifies when it hits near-daily in some month (>=8) OR
+  // reads like financing and recurs (>=2). Mirrors buildPlaidStatements' detection.
+  const groups = new Map<string, { name: string; amount: number; total: number; perMonth: Map<string, number> }>();
+  for (const t of debits) {
+    const amt = Math.abs(Number(t.amount));
+    if (!(amt > 0)) continue;
+    const name = txName(t) || "Unknown";
+    const key = `${normFunder(name) || "unknown"}|${Math.round(amt)}`;
+    const m = monthLabel(t.date!) ?? "?";
+    let g = groups.get(key);
+    if (!g) { g = { name, amount: amt, total: 0, perMonth: new Map() }; groups.set(key, g); }
+    g.total += 1;
+    g.perMonth.set(m, (g.perMonth.get(m) ?? 0) + 1);
+  }
+  let mcaPositions = 0, financingTotalDollars = 0;
+  for (const g of groups.values()) {
+    const maxMonth = Math.max(0, ...g.perMonth.values());
+    const isDaily = maxMonth >= 8;
+    const looksFinancing = FINANCING_NAME_RE.test(g.name);
+    if (!(isDaily || (looksFinancing && g.total >= 2))) continue;
+    mcaPositions += 1;
+    financingTotalDollars += g.amount * g.total; // all occurrences of this remittance in the window
+  }
+  // Estimated MONTHLY financing outflow (existing MCA payments) across the window.
+  const existingMcaPayments = mcaPositions ? round2(financingTotalDollars / monthsAnalyzed) : null;
+
+  const analysis = {
+    deal_id: dealId,
+    customer_id: customerId,
+    source: "plaid" as const,
+    months_analyzed: monthsAnalyzed,
+    // A transaction feed carries no running ledger balance → these are legitimately
+    // unknown (null), NOT zero. underwrite-deal reads the raw feed for the full read.
+    average_daily_balance: null as number | null,
+    negative_days: null as number | null,
+    avg_monthly_deposits: round2(totalDeposits / monthsAnalyzed),
+    avg_monthly_revenue: round2(totalRevenue / monthsAnalyzed),
+    deposit_count: credits.length,
+    nsf_count: nsfCount,
+    existing_mca_positions: mcaPositions,
+    existing_mca_payments: existingMcaPayments,
+    largest_deposit: round2(largestDeposit),
+    notes: `Auto-built from the merchant's connected bank (Plaid${institution ? ` — ${institution}` : ""}). ` +
+      `${monthsAnalyzed} month(s), ${credits.length} deposits. Avg daily balance & negative days are unknown ` +
+      `(a transaction feed has no ledger balance). Prefer statement PDFs when available.`,
+    raw: {
+      generated_at: new Date().toISOString(),
+      months: [...monthsWithDeposits],
+      total_deposits: round2(totalDeposits),
+      total_revenue: round2(totalRevenue),
+      financing_positions: mcaPositions,
+    },
+    entered_by: null as string | null,
+  };
+
+  // Build OR update: keep a single plaid row per deal (or per customer when the item
+  // has no deal). Look up the existing plaid row, update it in place, else insert.
+  const finder = db.from("bank_analyses").select("id").eq("source", "plaid");
+  const scoped = dealId ? finder.eq("deal_id", dealId) : finder.is("deal_id", null).eq("customer_id", customerId);
+  const { data: existing } = await scoped.order("created_at", { ascending: false }).limit(1).maybeSingle();
+
+  if (existing?.id) {
+    const { error } = await db.from("bank_analyses").update(analysis).eq("id", existing.id as string);
+    if (error) { notes.push(`bank_analyses update failed: ${error.message}`); return false; }
+    notes.push(`bank_analyses updated (plaid): ${monthsAnalyzed}mo, $${analysis.avg_monthly_deposits} avg deposits, ${mcaPositions} MCA position(s)`);
+  } else {
+    const { error } = await db.from("bank_analyses").insert(analysis);
+    if (error) { notes.push(`bank_analyses insert failed: ${error.message}`); return false; }
+    notes.push(`bank_analyses created (plaid): ${monthsAnalyzed}mo, $${analysis.avg_monthly_deposits} avg deposits, ${mcaPositions} MCA position(s)`);
+  }
+  return true;
 }
 
 /** Re-run the AI underwriter for the item's deal (or the customer's latest). Mirrors
