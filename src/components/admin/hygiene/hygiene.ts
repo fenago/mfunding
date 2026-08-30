@@ -29,6 +29,33 @@ export interface SmartList {
   last_refreshed_at: string | null;
   created_at: string;
   updated_at: string;
+  // Setter-handoff stamps (migration 20260830s) — set by the smart-list-action push.
+  dial_tag?: string | null;
+  pushed_to_setters_at?: string | null;
+  pushed_count?: number | null;
+}
+
+/* Results rollup returned by smart-list-action { action:'rollup' }.
+   dialable = not excluded AND phone present AND not dead AND not dnc AND not litigator
+   (the predicate lives in the smart_list_rollup() SQL RPC — the single source). */
+export interface SmartListRollupCounts {
+  total: number;
+  reachable: number;
+  dead: number;
+  dnc: number;
+  litigator: number;
+  no_contact: number;
+  unvalidated: number;
+  excluded: number;
+  dialable: number;
+}
+
+/* GHL-safe dial-tag slug, mirrors slugify() in the smart-list-action edge fn so the
+   UI's prefilled tag matches the server default. */
+export function slugifyTag(s: string): string {
+  return (
+    s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "list"
+  );
 }
 
 /* Denormalized render row stored on each member. phone-validate reads snapshot.phone

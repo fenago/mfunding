@@ -21,6 +21,7 @@ import {
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { fnErrorMessage, type SmartList } from "./hygiene";
+import SmartListRollup from "./SmartListRollup";
 
 const TRACE_COST_DISPLAY = 0.07; // BatchData observed all-in per-trace average
 const SKIPTRACE_CAP = 100; // ph-ucc-skiptrace per-call ceiling
@@ -300,6 +301,11 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
   );
 
   return (
+   <div className="space-y-3">
+    {/* Results rollup + take-action (suppress dead/DNC · push clean list to setters). */}
+    <SmartListRollup list={list} onChanged={onChanged} />
+
+    {/* Enrichment providers — skip-trace / enrich / phone-validate. */}
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
       <ActionPanel
         title="BatchData skip-trace"
@@ -375,6 +381,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         }
       />
     </div>
+   </div>
   );
 }
 
