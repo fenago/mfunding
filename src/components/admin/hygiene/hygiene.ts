@@ -9,8 +9,14 @@
 
 import supabase from "@/supabase";
 
-/* A smart list draws from exactly one store in v1 ('mixed' is deferred). */
-export type SmartListSource = "ph_ucc" | "lead_records" | "customers" | "mixed";
+/* A smart list draws from exactly one store in v1 ('mixed' is deferred).
+   'ghl' is the GoHighLevel CRM book — searched/materialized via the
+   ghl-contacts-search edge fn, NOT queried as a Supabase table. */
+export type SmartListSource = "ghl" | "ph_ucc" | "lead_records" | "customers" | "mixed";
+
+/* The sources that ARE plain Supabase tables (queried directly from the client).
+   'ghl' is excluded — it goes through the edge fn — as is the deferred 'mixed'. */
+export type DbSource = "ph_ucc" | "lead_records" | "customers";
 
 export interface SmartList {
   id: string;
@@ -34,6 +40,7 @@ export interface MemberSnapshot {
   email?: string | null;
   state?: string | null;
   city?: string | null;
+  tags?: string[] | null; // GHL members carry their contact tags
 }
 
 export interface SmartListMember {
@@ -54,8 +61,15 @@ export interface SmartListMember {
 
 export const SOURCE_META: Record<
   Exclude<SmartListSource, "mixed">,
-  { label: string; table: string; blurb: string; chip: string }
+  { label: string; table: string; blurb: string; chip: string; virtual?: boolean }
 > = {
+  ghl: {
+    label: "GoHighLevel",
+    table: "", // virtual — searched via the ghl-contacts-search edge fn, not a table
+    virtual: true,
+    blurb: "Your CRM contacts, searchable by tag · 162,612 contacts.",
+    chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  },
   ph_ucc: {
     label: "UCC leads",
     table: "ph_ucc_leads",
@@ -118,11 +132,12 @@ export function normalizeState(input: string): string {
   return STATE_NAME_TO_CODE[key] ?? "";
 }
 
-/* The columns each source needs SELECTed to build a member snapshot. */
-export const SNAPSHOT_SELECT: Record<Exclude<SmartListSource, "mixed">, string> = {
+/* The columns each Supabase source needs SELECTed to build a member snapshot.
+   ('ghl' snapshots are built server-side by the edge fn, so it is not here.) */
+export const SNAPSHOT_SELECT: Record<DbSource, string> = {
   ph_ucc: "id,debtor_name,person_name,phone,email,state,debtor_city",
   lead_records: "id,company,first_name,last_name,phone,email,state,city",
-  customers: "id,business_name,first_name,last_name,phone,email",
+  customers: "id,business_name,first_name,last_name,phone,email,address_city,address_state",
 };
 
 function joinName(first: unknown, last: unknown): string | null {
@@ -130,9 +145,9 @@ function joinName(first: unknown, last: unknown): string | null {
   return s.length ? s : null;
 }
 
-/* Map one source row → the denormalized snapshot stored on the member. */
+/* Map one Supabase source row → the denormalized snapshot stored on the member. */
 export function snapshotFromRow(
-  source: Exclude<SmartListSource, "mixed">,
+  source: DbSource,
   row: Record<string, unknown>,
 ): MemberSnapshot {
   const str = (v: unknown): string | null => {
@@ -165,8 +180,8 @@ export function snapshotFromRow(
     contact: joinName(row.first_name, row.last_name),
     phone: str(row.phone),
     email: str(row.email),
-    state: null,
-    city: null,
+    state: str(row.address_state),
+    city: str(row.address_city),
   };
 }
 
