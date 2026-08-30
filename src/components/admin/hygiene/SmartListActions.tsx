@@ -65,6 +65,28 @@ async function gatherMemberSourceIds(listId: string, source: string): Promise<st
   return ids;
 }
 
+/* Page-through helper: all member row ids (the smart_list_members PK, any source).
+   Non-UCC sources enrich by member id — the edge fns resolve name/address from
+   the underlying source row and skip members with no usable input (no charge). */
+async function gatherAllMemberIds(listId: string): Promise<string[]> {
+  const ids: string[] = [];
+  const PAGE = 1000;
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from("smart_list_members")
+      .select("id")
+      .eq("smart_list_id", listId)
+      .range(offset, offset + PAGE - 1);
+    if (error) throw error;
+    const rows = (data as { id: string }[]) ?? [];
+    ids.push(...rows.map((r) => r.id));
+    if (rows.length < PAGE) break;
+    offset += rows.length;
+  }
+  return ids;
+}
+
 /* Of the given ph_ucc_leads ids, which are skip-trace-eligible (needs_skiptrace,
    untraced, has a street address) — mirrors the edge fn's server-side guard. */
 async function filterTraceEligible(ids: string[]): Promise<string[]> {
@@ -126,18 +148,30 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
 
   // ── BatchData skip-trace preview ──
   const previewTrace = useCallback(async (): Promise<PreviewResult> => {
-    const ids = await gatherMemberSourceIds(list.id, "ph_ucc");
-    const eligible = await filterTraceEligible(ids);
+    if (isUcc) {
+      const eligible = await filterTraceEligible(await gatherMemberSourceIds(list.id, "ph_ucc"));
+      return {
+        count: eligible.length,
+        costUsd: Math.round(eligible.length * TRACE_COST_DISPLAY * 100) / 100,
+        note: eligible.length === 0 ? "No UCC members still need skip-tracing." : undefined,
+      };
+    }
+    const ids = await gatherAllMemberIds(list.id);
     return {
-      count: eligible.length,
-      costUsd: Math.round(eligible.length * TRACE_COST_DISPLAY * 100) / 100,
-      note: eligible.length === 0 ? "No UCC members still need skip-tracing." : undefined,
+      count: ids.length,
+      costUsd: Math.round(ids.length * TRACE_COST_DISPLAY * 100) / 100,
+      note:
+        ids.length === 0
+          ? "No members in this list."
+          : "Members without a mailing address are skipped server-side (no charge); already-traced members are skipped too.",
     };
-  }, [list.id]);
+  }, [list.id, isUcc]);
 
   const runTrace: Runner = useCallback(
     async (onProgress) => {
-      const ids = await filterTraceEligible(await gatherMemberSourceIds(list.id, "ph_ucc"));
+      const ids = isUcc
+        ? await filterTraceEligible(await gatherMemberSourceIds(list.id, "ph_ucc"))
+        : await gatherAllMemberIds(list.id);
       if (ids.length === 0) return "Nothing eligible to skip-trace.";
       let traced = 0,
         ready = 0,
@@ -148,7 +182,9 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       onProgress(0, ids.length);
       for (let i = 0; i < ids.length; i += SKIPTRACE_CAP) {
         const chunk = ids.slice(i, i + SKIPTRACE_CAP);
-        const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", { body: { lead_ids: chunk } });
+        const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", {
+          body: isUcc ? { lead_ids: chunk } : { smart_list_member_ids: chunk },
+        });
         if (error) throw new Error(await fnErrorMessage(error));
         const r = (data as Record<string, unknown>) ?? {};
         if (r.ok === false) throw new Error(String(r.error || "skip-trace failed"));
@@ -169,25 +205,25 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       const err = errored > 0 ? ` · ${errored} errored` : "";
       return `Traced ${traced.toLocaleString()} · ${ready.toLocaleString()} ready · $${spent.toFixed(2)} spent${bal}${err}`;
     },
-    [list.id, onChanged],
+    [list.id, isUcc, onChanged],
   );
 
   // ── Apollo enrich preview (no per-unit price / no balance API) ──
   const previewApollo = useCallback(async (): Promise<PreviewResult> => {
-    const ids = await gatherMemberSourceIds(list.id, "ph_ucc");
+    const ids = isUcc ? await gatherMemberSourceIds(list.id, "ph_ucc") : await gatherAllMemberIds(list.id);
     return {
       count: ids.length,
       costUsd: null,
       note:
         ids.length === 0
-          ? "No UCC members in this list."
-          : "Spends Apollo credits (no API balance — usage shows in the Apollo dashboard). Already-enriched leads are skipped server-side.",
+          ? "No members in this list."
+          : "Spends Apollo credits (no API balance — usage shows in the Apollo dashboard). Members with no company name and already-enriched members are skipped server-side.",
     };
-  }, [list.id]);
+  }, [list.id, isUcc]);
 
   const runApollo: Runner = useCallback(
     async (onProgress) => {
-      const ids = await gatherMemberSourceIds(list.id, "ph_ucc");
+      const ids = isUcc ? await gatherMemberSourceIds(list.id, "ph_ucc") : await gatherAllMemberIds(list.id);
       if (ids.length === 0) return "Nothing to enrich.";
       let enriched = 0,
         checked = 0,
@@ -196,7 +232,9 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       onProgress(0, ids.length);
       for (let i = 0; i < ids.length; i += APOLLO_CAP) {
         const chunk = ids.slice(i, i + APOLLO_CAP);
-        const { data, error } = await supabase.functions.invoke("ph-ucc-apollo-enrich", { body: { lead_ids: chunk } });
+        const { data, error } = await supabase.functions.invoke("ph-ucc-apollo-enrich", {
+          body: isUcc ? { lead_ids: chunk } : { smart_list_member_ids: chunk },
+        });
         if (error) throw new Error(await fnErrorMessage(error));
         const r = (data as Record<string, unknown>) ?? {};
         if (r.ok === false) throw new Error(String(r.error || "Apollo enrichment failed"));
@@ -214,7 +252,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       const err = errored > 0 ? ` · ${errored} errored` : "";
       return `Enriched ${enriched.toLocaleString()} of ${checked.toLocaleString()} checked${err}.`;
     },
-    [list.id, onChanged],
+    [list.id, isUcc, onChanged],
   );
 
   const providerLabel = phoneProvider === "realphonevalidation" ? "RealValidation" : "Twilio";
@@ -312,8 +350,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         icon={<MagnifyingGlassIcon className="w-4 h-4" />}
         accent="ocean-blue"
         spendChip="spends BatchData wallet"
-        enabled={isUcc}
-        disabledReason={isUcc ? undefined : "UCC-source lists only — skip-trace runs on ph_ucc_leads ids."}
+        enabled
         previewFn={previewTrace}
         runFn={runTrace}
         confirmVerb="Skip-trace"
@@ -323,8 +360,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         icon={<SparklesIcon className="w-4 h-4" />}
         accent="violet-600"
         spendChip="spends Apollo credits"
-        enabled={isUcc}
-        disabledReason={isUcc ? undefined : "UCC-source lists only — Apollo enrich runs on ph_ucc_leads ids."}
+        enabled
         previewFn={previewApollo}
         runFn={runApollo}
         confirmVerb="Enrich"
