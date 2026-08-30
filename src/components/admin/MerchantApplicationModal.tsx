@@ -25,6 +25,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { XMarkIcon, DocumentTextIcon, PaperAirplaneIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
+import { REQUIRED_APPLICATION_FIELDS } from "@/lib/applicationCompleteness";
 import { updateDealStatus, updateCustomerAdditionalEmails } from "../../services/dealService";
 import EnrichmentCard, { type EnrichmentUseField } from "./EnrichmentCard";
 import type { DealWithCustomer } from "../../types/deals";
@@ -147,31 +148,18 @@ const BOOLEAN_KEYS: (keyof AppForm)[] = ["has_bankruptcy", "has_tax_liens"];
 type Tab = "business" | "owner" | "banking" | "funding";
 
 // REQUIRED fields, mirroring the real "Merchant Funding Application" the merchant
-// e-signs. Everything the form marks "if any / if applicable" is OPTIONAL and
-// excluded here: business_dba, owner_dl_state, average_daily_balance,
-// existing_positions, existing_balance, notes. The application can't be SENT
-// until every one of these is filled (a Save draft may still be partial).
-// owner_ssn is NOT here by design (owner's call, 2026-07-13): a merchant who won't
-// read their SSN out on a first call should not block the whole application. It stays
-// on the form, it still merges when filled — it just doesn't gate the send. The one
-// consequence (a blank SSN prints as a raw {{tag}} on the signed document) is shown as
-// a single warning line by the Send button. The closer decides; the app doesn't.
-const REQUIRED_KEYS: (keyof AppForm)[] = [
-  // Business
-  "business_legal_name", "business_type", "ein", "business_start_date", "industry",
-  "business_phone", "business_email", "business_address", "business_city", "business_state", "business_zip",
-  // Owner / guarantor
-  // DL number is OPTIONAL (owner's call): the merchant sends a PHOTO of the licence
-  // with their stips anyway, so making a closer transcribe the number on the phone is
-  // double work. Blank on the 04B path = raw {{tag}} on the doc — warned, not gated.
-  "owner_first_name", "owner_last_name", "owner_title", "owner_ownership_pct", "owner_dob",
-  "owner_email", "owner_phone",
-  "owner_home_address", "owner_home_city", "owner_home_state", "owner_home_zip",
-  // Banking
-  "bank_name", "bank_routing_number", "bank_account_number",
-  // Funding request
-  "amount_requested", "use_of_funds", "monthly_revenue",
-];
+// e-signs. The application can't be SENT until every one of these is filled (a Save
+// draft may still be partial).
+//
+// SINGLE SOURCE OF TRUTH: the required SET now lives in
+// @/lib/applicationCompleteness (REQUIRED_APPLICATION_FIELDS) so the Setter Ops
+// completeness meter and this modal's send-gating can never disagree. The reasoning
+// for what's IN vs OUT (owner_ssn / DL number optional, dba / balances excluded,
+// etc.) is documented there. This derives the same key list, in the same order, so
+// the "jump to the first tab with a gap" behavior is unchanged.
+const REQUIRED_KEYS: (keyof AppForm)[] = REQUIRED_APPLICATION_FIELDS.map(
+  (f) => f.key as keyof AppForm,
+);
 
 // Entity type is a fixed vocabulary, not free text — a typo here lands on a legal
 // document. These values are the EXACT picklist of the GHL "Business Entity"

@@ -17,6 +17,7 @@ import SetterDndButton from "@/components/admin/setter/SetterDndButton";
 import SetterContactsEditor from "@/components/admin/setter/SetterContactsEditor";
 import SetterDealMeta from "@/components/admin/setter/SetterDealMeta";
 import SetterConnectBank from "@/components/admin/setter/SetterConnectBank";
+import SetterChecklist from "@/components/admin/setter/SetterChecklist";
 
 /**
  * SetterOpsTab — the setter's single-screen Operations console, mounted as a tab
@@ -174,6 +175,10 @@ export default function SetterOpsTab() {
         {/* Context BEFORE action: the merchant facts strip sits right under the
             header so a setter reads the stack/revenue/ask before they dial. */}
         <SetterSnapshot deal={deal} onRefresh={reload} />
+        {/* THE 3 THINGS — the setter's crystal-clear checklist (application meter,
+            bank statements, callback), pinned above every action so a glance shows
+            what's done and what's left. */}
+        <SetterChecklist deal={deal} onRefresh={reload} />
         {/* Product + campaign attribution context, right under the snapshot. */}
         <SetterDealMeta deal={deal} onRefresh={reload} />
         {/* Merchant-status row: portal invite / paperwork sent+signed / DND, three
