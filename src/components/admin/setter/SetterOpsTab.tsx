@@ -11,6 +11,12 @@ import SetterCallOutcome from "@/components/admin/setter/SetterCallOutcome";
 import SetterNotes from "@/components/admin/setter/SetterNotes";
 import SetterMerchantSearch from "@/components/admin/setter/SetterMerchantSearch";
 import SetterDealList from "@/components/admin/setter/SetterDealList";
+import SetterPortalCard from "@/components/admin/setter/SetterPortalCard";
+import SetterDocSigning from "@/components/admin/setter/SetterDocSigning";
+import SetterDndButton from "@/components/admin/setter/SetterDndButton";
+import SetterContactsEditor from "@/components/admin/setter/SetterContactsEditor";
+import SetterDealMeta from "@/components/admin/setter/SetterDealMeta";
+import SetterConnectBank from "@/components/admin/setter/SetterConnectBank";
 
 /**
  * SetterOpsTab — the setter's single-screen Operations console, mounted as a tab
@@ -168,8 +174,25 @@ export default function SetterOpsTab() {
         {/* Context BEFORE action: the merchant facts strip sits right under the
             header so a setter reads the stack/revenue/ask before they dial. */}
         <SetterSnapshot deal={deal} onRefresh={reload} />
+        {/* Product + campaign attribution context, right under the snapshot. */}
+        <SetterDealMeta deal={deal} onRefresh={reload} />
+        {/* Merchant-status row: portal invite / paperwork sent+signed / DND, three
+            up on large screens and stacked on mobile so the setter sees where the
+            merchant is before dialing. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <SetterPortalCard deal={deal} onRefresh={reload} />
+          <SetterDocSigning deal={deal} onRefresh={reload} />
+          <SetterDndButton deal={deal} onRefresh={reload} />
+        </div>
         <SetterActionRail deal={deal} onRefresh={reload} autoOpen />
         <SetterCommsPanel deal={deal} onRefresh={reload} />
+        {/* Contact details + connect-bank sit right below comms — the setter edits
+            extra emails/cells and hands over the bank/statements link in the same
+            breath as reaching out; two columns on large screens, stacked on mobile. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <SetterContactsEditor deal={deal} onRefresh={reload} />
+          <SetterConnectBank deal={deal} onRefresh={reload} />
+        </div>
         {/* Log-the-call and Notes side by side below the action/comms panels —
             two columns on large screens, stacked on mobile; both are self-contained
             and re-read the loaded deal through the same reload. */}
