@@ -2223,7 +2223,11 @@ export default function LeadMachinePage() {
       /* The email export FORCES has-email in the query itself rather than trusting
          a setState to land first — the state update it also fires only reaches the
          filter bar on the next render, long after this walk has started. */
-      override?: { p_has_email?: boolean; p_with_count?: boolean },
+      /* p_statuses is overridden ONLY by the push id-gather, which needs the
+         statuses the push will send rather than the ones on screen. The CSV
+         export deliberately does not pass it: an export legitimately wants every
+         status the browse shows. */
+      override?: { p_has_email?: boolean; p_with_count?: boolean; p_statuses?: string[] | null },
     ): Promise<{ rows: LeadRecord[]; total: number | null }> => {
       /* THE COUNT IS OPT-OUT, and opting out is the common case.
          total_count is count(*) over the filtered set, so on an unfiltered read it
@@ -2619,9 +2623,29 @@ export default function LeadMachinePage() {
     };
   }, [serverFilters, fBatch, retagMode, backendMissing, pushRunning, derivedCount]);
 
+  /* The statuses the push will ACTUALLY touch, mirroring the function's own
+     resolution: filters.status wins; otherwise a re-tag widens to the rows it
+     revisits; otherwise only rows still queued. The id-gather MUST ask for this
+     same set — see the guard below. */
+  const pushStatuses = useMemo(
+    () => (fStatus ? [fStatus] : retagMode ? ["loaded", "pushed", "error"] : ["loaded"]),
+    [fStatus, retagMode],
+  );
+
   /* The count the button promises. In re-tag mode already-pushed rows ARE the
      target, so the "still loaded" eligibility count doesn't apply. */
   const plannedPush = usingSelection ? selectedIds.size : (filteredCount ?? 0);
+
+  /* THE GUARD AND THE GATHER MUST COUNT THE SAME ROWS. plannedPush comes from
+     lead-push-ghl {action:'count'}, which counts only the statuses above. If the
+     id-gather were to page the BROWSE set instead (every status on screen), the
+     two would disagree the moment a batch is partly pushed — and the failure is
+     SILENT: with, say, 6k pushed + 4k loaded, plannedPush is 4,000, so this guard
+     says "small enough for an id list", the gather then fills its 5,000 slots
+     with mostly-already-pushed rows, the function re-filters to the pushable ones
+     and sends far fewer than the button promised. No error, just an under-push
+     nobody notices until the campaign numbers don't add up. That is why the
+     gather passes p_statuses: pushStatuses rather than the browse predicate. */
   const tooBigForIds = !usingSelection && plannedPush > MAX_LEAD_IDS;
 
   /* The auto tags the edge fn adds server-side, shown as fixed chips so the
@@ -2894,8 +2918,13 @@ export default function LeadMachinePage() {
             const want = Math.min(WINDOW, MAX_LEAD_IDS - ids.length);
             /* Never asks for a count: this loop reads nothing but `id`, so every
                count it computed would be thrown away — and it runs up to five
-               times, so the push was paying five full-book scans it never used. */
-            const { rows } = await fetchLeadPage(offset, want, { p_with_count: false });
+               times, so the push was paying five full-book scans it never used.
+               p_statuses narrows to exactly what the push will send, so the 5,000
+               slots can't be spent on rows the function will discard. */
+            const { rows } = await fetchLeadPage(offset, want, {
+              p_with_count: false,
+              p_statuses: pushStatuses,
+            });
             ids.push(...rows.map((r) => r.id));
             if (rows.length < want) break; // drained
             offset += rows.length;
@@ -3062,6 +3091,7 @@ export default function LeadMachinePage() {
     selectedIds,
     effectiveTags,
     attributionCampaign,
+    pushStatuses,
     retagMode,
     serverFilters,
     tooBigForIds,
