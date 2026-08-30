@@ -271,7 +271,7 @@ function PushToSettersPanel({ list, onDone }: { list: SmartList; onDone: () => v
         <h3 className="text-sm font-bold text-gray-900 dark:text-white">Push to setters</h3>
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        Tags the clean, dialable members in GHL so the floor can dial them. Point a VibeReach campaign at the tag.
+        Tags the clean, dialable members in VibeReach so the floor can dial them. Point a VibeReach campaign at the tag.
       </p>
 
       <div className="space-y-1">
@@ -292,17 +292,17 @@ function PushToSettersPanel({ list, onDone }: { list: SmartList; onDone: () => v
         <div className="text-sm text-gray-700 dark:text-gray-200 space-y-1">
           <p>
             Will tag <strong className="text-gray-900 dark:text-white">{preview.ghl_calls_needed.toLocaleString()}</strong> contacts ·
-            ~{preview.ghl_calls_needed.toLocaleString()} GHL calls ·{" "}
+            ~{preview.ghl_calls_needed.toLocaleString()} VibeReach calls ·{" "}
             {preview.daily_remaining == null ? "budget unknown" : `${preview.daily_remaining.toLocaleString()} left in today's budget`}
           </p>
           {preview.needs_ghl_push > 0 && (
             <p className="text-xs text-amber-700 dark:text-amber-400">
               <ExclamationTriangleIcon className="inline w-3.5 h-3.5 mr-1 -mt-0.5" />
-              {preview.needs_ghl_push.toLocaleString()} dialable member(s) aren't in GHL yet — push them from the Lead Machine first.
+              {preview.needs_ghl_push.toLocaleString()} dialable member(s) aren't in VibeReach yet — push them from the Lead Machine first.
             </p>
           )}
           {preview.ghl_calls_needed === 0 && (
-            <p className="text-xs text-gray-500 dark:text-gray-400">No in-GHL dialable members to tag.</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">No in-VibeReach dialable members to tag.</p>
           )}
         </div>
       )}
@@ -316,7 +316,7 @@ function PushToSettersPanel({ list, onDone }: { list: SmartList; onDone: () => v
           {armed ? `Confirm — tag ${preview!.ghl_calls_needed.toLocaleString()} as ${preview!.dial_tag}` : `Push ${preview!.ghl_calls_needed.toLocaleString()} to setters`}
         </button>
       )}
-      {running && <p className="text-xs text-gray-500">Tagging in GHL…</p>}
+      {running && <p className="text-xs text-gray-500">Tagging in VibeReach…</p>}
 
       {result && (
         <div className="text-sm space-y-1">
@@ -325,16 +325,16 @@ function PushToSettersPanel({ list, onDone }: { list: SmartList; onDone: () => v
           </p>
           {result.parked > 0 && (
             <p className="text-xs text-amber-700 dark:text-amber-400">
-              {result.parked.toLocaleString()} parked ({result.capped ? "hit the per-run cap" : "GHL daily budget"}) — run Push again to continue{result.capped ? "" : " after the daily reset"}.
+              {result.parked.toLocaleString()} parked ({result.capped ? "hit the per-run cap" : "VibeReach daily budget"}) — run Push again to continue{result.capped ? "" : " after the daily reset"}.
             </p>
           )}
           {result.needs_ghl_push > 0 && (
             <p className="text-xs text-amber-700 dark:text-amber-400">
-              {result.needs_ghl_push.toLocaleString()} dialable member(s) aren't in GHL yet — push them from the Lead Machine first.
+              {result.needs_ghl_push.toLocaleString()} dialable member(s) aren't in VibeReach yet — push them from the Lead Machine first.
             </p>
           )}
           {!!result.errored && result.errored > 0 && (
-            <p className="text-xs text-rose-600 dark:text-rose-400">{result.errored.toLocaleString()} errored (e.g. contact removed in GHL).</p>
+            <p className="text-xs text-rose-600 dark:text-rose-400">{result.errored.toLocaleString()} errored (e.g. contact removed in VibeReach).</p>
           )}
         </div>
       )}

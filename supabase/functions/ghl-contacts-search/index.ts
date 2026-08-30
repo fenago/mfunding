@@ -25,12 +25,19 @@
 //   materialize { smart_list_id, filters, max? }     → { inserted, scanned, total, capped,
 //                                                        parked, member_count }             (paged)
 //
-// filters := { tags?: string[], tagMode?: 'and'|'or', query?: string }
+// filters := { tags?, tagMode?, query?, state?, city?, postalCode?, areaCodes? }
 //   • tags     — GHL tag NAMES (as they appear in each contact's tags[]); verified
 //                filter shape is { field:"tags", operator:"eq", value:<name> }.
 //   • tagMode  — 'and' (default): every tag must be present (one top-level filter
 //                per tag). 'or': any tag matches (a single {group:"OR", filters:[…]}).
 //   • query    — free text over name / email / phone; ANDed with the tag filters.
+//   • state    — standard field, { field:"state", operator:"eq", value } (ANDed).
+//   • city     — standard field, { field:"city", operator:"contains", value }.
+//   • postalCode — standard field, { field:"postalCode", operator:"eq", value }.
+//   • areaCodes — 3-digit phone prefixes. The GHL API can't filter by area code,
+//                so this is a CLIENT-SIDE narrowing applied to each fetched page
+//                (search/materialize) AFTER the API filters. In PREVIEW it drives a
+//                small bounded scan and the returned count is flagged approximate.
 //   (pipeline/stage is NOT a contacts/search filter — omitted deliberately; that
 //    lives on opportunities/search, a different endpoint.)
 
@@ -48,6 +55,7 @@ const DEFAULT_SEARCH_PAGE = 50;       // a UI "search" page
 const MATERIALIZE_DEFAULT_MAX = 5000; // cap one materialize run (~25 pages)
 const MATERIALIZE_HARD_MAX = 20000;   // absolute ceiling even if caller asks for more
 const DAILY_FLOOR = 1000;             // park a materialize if daily budget dips below this
+const AREACODE_PREVIEW_PAGES = 10;    // bounded scan for an area-code PREVIEW (≤2,000 contacts)
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -61,6 +69,28 @@ interface HygieneFilters {
   tags?: string[];
   tagMode?: "and" | "or";
   query?: string;
+  state?: string;
+  city?: string;
+  postalCode?: string;
+  areaCodes?: string[];
+}
+
+/** 3-digit area code of a phone (handles a leading US country code). "" if none. */
+function areaCodeOf(phone: unknown): string {
+  const d = String(phone ?? "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) return d.slice(1, 4);
+  if (d.length >= 10) return d.slice(0, 3);
+  return "";
+}
+
+/** Normalize the area-code filter to unique 3-digit codes. */
+function areaCodeSet(filters: HygieneFilters): Set<string> {
+  const out = new Set<string>();
+  for (const a of filters.areaCodes ?? []) {
+    const c = String(a).replace(/\D/g, "");
+    if (c.length === 3) out.add(c);
+  }
+  return out;
 }
 
 /** Build the verified GHL /contacts/search body from our hygiene filter shape.
@@ -89,6 +119,16 @@ function buildSearchBody(
       ghlFilters.push(...tagFilters);
     }
   }
+
+  // Standard-field filters (ANDed with the tag filters). area code is NOT here —
+  // it's a client-side narrowing since the API can't filter on it.
+  const st = String(filters.state ?? "").trim();
+  if (st) ghlFilters.push({ field: "state", operator: "eq", value: st });
+  const ct = String(filters.city ?? "").trim();
+  if (ct) ghlFilters.push({ field: "city", operator: "contains", value: ct });
+  const pc = String(filters.postalCode ?? "").trim();
+  if (pc) ghlFilters.push({ field: "postalCode", operator: "eq", value: pc });
+
   if (ghlFilters.length > 0) body.filters = ghlFilters;
 
   const q = filters.query ? String(filters.query).trim() : "";
@@ -202,11 +242,37 @@ Deno.serve(async (req) => {
         return json({ tags });
       }
 
-      // ── total count for a filter — exactly ONE GHL call ─────────────────────────
+      // ── total count for a filter ────────────────────────────────────────────────
+      // No area code → exactly ONE GHL call (the API's own total). With area codes
+      // the API can't count them, so scan a bounded number of pages, count matches,
+      // and flag the result approximate (the real filter still applies on save).
       case "preview": {
-        const r = await searchPage(cfg, filters, 1);
-        if (!r.ok) return json({ error: ghlErrorMessage(r.error) || "preview failed" }, r.status || 500);
-        return json({ total: r.data?.total ?? 0 });
+        const acodes = areaCodeSet(filters);
+        if (acodes.size === 0) {
+          const r = await searchPage(cfg, filters, 1);
+          if (!r.ok) return json({ error: ghlErrorMessage(r.error) || "preview failed" }, r.status || 500);
+          return json({ total: r.data?.total ?? 0 });
+        }
+        let matched = 0;
+        let scanned = 0;
+        let apiTotal = 0;
+        let cursor: unknown[] | undefined = undefined;
+        for (let p = 0; p < AREACODE_PREVIEW_PAGES; p++) {
+          const r = await searchPage(cfg, filters, PAGE_MAX, cursor);
+          if (!r.ok) return json({ error: ghlErrorMessage(r.error) || "preview failed" }, r.status || 500);
+          apiTotal = r.data?.total ?? apiTotal;
+          const raw = r.data?.contacts ?? [];
+          if (raw.length === 0) break;
+          for (const c of raw) if (acodes.has(areaCodeOf((c as { phone?: unknown }).phone))) matched++;
+          scanned += raw.length;
+          const next = cursorOf(raw);
+          if (!next || raw.length < PAGE_MAX) break;
+          cursor = next;
+        }
+        // If the whole book fit inside the scan the count is exact; otherwise it's a
+        // lower-bound estimate over the sample.
+        const exact = scanned >= apiTotal;
+        return json({ total: matched, approximate: !exact, scanned, api_total: apiTotal });
       }
 
       // ── one page of matching contacts (for the builder's live results table) ────
@@ -219,10 +285,12 @@ Deno.serve(async (req) => {
         const r = await searchPage(cfg, filters, pageLimit, cursor);
         if (!r.ok) return json({ error: ghlErrorMessage(r.error) || "search failed" }, r.status || 500);
         const raw = r.data?.contacts ?? [];
+        const acodes = areaCodeSet(filters);
+        const kept = acodes.size === 0 ? raw : raw.filter((c) => acodes.has(areaCodeOf((c as { phone?: unknown }).phone)));
         return json({
-          contacts: raw.map(mapContact),
+          contacts: kept.map(mapContact),
           total: r.data?.total ?? raw.length,
-          // Only advertise a next page when this one came back full.
+          // Only advertise a next page when this one came back full (cursor from raw).
           nextCursor: raw.length >= pageLimit ? cursorOf(raw) : null,
         });
       }
@@ -249,6 +317,7 @@ Deno.serve(async (req) => {
         let capped = false;
         let parked = false;
         let cursor: unknown[] | undefined = undefined;
+        const acodes = areaCodeSet(filters); // client-side narrowing per page
 
         // Drain by cursor. Each page is ≤200; stop on cap, empty page, or a
         // dwindling daily budget (park — never blow the 200k/day cap).
@@ -267,7 +336,8 @@ Deno.serve(async (req) => {
           const raw = r.data?.contacts ?? [];
           if (raw.length === 0) break;
 
-          const mapped = raw.map(mapContact);
+          const keep = acodes.size === 0 ? raw : raw.filter((c) => acodes.has(areaCodeOf((c as { phone?: unknown }).phone)));
+          const mapped = keep.map(mapContact);
           const rows = mapped.map((m) => ({
             smart_list_id: smartListId,
             source: "ghl",

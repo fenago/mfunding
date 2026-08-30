@@ -1,22 +1,29 @@
-// SmartListBuilder — pick ONE source store, filter it, watch the count update live,
-// then save as a smart_lists row + its materialized smart_list_members (snapshot of
-// business/contact/phone/email). v1 is one-source-per-list ('mixed' is deferred).
+// SmartListBuilder — pick ONE source store, slice it with rich grouped filters,
+// watch the count update live, then save as a smart_lists row + its materialized
+// smart_list_members. v1 is one-source-per-list ('mixed' is deferred).
 //
 // UX contract (owner-driven):
 //   • Each source card shows a plain-language "what this is" + a LIVE total count.
-//     GoHighLevel is the FIRST / default card — the owner's primary use case is
-//     searching his 162k CRM contacts by TAG.
-//   • State is a MULTI-select keyed on the stored 2-letter code — typing "Florida"
-//     can never silently return 0 (the old free-text bug). Picks render as chips.
-//   • Status / lead-type render as human labels, not raw enum values.
-//   • The count auto-updates as filters change; with NO filters set it shows the
-//     FULL source count, never 0. A genuine empty combo says so ("0 match").
+//     VibeReach is the FIRST / default card — the owner's primary use case is
+//     searching his CRM contacts.
+//   • Filters are GROUPED (Location / Business / Contactability / Data quality) and
+//     every field carries a one-line hint — no opaque "status" labels.
+//   • States are a MULTI-select keyed on the stored 2-letter code, rendered as chips.
+//   • The count auto-updates as filters change; with NO filter set it shows the FULL
+//     source count, never 0. A genuine empty combo says so.
+//   • A tiny sample of matches renders under the count so you can eyeball the slice.
 //
-// The three Supabase sources (UCC Harvester / Lead Machine / Customers) are queried
-// directly. GoHighLevel goes through the ghl-contacts-search edge fn: {action:'tags'}
-// loads the tag list, {action:'preview'} gives the live count, and, on save,
-// {action:'materialize'} pages the matches into smart_list_members (the backend caps
-// and parks against the GHL daily call budget — we just surface what it reports).
+// ── Where the counting happens ──
+// The three Supabase sources (Purchased / UCC / Customers) are counted + paged
+// through ONE SECURITY DEFINER RPC, smart_list_source(source, filters, mode). It
+// applies filters PostgREST can't express — chiefly EFFECTIVE STATE for aged
+// purchased leads (COALESCE(state, state_inferred): the "Aged + Florida = 0" bug is
+// fixed here, the true answer is ~10,176) and AREA CODE (a digits-only phone
+// prefix). The SAME filter jsonb is saved as smart_lists.criteria so materialize
+// reproduces identical membership.
+// VibeReach goes through the ghl-contacts-search edge fn: {action:'tags'} loads the
+// tag list, {action:'preview'} the live count, {action:'materialize'} pages matches
+// in (cap-aware against the 200k/day GHL budget).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -30,22 +37,22 @@ import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
 import {
   SOURCE_META,
-  SNAPSHOT_SELECT,
   US_STATES,
-  snapshotFromRow,
+  parseAreaCodes,
   currentProfileId,
   isMissingRelation,
   fnErrorMessage,
   type SmartList,
   type SmartListSource,
   type DbSource,
+  type MemberSnapshot,
 } from "./hygiene";
 
 type BuildSource = Exclude<SmartListSource, "mixed">;
 type Opt = { value: string; label: string };
 
 const MAX_MEMBERS = 5000; // a single build materializes at most this many members
-const PAGE = 1000; // pagination window when gathering rows
+const PAGE = 1000; // pagination window when gathering rows via the RPC
 
 /* Human-labeled option lists — values are the REAL enum/text values in prod;
    labels explain them in plain English. "" is always "any" (no filter). */
@@ -81,6 +88,46 @@ const CUSTOMER_STATUS_OPTS: Opt[] = [
   { value: "declined", label: "Declined" },
   { value: "follow_up", label: "Follow-up" },
 ];
+const ENTITY_TYPE_OPTS: Opt[] = [
+  { value: "Corporation", label: "Corporation" },
+  { value: "LLC", label: "LLC" },
+  { value: "Professional Entity", label: "Professional Entity" },
+  { value: "Ltd", label: "Ltd" },
+  { value: "LLP", label: "LLP" },
+];
+const LINE_TYPE_OPTS: Opt[] = [
+  { value: "Mobile", label: "Mobile" },
+  { value: "Landline", label: "Landline" },
+  { value: "VoIP", label: "VoIP" },
+  { value: "Toll-Free", label: "Toll-Free" },
+];
+const PHONE_STATUS_OPTS: Opt[] = [
+  { value: "", label: "Any" },
+  { value: "reachable", label: "Reachable (validated live)" },
+  { value: "disconnected", label: "Disconnected / dead" },
+  { value: "unvalidated", label: "Not validated yet" },
+];
+const CUST_PHONE_STATUS_OPTS: Opt[] = [
+  { value: "", label: "Any" },
+  { value: "reachable", label: "Reachable (validated live)" },
+  { value: "unvalidated", label: "Not validated yet" },
+];
+const ENRICHED_OPTS: Opt[] = [
+  { value: "", label: "Any" },
+  { value: "yes", label: "Enriched (skip-trace / Apollo)" },
+  { value: "no", label: "Not enriched yet" },
+];
+const CONFIDENCE_OPTS: Opt[] = [
+  { value: "confirmed", label: "Confirmed" },
+  { value: "high", label: "High" },
+  { value: "medium", label: "Medium" },
+  { value: "low", label: "Low" },
+];
+const LEAD_CLASS_OPTS: Opt[] = [
+  { value: "", label: "Any class" },
+  { value: "named_funder", label: "Named funder on lien" },
+  { value: "agent_masked", label: "Agent-masked (funder hidden)" },
+];
 
 /* State options for the multi-select (value = stored 2-letter code). */
 const STATE_OPTS: Opt[] = US_STATES.map((s) => ({ value: s.code, label: `${s.name} (${s.code})` }));
@@ -90,61 +137,85 @@ const input =
 const lbl = "text-[11px] font-semibold uppercase tracking-wide text-gray-400";
 const help = "text-[11px] text-gray-400 dark:text-gray-500 mt-1";
 
+/* ── Per-source filter shapes (mirror the RPC's filter jsonb keys). Raw UI values;
+      area codes typed as a CSV string and parsed at criteria-build time. ── */
+type LrFilters = {
+  states: string[]; area_codes: string; zip_prefix: string; city: string;
+  industry: string; entity_types: string[]; min_revenue: string; max_revenue: string;
+  line_types: string[]; carrier: string; has_phone: boolean; has_email: boolean;
+  phone_status: string; dial_score_min: string; enriched: string;
+  lead_type: string; status: string; search: string;
+};
+type UccFilters = {
+  states: string[]; area_codes: string; zip_prefix: string; city: string;
+  min_stack: string; secured_party: string; filing_within_days: string;
+  confidence: string[]; lead_class: string; status: string;
+  has_phone: boolean; has_email: boolean; hide_litigator: boolean; search: string;
+};
+type CustFilters = {
+  states: string[]; area_codes: string; zip_prefix: string; city: string;
+  industry: string; entity_types: string[]; min_revenue: string; max_revenue: string;
+  line_types: string[]; has_phone: boolean; has_email: boolean;
+  phone_status: string; exclude_dnc: boolean; status: string; search: string;
+};
+type GhlFilters = {
+  tags: string[]; tagMode: "and" | "or"; query: string;
+  state: string; city: string; postalCode: string; area_codes: string;
+};
+
+const LR_DEFAULT: LrFilters = {
+  states: [], area_codes: "", zip_prefix: "", city: "", industry: "", entity_types: [],
+  min_revenue: "", max_revenue: "", line_types: [], carrier: "", has_phone: false,
+  has_email: false, phone_status: "", dial_score_min: "", enriched: "", lead_type: "",
+  status: "", search: "",
+};
+const UCC_DEFAULT: UccFilters = {
+  states: [], area_codes: "", zip_prefix: "", city: "", min_stack: "", secured_party: "",
+  filing_within_days: "", confidence: [], lead_class: "", status: "", has_phone: false,
+  has_email: false, hide_litigator: false, search: "",
+};
+const CUST_DEFAULT: CustFilters = {
+  states: [], area_codes: "", zip_prefix: "", city: "", industry: "", entity_types: [],
+  min_revenue: "", max_revenue: "", line_types: [], has_phone: false, has_email: false,
+  phone_status: "", exclude_dnc: false, status: "", search: "",
+};
+const GHL_DEFAULT: GhlFilters = {
+  tags: [], tagMode: "or", query: "", state: "", city: "", postalCode: "", area_codes: "",
+};
+
+const t = (s: string) => (s.trim() ? s.trim() : null);
+const n = (s: string) => (s.trim() ? s.trim() : null);
+
+/* Sample row the RPC / preview returns to eyeball the slice. */
+type SampleRow = MemberSnapshot & { id?: string };
+
 export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartList) => void }) {
   const [source, setSource] = useState<BuildSource>("ghl");
 
-  // Live total per source (raw table count / GHL preview) — shown on the source cards.
+  // Live total per source (raw table count / VibeReach preview) — shown on the cards.
   const [sourceCounts, setSourceCounts] = useState<Record<BuildSource, number | null>>({
-    ghl: null,
-    ph_ucc: null,
-    lead_records: null,
-    customers: null,
+    ghl: null, ph_ucc: null, lead_records: null, customers: null,
   });
 
-  // Name / description of the list being saved.
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
-  // ── GoHighLevel (edge fn) filters ──
-  const [ghlTags, setGhlTags] = useState<string[]>([]);
-  const [ghlTagMode, setGhlTagMode] = useState<"and" | "or">("or");
-  const [ghlQuery, setGhlQuery] = useState("");
+  // Per-source filter state.
+  const [ghl, setGhl] = useState<GhlFilters>(GHL_DEFAULT);
+  const [lr, setLr] = useState<LrFilters>(LR_DEFAULT);
+  const [ucc, setUcc] = useState<UccFilters>(UCC_DEFAULT);
+  const [cust, setCust] = useState<CustFilters>(CUST_DEFAULT);
+
+  // VibeReach tag list.
   const [ghlTagList, setGhlTagList] = useState<{ id: string; name: string }[]>([]);
   const [ghlTagsLoading, setGhlTagsLoading] = useState(false);
   const [ghlTagsErr, setGhlTagsErr] = useState<string | null>(null);
 
-  // ── UCC (ph_ucc_leads) filters ──
-  const [uccStates, setUccStates] = useState<string[]>([]);
-  const [uccStatus, setUccStatus] = useState("");
-  const [uccMinStack, setUccMinStack] = useState("");
-  const [uccCity, setUccCity] = useState("");
-  const [uccSearch, setUccSearch] = useState("");
-  const [uccHasPhone, setUccHasPhone] = useState(false);
-  const [uccHasEmail, setUccHasEmail] = useState(false);
-
-  // ── Purchased (lead_records) filters ──
-  const [lrType, setLrType] = useState("");
-  const [lrStatus, setLrStatus] = useState("");
-  const [lrStates, setLrStates] = useState<string[]>([]);
-  const [lrCity, setLrCity] = useState("");
-  const [lrMinRevenue, setLrMinRevenue] = useState("");
-  const [lrIndustry, setLrIndustry] = useState("");
-  const [lrSearch, setLrSearch] = useState("");
-  const [lrHasEmail, setLrHasEmail] = useState(false);
-
-  // ── Customers filters ──
-  const [custStatus, setCustStatus] = useState("");
-  const [custStates, setCustStates] = useState<string[]>([]);
-  const [custCity, setCustCity] = useState("");
-  const [custIndustry, setCustIndustry] = useState("");
-  const [custMinRevenue, setCustMinRevenue] = useState("");
-  const [custSearch, setCustSearch] = useState("");
-  const [custHasPhone, setCustHasPhone] = useState(false);
-  const [custHasEmail, setCustHasEmail] = useState(false);
-
   const [count, setCount] = useState<number | null>(null);
   const [countErr, setCountErr] = useState<string | null>(null);
   const [counting, setCounting] = useState(false);
+  const [approx, setApprox] = useState(false); // VibeReach area-code counts are approximate
+  const [sample, setSample] = useState<SampleRow[]>([]);
 
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -152,105 +223,70 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
   const [busyNote, setBusyNote] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
-  /* The GHL filter payload for the edge fn (tags / mode / free text). */
+  const patchGhl = useCallback((p: Partial<GhlFilters>) => setGhl((s) => ({ ...s, ...p })), []);
+  const patchLr = useCallback((p: Partial<LrFilters>) => setLr((s) => ({ ...s, ...p })), []);
+  const patchUcc = useCallback((p: Partial<UccFilters>) => setUcc((s) => ({ ...s, ...p })), []);
+  const patchCust = useCallback((p: Partial<CustFilters>) => setCust((s) => ({ ...s, ...p })), []);
+
+  /* The VibeReach filter payload for the edge fn. */
   const ghlFilters = useMemo(
-    () => ({ tags: ghlTags, tagMode: ghlTagMode, query: ghlQuery.trim() || undefined }),
-    [ghlTags, ghlTagMode, ghlQuery],
+    () => ({
+      tags: ghl.tags, tagMode: ghl.tagMode, query: t(ghl.query) ?? undefined,
+      state: t(ghl.state) ?? undefined, city: t(ghl.city) ?? undefined,
+      postalCode: t(ghl.postalCode) ?? undefined, areaCodes: parseAreaCodes(ghl.area_codes),
+    }),
+    [ghl],
   );
+
+  /* The saved filter (criteria jsonb) for the current source — SAME shape the RPC
+     reads, so materialize reproduces the exact membership. */
+  const criteria = useMemo((): Record<string, unknown> => {
+    if (source === "ghl")
+      return {
+        tags: ghl.tags, tag_mode: ghl.tagMode, query: t(ghl.query),
+        state: t(ghl.state), city: t(ghl.city), postal_code: t(ghl.postalCode),
+        area_codes: parseAreaCodes(ghl.area_codes),
+      };
+    if (source === "lead_records")
+      return {
+        states: lr.states, area_codes: parseAreaCodes(lr.area_codes), zip_prefix: t(lr.zip_prefix),
+        city: t(lr.city), industry: t(lr.industry), entity_types: lr.entity_types,
+        min_revenue: n(lr.min_revenue), max_revenue: n(lr.max_revenue), line_types: lr.line_types,
+        carrier: t(lr.carrier), has_phone: lr.has_phone, has_email: lr.has_email,
+        phone_status: lr.phone_status || null, dial_score_min: n(lr.dial_score_min),
+        enriched: lr.enriched || null, lead_type: lr.lead_type || null,
+        status: lr.status || null, search: t(lr.search),
+      };
+    if (source === "ph_ucc")
+      return {
+        states: ucc.states, area_codes: parseAreaCodes(ucc.area_codes), zip_prefix: t(ucc.zip_prefix),
+        city: t(ucc.city), min_stack: n(ucc.min_stack), secured_party: t(ucc.secured_party),
+        filing_within_days: n(ucc.filing_within_days), confidence: ucc.confidence,
+        lead_class: ucc.lead_class || null, status: ucc.status || null,
+        has_phone: ucc.has_phone, has_email: ucc.has_email, hide_litigator: ucc.hide_litigator,
+        search: t(ucc.search),
+      };
+    return {
+      states: cust.states, area_codes: parseAreaCodes(cust.area_codes), zip_prefix: t(cust.zip_prefix),
+      city: t(cust.city), industry: t(cust.industry), entity_types: cust.entity_types,
+      min_revenue: n(cust.min_revenue), max_revenue: n(cust.max_revenue), line_types: cust.line_types,
+      has_phone: cust.has_phone, has_email: cust.has_email, phone_status: cust.phone_status || null,
+      exclude_dnc: cust.exclude_dnc, status: cust.status || null, search: t(cust.search),
+    };
+  }, [source, ghl, lr, ucc, cust]);
 
   /* Whether ANY filter is set for the current source (drives the empty-state copy). */
   const hasFilters = useMemo(() => {
-    if (source === "ghl") return !!(ghlTags.length || ghlQuery.trim());
-    if (source === "ph_ucc")
-      return !!(uccStates.length || uccStatus || uccMinStack || uccCity.trim() || uccSearch.trim() || uccHasPhone || uccHasEmail);
-    if (source === "lead_records")
-      return !!(lrType || lrStatus || lrStates.length || lrCity.trim() || lrMinRevenue || lrIndustry.trim() || lrSearch.trim() || lrHasEmail);
-    return !!(custStatus || custStates.length || custCity.trim() || custIndustry.trim() || custMinRevenue || custSearch.trim() || custHasPhone || custHasEmail);
-  }, [
-    source, ghlTags, ghlQuery,
-    uccStates, uccStatus, uccMinStack, uccCity, uccSearch, uccHasPhone, uccHasEmail,
-    lrType, lrStatus, lrStates, lrCity, lrMinRevenue, lrIndustry, lrSearch, lrHasEmail,
-    custStatus, custStates, custCity, custIndustry, custMinRevenue, custSearch, custHasPhone, custHasEmail,
-  ]);
+    const c = criteria;
+    return Object.entries(c).some(([k, v]) => {
+      if (k === "tag_mode") return false; // mode alone isn't a filter
+      if (Array.isArray(v)) return v.length > 0;
+      if (typeof v === "boolean") return v;
+      return v != null && v !== "";
+    });
+  }, [criteria]);
 
-  /* The saved filter (criteria jsonb) for the current source + inputs. */
-  const criteria = useMemo((): Record<string, unknown> => {
-    if (source === "ghl")
-      return { tags: ghlTags, tag_mode: ghlTagMode, query: ghlQuery.trim() || null };
-    if (source === "ph_ucc")
-      return {
-        states: uccStates, status: uccStatus || null, min_stack: uccMinStack || null,
-        city: uccCity.trim() || null, search: uccSearch.trim() || null,
-        has_phone: uccHasPhone, has_email: uccHasEmail,
-      };
-    if (source === "lead_records")
-      return {
-        lead_type: lrType || null, status: lrStatus || null, states: lrStates,
-        city: lrCity.trim() || null, min_revenue: lrMinRevenue || null,
-        industry: lrIndustry.trim() || null, search: lrSearch.trim() || null, has_email: lrHasEmail,
-      };
-    return {
-      status: custStatus || null, states: custStates, city: custCity.trim() || null,
-      industry: custIndustry.trim() || null, min_revenue: custMinRevenue || null,
-      search: custSearch.trim() || null, has_phone: custHasPhone, has_email: custHasEmail,
-    };
-  }, [
-    source, ghlTags, ghlTagMode, ghlQuery,
-    uccStates, uccStatus, uccMinStack, uccCity, uccSearch, uccHasPhone, uccHasEmail,
-    lrType, lrStatus, lrStates, lrCity, lrMinRevenue, lrIndustry, lrSearch, lrHasEmail,
-    custStatus, custStates, custCity, custIndustry, custMinRevenue, custSearch, custHasPhone, custHasEmail,
-  ]);
-
-  /* Build the filtered query for a SUPABASE source (never GHL). Callers add
-     .range()/count opts. No default filters are applied — an empty filter set
-     returns the whole book, so the preview with nothing set equals the source's
-     card total (never 0). */
-  const buildQuery = useCallback(
-    (select: string, opts: { count?: "exact"; head?: boolean } = {}) => {
-      if (source === "ph_ucc") {
-        let q = supabase.from("ph_ucc_leads").select(select, opts).order("score", { ascending: false, nullsFirst: false });
-        if (uccStates.length) q = q.in("state", uccStates); // stored 2-letter codes
-        if (uccStatus) q = q.eq("status", uccStatus);
-        if (uccMinStack) q = q.gte("stack_depth", Number(uccMinStack) || 0);
-        if (uccCity.trim()) q = q.ilike("debtor_city", `%${uccCity.trim()}%`);
-        if (uccSearch.trim()) q = q.ilike("debtor_name", `%${uccSearch.trim()}%`);
-        if (uccHasPhone) q = q.not("phone", "is", null);
-        if (uccHasEmail) q = q.not("email", "is", null);
-        return q;
-      }
-      if (source === "lead_records") {
-        let q = supabase.from("lead_records").select(select, opts).order("created_at", { ascending: false });
-        if (lrType) q = q.eq("lead_type", lrType);
-        if (lrStatus) q = q.eq("status", lrStatus);
-        if (lrStates.length) q = q.in("state", lrStates); // stored 2-letter codes
-        if (lrCity.trim()) q = q.ilike("city", `%${lrCity.trim()}%`);
-        if (lrMinRevenue) q = q.gte("revenue", Number(lrMinRevenue) || 0);
-        if (lrIndustry.trim()) q = q.ilike("industry_bucket", `%${lrIndustry.trim()}%`);
-        if (lrSearch.trim()) q = q.ilike("company", `%${lrSearch.trim()}%`);
-        if (lrHasEmail) q = q.eq("has_any_email", true);
-        return q;
-      }
-      // customers — address_state may hold a code OR a full name, so match both.
-      let q = supabase.from("customers").select(select, opts).order("created_at", { ascending: false });
-      if (custStatus) q = q.eq("status", custStatus);
-      if (custStates.length) q = q.in("address_state", expandStates(custStates));
-      if (custCity.trim()) q = q.ilike("address_city", `%${custCity.trim()}%`);
-      if (custIndustry.trim()) q = q.ilike("industry", `%${custIndustry.trim()}%`);
-      if (custMinRevenue) q = q.gte("monthly_revenue", Number(custMinRevenue) || 0);
-      if (custSearch.trim()) q = q.ilike("business_name", `%${custSearch.trim()}%`);
-      if (custHasPhone) q = q.not("phone", "is", null);
-      if (custHasEmail) q = q.not("email", "is", null);
-      return q;
-    },
-    [
-      source,
-      uccStates, uccStatus, uccMinStack, uccCity, uccSearch, uccHasPhone, uccHasEmail,
-      lrType, lrStatus, lrStates, lrCity, lrMinRevenue, lrIndustry, lrSearch, lrHasEmail,
-      custStatus, custStates, custCity, custIndustry, custMinRevenue, custSearch, custHasPhone, custHasEmail,
-    ],
-  );
-
-  /* Live source totals (Supabase table counts) for the non-virtual source cards. */
+  /* Live source totals (Supabase table head counts) for the non-virtual cards. */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -265,12 +301,10 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
         }),
       );
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
 
-  /* Live GHL card count — one preview call with no filters (the whole book). */
+  /* Live VibeReach card count — one preview call with no filters (the whole book). */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -278,18 +312,14 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
         const { data, error } = await supabase.functions.invoke("ghl-contacts-search", {
           body: { action: "preview", filters: {} },
         });
-        if (error || (data as { error?: string })?.error) return; // leave null; blurb still states the number
+        if (error || (data as { error?: string })?.error) return;
         if (alive) setSourceCounts((prev) => ({ ...prev, ghl: (data as { total?: number })?.total ?? null }));
-      } catch {
-        /* ignore — the card falls back to "counting…" and the blurb carries the number */
-      }
+      } catch { /* card falls back to "counting…" */ }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
 
-  /* Load the GHL tag list the first time the GHL source is opened. */
+  /* Load the VibeReach tag list the first time the source is opened. */
   useEffect(() => {
     if (source !== "ghl" || ghlTagList.length > 0 || ghlTagsLoading) return;
     let alive = true;
@@ -308,61 +338,63 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
         if (alive) setGhlTagsLoading(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [source, ghlTagList.length, ghlTagsLoading]);
 
   /* Auto-preview: re-run the count whenever the source or any filter changes.
-     Debounced so typing in a search box doesn't fire a query per keystroke. */
+     Debounced so typing in a box doesn't fire a query per keystroke. */
   useEffect(() => {
     setSaveMsg(null);
     setCounting(true);
     setCountErr(null);
-    const t = setTimeout(async () => {
+    setApprox(false);
+    const timer = setTimeout(async () => {
       try {
         if (source === "ghl") {
           const { data, error } = await supabase.functions.invoke("ghl-contacts-search", {
             body: { action: "preview", filters: ghlFilters },
           });
           if (error) throw new Error(await fnErrorMessage(error));
-          const err = (data as { error?: string })?.error;
-          if (err) throw new Error(err);
-          setCount((data as { total?: number })?.total ?? 0);
+          const res = (data ?? {}) as { error?: string; total?: number; approximate?: boolean };
+          if (res.error) throw new Error(res.error);
+          setCount(res.total ?? 0);
+          setApprox(!!res.approximate);
+          setSample([]);
         } else {
-          const { count: c, error } = await buildQuery("id", { count: "exact", head: true });
+          const { data, error } = await supabase.rpc("smart_list_source", {
+            p_source: source, p_filters: criteria, p_mode: "count",
+          });
           if (error) {
-            if (isMissingRelation(error)) throw new Error(`${SOURCE_META[source].table} is not available yet.`);
-            throw error;
+            if (isMissingRelation(error)) throw new Error("The source query isn't available yet — apply the migration.");
+            throw new Error(error.message);
           }
-          setCount(c ?? 0);
+          const res = (data ?? {}) as { count?: number; sample?: SampleRow[] };
+          setCount(res.count ?? 0);
+          setSample(Array.isArray(res.sample) ? res.sample : []);
         }
       } catch (e) {
         setCount(null);
+        setSample([]);
         setCountErr(e instanceof Error ? e.message : String(e));
       } finally {
         setCounting(false);
       }
     }, 350);
-    return () => clearTimeout(t);
-  }, [buildQuery, source, ghlFilters]);
+    return () => clearTimeout(timer);
+  }, [source, criteria, ghlFilters]);
 
-  /* Save the GHL source: create the row, then materialize via the edge fn. */
+  /* Save the VibeReach source: create the row, then materialize via the edge fn. */
   const saveGhl = useCallback(async () => {
     const createdBy = await currentProfileId();
     const [list] = await mustWrite<SmartList>(
       "create smart_list",
       supabase.from("smart_lists").insert({
-        name: name.trim(),
-        description: description.trim() || null,
-        source: "ghl",
-        criteria,
-        created_by: createdBy,
-        member_count: 0,
+        name: name.trim(), description: description.trim() || null,
+        source: "ghl", criteria, created_by: createdBy, member_count: 0,
       }),
     );
 
-    setBusyNote("Loading contacts from GoHighLevel… this can take a moment.");
+    setBusyNote("Loading contacts from VibeReach… this can take a moment.");
     const { data, error } = await supabase.functions.invoke("ghl-contacts-search", {
       body: { action: "materialize", smart_list_id: list.id, filters: ghlFilters },
     });
@@ -374,30 +406,31 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
 
     const inserted = res.inserted ?? 0;
     const total = res.total ?? inserted;
-    // Re-read the finalized row so the caller gets the backend-stamped count/time.
     const { data: fresh } = await supabase.from("smart_lists").select("*").eq("id", list.id).single();
     const updated = (fresh as SmartList | null) ?? { ...list, member_count: res.member_count ?? inserted };
 
     let msg = `Saved "${updated.name}" — ${inserted.toLocaleString()} contacts loaded (of ${total.toLocaleString()} matched).`;
-    if (res.capped) msg += ` Capped at ${inserted.toLocaleString()} — narrow the tag to load the rest.`;
-    else if (res.parked) msg += " Paused — GHL daily cap almost hit, resumes later.";
+    if (res.capped) msg += ` Capped at ${inserted.toLocaleString()} — narrow the filter to load the rest.`;
+    else if (res.parked) msg += " Paused — VibeReach daily cap almost hit, resumes later.";
     setSaveMsg(msg);
     onSaved(updated);
   }, [name, description, criteria, ghlFilters, onSaved]);
 
-  /* Save a Supabase source: gather rows client-side, insert list + members. */
+  /* Save a Supabase source: page rows from the RPC, insert list + members. */
   const saveDb = useCallback(async () => {
     const dbSource = source as DbSource;
     const createdBy = await currentProfileId();
 
-    // 1) Gather up to MAX_MEMBERS matching rows (with snapshot columns).
-    const rows: Record<string, unknown>[] = [];
+    // 1) Gather up to MAX_MEMBERS matching rows (already snapshot-shaped by the RPC).
+    const rows: SampleRow[] = [];
     let offset = 0;
     while (rows.length < MAX_MEMBERS) {
       const want = Math.min(PAGE, MAX_MEMBERS - rows.length);
-      const { data, error } = await buildQuery(SNAPSHOT_SELECT[dbSource]).range(offset, offset + want - 1);
-      if (error) throw error;
-      const chunk = (data as unknown as Record<string, unknown>[]) ?? [];
+      const { data, error } = await supabase.rpc("smart_list_source", {
+        p_source: dbSource, p_filters: criteria, p_mode: "rows", p_limit: want, p_offset: offset,
+      });
+      if (error) throw new Error(error.message);
+      const chunk = ((data as { rows?: SampleRow[] })?.rows) ?? [];
       rows.push(...chunk);
       if (chunk.length < want) break; // drained
       offset += chunk.length;
@@ -408,16 +441,12 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
     const [list] = await mustWrite<SmartList>(
       "create smart_list",
       supabase.from("smart_lists").insert({
-        name: name.trim(),
-        description: description.trim() || null,
-        source: dbSource,
-        criteria,
-        created_by: createdBy,
-        member_count: 0,
+        name: name.trim(), description: description.trim() || null,
+        source: dbSource, criteria, created_by: createdBy, member_count: 0,
       }),
     );
 
-    // 3) Insert members in chunks with a denormalized snapshot.
+    // 3) Insert members in chunks with the denormalized snapshot.
     const CHUNK = 500;
     let inserted = 0;
     setProgress({ done: 0, total: rows.length });
@@ -427,7 +456,10 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
         smart_list_id: list.id,
         source: dbSource,
         source_id: String(r.id),
-        snapshot: snapshotFromRow(dbSource, r),
+        snapshot: {
+          business: r.business ?? null, contact: r.contact ?? null, phone: r.phone ?? null,
+          email: r.email ?? null, state: r.state ?? null, city: r.city ?? null,
+        },
       }));
       await mustWrite("insert smart_list_members", supabase.from("smart_list_members").insert(members));
       inserted += slice.length;
@@ -449,13 +481,10 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
         (capped ? ` (capped at ${MAX_MEMBERS.toLocaleString()} — narrow the filter to include more).` : "."),
     );
     onSaved(updated);
-  }, [source, name, description, criteria, buildQuery, onSaved]);
+  }, [source, name, description, criteria, onSaved]);
 
   const save = useCallback(async () => {
-    if (!name.trim()) {
-      setSaveErr("Give the list a name first.");
-      return;
-    }
+    if (!name.trim()) { setSaveErr("Give the list a name first."); return; }
     setSaving(true);
     setSaveErr(null);
     setSaveMsg(null);
@@ -464,7 +493,6 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
     try {
       if (source === "ghl") await saveGhl();
       else await saveDb();
-      // Reset name so the next save doesn't collide; keep filters for a quick re-save.
       setName("");
       setDescription("");
     } catch (e) {
@@ -517,14 +545,15 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
           <FunnelIcon className="w-3.5 h-3.5" /> 2 · Filter {SOURCE_META[source].label}
           <span className="normal-case font-normal text-gray-400"> — leave everything blank to include the whole book</span>
         </p>
-        <div className="flex flex-wrap items-start gap-3">
-          {source === "ghl" && (
-            <>
+
+        {source === "ghl" && (
+          <div className="space-y-4">
+            <Group title="Tags">
               <Field label="Tags" hint={ghlTagsErr ? ghlTagsErr : ghlTagsLoading ? "loading tags…" : "pick one or more CRM tags"}>
                 <MultiSelect
-                  options={ghlTagList.map((t) => ({ value: t.name, label: t.name }))}
-                  selected={ghlTags}
-                  onChange={setGhlTags}
+                  options={ghlTagList.map((tg) => ({ value: tg.name, label: tg.name }))}
+                  selected={ghl.tags}
+                  onChange={(v) => patchGhl({ tags: v })}
                   placeholder={ghlTagsLoading ? "loading tags…" : "+ add a tag"}
                   width="w-64"
                 />
@@ -535,11 +564,9 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
                     <button
                       key={m}
                       type="button"
-                      onClick={() => setGhlTagMode(m)}
+                      onClick={() => patchGhl({ tagMode: m })}
                       className={`px-3 py-1.5 text-sm ${
-                        ghlTagMode === m
-                          ? "bg-mint-green text-white"
-                          : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300"
+                        ghl.tagMode === m ? "bg-mint-green text-white" : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300"
                       }`}
                     >
                       {m === "or" ? "ANY" : "ALL"}
@@ -547,92 +574,199 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
                   ))}
                 </div>
               </Field>
-              <Field label="Search" hint="name / email / phone contains">
-                <input className={`${input} w-52`} placeholder="free text…" value={ghlQuery} onChange={(e) => setGhlQuery(e.target.value)} />
+            </Group>
+            <Group title="Location">
+              <Field label="State" hint="matches the contact's State field (code or name)">
+                <input className={`${input} w-32`} placeholder="e.g. FL" value={ghl.state} onChange={(e) => patchGhl({ state: e.target.value })} />
               </Field>
-            </>
-          )}
-          {source === "ph_ucc" && (
-            <>
-              <Field label="States" hint="Matches the stored 2-letter code">
-                <MultiSelect options={STATE_OPTS} selected={uccStates} onChange={setUccStates} placeholder="+ add a state" />
+              <Field label="City" hint="City contains">
+                <input className={`${input} w-44`} placeholder="contains…" value={ghl.city} onChange={(e) => patchGhl({ city: e.target.value })} />
               </Field>
-              <Field label="Status" hint="Where the lead is in cleaning">
-                <SelectOpts className="w-52" value={uccStatus} onChange={setUccStatus} opts={UCC_STATUS_OPTS} />
+              <Field label="Zip" hint="postal code (exact)">
+                <input className={`${input} w-32`} placeholder="e.g. 33101" value={ghl.postalCode} onChange={(e) => patchGhl({ postalCode: e.target.value })} />
               </Field>
-              <Field label="Min open advances" hint="Stacking depth on file">
-                <input type="number" min={0} className={`${input} w-32`} placeholder="any" value={uccMinStack} onChange={(e) => setUccMinStack(e.target.value)} />
+              <Field label="Area codes" hint="comma-separated · narrows after fetch (count is approximate)">
+                <input className={`${input} w-44`} placeholder="e.g. 305, 786" value={ghl.area_codes} onChange={(e) => patchGhl({ area_codes: e.target.value })} />
               </Field>
-              <Field label="City" hint="Debtor city contains">
-                <input className={`${input} w-44`} placeholder="contains…" value={uccCity} onChange={(e) => setUccCity(e.target.value)} />
+            </Group>
+            <Group title="Search">
+              <Field label="Free text" hint="name / email / phone contains">
+                <input className={`${input} w-64`} placeholder="free text…" value={ghl.query} onChange={(e) => patchGhl({ query: e.target.value })} />
               </Field>
-              <Field label="Business name">
-                <input className={`${input} w-52`} placeholder="contains…" value={uccSearch} onChange={(e) => setUccSearch(e.target.value)} />
+            </Group>
+          </div>
+        )}
+
+        {source === "lead_records" && (
+          <div className="space-y-4">
+            <Group title="Location">
+              <Field label="States" hint="effective state — includes inferred state for aged leads">
+                <MultiSelect options={STATE_OPTS} selected={lr.states} onChange={(v) => patchLr({ states: v })} placeholder="+ add a state" />
               </Field>
-              <CheckRow>
-                <Check checked={uccHasPhone} onChange={setUccHasPhone} label="Has phone" />
-                <Check checked={uccHasEmail} onChange={setUccHasEmail} label="Has email" />
-              </CheckRow>
-            </>
-          )}
-          {source === "lead_records" && (
-            <>
+              <Field label="Area codes" hint="comma-separated 3-digit codes">
+                <input className={`${input} w-44`} placeholder="e.g. 305, 786" value={lr.area_codes} onChange={(e) => patchLr({ area_codes: e.target.value })} />
+              </Field>
+              <Field label="Zip" hint="zip starts with">
+                <input className={`${input} w-32`} placeholder="prefix…" value={lr.zip_prefix} onChange={(e) => patchLr({ zip_prefix: e.target.value })} />
+              </Field>
+              <Field label="City" hint="City contains">
+                <input className={`${input} w-40`} placeholder="contains…" value={lr.city} onChange={(e) => patchLr({ city: e.target.value })} />
+              </Field>
+            </Group>
+            <Group title="Business">
+              <Field label="Industry" hint="industry bucket or SIC description contains">
+                <input className={`${input} w-44`} placeholder="e.g. construction" value={lr.industry} onChange={(e) => patchLr({ industry: e.target.value })} />
+              </Field>
+              <Field label="Entity type" hint="pick one or more">
+                <MultiSelect options={ENTITY_TYPE_OPTS} selected={lr.entity_types} onChange={(v) => patchLr({ entity_types: v })} placeholder="+ add a type" />
+              </Field>
+              <Field label="Min revenue" hint="annual revenue on file (≥)">
+                <input type="number" min={0} className={`${input} w-32`} placeholder="any" value={lr.min_revenue} onChange={(e) => patchLr({ min_revenue: e.target.value })} />
+              </Field>
+              <Field label="Max revenue" hint="annual revenue on file (≤)">
+                <input type="number" min={0} className={`${input} w-32`} placeholder="any" value={lr.max_revenue} onChange={(e) => patchLr({ max_revenue: e.target.value })} />
+              </Field>
               <Field label="Lead type" hint="Aged, Trigger, or UCC">
-                <SelectOpts className="w-44" value={lrType} onChange={setLrType} opts={LEAD_TYPE_OPTS} />
+                <SelectOpts className="w-40" value={lr.lead_type} onChange={(v) => patchLr({ lead_type: v })} opts={LEAD_TYPE_OPTS} />
               </Field>
-              <Field label="Status" hint="Loaded vs. pushed to the dialer">
-                <SelectOpts className="w-52" value={lrStatus} onChange={setLrStatus} opts={LEAD_STATUS_OPTS} />
+              <Field label="Company name" hint="company contains">
+                <input className={`${input} w-48`} placeholder="contains…" value={lr.search} onChange={(e) => patchLr({ search: e.target.value })} />
               </Field>
-              <Field label="States" hint="Matches the stored 2-letter code">
-                <MultiSelect options={STATE_OPTS} selected={lrStates} onChange={setLrStates} placeholder="+ add a state" />
+            </Group>
+            <Group title="Contactability">
+              <Field label="Line type" hint="mobile / landline / VoIP / toll-free">
+                <MultiSelect options={LINE_TYPE_OPTS} selected={lr.line_types} onChange={(v) => patchLr({ line_types: v })} placeholder="+ add a line type" />
               </Field>
-              <Field label="City" hint="City contains">
-                <input className={`${input} w-44`} placeholder="contains…" value={lrCity} onChange={(e) => setLrCity(e.target.value)} />
+              <Field label="Carrier" hint="carrier name contains">
+                <input className={`${input} w-40`} placeholder="e.g. Verizon" value={lr.carrier} onChange={(e) => patchLr({ carrier: e.target.value })} />
               </Field>
-              <Field label="Min revenue" hint="Annual revenue on file (≥)">
-                <input type="number" min={0} className={`${input} w-36`} placeholder="any" value={lrMinRevenue} onChange={(e) => setLrMinRevenue(e.target.value)} />
-              </Field>
-              <Field label="Industry" hint="Industry bucket contains">
-                <input className={`${input} w-44`} placeholder="e.g. construction" value={lrIndustry} onChange={(e) => setLrIndustry(e.target.value)} />
-              </Field>
-              <Field label="Company name">
-                <input className={`${input} w-52`} placeholder="contains…" value={lrSearch} onChange={(e) => setLrSearch(e.target.value)} />
+              <Field label="Phone status" hint="validated reachability">
+                <SelectOpts className="w-52" value={lr.phone_status} onChange={(v) => patchLr({ phone_status: v })} opts={PHONE_STATUS_OPTS} />
               </Field>
               <CheckRow>
-                <Check checked={lrHasEmail} onChange={setLrHasEmail} label="Has email" />
+                <Check checked={lr.has_phone} onChange={(v) => patchLr({ has_phone: v })} label="Has a phone" />
+                <Check checked={lr.has_email} onChange={(v) => patchLr({ has_email: v })} label="Has an email" />
               </CheckRow>
-            </>
-          )}
-          {source === "customers" && (
-            <>
-              <Field label="Pipeline status" hint="Stage in the CRM funnel">
-                <SelectOpts className="w-52" value={custStatus} onChange={setCustStatus} opts={CUSTOMER_STATUS_OPTS} />
+            </Group>
+            <Group title="Data quality">
+              <Field label="Enriched" hint="skip-trace / Apollo data present">
+                <SelectOpts className="w-56" value={lr.enriched} onChange={(v) => patchLr({ enriched: v })} opts={ENRICHED_OPTS} />
               </Field>
+              <Field label="Dial score ≥" hint="minimum dial score">
+                <input type="number" min={0} className={`${input} w-28`} placeholder="any" value={lr.dial_score_min} onChange={(e) => patchLr({ dial_score_min: e.target.value })} />
+              </Field>
+              <Field label="Load status" hint="loaded vs. pushed to the dialer">
+                <SelectOpts className="w-52" value={lr.status} onChange={(v) => patchLr({ status: v })} opts={LEAD_STATUS_OPTS} />
+              </Field>
+            </Group>
+          </div>
+        )}
+
+        {source === "ph_ucc" && (
+          <div className="space-y-4">
+            <Group title="Location">
+              <Field label="States" hint="matches the stored 2-letter code">
+                <MultiSelect options={STATE_OPTS} selected={ucc.states} onChange={(v) => patchUcc({ states: v })} placeholder="+ add a state" />
+              </Field>
+              <Field label="Area codes" hint="comma-separated 3-digit codes">
+                <input className={`${input} w-44`} placeholder="e.g. 305, 786" value={ucc.area_codes} onChange={(e) => patchUcc({ area_codes: e.target.value })} />
+              </Field>
+              <Field label="Zip" hint="debtor zip starts with">
+                <input className={`${input} w-32`} placeholder="prefix…" value={ucc.zip_prefix} onChange={(e) => patchUcc({ zip_prefix: e.target.value })} />
+              </Field>
+              <Field label="City" hint="debtor city contains">
+                <input className={`${input} w-40`} placeholder="contains…" value={ucc.city} onChange={(e) => patchUcc({ city: e.target.value })} />
+              </Field>
+            </Group>
+            <Group title="UCC / business">
+              <Field label="Min open advances" hint="stacking depth on file (≥)">
+                <input type="number" min={0} className={`${input} w-32`} placeholder="any" value={ucc.min_stack} onChange={(e) => patchUcc({ min_stack: e.target.value })} />
+              </Field>
+              <Field label="Secured party" hint="funder on the lien contains">
+                <input className={`${input} w-48`} placeholder="e.g. Kapitus" value={ucc.secured_party} onChange={(e) => patchUcc({ secured_party: e.target.value })} />
+              </Field>
+              <Field label="Filed within (days)" hint="latest filing recency (≤ N days)">
+                <input type="number" min={0} className={`${input} w-32`} placeholder="any" value={ucc.filing_within_days} onChange={(e) => patchUcc({ filing_within_days: e.target.value })} />
+              </Field>
+              <Field label="Lead class" hint="named funder vs. agent-masked">
+                <SelectOpts className="w-56" value={ucc.lead_class} onChange={(v) => patchUcc({ lead_class: v })} opts={LEAD_CLASS_OPTS} />
+              </Field>
+              <Field label="Business name" hint="debtor name contains">
+                <input className={`${input} w-48`} placeholder="contains…" value={ucc.search} onChange={(e) => patchUcc({ search: e.target.value })} />
+              </Field>
+            </Group>
+            <Group title="Contactability">
+              <CheckRow>
+                <Check checked={ucc.has_phone} onChange={(v) => patchUcc({ has_phone: v })} label="Has a phone" />
+                <Check checked={ucc.has_email} onChange={(v) => patchUcc({ has_email: v })} label="Has an email" />
+                <Check checked={ucc.hide_litigator} onChange={(v) => patchUcc({ hide_litigator: v })} label="Hide TCPA litigators" />
+              </CheckRow>
+            </Group>
+            <Group title="Data quality">
+              <Field label="Confidence" hint="match confidence tier(s)">
+                <MultiSelect options={CONFIDENCE_OPTS} selected={ucc.confidence} onChange={(v) => patchUcc({ confidence: v })} placeholder="+ add a tier" />
+              </Field>
+              <Field label="Clean status" hint="where the lead is in cleaning">
+                <SelectOpts className="w-52" value={ucc.status} onChange={(v) => patchUcc({ status: v })} opts={UCC_STATUS_OPTS} />
+              </Field>
+            </Group>
+          </div>
+        )}
+
+        {source === "customers" && (
+          <div className="space-y-4">
+            <Group title="Location">
               <Field label="States" hint="2-letter code or full name — both match">
-                <MultiSelect options={STATE_OPTS} selected={custStates} onChange={setCustStates} placeholder="+ add a state" />
+                <MultiSelect options={STATE_OPTS} selected={cust.states} onChange={(v) => patchCust({ states: v })} placeholder="+ add a state" />
+              </Field>
+              <Field label="Area codes" hint="comma-separated 3-digit codes">
+                <input className={`${input} w-44`} placeholder="e.g. 305, 786" value={cust.area_codes} onChange={(e) => patchCust({ area_codes: e.target.value })} />
+              </Field>
+              <Field label="Zip" hint="zip starts with">
+                <input className={`${input} w-32`} placeholder="prefix…" value={cust.zip_prefix} onChange={(e) => patchCust({ zip_prefix: e.target.value })} />
               </Field>
               <Field label="City" hint="City contains">
-                <input className={`${input} w-44`} placeholder="contains…" value={custCity} onChange={(e) => setCustCity(e.target.value)} />
+                <input className={`${input} w-40`} placeholder="contains…" value={cust.city} onChange={(e) => patchCust({ city: e.target.value })} />
               </Field>
-              <Field label="Industry" hint="Industry contains">
-                <input className={`${input} w-44`} placeholder="e.g. trucking" value={custIndustry} onChange={(e) => setCustIndustry(e.target.value)} />
+            </Group>
+            <Group title="Business">
+              <Field label="Industry" hint="industry contains">
+                <input className={`${input} w-44`} placeholder="e.g. trucking" value={cust.industry} onChange={(e) => patchCust({ industry: e.target.value })} />
               </Field>
-              <Field label="Min monthly revenue" hint="Monthly revenue on file (≥)">
-                <input type="number" min={0} className={`${input} w-36`} placeholder="any" value={custMinRevenue} onChange={(e) => setCustMinRevenue(e.target.value)} />
+              <Field label="Entity type" hint="pick one or more">
+                <MultiSelect options={ENTITY_TYPE_OPTS} selected={cust.entity_types} onChange={(v) => patchCust({ entity_types: v })} placeholder="+ add a type" />
               </Field>
-              <Field label="Business name">
-                <input className={`${input} w-52`} placeholder="contains…" value={custSearch} onChange={(e) => setCustSearch(e.target.value)} />
+              <Field label="Min monthly revenue" hint="monthly revenue on file (≥)">
+                <input type="number" min={0} className={`${input} w-32`} placeholder="any" value={cust.min_revenue} onChange={(e) => patchCust({ min_revenue: e.target.value })} />
+              </Field>
+              <Field label="Max monthly revenue" hint="monthly revenue on file (≤)">
+                <input type="number" min={0} className={`${input} w-32`} placeholder="any" value={cust.max_revenue} onChange={(e) => patchCust({ max_revenue: e.target.value })} />
+              </Field>
+              <Field label="Pipeline status" hint="stage in the CRM funnel">
+                <SelectOpts className="w-52" value={cust.status} onChange={(v) => patchCust({ status: v })} opts={CUSTOMER_STATUS_OPTS} />
+              </Field>
+              <Field label="Business name" hint="business name contains">
+                <input className={`${input} w-48`} placeholder="contains…" value={cust.search} onChange={(e) => patchCust({ search: e.target.value })} />
+              </Field>
+            </Group>
+            <Group title="Contactability">
+              <Field label="Line type" hint="mobile / landline / VoIP / toll-free">
+                <MultiSelect options={LINE_TYPE_OPTS} selected={cust.line_types} onChange={(v) => patchCust({ line_types: v })} placeholder="+ add a line type" />
+              </Field>
+              <Field label="Phone status" hint="validated reachability">
+                <SelectOpts className="w-52" value={cust.phone_status} onChange={(v) => patchCust({ phone_status: v })} opts={CUST_PHONE_STATUS_OPTS} />
               </Field>
               <CheckRow>
-                <Check checked={custHasPhone} onChange={setCustHasPhone} label="Has phone" />
-                <Check checked={custHasEmail} onChange={setCustHasEmail} label="Has email" />
+                <Check checked={cust.has_phone} onChange={(v) => patchCust({ has_phone: v })} label="Has a phone" />
+                <Check checked={cust.has_email} onChange={(v) => patchCust({ has_email: v })} label="Has an email" />
+                <Check checked={cust.exclude_dnc} onChange={(v) => patchCust({ exclude_dnc: v })} label="Exclude do-not-contact" />
               </CheckRow>
-            </>
-          )}
-        </div>
+            </Group>
+          </div>
+        )}
 
         {/* Live count — auto-updates as filters change. */}
-        <div className="mt-3 min-h-[1.25rem]">
+        <div className="mt-4 min-h-[1.25rem]">
           {countErr ? (
             <p className="text-xs text-rose-600 dark:text-rose-400 inline-flex items-center gap-1">
               <ExclamationTriangleIcon className="w-3.5 h-3.5" /> {countErr}
@@ -646,15 +780,29 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
               </p>
             ) : (
               <p className="text-sm text-gray-700 dark:text-gray-200">
+                {approx && <span className="text-gray-400">~</span>}
                 <strong className="text-gray-900 dark:text-white tabular-nums">{count.toLocaleString()}</strong>{" "}
                 {hasFilters ? "match" : "in"} {SOURCE_META[source].label}
                 {!hasFilters && <span className="text-gray-400"> (everything — add filters to narrow)</span>}
+                {approx && <span className="text-gray-400"> · before area-code filter (applied on save)</span>}
                 {count > MAX_MEMBERS && (
                   <span className="text-amber-600 dark:text-amber-400"> · this build saves the first {MAX_MEMBERS.toLocaleString()}</span>
                 )}
               </p>
             )
           ) : null}
+
+          {/* Tiny sample so you can eyeball the slice before saving. */}
+          {sample.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {sample.slice(0, 6).map((r, i) => (
+                <span key={r.id ?? i} className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
+                  {r.business || r.contact || r.phone || "—"}
+                  {r.state ? <span className="text-gray-400"> · {r.state}</span> : null}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -699,16 +847,14 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
   );
 }
 
-/* Expand selected state codes to [code, full name] so customers rows that store
-   the full state name ('Florida') match a 'FL' pick — and vice-versa. */
-function expandStates(codes: string[]): string[] {
-  const out = new Set<string>();
-  for (const code of codes) {
-    out.add(code);
-    const name = US_STATES.find((s) => s.code === code)?.name;
-    if (name) out.add(name);
-  }
-  return [...out];
+/* A titled group of filter fields — keeps the builder scannable. */
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/30 p-3">
+      <p className="text-[11px] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">{title}</p>
+      <div className="flex flex-wrap items-start gap-3">{children}</div>
+    </div>
+  );
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -747,21 +893,12 @@ function SelectOpts({ value, onChange, opts, className = "" }: { value: string; 
 }
 
 /* Multi-select rendered as removable chips + an "add" dropdown. Used for states
-   (keyed on the stored 2-letter code, so "Florida" always resolves to 'FL') and
-   for GHL tags. Adding one at a time via a plain <select> keeps it robust in both
-   light/dark with no popover/blur juggling. */
+   (keyed on the stored 2-letter code, so "Florida" always resolves to 'FL'),
+   VibeReach tags, entity types, line types, and confidence tiers. */
 function MultiSelect({
-  options,
-  selected,
-  onChange,
-  placeholder,
-  width = "w-44",
+  options, selected, onChange, placeholder, width = "w-44",
 }: {
-  options: Opt[];
-  selected: string[];
-  onChange: (v: string[]) => void;
-  placeholder: string;
-  width?: string;
+  options: Opt[]; selected: string[]; onChange: (v: string[]) => void; placeholder: string; width?: string;
 }) {
   const labelFor = (v: string) => options.find((o) => o.value === v)?.label ?? v;
   const available = options.filter((o) => !selected.includes(o.value));
@@ -790,9 +927,7 @@ function MultiSelect({
       <select
         className={`${input} ${width}`}
         value=""
-        onChange={(e) => {
-          if (e.target.value) onChange([...selected, e.target.value]);
-        }}
+        onChange={(e) => { if (e.target.value) onChange([...selected, e.target.value]); }}
         disabled={available.length === 0}
       >
         <option value="">{available.length === 0 ? "all added" : placeholder}</option>

@@ -58,6 +58,16 @@ export function slugifyTag(s: string): string {
   );
 }
 
+/* Parse a free-typed area-code box ("305, 786 / 212") into unique 3-digit codes.
+   Anything that isn't a clean 3-digit run is dropped, so junk never reaches the RPC. */
+export function parseAreaCodes(raw: string): string[] {
+  const out = new Set<string>();
+  for (const tok of (raw || "").split(/[^0-9]+/)) {
+    if (/^\d{3}$/.test(tok)) out.add(tok);
+  }
+  return [...out];
+}
+
 /* Denormalized render row stored on each member. phone-validate reads snapshot.phone
    (or phone_number / mobile), so `phone` MUST be present when it exists. */
 export interface MemberSnapshot {
@@ -91,10 +101,12 @@ export const SOURCE_META: Record<
   { label: string; table: string; blurb: string; chip: string; virtual?: boolean }
 > = {
   ghl: {
-    label: "GoHighLevel",
+    // 'ghl' stays the internal source key everywhere; only the LABEL is the product
+    // name the owner uses — VibeReach (VibeReach.io), our white-label of the CRM.
+    label: "VibeReach",
     table: "", // virtual — searched via the ghl-contacts-search edge fn, not a table
     virtual: true,
-    blurb: "Your CRM contacts, searchable by tag · 162,612 contacts.",
+    blurb: "Your VibeReach CRM contacts — search by tag, state, city, zip, area code, or free text.",
     chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
   },
   ph_ucc: {
