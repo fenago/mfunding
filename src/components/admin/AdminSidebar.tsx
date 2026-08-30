@@ -281,13 +281,22 @@ export default function AdminSidebar() {
   });
   // Per-group expand/collapse (manager view only). Persisted so it survives
   // reloads. Shape: { [groupTitle]: true } means COLLAPSED; absent/false =
-  // expanded. Default {} → every group expanded.
+  // expanded. Default: every group collapsed EXCEPT "Daily" (the day-to-day
+  // tools stay open; everything else folds away until the user opens it).
+  // A saved preference always wins over this default.
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    const defaultCollapsed: Record<string, boolean> = {
+      "Lead Gen": true,
+      "Funder Network": true,
+      "Pipeline & Comms": true,
+      Insights: true,
+      System: true,
+    };
     try {
       const saved = localStorage.getItem("adminSidebarGroups");
-      return saved ? (JSON.parse(saved) as Record<string, boolean>) : {};
+      return saved ? (JSON.parse(saved) as Record<string, boolean>) : defaultCollapsed;
     } catch {
-      return {};
+      return defaultCollapsed;
     }
   });
   const toggleGroup = (title: string) =>
