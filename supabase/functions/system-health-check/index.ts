@@ -47,7 +47,16 @@ const SB_PROJECT_REF = "ehibjeonqpqskhcvizow";
 const PRO_EGRESS_GB = 250; // cached egress + DB egress included per billing month
 const PRO_DISK_GB = 8;     // included disk before overage
 
-type Status = "up" | "degraded" | "down";
+// "no_data" = a probe we deliberately can't run yet because it isn't configured
+// (e.g. a vault key not staged). It is NOT a failure: it renders grey on the page
+// and never opens an incident or fires an alert (see isBad + worthAlert below).
+type Status = "up" | "degraded" | "down" | "no_data";
+
+/** A status that represents an actual problem worth an incident/alert. "no_data"
+ * (gated/unconfigured) and "up" are both fine. */
+function isBad(s: Status | null): boolean {
+  return s === "down" || s === "degraded";
+}
 
 interface CheckResult {
   service: string;
@@ -293,6 +302,64 @@ async function checkWavv(db: SupabaseClient): Promise<CheckResult> {
       service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0,
       detail: `unreachable: ${e instanceof Error ? e.message : String(e)}`,
     };
+  }
+}
+
+/** Twilio (phone validation): authenticate against the Lookup v2 Line Type
+ * Intelligence endpoint — a Basic-auth GET against a known-good number. A 200 proves
+ * the SID/token pair works AND that line-type lookups are live (the exact capability
+ * Data Hygiene's phone-validate fn depends on). 401/403 = bad credentials → down;
+ * any other non-2xx = degraded (reachable, wrong). Creds come from the vault via
+ * get_phone_validation_key() — the same source phone-validate uses. If the pair
+ * isn't staged yet, that is a GATE, not an outage: report 'no_data' (grey) with an
+ * "add the key" note and never alert on it. This is the auth/uptime MONITOR — the
+ * separate provider-balance strip covers the Twilio account balance. */
+async function checkTwilio(db: SupabaseClient): Promise<CheckResult> {
+  const svc = "twilio";
+  const t0 = Date.now();
+  let sid: string | null = null;
+  let token: string | null = null;
+  try {
+    const { data: creds, error } = await db.rpc("get_phone_validation_key");
+    if (error) {
+      return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `vault read failed: ${error.message}` };
+    }
+    const c = creds as { account_sid?: string; auth_token?: string } | null;
+    sid = (c?.account_sid ?? "").toString().trim() || null;
+    token = (c?.auth_token ?? "").toString().trim() || null;
+  } catch (e) {
+    return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `vault read threw: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (!sid || !token) {
+    return {
+      service: svc, status: "no_data", http_status: null, latency_ms: Date.now() - t0,
+      detail: "Add the Twilio key — TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN not staged in the vault (get_phone_validation_key returned null). Phone validation is gated until then.",
+    };
+  }
+  try {
+    const url = "https://lookups.twilio.com/v2/PhoneNumbers/+17865041159?Fields=line_type_intelligence";
+    const res = await fetch(url, {
+      headers: { Authorization: "Basic " + btoa(`${sid}:${token}`), Accept: "application/json" },
+      signal: AbortSignal.timeout(12000),
+    });
+    const latency = Date.now() - t0;
+    const text = await res.text().catch(() => "");
+    let body: unknown = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    const b = body as { valid?: boolean; message?: string; line_type_intelligence?: { type?: string } } | null;
+    if (res.ok) {
+      const valid = typeof b?.valid === "boolean" ? b.valid : null;
+      const lineType = b?.line_type_intelligence?.type ?? null;
+      const extra = valid !== null ? ` (probe number valid=${valid}${lineType ? `, ${lineType}` : ""})` : "";
+      return { service: svc, status: "up", http_status: res.status, latency_ms: latency, detail: `authenticated · line-type lookups live${extra}.` };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { service: svc, status: "down", http_status: res.status, latency_ms: latency, detail: `auth rejected (${res.status}) — check TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN in the vault.` };
+    }
+    const msg = (b && typeof b === "object" ? b.message : null) ?? (typeof body === "string" ? body : "");
+    return { service: svc, status: "degraded", http_status: res.status, latency_ms: latency, detail: `Lookup v2 HTTP ${res.status}: ${String(msg).slice(0, 160)}` };
+  } catch (e) {
+    return { service: svc, status: "down", http_status: null, latency_ms: Date.now() - t0, detail: `unreachable: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
@@ -563,6 +630,7 @@ const LABELS: Record<string, string> = {
   llm: "AI provider (underwriting / recommendations)",
   plaid: "Plaid (bank connection)",
   hotprospector: "HotProspector (PowerDialer)",
+  twilio: "Twilio (phone validation)",
   "site:mfunding.net": "Website (mfunding.net)",
   "site:my.mfunding.net": "Merchant portal (my.mfunding.net)",
   "edge-runtime": "Supabase edge runtime",
@@ -671,19 +739,20 @@ Deno.serve(async (req) => {
 
   // ── Run every probe (in parallel where independent) ──
   const results: CheckResult[] = [];
-  const [instantly, ghl, llm, plaid, hotprospector, wavv, site1, site2, cron, egress] = await Promise.all([
+  const [instantly, ghl, llm, plaid, hotprospector, wavv, twilio, site1, site2, cron, egress] = await Promise.all([
     checkInstantly(db),
     checkGhl(cfg, cfgErr),
     checkLlm(db),
     checkPlaid(db),
     checkHotProspector(db),
     checkWavv(db),
+    checkTwilio(db),
     checkSite("site:mfunding.net", "https://mfunding.net"),
     checkSite("site:my.mfunding.net", "https://my.mfunding.net"),
     checkCron(db),
     checkSupabaseEgress(db),
   ]);
-  results.push(instantly, ghl, llm, plaid, hotprospector, wavv, site1, site2, cron, egress);
+  results.push(instantly, ghl, llm, plaid, hotprospector, wavv, twilio, site1, site2, cron, egress);
   // Edge-runtime self-check: if this line runs, the function + its scheduler are alive.
   results.push({ service: "edge-runtime", status: "up", http_status: null, latency_ms: null, detail: `edge function executed at ${new Date().toISOString()}.` });
 
@@ -712,17 +781,19 @@ Deno.serve(async (req) => {
       // Incidents: open on entering a bad state, close on recovery. A bad→bad
       // change (degraded↔down) supersedes the previous incident — close it first,
       // otherwise a flapping service piles up open rows that never resolve.
-      if (r.status !== "up") {
-        if (priorStatus && priorStatus !== "up") {
+      if (isBad(r.status)) {
+        if (isBad(priorStatus)) {
           await db.from("system_health_incidents").update({ closed_at: nowIso }).eq("service", r.service).is("closed_at", null);
         }
         await db.from("system_health_incidents").insert({ service: r.service, status: r.status, detail: r.detail, opened_at: nowIso });
-      } else if (priorStatus && priorStatus !== "up") {
+      } else if (isBad(priorStatus)) {
+        // Recovered from down/degraded (into 'up' OR 'no_data') — close the incident.
         await db.from("system_health_incidents").update({ closed_at: nowIso }).eq("service", r.service).is("closed_at", null);
       }
 
-      // Alert on: entering a bad state, or recovering from one. (First-ever 'up' is silent.)
-      const worthAlert = r.status !== "up" || (priorStatus !== null && priorStatus !== "up");
+      // Alert on: entering a bad state, or recovering from one. Transitions into or
+      // out of 'no_data' (gated/unconfigured) are silent — not a real outage.
+      const worthAlert = isBad(r.status) || (isBad(priorStatus) && r.status === "up");
       if (worthAlert) transitions.push({ service: r.service, from: priorStatus, to: r.status, detail: r.detail });
     } else {
       // No change: refresh the live fields, keep last_transition_at + alerted.
