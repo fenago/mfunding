@@ -1,14 +1,16 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   EnvelopeIcon,
   XMarkIcon,
   CheckCircleIcon,
   ExclamationCircleIcon,
   PaperAirplaneIcon,
+  BuildingLibraryIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { useUserProfile } from "@/context/UserProfileContext";
 import { logContactAttempt } from "@/services/dealService";
+import { mintConnectBankLink } from "@/lib/connectBank";
 import { statedTimeInET } from "@/utils/time";
 
 /**
@@ -142,7 +144,9 @@ export default function EmailMerchantPanel({
   const [subject, setSubject] = useState(() => tpl.subject(ctx));
   const [bodyText, setBodyText] = useState(() => tpl.body(ctx));
   const [sending, setSending] = useState(false);
+  const [minting, setMinting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
 
   const applyTemplate = (id: string) => {
     const t = TEMPLATES.find((x) => x.id === id);
@@ -151,6 +155,43 @@ export default function EmailMerchantPanel({
     setSubject(t.subject(ctx));
     setBodyText(t.body(ctx));
     setResult(null);
+  };
+
+  /** Insert text at the caret (or append), keeping the caret after it. */
+  const insertAtCursor = (snippet: string) => {
+    setResult(null);
+    const ta = taRef.current;
+    setBodyText((prev) => {
+      const start = ta?.selectionStart ?? prev.length;
+      const end = ta?.selectionEnd ?? prev.length;
+      const before = prev.slice(0, start);
+      const after = prev.slice(end);
+      // One space between the message and a pasted link — never glue them together.
+      const pad = before && !/\s$/.test(before) ? " " : "";
+      const next = `${before}${pad}${snippet}${after}`;
+      requestAnimationFrame(() => {
+        const pos = (before + pad + snippet).length;
+        ta?.focus();
+        ta?.setSelectionRange(pos, pos);
+      });
+      return next;
+    });
+  };
+
+  // Mint a tokenized Connect-Bank link and drop it straight into the email body —
+  // the email counterpart of the Text panel's quick-insert. One ~60-second connect
+  // verifies revenue AND pulls ~6 months of statements, so there's nothing to chase.
+  const insertConnectBank = async () => {
+    if (!dealId) return;
+    setMinting(true);
+    setResult(null);
+    try {
+      insertAtCursor(await mintConnectBankLink(dealId));
+    } catch (e) {
+      setResult({ ok: false, text: e instanceof Error ? e.message : "Could not create a Connect-Bank link." });
+    } finally {
+      setMinting(false);
+    }
   };
 
   const openPanel = () => {
@@ -279,14 +320,27 @@ export default function EmailMerchantPanel({
               <div>
                 <label className="block text-[11px] font-semibold text-gray-500 dark:text-gray-400 mb-1">Message</label>
                 <textarea
+                  ref={taRef}
                   value={bodyText}
                   onChange={(e) => setBodyText(e.target.value)}
                   rows={12}
                   className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-ocean-blue resize-y"
                 />
-                <p className="mt-1 text-[10px] text-gray-400">
-                  Edit freely before sending. Keep it "funding" / "capital" — never call an advance a loan.
-                </p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={insertConnectBank}
+                    disabled={minting}
+                    title="Mint a secure Connect-Bank link and drop it into the email. One ~60-second connect verifies revenue AND pulls ~6 months of bank statements — no PDFs to chase."
+                    className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-emerald-200 text-emerald-600 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-900/50 dark:text-emerald-400 dark:hover:bg-emerald-900/20"
+                  >
+                    <BuildingLibraryIcon className="w-3.5 h-3.5" />
+                    {minting ? "minting…" : "Insert Connect-Bank link"}
+                  </button>
+                  <p className="text-[10px] text-gray-400">
+                    Edit freely before sending. Keep it "funding" / "capital" — never call an advance a loan.
+                  </p>
+                </div>
               </div>
 
               {/* So the closer knows the extra addresses are going out — no toggle,
