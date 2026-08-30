@@ -17,10 +17,12 @@ import { useState } from "react";
 import { ClipboardDocumentCheckIcon } from "@heroicons/react/24/outline";
 import type { DealWithCustomer } from "@/types/deals";
 import { useDealPlaidItem } from "@/hooks/useDealPlaidItem";
+import { useUserProfile } from "@/context/UserProfileContext";
 import { dateTimeET } from "@/utils/time";
 import SetterAppProgress, { type AppProgressStatus } from "@/components/admin/setter/SetterAppProgress";
 import SetterConnectBank from "@/components/admin/setter/SetterConnectBank";
 import { DealDocumentsButton } from "@/components/admin/DealDocumentsModal";
+import BookAppointmentControl from "@/components/admin/BookAppointmentControl";
 
 const SALES_EMAIL = "sales@send.mfunding.net";
 
@@ -73,6 +75,15 @@ function StepRow({
 }
 
 export default function SetterChecklist({ deal, onRefresh }: Props) {
+  const { effectiveUserId } = useUserProfile();
+  // BookAppointmentControl requires an onNotify; a lightweight local toast keeps
+  // step 3 self-contained (mirrors the pattern SetterActionRail used to carry).
+  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
+  const notify = (text: string, tone: "ok" | "error" = "ok") => {
+    setToast({ text, tone });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   // Step 1 status comes up from SetterAppProgress (which owns the draft read).
   const [appStatus, setAppStatus] = useState<AppProgressStatus | null>(null);
   const appStep: StepStatus = !appStatus || appStatus.unreadable
@@ -144,19 +155,44 @@ export default function SetterChecklist({ deal, onRefresh }: Props) {
 
         <div className="border-t border-gray-100 dark:border-gray-700/60" />
 
-        {/* 3 — CALLBACK (fallback) */}
+        {/* 3 — CALLBACK / APPOINTMENT (fallback) — both schedule a follow-up. */}
         <StepRow n={3} status={callbackStep} title="No luck today? Set a callback">
-          {callbackStep === "done" ? (
-            <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-              Callback set for {dateTimeET(deal.callback_at as string)}.
-            </p>
-          ) : (
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              Can't get the application or the statements right now? Use{" "}
-              <span className="font-semibold text-gray-700 dark:text-gray-200">Log the call</span> below to set a
-              callback so this deal comes back to the top when it's due.
-            </p>
-          )}
+          <div className="space-y-2">
+            {callbackStep === "done" ? (
+              <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                Callback set for {dateTimeET(deal.callback_at as string)}.
+              </p>
+            ) : (
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Can't get the application or the statements right now? Use{" "}
+                <span className="font-semibold text-gray-700 dark:text-gray-200">Log the call</span> below to set a
+                callback so this deal comes back to the top when it's due.
+              </p>
+            )}
+            {/* Or, if the merchant agreed to a real meeting, book the appointment
+                right here — it lives beside the callback because both schedule a
+                follow-up (an appointment emails the merchant an invite). */}
+            <BookAppointmentControl
+              dealId={deal.id}
+              appointmentAt={deal.appointment_at}
+              appointmentSyncedAt={deal.appointment_synced_at}
+              appointmentSyncError={deal.appointment_sync_error}
+              ownerUserId={effectiveUserId}
+              onRefresh={onRefresh}
+              onNotify={notify}
+            />
+            {toast && (
+              <div
+                className={`text-xs font-medium ${
+                  toast.tone === "error"
+                    ? "text-red-600 dark:text-red-400"
+                    : "text-emerald-600 dark:text-emerald-400"
+                }`}
+              >
+                {toast.text}
+              </div>
+            )}
+          </div>
         </StepRow>
       </div>
 

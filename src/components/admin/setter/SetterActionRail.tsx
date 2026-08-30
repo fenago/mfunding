@@ -2,18 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { PencilSquareIcon } from "@heroicons/react/24/outline";
 import MerchantApplicationModal from "../MerchantApplicationModal";
 import AdHocSendMenu from "../AdHocSendMenu";
-import BookAppointmentControl from "../BookAppointmentControl";
-import { useUserProfile } from "../../../context/UserProfileContext";
 import { ensureDealStageAtLeast } from "../../../services/dealService";
 import type { DealWithCustomer } from "../../../types/deals";
 
 /**
- * SetterActionRail — the three actions a setter fires from the Operations
- * console, all reusing the Revenue Playbook's own controls (no reinvention):
+ * SetterActionRail — the two actions a setter fires from the Operations
+ * console, both reusing the Revenue Playbook's own controls (no reinvention):
  *   1. Fill out application  → MerchantApplicationModal (the PRIMARY/headline
  *      action — the in-app capture with all three send paths built in)
  *   2. Send docs             → AdHocSendMenu (application paths + agreements)
- *   3. Appointment           → BookAppointmentControl (30-min GHL calendar book)
+ *
+ * Booking an appointment now lives in the Setter checklist (step 3, beside "Set a
+ * callback") — both schedule a follow-up, so they belong together.
  *
  * Everything binds to the single already-loaded deal — nothing re-fetches it.
  *
@@ -31,7 +31,6 @@ export default function SetterActionRail({
   onRefresh: () => void;
   autoOpen?: boolean;
 }) {
-  const { effectiveUserId } = useUserProfile();
   const [showApp, setShowApp] = useState(false);
   // One auto-open per deal id: hold the id we've already popped for so switching
   // merchants re-arms it, but a close on the same deal stays closed.
@@ -42,13 +41,6 @@ export default function SetterActionRail({
       setShowApp(true);
     }
   }, [autoOpen, deal.id]);
-  // BookAppointmentControl requires an onNotify; a lightweight local toast keeps
-  // this component self-contained (the host only needs to hand us the deal).
-  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
-  const notify = (text: string, tone: "ok" | "error" = "ok") => {
-    setToast({ text, tone });
-    setTimeout(() => setToast(null), 4000);
-  };
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
@@ -62,35 +54,14 @@ export default function SetterActionRail({
         Fill out application
       </button>
 
-      {/* Secondary actions — send docs + book an appointment. */}
+      {/* Secondary action — send docs. */}
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <AdHocSendMenu
           dealId={deal.id}
           merchantEmail={deal.customer?.email}
           ghlContactId={deal.ghl_contact_id}
         />
-        <BookAppointmentControl
-          dealId={deal.id}
-          appointmentAt={deal.appointment_at}
-          appointmentSyncedAt={deal.appointment_synced_at}
-          appointmentSyncError={deal.appointment_sync_error}
-          ownerUserId={effectiveUserId}
-          onRefresh={onRefresh}
-          onNotify={notify}
-        />
       </div>
-
-      {toast && (
-        <div
-          className={`text-xs font-medium ${
-            toast.tone === "error"
-              ? "text-red-600 dark:text-red-400"
-              : "text-emerald-600 dark:text-emerald-400"
-          }`}
-        >
-          {toast.text}
-        </div>
-      )}
 
       {showApp && (
         <MerchantApplicationModal
