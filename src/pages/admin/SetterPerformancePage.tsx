@@ -250,7 +250,7 @@ interface SourceDeal {
 // customers is deliberately whole-book (qualification data a setter must see to
 // qualify), so monthly_revenue embeds cleanly — but it still only surfaces for a
 // deal row the caller could read.
-const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,monthly_revenue,phone)";
+const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,previous_status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,monthly_revenue,phone)";
 /** Same reasoning as SOURCE_DEAL_CAP — must not exceed PostgREST max-rows, or
  *  the `>= CAP` truncation test can never fire and the tab under-reports in
  *  silence. */
@@ -260,6 +260,9 @@ interface ProductiveDeal {
   id: string;
   deal_number: string | null;
   status: string | null;
+  /** Last active stage before the deal was parked (nurture / declined / dead),
+   *  so a parked deal can still be read at the rung it actually reached. */
+  previous_status: string | null;
   lead_source: string | null;
   assigned_closer_id: string | null;
   created_by: string | null;
@@ -267,6 +270,10 @@ interface ProductiveDeal {
   contacted_at: string | null;
   qualified_at: string | null;
   application_sent_at: string | null;
+  /** Stamped when documents / bank statements were collected — the "with
+   *  statements" signal for the Applications funnel rung. */
+  docs_collected_at: string | null;
+  bank_statements_at: string | null;
   appointment_at: string | null;
   appointment_promised_at: string | null;
   funded_at: string | null;
@@ -306,12 +313,15 @@ interface ProductiveCounts {
   contacted: number;
   qualified: number;
   appsSent: number;
+  /** Of the in-range applications, how many ALSO reached bank statements — the
+   *  hard, un-fakeable "App + statements" the funnel's Applications rung shows. */
+  appsWithStatements: number;
   appointments: number;
   funded: number;
 }
 
 function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): ProductiveCounts {
-  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appointments: 0, funded: 0 };
+  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appsWithStatements: 0, appointments: 0, funded: 0 };
   for (const d of deals) {
     const contacted = inRange(d.contacted_at, from, to);
     const qualified = inRange(d.qualified_at, from, to);
@@ -322,7 +332,11 @@ function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): Produ
     c.deals++;
     if (contacted) c.contacted++;
     if (qualified) c.qualified++;
-    if (appSent) c.appsSent++;
+    // The application is attributed to the range by its application_sent_at
+    // stamp; "with statements" is a property of that same applied-in-range deal
+    // (of those apps, how many also got the docs in), so it is NOT range-gated
+    // again on the statements stamp.
+    if (appSent) { c.appsSent++; if (dealReachedStatements(d)) c.appsWithStatements++; }
     if (appt) c.appointments++;
     if (funded) c.funded++;
   }
@@ -337,6 +351,25 @@ function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): Produ
 const MCA_LADDER: DealStatus[] = DEAL_STAGES.map((s) => s.key);
 const LADDER_INDEX = new Map<string, number>(MCA_LADDER.map((k, i) => [k as string, i]));
 const IDX = (k: DealStatus) => LADDER_INDEX.get(k)!;
+
+/** Did this deal collect bank statements? The TRUEST signal available on the
+ *  deal row this page already loads, without a second query: it reached the Bank
+ *  Statements rung — a bank_statements_at (or docs_collected_at) stamp, or a
+ *  current status (or, for a parked deal, its previous_status) at Bank
+ *  Statements or deeper. This is the "prefer reached-bank-statements-stage"
+ *  signal. A plaid_items / customer_documents / bank_analyses join would be
+ *  truer for a deal whose docs arrived but whose stage never advanced, but the
+ *  whole industry block folds from rows already in hand and adds no query — so
+ *  the stage/stamp reading is used, and this can UNDER-count a lagging deal
+ *  rather than ever over-claim one. */
+function dealReachedStatements(d: ProductiveDeal): boolean {
+  if (d.bank_statements_at || d.docs_collected_at) return true;
+  const depth =
+    LADDER_INDEX.get(d.status ?? "") ??
+    LADDER_INDEX.get(d.previous_status ?? "") ??
+    -1;
+  return depth >= IDX("bank_statements");
+}
 
 // ── HOW "REACHED THIS STAGE" IS DERIVED ──────────────────────────────────────
 // A deal does not leave a breadcrumb at every rung, so the deepest rung it ever
@@ -746,11 +779,28 @@ interface FunnelStage {
    *  the other percentage demotes to a plain uncoloured stat. See the
    *  precedence note in StageBars. */
   benchmark?: { id: BenchmarkId; basis: "ofTotal" | "step" } | null;
+  /** UNREADABLE, not zero: the count comes from a source that failed to load
+   *  (the pipeline read for the Applications rung). Draws "—", never "0". */
+  unreadable?: boolean;
+  /** A second line under the rung's label — the Applications rung uses it for
+   *  "X with statements". */
+  secondaryLine?: ReactNode;
 }
 
-function funnelStagesOf(f: FunnelCounts): FunnelStage[] {
+/** The deal-derived Applications rung, computed from `deals` (not calls) for the
+ *  same scope+range as the dial funnel above it.
+ *    • object → applications on file + how many also have statements
+ *    • null   → the pipeline read failed (UNREADABLE — draws "—", never 0)
+ *    • absent (undefined) → this scope has no setter to attribute deals to
+ *                           (an unassigned NUMBER card), so the rung is omitted */
+interface AppsRung {
+  applications: number;
+  withStatements: number;
+}
+
+function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] {
   const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
-  return [
+  const stages: FunnelStage[] = [
     {
       key: "dials", label: "Dials", short: "Dials", help: "Outbound call rows in this range",
       count: f.dials, stepLabel: "—", stepShort: "—", stepPct: null, targetKey: null,
@@ -790,6 +840,39 @@ function funnelStagesOf(f: FunnelCounts): FunnelStage[] {
       stepPct: pct(f.positives, f.conversations), targetKey: "positive_rate_pct",
     },
   ];
+
+  // ── Applications: the HARD outcome under Positives ──────────────────────────
+  // Positives counts soft, fakeable dispositions (Interested, Callback…). This
+  // rung counts what actually predicts funding: a real application on FILE, read
+  // from `deals` — distinct deals whose application_sent_at lands in the range,
+  // attributed to this scope's setter — with "App + statements" (also reached
+  // bank statements) as the sub-figure. Judged apps ÷ conversations against the
+  // industry 2–4% app-per-conversation band, which CARRIES the rung's colour
+  // (basis:"step" → the "% of conversations" chip is the coloured number).
+  // `apps === undefined` → no setter to attribute to; the rung is omitted.
+  if (apps !== undefined) {
+    const unreadable = apps === null;
+    const applications = apps?.applications ?? 0;
+    const withStatements = apps?.withStatements ?? 0;
+    stages.push({
+      key: "applications", label: "Applications", short: "Apps",
+      help:
+        "Distinct deals whose application_sent_at falls in this range, attributed to the assigned setter — a real application on file, NOT a typed disposition. \"with statements\" = those that also reached the Bank Statements rung (a bank_statements_at / docs_collected_at stamp, or a current/pre-park status at Bank Statements or deeper).",
+      count: applications,
+      stepLabel: "of conversations", stepShort: "of talks",
+      stepPct: unreadable ? null : pct(applications, f.conversations),
+      targetKey: null,
+      benchmark: unreadable ? null : { id: "app_per_conversation", basis: "step" },
+      unreadable,
+      secondaryLine: unreadable ? (
+        <span className="text-amber-600 dark:text-amber-400">pipeline unreadable — unknown, not zero</span>
+      ) : (
+        <><b className="tabular-nums text-gray-600 dark:text-gray-300">{withStatements.toLocaleString()}</b> with statements</>
+      ),
+    });
+  }
+
+  return stages;
 }
 
 /** How the Funnel tab is sliced. Combined is the default and is the team-wide
@@ -2251,6 +2334,31 @@ export default function SetterPerformancePage() {
     [productiveDeals, range],
   );
 
+  /** The Applications rung for the COMBINED (team-wide) dial funnel — applications
+   *  on file and how many also have statements, over the whole floor. null when
+   *  the pipeline read failed (drawn "—", never 0). */
+  const appsRungCombined = useMemo(
+    (): AppsRung | null =>
+      productiveTotals
+        ? { applications: productiveTotals.appsSent, withStatements: productiveTotals.appsWithStatements }
+        : null,
+    [productiveTotals],
+  );
+
+  /** The Applications rung PER setter (profiles.id → counts), for the by-setter
+   *  funnel cards. null = pipeline unreadable; a missing key = that setter has no
+   *  applications in range (0/0). Keyed the same way productiveByOwner is, so a
+   *  card scoped to `setter:<id>` reads its own book. */
+  const appsBySetter = useMemo((): Map<string, AppsRung> | null => {
+    if (!productiveByOwner) return null;
+    const m = new Map<string, AppsRung>();
+    for (const [key, deals] of productiveByOwner) {
+      const c = computeProductive(deals, range.from, range.to);
+      m.set(key, { applications: c.appsSent, withStatements: c.appsWithStatements });
+    }
+    return m;
+  }, [productiveByOwner, range]);
+
   /** Calls dispositioned as an actual APPLICATION — the numerator for the
    *  industry app-per-conversation band, and shown next to it so the rate never
    *  appears without the count behind it. */
@@ -2298,9 +2406,10 @@ export default function SetterPerformancePage() {
   // number", never 0 and never a silently-substituted near-miss.
   //
   // The denominators are the whole point of this block, so each one is named:
-  //   • contact rate      = humans ÷ DIALS   (the industry band is per dial,
-  //                         not per answer — the page's own human_rate_pct is
-  //                         per answer and is a different metric)
+  //   • contact rate      = CONVERSATIONS ÷ DIALS  (the industry 3–5% band is a
+  //                         real-conversation rate per dial — reached a live
+  //                         decision-maker and talked — NOT raw human pickups,
+  //                         same basis the Conversations funnel rung is judged on)
   //   • app / conversation= application dispositions ÷ conversations
   //   • app → fund        = pipeline funded ÷ pipeline apps sent, both counted
   //                         IN RANGE, which is a cohort mismatch stated in the
@@ -2325,7 +2434,7 @@ export default function SetterPerformancePage() {
     }
 
     return {
-      contact_rate: pct(funnel.humans, funnel.dials),
+      contact_rate: pct(funnel.conversations, funnel.dials),
       app_per_conversation: pct(applicationDispositions, funnel.conversations),
       app_to_fund_cold: productiveTotals ? pct(productiveTotals.funded, productiveTotals.appsSent) : null,
       avg_advance: avgAdvance,
@@ -3106,6 +3215,7 @@ export default function SetterPerformancePage() {
                     targetFor={targetFor}
                     headerRight={<RagLegend />}
                     onPositivesClick={jumpToPositives}
+                    appsForScope={appsRungCombined}
                   >
                     <div className="rounded-md border border-base-300 bg-base-200/50 dark:bg-gray-800/40 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 space-y-1">
                       <div>
@@ -3141,17 +3251,29 @@ export default function SetterPerformancePage() {
                   ) : (
                     <>
                       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
-                        {funnelGroups.map((g) => (
-                          <FunnelCard
-                            key={g.key}
-                            calls={g.calls}
-                            title={g.title}
-                            subtitle={g.subtitle}
-                            badge={g.unassigned ? "unassigned" : undefined}
-                            targetFor={targetFor}
-                            compact
-                          />
-                        ))}
+                        {funnelGroups.map((g) => {
+                          // Deals attribute to a SETTER, not to a phone line — so an
+                          // unassigned NUMBER card gets no Applications rung
+                          // (undefined → omitted). A real setter reads its own book
+                          // from appsBySetter; null there means the pipeline read
+                          // failed and the rung draws "—".
+                          const setterId = g.key.startsWith("setter:") ? g.key.slice("setter:".length) : null;
+                          const appsForScope: AppsRung | null | undefined = setterId
+                            ? (appsBySetter === null ? null : (appsBySetter.get(setterId) ?? { applications: 0, withStatements: 0 }))
+                            : undefined;
+                          return (
+                            <FunnelCard
+                              key={g.key}
+                              calls={g.calls}
+                              title={g.title}
+                              subtitle={g.subtitle}
+                              badge={g.unassigned ? "unassigned" : undefined}
+                              targetFor={targetFor}
+                              compact
+                              appsForScope={appsForScope}
+                            />
+                          );
+                        })}
                       </div>
                       <p className="text-xs text-gray-400">
                         {funnelGroups.length.toLocaleString()} card{funnelGroups.length === 1 ? "" : "s"} with dials in this
@@ -3183,7 +3305,7 @@ export default function SetterPerformancePage() {
                       id="contact_rate"
                       value={industryValues.contact_rate ?? null}
                       label="Contact rate (cold dial)"
-                      basis={`${funnel.humans.toLocaleString()} humans reached ÷ ${funnel.dials.toLocaleString()} dials. Per DIAL — not the per-answer human rate in the funnel above.`}
+                      basis={`${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.dials.toLocaleString()} dials · per dial — real conversations reaching a decision-maker, not raw pickups.`}
                     />
                     <BenchmarkTile
                       id="app_per_conversation"
@@ -3608,7 +3730,7 @@ export default function SetterPerformancePage() {
               values={industryValues}
               rangeLabel={RANGE_LABELS[rangeKey]}
               basis={{
-                contact_rate: `${funnel.humans.toLocaleString()} humans ÷ ${funnel.dials.toLocaleString()} dials`,
+                contact_rate: `${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.dials.toLocaleString()} dials · per dial — real conversations reaching a decision-maker, not raw pickups`,
                 app_per_conversation: `${applicationDispositions.toLocaleString()} app dispositions ÷ ${funnel.conversations.toLocaleString()} conversations`,
                 app_to_fund_cold: productiveTotals
                   ? `${productiveTotals.funded.toLocaleString()} funded ÷ ${productiveTotals.appsSent.toLocaleString()} apps sent (in-range stamps, different deals)`
@@ -4894,7 +5016,7 @@ function sumOrDash(values: (number | null)[]) {
 // `compact` is the grid variant: same numbers, same RAG rule, tighter layout so
 // several funnels sit side by side for comparison.
 function FunnelCard({
-  calls, title, subtitle, badge, targetFor, compact = false, icon = false, headerRight, onPositivesClick, children,
+  calls, title, subtitle, badge, targetFor, compact = false, icon = false, headerRight, onPositivesClick, appsForScope, children,
 }: {
   calls: SetterCall[];
   title: string;
@@ -4907,10 +5029,13 @@ function FunnelCard({
   /** When set, the bottom "Positive dispositions" count becomes a jump link to
    *  the list of those exact calls. */
   onPositivesClick?: () => void;
+  /** Deal-derived Applications rung for THIS card's scope+range. See AppsRung:
+   *  object → draw it, null → draw it unreadable, undefined → omit the rung. */
+  appsForScope?: AppsRung | null;
   children?: ReactNode;
 }) {
   const funnel = useMemo(() => computeFunnel(calls), [calls]);
-  const stages = useMemo(() => funnelStagesOf(funnel), [funnel]);
+  const stages = useMemo(() => funnelStagesOf(funnel, appsForScope), [funnel, appsForScope]);
 
   // Honest empty: a group with no dials has nothing to draw, so it draws
   // nothing rather than a card of zeros and dashes.
@@ -5080,6 +5205,9 @@ function StageBars({
             // renders as a link instead of plain text.
             const jumpable = !!jumpKey && s.key === jumpKey && !!onJump && s.count > 0;
             const countBase = `${compact ? "text-sm shrink-0" : "text-base"} font-semibold tabular-nums`;
+            // UNREADABLE draws "—", never "0" — an unloaded source must not read
+            // as an empty result (see readers-must-distinguish-unreadable).
+            const countText = s.unreadable ? "—" : s.count.toLocaleString();
             const countNode = jumpable ? (
               <button
                 type="button"
@@ -5087,10 +5215,10 @@ function StageBars({
                 title="Jump to every positive-disposition call in this range"
                 className={`${countBase} text-mint-green hover:underline underline-offset-2`}
               >
-                {s.count.toLocaleString()} <span aria-hidden="true">↓</span>
+                {countText} <span aria-hidden="true">↓</span>
               </button>
             ) : (
-              <span className={`${countBase} text-gray-900 dark:text-white`}>{s.count.toLocaleString()}</span>
+              <span className={`${countBase} text-gray-900 dark:text-white`}>{countText}</span>
             );
 
             if (compact) {
@@ -5119,6 +5247,9 @@ function StageBars({
                       </span>
                     )}
                   </div>
+                  {s.secondaryLine && (
+                    <div className="text-[10px] text-gray-400">{s.secondaryLine}</div>
+                  )}
                 </div>
               );
             }
@@ -5131,6 +5262,9 @@ function StageBars({
                     {shareNode}
                     {s.benchmark?.basis === "ofTotal" && bmChip}
                   </div>
+                  {s.secondaryLine && (
+                    <div className="text-[11px] text-gray-400 mt-0.5">{s.secondaryLine}</div>
+                  )}
                 </div>
                 <div className="flex-1 min-w-0">{bar}</div>
                 <div className="w-full sm:w-56 shrink-0 flex flex-wrap items-center justify-between sm:justify-end gap-x-3 gap-y-1">
