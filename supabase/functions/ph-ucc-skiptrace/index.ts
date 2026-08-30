@@ -191,9 +191,16 @@ function aggregate(persons: Person[]) {
   const tcpaPhones = allPhones.filter((p) => p.suppressed_tcpa);
 
   // best dialable = highest score among neither-DNC-nor-TCPA numbers (nulls last)
-  const bestPhone = usablePhones.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0]?.number ?? null;
+  const bestPhoneObj = usablePhones.slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0] ?? null;
+  const bestPhone = bestPhoneObj?.number ?? null;
+  const bestPhoneType = bestPhoneObj?.type ?? null;
+  const bestPhoneDnc = bestPhoneObj ? bestPhoneObj.dnc : null;   // usable ⇒ false; null when no dialable number
   const bestEmail = allEmails[0] ?? null;
   const primaryName = persons.find((p) => p.person_name)?.person_name ?? null;
+
+  // PERSON-level TCPA signal (litigator OR dnc.tcpa), independent of whether the person
+  // had any phones — promoted to the queryable ph_ucc_leads.tcpa_litigator column.
+  const tcpaLitigator = persons.some((p) => personTcpa(p.raw).suppressed);
 
   // STRAIGHT-THROUGH: a usable phone (neither DNC nor TCPA-litigator) is already
   // compliance-clean per the owner's Option-A decision, so it goes straight to
@@ -225,7 +232,30 @@ function aggregate(persons: Person[]) {
         (removedList ? ` ${removedList} number(s) removed by BatchData scrub.` : "")
       : `No skip-trace match for this address.`;
 
-  return { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones, bestPhone, bestEmail, primaryName, status, statusReason };
+  return { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones, bestPhone, bestPhoneType, bestPhoneDnc, bestEmail, primaryName, tcpaLitigator, status, statusReason };
+}
+
+// Mirror a lead's aggregated skip-trace result onto any smart_list_members that point
+// at it (source='ph_ucc', source_id = lead.id as text). Keeps the member view rich AND
+// captures the raw persons array on the member, so enrichment survives the smart_list
+// cascade. Best-effort, LOUD on failure — never blocks the lead write.
+async function mirrorSkiptraceToMembers(
+  db: SupabaseClient, leadId: string, persons: Person[], agg: ReturnType<typeof aggregate>, nowIso: string,
+) {
+  const { error } = await db.from("smart_list_members").update({
+    skiptrace_raw: persons.map((p) => p.raw),
+    best_phone: agg.bestPhone,
+    best_phone_type: agg.bestPhoneType,
+    best_phone_dnc: agg.bestPhoneDnc,
+    best_email: agg.bestEmail,
+    person_name: agg.primaryName,
+    phones: agg.allPhones,
+    emails: agg.allEmails,
+    tcpa_litigator: agg.tcpaLitigator,
+    dnc_suppressed_count: agg.dncPhones.length,
+    skiptraced_at: nowIso,
+  }).eq("source", "ph_ucc").eq("source_id", leadId);
+  if (error) console.error("[ph-ucc-skiptrace] smart_list_members mirror failed", JSON.stringify({ lead_id: leadId, error: error.message }));
 }
 
 // ── Lead selection: fresh-first, high-score-first, spend-capped ────────────────
@@ -355,9 +385,13 @@ Deno.serve(async (req) => {
 
       const { error: luErr } = await db.from("ph_ucc_leads").update({
         phone: agg.bestPhone, email: agg.bestEmail, person_name: agg.primaryName,
+        tcpa_litigator: agg.tcpaLitigator, dnc_suppressed_count: agg.dncPhones.length,
         status: agg.status, status_reason: agg.statusReason,
       }).eq("id", lead.id);
       if (luErr) { errored++; details.push({ lead_id: lead.id, error: `lead update: ${luErr.message}` }); continue; }
+
+      // Keep any smart_list_members in sync with the reparsed enrichment too.
+      await mirrorSkiptraceToMembers(db, lead.id, persons, agg, new Date().toISOString());
 
       if (clearsPhone || movesStatus || agg.tcpaPhones.length > 0) {
         changed++;
@@ -481,8 +515,9 @@ Deno.serve(async (req) => {
 
       const persons = normalizePersons(r.body);
       // Shared aggregation: DNC + TCPA-litigator both suppress a number from becoming dialable.
+      const agg = aggregate(persons);
       const { anyPerson, allPhones, allEmails, usablePhones, dncPhones, tcpaPhones,
-              bestPhone, bestEmail, primaryName, status, statusReason } = aggregate(persons);
+              bestPhone, bestEmail, primaryName, tcpaLitigator, status, statusReason } = agg;
       if (status === "ready") ready++;
       else if (status === "email_only") emailOnly++;
       else noMatch++;
@@ -513,10 +548,15 @@ Deno.serve(async (req) => {
         person_name: primaryName,
         traced_at: nowIso,
         trace_match: anyPerson,
+        tcpa_litigator: tcpaLitigator,        // person-level litigator / dnc.tcpa (now queryable)
+        dnc_suppressed_count: dncPhones.length, // # of DNC numbers pulled & suppressed
         status,
         status_reason: statusReason,
       }).eq("id", lead.id);
       if (uErr) { errored++; perLead.push({ lead_id: lead.id, debtor: lead.debtor_name, error: `lead update: ${uErr.message}` }); continue; }
+
+      // Mirror the enrichment onto any smart_list_members pointing at this lead.
+      await mirrorSkiptraceToMembers(db, lead.id, persons, agg, nowIso);
 
       traced++;
       perLead.push({

@@ -42,7 +42,11 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders, serviceClient } from "../_shared/ghl.ts";
+import {
+  corsHeaders, serviceClient,
+  getGhlConfig, listCustomFields, findFieldByName, updateContactCustomFields,
+  type GhlConfig, type GhlCustomField,
+} from "../_shared/ghl.ts";
 
 const PROVIDER_DEFAULT = "twilio";
 const HARD_MAX_LIMIT = 200;                 // never validate more than this per call
@@ -101,6 +105,16 @@ interface LookupResult {
   carrier: string | null;
   reachable: boolean | null;     // number is well-formed/assigned (Twilio `valid`)
   disconnected: boolean | null;  // true=known-disconnected; null=unknown (Twilio)
+  // Lossless-capture additions — every extra field the provider returned:
+  status_raw: string | null;         // RPV 'connected-75' / Twilio composite verdict
+  quality_score: number | null;      // RPV confidence (parsed from '-75'); Twilio null
+  mcc: string | null;                // mobile country code
+  mnc: string | null;                // mobile network code
+  carrier_error_code: string | null; // Twilio LTI error_code / RPV error_text
+  caller_name: string | null;        // present only when the provider returns CNAM
+  national_format: string | null;
+  sms_pumping_risk: string | null;   // present only when the provider returns it
+  raw: Record<string, unknown>;      // FULL provider JSON — nothing dropped
 }
 interface Provider {
   name: string;
@@ -123,21 +137,38 @@ function twilioProvider(sid: string, token: string): Provider {
         // Twilio 404 = number not found / invalid. Treat as an unreachable verdict,
         // not a hard error, so a bad number is recorded rather than aborting the batch.
         if (res.status === 404) {
-          return { ok: true, status: 404, result: { line_type: null, carrier: null, reachable: false, disconnected: null } };
+          return { ok: true, status: 404, result: {
+            line_type: null, carrier: null, reachable: false, disconnected: null,
+            status_raw: "invalid", quality_score: null, mcc: null, mnc: null,
+            carrier_error_code: null, caller_name: null, national_format: null,
+            sms_pumping_risk: null, raw: (b ?? {}) as Record<string, unknown>,
+          } };
         }
         return { ok: false, status: res.status, error: (b?.message ?? text ?? "").toString().slice(0, 300) };
       }
       const lti = b?.line_type_intelligence ?? {};
       // Twilio returns type + carrier + a top-level `valid`. reachable = valid;
-      // disconnected is UNKNOWN from this product → null (see header caveat).
+      // disconnected is UNKNOWN from this product → null (see header caveat). Every
+      // other field Twilio returned is captured (raw + typed) so nothing is dropped.
+      const valid = typeof b?.valid === "boolean" ? b.valid : null;
+      const spr = b?.sms_pumping_risk;
       return {
         ok: true,
         status: res.status,
         result: {
           line_type: clean(lti?.type),
           carrier: clean(lti?.carrier_name),
-          reachable: typeof b?.valid === "boolean" ? b.valid : null,
+          reachable: valid,
           disconnected: null,
+          status_raw: `${valid === null ? "unknown" : valid ? "valid" : "invalid"}${lti?.type ? `:${lti.type}` : ""}`,
+          quality_score: null,   // Twilio LTI exposes no numeric quality score
+          mcc: clean(lti?.mobile_country_code),
+          mnc: clean(lti?.mobile_network_code),
+          carrier_error_code: clean(lti?.error_code) ?? (Array.isArray(b?.validation_errors) && b.validation_errors.length ? b.validation_errors.join(",") : null),
+          caller_name: clean(b?.caller_name?.caller_name),
+          national_format: clean(b?.national_format),
+          sms_pumping_risk: spr == null ? null : (clean(spr?.sms_pumping_risk_score) ?? JSON.stringify(spr).slice(0, 300)),
+          raw: (b ?? {}) as Record<string, unknown>,
         },
       };
     },
@@ -182,6 +213,10 @@ function realPhoneValidationProvider(token: string): Provider {
         return { ok: false, status: res.status, error: `RPV returned no status: ${JSON.stringify(b).slice(0, 200)}` };
       }
       const iscell = (b?.iscell ?? "").toString().trim().toUpperCase();
+      // RPV encodes a confidence in the status suffix ("connected-75" → 75); promote
+      // it to a numeric quality_score. The full status string is kept in status_raw.
+      const confMatch = status.match(/-(\d+)$/);
+      const qualityScore = confMatch ? Number(confMatch[1]) : null;
       return {
         ok: true,
         status: res.status,
@@ -193,6 +228,15 @@ function realPhoneValidationProvider(token: string): Provider {
           // numbers as unreachable.
           reachable: /^connected/.test(status),
           disconnected: /^disconnected/.test(status),
+          status_raw: clean(b?.status),          // original 'connected-75' etc.
+          quality_score: Number.isFinite(qualityScore) ? qualityScore : null,
+          mcc: null,                              // RPV Scrub exposes no MCC/MNC
+          mnc: null,
+          carrier_error_code: clean(b?.error_text),
+          caller_name: null,                      // RPV Scrub returns no CNAM
+          national_format: null,
+          sms_pumping_risk: null,                 // RPV Scrub returns no SMS-pumping signal
+          raw: (b ?? {}) as Record<string, unknown>,
         },
       };
     },
@@ -261,6 +305,62 @@ async function countNeeding(db: SupabaseClient, smartListId: string | null, memb
   const { count, error } = await q;
   if (error) throw new Error(`countNeeding failed: ${error.message}`);
   return count ?? 0;
+}
+
+// ── GHL write-back context (source='ghl' members) ────────────────────────────────
+// GHL is the CRM system of record, so a phone verdict for a source='ghl' member is
+// written to the CONTACT's custom fields — NOT back to a DB row. Per the
+// ghl-custom-field-traps memory we REUSE existing fields and NEVER create new ones:
+// resolved ONCE per invocation (list + match), then applied per contact. When no
+// suitable field exists for a key we skip that key and note it, so we never leave a
+// pile of duplicate fields behind. Returns null when GHL isn't configured at all.
+type GhlWriteback = {
+  cfg: GhlConfig;
+  ids: { line_type?: string; carrier?: string; reachable?: string; dnc?: string };
+  matched: Record<string, string>;    // key → matched field name (for the report)
+  missing: string[];                  // keys with no suitable field (skipped)
+};
+
+async function resolveGhlWriteback(db: SupabaseClient): Promise<{ ctx: GhlWriteback | null; error: string | null }> {
+  let cfg: GhlConfig;
+  try { cfg = await getGhlConfig(db); } catch (e) { return { ctx: null, error: e instanceof Error ? e.message : String(e) }; }
+  const res = await listCustomFields(cfg);
+  if (!res.ok || !res.data) return { ctx: null, error: `listCustomFields failed: ${res.error ?? res.status}` };
+  const fields: GhlCustomField[] = res.data.customFields ?? [];
+  // Conservative name matching — reuse a field only when its name clearly names the
+  // concept. `findFieldByName` is a case-insensitive `includes`, so use narrow terms.
+  const find = (...terms: string[]): GhlCustomField | undefined => {
+    for (const t of terms) { const f = findFieldByName(fields, t); if (f) return f; }
+    return undefined;
+  };
+  const fLine = find("line type", "line_type");
+  const fCarrier = find("carrier");
+  const fReach = find("phone reachable", "reachable");
+  const fDnc = find("do not call", "dnc");
+  const ids: GhlWriteback["ids"] = {};
+  const matched: Record<string, string> = {};
+  const missing: string[] = [];
+  const put = (key: keyof GhlWriteback["ids"], f: GhlCustomField | undefined) => {
+    if (f) { ids[key] = f.id; matched[key] = f.name; } else missing.push(key);
+  };
+  put("line_type", fLine); put("carrier", fCarrier); put("reachable", fReach); put("dnc", fDnc);
+  return { ctx: { cfg, ids, matched, missing }, error: null };
+}
+
+// Write the resolved phone verdict onto a GHL contact's REUSED custom fields. Only
+// fields that were matched are written; best-effort, LOUD on failure.
+async function writeGhlContact(
+  ctx: GhlWriteback, contactId: string, v: { line_type: string | null; carrier: string | null; reachable: boolean | null; dnc: boolean | null },
+): Promise<{ ok: boolean; wrote: string[]; error: string | null }> {
+  const fields: Array<{ id: string; value: string | number }> = [];
+  if (ctx.ids.line_type && v.line_type != null) fields.push({ id: ctx.ids.line_type, value: v.line_type });
+  if (ctx.ids.carrier && v.carrier != null) fields.push({ id: ctx.ids.carrier, value: v.carrier });
+  if (ctx.ids.reachable && v.reachable != null) fields.push({ id: ctx.ids.reachable, value: v.reachable ? "true" : "false" });
+  if (ctx.ids.dnc && v.dnc != null) fields.push({ id: ctx.ids.dnc, value: v.dnc ? "true" : "false" });
+  if (fields.length === 0) return { ok: true, wrote: [], error: null };
+  const res = await updateContactCustomFields(ctx.cfg, contactId, fields);
+  if (!res.ok) return { ok: false, wrote: [], error: res.error ?? `status ${res.status}` };
+  return { ok: true, wrote: Object.keys(ctx.ids), error: null };
 }
 
 Deno.serve(async (req) => {
@@ -378,6 +478,13 @@ Deno.serve(async (req) => {
 
     const perMember: Record<string, unknown>[] = [];
     let validated = 0, mobile = 0, landline = 0, voip = 0, unreachable = 0, noPhone = 0, errored = 0;
+    let srcWriteback = 0, ghlWriteback = 0;
+
+    // GHL write-back context is resolved lazily ONCE, only if a source='ghl' member
+    // is actually processed (avoids a GHL API round-trip for pure-DB batches).
+    let ghlResolved = false;
+    let ghlWb: GhlWriteback | null = null;
+    let ghlWbError: string | null = null;
 
     for (const m of members) {
       if (Date.now() - started > BUDGET_MS) break;   // leave the rest for the next call
@@ -394,35 +501,79 @@ Deno.serve(async (req) => {
         perMember.push({ member_id: m.id, phone: e164, error: r.error ?? `lookup ${r.status}` });
         continue;
       }
-      const { line_type, carrier, reachable, disconnected } = r.result;
+      const {
+        line_type, carrier, reachable, disconnected,
+        status_raw, quality_score, mcc, mnc, carrier_error_code, caller_name, national_format, sms_pumping_risk, raw,
+      } = r.result;
       const nowIso = new Date().toISOString();
 
+      // Member row gets EVERYTHING: the full provider JSON (phone_validation_raw) plus
+      // every typed field, so nothing the provider returned is dropped on the member.
       const { error: uErr } = await db.from("smart_list_members").update({
         line_type, carrier, phone_reachable: reachable, phone_disconnected: disconnected,
         phone_validated_at: nowIso, validation_provider: provider.name, validation_cost: costPer,
+        phone_validation_raw: raw,
+        phone_status_raw: status_raw, phone_quality_score: quality_score,
+        mcc, mnc, carrier_error_code, caller_name, national_format, sms_pumping_risk,
       }).eq("id", m.id);
       if (uErr) { errored++; perMember.push({ member_id: m.id, phone: e164, error: `member update: ${uErr.message}` }); continue; }
 
-      // Optional write-back onto the source ph_ucc_lead (columns added by the DH
-      // migration). Best-effort but LOUD on failure — never blocks the member write.
+      // ── Durable write-back to the SOURCE record (so enrichment survives the
+      // smart_list cascade). Best-effort but LOUD on failure — never blocks. ──
       if (m.source === "ph_ucc") {
         const { error: lErr } = await db.from("ph_ucc_leads").update({
           line_type, carrier, phone_reachable: reachable, phone_validated_at: nowIso,
         }).eq("id", m.source_id);
         if (lErr) console.error("[phone-validate] ph_ucc_leads write-back failed", JSON.stringify({ lead_id: m.source_id, error: lErr.message }));
+        else srcWriteback++;
+      } else if (m.source === "lead_records") {
+        // lead_records carries the full phone-validation column set (migration added them).
+        const { error: lErr } = await db.from("lead_records").update({
+          line_type, carrier, phone_reachable: reachable, phone_disconnected: disconnected,
+          phone_status_raw: status_raw, phone_validated_at: nowIso,
+        }).eq("id", m.source_id);
+        if (lErr) console.error("[phone-validate] lead_records write-back failed", JSON.stringify({ id: m.source_id, error: lErr.message }));
+        else srcWriteback++;
+      } else if (m.source === "customers") {
+        // customers has line_type/carrier/phone_reachable/phone_status_raw + the existing
+        // phone_checked_at bookkeeping stamp (no phone_disconnected/phone_validated_at cols).
+        const { error: lErr } = await db.from("customers").update({
+          line_type, carrier, phone_reachable: reachable, phone_status_raw: status_raw,
+          phone_checked_at: nowIso,
+        }).eq("id", m.source_id);
+        if (lErr) console.error("[phone-validate] customers write-back failed", JSON.stringify({ id: m.source_id, error: lErr.message }));
+        else srcWriteback++;
+      } else if (m.source === "ghl") {
+        // GHL is the CRM system of record — write the verdict to the contact's REUSED
+        // custom fields (never create new fields). Resolve the field map once.
+        if (!ghlResolved) {
+          ghlResolved = true;
+          const r2 = await resolveGhlWriteback(db);
+          ghlWb = r2.ctx; ghlWbError = r2.error;
+          if (ghlWbError) console.error("[phone-validate] GHL write-back unavailable", JSON.stringify({ error: ghlWbError }));
+        }
+        if (ghlWb) {
+          // dnc is not a phone-validation signal (it comes from skip-trace) → null, skipped.
+          const w = await writeGhlContact(ghlWb, m.source_id, { line_type, carrier, reachable, dnc: null });
+          if (!w.ok) console.error("[phone-validate] GHL contact write-back failed", JSON.stringify({ contact_id: m.source_id, error: w.error }));
+          else if (w.wrote.length) ghlWriteback++;
+        }
       }
 
       validated++;
       const t = (line_type ?? "").toLowerCase();
       if (t === "mobile") mobile++; else if (t === "landline") landline++; else if (t === "voip") voip++;
       if (reachable === false) unreachable++;
-      perMember.push({ member_id: m.id, phone: e164, line_type, carrier, reachable, disconnected });
+      perMember.push({ member_id: m.id, source: m.source, phone: e164, line_type, carrier, reachable, disconnected, status_raw });
     }
 
     return json({
       ok: true, action: "validate", provider: provider.name,
       requested_limit: limit, candidates: members.length,
       validated, mobile, landline, voip, unreachable, no_phone: noPhone, errored,
+      source_writeback: srcWriteback, ghl_writeback: ghlWriteback,
+      // GHL custom-field reuse decision (reused existing fields; never created any).
+      ghl_field_map: ghlResolved ? (ghlWb ? { matched: ghlWb.matched, missing_skipped: ghlWb.missing } : { unavailable: ghlWbError }) : null,
       est_run_cost_usd: Math.round(validated * costPer * 10000) / 10000,
       elapsed_ms: Date.now() - started,
       per_member: perMember,

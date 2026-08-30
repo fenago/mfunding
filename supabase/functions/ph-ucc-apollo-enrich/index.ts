@@ -49,6 +49,25 @@ function realEmail(s: unknown): string | null {
   return v;
 }
 
+// Pull the typed, filterable fields off an Apollo person object (which nests its
+// organization). Every field Apollo returned is preserved losslessly in apollo_raw;
+// these are the promoted columns the UI can filter on. Any absent field → null.
+function apolloTyped(p: any) {
+  const org = p?.organization ?? p?.account ?? {};
+  return {
+    business_email: realEmail(p?.email),
+    owner_title:    clean(p?.title),
+    company:        clean(org?.name),
+    industry:       clean(org?.industry ?? p?.industry),
+    employees:      (() => { const n = num(org?.estimated_num_employees ?? org?.num_employees); return n == null ? null : Math.round(n); })(),
+    annual_revenue: num(org?.annual_revenue ?? org?.organization_revenue),
+    linkedin_url:   clean(p?.linkedin_url ?? org?.linkedin_url),
+    website:        clean(org?.website_url ?? org?.primary_domain ?? p?.website_url),
+    apollo_city:    clean(p?.city ?? org?.city),
+    apollo_state:   clean(p?.state ?? org?.state),
+  };
+}
+
 async function apollo(apiKey: string, path: string, body: unknown) {
   const res = await fetch(`${APOLLO_BASE}${path}`, {
     method: "POST",
@@ -166,20 +185,54 @@ Deno.serve(async (req) => {
       }
       const people: any[] = (r.body as any)?.people ?? (r.body as any)?.contacts ?? [];
       const p = people[0] ?? null;
-      const bizEmail = realEmail(p?.email);
-      const title = clean(p?.title);
+      // FULL person+organization object → apollo_raw (lossless: nothing Apollo
+      // returned for this person is dropped). Typed columns are promoted below.
+      const apolloRaw = p ? { person: p, organization: p?.organization ?? p?.account ?? null } : null;
+      const t = p ? apolloTyped(p) : {
+        business_email: null, owner_title: null, company: null, industry: null,
+        employees: null, annual_revenue: null, linkedin_url: null, website: null,
+        apollo_city: null, apollo_state: null,
+      };
+      const bizEmail = t.business_email;
+      const title = t.owner_title;
 
       const { error: uErr } = await db.from("ph_ucc_leads").update({
         apollo_business_email: bizEmail,
         apollo_owner_title: title,
+        apollo_raw: apolloRaw,
+        apollo_company: t.company,
+        apollo_industry: t.industry,
+        apollo_employees: t.employees,
+        apollo_revenue: t.annual_revenue,
+        apollo_linkedin_url: t.linkedin_url,
+        apollo_website: t.website,
         apollo_checked_at: nowIso,
       }).eq("id", lead.id);
       if (uErr) { errored++; perLead.push({ lead_id: lead.id, debtor: name, error: `update: ${uErr.message}` }); continue; }
 
+      // Mirror onto any smart_list_members that point at this UCC lead (source='ph_ucc',
+      // source_id = lead.id as text) so the member view carries the Apollo enrichment too
+      // and nothing is lost on the smart_list cascade. Best-effort, LOUD on failure.
+      const { error: mErr } = await db.from("smart_list_members").update({
+        apollo_raw: apolloRaw,
+        business_email: bizEmail,
+        owner_title: title,
+        company: t.company,
+        industry: t.industry,
+        employees: t.employees,
+        annual_revenue: t.annual_revenue,
+        linkedin_url: t.linkedin_url,
+        website: t.website,
+        apollo_city: t.apollo_city,
+        apollo_state: t.apollo_state,
+        apollo_checked_at: nowIso,
+      }).eq("source", "ph_ucc").eq("source_id", lead.id);
+      if (mErr) console.error("[ph-ucc-apollo-enrich] smart_list_members mirror failed", JSON.stringify({ lead_id: lead.id, error: mErr.message }));
+
       checked++;
       if (bizEmail) withEmail++;
       if (title) withTitle++;
-      perLead.push({ lead_id: lead.id, debtor: name, business_email: bizEmail ? "found" : null, owner_title: title });
+      perLead.push({ lead_id: lead.id, debtor: name, business_email: bizEmail ? "found" : null, owner_title: title, company: t.company });
     } catch (e) {
       errored++;
       perLead.push({ lead_id: lead.id, debtor: name, error: e instanceof Error ? e.message : String(e) });
