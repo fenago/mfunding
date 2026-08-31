@@ -319,9 +319,13 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
     return () => { alive = false; };
   }, []);
 
-  /* Load the VibeReach tag list the first time the source is opened. */
+  /* Load the VibeReach tag list the first time the source is opened.
+     NOTE: ghlTagsLoading must NOT be in the guard or the deps. Setting it true
+     inside the effect would otherwise re-fire the effect, run this run's cleanup
+     (alive=false) on the in-flight fetch, and the finally would skip clearing
+     loading — leaving the picker stuck on "loading tags…" forever. */
   useEffect(() => {
-    if (source !== "ghl" || ghlTagList.length > 0 || ghlTagsLoading) return;
+    if (source !== "ghl" || ghlTagList.length > 0) return;
     let alive = true;
     (async () => {
       setGhlTagsLoading(true);
@@ -339,7 +343,7 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
       }
     })();
     return () => { alive = false; };
-  }, [source, ghlTagList.length, ghlTagsLoading]);
+  }, [source, ghlTagList.length]);
 
   /* Auto-preview: re-run the count whenever the source or any filter changes.
      Debounced so typing in a box doesn't fire a query per keystroke. */
