@@ -53,9 +53,11 @@ import {
   LifebuoyIcon,
   ClockIcon,
   DevicePhoneMobileIcon,
+  QueueListIcon,
 } from "@heroicons/react/24/outline";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useRenewalsAccess, useCloserLens } from "../../hooks/useCloserSplits";
+import useIsProcessor from "../../hooks/useIsProcessor";
 import { useUnreadSms } from "../../hooks/useUnreadSms";
 import { useTheme } from "../../lib/theme-context";
 import supabase from "../../supabase";
@@ -150,6 +152,9 @@ const navGroups: NavGroup[] = [
       // exception (the one doc they must open before their first live call).
       { name: "Setter Guide", path: "/admin/setter-guide", icon: LifebuoyIcon, roles: OPS },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
+      // Processor — whole-pipeline daily workspace. Visibility is NOT role-based:
+      // it's gated in canSee() on isProcessor OR isSuperAdmin only (see below).
+      { name: "Processor", path: "/admin/processor", icon: QueueListIcon, roles: OPS },
       { name: "Deals", path: "/admin/deals", icon: DocumentTextIcon, roles: OPS },
       // Funder Cheat Sheet — which funder gets the deal in front of you. OPS
       // (closers included) + lens: the reference they work off on every submission.
@@ -305,6 +310,8 @@ export default function AdminSidebar() {
   const { profile, isSuperAdmin } = useUserProfile();
   const { canSeeRenewals, loading: renewalsLoading } = useRenewalsAccess();
   const { isCloserLens } = useCloserLens();
+  // Processor capability — gates the "Processor" nav item (processor OR super_admin).
+  const { isProcessor } = useIsProcessor();
   // Org-wide unread count for the shared SMS line → badge on "Text Messages".
   const unreadSms = useUnreadSms();
   const { mode, cycleMode } = useTheme();
@@ -329,6 +336,11 @@ export default function AdminSidebar() {
   const role: NavRole | undefined =
     profile?.role === "employee" ? "admin" : (profile?.role as NavRole | undefined);
   const canSee = (item: NavItem) => {
+    // Processor workspace: visible ONLY to a processor OR a super_admin, regardless
+    // of role / setter-lock / closer-lens. A processor is a role=closer with the
+    // capability flag, so this must bypass the pure-setter lock below. Handled
+    // first and exclusively — its `roles` array is irrelevant.
+    if (item.path === "/admin/processor") return isSuperAdmin || isProcessor;
     // SETTERS ARE LOCKED TO THE PLAYBOOK. A pure setter carries role === "closer"
     // exactly; the Revenue Playbook is their ONLY screen (they open a merchant
     // from a contact deep link and work the steps there), so nothing else renders

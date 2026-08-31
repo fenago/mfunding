@@ -138,6 +138,7 @@ const StrategyPage = lazyWithReload(() => import("../pages/admin/StrategyPage.ts
 const RnDPage = lazyWithReload(() => import("../pages/admin/RnDPage.tsx"));
 const CommsPage = lazyWithReload(() => import("../pages/admin/CommsPage.tsx"));
 const CalendarPage = lazyWithReload(() => import("../pages/admin/CalendarPage.tsx"));
+const ProcessorPage = lazyWithReload(() => import("../pages/admin/ProcessorPage.tsx"));
 const DealListPage = lazyWithReload(() => import("../pages/admin/deals/DealListPage.tsx"));
 const DealDetailPage = lazyWithReload(() => import("../pages/admin/deals/DealDetailPage.tsx"));
 
@@ -753,6 +754,16 @@ export const routes: RouteObject[] = [
               {
                 path: "playbooks",
                 element: <PlaybooksPage />,
+              },
+              // Processor — the whole-pipeline daily workspace for a PROCESSOR (a
+              // closer with closers.is_processor) + super-admins. NO extra route
+              // guard on purpose: AdminOnlyProtectedRoute would exclude role=closer
+              // and thus lock out processors (who ARE closers). The page gates
+              // itself on useIsProcessor() OR isSuperAdmin (and every RPC is gated
+              // server-side), so a non-processor closer lands on "Not authorized".
+              {
+                path: "processor",
+                element: <ProcessorPage />,
               },
               // PH Setter Playbook — the outbound-setter console (a NEW playbook,
               // separate from the MCA/VCF flows). Admin + super_admin only, so it
