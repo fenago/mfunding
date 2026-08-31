@@ -331,10 +331,16 @@ export default function ProcessorDetailDrawer({
             <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2 flex-wrap">
               {typeof deal?.deal_number === "string" && <span>#{deal.deal_number}</span>}
               <Link
-                to={`/admin/deals/${dealId}`}
+                to={`/admin/setter-performance?deal=${dealId}`}
                 className="inline-flex items-center gap-1 font-semibold text-ocean-blue hover:underline"
               >
-                <ArrowTopRightOnSquareIcon className="w-3 h-3" /> Full deal record
+                <ArrowTopRightOnSquareIcon className="w-3 h-3" /> Open in Operations console
+              </Link>
+              <Link
+                to={`/admin/deals/${dealId}`}
+                className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400 hover:underline"
+              >
+                Full deal record
               </Link>
             </div>
           </div>

@@ -727,9 +727,9 @@ export default function ProcessorPage() {
                                 {merchantName(r)}
                               </button>
                               <Link
-                                to={`/admin/deals/${r.id}`}
+                                to={`/admin/setter-performance?deal=${r.id}`}
                                 className="shrink-0 text-gray-400 hover:text-ocean-blue"
-                                title="Open the full deal record"
+                                title="Open in the Setter Operations console to work it"
                               >
                                 <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
                               </Link>
