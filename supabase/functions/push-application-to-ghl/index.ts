@@ -362,8 +362,12 @@ Deno.serve(async (req) => {
   if (dErr || !deal) return json({ error: `deal not found: ${dErr?.message ?? dealId}` }, 404);
 
   if (callerRole === "closer") {
-    const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
-    if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    // A processor works the WHOLE board, so they may fill/send any deal's app.
+    const { data: proc } = await db.rpc("is_processor", { uid: caller.id });
+    if (!proc) {
+      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    }
   }
 
   // The application the closer just filled.
