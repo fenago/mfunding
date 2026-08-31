@@ -806,17 +806,32 @@ export default function ProcessorPage() {
                             </div>
                           </td>
 
-                          {/* Age */}
+                          {/* Age + today's-touch dot */}
                           <td className="px-3 py-2 text-right align-top tabular-nums">
-                            <span
-                              className={
-                                stale
-                                  ? "text-red-600 dark:text-red-400 font-bold"
-                                  : "text-gray-600 dark:text-gray-300"
-                              }
-                            >
-                              {r.days_in_pipeline ?? "—"}d
-                            </span>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <span
+                                title={
+                                  r.touched_today
+                                    ? "Called today"
+                                    : "Not called today" +
+                                      (r.touches_total ? ` · ${r.touches_total} total` : "")
+                                }
+                                className={`inline-block w-2 h-2 rounded-full shrink-0 ${
+                                  r.touched_today
+                                    ? "bg-emerald-500"
+                                    : "bg-red-400 dark:bg-red-500"
+                                }`}
+                              />
+                              <span
+                                className={
+                                  stale
+                                    ? "text-red-600 dark:text-red-400 font-bold"
+                                    : "text-gray-600 dark:text-gray-300"
+                                }
+                              >
+                                {r.days_in_pipeline ?? "—"}d
+                              </span>
+                            </div>
                           </td>
 
                           {/* Callback */}

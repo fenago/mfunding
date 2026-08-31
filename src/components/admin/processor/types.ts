@@ -31,6 +31,8 @@ export interface PipelineRow {
   appointment_at: string | null;
   last_contact_at: string | null;
   has_bank_statements: boolean | null;
+  touches_total?: number | null;
+  touched_today?: boolean | null;
   bank_statements_at: string | null;
   bank_statement_count: number | null;
   working_by: string | null;

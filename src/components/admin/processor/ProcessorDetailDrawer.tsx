@@ -83,12 +83,79 @@ interface QaShape {
   notes?: string | null;
 }
 
+interface Touch {
+  touched_at: string;
+  outcome?: string | null;
+  note?: string | null;
+  by_name?: string | null;
+}
+
 interface DetailShape {
   deal?: Record<string, unknown> | null;
   customer?: Record<string, unknown> | null;
   application?: Record<string, unknown> | null;
   documents?: DetailDoc[] | null;
   qa?: QaShape | null;
+  touches?: Touch[] | null;
+  touches_total?: number | null;
+}
+
+const DAY_MS = 86_400_000;
+
+/** 14-day call tracker — one cell per day from the deal's creation (day it entered
+ *  the pipeline). Green = called that day (count shown), light-red = an elapsed day
+ *  with NO touch (a missed day), grey = a future day. Today is ringed. */
+function TouchTracker({ createdAt, touches }: { createdAt: string | null; touches: Touch[] }) {
+  if (!createdAt) return null;
+  const created = new Date(createdAt).getTime();
+  const now = Date.now();
+  const elapsed = Math.floor((now - created) / DAY_MS); // today's day index (0-based)
+  const counts = new Array(14).fill(0) as number[];
+  for (const t of touches) {
+    const idx = Math.floor((new Date(t.touched_at).getTime() - created) / DAY_MS);
+    if (idx >= 0 && idx < 14) counts[idx] += 1;
+  }
+  const total = touches.length;
+  const missed = counts.filter((c, i) => i <= Math.min(elapsed, 13) && c === 0).length;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+          14-day call tracker
+        </h3>
+        <span className="text-[10px] text-gray-500 dark:text-gray-400">
+          {total} call{total === 1 ? "" : "s"}
+          {missed > 0 && elapsed < 14 ? ` · ${missed} day${missed === 1 ? "" : "s"} missed` : ""}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {counts.map((c, i) => {
+          const future = i > elapsed;
+          const today = i === elapsed && elapsed < 14;
+          const cls = future
+            ? "bg-gray-100 text-gray-300 dark:bg-gray-800 dark:text-gray-600"
+            : c > 0
+              ? "bg-emerald-500 text-white"
+              : "bg-red-100 text-red-500 dark:bg-red-900/30 dark:text-red-400";
+          return (
+            <div
+              key={i}
+              title={`Day ${i + 1}${today ? " (today)" : ""} — ${future ? "upcoming" : c > 0 ? `${c} call${c === 1 ? "" : "s"}` : "no calls"}`}
+              className={`w-6 h-7 rounded flex flex-col items-center justify-center text-[9px] font-bold ${cls} ${
+                today ? "ring-2 ring-ocean-blue" : ""
+              }`}
+            >
+              <span className="opacity-60 leading-none">{i + 1}</span>
+              <span className="leading-none">{future ? "" : c > 0 ? c : "·"}</span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-1 text-[10px] text-gray-400">
+        Day 1 = entered the pipeline. Aim for a touch every day through day 14.
+      </p>
+    </div>
+  );
 }
 
 type State =
@@ -166,6 +233,7 @@ export default function ProcessorDetailDrawer({
   const [actionErr, setActionErr] = useState<string | null>(null);
   // Move-to-nurture is destructive-ish (soft-closes the deal) → armed two-step.
   const [nurtureArmed, setNurtureArmed] = useState(false);
+  const [dndArmed, setDndArmed] = useState(false);
   // QA checklist working state (seeded from the loaded detail's qa.checklist).
   const [qaChecks, setQaChecks] = useState<Record<string, boolean>>({});
   const [qaNotes, setQaNotes] = useState("");
@@ -201,6 +269,7 @@ export default function ProcessorDetailDrawer({
     setNote("");
     setActionErr(null);
     setNurtureArmed(false);
+    setDndArmed(false);
     setNoGoOpen(false);
     setNoGoReason("");
     if (dealId) void load();
@@ -568,6 +637,14 @@ export default function ProcessorDetailDrawer({
                 )}
               </section>
 
+              {/* 14-day call tracker */}
+              <section>
+                <TouchTracker
+                  createdAt={(deal?.created_at as string) ?? null}
+                  touches={detail?.touches ?? []}
+                />
+              </section>
+
               {/* Bank statements + documents */}
               <section>
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
@@ -903,9 +980,48 @@ export default function ProcessorDetailDrawer({
           )}
         </div>
 
-        {/* Footer — move to nurture (armed two-step, no popup) */}
+        {/* Footer — "take them off the list" (DND) + move to nurture. Both armed
+            two-step, no popup. */}
         {state.kind === "ready" && (
-          <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-3">
+          <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-3 space-y-2">
+            {/* DND — mark / clear do-not-contact for the merchant. */}
+            {customer?.do_not_contact ? (
+              <button
+                type="button"
+                disabled={actionBusy === "dnd"}
+                onClick={() => void runRpc("processor_set_dnd", { p_deal_id: dealId, p_on: false }, "dnd")}
+                className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-red-400 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 hover:bg-red-100"
+              >
+                <XCircleIcon className="w-4 h-4" />
+                {actionBusy === "dnd" ? "Updating…" : "Do-Not-Contact is ON — click to clear"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={actionBusy === "dnd"}
+                onClick={() => {
+                  if (dndArmed) {
+                    void runRpc("processor_set_dnd", { p_deal_id: dealId, p_on: true }, "dnd");
+                    setDndArmed(false);
+                  } else {
+                    setDndArmed(true);
+                    window.setTimeout(() => setDndArmed(false), 4000);
+                  }
+                }}
+                className={`w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border transition-colors ${
+                  dndArmed
+                    ? "border-red-500 bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200"
+                    : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-red-500 hover:text-red-600 dark:hover:text-red-300"
+                }`}
+              >
+                <XCircleIcon className="w-4 h-4" />
+                {actionBusy === "dnd"
+                  ? "Updating…"
+                  : dndArmed
+                    ? "Click again to confirm — Do Not Contact (take off the list)"
+                    : "Do Not Contact — take them off the list"}
+              </button>
+            )}
             <button
               type="button"
               disabled={actionBusy === "nurture"}
