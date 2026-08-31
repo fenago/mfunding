@@ -1,19 +1,53 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowTopRightOnSquareIcon,
   ArrowDownTrayIcon,
+  ArrowUturnLeftIcon,
+  CheckCircleIcon,
   DocumentTextIcon,
   ExclamationTriangleIcon,
   EyeIcon,
   EyeSlashIcon,
   MoonIcon,
+  PaperAirplaneIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
+import { CheckIcon } from "@heroicons/react/24/solid";
 import supabase from "@/supabase";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { dateTimeET } from "@/utils/time";
+import {
+  applicationCompleteness,
+  SECTION_LABEL,
+  type AppSection,
+} from "@/lib/applicationCompleteness";
 import SchedulePicker from "./SchedulePicker";
+import GateTracker from "./GateTracker";
+import { appComplete, hasStatements, qaPassed, toDealArg, type Pipe, type PipelineRow } from "./types";
+
+// ── The QA checklist — UI-owned, stable keys (persisted as jsonb via
+// processor_save_qa). Every item must be ticked before QA can be marked passed.
+// NOTE: a voided check NEVER blocks (house rule) — it is deliberately not here.
+const QA_ITEMS: { key: string; label: string }[] = [
+  { key: "app_accurate", label: "Application fields are accurate & complete" },
+  {
+    key: "statements_recent",
+    label: "3 most-recent full months of statements — all pages, legible",
+  },
+  {
+    key: "statements_match",
+    label: "Statements match the business & bank account on the application",
+  },
+  {
+    key: "amount_sensible",
+    label: "Requested amount + use of funds set and sensible vs. revenue",
+  },
+  {
+    key: "no_blocking_flags",
+    label: "No blocking flags (DND handled · not a TCPA litigator)",
+  },
+];
 
 /**
  * ProcessorDetailDrawer — the "processor sees everything" surface. An in-app
@@ -34,11 +68,22 @@ interface DetailDoc {
   is_bank_statement: boolean | null;
 }
 
+interface QaShape {
+  checklist?: Record<string, boolean> | null;
+  qa_passed?: boolean | null;
+  qa_passed_at?: string | null;
+  qa_passed_by_name?: string | null;
+  submission_ready_at?: string | null;
+  submission_ready_by_name?: string | null;
+  notes?: string | null;
+}
+
 interface DetailShape {
   deal?: Record<string, unknown> | null;
   customer?: Record<string, unknown> | null;
   application?: Record<string, unknown> | null;
   documents?: DetailDoc[] | null;
+  qa?: QaShape | null;
 }
 
 type State =
@@ -96,10 +141,16 @@ const CONTACT_OUTCOMES: { key: string; label: string }[] = [
 
 export default function ProcessorDetailDrawer({
   dealId,
+  row,
+  pipe,
   onClose,
   onChanged,
 }: {
   dealId: string | null;
+  /** The list row for this deal — the single source of truth for the gates so the
+   *  drawer and the list can never disagree. */
+  row: PipelineRow | null;
+  pipe: Pipe;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -110,6 +161,9 @@ export default function ProcessorDetailDrawer({
   const [actionErr, setActionErr] = useState<string | null>(null);
   // Move-to-nurture is destructive-ish (soft-closes the deal) → armed two-step.
   const [nurtureArmed, setNurtureArmed] = useState(false);
+  // QA checklist working state (seeded from the loaded detail's qa.checklist).
+  const [qaChecks, setQaChecks] = useState<Record<string, boolean>>({});
+  const [qaNotes, setQaNotes] = useState("");
 
   const load = useCallback(async () => {
     if (!dealId) return;
@@ -118,7 +172,14 @@ export default function ProcessorDetailDrawer({
       const { data, error } = await supabase.rpc("processor_deal_detail", { p_deal_id: dealId });
       if (error) throw new Error(error.message);
       if (!data) throw new Error("The detail read returned nothing.");
-      setState({ kind: "ready", detail: data as DetailShape });
+      const detail = data as DetailShape;
+      // Seed the QA checklist / notes from what's already persisted.
+      const savedChecks = (detail.qa?.checklist ?? {}) as Record<string, boolean>;
+      const seeded: Record<string, boolean> = {};
+      for (const item of QA_ITEMS) seeded[item.key] = !!savedChecks[item.key];
+      setQaChecks(seeded);
+      setQaNotes(detail.qa?.notes ?? "");
+      setState({ kind: "ready", detail });
     } catch (e) {
       setState({
         kind: "error",
@@ -192,6 +253,30 @@ export default function ProcessorDetailDrawer({
     }
   }, []);
 
+  // Persist the QA checklist + notes. p_passed carries whether QA is marked passed
+  // (keep the current value on a plain "Save", flip it on the pass / reopen buttons).
+  const saveQa = useCallback(
+    (passed: boolean, busyKey: string) =>
+      runRpc(
+        "processor_save_qa",
+        {
+          p_deal_id: dealId,
+          p_checklist: qaChecks,
+          p_passed: passed,
+          ...(qaNotes.trim() ? { p_notes: qaNotes.trim() } : {}),
+        },
+        busyKey,
+      ),
+    [runRpc, dealId, qaChecks, qaNotes],
+  );
+
+  // Completeness for the missing-field list — computed off the ROW so the drawer's
+  // gate ② matches the list exactly (single source of truth).
+  const completeness = useMemo(
+    () => (row ? applicationCompleteness(toDealArg(row), row.application ?? null) : null),
+    [row],
+  );
+
   if (!dealId) return null;
 
   const detail = state.kind === "ready" ? state.detail : null;
@@ -199,6 +284,7 @@ export default function ProcessorDetailDrawer({
   const customer = detail?.customer ?? {};
   const application = detail?.application ?? null;
   const documents = detail?.documents ?? [];
+  const qa = detail?.qa ?? null;
   const chip = stageChip(deal?.status as string | undefined);
   const title =
     (customer?.business_name as string) ||
@@ -208,6 +294,19 @@ export default function ProcessorDetailDrawer({
 
   const appEntries = application
     ? Object.entries(application).filter(([k]) => !HIDDEN_KEYS.has(k))
+    : [];
+
+  // ── Gate readouts (all off the row — the same source the list uses) ──
+  const gateApp = row ? appComplete(row) : false;
+  const gateStmts = row ? hasStatements(row) : false;
+  const gateQa = !!qa?.qa_passed || (row ? qaPassed(row) : false);
+  const gateReady = !!qa?.submission_ready_at || !!row?.submission_ready_at;
+  const allQaTicked = QA_ITEMS.every((i) => qaChecks[i.key]);
+  const canMarkReady = gateApp && gateStmts && gateQa && !gateReady;
+  const missingBySection = completeness
+    ? (Object.entries(completeness.missingBySection) as [AppSection, number][]).filter(
+        ([, n]) => n > 0,
+      )
     : [];
 
   return (
@@ -277,6 +376,53 @@ export default function ProcessorDetailDrawer({
 
           {state.kind === "ready" && (
             <>
+              {/* Readiness — the spine. Where this lead sits on the 4 gates, and
+                  exactly what's missing. */}
+              <section className="rounded-lg border border-ocean-blue/30 dark:border-ocean-blue/40 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-3">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
+                  Readiness — drive to submission-ready
+                </h3>
+                {row ? (
+                  <GateTracker row={row} pipe={pipe} />
+                ) : (
+                  <p className="text-xs text-gray-400">Gate readout unavailable for this lead.</p>
+                )}
+                {/* Gate ② — the exact fields still missing on the application. */}
+                {!gateApp && completeness && (
+                  <div className="mt-2 text-[11px] text-gray-600 dark:text-gray-300">
+                    <span className="font-semibold text-purple-600 dark:text-purple-400">
+                      Application {completeness.pct}%
+                    </span>{" "}
+                    — {completeness.missing.length} field
+                    {completeness.missing.length === 1 ? "" : "s"} left
+                    {missingBySection.length > 0 && (
+                      <span className="text-gray-400">
+                        {" ("}
+                        {missingBySection
+                          .map(([s, n]) => `${SECTION_LABEL[s]}: ${n}`)
+                          .join(" · ")}
+                        {")"}
+                      </span>
+                    )}
+                    <ul className="mt-1 flex flex-wrap gap-1">
+                      {completeness.missing.map((f) => (
+                        <li
+                          key={f.key}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
+                        >
+                          {f.label}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {gateApp && !gateStmts && (
+                  <p className="mt-2 text-[11px] font-semibold text-sky-600 dark:text-sky-400">
+                    Application done — now get the bank statements in (chase below).
+                  </p>
+                )}
+              </section>
+
               {/* Schedule actions */}
               <section>
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
@@ -393,6 +539,165 @@ export default function ProcessorDetailDrawer({
                       </div>
                     ))}
                   </div>
+                )}
+              </section>
+
+              {/* QA step — gate ④. Tick every item, then mark QA passed. */}
+              <section className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                    QA — quality check before submission
+                  </h3>
+                  {gateQa && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                      <CheckIcon className="w-3 h-3" /> QA passed
+                    </span>
+                  )}
+                </div>
+                {gateQa && qa?.qa_passed_by_name && (
+                  <p className="mb-2 text-[11px] text-gray-500 dark:text-gray-400">
+                    Passed by {qa.qa_passed_by_name}
+                    {qa.qa_passed_at ? ` · ${dateTimeET(qa.qa_passed_at)} ET` : ""}
+                  </p>
+                )}
+                <ul className="space-y-1.5">
+                  {QA_ITEMS.map((item) => (
+                    <li key={item.key}>
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!qaChecks[item.key]}
+                          onChange={(e) =>
+                            setQaChecks((prev) => ({ ...prev, [item.key]: e.target.checked }))
+                          }
+                          className="mt-0.5 checkbox checkbox-xs checkbox-primary"
+                        />
+                        <span className="text-xs text-gray-700 dark:text-gray-200">
+                          {item.label}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-[10px] text-gray-400">
+                  A voided check never blocks — a bank-portal screenshot satisfies it.
+                </p>
+                <textarea
+                  value={qaNotes}
+                  onChange={(e) => setQaNotes(e.target.value)}
+                  placeholder="QA notes (optional)…"
+                  rows={2}
+                  className="mt-2 w-full text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2.5 py-2 text-gray-900 dark:text-white"
+                />
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={actionBusy === "qa-save"}
+                    onClick={() => void saveQa(gateQa, "qa-save")}
+                    className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue disabled:opacity-50"
+                  >
+                    {actionBusy === "qa-save" ? "Saving…" : "Save QA progress"}
+                  </button>
+                  {!gateQa ? (
+                    <button
+                      type="button"
+                      disabled={!allQaTicked || actionBusy === "qa-pass"}
+                      onClick={() => void saveQa(true, "qa-pass")}
+                      title={allQaTicked ? "Mark QA passed" : "Tick every item first"}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <CheckIcon className="w-3.5 h-3.5" />
+                      {actionBusy === "qa-pass" ? "Passing…" : "Mark QA passed"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={actionBusy === "qa-reopen"}
+                      onClick={() => void saveQa(false, "qa-reopen")}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-amber-500 hover:text-amber-600 disabled:opacity-50"
+                    >
+                      <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
+                      {actionBusy === "qa-reopen" ? "Reopening…" : "Reopen QA"}
+                    </button>
+                  )}
+                </div>
+              </section>
+
+              {/* Mark ready for submission — gate ⑤. Server also enforces
+                  qa_passed AND statements, so this is guided, not just gated here. */}
+              <section
+                className={`rounded-lg border p-3 ${
+                  gateReady
+                    ? "border-emerald-400 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20"
+                    : "border-gray-200 dark:border-gray-700"
+                }`}
+              >
+                {gateReady ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <CheckCircleIcon className="w-5 h-5 text-emerald-500 shrink-0" />
+                      <div>
+                        <div className="text-sm font-bold text-emerald-700 dark:text-emerald-300">
+                          Ready to submit
+                        </div>
+                        {qa?.submission_ready_by_name && (
+                          <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                            Marked by {qa.submission_ready_by_name}
+                            {qa.submission_ready_at
+                              ? ` · ${dateTimeET(qa.submission_ready_at)} ET`
+                              : ""}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={actionBusy === "unready"}
+                      onClick={() =>
+                        void runRpc("processor_unmark_ready", { p_deal_id: dealId }, "unready")
+                      }
+                      className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-red-500 hover:text-red-600 disabled:opacity-50"
+                    >
+                      <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
+                      {actionBusy === "unready" ? "Un-marking…" : "Un-mark (pull back)"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={!canMarkReady || actionBusy === "ready"}
+                      onClick={() =>
+                        void runRpc("processor_mark_ready", { p_deal_id: dealId }, "ready")
+                      }
+                      title={
+                        canMarkReady
+                          ? "Mark ready for submission"
+                          : "Finish the application, get statements in, and pass QA first"
+                      }
+                      className="w-full inline-flex items-center justify-center gap-1.5 text-sm font-bold px-3 py-2.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <PaperAirplaneIcon className="w-4 h-4" />
+                      {actionBusy === "ready" ? "Marking ready…" : "Mark ready to submit"}
+                    </button>
+                    {!canMarkReady && (
+                      <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        Enabled once{" "}
+                        <span className={gateApp ? "text-emerald-600 dark:text-emerald-400" : ""}>
+                          application
+                        </span>
+                        ,{" "}
+                        <span className={gateStmts ? "text-emerald-600 dark:text-emerald-400" : ""}>
+                          statements
+                        </span>{" "}
+                        and{" "}
+                        <span className={gateQa ? "text-emerald-600 dark:text-emerald-400" : ""}>
+                          QA
+                        </span>{" "}
+                        are all green.
+                      </p>
+                    )}
+                  </>
                 )}
               </section>
 
