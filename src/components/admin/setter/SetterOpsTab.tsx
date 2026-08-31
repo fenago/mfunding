@@ -222,6 +222,14 @@ export default function SetterOpsTab() {
 
   return (
     <div className="space-y-4">
+      {/* Always-visible reminder: the no-friction way a merchant can get docs to us. */}
+      <div className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 px-3 py-2 text-xs text-gray-700 dark:text-gray-200">
+        📎 Merchants can always email their documents (bank statements, ID, etc.) to{" "}
+        <a href="mailto:sales@send.mfunding.net" className="font-semibold text-ocean-blue">
+          sales@send.mfunding.net
+        </a>
+        .
+      </div>
       {body}
       {/* PROCESSOR BOARD — whole-pipeline hunt list, pinned to the very BOTTOM of
           the console (below everything else) and visible ONLY to processors. It

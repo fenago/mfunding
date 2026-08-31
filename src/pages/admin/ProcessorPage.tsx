@@ -435,6 +435,13 @@ export default function ProcessorPage() {
             → ✅ READY TO SUBMIT
           </span>
         </div>
+        <p className="mt-3 text-xs text-gray-600 dark:text-gray-300">
+          📎 Merchants can always email their documents (bank statements, ID, etc.) to{" "}
+          <a href="mailto:sales@send.mfunding.net" className="font-semibold text-ocean-blue">
+            sales@send.mfunding.net
+          </a>
+          .
+        </p>
       </div>
 
       {/* 2. Workflow buckets — the primary navigation (funnel view). */}
