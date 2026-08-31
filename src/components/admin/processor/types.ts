@@ -44,7 +44,7 @@ export interface PipelineRow {
 }
 
 export type Pipe = "mca" | "vcf";
-export type Sort = "age" | "callback" | "stage" | "amount" | "closer";
+export type Sort = "recent" | "age" | "callback" | "stage" | "amount" | "closer";
 export type CallbackSegment = "all" | "overdue" | "today" | "next7" | "fortnight";
 
 export function merchantName(r: PipelineRow): string {

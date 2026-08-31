@@ -46,6 +46,7 @@ type ListState =
   | { kind: "ready"; rows: PipelineRow[] };
 
 const SORTS: { key: Sort; label: string }[] = [
+  { key: "recent", label: "Recent" },
   { key: "age", label: "Age" },
   { key: "callback", label: "Callback" },
   { key: "stage", label: "Stage" },
@@ -159,7 +160,7 @@ export default function ProcessorPage() {
   const [view, setView] = useState<"funnel" | "board">("funnel");
   const [bucket, setBucket] = useState<BucketKey>("all");
   const [stage, setStage] = useState<string | null>(null);
-  const [sort, setSort] = useState<Sort>("age");
+  const [sort, setSort] = useState<Sort>("recent");
   const [segment, setSegment] = useState<CallbackSegment>("all");
   const [search, setSearch] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
