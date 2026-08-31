@@ -123,6 +123,17 @@ const CONFIDENCE_OPTS: Opt[] = [
   { value: "medium", label: "Medium" },
   { value: "low", label: "Low" },
 ];
+// deals.lead_source values — the Customers source filters on the merchant's deal
+// lead source. Synergy purchases are live_transfer + realtime_appt.
+const LEAD_SOURCE_OPTS: Opt[] = [
+  { value: "live_transfer", label: "Synergy — Live transfer" },
+  { value: "realtime_appt", label: "Synergy — Real-time" },
+  { value: "aged_list", label: "Aged list" },
+  { value: "ucc_list", label: "UCC list" },
+  { value: "ph_setter", label: "PH setter" },
+  { value: "referral", label: "Referral" },
+  { value: "ghl_other", label: "VibeReach / other" },
+];
 const LEAD_CLASS_OPTS: Opt[] = [
   { value: "", label: "Any class" },
   { value: "named_funder", label: "Named funder on lien" },
@@ -157,6 +168,7 @@ type CustFilters = {
   industry: string; entity_types: string[]; min_revenue: string; max_revenue: string;
   line_types: string[]; has_phone: boolean; has_email: boolean;
   phone_status: string; exclude_dnc: boolean; status: string; search: string;
+  lead_sources: string[];
 };
 type GhlFilters = {
   tags: string[]; tagMode: "and" | "or"; query: string;
@@ -177,7 +189,7 @@ const UCC_DEFAULT: UccFilters = {
 const CUST_DEFAULT: CustFilters = {
   states: [], area_codes: "", zip_prefix: "", city: "", industry: "", entity_types: [],
   min_revenue: "", max_revenue: "", line_types: [], has_phone: false, has_email: false,
-  phone_status: "", exclude_dnc: false, status: "", search: "",
+  phone_status: "", exclude_dnc: false, status: "", search: "", lead_sources: [],
 };
 const GHL_DEFAULT: GhlFilters = {
   tags: [], tagMode: "or", query: "", state: "", city: "", postalCode: "", area_codes: "",
@@ -272,6 +284,7 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
       min_revenue: n(cust.min_revenue), max_revenue: n(cust.max_revenue), line_types: cust.line_types,
       has_phone: cust.has_phone, has_email: cust.has_email, phone_status: cust.phone_status || null,
       exclude_dnc: cust.exclude_dnc, status: cust.status || null, search: t(cust.search),
+      lead_sources: cust.lead_sources,
     };
   }, [source, ghl, lr, ucc, cust]);
 
@@ -734,6 +747,9 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
               </Field>
             </Group>
             <Group title="Business">
+              <Field label="Lead source" hint="how the merchant came in — Synergy live-transfer / real-time, etc.">
+                <MultiSelect options={LEAD_SOURCE_OPTS} selected={cust.lead_sources} onChange={(v) => patchCust({ lead_sources: v })} placeholder="+ add a lead source" />
+              </Field>
               <Field label="Industry" hint="industry contains">
                 <input className={`${input} w-44`} placeholder="e.g. trucking" value={cust.industry} onChange={(e) => patchCust({ industry: e.target.value })} />
               </Field>
