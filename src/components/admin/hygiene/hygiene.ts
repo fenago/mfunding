@@ -98,33 +98,37 @@ export interface SmartListMember {
 
 export const SOURCE_META: Record<
   Exclude<SmartListSource, "mixed">,
-  { label: string; table: string; blurb: string; chip: string; virtual?: boolean }
+  { label: string; table: string; blurb: string; useWhen: string; chip: string; virtual?: boolean }
 > = {
   ghl: {
     // 'ghl' stays the internal source key everywhere; only the LABEL is the product
     // name the owner uses — VibeReach (VibeReach.io), our white-label of the CRM.
-    label: "VibeReach",
+    label: "VibeReach contacts",
     table: "", // virtual — searched via the ghl-contacts-search edge fn, not a table
     virtual: true,
-    blurb: "Your VibeReach CRM contacts — search by tag, state, city, zip, area code, or free text.",
+    blurb: "The whole dialer book — every contact in VibeReach.",
+    useWhen: "Use when you want to slice the live book by tag or location.",
     chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
-  },
-  ph_ucc: {
-    label: "UCC leads",
-    table: "ph_ucc_leads",
-    blurb: "Merchants with an existing advance on file, harvested from UCC filings (the UCC Harvester book).",
-    chip: "bg-ocean-blue/10 text-ocean-blue",
   },
   lead_records: {
     label: "Purchased lists",
     table: "lead_records",
-    blurb: "Aged / UCC / trigger lists you uploaded (the Lead Machine book).",
+    blurb: "Aged / UCC / trigger lists you uploaded (Lead Machine).",
+    useWhen: "Use for the raw purchased book — richest filters, biggest volume.",
     chip: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
   },
+  ph_ucc: {
+    label: "UCC leads",
+    table: "ph_ucc_leads",
+    blurb: "Merchants with an advance on file, from UCC filings.",
+    useWhen: "Use to target stacked merchants by funder / # of positions.",
+    chip: "bg-ocean-blue/10 text-ocean-blue",
+  },
   customers: {
-    label: "Customers (CRM)",
+    label: "My pipeline (CRM)",
     table: "customers",
-    blurb: "Your CRM pipeline — leads through funded merchants.",
+    blurb: "Leads that became real deals in your pipeline.",
+    useWhen: "Use for worked deals — filter by lead source, revenue, stage.",
     chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
   },
 };

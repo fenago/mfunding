@@ -70,6 +70,7 @@ interface HygieneFilters {
   tagMode?: "and" | "or";
   query?: string;
   state?: string;
+  states?: string[];
   city?: string;
   postalCode?: string;
   areaCodes?: string[];
@@ -122,8 +123,15 @@ function buildSearchBody(
 
   // Standard-field filters (ANDed with the tag filters). area code is NOT here —
   // it's a client-side narrowing since the API can't filter on it.
+  // States: multi → OR group; single legacy `state` still honored.
+  const states = (filters.states ?? []).map((s) => String(s).trim()).filter(Boolean);
+  if (states.length > 1) {
+    ghlFilters.push({ group: "OR", filters: states.map((s) => ({ field: "state", operator: "eq", value: s })) });
+  } else if (states.length === 1) {
+    ghlFilters.push({ field: "state", operator: "eq", value: states[0] });
+  }
   const st = String(filters.state ?? "").trim();
-  if (st) ghlFilters.push({ field: "state", operator: "eq", value: st });
+  if (st && states.length === 0) ghlFilters.push({ field: "state", operator: "eq", value: st });
   const ct = String(filters.city ?? "").trim();
   if (ct) ghlFilters.push({ field: "city", operator: "contains", value: ct });
   const pc = String(filters.postalCode ?? "").trim();

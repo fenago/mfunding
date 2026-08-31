@@ -172,7 +172,7 @@ type CustFilters = {
 };
 type GhlFilters = {
   tags: string[]; tagMode: "and" | "or"; query: string;
-  state: string; city: string; postalCode: string; area_codes: string;
+  states: string[]; city: string; postalCode: string; area_codes: string;
 };
 
 const LR_DEFAULT: LrFilters = {
@@ -192,7 +192,7 @@ const CUST_DEFAULT: CustFilters = {
   phone_status: "", exclude_dnc: false, status: "", search: "", lead_sources: [],
 };
 const GHL_DEFAULT: GhlFilters = {
-  tags: [], tagMode: "or", query: "", state: "", city: "", postalCode: "", area_codes: "",
+  tags: [], tagMode: "or", query: "", states: [], city: "", postalCode: "", area_codes: "",
 };
 
 const t = (s: string) => (s.trim() ? s.trim() : null);
@@ -244,7 +244,7 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
   const ghlFilters = useMemo(
     () => ({
       tags: ghl.tags, tagMode: ghl.tagMode, query: t(ghl.query) ?? undefined,
-      state: t(ghl.state) ?? undefined, city: t(ghl.city) ?? undefined,
+      states: ghl.states, city: t(ghl.city) ?? undefined,
       postalCode: t(ghl.postalCode) ?? undefined, areaCodes: parseAreaCodes(ghl.area_codes),
     }),
     [ghl],
@@ -256,7 +256,7 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
     if (source === "ghl")
       return {
         tags: ghl.tags, tag_mode: ghl.tagMode, query: t(ghl.query),
-        state: t(ghl.state), city: t(ghl.city), postal_code: t(ghl.postalCode),
+        states: ghl.states, city: t(ghl.city), postal_code: t(ghl.postalCode),
         area_codes: parseAreaCodes(ghl.area_codes),
       };
     if (source === "lead_records")
@@ -547,6 +547,7 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
                   {active && <CheckCircleIcon className="w-4 h-4 text-mint-green ml-auto" />}
                 </div>
                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{meta.blurb}</p>
+                <p className="mt-1 text-[11px] italic text-gray-400 dark:text-gray-500">{meta.useWhen}</p>
                 <p className="mt-2 text-xs font-semibold text-gray-700 dark:text-gray-200 tabular-nums">
                   {c == null ? "counting…" : `${c.toLocaleString()} ${unit}`}
                 </p>
@@ -593,8 +594,8 @@ export default function SmartListBuilder({ onSaved }: { onSaved: (list: SmartLis
               </Field>
             </Group>
             <Group title="Location">
-              <Field label="State" hint="matches the contact's State field (code or name)">
-                <input className={`${input} w-32`} placeholder="e.g. FL" value={ghl.state} onChange={(e) => patchGhl({ state: e.target.value })} />
+              <Field label="States" hint="matches the contact's State field">
+                <MultiSelect options={STATE_OPTS} selected={ghl.states} onChange={(v) => patchGhl({ states: v })} placeholder="+ add a state" />
               </Field>
               <Field label="City" hint="City contains">
                 <input className={`${input} w-44`} placeholder="contains…" value={ghl.city} onChange={(e) => patchGhl({ city: e.target.value })} />
