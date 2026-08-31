@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import {
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   ExclamationTriangleIcon,
   BuildingStorefrontIcon,
   Squares2X2Icon,
@@ -186,6 +188,22 @@ export default function ProcessorBoard({
   const [stage, setStage] = useState<DealStatus | null>(null);
   const [sort, setSort] = useState<Sort>("recent");
   const [list, setList] = useState<ListState>({ kind: "idle" });
+  // Collapsible — remembered across reloads. It's a big board at the bottom of the
+  // console; a processor can fold it away when working the console above.
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("processorBoardCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("processorBoardCollapsed", collapsed ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [collapsed]);
 
   // ── Whole-board counts ──
   const loadCounts = useCallback(async () => {
@@ -247,7 +265,18 @@ export default function ProcessorBoard({
   const header = useMemo(
     () => (
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white">
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          className="group flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white text-left"
+          aria-expanded={!collapsed}
+          title={collapsed ? "Expand the processor board" : "Collapse the processor board"}
+        >
+          {collapsed ? (
+            <ChevronRightIcon className="w-4 h-4 text-gray-400 group-hover:text-ocean-blue" />
+          ) : (
+            <ChevronDownIcon className="w-4 h-4 text-gray-400 group-hover:text-ocean-blue" />
+          )}
           <Squares2X2Icon className="w-5 h-5 text-ocean-blue" />
           Processor board — whole pipeline
           {counts.kind === "ready" && (
@@ -255,28 +284,33 @@ export default function ProcessorBoard({
               ({counts.total.toLocaleString()} deals)
             </span>
           )}
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            void loadCounts();
-            if (stage) void loadStage(stage, sort);
-          }}
-          disabled={counts.kind === "loading"}
-          className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-ocean-blue disabled:opacity-50"
-          title="Reload the board"
-        >
-          <ArrowPathIcon className={`w-3.5 h-3.5 ${counts.kind === "loading" ? "animate-spin" : ""}`} />
-          Refresh
         </button>
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={() => {
+              void loadCounts();
+              if (stage) void loadStage(stage, sort);
+            }}
+            disabled={counts.kind === "loading"}
+            className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-ocean-blue disabled:opacity-50"
+            title="Reload the board"
+          >
+            <ArrowPathIcon className={`w-3.5 h-3.5 ${counts.kind === "loading" ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        )}
       </div>
     ),
-    [counts, stage, sort, loadCounts, loadStage],
+    [counts, stage, sort, loadCounts, loadStage, collapsed],
   );
 
   return (
     <div className="rounded-xl border border-ocean-blue/30 dark:border-ocean-blue/40 bg-white dark:bg-gray-800 p-6">
       {header}
+
+      {collapsed ? null : (
+      <>
       <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
         Every deal on the board, across all setters — click a stage to work its merchants:
         text them, open the record, load one into the console above, and see exactly what's
@@ -518,6 +552,8 @@ export default function ProcessorBoard({
             )}
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );
