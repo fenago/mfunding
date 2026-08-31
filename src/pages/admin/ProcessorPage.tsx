@@ -8,6 +8,7 @@ import {
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
   MoonIcon,
+  NoSymbolIcon,
   StarIcon,
   Squares2X2Icon,
 } from "@heroicons/react/24/outline";
@@ -168,7 +169,9 @@ export default function ProcessorPage() {
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   // Per-row armed nurture (armOrFire) — houses the two-step confirm without a popup.
   const [nurtureArmed, setNurtureArmed] = useState<string | null>(null);
+  const [dndArmed, setDndArmed] = useState<string | null>(null);
   const armTimer = useRef<number | null>(null);
+  const dndTimer = useRef<number | null>(null);
   const [rowErr, setRowErr] = useState<string | null>(null);
 
   const loadCounts = useCallback(async () => {
@@ -334,6 +337,41 @@ export default function ProcessorPage() {
       }
     },
     [nurtureArmed, reloadAll],
+  );
+
+  // Row-level DND: turning it ON is armed (two-step); turning it OFF (clearing a
+  // mistaken flag) is immediate.
+  const setDnd = useCallback(
+    (dealId: string, on: boolean) => {
+      setRowBusy(dealId);
+      setRowErr(null);
+      void (async () => {
+        try {
+          const { error } = await supabase.rpc("processor_set_dnd", { p_deal_id: dealId, p_on: on });
+          if (error) throw new Error(error.message);
+          reloadAll();
+        } catch (e) {
+          setRowErr(e instanceof Error ? e.message : "Couldn't update Do-Not-Contact.");
+        } finally {
+          setRowBusy(null);
+        }
+      })();
+    },
+    [reloadAll],
+  );
+
+  const armOrFireDnd = useCallback(
+    (dealId: string) => {
+      if (dndTimer.current) window.clearTimeout(dndTimer.current);
+      if (dndArmed === dealId) {
+        setDndArmed(null);
+        setDnd(dealId, true);
+      } else {
+        setDndArmed(dealId);
+        dndTimer.current = window.setTimeout(() => setDndArmed(null), 4000);
+      }
+    },
+    [dndArmed, setDnd],
   );
 
   const selectedRow = useMemo(
@@ -876,22 +914,54 @@ export default function ProcessorPage() {
                                 buttonLabel="Text"
                                 presentation="modal"
                               />
-                              {stale && (
+                              {/* DND — take them off the list. On = red, click clears; off = armed two-step. */}
+                              {r.do_not_contact ? (
                                 <button
                                   type="button"
                                   disabled={rowBusy === r.id}
-                                  onClick={() => armOrFireNurture(r.id)}
-                                  title="Two weeks up — move to long-term nurture"
+                                  onClick={() => setDnd(r.id, false)}
+                                  title="Do-Not-Contact is ON — click to clear"
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-red-400 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                                >
+                                  <NoSymbolIcon className="w-3 h-3" /> DND
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={rowBusy === r.id}
+                                  onClick={() => armOrFireDnd(r.id)}
+                                  title="Do Not Contact — take them off the list"
                                   className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border transition-colors ${
-                                    nurtureArmed === r.id
-                                      ? "border-violet-500 bg-violet-100 dark:bg-violet-900/40 text-violet-800 dark:text-violet-200"
-                                      : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-300"
+                                    dndArmed === r.id
+                                      ? "border-red-500 bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200"
+                                      : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-red-500 hover:text-red-600 dark:hover:text-red-300"
                                   }`}
                                 >
-                                  <MoonIcon className="w-3 h-3" />
-                                  {nurtureArmed === r.id ? "Confirm?" : "Nurture"}
+                                  <NoSymbolIcon className="w-3 h-3" />
+                                  {dndArmed === r.id ? "Confirm?" : "DND"}
                                 </button>
                               )}
+                              {/* Nurture — always available; emphasized when stale (≥14d). */}
+                              <button
+                                type="button"
+                                disabled={rowBusy === r.id}
+                                onClick={() => armOrFireNurture(r.id)}
+                                title={
+                                  stale
+                                    ? "Two weeks up — move to long-term nurture"
+                                    : "Move to long-term nurture"
+                                }
+                                className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border transition-colors ${
+                                  nurtureArmed === r.id
+                                    ? "border-violet-500 bg-violet-100 dark:bg-violet-900/40 text-violet-800 dark:text-violet-200"
+                                    : stale
+                                      ? "border-violet-400 text-violet-600 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                                      : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-violet-500 hover:text-violet-600 dark:hover:text-violet-300"
+                                }`}
+                              >
+                                <MoonIcon className="w-3 h-3" />
+                                {nurtureArmed === r.id ? "Confirm?" : "Nurture"}
+                              </button>
                             </div>
                           </td>
                         </tr>
