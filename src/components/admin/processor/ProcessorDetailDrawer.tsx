@@ -166,10 +166,14 @@ export default function ProcessorDetailDrawer({
   const openDoc = useCallback(async (documentId: string, download: boolean) => {
     setActionErr(null);
     try {
-      const { data, error } = await supabase.rpc("processor_document_url", {
-        p_document_id: documentId,
+      // Signing needs the service role (customer-documents storage RLS walls a
+      // processor-closer to their own book), so this is an edge fn, not an RPC.
+      const { data, error } = await supabase.functions.invoke("processor-document-url", {
+        body: { document_id: documentId },
       });
       if (error) throw new Error(error.message);
+      const err = (data as { error?: string } | null)?.error;
+      if (err) throw new Error(err);
       const url = (data as { url?: string } | null)?.url;
       const fileName = (data as { file_name?: string } | null)?.file_name;
       if (!url) throw new Error("No signed URL returned.");
