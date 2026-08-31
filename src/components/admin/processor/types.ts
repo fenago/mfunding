@@ -41,6 +41,8 @@ export interface PipelineRow {
   qa_passed: boolean | null;
   qa_passed_at: string | null;
   submission_ready_at: string | null;
+  qa_decision: "go" | "no_go" | null;
+  qa_decision_reason: string | null;
 }
 
 export type Pipe = "mca" | "vcf";

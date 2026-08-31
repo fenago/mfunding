@@ -102,8 +102,8 @@ const BUCKETS: {
   },
   {
     key: "ready_submit",
-    label: "Ready to submit",
-    hint: "QA passed — handed off",
+    label: "GO · run AI Underwriter",
+    hint: "QA passed GO — owner runs the AI Underwriter",
     ring: "border-emerald-500 text-emerald-700 dark:text-emerald-300",
     dot: "text-emerald-600 dark:text-emerald-400",
   },
@@ -659,12 +659,26 @@ export default function ProcessorPage() {
               </div>
             ) : (
               <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                {/* Legend for the numbered "Steps to submit-ready" pips. */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-gray-100 dark:border-gray-800 text-[10px] text-gray-500 dark:text-gray-400">
+                  <span className="uppercase tracking-wide font-semibold text-gray-400">Steps to submit-ready</span>
+                  <span>① Interested</span>
+                  <span>② Application complete</span>
+                  <span>③ Bank statements in</span>
+                  <span>④ QA passed</span>
+                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">→ ✅ READY</span>
+                </div>
                 <table className="min-w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 dark:bg-gray-900/50 text-[10px] uppercase tracking-wide text-gray-400">
                       <th className="px-2 py-2 text-center w-10">★</th>
                       <th className="px-3 py-2 text-left">Company</th>
-                      <th className="px-3 py-2 text-left">Readiness</th>
+                      <th
+                        className="px-3 py-2 text-left"
+                        title="Progress through the 4 steps to submit-ready: ① Interested  ② Application complete  ③ Bank statements in  ④ QA passed → ready to submit"
+                      >
+                        Steps to submit-ready
+                      </th>
                       <th className="px-3 py-2 text-left">Next action</th>
                       <th className="px-3 py-2 text-right">Amount</th>
                       <th className="px-3 py-2 text-left">Contact</th>

@@ -11,6 +11,7 @@ import {
   EyeSlashIcon,
   MoonIcon,
   PaperAirplaneIcon,
+  XCircleIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { CheckIcon } from "@heroicons/react/24/solid";
@@ -75,6 +76,10 @@ interface QaShape {
   qa_passed_by_name?: string | null;
   submission_ready_at?: string | null;
   submission_ready_by_name?: string | null;
+  decision?: "go" | "no_go" | null;
+  decision_reason?: string | null;
+  decision_at?: string | null;
+  decision_by_name?: string | null;
   notes?: string | null;
 }
 
@@ -164,6 +169,9 @@ export default function ProcessorDetailDrawer({
   // QA checklist working state (seeded from the loaded detail's qa.checklist).
   const [qaChecks, setQaChecks] = useState<Record<string, boolean>>({});
   const [qaNotes, setQaNotes] = useState("");
+  // Go/No-Go verdict working state.
+  const [noGoOpen, setNoGoOpen] = useState(false);
+  const [noGoReason, setNoGoReason] = useState("");
 
   const load = useCallback(async () => {
     if (!dealId) return;
@@ -193,6 +201,8 @@ export default function ProcessorDetailDrawer({
     setNote("");
     setActionErr(null);
     setNurtureArmed(false);
+    setNoGoOpen(false);
+    setNoGoReason("");
     if (dealId) void load();
   }, [dealId, load]);
 
@@ -270,6 +280,64 @@ export default function ProcessorDetailDrawer({
     [runRpc, dealId, qaChecks, qaNotes],
   );
 
+  // GO verdict — persist the ticks/notes, then record the go decision (server
+  // requires bank statements + flips qa_passed + submission_ready).
+  const submitGo = useCallback(async () => {
+    setActionBusy("go");
+    setActionErr(null);
+    try {
+      const save = await supabase.rpc("processor_save_qa", {
+        p_deal_id: dealId,
+        p_checklist: qaChecks,
+        p_passed: true,
+        ...(qaNotes.trim() ? { p_notes: qaNotes.trim() } : {}),
+      });
+      if (save.error) throw new Error(save.error.message);
+      const { error } = await supabase.rpc("processor_qa_decision", {
+        p_deal_id: dealId,
+        p_decision: "go",
+      });
+      if (error) throw new Error(error.message);
+      onChanged();
+      await load();
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : "Couldn't record GO.");
+    } finally {
+      setActionBusy(null);
+    }
+  }, [dealId, qaChecks, qaNotes, onChanged, load]);
+
+  // NO-GO verdict — persist any ticks/notes, then record the no-go + reason.
+  const submitNoGo = useCallback(async () => {
+    const reason = noGoReason.trim();
+    if (!reason) return;
+    setActionBusy("nogo");
+    setActionErr(null);
+    try {
+      const save = await supabase.rpc("processor_save_qa", {
+        p_deal_id: dealId,
+        p_checklist: qaChecks,
+        p_passed: false,
+        ...(qaNotes.trim() ? { p_notes: qaNotes.trim() } : {}),
+      });
+      if (save.error) throw new Error(save.error.message);
+      const { error } = await supabase.rpc("processor_qa_decision", {
+        p_deal_id: dealId,
+        p_decision: "no_go",
+        p_reason: reason,
+      });
+      if (error) throw new Error(error.message);
+      setNoGoOpen(false);
+      setNoGoReason("");
+      onChanged();
+      await load();
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : "Couldn't record NO-GO.");
+    } finally {
+      setActionBusy(null);
+    }
+  }, [dealId, qaChecks, qaNotes, noGoReason, onChanged, load]);
+
   // Completeness for the missing-field list — computed off the ROW so the drawer's
   // gate ② matches the list exactly (single source of truth).
   const completeness = useMemo(
@@ -300,9 +368,11 @@ export default function ProcessorDetailDrawer({
   const gateApp = row ? appComplete(row) : false;
   const gateStmts = row ? hasStatements(row) : false;
   const gateQa = !!qa?.qa_passed || (row ? qaPassed(row) : false);
-  const gateReady = !!qa?.submission_ready_at || !!row?.submission_ready_at;
   const allQaTicked = QA_ITEMS.every((i) => qaChecks[i.key]);
-  const canMarkReady = gateApp && gateStmts && gateQa && !gateReady;
+  // Go / No-Go verdict state.
+  const decision: "go" | "no_go" | null =
+    (qa?.decision as "go" | "no_go" | null) ?? (row?.qa_decision ?? null);
+  const canGo = gateApp && gateStmts && allQaTicked;
   const missingBySection = completeness
     ? (Object.entries(completeness.missingBySection) as [AppSection, number][]).filter(
         ([, n]) => n > 0,
@@ -629,33 +699,47 @@ export default function ProcessorDetailDrawer({
                 </div>
               </section>
 
-              {/* Mark ready for submission — gate ⑤. Server also enforces
-                  qa_passed AND statements, so this is guided, not just gated here. */}
+              {/* The verdict — GO / NO-GO (submit / don't submit). Server enforces
+                  bank statements on a GO; the UI also requires app + statements +
+                  all QA items ticked. A GO is the owner's "run the AI Underwriter"
+                  signal; a NO-GO records a reason and sends it back for rework. */}
               <section
                 className={`rounded-lg border p-3 ${
-                  gateReady
+                  decision === "go"
                     ? "border-emerald-400 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20"
-                    : "border-gray-200 dark:border-gray-700"
+                    : decision === "no_go"
+                      ? "border-red-400 dark:border-red-700 bg-red-50 dark:bg-red-900/20"
+                      : "border-gray-200 dark:border-gray-700"
                 }`}
               >
-                {gateReady ? (
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
+                  Verdict — submit or don&apos;t
+                </h3>
+
+                {decision === "go" ? (
                   <>
                     <div className="flex items-center gap-2">
                       <CheckCircleIcon className="w-5 h-5 text-emerald-500 shrink-0" />
                       <div>
                         <div className="text-sm font-bold text-emerald-700 dark:text-emerald-300">
-                          Ready to submit
+                          GO — ready for the AI Underwriter
                         </div>
-                        {qa?.submission_ready_by_name && (
+                        {(qa?.submission_ready_by_name || qa?.decision_by_name) && (
                           <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                            Marked by {qa.submission_ready_by_name}
-                            {qa.submission_ready_at
+                            by {qa?.submission_ready_by_name || qa?.decision_by_name}
+                            {qa?.submission_ready_at
                               ? ` · ${dateTimeET(qa.submission_ready_at)} ET`
                               : ""}
                           </div>
                         )}
                       </div>
                     </div>
+                    <Link
+                      to={`/admin/deals/${dealId}#underwriting`}
+                      className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-sm font-bold px-3 py-2.5 rounded-lg bg-ocean-blue text-white hover:bg-deep-sea"
+                    >
+                      <PaperAirplaneIcon className="w-4 h-4" /> Run the AI Underwriter →
+                    </Link>
                     <button
                       type="button"
                       disabled={actionBusy === "unready"}
@@ -665,30 +749,68 @@ export default function ProcessorDetailDrawer({
                       className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-red-500 hover:text-red-600 disabled:opacity-50"
                     >
                       <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
-                      {actionBusy === "unready" ? "Un-marking…" : "Un-mark (pull back)"}
+                      {actionBusy === "unready" ? "Clearing…" : "Pull back / change verdict"}
+                    </button>
+                  </>
+                ) : decision === "no_go" ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <XCircleIcon className="w-5 h-5 text-red-500 shrink-0" />
+                      <div className="text-sm font-bold text-red-700 dark:text-red-300">
+                        NO-GO — do not submit
+                      </div>
+                    </div>
+                    {qa?.decision_reason && (
+                      <p className="mt-1 text-xs text-gray-700 dark:text-gray-200">
+                        <span className="font-semibold">Reason:</span> {qa.decision_reason}
+                      </p>
+                    )}
+                    {qa?.decision_by_name && (
+                      <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                        by {qa.decision_by_name}
+                        {qa.decision_at ? ` · ${dateTimeET(qa.decision_at)} ET` : ""}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      disabled={actionBusy === "unready"}
+                      onClick={() =>
+                        void runRpc("processor_unmark_ready", { p_deal_id: dealId }, "unready")
+                      }
+                      className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue disabled:opacity-50"
+                    >
+                      <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
+                      {actionBusy === "unready" ? "Clearing…" : "Clear / re-open verdict"}
                     </button>
                   </>
                 ) : (
                   <>
-                    <button
-                      type="button"
-                      disabled={!canMarkReady || actionBusy === "ready"}
-                      onClick={() =>
-                        void runRpc("processor_mark_ready", { p_deal_id: dealId }, "ready")
-                      }
-                      title={
-                        canMarkReady
-                          ? "Mark ready for submission"
-                          : "Finish the application, get statements in, and pass QA first"
-                      }
-                      className="w-full inline-flex items-center justify-center gap-1.5 text-sm font-bold px-3 py-2.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      <PaperAirplaneIcon className="w-4 h-4" />
-                      {actionBusy === "ready" ? "Marking ready…" : "Mark ready to submit"}
-                    </button>
-                    {!canMarkReady && (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={!canGo || actionBusy === "go"}
+                        onClick={() => void submitGo()}
+                        title={
+                          canGo
+                            ? "GO — ready for the AI Underwriter"
+                            : "Finish the application, get statements in, and tick every QA item first"
+                        }
+                        className="inline-flex items-center gap-1.5 text-sm font-bold px-3 py-2.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <PaperAirplaneIcon className="w-4 h-4" />
+                        {actionBusy === "go" ? "Recording…" : "GO — Submit"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNoGoOpen((v) => !v)}
+                        className="inline-flex items-center gap-1.5 text-sm font-bold px-3 py-2.5 rounded-lg border border-red-400 text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20"
+                      >
+                        <XCircleIcon className="w-4 h-4" /> NO-GO — Don&apos;t submit
+                      </button>
+                    </div>
+                    {!canGo && (
                       <p className="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                        Enabled once{" "}
+                        GO unlocks once{" "}
                         <span className={gateApp ? "text-emerald-600 dark:text-emerald-400" : ""}>
                           application
                         </span>
@@ -697,11 +819,30 @@ export default function ProcessorDetailDrawer({
                           statements
                         </span>{" "}
                         and{" "}
-                        <span className={gateQa ? "text-emerald-600 dark:text-emerald-400" : ""}>
-                          QA
+                        <span className={allQaTicked ? "text-emerald-600 dark:text-emerald-400" : ""}>
+                          every QA item
                         </span>{" "}
-                        are all green.
+                        are green.
                       </p>
+                    )}
+                    {noGoOpen && (
+                      <div className="mt-2 space-y-2">
+                        <textarea
+                          value={noGoReason}
+                          onChange={(e) => setNoGoReason(e.target.value)}
+                          placeholder="Why not? What has to be fixed before this can be submitted? (required)"
+                          rows={2}
+                          className="w-full text-sm rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-gray-800 px-2.5 py-2 text-gray-900 dark:text-white"
+                        />
+                        <button
+                          type="button"
+                          disabled={!noGoReason.trim() || actionBusy === "nogo"}
+                          onClick={() => void submitNoGo()}
+                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {actionBusy === "nogo" ? "Recording…" : "Record NO-GO"}
+                        </button>
+                      </div>
                     )}
                   </>
                 )}
