@@ -11,9 +11,8 @@ import {
   UserIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
-import PipelineFlow from "@/components/shared/PipelineFlow";
 import TextMerchantPanel from "@/components/admin/TextMerchantPanel";
-import { MCA_PIPELINE } from "@/data/pipelines";
+import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
 import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
 import {
   applicationCompleteness,
@@ -49,10 +48,7 @@ import { dateTimeET } from "@/utils/time";
 
 const LIST_CAP = 200;
 type Sort = "recent" | "closer";
-
-// Only the MCA pipeline stages are hunted here (VCF has its own statuses that
-// never collide). Order + labels come from MCA_PIPELINE / DEAL_STATUS_CONFIG.
-const STAGE_KEYS = MCA_PIPELINE.stages.map((s) => s.key as DealStatus);
+type Pipe = "mca" | "vcf";
 
 interface AppObj {
   [key: string]: unknown;
@@ -87,6 +83,7 @@ interface DealRow {
   bank_statements_at: string | null;
   use_of_funds: string | null;
   deal_type: string | null;
+  amount_requested: number | null;
   assigned_closer_id: string | null;
   closer: { id: string; first_name: string | null; last_name: string | null } | null;
   customer: RowCustomer | null;
@@ -185,6 +182,7 @@ export default function ProcessorBoard({
   onOpen: (lookup: { dealId: string }) => void;
 }) {
   const [counts, setCounts] = useState<CountsState>({ kind: "loading" });
+  const [pipe, setPipe] = useState<Pipe>("mca");
   const [stage, setStage] = useState<DealStatus | null>(null);
   const [sort, setSort] = useState<Sort>("recent");
   const [list, setList] = useState<ListState>({ kind: "idle" });
@@ -251,16 +249,20 @@ export default function ProcessorBoard({
     if (stage) void loadStage(stage, sort);
   }, [stage, sort, loadStage]);
 
-  const onStageClick = useCallback((key: string) => {
-    setStage(key as DealStatus);
-  }, []);
-
   const countFor = useCallback(
     (k: string) => (counts.kind === "ready" ? counts.counts[k] ?? 0 : 0),
     [counts],
   );
 
   const listRows = list.kind === "ready" ? list.rows : [];
+
+  // Stages for the currently-selected pipeline (MCA / VCF). processor_stage_counts()
+  // returns counts for EVERY status, so the toggle is a pure display filter.
+  const stageDefs = (pipe === "mca" ? MCA_PIPELINE : VCF_PIPELINE).stages;
+  const maxCount = useMemo(
+    () => Math.max(1, ...stageDefs.map((s) => (counts.kind === "ready" ? counts.counts[s.key] ?? 0 : 0))),
+    [counts, stageDefs],
+  );
 
   const header = useMemo(
     () => (
@@ -286,23 +288,45 @@ export default function ProcessorBoard({
           )}
         </button>
         {!collapsed && (
-          <button
-            type="button"
-            onClick={() => {
-              void loadCounts();
-              if (stage) void loadStage(stage, sort);
-            }}
-            disabled={counts.kind === "loading"}
-            className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-ocean-blue disabled:opacity-50"
-            title="Reload the board"
-          >
-            <ArrowPathIcon className={`w-3.5 h-3.5 ${counts.kind === "loading" ? "animate-spin" : ""}`} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden text-xs">
+              {(["mca", "vcf"] as Pipe[]).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => {
+                    setPipe(p);
+                    setStage(null);
+                    setList({ kind: "idle" });
+                  }}
+                  className={`px-2.5 py-1 font-semibold ${
+                    pipe === p
+                      ? "bg-ocean-blue text-white"
+                      : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  }`}
+                >
+                  {p.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void loadCounts();
+                if (stage) void loadStage(stage, sort);
+              }}
+              disabled={counts.kind === "loading"}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-ocean-blue disabled:opacity-50"
+              title="Reload the board"
+            >
+              <ArrowPathIcon className={`w-3.5 h-3.5 ${counts.kind === "loading" ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+          </div>
         )}
       </div>
     ),
-    [counts, stage, sort, loadCounts, loadStage, collapsed],
+    [counts, stage, sort, loadCounts, loadStage, collapsed, pipe],
   );
 
   return (
@@ -317,7 +341,7 @@ export default function ProcessorBoard({
         missing before you chase.
       </p>
 
-      {/* ── Pipeline visual (shared PipelineFlow) — click a stage to select it ── */}
+      {/* ── Stage histogram — one bar per stage, click to open its leads below ── */}
       <div className="mt-4">
         {counts.kind === "error" ? (
           <div className="flex items-start gap-2 rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-3 text-xs text-red-700 dark:text-red-300">
@@ -335,40 +359,48 @@ export default function ProcessorBoard({
               </button>
             </div>
           </div>
+        ) : counts.kind === "loading" ? (
+          <p className="text-xs text-gray-400 py-6">Loading the board…</p>
         ) : (
-          <PipelineFlow
-            pipeline={MCA_PIPELINE}
-            currentKey={stage ?? ""}
-            onStageClick={onStageClick}
-          />
+          <div className="space-y-1.5">
+            {stageDefs.map((s) => {
+              const c = countFor(s.key);
+              const pct = Math.round((c / maxCount) * 100);
+              const active = stage === s.key;
+              return (
+                <button
+                  key={s.key}
+                  type="button"
+                  onClick={() => setStage(active ? null : (s.key as DealStatus))}
+                  aria-pressed={active}
+                  className={`w-full group flex items-center gap-3 text-left rounded ${
+                    active ? "ring-1 ring-ocean-blue/40 bg-ocean-blue/5" : ""
+                  }`}
+                  title={`${s.label} — ${c} deal${c === 1 ? "" : "s"}`}
+                >
+                  <span
+                    className={`w-36 shrink-0 text-sm truncate ${
+                      active ? "font-semibold text-ocean-blue" : "text-gray-700 dark:text-gray-200"
+                    }`}
+                  >
+                    {s.label}
+                  </span>
+                  <span className="flex-1 h-7 rounded bg-gray-100 dark:bg-gray-900 overflow-hidden relative">
+                    <span
+                      className={`absolute inset-y-0 left-0 rounded ${
+                        active ? "bg-ocean-blue" : "bg-ocean-blue/70 group-hover:bg-ocean-blue"
+                      }`}
+                      style={{ width: `${Math.max(pct, c > 0 ? 8 : 0)}%` }}
+                    />
+                  </span>
+                  <span className="w-12 shrink-0 text-right text-sm font-semibold tabular-nums text-gray-900 dark:text-white">
+                    {c.toLocaleString()}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         )}
-      </div>
-
-      {/* ── Per-stage count chips (also the selector) ── */}
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {STAGE_KEYS.map((k) => {
-          const active = stage === k;
-          const n = countFor(k);
-          return (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setStage(k)}
-              aria-pressed={active}
-              className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-colors ${
-                active
-                  ? "border-ocean-blue bg-ocean-blue/10 text-ocean-blue"
-                  : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600"
-              }`}
-              title={`${stageLabel(k)} — ${n} deal${n === 1 ? "" : "s"}`}
-            >
-              {stageLabel(k)}
-              <span className="ml-1 tabular-nums opacity-70">
-                {counts.kind === "loading" ? "…" : n}
-              </span>
-            </button>
-          );
-        })}
       </div>
 
       {/* ── The stage's deals ── */}
@@ -475,6 +507,11 @@ export default function ProcessorBoard({
                             </span>
                           </div>
                           <div className="mt-1 flex items-center gap-2 flex-wrap text-[11px] text-gray-500 dark:text-gray-400">
+                            {r.amount_requested != null && r.amount_requested > 0 && (
+                              <span className="font-semibold text-gray-700 dark:text-gray-200">
+                                ${Math.round(r.amount_requested).toLocaleString()} requested
+                              </span>
+                            )}
                             <span className="inline-flex items-center gap-1">
                               <UserIcon className="w-3 h-3" />
                               {closerName(r)}
