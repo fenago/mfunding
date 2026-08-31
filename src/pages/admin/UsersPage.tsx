@@ -69,6 +69,8 @@ export default function UsersPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<UserRole | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "paused">("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [viewing, setViewing] = useState<AdminUser | null>(null);
   const [editing, setEditing] = useState<AdminUser | null>(null);
@@ -97,15 +99,29 @@ export default function UsersPage() {
     setTimeout(() => setNotice(null), 3500);
   }
 
+  // This page is for STAFF. Merchant/customer accounts (role "user") are managed
+  // elsewhere and are hidden here so the team roster stays clean.
+  const staffRows = useMemo(() => rows.filter((u) => u.role !== "user"), [rows]);
+
+  // Staff roles only, for the role-filter dropdown.
+  const staffRoleOptions = useMemo(() => ROLE_OPTIONS.filter((r) => r.value !== "user"), []);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((u) =>
-      [u.email, u.first_name, u.last_name, u.display_name, u.company_name]
-        .filter(Boolean)
-        .some((v) => v!.toLowerCase().includes(q))
-    );
-  }, [rows, search]);
+    return staffRows.filter((u) => {
+      if (roleFilter !== "all" && u.role !== roleFilter) return false;
+      if (statusFilter === "active" && u.paused) return false;
+      if (statusFilter === "paused" && !u.paused) return false;
+      if (
+        q &&
+        ![u.email, u.first_name, u.last_name, u.display_name, u.company_name]
+          .filter(Boolean)
+          .some((v) => v!.toLowerCase().includes(q))
+      )
+        return false;
+      return true;
+    });
+  }, [staffRows, search, roleFilter, statusFilter]);
 
   async function run(id: string, fn: () => Promise<unknown>, okMsg: string) {
     setBusyId(id);
@@ -177,14 +193,42 @@ export default function UsersPage() {
 
       {showRoles && <RolePermissions onClose={() => setShowRoles(false)} />}
 
-      <div className="relative max-w-sm">
-        <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name, email, company…"
-          className="pl-9 pr-3 py-2 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100"
-        />
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[220px] max-w-sm">
+          <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search name, email, company…"
+            className="pl-9 pr-3 py-2 w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100"
+          />
+        </div>
+        <select
+          value={roleFilter}
+          onChange={(e) => setRoleFilter(e.target.value as UserRole | "all")}
+          className="py-2 pl-3 pr-8 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-700 dark:text-gray-200"
+          title="Filter by role"
+        >
+          <option value="all">All roles</option>
+          {staffRoleOptions.map((r) => (
+            <option key={r.value} value={r.value}>
+              {r.label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "paused")}
+          className="py-2 pl-3 pr-8 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-700 dark:text-gray-200"
+          title="Filter by status"
+        >
+          <option value="all">Any status</option>
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+        </select>
+        <span className="text-xs text-gray-400">
+          {filtered.length} of {staffRows.length} staff
+        </span>
       </div>
 
       {error && (
@@ -324,9 +368,10 @@ export default function UsersPage() {
       </div>
 
       <p className="text-xs text-gray-400">
-        Use <strong>Invite user</strong> to create a teammate's account and email them a set-password link. Anyone who
-        signs up at <code className="text-gray-500">/auth/sign-up</code> also lands here as a "User" — set their role above.
-        "User" = a merchant/customer.
+        Use <strong>Invite user</strong> to create a teammate's account and email them a set-password link. This roster
+        shows <strong>staff only</strong>; merchant/customer accounts (role "User") are hidden here and managed from the
+        CRM. Anyone who signs up at <code className="text-gray-500">/auth/sign-up</code> starts as a "User" until you
+        assign them a staff role.
       </p>
 
       {viewing && <UserDetailDrawer user={viewing} onClose={() => setViewing(null)} />}
