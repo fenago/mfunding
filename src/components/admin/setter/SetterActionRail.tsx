@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PencilSquareIcon } from "@heroicons/react/24/outline";
 import MerchantApplicationModal from "../MerchantApplicationModal";
 import AdHocSendMenu from "../AdHocSendMenu";
+import SetterDndButton from "./SetterDndButton";
 import { ensureDealStageAtLeast } from "../../../services/dealService";
 import type { DealWithCustomer } from "../../../types/deals";
 
@@ -54,13 +55,17 @@ export default function SetterActionRail({
         Fill out application
       </button>
 
-      {/* Secondary action — send docs. */}
+      {/* Secondary actions — send docs + take them off the list (DND), together so
+          the setter can act on "take me off your list" right where they send. */}
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <AdHocSendMenu
           dealId={deal.id}
           merchantEmail={deal.customer?.email}
           ghlContactId={deal.ghl_contact_id}
         />
+        <span className="ml-auto">
+          <SetterDndButton deal={deal} onRefresh={onRefresh} />
+        </span>
       </div>
 
       {showApp && (

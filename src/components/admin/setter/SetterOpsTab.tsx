@@ -13,7 +13,6 @@ import SetterMerchantSearch from "@/components/admin/setter/SetterMerchantSearch
 import SetterDealList from "@/components/admin/setter/SetterDealList";
 import SetterPortalCard from "@/components/admin/setter/SetterPortalCard";
 import SetterDocSigning from "@/components/admin/setter/SetterDocSigning";
-import SetterDndButton from "@/components/admin/setter/SetterDndButton";
 import SetterContactsEditor from "@/components/admin/setter/SetterContactsEditor";
 import SetterDealMeta from "@/components/admin/setter/SetterDealMeta";
 import SetterConnectBank from "@/components/admin/setter/SetterConnectBank";
@@ -188,13 +187,11 @@ export default function SetterOpsTab() {
         <SetterChecklist deal={deal} onRefresh={reload} />
         {/* Product + campaign attribution context, right under the snapshot. */}
         <SetterDealMeta deal={deal} onRefresh={reload} />
-        {/* Merchant-status row: portal invite / paperwork sent+signed / DND, three
-            up on large screens and stacked on mobile so the setter sees where the
-            merchant is before dialing. */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Merchant-status row: portal invite + paperwork sent/signed. (DND moved
+            up into the action rail so "take them off the list" sits with Send docs.) */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <SetterPortalCard deal={deal} onRefresh={reload} />
           <SetterDocSigning deal={deal} onRefresh={reload} />
-          <SetterDndButton deal={deal} onRefresh={reload} />
         </div>
         <SetterActionRail deal={deal} onRefresh={reload} autoOpen />
         <SetterCommsPanel deal={deal} onRefresh={reload} />
