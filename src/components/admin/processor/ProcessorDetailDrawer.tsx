@@ -4,6 +4,7 @@ import {
   ArrowTopRightOnSquareIcon,
   ArrowDownTrayIcon,
   ArrowUturnLeftIcon,
+  BoltIcon,
   CheckCircleIcon,
   DocumentTextIcon,
   ExclamationTriangleIcon,
@@ -25,6 +26,7 @@ import {
 } from "@/lib/applicationCompleteness";
 import SchedulePicker from "./SchedulePicker";
 import GateTracker from "./GateTracker";
+import QuickAppModal from "./QuickAppModal";
 import { appComplete, hasStatements, qaPassed, toDealArg, type Pipe, type PipelineRow } from "./types";
 
 // ── The QA checklist — UI-owned, stable keys (persisted as jsonb via
@@ -240,6 +242,7 @@ export default function ProcessorDetailDrawer({
   // Go/No-Go verdict working state.
   const [noGoOpen, setNoGoOpen] = useState(false);
   const [noGoReason, setNoGoReason] = useState("");
+  const [quickApp, setQuickApp] = useState(false);
 
   const load = useCallback(async () => {
     if (!dealId) return;
@@ -495,6 +498,17 @@ export default function ProcessorDetailDrawer({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {/* Quick App — the fast mandatory-only application (live-transfer script,
+              auto-fill, safe defaults). The processor's first move on a live call. */}
+          {state.kind === "ready" && (
+            <button
+              type="button"
+              onClick={() => setQuickApp(true)}
+              className="w-full inline-flex items-center justify-center gap-2 text-sm font-bold px-3 py-2.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600"
+            >
+              <BoltIcon className="w-4 h-4" /> Quick App — fast fill + send
+            </button>
+          )}
           {state.kind === "loading" && (
             <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 py-10">
               <span className="loading loading-spinner loading-sm" /> Loading the deal…
@@ -1057,6 +1071,15 @@ export default function ProcessorDetailDrawer({
           </div>
         )}
       </div>
+
+      {/* Quick App — mandatory-only fast application. Re-reads the deal on save. */}
+      {quickApp && dealId && (
+        <QuickAppModal
+          dealId={dealId}
+          onClose={() => setQuickApp(false)}
+          onSaved={() => { onChanged(); void load(); }}
+        />
+      )}
     </div>
   );
 }
