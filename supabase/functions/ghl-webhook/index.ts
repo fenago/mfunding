@@ -1372,6 +1372,29 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
         }
       }
     } catch { /* attribution is best-effort; round-robin covers the rest */ }
+    // ── SECOND SIGNAL — the opportunity's OWNER in VibeReach. A setter who dials a
+    // merchant and adds the account/opportunity themselves owns it there (assignedTo),
+    // no time window involved. Commission attribution rides on this assignment, so
+    // the direct ownership evidence beats round-robin whenever it resolves.
+    if (!dialerId && oppId) {
+      try {
+        const cfg = await getGhlConfig(db);
+        const or2 = await ghlFetch<{ opportunity?: { assignedTo?: string } }>(cfg, "GET", `/opportunities/${oppId}`);
+        const ghlUserId = or2.data?.opportunity?.assignedTo;
+        if (ghlUserId) {
+          const ur = await ghlFetch<{ email?: string; firstName?: string; lastName?: string }>(cfg, "GET", `/users/${ghlUserId}`);
+          const email = String(ur.data?.email ?? "").trim().toLowerCase();
+          if (email) {
+            const { data: prof } = await db
+              .from("profiles").select("id, first_name, last_name").ilike("email", email).maybeSingle();
+            if (prof?.id) {
+              dialerId = prof.id as string;
+              dialerNote = `Assigned to ${[prof.first_name, prof.last_name].filter(Boolean).join(" ") || email} — they own this opportunity in VibeReach (assignedTo).`;
+            }
+          }
+        }
+      } catch { /* best-effort; falls back to the configured strategy */ }
+    }
     if (dialerId) insert.assigned_closer_id = dialerId;
     // Stamp the stage timestamp for whatever status this opportunity was created
     // at (it's a fresh row, so the column is null by definition).
