@@ -11,7 +11,7 @@
 // validation works off each member's snapshot phone, so it's offered for every list —
 // and is disabled with an "add the Twilio key" note when the provider is gated.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   MagnifyingGlassIcon,
   SparklesIcon,
@@ -532,6 +532,18 @@ function ActionPanel({
     }
   };
 
+  // Auto-run the count/cost preview the moment the panel is enabled — no manual
+  // "Preview" click. Fires once per panel instance (the phone panel remounts on
+  // provider switch, so it re-previews per provider). A manual Refresh still works.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (enabled && !autoRan.current) {
+      autoRan.current = true;
+      void doPreview();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
+
   const doRun = async () => {
     setArmed(false);
     setRunning(true);
@@ -575,8 +587,9 @@ function ActionPanel({
       ) : (
         <>
           {extra}
+          {/* Count/cost auto-loads; this just re-checks it. */}
           <button onClick={doPreview} disabled={previewing || running} className="btn-ghost btn-sm inline-flex items-center gap-1.5">
-            <MagnifyingGlassIcon className="w-4 h-4" /> {previewing ? "Counting…" : "Preview count & cost"}
+            <MagnifyingGlassIcon className="w-4 h-4" /> {previewing ? "Counting…" : preview ? "Refresh count" : "Count & cost"}
           </button>
 
           {preview && (
