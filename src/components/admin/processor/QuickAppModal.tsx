@@ -133,11 +133,19 @@ export default function QuickAppModal({
   const set = useCallback((key: string, value: string) => {
     setForm((f) => {
       const next: Form = { ...f, [key]: value };
-      if (key === "business_address" && !f.owner_home_address?.trim()) next.owner_home_address = value;
-      if (key === "business_city" && !f.owner_home_city?.trim()) next.owner_home_city = value;
-      if (key === "business_state" && !f.owner_home_state?.trim()) next.owner_home_state = value;
-      if (key === "business_zip" && !f.owner_home_zip?.trim()) next.owner_home_zip = value;
-      if (key === "business_phone" && !f.owner_phone?.trim()) next.owner_phone = value;
+      // Mirror business → home while the home field is still TRACKING business
+      // (empty, or equal to the pre-keystroke business value). This keeps mirroring
+      // through every keystroke ("Plantation", not just "P"), and stops the instant
+      // the processor types something different into the home field itself.
+      const linked = (homeKey: string, bizKey: string) => {
+        const h = (f[homeKey] ?? "").trim();
+        return h === "" || (f[homeKey] ?? "") === (f[bizKey] ?? "");
+      };
+      if (key === "business_address" && linked("owner_home_address", "business_address")) next.owner_home_address = value;
+      if (key === "business_city" && linked("owner_home_city", "business_city")) next.owner_home_city = value;
+      if (key === "business_state" && linked("owner_home_state", "business_state")) next.owner_home_state = value;
+      if (key === "business_zip" && linked("owner_home_zip", "business_zip")) next.owner_home_zip = value;
+      if (key === "business_phone" && linked("owner_phone", "business_phone")) next.owner_phone = value;
       return next;
     });
   }, []);
