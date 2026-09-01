@@ -316,12 +316,15 @@ interface ProductiveCounts {
   /** Of the in-range applications, how many ALSO reached bank statements — the
    *  hard, un-fakeable "App + statements" the funnel's Applications rung shows. */
   appsWithStatements: number;
+  /** Σ amount_requested over the in-range applications (partials included) — the
+   *  dollars ADDED TO THE PIPELINE by this range's applications. */
+  appsAskTotal: number;
   appointments: number;
   funded: number;
 }
 
 function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): ProductiveCounts {
-  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appsWithStatements: 0, appointments: 0, funded: 0 };
+  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appsWithStatements: 0, appsAskTotal: 0, appointments: 0, funded: 0 };
   for (const d of deals) {
     const contacted = inRange(d.contacted_at, from, to);
     const qualified = inRange(d.qualified_at, from, to);
@@ -336,7 +339,11 @@ function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): Produ
     // stamp; "with statements" is a property of that same applied-in-range deal
     // (of those apps, how many also got the docs in), so it is NOT range-gated
     // again on the statements stamp.
-    if (appSent) { c.appsSent++; if (dealReachedStatements(d)) c.appsWithStatements++; }
+    if (appSent) {
+      c.appsSent++;
+      if (dealReachedStatements(d)) c.appsWithStatements++;
+      c.appsAskTotal += Number(d.amount_requested ?? 0) || 0;
+    }
     if (appt) c.appointments++;
     if (funded) c.funded++;
   }
@@ -796,6 +803,9 @@ interface FunnelStage {
 interface AppsRung {
   applications: number;
   withStatements: number;
+  /** Σ amount_requested across the in-range applications — dollars added to the
+   *  pipeline (partials included). */
+  askTotal: number;
 }
 
 function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] {
@@ -854,6 +864,7 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
     const unreadable = apps === null;
     const applications = apps?.applications ?? 0;
     const withStatements = apps?.withStatements ?? 0;
+    const askTotal = apps?.askTotal ?? 0;
     stages.push({
       key: "applications", label: "Applications", short: "Apps",
       help:
@@ -867,7 +878,18 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       secondaryLine: unreadable ? (
         <span className="text-amber-600 dark:text-amber-400">pipeline unreadable — unknown, not zero</span>
       ) : (
-        <><b className="tabular-nums text-gray-600 dark:text-gray-300">{withStatements.toLocaleString()}</b> with statements</>
+        <>
+          <b className="tabular-nums text-gray-600 dark:text-gray-300">{withStatements.toLocaleString()}</b> with statements
+          {askTotal > 0 && (
+            <>
+              {" · "}
+              <b className="tabular-nums text-emerald-600 dark:text-emerald-400">
+                ${Math.round(askTotal).toLocaleString()}
+              </b>{" "}
+              added to pipeline
+            </>
+          )}
+        </>
       ),
     });
   }
@@ -2340,7 +2362,7 @@ export default function SetterPerformancePage() {
   const appsRungCombined = useMemo(
     (): AppsRung | null =>
       productiveTotals
-        ? { applications: productiveTotals.appsSent, withStatements: productiveTotals.appsWithStatements }
+        ? { applications: productiveTotals.appsSent, withStatements: productiveTotals.appsWithStatements, askTotal: productiveTotals.appsAskTotal }
         : null,
     [productiveTotals],
   );
@@ -2354,7 +2376,7 @@ export default function SetterPerformancePage() {
     const m = new Map<string, AppsRung>();
     for (const [key, deals] of productiveByOwner) {
       const c = computeProductive(deals, range.from, range.to);
-      m.set(key, { applications: c.appsSent, withStatements: c.appsWithStatements });
+      m.set(key, { applications: c.appsSent, withStatements: c.appsWithStatements, askTotal: c.appsAskTotal });
     }
     return m;
   }, [productiveByOwner, range]);
@@ -3259,7 +3281,7 @@ export default function SetterPerformancePage() {
                           // failed and the rung draws "—".
                           const setterId = g.key.startsWith("setter:") ? g.key.slice("setter:".length) : null;
                           const appsForScope: AppsRung | null | undefined = setterId
-                            ? (appsBySetter === null ? null : (appsBySetter.get(setterId) ?? { applications: 0, withStatements: 0 }))
+                            ? (appsBySetter === null ? null : (appsBySetter.get(setterId) ?? { applications: 0, withStatements: 0, askTotal: 0 }))
                             : undefined;
                           return (
                             <FunnelCard
