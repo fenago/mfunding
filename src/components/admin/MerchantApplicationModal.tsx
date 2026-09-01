@@ -733,13 +733,21 @@ export default function MerchantApplicationModal({
       // Mirror the app fields onto the VibeReach contact's custom fields too — the
       // app is the master surface, so a save keeps VibeReach in step (no document
       // sent). Best-effort: a sync hiccup must never make a saved draft look failed.
+      let vibeMsg = "";
       try {
-        await supabase.functions.invoke("push-application-to-ghl", {
-          body: { dealId: deal.id, fields_only: true },
-        });
-      } catch { /* saved locally; VibeReach catches up on the next save / send */ }
-      setToast("Application saved.");
-      setTimeout(() => setToast(null), 3000);
+        const { data: syncData, error: syncErr } = await supabase.functions.invoke(
+          "push-application-to-ghl",
+          { body: { dealId: deal.id, fields_only: true } },
+        );
+        const r = (syncData ?? {}) as { synced?: boolean };
+        if (syncErr) vibeMsg = " · VibeReach sync will retry on next save";
+        else if (r.synced) vibeMsg = " · synced to VibeReach";
+        else vibeMsg = " · not synced to VibeReach yet (add an email)";
+      } catch {
+        vibeMsg = " · VibeReach sync will retry on next save";
+      }
+      setToast(`Application saved${vibeMsg}.`);
+      setTimeout(() => setToast(null), 4500);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the application.");
     } finally {
