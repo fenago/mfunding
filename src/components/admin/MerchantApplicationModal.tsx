@@ -25,6 +25,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { XMarkIcon, DocumentTextIcon, PaperAirplaneIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
 import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
+import { normalizePhoneForStorage } from "@/lib/phone";
 import { REQUIRED_APPLICATION_FIELDS } from "@/lib/applicationCompleteness";
 import { updateDealStatus, updateCustomerAdditionalEmails } from "../../services/dealService";
 import EnrichmentCard, { type EnrichmentUseField } from "./EnrichmentCard";
@@ -660,11 +661,20 @@ export default function MerchantApplicationModal({
         failed.push(e instanceof Error ? e.message : String(e));
       }
     }
-    if (revChanged && deal.customer_id) {
+    // Backfill the merchant's textable/dialable phone from the application when the
+    // customer record has none — the app's owner/business phone otherwise never
+    // reaches the text panel or dialer (both read customers.phone).
+    const custPatch: Record<string, unknown> = {};
+    if (revChanged) custPatch.monthly_revenue = rev;
+    const appPhone = form.owner_phone.trim() || form.business_phone.trim();
+    if (appPhone && !(cust?.phone && cust.phone.trim())) {
+      custPatch.phone = normalizePhoneForStorage(appPhone) || appPhone;
+    }
+    if (deal.customer_id && Object.keys(custPatch).length > 0) {
       try {
         await mustWrite(
-          "save monthly revenue on the merchant",
-          supabase.from("customers").update({ monthly_revenue: rev }).eq("id", deal.customer_id),
+          "save the merchant's contact info",
+          supabase.from("customers").update(custPatch).eq("id", deal.customer_id),
         );
       } catch (e) {
         failed.push(e instanceof Error ? e.message : String(e));
@@ -674,7 +684,7 @@ export default function MerchantApplicationModal({
       return `The application saved, but the deal record did NOT take the new numbers — the Playbook still shows the old ask. ${failed.join(" ")}`;
     }
     // Only ask the parent to re-read when something actually changed.
-    if (Object.keys(dealPatch).length > 0 || revChanged) onSaved?.();
+    if (Object.keys(dealPatch).length > 0 || Object.keys(custPatch).length > 0) onSaved?.();
     return null;
   }
 

@@ -169,6 +169,12 @@ export default function TextMerchantPanel({
   }, [merchantPhone, additionalPhones]);
   const [phone, setPhone] = useState(phoneOptions[0] ?? "");
   useEffect(() => { setPhone((p) => (p && phoneOptions.includes(p) ? p : phoneOptions[0] ?? "")); }, [phoneOptions]);
+  // Manual entry — always available; forced on when there are no numbers on file.
+  const [manual, setManual] = useState(false);
+  const [manualPhone, setManualPhone] = useState("");
+  const manualMode = manual || phoneOptions.length === 0;
+  // The number the text actually goes to (typed number wins when in manual mode).
+  const toPhone = manualMode ? (normalizePhoneForStorage(manualPhone) || "") : phone;
 
   const ctx: Ctx = useMemo(() => ({
     first: (merchantFirstName || "there").trim(),
@@ -365,7 +371,7 @@ export default function TextMerchantPanel({
     try {
       const { error } = await supabase.functions.invoke("sms-send", {
         body: {
-          to: phone,
+          to: toPhone,
           body: text.trim(),
           ...(customerId ? { customer_id: customerId } : {}),
           // Only a real sms_lines row carries an id; the hardcoded fallback line
@@ -392,7 +398,7 @@ export default function TextMerchantPanel({
       }
       onSent?.();
 
-      setResult({ ok: true, text: `Sent to ${prettyPhone(phone)}.` });
+      setResult({ ok: true, text: `Sent to ${prettyPhone(toPhone)}.` });
       setText("");
       setDocChips([]);
     } catch (e) {
@@ -406,7 +412,7 @@ export default function TextMerchantPanel({
 
   const chars = text.length;
   const segments = chars === 0 ? 0 : Math.ceil(chars / 160);
-  const noPhone = !phone;
+  const noPhone = !toPhone;
   const canSend = !noPhone && text.trim() !== "" && chars <= MAX_CHARS && !sending;
   const lineNumber = selectedLine ? prettyPhone(selectedLine.phone) : prettyPhone("+17865041159");
 
@@ -421,10 +427,15 @@ export default function TextMerchantPanel({
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
             <span className="inline-flex items-center gap-2">
               <span className="text-[10px] uppercase tracking-wide text-gray-400 flex-shrink-0">To</span>
-              {phoneOptions.length === 0 ? (
-                <span className="text-[11px] text-amber-600 dark:text-amber-400">
-                  No mobile on file — add one to text.
-                </span>
+              {manualMode ? (
+                <input
+                  type="tel"
+                  autoFocus={phoneOptions.length === 0}
+                  value={manualPhone}
+                  onChange={(e) => setManualPhone(e.target.value)}
+                  placeholder="type a mobile number…"
+                  className="text-[11px] font-mono rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-0.5 w-40"
+                />
               ) : phoneOptions.length === 1 ? (
                 <span className="text-[11px] font-mono text-gray-800 dark:text-gray-200">{prettyPhone(phone)}</span>
               ) : (
@@ -435,6 +446,16 @@ export default function TextMerchantPanel({
                 >
                   {phoneOptions.map((p) => <option key={p} value={p}>{prettyPhone(p)}</option>)}
                 </select>
+              )}
+              {/* Toggle between on-file numbers and a typed number — always available. */}
+              {phoneOptions.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setManual((m) => !m)}
+                  className="text-[10px] font-semibold text-ocean-blue hover:underline"
+                >
+                  {manualMode ? "use on-file number" : "type a different number"}
+                </button>
               )}
             </span>
             {selectedLine && (
@@ -609,7 +630,7 @@ export default function TextMerchantPanel({
               ) : (
                 <PaperAirplaneIcon className="w-3.5 h-3.5" />
               )}
-              {sending ? "Sending…" : armed ? `Tap again — send to ${prettyPhone(phone)}` : "Send text"}
+              {sending ? "Sending…" : armed ? `Tap again — send to ${prettyPhone(toPhone)}` : "Send text"}
             </button>
           </div>
           <p className="mt-1 text-[10px] text-gray-400">
