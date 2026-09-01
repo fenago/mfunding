@@ -335,6 +335,10 @@ Deno.serve(async (req) => {
   // completes the rest on the document; blank = merchant fills everything.
   const mode: SendMode = blank ? "blank" : partial ? "partial" : "prefill";
   const resend = payload.resend === true;
+  // Sync-on-save: write the app fields to the VibeReach contact WITHOUT sending any
+  // document, enrolling, or moving the stage. No email guard (a save must never be
+  // blocked). Used by the Fill-the-application modal's Save draft.
+  const fieldsOnly = payload.fields_only === true || payload.sync_only === true;
 
   const db = serviceClient();
 
@@ -421,6 +425,45 @@ Deno.serve(async (req) => {
   // the submit/email engines). Persist a newly-created id for later comms.
   const appRow = (app ?? {}) as App;
   const merchantEmail = s(appRow.business_email) || s(appRow.owner_email) || s(customer.email);
+
+  // ── SYNC-ONLY (Save draft) — mirror the app fields to VibeReach, nothing else. ──
+  if (fieldsOnly) {
+    let contactId =
+      (customer.ghl_contact_id as string | null) ?? (deal.ghl_contact_id as string | null) ?? null;
+    // No contact yet? Create one by email if we have it; otherwise skip GHL quietly
+    // (the save still succeeds — GHL just catches up once an email exists / on send).
+    if (!contactId && merchantEmail) {
+      const cr = await upsertContact(cfg, {
+        email: merchantEmail,
+        firstName: (customer.first_name as string | null) ?? undefined,
+        lastName: (customer.last_name as string | null) ?? undefined,
+        companyName: (customer.business_name as string | null) ?? undefined,
+        phone: (customer.phone as string | null) ?? undefined,
+        address1: (customer.address_street as string | null) ?? undefined,
+        city: (customer.address_city as string | null) ?? undefined,
+        state: (customer.address_state as string | null) ?? undefined,
+        postalCode: (customer.address_zip as string | null) ?? undefined,
+        source: "MCA Application",
+      });
+      contactId = cr.data?.contact?.id ?? null;
+      if (contactId) {
+        await db.from("customers").update({ ghl_contact_id: contactId }).eq("id", customer.id);
+        if ((deal.ghl_contact_id ?? null) !== contactId) {
+          await db.from("deals").update({ ghl_contact_id: contactId }).eq("id", dealId);
+        }
+      }
+    }
+    if (!contactId) {
+      return json({ ok: true, synced: false, reason: "no VibeReach contact yet (an email is needed to create one)" });
+    }
+    const syncFields = buildFields(appRow);
+    if (syncFields.length > 0) {
+      const res = await updateContactCustomFields(cfg, contactId, syncFields);
+      if (!res.ok) return json({ ok: false, synced: false, error: `VibeReach field sync failed: ${res.error}` }, 502);
+    }
+    return json({ ok: true, synced: true, fields: syncFields.length });
+  }
+
   // HARD GUARD: the GHL contact MCA 04 fires against MUST carry an email, or the
   // doc-send + email actions silently SKIP and the merchant gets nothing (while
   // the app shows "sent"). So require an email up front — regardless of whether a

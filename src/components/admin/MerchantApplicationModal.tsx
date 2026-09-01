@@ -670,6 +670,21 @@ export default function MerchantApplicationModal({
     if (appPhone && !(cust?.phone && cust.phone.trim())) {
       custPatch.phone = normalizePhoneForStorage(appPhone) || appPhone;
     }
+    // The app is the most-touched surface → keep the customer record in step with it.
+    // present-only: a blank app field never clobbers an existing customer value.
+    const setIf = (col: string, v: string | undefined) => {
+      const val = (v ?? "").trim();
+      if (val) custPatch[col] = val;
+    };
+    setIf("business_name", form.business_legal_name);
+    setIf("address_street", form.business_address);
+    setIf("address_city", form.business_city);
+    setIf("address_state", form.business_state);
+    setIf("address_zip", form.business_zip);
+    setIf("industry", form.industry);
+    setIf("entity_type", form.business_type);
+    // email is comms-critical — only fill when the customer has none.
+    if (!(cust?.email && cust.email.trim())) setIf("email", form.business_email || form.owner_email);
     if (deal.customer_id && Object.keys(custPatch).length > 0) {
       try {
         await mustWrite(
@@ -715,6 +730,14 @@ export default function MerchantApplicationModal({
       // The ask/use-of-funds/revenue the closer just typed become the RECORD's
       // numbers too — otherwise this draft and the Playbook disagree.
       setSyncWarning(await syncSharedFieldsToDeal());
+      // Mirror the app fields onto the VibeReach contact's custom fields too — the
+      // app is the master surface, so a save keeps VibeReach in step (no document
+      // sent). Best-effort: a sync hiccup must never make a saved draft look failed.
+      try {
+        await supabase.functions.invoke("push-application-to-ghl", {
+          body: { dealId: deal.id, fields_only: true },
+        });
+      } catch { /* saved locally; VibeReach catches up on the next save / send */ }
       setToast("Application saved.");
       setTimeout(() => setToast(null), 3000);
     } catch (e) {
