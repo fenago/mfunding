@@ -64,6 +64,7 @@ export default function QuickAppModal({
   const [err, setErr] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showScript, setShowScript] = useState(false);
+  const [signed, setSigned] = useState(false);
 
   const script = useMemo(ltScript, []);
 
@@ -94,6 +95,16 @@ export default function QuickAppModal({
         const cust = (found.deal?.customer ?? {}) as unknown as Record<string, unknown>;
         const app = (appRow ?? {}) as Record<string, unknown>;
         setExistingId((app.id as string) ?? null);
+        // Signed? Check the completion ledger for this merchant (no GHL call).
+        const custId = s(deal.customer_id);
+        if (custId) {
+          const { data: comps } = await supabase
+            .from("ghl_doc_completions").select("doc_name").eq("customer_id", custId);
+          const isSigned = ((comps ?? []) as { doc_name: string | null }[]).some(
+            (c) => /application|prefill|partial/i.test(c.doc_name ?? ""),
+          );
+          if (alive) setSigned(isSigned);
+        }
         const seed: Form = {};
         for (const { key } of REQUIRED_APPLICATION_FIELDS) {
           let v = s(app[key]);
@@ -250,6 +261,11 @@ export default function QuickAppModal({
           <div>
             <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
               <BoltIcon className="w-5 h-5 text-amber-500" /> Quick App
+              {signed && (
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                  ✍️ Application signed
+                </span>
+              )}
             </h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
               Mandatory fields only — address & phone auto-fill; account/routing/DOB pre-defaulted.

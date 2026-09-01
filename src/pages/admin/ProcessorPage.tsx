@@ -805,6 +805,14 @@ export default function ProcessorPage() {
                               {r.deal_number && (
                                 <span className="text-[10px] text-gray-400">#{r.deal_number}</span>
                               )}
+                              {r.application_signed_at && (
+                                <span
+                                  title={`Application signed ${new Date(r.application_signed_at).toLocaleDateString()}`}
+                                  className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                >
+                                  ✍️ Signed
+                                </span>
+                              )}
                             </div>
                           </td>
 

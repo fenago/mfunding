@@ -42,7 +42,7 @@ const DEAL_CAP = 50;
 // One unbroken literal — supabase-js infers the row shape by parsing it, so a
 // split string degrades the type to GenericStringError.
 const DEAL_COLS =
-  "id,deal_number,status,previous_status,lead_source,updated_at,created_at,contacted_at,spoke_at,last_attempt_at,callback_at,callback_source,appointment_at,appointment_promised_at,stips_promised_by,customer:customers!customer_id(business_name,first_name,last_name,phone)";
+  "id,deal_number,status,previous_status,lead_source,updated_at,created_at,contacted_at,spoke_at,last_attempt_at,callback_at,callback_source,appointment_at,appointment_promised_at,stips_promised_by,customer_id,customer:customers!customer_id(business_name,first_name,last_name,phone)";
 
 interface DealCustomer {
   business_name: string | null;
@@ -67,6 +67,7 @@ interface DealRow {
   appointment_at: string | null;
   appointment_promised_at: string | null;
   stips_promised_by: string | null;
+  customer_id: string | null;
   customer: DealCustomer | null;
 }
 
@@ -241,6 +242,8 @@ export default function SetterDealList({
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [filter, setFilter] = useState<QueueFilter>({ kind: "all" });
   const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
+  // Customer ids whose application has been signed (from ghl_doc_completions).
+  const [signedCustomers, setSignedCustomers] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -283,6 +286,22 @@ export default function SetterDealList({
       if (error) throw new Error(error.message);
       const rows = (data ?? []) as unknown as DealRow[];
       setState({ kind: "ready", rows, total: count ?? rows.length });
+      // Which of these merchants have a SIGNED application? One extra query against
+      // the completion ledger (no GHL call) → a ✍️ Signed badge on the row.
+      const custIds = Array.from(new Set(rows.map((r) => r.customer_id).filter(Boolean))) as string[];
+      if (custIds.length > 0) {
+        const { data: comps } = await supabase
+          .from("ghl_doc_completions")
+          .select("customer_id, doc_name")
+          .in("customer_id", custIds);
+        const signed = new Set<string>();
+        for (const c of (comps ?? []) as { customer_id: string; doc_name: string | null }[]) {
+          if (c.customer_id && /application|prefill|partial/i.test(c.doc_name ?? "")) signed.add(c.customer_id);
+        }
+        setSignedCustomers(signed);
+      } else {
+        setSignedCustomers(new Set());
+      }
     } catch (e) {
       // error, NEVER an empty list — an unreadable book is not an empty book.
       setState({
@@ -486,6 +505,14 @@ export default function SetterDealList({
                             title={ns.title}
                           >
                             {ns.label}
+                          </span>
+                        )}
+                        {r.customer_id && signedCustomers.has(r.customer_id) && (
+                          <span
+                            title="Application signed"
+                            className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                          >
+                            ✍️ Signed
                           </span>
                         )}
                       </div>
