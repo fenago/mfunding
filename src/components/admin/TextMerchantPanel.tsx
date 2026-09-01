@@ -68,29 +68,9 @@ interface Ctx { first: string; business: string; closerFirst: string }
 
 export interface TextTemplate { id: string; label: string; body: (c: Ctx) => string }
 
-const DEFAULT_TEMPLATES: TextTemplate[] = [
-  {
-    id: "intro",
-    label: "Intro + application",
-    body: (c) =>
-      `Hi ${c.first}, it's ${c.closerFirst} with Momentum Funding about working capital for ${c.business}. ` +
-      `Here's the application — takes about 3 minutes: `,
-  },
-  {
-    id: "docs",
-    label: "Docs chase",
-    body: (c) =>
-      `${c.first}, last piece before I can get you numbers: your last 3-4 months of business bank statements. ` +
-      `Upload them here: `,
-  },
-  {
-    id: "bank",
-    label: "Bank-connect nudge",
-    body: (c) =>
-      `${c.first}, skip the PDFs — connect your bank in about 60 seconds and I'll have your funding options today: `,
-  },
-  { id: "blank", label: "Blank", body: () => "" },
-];
+// Where merchants can always email their documents (owner rule — offered in every
+// docs-request template as the no-friction alternative to the upload link).
+const DOCS_EMAIL = "sales@send.mfunding.net";
 
 const MAX_CHARS = 1600;
 
@@ -157,7 +137,9 @@ export default function TextMerchantPanel({
   const wrapRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  const TEMPLATES = templates ?? DEFAULT_TEMPLATES;
+  // Hosts may still pass a custom template set; with none, the SMART templates
+  // below (which auto-build with this merchant's real links) render instead.
+  const TEMPLATES = templates ?? [];
 
   // ── To ──
   const phoneOptions = useMemo(() => {
@@ -365,6 +347,71 @@ export default function TextMerchantPanel({
       : uploadFormUrl
     : null;
 
+  // ── SMART TEMPLATES (owner's three core use cases) — one click builds the whole
+  // message WITH this merchant's real links. Setters/processors always work the
+  // COMPLETE application, so the sign-link templates use the merchant's own sent
+  // e-sign document; when it hasn't been sent yet the chip is disabled with the
+  // reason (be proactive: never text a link that doesn't exist). ──
+  const appDoc = useMemo(
+    () => (sentLinks ?? []).find((l) => /application|prefill|partial/i.test(l.name) && l.url),
+    [sentLinks],
+  );
+  const appSignUrl = appDoc?.url ?? null;
+  const appAlreadySigned = appDoc?.signed === true;
+  // Why the sign-link templates can't fire yet (null = they can).
+  const appLinkBlock = !ghlContactId
+    ? "No VibeReach contact on this merchant yet — send the application first."
+    : sentLinks === null
+      ? "Checking their documents…"
+      : !appSignUrl
+        ? "Send the application first (Fill out application → send) — its e-sign link doesn't exist yet."
+        : appAlreadySigned
+          ? "Application already signed ✓ — nothing to chase."
+          : null;
+
+  const statementsAsk = (lead: string) =>
+    `${lead} your last 3-4 months of business bank statements (a photo of your driver's license helps too). ` +
+    (uploadLink
+      ? `Upload securely here: ${uploadLink} — or just email everything to ${DOCS_EMAIL}.`
+      : `Just email everything to ${DOCS_EMAIL}.`);
+
+  interface SmartTemplate { id: string; label: string; disabled: string | null; build: () => string }
+  const smartTemplates: SmartTemplate[] = [
+    {
+      id: "sign-app",
+      label: "✍️ Sign the application",
+      disabled: appLinkBlock,
+      build: () =>
+        `Hi ${ctx.first}, it's ${ctx.closerFirst} with Momentum Funding. Your working-capital application for ${ctx.business} is ready — tap to review and e-sign (about 2 minutes): ${appSignUrl}`,
+    },
+    {
+      id: "bank-docs",
+      label: "🏦 Request bank statements",
+      disabled: null,
+      build: () => statementsAsk(`${ctx.first}, to finalize your funding options for ${ctx.business} I need`),
+    },
+    {
+      id: "intro-all",
+      label: "🚀 Intro — sign + docs",
+      disabled: appLinkBlock,
+      build: () =>
+        `Hi ${ctx.first}, it's ${ctx.closerFirst} with Momentum Funding — great speaking with you about working capital for ${ctx.business}. Two quick steps to get your options:\n` +
+        `1) Review + e-sign your application: ${appSignUrl}\n` +
+        `2) ${uploadLink
+          ? `Send your last 3-4 months of business bank statements + driver's license — upload: ${uploadLink} or email them to ${DOCS_EMAIL}.`
+          : `Email your last 3-4 months of business bank statements + driver's license to ${DOCS_EMAIL}.`}\n` +
+        `Questions? Just reply here.`,
+    },
+    { id: "blank", label: "Blank", disabled: null, build: () => "" },
+  ];
+
+  const applySmart = (t: SmartTemplate) => {
+    if (t.disabled) return;
+    setText(t.build());
+    setResult(null);
+    setArmed(false);
+  };
+
   const send = async () => {
     setSending(true);
     setResult(null);
@@ -484,7 +531,7 @@ export default function TextMerchantPanel({
           </div>
 
           {/* ── Templates ── */}
-          {TEMPLATES.length > 0 && (
+          {TEMPLATES.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {TEMPLATES.map((t) => (
                 <button
@@ -497,6 +544,31 @@ export default function TextMerchantPanel({
                 </button>
               ))}
             </div>
+          ) : (
+            <>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {smartTemplates.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    disabled={!!t.disabled}
+                    onClick={() => applySmart(t)}
+                    title={t.disabled ?? "One click builds the whole message with this merchant's links"}
+                    className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors ${
+                      t.disabled
+                        ? "border-gray-200 dark:border-gray-700 text-gray-300 dark:text-gray-600 cursor-not-allowed"
+                        : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              {/* Proactive: say WHY the sign-link templates are greyed, right here. */}
+              {appLinkBlock && sentLinks !== null && (
+                <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">{appLinkBlock}</p>
+              )}
+            </>
           )}
 
           {/* ── Quick-insert links — every one reuses an existing builder ── */}
