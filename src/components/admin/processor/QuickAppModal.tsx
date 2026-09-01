@@ -224,12 +224,15 @@ export default function QuickAppModal({
 
   const inputBase =
     "mt-1 w-full px-2.5 py-1.5 rounded-lg border text-sm text-gray-900 dark:text-gray-100";
-  // Light green when a field has a value, light red when it's still empty — guides
-  // the eye straight to what's left to fill.
-  const tint = (v: string | undefined) =>
-    (v ?? "").trim() !== ""
-      ? "border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-900/20"
-      : "border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-900/15";
+  // Field tint: light red = empty, amber = still the pre-filled placeholder default
+  // (double-check before final submit), light green = a real value the processor entered.
+  const tint = (key: string, v: string | undefined) => {
+    const val = (v ?? "").trim();
+    if (val === "") return "border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-900/15";
+    if (DEFAULTS[key] && val === DEFAULTS[key])
+      return "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20";
+    return "border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-900/20";
+  };
 
   return (
     <div className="fixed inset-0 z-[60] flex justify-end" role="dialog" aria-modal="true">
@@ -302,7 +305,7 @@ export default function QuickAppModal({
                       {LABEL_OVERRIDE[f.key] ?? f.label}
                       {f.key === "business_type" ? (
                         <select
-                          className={`${inputBase} ${tint(form[f.key])}`}
+                          className={`${inputBase} ${tint(f.key, form[f.key])}`}
                           value={form[f.key] ?? ""}
                           onChange={(e) => set(f.key, e.target.value)}
                         >
@@ -311,7 +314,7 @@ export default function QuickAppModal({
                         </select>
                       ) : (
                         <input
-                          className={`${inputBase} ${tint(form[f.key])}`}
+                          className={`${inputBase} ${tint(f.key, form[f.key])}`}
                           type={DATE.has(f.key) ? "date" : NUMERIC.has(f.key) ? "number" : "text"}
                           value={form[f.key] ?? ""}
                           onChange={(e) => set(f.key, e.target.value)}
