@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { XMarkIcon, BoltIcon, PhoneIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
-import { getDealById } from "@/services/dealService";
+import { getDealById, ensureDealStageAtLeast } from "@/services/dealService";
+import type { DealWithCustomer } from "@/types/deals";
 import { mustWrite } from "@/supabase/writes";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { REQUIRED_APPLICATION_FIELDS, SECTION_LABEL, type AppSection } from "@/lib/applicationCompleteness";
@@ -59,6 +60,8 @@ export default function QuickAppModal({
 }) {
   const [form, setForm] = useState<Form>({});
   const [existingId, setExistingId] = useState<string | null>(null);
+  // The loaded deal — needed for the forward-only stage moves on save/send.
+  const [dealObj, setDealObj] = useState<DealWithCustomer | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -88,6 +91,7 @@ export default function QuickAppModal({
         // processor-only detail RPC.
         const found = await getDealById(dealId);
         if (!found) throw new Error("Couldn't load that deal.");
+        setDealObj(found.deal);
         const { data: appRow } = await supabase
           .from("mca_applications").select("*").eq("deal_id", dealId).maybeSingle();
         if (!alive) return;
@@ -193,6 +197,11 @@ export default function QuickAppModal({
       if (Object.keys(dealPatch).length) {
         await mustWrite("save the ask on the deal", supabase.from("deals").update(dealPatch).eq("id", dealId));
       }
+      // Saving the app = the merchant was WORKED → advance to at least Qualifying
+      // (forward-only, mirrors the full application modal). Best-effort.
+      if (dealObj) {
+        try { await ensureDealStageAtLeast(dealObj, "qualifying"); } catch { /* stage move is bookkeeping */ }
+      }
       // Sync to VibeReach (no document sent) — same path as the full modal.
       let vibe = "";
       try {
@@ -225,6 +234,10 @@ export default function QuickAppModal({
       if (error) throw new Error(error.message);
       const r = (data ?? {}) as { error?: string };
       if (r.error) throw new Error(r.error);
+      // A sent application = Application Sent (forward-only, same as the full modal).
+      if (dealObj) {
+        try { await ensureDealStageAtLeast(dealObj, "application_sent"); } catch { /* bookkeeping */ }
+      }
       setToast("Sent to the merchant to e-sign.");
       setTimeout(() => { setToast(null); onClose(); }, 2500);
     } catch (e) {
