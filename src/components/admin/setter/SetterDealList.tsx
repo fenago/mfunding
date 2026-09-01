@@ -275,6 +275,12 @@ export default function SetterDealList({
       } else if (filter.kind === "stage") {
         query = query.eq("status", filter.stage);
       }
+      // Parked deals (nurture / declined / dead) are NOISE on the working board
+      // (owner rule 9/1) — hidden from every view except an explicit stage pick,
+      // which is still how you reach them when you want them.
+      if (filter.kind !== "stage") {
+        query = query.not("status", "in", "(nurture,declined,dead)");
+      }
 
       // Callbacks are most useful soonest-first; every other view is newest-touch first.
       query =

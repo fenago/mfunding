@@ -256,6 +256,22 @@ export default function ProcessorPage() {
     return c;
   }, [inScopeRows]);
 
+  /** Dollars in play per bucket — Σ amount_requested over the bucket's members. */
+  const bucketDollars = useMemo(() => {
+    const d: Record<BucketKey, number> = {
+      all: 0, needs_app: 0, needs_stmts: 0, ready_qa: 0, ready_submit: 0, callbacks: 0, stale: 0,
+    };
+    for (const r of inScopeRows) {
+      const amt = Number(r.amount_requested ?? 0) || 0;
+      if (!amt) continue;
+      d.all += amt;
+      d[workBucket(r)] += amt;
+      if (matchesCallbackBucket(r, "all")) d.callbacks += amt;
+      if (r.is_stale) d.stale += amt;
+    }
+    return d;
+  }, [inScopeRows]);
+
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     const base = view === "board" ? allRows : inScopeRows;
@@ -509,6 +525,12 @@ export default function ProcessorPage() {
                 >
                   {list.kind === "ready" ? n.toLocaleString() : "—"}
                 </div>
+                {/* Dollars in play in this bucket (Σ amount requested). */}
+                {list.kind === "ready" && bucketDollars[b.key] > 0 && (
+                  <div className="text-[11px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400 leading-tight">
+                    ${Math.round(bucketDollars[b.key]).toLocaleString()}
+                  </div>
+                )}
                 <div className="mt-0.5 text-[11px] font-semibold text-gray-700 dark:text-gray-200 leading-tight">
                   {b.label}
                 </div>
