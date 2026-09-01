@@ -29,6 +29,11 @@ const DEFAULTS: Record<string, string> = {
 const NUMERIC = new Set(["amount_requested", "monthly_revenue", "owner_ownership_pct"]);
 const DATE = new Set(["owner_dob", "business_start_date"]);
 
+// Entity type is a dropdown (same options as the full application).
+const ENTITY_OPTS = ["LLC", "S-Corp", "C-Corp", "Sole Proprietor", "Partnership", "LLP", "Other"];
+// Field-label overrides for the Quick App.
+const LABEL_OVERRIDE: Record<string, string> = { ein: "EIN / Tax ID" };
+
 type Form = Record<string, string>;
 
 interface Detail {
@@ -63,9 +68,17 @@ export default function QuickAppModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [showScript, setShowScript] = useState(true);
+  const [showScript, setShowScript] = useState(false);
 
   const script = useMemo(ltScript, []);
+
+  // Live completeness — recomputed as the processor fills fields.
+  const filledCount = useMemo(
+    () => REQUIRED_APPLICATION_FIELDS.filter((f) => (form[f.key] ?? "").trim() !== "").length,
+    [form],
+  );
+  const totalReq = REQUIRED_APPLICATION_FIELDS.length;
+  const pct = Math.round((filledCount / totalReq) * 100);
 
   // Seed the form from the application (if any) → customer/deal fallbacks → defaults.
   useEffect(() => {
@@ -225,6 +238,18 @@ export default function QuickAppModal({
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
               Mandatory fields only — address & phone auto-fill; account/routing/DOB pre-defaulted.
             </p>
+            {/* Live progress as they fill. */}
+            <div className="mt-2 flex items-center gap-2">
+              <div className="h-1.5 w-40 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${pct >= 100 ? "bg-emerald-500" : "bg-amber-500"}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <span className="text-[11px] font-semibold tabular-nums text-gray-600 dark:text-gray-300">
+                {filledCount}/{totalReq} · {pct}%
+              </span>
+            </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-md text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800" title="Close">
             <XMarkIcon className="w-5 h-5" />
@@ -268,13 +293,24 @@ export default function QuickAppModal({
                       key={f.key}
                       className={`text-xs text-gray-600 dark:text-gray-300 ${["business_address", "owner_home_address", "use_of_funds", "business_legal_name"].includes(f.key) ? "col-span-2" : ""}`}
                     >
-                      {f.label}
-                      <input
-                        className={input}
-                        type={DATE.has(f.key) ? "date" : NUMERIC.has(f.key) ? "number" : "text"}
-                        value={form[f.key] ?? ""}
-                        onChange={(e) => set(f.key, e.target.value)}
-                      />
+                      {LABEL_OVERRIDE[f.key] ?? f.label}
+                      {f.key === "business_type" ? (
+                        <select
+                          className={input}
+                          value={form[f.key] ?? ""}
+                          onChange={(e) => set(f.key, e.target.value)}
+                        >
+                          <option value="">Select…</option>
+                          {ENTITY_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : (
+                        <input
+                          className={input}
+                          type={DATE.has(f.key) ? "date" : NUMERIC.has(f.key) ? "number" : "text"}
+                          value={form[f.key] ?? ""}
+                          onChange={(e) => set(f.key, e.target.value)}
+                        />
+                      )}
                     </label>
                   ))}
                 </div>
