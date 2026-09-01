@@ -7,6 +7,7 @@ import {
   ChevronRightIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
+  BoltIcon,
   MoonIcon,
   NoSymbolIcon,
   StarIcon,
@@ -21,6 +22,7 @@ import StageHistogram, { type CountsState } from "@/components/admin/processor/S
 import SchedulePicker from "@/components/admin/processor/SchedulePicker";
 import ProcessorDetailDrawer from "@/components/admin/processor/ProcessorDetailDrawer";
 import GateTracker from "@/components/admin/processor/GateTracker";
+import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import {
@@ -166,6 +168,7 @@ export default function ProcessorPage() {
   const [search, setSearch] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
   const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
+  const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   // Per-row armed nurture (armOrFire) — houses the two-step confirm without a popup.
   const [nurtureArmed, setNurtureArmed] = useState<string | null>(null);
@@ -904,6 +907,14 @@ export default function ProcessorPage() {
                           {/* Actions */}
                           <td className="px-3 py-2 align-top">
                             <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setQuickAppDealId(r.id)}
+                                title="Quick App — fast mandatory-only application"
+                                className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-full bg-amber-500 text-white hover:bg-amber-600"
+                              >
+                                <BoltIcon className="w-3 h-3" /> Quick App
+                              </button>
                               <TextMerchantPanel
                                 merchantPhone={r.phone}
                                 customerId={undefined}
@@ -995,6 +1006,15 @@ export default function ProcessorPage() {
         onClose={() => setSelectedDealId(null)}
         onChanged={reloadAll}
       />
+
+      {/* Quick App launched straight from a row (no drawer needed). */}
+      {quickAppDealId && (
+        <QuickAppModal
+          dealId={quickAppDealId}
+          onClose={() => setQuickAppDealId(null)}
+          onSaved={reloadAll}
+        />
+      )}
     </div>
   );
 }
