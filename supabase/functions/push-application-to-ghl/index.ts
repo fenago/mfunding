@@ -315,7 +315,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  let payload: { dealId?: string; blank?: boolean; partial?: boolean; resend?: boolean; mintAnyway?: boolean };
+  let payload: { dealId?: string; blank?: boolean; partial?: boolean; resend?: boolean; mintAnyway?: boolean; fields_only?: boolean; sync_only?: boolean };
   try { payload = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
   const dealId = payload.dealId;
   if (!dealId) return json({ error: "dealId is required" }, 400);
@@ -522,8 +522,17 @@ Deno.serve(async (req) => {
   //     since PROVEN it dead. Either way we already know — don't pay GHL a round-trip
   //     to re-learn it, and don't mint documents against it.
   const { data: health } = await db
-    .from("customers").select("email_status, email_bounce_reason").eq("id", customer.id).maybeSingle();
-  const known = (health?.email_status as string | null) ?? null;
+    .from("customers").select("email, email_status, email_bounce_reason").eq("id", customer.id).maybeSingle();
+  // THE VERDICT MUST BELONG TO THE ADDRESS WE ARE SENDING TO. email_status is the
+  // verdict on customers.email — if the send is going to a DIFFERENT address (e.g.
+  // the app's business_email that the setter just captured), a stale verdict on the
+  // old address must never veto it. (Hudson Valley MF-2026-0289: the gmail send was
+  // blocked three times by the AOL address's verdict.) Path (b) still protects the
+  // new address via GHL's actual bounce history.
+  const verdictEmail = String(health?.email ?? "").trim().toLowerCase();
+  const sendEmail = String(merchantEmail ?? "").trim().toLowerCase();
+  const verdictApplies = verdictEmail !== "" && verdictEmail === sendEmail;
+  const known = verdictApplies ? ((health?.email_status as string | null) ?? null) : null;
   if (known === "invalid" || known === "bounced") {
     const why = known === "bounced"
       ? `the last email to it bounced (${health?.email_bounce_reason ?? "hard bounce"})`
