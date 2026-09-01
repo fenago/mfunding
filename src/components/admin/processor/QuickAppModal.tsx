@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { XMarkIcon, BoltIcon, PhoneIcon, PaperAirplaneIcon } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
+import { getDealById } from "@/services/dealService";
 import { mustWrite } from "@/supabase/writes";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { REQUIRED_APPLICATION_FIELDS, SECTION_LABEL, type AppSection } from "@/lib/applicationCompleteness";
@@ -35,12 +36,6 @@ const ENTITY_OPTS = ["LLC", "S-Corp", "C-Corp", "Sole Proprietor", "Partnership"
 const LABEL_OVERRIDE: Record<string, string> = { ein: "EIN / Tax ID" };
 
 type Form = Record<string, string>;
-
-interface Detail {
-  deal?: Record<string, unknown> | null;
-  customer?: Record<string, unknown> | null;
-  application?: Record<string, unknown> | null;
-}
 
 const s = (v: unknown): string => (v === null || v === undefined ? "" : String(v));
 
@@ -87,13 +82,17 @@ export default function QuickAppModal({
       setLoading(true);
       setErr(null);
       try {
-        const { data, error } = await supabase.rpc("processor_deal_detail", { p_deal_id: dealId });
-        if (error) throw new Error(error.message);
+        // Load via getDealById (own-deal for a setter, whole-board masked for a
+        // processor) + a direct application read — works for BOTH roles, unlike the
+        // processor-only detail RPC.
+        const found = await getDealById(dealId);
+        if (!found) throw new Error("Couldn't load that deal.");
+        const { data: appRow } = await supabase
+          .from("mca_applications").select("*").eq("deal_id", dealId).maybeSingle();
         if (!alive) return;
-        const d = (data ?? {}) as Detail;
-        const app = d.application ?? {};
-        const cust = d.customer ?? {};
-        const deal = d.deal ?? {};
+        const deal = (found.deal ?? {}) as unknown as Record<string, unknown>;
+        const cust = (found.deal?.customer ?? {}) as unknown as Record<string, unknown>;
+        const app = (appRow ?? {}) as Record<string, unknown>;
         setExistingId((app.id as string) ?? null);
         const seed: Form = {};
         for (const { key } of REQUIRED_APPLICATION_FIELDS) {

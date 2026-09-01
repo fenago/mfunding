@@ -4,10 +4,12 @@ import {
   ExclamationTriangleIcon,
   InboxStackIcon,
   BuildingStorefrontIcon,
+  BoltIcon,
   PhoneIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { useUserProfile } from "@/context/UserProfileContext";
+import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import type { PlaybookLookup } from "@/hooks/usePlaybookContact";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
@@ -238,6 +240,7 @@ export default function SetterDealList({
   const { effectiveUserId } = useUserProfile();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [filter, setFilter] = useState<QueueFilter>({ kind: "all" });
+  const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -442,13 +445,16 @@ export default function SetterDealList({
                 const active = lastActiveAt(r);
                 const phone = prettyPhone(r.customer?.phone ?? null);
                 return (
-                  <button
+                  <div
                     key={r.id}
-                    type="button"
-                    onClick={() => onOpen({ dealId: r.id })}
-                    title={`Load ${merchantName(r)} into the console`}
-                    className="w-full text-left px-3 py-2.5 flex items-start gap-2.5 border-t border-gray-100 dark:border-gray-800 first:border-t-0 hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors"
+                    className="w-full px-3 py-2.5 flex items-start gap-2.5 border-t border-gray-100 dark:border-gray-800 first:border-t-0 hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors"
                   >
+                    <button
+                      type="button"
+                      onClick={() => onOpen({ dealId: r.id })}
+                      title={`Load ${merchantName(r)} into the console`}
+                      className="min-w-0 flex-1 text-left flex items-start gap-2.5"
+                    >
                     <BuildingStorefrontIcon className="w-4 h-4 shrink-0 mt-0.5 text-gray-400" />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
@@ -490,13 +496,32 @@ export default function SetterDealList({
                         </div>
                       )}
                     </div>
-                  </button>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickAppDealId(r.id)}
+                      title="Quick App — fast mandatory-only application"
+                      className="shrink-0 self-center inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-full bg-amber-500 text-white hover:bg-amber-600"
+                    >
+                      <BoltIcon className="w-3 h-3" /> Quick App
+                    </button>
+                  </div>
                 );
               })}
             </div>
           </>
         )}
       </div>
+
+      {/* Quick App launched from a row — loads the deal via getDealById (own-deal
+          for a setter), no console load required. Refresh the book on save. */}
+      {quickAppDealId && (
+        <QuickAppModal
+          dealId={quickAppDealId}
+          onClose={() => setQuickAppDealId(null)}
+          onSaved={() => void load()}
+        />
+      )}
     </div>
   );
 }
