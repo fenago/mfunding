@@ -42,7 +42,10 @@ interface PreviewResult {
   gated?: boolean;
   note?: string;
 }
-type Runner = (onProgress: (done: number, total: number) => void) => Promise<string>;
+type Runner = (
+  onProgress: (done: number, total: number) => void,
+  isStopped?: () => boolean,
+) => Promise<string>;
 
 /* Page-through helper: all member source_ids for one source in this list. */
 async function gatherMemberSourceIds(listId: string, source: string): Promise<string[]> {
@@ -208,7 +211,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
   }, [list.id, isUcc]);
 
   const runTrace: Runner = useCallback(
-    async (onProgress) => {
+    async (onProgress, isStopped) => {
       const ids = isUcc
         ? await filterTraceEligible(await gatherMemberSourceIds(list.id, "ph_ucc"))
         : await gatherAllMemberIds(list.id);
@@ -216,11 +219,15 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       let traced = 0,
         ready = 0,
         spent = 0,
-        errored = 0;
+        errored = 0,
+        noAddress = 0,
+        alreadyDone = 0;
       let balanceAfter: number | null = null;
       let paused = false;
+      let stopped = false;
       onProgress(0, ids.length);
       for (let i = 0; i < ids.length; i += SKIPTRACE_CAP) {
+        if (isStopped?.()) { stopped = true; break; }
         const chunk = ids.slice(i, i + SKIPTRACE_CAP);
         const { data, error } = await supabase.functions.invoke("ph-ucc-skiptrace", {
           body: isUcc ? { lead_ids: chunk } : { smart_list_member_ids: chunk },
@@ -236,14 +243,25 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         ready += Number(r.ready ?? 0) || 0;
         spent += Number(r.run_spend_usd ?? 0) || 0;
         errored += Number(r.errored ?? 0) || 0;
+        noAddress += Number(r.no_address ?? 0) || 0;
+        alreadyDone += Number(r.already_traced ?? r.already_done ?? 0) || 0;
         if (typeof r.balance_after === "number") balanceAfter = r.balance_after as number;
         onProgress(Math.min(i + chunk.length, ids.length), ids.length);
       }
       onChanged();
       if (paused) return "Skip-trace is paused in Settings (skiptrace_enabled = OFF). Turn it on to run.";
-      const bal = balanceAfter != null ? ` · wallet now $${balanceAfter.toFixed(2)}` : "";
-      const err = errored > 0 ? ` · ${errored} errored` : "";
-      return `Traced ${traced.toLocaleString()} · ${ready.toLocaleString()} ready · $${spent.toFixed(2)} spent${bal}${err}`;
+      // The honest summary: what was traced, what was skipped and WHY, what it cost.
+      const bits = [
+        `Traced ${traced.toLocaleString()} of ${ids.length.toLocaleString()}`,
+        `${ready.toLocaleString()} got a phone/email`,
+        noAddress > 0 ? `${noAddress.toLocaleString()} skipped — no mailing address (no charge)` : "",
+        alreadyDone > 0 ? `${alreadyDone.toLocaleString()} already traced (skipped)` : "",
+        errored > 0 ? `${errored} errored` : "",
+        `$${spent.toFixed(2)} spent`,
+        balanceAfter != null ? `wallet now $${balanceAfter.toFixed(2)}` : "",
+        stopped ? "⏹ stopped early — run again to continue" : "",
+      ].filter(Boolean);
+      return bits.join(" · ");
     },
     [list.id, isUcc, onChanged],
   );
@@ -262,15 +280,18 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
   }, [list.id, isUcc]);
 
   const runApollo: Runner = useCallback(
-    async (onProgress) => {
+    async (onProgress, isStopped) => {
       const ids = isUcc ? await gatherMemberSourceIds(list.id, "ph_ucc") : await gatherAllMemberIds(list.id);
       if (ids.length === 0) return "Nothing to enrich.";
       let enriched = 0,
         checked = 0,
-        errored = 0;
+        errored = 0,
+        noInput = 0;
       let paused = false;
+      let stopped = false;
       onProgress(0, ids.length);
       for (let i = 0; i < ids.length; i += APOLLO_CAP) {
+        if (isStopped?.()) { stopped = true; break; }
         const chunk = ids.slice(i, i + APOLLO_CAP);
         const { data, error } = await supabase.functions.invoke("ph-ucc-apollo-enrich", {
           body: isUcc ? { lead_ids: chunk } : { smart_list_member_ids: chunk },
@@ -285,12 +306,18 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         enriched += Number(r.enriched ?? 0) || 0;
         checked += Number(r.checked ?? 0) || 0;
         errored += Number(r.errored ?? r.errors ?? 0) || 0;
+        noInput += Number(r.no_input ?? 0) || 0;
         onProgress(Math.min(i + chunk.length, ids.length), ids.length);
       }
       onChanged();
       if (paused) return "Apollo enrichment is disabled in Settings (apollo_enrich_enabled = OFF). Turn it on to run.";
-      const err = errored > 0 ? ` · ${errored} errored` : "";
-      return `Enriched ${enriched.toLocaleString()} of ${checked.toLocaleString()} checked${err}.`;
+      const bits = [
+        `Enriched ${enriched.toLocaleString()} of ${checked.toLocaleString()} checked`,
+        noInput > 0 ? `${noInput.toLocaleString()} skipped — no company/email to match on` : "",
+        errored > 0 ? `${errored} errored` : "",
+        stopped ? "⏹ stopped early — run again to continue" : "",
+      ].filter(Boolean);
+      return bits.join(" · ");
     },
     [list.id, isUcc, onChanged],
   );
@@ -316,7 +343,8 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
   }, [list.id, phoneProvider, providerLabel]);
 
   const runPhone: Runner = useCallback(
-    async (onProgress) => {
+    async (onProgress, isStopped) => {
+      let stopped = false;
       let validated = 0,
         mobile = 0,
         landline = 0,
@@ -325,10 +353,21 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         noPhone = 0,
         errored = 0,
         looked = 0;
-      // Loop ≤200/call toward PHONE_TARGET. Stop when a call validates nothing new
-      // (remaining members are no-phone/errored) or the list drains.
-      onProgress(0, PHONE_TARGET);
+      // Progress out of what ACTUALLY needs validating (capped by the per-run
+      // ceiling) — not a fixed constant that lies about the list size.
+      let total = PHONE_TARGET;
+      try {
+        const { data: pv } = await supabase.functions.invoke("phone-validate", {
+          body: { action: "preview", smart_list_id: list.id, provider: phoneProvider },
+        });
+        const needing = Number((pv as Record<string, unknown>)?.needing_validation ?? 0) || 0;
+        if (needing > 0) total = Math.min(needing, PHONE_TARGET);
+      } catch { /* fall back to the ceiling */ }
+      // Loop ≤200/call. Stop when a call validates nothing new (remaining members
+      // are no-phone/errored) or the list drains.
+      onProgress(0, total);
       while (looked < PHONE_TARGET) {
+        if (isStopped?.()) { stopped = true; break; }
         const { data, error } = await supabase.functions.invoke("phone-validate", {
           body: { action: "validate", smart_list_id: list.id, limit: 200, provider: phoneProvider },
         });
@@ -373,7 +412,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
       ]
         .filter(Boolean)
         .join(" · ");
-      return `Validated ${validated.toLocaleString()}${extras ? " · " + extras : ""}${bal}`;
+      return `Validated ${validated.toLocaleString()}${extras ? " · " + extras : ""}${bal}${stopped ? " · ⏹ stopped early — run again to continue" : ""}`;
     },
     [list.id, onChanged, phoneProvider, providerLabel],
   );
@@ -544,14 +583,21 @@ function ActionPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
+  // Stop switch — checked between batches, so pressing Stop halts before the NEXT
+  // API chunk fires (the in-flight chunk finishes; nothing is left half-written).
+  const stopRef = useRef(false);
   const doRun = async () => {
     setArmed(false);
     setRunning(true);
     setErr(null);
     setResult(null);
+    stopRef.current = false;
     setProgress({ done: 0, total: 1 });
     try {
-      const summary = await runFn((done, total) => setProgress({ done, total }));
+      const summary = await runFn(
+        (done, total) => setProgress({ done, total }),
+        () => stopRef.current,
+      );
       setResult(summary);
       setPreview(null); // stale after a run
     } catch (e) {
@@ -639,9 +685,19 @@ function ActionPanel({
                   style={{ width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%` }}
                 />
               </div>
-              <p className="text-xs text-gray-600 dark:text-gray-300">
-                {progress.done.toLocaleString()} / {progress.total.toLocaleString()}…
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-gray-600 dark:text-gray-300">
+                  {progress.done.toLocaleString()} / {progress.total.toLocaleString()}…
+                </p>
+                <button
+                  type="button"
+                  onClick={() => { stopRef.current = true; }}
+                  className="text-[11px] font-bold px-2 py-0.5 rounded-full border border-red-400 text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20"
+                  title="Stop after the current batch — nothing is left half-written; run again to continue"
+                >
+                  ⏹ Stop
+                </button>
+              </div>
             </div>
           )}
 

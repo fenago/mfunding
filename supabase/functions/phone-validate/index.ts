@@ -492,6 +492,13 @@ Deno.serve(async (req) => {
       if (!e164) {
         noPhone++;
         perMember.push({ member_id: m.id, error: "no usable phone in snapshot" });
+        // Stamp it so it is NOT re-selected next call (nothing to validate here) —
+        // otherwise it re-appears every batch and the run never drains. No charge.
+        await db.from("smart_list_members").update({
+          phone_validated_at: new Date().toISOString(),
+          validation_provider: provider.name,
+          phone_status_raw: "no_phone",
+        }).eq("id", m.id);
         continue;
       }
 
@@ -499,6 +506,13 @@ Deno.serve(async (req) => {
       if (!r.ok || !r.result) {
         errored++;
         perMember.push({ member_id: m.id, phone: e164, error: r.error ?? `lookup ${r.status}` });
+        // Stamp it so a failed lookup is NOT retried (and re-charged) every batch in
+        // this run. Re-run with force to retry errored numbers later.
+        await db.from("smart_list_members").update({
+          phone_validated_at: new Date().toISOString(),
+          validation_provider: provider.name,
+          phone_status_raw: `error:${(r.error ?? r.status ?? "lookup").toString().slice(0, 40)}`,
+        }).eq("id", m.id);
         continue;
       }
       const {
