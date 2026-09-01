@@ -56,7 +56,8 @@ export default function SmartListRollup({ list, onChanged }: { list: SmartList; 
       setRollup({
         total: Number(r.total ?? 0), reachable: Number(r.reachable ?? 0), dead: Number(r.dead ?? 0),
         dnc: Number(r.dnc ?? 0), litigator: Number(r.litigator ?? 0), no_contact: Number(r.no_contact ?? 0),
-        unvalidated: Number(r.unvalidated ?? 0), excluded: Number(r.excluded ?? 0), dialable: Number(r.dialable ?? 0),
+        unvalidated: Number(r.unvalidated ?? 0), excluded: Number(r.excluded ?? 0),
+        suppressible: Number(r.suppressible ?? 0), dialable: Number(r.dialable ?? 0),
       });
     } catch (e) {
       setRollup(null);
@@ -131,8 +132,10 @@ function SuppressPanel({ list, rollup, onDone }: { list: SmartList; rollup: Smar
   const [err, setErr] = useState<string | null>(null);
   const [canUndo, setCanUndo] = useState(false);
 
-  // Target = anything dead OR dnc OR litigator that isn't already excluded (upper bound).
-  const target = rollup ? rollup.dead + rollup.dnc + rollup.litigator : null;
+  // Target = UNIQUE not-yet-excluded members that are dead OR dnc OR litigator.
+  // (The per-flag counts overlap — one member can be dead AND a litigator — so
+  // summing them over-counts; the RPC's `suppressible` is the honest number.)
+  const target = rollup ? rollup.suppressible : null;
 
   const run = async () => {
     disarm();

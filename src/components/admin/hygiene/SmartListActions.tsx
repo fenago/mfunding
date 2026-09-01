@@ -432,6 +432,14 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         icon={<MagnifyingGlassIcon className="w-4 h-4" />}
         accent="ocean-blue"
         spendChip="spends BatchData wallet"
+        brings={[
+          "NEW phone numbers (owner cell + alternates)",
+          "phone type (mobile/landline)",
+          "NEW emails",
+          "owner name",
+          "DNC flag per phone",
+          "TCPA-litigator flag",
+        ]}
         enabled={hasAddresses}
         disabledReason="No mailing addresses in this list — skip-trace needs an address. Try phone validation or Apollo instead."
         previewFn={previewTrace}
@@ -444,6 +452,15 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         icon={<SparklesIcon className="w-4 h-4" />}
         accent="violet-600"
         spendChip="spends Apollo credits"
+        brings={[
+          "verified business email",
+          "owner title",
+          "industry",
+          "employee count",
+          "annual revenue",
+          "website",
+          "LinkedIn",
+        ]}
         enabled={hasBusiness}
         disabledReason="No company names or emails in this list — Apollo has nothing to match on."
         previewFn={previewApollo}
@@ -459,6 +476,14 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         icon={<PhoneIcon className="w-4 h-4" />}
         accent="mint-green"
         spendChip={PHONE_PROVIDERS.find((p) => p.id === phoneProvider)?.spendChip ?? "spends provider credits"}
+        brings={[
+          "live / disconnected verdict",
+          "line type (mobile · landline · VoIP)",
+          "carrier",
+          "caller name (when available)",
+          "spam / SMS-pumping risk (Twilio)",
+          "no new numbers — it grades the ones you have",
+        ]}
         enabled={hasPhones}
         disabledReason="No phone numbers in this list — nothing to validate. Skip-trace or Apollo can append phones first."
         previewFn={previewPhone}
@@ -519,6 +544,7 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
 function ActionPanel({
   title,
   blurb,
+  brings,
   icon,
   accent,
   spendChip,
@@ -531,6 +557,8 @@ function ActionPanel({
 }: {
   title: string;
   blurb: string;
+  /** The concrete data fields this provider writes onto matched records. */
+  brings?: string[];
   icon: React.ReactNode;
   accent: string;
   spendChip: string;
@@ -627,6 +655,21 @@ function ActionPanel({
 
       {/* What this provider does — always visible, enabled or not. */}
       <p className="text-xs leading-snug text-gray-500 dark:text-gray-400">{blurb}</p>
+
+      {/* The concrete data it writes onto matched records. */}
+      {brings && brings.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-[10px] uppercase tracking-wide font-semibold text-gray-400">Brings in</span>
+          {brings.map((b) => (
+            <span
+              key={b}
+              className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700/70 dark:text-gray-300"
+            >
+              {b}
+            </span>
+          ))}
+        </div>
+      )}
 
       {!enabled ? (
         <p className="text-xs font-medium text-amber-600 dark:text-amber-400">{disabledReason}</p>

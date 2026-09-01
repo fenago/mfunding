@@ -93,8 +93,11 @@ async function twilioBalance(db: SupabaseClient) {
   }
 }
 
-// RealPhoneValidation: token-gated, but no balance API exists — so a present token
-// resolves to available:false with a reason, an absent token to gated:true.
+// RealPhoneValidation: no balance API exists (re-verified — all candidates 404), so
+// the wallet is TRACKED: the owner sets their current RPV balance (platform_settings
+// key 'rpv_wallet' = { balance, set_at }) and we subtract our own recorded per-lookup
+// spend (smart_list_members.validation_cost where provider='realphonevalidation')
+// since that stamp. Estimated — external spend outside this app won't be seen.
 async function realPhoneValidationBalance(db: SupabaseClient) {
   const { data: token, error } = await db.rpc("get_rpv_token");
   if (error) {
@@ -103,7 +106,35 @@ async function realPhoneValidationBalance(db: SupabaseClient) {
   if (!token || typeof token !== "string") {
     return { provider: "realphonevalidation", available: false, balance: null, currency: null, ok: false, gated: true, reason: "Add REALPHONEVALIDATION_TOKEN to the vault" };
   }
-  return { provider: "realphonevalidation", available: false, balance: null, currency: null, ok: true, reason: "RealValidation exposes no credit/balance API endpoint for the Scrub product" };
+  const { data: setting } = await db
+    .from("platform_settings").select("value").eq("key", "rpv_wallet").maybeSingle();
+  const v = (setting?.value ?? null) as { balance?: number; set_at?: string } | null;
+  const start = typeof v?.balance === "number" ? v.balance : null;
+  if (start == null) {
+    return {
+      provider: "realphonevalidation", available: false, balance: null, currency: null, ok: true,
+      needs_setup: true,
+      reason: "RealValidation has no balance API — set your current balance (from their dashboard) to track it here",
+    };
+  }
+  // Tracked spend since the stamp.
+  let spent = 0;
+  const since = v?.set_at ?? "1970-01-01";
+  const { data: spendRows } = await db
+    .from("smart_list_members")
+    .select("validation_cost")
+    .eq("validation_provider", "realphonevalidation")
+    .gte("phone_validated_at", since)
+    .not("validation_cost", "is", null);
+  for (const r of (spendRows ?? []) as { validation_cost: number | null }[]) {
+    spent += Number(r.validation_cost ?? 0) || 0;
+  }
+  const est = Math.max(0, Math.round((start - spent) * 100) / 100);
+  return {
+    provider: "realphonevalidation", available: true, balance: est, currency: "USD", ok: true,
+    estimated: true, set_at: v?.set_at ?? null, tracked_spend: Math.round(spent * 100) / 100,
+    reason: "estimated — RPV has no balance API; your set balance minus spend tracked here",
+  };
 }
 
 Deno.serve(async (req) => {

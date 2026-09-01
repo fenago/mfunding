@@ -47,6 +47,9 @@ export interface SmartListRollupCounts {
   no_contact: number;
   unvalidated: number;
   excluded: number;
+  /** UNIQUE not-yet-excluded members the suppress action would flag (the per-flag
+   *  dead/dnc/litigator counts can overlap on one member — this never does). */
+  suppressible: number;
   dialable: number;
 }
 

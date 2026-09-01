@@ -8,6 +8,7 @@
 //   • unreadable — the read failed: neutral grey + the error, NEVER a fake $0
 // A failed whole-call read (hook error) renders every row as unreadable.
 
+import { useState } from "react";
 import {
   BanknotesIcon,
   ExclamationTriangleIcon,
@@ -16,9 +17,11 @@ import {
   NoSymbolIcon,
   QuestionMarkCircleIcon,
 } from "@heroicons/react/24/outline";
+import supabase from "@/supabase";
+import { mustWrite } from "@/supabase/writes";
 import { useProviderBalances, type ProviderBalances } from "@/hooks/useProviderBalances";
 
-type RowState = "money" | "gated" | "na" | "unreadable" | "unknown";
+type RowState = "money" | "gated" | "na" | "unreadable" | "unknown" | "setup";
 type Tone = "ok" | "warn" | "bad" | "neutral";
 
 interface BalRow {
@@ -127,7 +130,89 @@ function buildRows(data: ProviderBalances | null, error: string | null): BalRow[
     });
   }
 
+  // RealValidation — TRACKED wallet (their API exposes no balance): the owner sets
+  // the balance from the RPV dashboard; we subtract our recorded per-lookup spend.
+  const rpv = data.realphonevalidation;
+  if (rpv) {
+    if (rpv.gated) {
+      rows.push({ key: "realphonevalidation", label: "RealValidation (phone)", state: "gated", tone: "warn", note: "Add the RealValidation token to the vault" });
+    } else if (!rpv.ok) {
+      rows.push({ key: "realphonevalidation", label: "RealValidation (phone)", state: "unreadable", tone: "neutral", note: rpv.error || "read failed" });
+    } else if (rpv.needs_setup || rpv.balance == null) {
+      rows.push({ key: "realphonevalidation", label: "RealValidation (phone)", state: "setup", tone: "neutral", note: "No balance API — enter your balance from the RPV dashboard to track it" });
+    } else {
+      rows.push({
+        key: "realphonevalidation",
+        label: "RealValidation (phone)",
+        state: "money",
+        amount: rpv.balance,
+        currency: "USD",
+        tone: moneyTone(rpv.balance, "phone_validation"),
+        note: `est. — $${(rpv.tracked_spend ?? 0).toFixed(2)} spent here since ${rpv.set_at ? new Date(rpv.set_at).toLocaleDateString() : "set"} · re-set after top-ups`,
+      });
+    }
+  }
+
   return rows;
+}
+
+/** Inline "set / update the RPV balance" control (writes platform_settings.rpv_wallet). */
+function RpvSetBalance({ current, onSaved }: { current: number | null; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState(current != null ? String(current) : "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const save = async () => {
+    const n = Number(val);
+    if (!Number.isFinite(n) || n < 0) { setErr("Enter a dollar amount."); return; }
+    setBusy(true);
+    setErr(null);
+    try {
+      await mustWrite(
+        "save the RealValidation balance",
+        supabase.from("platform_settings").upsert(
+          { key: "rpv_wallet", value: { balance: n, set_at: new Date().toISOString() } },
+          { onConflict: "key" },
+        ),
+      );
+      setOpen(false);
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="text-[11px] font-semibold text-ocean-blue hover:underline"
+      >
+        {current != null ? "update balance" : "Set balance"}
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <input
+        type="number"
+        min={0}
+        step="0.01"
+        autoFocus
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        placeholder="e.g. 25.00"
+        className="w-24 text-xs px-2 py-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+      />
+      <button type="button" disabled={busy} onClick={() => void save()} className="text-[11px] font-bold text-white bg-ocean-blue rounded-full px-2 py-1 disabled:opacity-50">
+        {busy ? "…" : "Save"}
+      </button>
+      <button type="button" onClick={() => setOpen(false)} className="text-[11px] text-gray-400 hover:underline">cancel</button>
+      {err && <span className="text-[11px] text-red-600 dark:text-red-400">{err}</span>}
+    </span>
+  );
 }
 
 function RowValue({ row }: { row: BalRow }) {
@@ -154,6 +239,12 @@ function RowValue({ row }: { row: BalRow }) {
       return (
         <span className={`text-xs font-semibold px-2.5 py-1 rounded-full inline-flex items-center gap-1 ${TONE_PILL.neutral}`}>
           <ExclamationTriangleIcon className="w-3.5 h-3.5" /> Unreadable
+        </span>
+      );
+    case "setup":
+      return (
+        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full inline-flex items-center gap-1 ${TONE_PILL.warn}`}>
+          <QuestionMarkCircleIcon className="w-3.5 h-3.5" /> Not set
         </span>
       );
     default: // unknown
@@ -199,7 +290,12 @@ export default function ProviderBalanceStrip({ variant = "page" }: { variant?: "
                   {r.note && <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{r.note}</p>}
                 </div>
               </div>
-              <RowValue row={r} />
+              <span className="inline-flex items-center gap-2">
+                <RowValue row={r} />
+                {r.key === "realphonevalidation" && (r.state === "setup" || r.state === "money") && (
+                  <RpvSetBalance current={r.amount ?? null} onSaved={() => void reload()} />
+                )}
+              </span>
             </div>
           ))}
         </div>
@@ -228,13 +324,16 @@ export default function ProviderBalanceStrip({ variant = "page" }: { variant?: "
           <ExclamationTriangleIcon className="w-3.5 h-3.5" /> Could not read provider balances — showing each as unreadable.
         </p>
       )}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {rows.map((r) => (
           <div key={r.key} className="rounded-lg border border-gray-100 dark:border-gray-700 p-3 flex flex-col gap-1.5">
             <p className="text-xs text-gray-500 dark:text-gray-400">{r.label}</p>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {r.state === "money" && r.tone === "ok" && <CheckCircleIcon className="w-4 h-4 text-emerald-500 shrink-0" />}
               <RowValue row={r} />
+              {r.key === "realphonevalidation" && (r.state === "setup" || r.state === "money") && (
+                <RpvSetBalance current={r.amount ?? null} onSaved={() => void reload()} />
+              )}
             </div>
             {r.note && <p className="text-[11px] text-gray-400 dark:text-gray-500">{r.note}</p>}
           </div>

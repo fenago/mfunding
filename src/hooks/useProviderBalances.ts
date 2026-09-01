@@ -27,10 +27,27 @@ export interface PhoneValidationBalance {
   gated?: boolean; // true = the Twilio key isn't in the vault yet
   error?: string;
 }
+export interface RpvBalance {
+  provider: string;
+  available: boolean;
+  balance: number | null;
+  currency?: string | null;
+  ok: boolean;
+  gated?: boolean;
+  /** true = no stored starting balance yet — prompt to set one. */
+  needs_setup?: boolean;
+  /** true = the balance is our estimate (set balance − tracked spend). */
+  estimated?: boolean;
+  set_at?: string | null;
+  tracked_spend?: number;
+  reason?: string;
+  error?: string;
+}
 export interface ProviderBalances {
   batchdata: BatchdataBalance;
   apollo: ApolloBalance;
   phone_validation: PhoneValidationBalance;
+  realphonevalidation?: RpvBalance;
 }
 
 interface State {
