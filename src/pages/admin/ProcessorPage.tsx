@@ -15,6 +15,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { StarIcon as StarSolid } from "@heroicons/react/24/solid";
 import supabase from "@/supabase";
+import { dateTimeET } from "@/utils/time";
 import { useUserProfile } from "@/context/UserProfileContext";
 import useIsProcessor from "@/hooks/useIsProcessor";
 import TextMerchantPanel from "@/components/admin/TextMerchantPanel";
@@ -723,6 +724,12 @@ export default function ProcessorPage() {
                       <th className="px-3 py-2 text-left">Next action</th>
                       <th className="px-3 py-2 text-right">Amount</th>
                       <th className="px-3 py-2 text-left">Contact</th>
+                      <th
+                        className="px-3 py-2 text-left"
+                        title="Who most recently WORKED this deal (any logged activity) — distinct from the assigned closer shown under Contact"
+                      >
+                        Last touched by
+                      </th>
                       <th className="px-3 py-2 text-right">Age</th>
                       <th className="px-3 py-2 text-left">Callback</th>
                       <th className="px-3 py-2 text-left">Appt</th>
@@ -853,6 +860,30 @@ export default function ProcessorPage() {
                             <div className="text-[10px] text-gray-400 truncate max-w-[11rem]">
                               {closerLabel(r)}
                             </div>
+                          </td>
+
+                          {/* Last touched by — who actually worked it (≠ assigned) */}
+                          <td className="px-3 py-2 align-top">
+                            {r.last_touched_by ? (
+                              <div
+                                title={
+                                  r.last_activity_at
+                                    ? `Last activity ${dateTimeET(r.last_activity_at)} ET`
+                                    : undefined
+                                }
+                              >
+                                <div className="text-xs text-gray-700 dark:text-gray-200 truncate max-w-[9rem]">
+                                  {r.last_touched_by}
+                                </div>
+                                {r.last_activity_at && (
+                                  <div className="text-[10px] text-gray-400">
+                                    {dateTimeET(r.last_activity_at)}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-gray-400">no activity yet</span>
+                            )}
                           </td>
 
                           {/* Age + today's-touch dot */}

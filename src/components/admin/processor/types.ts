@@ -34,6 +34,10 @@ export interface PipelineRow {
   touches_total?: number | null;
   touched_today?: boolean | null;
   application_signed_at?: string | null;
+  /** Latest human author of any activity on this deal — who actually WORKED it
+   *  (distinct from the assigned closer). */
+  last_touched_by?: string | null;
+  last_activity_at?: string | null;
   bank_statements_at: string | null;
   bank_statement_count: number | null;
   working_by: string | null;
