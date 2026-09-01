@@ -222,8 +222,14 @@ export default function QuickAppModal({
     return g;
   }, []);
 
-  const input =
-    "mt-1 w-full px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100";
+  const inputBase =
+    "mt-1 w-full px-2.5 py-1.5 rounded-lg border text-sm text-gray-900 dark:text-gray-100";
+  // Light green when a field has a value, light red when it's still empty — guides
+  // the eye straight to what's left to fill.
+  const tint = (v: string | undefined) =>
+    (v ?? "").trim() !== ""
+      ? "border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-900/20"
+      : "border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-900/15";
 
   return (
     <div className="fixed inset-0 z-[60] flex justify-end" role="dialog" aria-modal="true">
@@ -296,7 +302,7 @@ export default function QuickAppModal({
                       {LABEL_OVERRIDE[f.key] ?? f.label}
                       {f.key === "business_type" ? (
                         <select
-                          className={input}
+                          className={`${inputBase} ${tint(form[f.key])}`}
                           value={form[f.key] ?? ""}
                           onChange={(e) => set(f.key, e.target.value)}
                         >
@@ -305,7 +311,7 @@ export default function QuickAppModal({
                         </select>
                       ) : (
                         <input
-                          className={input}
+                          className={`${inputBase} ${tint(form[f.key])}`}
                           type={DATE.has(f.key) ? "date" : NUMERIC.has(f.key) ? "number" : "text"}
                           value={form[f.key] ?? ""}
                           onChange={(e) => set(f.key, e.target.value)}
