@@ -380,10 +380,12 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
 
   return (
    <div className="space-y-3">
-    {/* Results rollup + take-action (suppress dead/DNC · push clean list to setters). */}
-    <SmartListRollup list={list} onChanged={onChanged} />
-
-    {/* Enrichment providers — skip-trace / enrich / phone-validate. */}
+    {/* STEP 1 — clean the list FIRST (skip-trace / enrich / validate). These are the
+        primary actions, so they lead; the rollup + suppress + push come after. */}
+    <h3 className="text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
+      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-ocean-blue text-white text-[11px] font-bold">1</span>
+      Clean the list — skip-trace · enrich · validate the phones
+    </h3>
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
       <ActionPanel
         title="BatchData skip-trace"
@@ -463,6 +465,13 @@ export default function SmartListActions({ list, onChanged }: { list: SmartList;
         }
       />
     </div>
+
+    {/* STEP 2 — review the results, then suppress dead/DNC + push the clean list. */}
+    <h3 className="mt-1 text-sm font-bold text-gray-900 dark:text-white flex items-center gap-2">
+      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-ocean-blue text-white text-[11px] font-bold">2</span>
+      Review &amp; push to setters
+    </h3>
+    <SmartListRollup list={list} onChanged={onChanged} />
    </div>
   );
 }
