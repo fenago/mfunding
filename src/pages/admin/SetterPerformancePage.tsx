@@ -319,18 +319,23 @@ interface ProductiveCounts {
   /** Σ amount_requested over the in-range applications (partials included) — the
    *  dollars ADDED TO THE PIPELINE by this range's applications. */
   appsAskTotal: number;
+  /** Deals whose bank statements ARRIVED in range (bank_statements_at or
+   *  docs_collected_at stamp) — the docs-chase payoff. */
+  statementsIn: number;
   appointments: number;
   funded: number;
 }
 
 function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): ProductiveCounts {
-  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appsWithStatements: 0, appsAskTotal: 0, appointments: 0, funded: 0 };
+  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appsWithStatements: 0, appsAskTotal: 0, statementsIn: 0, appointments: 0, funded: 0 };
   for (const d of deals) {
     const contacted = inRange(d.contacted_at, from, to);
     const qualified = inRange(d.qualified_at, from, to);
     const appSent = inRange(d.application_sent_at, from, to);
+    const stmtsIn = inRange(d.bank_statements_at, from, to) || inRange(d.docs_collected_at, from, to);
     const appt = inRange(productiveAppointmentAt(d), from, to);
     const funded = inRange(d.funded_at, from, to);
+    if (stmtsIn) c.statementsIn++;
     if (!(contacted || qualified || appSent || appt || funded)) continue;
     c.deals++;
     if (contacted) c.contacted++;
@@ -2381,6 +2386,37 @@ export default function SetterPerformancePage() {
     return m;
   }, [productiveByOwner, range]);
 
+  /** "What happened" digest — one row per SETTER for the selected range: their
+   *  dial work (from the WAVV rows) joined with their pipeline work (from deals).
+   *  People only — unattributed lines stay in the by-setter funnel cards. */
+  const setterDigest = useMemo(() => {
+    const byId = new Map<string, { name: string; calls: SetterCall[] }>();
+    for (const r of aggRows) {
+      if (!r.setter_id) continue;
+      const g = byId.get(r.setter_id) ?? { name: r.setter_name ?? "", calls: [] };
+      if (!g.name && r.setter_name) g.name = r.setter_name;
+      g.calls.push(r);
+      byId.set(r.setter_id, g);
+    }
+    // Setters with pipeline work but zero dials in range still get a row.
+    for (const key of productiveByOwner?.keys() ?? []) {
+      if (key !== UNATTRIBUTED_OWNER && !byId.has(key)) byId.set(key, { name: "", calls: [] });
+    }
+    const rows = [...byId.entries()].map(([id, g]) => {
+      const f = computeFunnel(g.calls);
+      const p = computeProductive(productiveByOwner?.get(id) ?? [], range.from, range.to);
+      return {
+        id,
+        name: g.name || staffNames[id] || `Setter ${id.slice(0, 6)}…`,
+        dials: f.dials, conversations: f.conversations, positives: f.positives,
+        appointments: p.appointments, apps: p.appsSent, askTotal: p.appsAskTotal,
+        statementsIn: p.statementsIn,
+      };
+    });
+    rows.sort((a, b) => b.dials - a.dials || b.apps - a.apps);
+    return rows;
+  }, [aggRows, productiveByOwner, staffNames, range]);
+
   /** Calls dispositioned as an actual APPLICATION — the numerator for the
    *  industry app-per-conversation band, and shown next to it so the rate never
    *  appears without the count behind it. */
@@ -3201,6 +3237,49 @@ export default function SetterPerformancePage() {
                     </div>
                   ))}
                 </div>
+
+                {/* ── "What happened" — one row per setter for this range: dials →
+                    conversations → positives, plus the pipeline outcomes (appts,
+                    apps + $ added, statements in). The daily read-at-a-glance. */}
+                {setterDigest.length > 0 && (
+                  <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+                    <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-2">
+                      What happened — by setter
+                    </h3>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="text-[10px] uppercase tracking-wide text-gray-400">
+                            <th className="px-3 py-1.5 text-left">Setter</th>
+                            <th className="px-3 py-1.5 text-right">Dials</th>
+                            <th className="px-3 py-1.5 text-right">Conversations</th>
+                            <th className="px-3 py-1.5 text-right">Positives</th>
+                            <th className="px-3 py-1.5 text-right">Appts</th>
+                            <th className="px-3 py-1.5 text-right">Apps sent</th>
+                            <th className="px-3 py-1.5 text-right">$ added</th>
+                            <th className="px-3 py-1.5 text-right" title="Deals whose bank statements arrived in this range (assigned to this setter)">Stmts in</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                          {setterDigest.map((r) => (
+                            <tr key={r.id}>
+                              <td className="px-3 py-1.5 font-semibold text-gray-900 dark:text-white">{r.name}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{r.dials.toLocaleString()}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{r.conversations.toLocaleString()}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{r.positives.toLocaleString()}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{r.appointments.toLocaleString()}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{r.apps.toLocaleString()}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
+                                {r.askTotal > 0 ? `$${Math.round(r.askTotal).toLocaleString()}` : "—"}
+                              </td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{r.statementsIn.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* Grouping sub-toggle — a control INSIDE this panel, not a page tab. */}
                 <div className="flex flex-wrap items-center justify-between gap-3">

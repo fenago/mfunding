@@ -24,6 +24,7 @@ import SchedulePicker from "@/components/admin/processor/SchedulePicker";
 import ProcessorDetailDrawer from "@/components/admin/processor/ProcessorDetailDrawer";
 import GateTracker from "@/components/admin/processor/GateTracker";
 import QuickAppModal from "@/components/admin/processor/QuickAppModal";
+import ProcessorScoreboard from "@/components/admin/processor/ProcessorScoreboard";
 import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import {
@@ -501,6 +502,9 @@ export default function ProcessorPage() {
           .
         </p>
       </div>
+
+      {/* Processor scoreboard — what got DONE (today / 7d / 30d), per processor. */}
+      <ProcessorScoreboard />
 
       {/* 2. Workflow buckets — the primary navigation (funnel view). */}
       {view === "funnel" && (
