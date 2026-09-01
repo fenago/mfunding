@@ -1335,6 +1335,42 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       ghl_opportunity_id: oppId,
       lead_source: "ghl_other",
     };
+    // ── CREDIT THE DIALER (owner ruling 8/31): when this opportunity exists because
+    // a setter just dialed the merchant on WAVV and dispositioned the call (e.g.
+    // "Appointment Set" fired the GHL workflow that created it), the deal belongs to
+    // THAT setter — not round-robin. Look for the most recent WAVV call to this
+    // merchant's phone in the last 6h and map its caller ID to the setter. Pre-setting
+    // assigned_closer_id here bypasses the round-robin trigger (it only assigns when
+    // null). Best-effort: any failure falls back to the normal strategy.
+    let dialerId: string | null = null;
+    let dialerNote = "";
+    try {
+      const { data: custRow } = await db.from("customers").select("phone").eq("id", customerId).maybeSingle();
+      const digits = String(custRow?.phone ?? "").replace(/\D/g, "").slice(-10);
+      if (digits.length === 10) {
+        const { data: call } = await db
+          .from("wavv_calls")
+          .select("caller_id, started_at, disposition")
+          .ilike("phone", `%${digits}%`)
+          .gte("started_at", new Date(Date.now() - 6 * 3600 * 1000).toISOString())
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const cid = String(call?.caller_id ?? "").replace(/\D/g, "");
+        if (cid) {
+          const { data: map } = await db
+            .from("v_wavv_outbound_caller_ids")
+            .select("setter_id, setter_name")
+            .eq("caller_id", cid)
+            .maybeSingle();
+          if (map?.setter_id) {
+            dialerId = map.setter_id as string;
+            dialerNote = `Assigned to ${map.setter_name ?? "the dialing setter"} — they dialed this merchant on WAVV (${call?.disposition ?? "call"} at ${call?.started_at ?? "?"}) and the disposition created this opportunity.`;
+          }
+        }
+      }
+    } catch { /* attribution is best-effort; round-robin covers the rest */ }
+    if (dialerId) insert.assigned_closer_id = dialerId;
     // Stamp the stage timestamp for whatever status this opportunity was created
     // at (it's a fresh row, so the column is null by definition).
     const createTsCol = STATUS_TIMESTAMP_MAP[status];
@@ -1347,6 +1383,12 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       return;
     }
     {
+      if (dialerId && dialerNote) {
+        await db.from("activity_log").insert({
+          entity_type: "deal", entity_id: newDeal.id, interaction_type: "note",
+          subject: "lead:assigned-to-dialer", content: dialerNote, logged_by: dialerId,
+        });
+      }
       await log(db, "deal", newDeal.id, `ghl:${evtTypeLabel(evt)}:created`, { stage: mapped, evt });
       // Receipt: this event MINTED a deal (vs. "adopted" — see adoptOrphanDeal).
       await logEvent(db, evt, evtTypeLabel(evt), "created",
