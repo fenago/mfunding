@@ -1339,7 +1339,9 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     // a setter just dialed the merchant on WAVV and dispositioned the call (e.g.
     // "Appointment Set" fired the GHL workflow that created it), the deal belongs to
     // THAT setter — not round-robin. Look for the most recent WAVV call to this
-    // merchant's phone in the last 6h and map its caller ID to the setter. Pre-setting
+    // merchant's phone in the last 15 MINUTES — the disposition→workflow→opportunity
+    // chain lands in ~1-2 min (Liberty: 84s), so a tight window credits the real
+    // cause and can't scoop up an unrelated call from hours earlier. Pre-setting
     // assigned_closer_id here bypasses the round-robin trigger (it only assigns when
     // null). Best-effort: any failure falls back to the normal strategy.
     let dialerId: string | null = null;
@@ -1352,7 +1354,7 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
           .from("wavv_calls")
           .select("caller_id, started_at, disposition")
           .ilike("phone", `%${digits}%`)
-          .gte("started_at", new Date(Date.now() - 6 * 3600 * 1000).toISOString())
+          .gte("started_at", new Date(Date.now() - 15 * 60 * 1000).toISOString())
           .order("started_at", { ascending: false })
           .limit(1)
           .maybeSingle();
