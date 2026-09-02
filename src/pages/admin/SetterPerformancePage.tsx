@@ -54,6 +54,7 @@ import {
   PlayIcon,
   DocumentTextIcon,
   FunnelIcon,
+  ShieldCheckIcon,
   ChartBarIcon,
   ArrowTrendingUpIcon,
   HashtagIcon,
@@ -77,6 +78,7 @@ import { DEAL_STAGES, type DealStatus } from "@/types/deals";
 import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
 import DialCeilingPanel, { type ProductiveSetterRow } from "@/components/admin/DialCeilingPanel";
 import SetterOpsTab from "@/components/admin/setter/SetterOpsTab";
+import CallAuditTab from "@/components/admin/setter/CallAuditTab";
 import TextMerchantPanel from "@/components/admin/TextMerchantPanel";
 import {
   BenchmarkChip, BenchmarkTile, BenchmarkLegend, IndustryComparisonCard,
@@ -1332,8 +1334,8 @@ function hourLabel(h: number): string {
   return h < 12 ? `${h}a` : `${h - 12}p`;
 }
 
-type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers" | "operations";
-const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean }[] = [
+type TabId = "funnel" | "setters" | "talk_time" | "live_transfers" | "realtime" | "assignments" | "dial_ceiling" | "dispositions" | "review" | "trends" | "log" | "numbers" | "operations" | "audit";
+const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: boolean; superOnly?: boolean }[] = [
   { id: "funnel",         label: "Funnel",         icon: FunnelIcon },
   // Right of Funnel (owner-specified): the setter's single-merchant working
   // surface — opens ONE merchant into the ops console (deep-linked from a contact
@@ -1363,6 +1365,9 @@ const TABS: { id: TabId; label: string; icon: typeof PhoneIcon; adminOnly?: bool
   // shift produced them (occupancy) and how much of the "talking" is real.
   { id: "dial_ceiling",   label: "Dial Ceiling",   icon: ScaleIcon },
   { id: "numbers",        label: "Numbers",        icon: HashtagIcon, adminOnly: true },
+  // End-of-day call-quality audit (transcript-classified) — OWNER ONLY. Setters
+  // and admins never see this tab; the data behind it is super_admin-RLS'd too.
+  { id: "audit",          label: "Call Audit",     icon: ShieldCheckIcon, superOnly: true },
 ];
 
 /** The two DEALS-based tabs. They read a different table from every other tab,
@@ -3021,7 +3026,7 @@ export default function SetterPerformancePage() {
   const neverSynced = (totalRowsEver ?? 0) === 0;
   const emptyRange = !neverSynced && aggRows.length === 0 && !loading;
   const logPages = logCount === null ? 0 : Math.ceil(logCount / LOG_PAGE_SIZE);
-  const visibleTabs = TABS.filter((t) => !t.adminOnly || canManageNumbers);
+  const visibleTabs = TABS.filter((t) => (!t.adminOnly || canManageNumbers) && (!t.superOnly || isSuperAdmin));
   /** The Synergy tabs read `deals`, not WAVV — so every WAVV banner below is
    *  suppressed on them. A stale dialer sync says nothing about a lead cohort,
    *  and showing it there would be a warning about the wrong data source. */
@@ -3207,6 +3212,7 @@ export default function SetterPerformancePage() {
           so a slow or broken dialer sync must not blank them. */}
       {/* isSourceTab() is called inline (not via sourceTabActive) so TypeScript
           narrows `tab` for the lookups below — no casts. */}
+      {tab === "audit" && <CallAuditTab />}
       {tab === "operations" ? (
         /* Operations — the setter's single-merchant console. It resolves ONE
            merchant (deep link or manual phone) via usePlaybookContact and reads
