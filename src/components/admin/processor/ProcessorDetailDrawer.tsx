@@ -236,6 +236,14 @@ export default function ProcessorDetailDrawer({
   // Move-to-nurture is destructive-ish (soft-closes the deal) → armed two-step.
   const [nurtureArmed, setNurtureArmed] = useState(false);
   const [dndArmed, setDndArmed] = useState(false);
+  // Files living in VibeReach (GHL uploads + e-sign docs) — merchants' emailed /
+  // uploaded files often land THERE, not in customer_documents, so the drawer
+  // must show both stores or the processor "can't see the files".
+  const [ghlFiles, setGhlFiles] = useState<
+    | { kind: "idle" | "loading" }
+    | { kind: "error"; message: string }
+    | { kind: "ready"; uploads: { name: string; url: string }[]; docs: { name: string; signed: boolean; url: string | null }[] }
+  >({ kind: "idle" });
   // QA checklist working state (seeded from the loaded detail's qa.checklist).
   const [qaChecks, setQaChecks] = useState<Record<string, boolean>>({});
   const [qaNotes, setQaNotes] = useState("");
@@ -259,6 +267,29 @@ export default function ProcessorDetailDrawer({
       setQaChecks(seeded);
       setQaNotes(detail.qa?.notes ?? "");
       setState({ kind: "ready", detail });
+      // VibeReach files (uploads on the contact + e-sign docs) — best-effort,
+      // loaded after the main read so a GHL hiccup never blanks the drawer.
+      const ghlContactId = (detail.deal?.ghl_contact_id as string | null) ?? null;
+      if (ghlContactId) {
+        setGhlFiles({ kind: "loading" });
+        supabase.functions
+          .invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
+          .then(({ data: gd, error: gerr }) => {
+            const g = gd as {
+              error?: string;
+              uploads?: { name: string; url: string }[];
+              documents?: { name: string; signed: boolean; url: string | null }[];
+            } | null;
+            if (gerr || g?.error) {
+              setGhlFiles({ kind: "error", message: g?.error || "couldn't read VibeReach files" });
+            } else {
+              setGhlFiles({ kind: "ready", uploads: g?.uploads ?? [], docs: g?.documents ?? [] });
+            }
+          })
+          .catch((e) => setGhlFiles({ kind: "error", message: e instanceof Error ? e.message : "couldn't read VibeReach files" }));
+      } else {
+        setGhlFiles({ kind: "idle" });
+      }
     } catch (e) {
       setState({
         kind: "error",
@@ -707,6 +738,78 @@ export default function ProcessorDetailDrawer({
                     ))}
                   </div>
                 )}
+              </section>
+
+              {/* Files in VibeReach — merchant uploads on the contact + e-sign docs.
+                  Emailed/uploaded files often land HERE, not in the app store. */}
+              <section>
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-2">
+                  Files in VibeReach
+                </h3>
+                {ghlFiles.kind === "loading" && (
+                  <p className="text-xs text-gray-400">Checking VibeReach…</p>
+                )}
+                {ghlFiles.kind === "idle" && (
+                  <p className="text-xs text-gray-400">No VibeReach contact linked — nothing to check.</p>
+                )}
+                {ghlFiles.kind === "error" && (
+                  <p className="text-xs text-red-600 dark:text-red-400">
+                    Couldn't read VibeReach files — {ghlFiles.message} (not proof there are none)
+                  </p>
+                )}
+                {ghlFiles.kind === "ready" &&
+                  (ghlFiles.uploads.length === 0 && ghlFiles.docs.length === 0 ? (
+                    <p className="text-xs text-gray-400">No files on the VibeReach contact.</p>
+                  ) : (
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800">
+                      {ghlFiles.uploads.map((u, i) => (
+                        <div key={`u${i}`} className="flex items-center gap-2 px-3 py-2">
+                          <DocumentTextIcon className="w-4 h-4 shrink-0 text-violet-400" />
+                          <div className="min-w-0 flex-1 text-xs font-semibold text-gray-900 dark:text-white truncate">
+                            {u.name || "Uploaded file"}
+                            <span className="ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                              upload
+                            </span>
+                          </div>
+                          <a
+                            href={u.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+                          >
+                            <EyeIcon className="w-3 h-3" /> View
+                          </a>
+                        </div>
+                      ))}
+                      {ghlFiles.docs.map((d2, i) => (
+                        <div key={`d${i}`} className="flex items-center gap-2 px-3 py-2">
+                          <DocumentTextIcon className="w-4 h-4 shrink-0 text-gray-400" />
+                          <div className="min-w-0 flex-1 text-xs font-semibold text-gray-900 dark:text-white truncate">
+                            {d2.name}
+                            <span
+                              className={`ml-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                                d2.signed
+                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                  : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                              }`}
+                            >
+                              {d2.signed ? "signed ✓" : "awaiting signature"}
+                            </span>
+                          </div>
+                          {d2.url && (
+                            <a
+                              href={d2.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+                            >
+                              <EyeIcon className="w-3 h-3" /> View
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
               </section>
 
               {/* QA step — gate ④. Tick every item, then mark QA passed. */}

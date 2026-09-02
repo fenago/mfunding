@@ -127,17 +127,30 @@ export default function SetterMerchantSearch({
         // don't match here are still reachable via the ENTER raw-phone fallback.
         query = query.ilike("phone", `%${raw.replace(/\D/g, "")}%`);
       } else {
-        const t = `%${raw}%`;
-        const conds = [
-          `business_name.ilike.${t}`,
-          `first_name.ilike.${t}`,
-          `last_name.ilike.${t}`,
-          `email.ilike.${t}`,
-        ];
-        // additional_emails is a text[] — substring ILIKE isn't supported on
-        // arrays, but a FULL email can be matched with `contains` (cs).
-        if (raw.includes("@")) conds.push(`additional_emails.cs.{"${raw}"}`);
-        query = query.or(conds.join(","));
+        // TOKENIZED match: every word must appear SOMEWHERE (business, first,
+        // last, email), each independently. A whole-phrase ILIKE fails the
+        // moment punctuation intervenes — "Andrade Stone" never matched
+        // "ANDRADE'S STONE INC" because of the 'S. Per-token OR groups are
+        // AND-ed together (each .or() call is a separate AND filter), so
+        // "john smith" also matches first+last across fields.
+        const tokens = raw
+          .split(/\s+/)
+          .map((w) => w.replace(/[,()]/g, "").trim()) // strip PostgREST syntax chars
+          .filter(Boolean)
+          .slice(0, 4);
+        for (const tok of tokens.length > 0 ? tokens : [raw]) {
+          const t = `%${tok}%`;
+          const conds = [
+            `business_name.ilike.${t}`,
+            `first_name.ilike.${t}`,
+            `last_name.ilike.${t}`,
+            `email.ilike.${t}`,
+          ];
+          // additional_emails is a text[] — substring ILIKE isn't supported on
+          // arrays, but a FULL email can be matched with `contains` (cs).
+          if (tok.includes("@")) conds.push(`additional_emails.cs.{"${tok}"}`);
+          query = query.or(conds.join(","));
+        }
       }
 
       const { data, error } = await query;
