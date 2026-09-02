@@ -590,17 +590,21 @@ const TOOLTIP_STYLE = {
  *  The SAME vocabulary is duplicated server-side in setter_dial_ceiling /
  *  setter_dial_ceiling_daily (one `dispo` CTE each) — change both together. */
 const POSITIVE_DISPOSITIONS = [
-  "Full App + Statements", "Full Application", "Appointment Set", "Interested", "Callback",
+  // "Partial Application" is the 9/1 rename of "Interested" in WAVV; the old
+  // string stays so historical rows keep counting. (The GHL tag is still
+  // wavv-interested — tag-based stage sync is unaffected by the rename.)
+  "Full App + Statements", "Full Application", "Partial Application", "Appointment Set", "Interested", "Callback",
 ];
 
 /** The subset of positives that is actually an APPLICATION — the numerator for
  *  the industry "app rate per conversation" band (2–4%).
  *
- *  Deliberately NOT all five positives. "Interested", "Callback" and even
+ *  Deliberately NOT all positives. "Interested", "Callback" and even
  *  "Appointment Set" are wins, but none of them is an application, and counting
  *  them against a band that means applications would flatter the comparison by
- *  a multiple. Same string discipline as the list above — exact WAVV values. */
-const APPLICATION_DISPOSITIONS = ["Full App + Statements", "Full Application"];
+ *  a multiple. "Partial Application" IS an application (a partial went out).
+ *  Same string discipline as the list above — exact WAVV values. */
+const APPLICATION_DISPOSITIONS = ["Full App + Statements", "Full Application", "Partial Application"];
 
 // ── What counts as a real conversation ───────────────────────────────────────
 // NOT duration, and NOT WAVV's `human` flag. Both are unreliable here and the
