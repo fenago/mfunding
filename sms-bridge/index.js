@@ -163,8 +163,32 @@ xmpp.on("error", (e) => log("xmpp error:", e.message));
 xmpp.on("offline", () => log("xmpp offline (will auto-reconnect)"));
 xmpp.on("online", async (addr) => {
   log("xmpp online as", addr.toString());
+  lastOnlineAt = Date.now();
   await xmpp.send(xml("presence"));
 });
+
+// ---------- zombie watchdog ----------
+// 9/2: the bridge sat "active (running)" for hours with a DEAD XMPP socket —
+// @xmpp/client's reconnect wedged (endless empty `xmpp error:` + nonza-listener
+// leaks), every send hit a null socket ("Cannot read properties of null
+// (reading 'write')") and texts stuck at queued/failed. The process never
+// exited, so systemd's Restart=always never got its chance. This watchdog gives
+// it that chance: if the client hasn't been online for ZOMBIE_MS, exit(1) and
+// let systemd bring up a clean process (which drains the queue on connect).
+let lastOnlineAt = Date.now();
+const ZOMBIE_MS = 3 * 60 * 1000;
+setInterval(() => {
+  const online = xmpp.status === "online";
+  if (online) {
+    lastOnlineAt = Date.now();
+    return;
+  }
+  const downFor = Date.now() - lastOnlineAt;
+  if (downFor > ZOMBIE_MS) {
+    log(`watchdog: xmpp not online for ${Math.round(downFor / 1000)}s (status=${xmpp.status}) — exiting for a clean systemd restart`);
+    process.exit(1);
+  }
+}, 30 * 1000);
 
 xmpp.on("stanza", async (stanza) => {
   try {
