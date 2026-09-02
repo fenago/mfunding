@@ -271,6 +271,8 @@ export default function SetterDealList({
   const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
   // Customer ids whose application has been signed (from ghl_doc_completions).
   const [signedCustomers, setSignedCustomers] = useState<Set<string>>(new Set());
+  // Documents on file per customer: total + bank-statement count.
+  const [docCounts, setDocCounts] = useState<Map<string, { total: number; statements: number }>>(new Map());
   // Per-deal application completeness (pct + fields left) — the exit rule: a deal
   // leaves the working list at 100% (or Nurture).
   const [appPct, setAppPct] = useState<Map<string, { pct: number; left: number }>>(new Map());
@@ -335,17 +337,26 @@ export default function SetterDealList({
       // the completion ledger (no GHL call) → a ✍️ Signed badge on the row.
       const custIds = Array.from(new Set(rows.map((r) => r.customer_id).filter(Boolean))) as string[];
       if (custIds.length > 0) {
-        const { data: comps } = await supabase
-          .from("ghl_doc_completions")
-          .select("customer_id, doc_name")
-          .in("customer_id", custIds);
+        const [{ data: comps }, { data: docs }] = await Promise.all([
+          supabase.from("ghl_doc_completions").select("customer_id, doc_name").in("customer_id", custIds),
+          supabase.from("customer_documents").select("customer_id, document_type").in("customer_id", custIds),
+        ]);
         const signed = new Set<string>();
         for (const c of (comps ?? []) as { customer_id: string; doc_name: string | null }[]) {
           if (c.customer_id && /application|prefill|partial/i.test(c.doc_name ?? "")) signed.add(c.customer_id);
         }
         setSignedCustomers(signed);
+        const dc = new Map<string, { total: number; statements: number }>();
+        for (const doc of (docs ?? []) as { customer_id: string; document_type: string | null }[]) {
+          const cur = dc.get(doc.customer_id) ?? { total: 0, statements: 0 };
+          cur.total += 1;
+          if (doc.document_type === "bank_statement") cur.statements += 1;
+          dc.set(doc.customer_id, cur);
+        }
+        setDocCounts(dc);
       } else {
         setSignedCustomers(new Set());
+        setDocCounts(new Map());
       }
       // ── Application completeness per deal (the exit rule) + the setter's ★s ──
       const dealIds = rows.map((r) => r.id);
@@ -706,6 +717,33 @@ export default function SetterDealList({
                             ✍️ Signed
                           </span>
                         )}
+                        {/* Documents on file — total + how many are bank statements. */}
+                        {(() => {
+                          const dcs = r.customer_id ? docCounts.get(r.customer_id) : null;
+                          if (!dcs || dcs.total === 0) {
+                            return (
+                              <span
+                                title="No documents on file yet"
+                                className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-400 dark:bg-gray-700/60"
+                              >
+                                📄 no docs
+                              </span>
+                            );
+                          }
+                          return (
+                            <span
+                              title={`${dcs.total} document${dcs.total === 1 ? "" : "s"} on file · ${dcs.statements} bank statement${dcs.statements === 1 ? "" : "s"} — open the deal to view them`}
+                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full tabular-nums ${
+                                dcs.statements > 0
+                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                  : "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+                              }`}
+                            >
+                              📄 {dcs.total} doc{dcs.total === 1 ? "" : "s"}
+                              {dcs.statements > 0 ? ` · ${dcs.statements} stmt${dcs.statements === 1 ? "" : "s"}` : ""}
+                            </span>
+                          );
+                        })()}
                         {/* App completeness — the exit rule: 100% leaves this list. */}
                         {p && (
                           <span
