@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { PencilSquareIcon } from "@heroicons/react/24/outline";
+import { BoltIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
 import MerchantApplicationModal from "../MerchantApplicationModal";
 import AdHocSendMenu from "../AdHocSendMenu";
+import QuickAppModal from "../processor/QuickAppModal";
 import SetterDndButton from "./SetterDndButton";
 import { ensureDealStageAtLeast } from "../../../services/dealService";
 import type { DealWithCustomer } from "../../../types/deals";
@@ -33,6 +34,7 @@ export default function SetterActionRail({
   autoOpen?: boolean;
 }) {
   const [showApp, setShowApp] = useState(false);
+  const [showQuickApp, setShowQuickApp] = useState(false);
   // One auto-open per deal id: hold the id we've already popped for so switching
   // merchants re-arms it, but a close on the same deal stays closed.
   const autoOpenedFor = useRef<string | null>(null);
@@ -45,15 +47,27 @@ export default function SetterActionRail({
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
-      {/* PRIMARY / headline action — fill the application in-app, then send it. */}
-      <button
-        type="button"
-        onClick={() => setShowApp(true)}
-        className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-ocean-blue px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-ocean-blue/90"
-      >
-        <PencilSquareIcon className="w-5 h-5" />
-        Fill out application
-      </button>
+      {/* PRIMARY / headline actions — the fast mandatory-only Quick App beside the
+          full application. Same width, side by side. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => setShowQuickApp(true)}
+          title="Mandatory fields only — address/phone auto-fill, account/routing/DOB pre-defaulted, live-transfer script inside"
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-amber-600"
+        >
+          <BoltIcon className="w-5 h-5" />
+          Quick App
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowApp(true)}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-ocean-blue px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-ocean-blue/90"
+        >
+          <PencilSquareIcon className="w-5 h-5" />
+          Fill out application
+        </button>
+      </div>
 
       {/* Secondary actions — send docs + take them off the list (DND), together so
           the setter can act on "take me off your list" right where they send. */}
@@ -67,6 +81,14 @@ export default function SetterActionRail({
           <SetterDndButton deal={deal} onRefresh={onRefresh} />
         </span>
       </div>
+
+      {showQuickApp && (
+        <QuickAppModal
+          dealId={deal.id}
+          onClose={() => setShowQuickApp(false)}
+          onSaved={onRefresh}
+        />
+      )}
 
       {showApp && (
         <MerchantApplicationModal
