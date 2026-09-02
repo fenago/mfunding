@@ -5,11 +5,20 @@ import {
   InboxStackIcon,
   BuildingStorefrontIcon,
   BoltIcon,
+  MoonIcon,
+  PencilSquareIcon,
   PhoneIcon,
+  StarIcon,
 } from "@heroicons/react/24/outline";
+import { StarIcon as StarSolid } from "@heroicons/react/24/solid";
 import supabase from "@/supabase";
+import { mustWrite } from "@/supabase/writes";
 import { useUserProfile } from "@/context/UserProfileContext";
 import QuickAppModal from "@/components/admin/processor/QuickAppModal";
+import SchedulePicker from "@/components/admin/processor/SchedulePicker";
+import { addDealNote, updateDealStatus } from "@/services/dealService";
+import { applicationCompleteness } from "@/lib/applicationCompleteness";
+import type { DealWithCustomer } from "@/types/deals";
 import type { PlaybookLookup } from "@/hooks/usePlaybookContact";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
@@ -42,13 +51,16 @@ const DEAL_CAP = 50;
 // One unbroken literal — supabase-js infers the row shape by parsing it, so a
 // split string degrades the type to GenericStringError.
 const DEAL_COLS =
-  "id,deal_number,status,previous_status,lead_source,updated_at,created_at,contacted_at,spoke_at,last_attempt_at,callback_at,callback_source,appointment_at,appointment_promised_at,stips_promised_by,customer_id,customer:customers!customer_id(business_name,first_name,last_name,phone)";
+  "id,deal_number,status,previous_status,lead_source,updated_at,created_at,contacted_at,spoke_at,last_attempt_at,callback_at,callback_source,appointment_at,appointment_promised_at,stips_promised_by,amount_requested,use_of_funds,customer_id,customer:customers!customer_id(business_name,first_name,last_name,phone,email,monthly_revenue,industry)";
 
 interface DealCustomer {
   business_name: string | null;
   first_name: string | null;
   last_name: string | null;
   phone: string | null;
+  email: string | null;
+  monthly_revenue: number | null;
+  industry: string | null;
 }
 
 interface DealRow {
@@ -67,9 +79,24 @@ interface DealRow {
   appointment_at: string | null;
   appointment_promised_at: string | null;
   stips_promised_by: string | null;
+  amount_requested: number | null;
+  use_of_funds: string | null;
   customer_id: string | null;
   customer: DealCustomer | null;
 }
+
+/** Days since the SETTER'S FIRST TOUCH (earliest contact stamp). null = never
+ *  touched — the two-week clock hasn't started. */
+function daysSinceFirstTouch(r: DealRow): number | null {
+  const stamps = [r.contacted_at, r.spoke_at]
+    .filter((v): v is string => !!v)
+    .map((v) => Date.parse(v))
+    .filter((n) => Number.isFinite(n));
+  if (stamps.length === 0) return null;
+  return Math.floor((Date.now() - Math.min(...stamps)) / 86_400_000);
+}
+
+const STALE_DAYS = 14;
 
 type LoadState =
   | { kind: "loading" }
@@ -244,6 +271,18 @@ export default function SetterDealList({
   const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
   // Customer ids whose application has been signed (from ghl_doc_completions).
   const [signedCustomers, setSignedCustomers] = useState<Set<string>>(new Set());
+  // Per-deal application completeness (pct + fields left) — the exit rule: a deal
+  // leaves the working list at 100% (or Nurture).
+  const [appPct, setAppPct] = useState<Map<string, { pct: number; left: number }>>(new Map());
+  // ★ the signed-in setter's working set (their own processor_working claims).
+  const [workingSet, setWorkingSet] = useState<Set<string>>(new Set());
+  const [workingOnly, setWorkingOnly] = useState(false);
+  // Row-action state: star busy, armed nurture, notes editor, errors.
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [nurtureArmed, setNurtureArmed] = useState<string | null>(null);
+  const [rowErr, setRowErr] = useState<string | null>(null);
+  const [notesFor, setNotesFor] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState("");
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -308,6 +347,36 @@ export default function SetterDealList({
       } else {
         setSignedCustomers(new Set());
       }
+      // ── Application completeness per deal (the exit rule) + the setter's ★s ──
+      const dealIds = rows.map((r) => r.id);
+      if (dealIds.length > 0) {
+        const [{ data: apps }, { data: stars }] = await Promise.all([
+          supabase.from("mca_applications").select("*").in("deal_id", dealIds),
+          supabase.from("processor_working").select("deal_id").eq("profile_id", effectiveUserId).in("deal_id", dealIds),
+        ]);
+        const appByDeal = new Map<string, Record<string, unknown>>();
+        for (const a of (apps ?? []) as Record<string, unknown>[]) {
+          appByDeal.set(String(a.deal_id), a);
+        }
+        const pct = new Map<string, { pct: number; left: number }>();
+        for (const r of rows) {
+          const res = applicationCompleteness(
+            {
+              customer: r.customer ?? undefined,
+              lead_qual: null,
+              amount_requested: r.amount_requested,
+              use_of_funds: r.use_of_funds,
+            } as unknown as DealWithCustomer,
+            (appByDeal.get(r.id) as never) ?? null,
+          );
+          pct.set(r.id, { pct: res.pct, left: res.missing.length });
+        }
+        setAppPct(pct);
+        setWorkingSet(new Set(((stars ?? []) as { deal_id: string }[]).map((s) => s.deal_id)));
+      } else {
+        setAppPct(new Map());
+        setWorkingSet(new Set());
+      }
     } catch (e) {
       // error, NEVER an empty list — an unreadable book is not an empty book.
       setState({
@@ -321,9 +390,85 @@ export default function SetterDealList({
     void load();
   }, [load]);
 
-  const rows = state.kind === "ready" ? state.rows : [];
+  const loadedRows = state.kind === "ready" ? state.rows : [];
+  // WORKING-QUEUE RULE (owner 9/2): a deal stays on My Deals until its application
+  // is COMPLETE (100%) or it leaves for Nurture. Complete deals drop off the
+  // default view (still reachable by picking their stage). The ★ chip narrows to
+  // the setter's own working set.
+  const rows = loadedRows.filter((r) => {
+    if (filter.kind === "all") {
+      const p = appPct.get(r.id);
+      if (p && p.pct >= 100) return false;
+    }
+    if (workingOnly && !workingSet.has(r.id)) return false;
+    return true;
+  });
   const total = state.kind === "ready" ? state.total : 0;
-  const truncated = state.kind === "ready" && total > rows.length;
+  const truncated = state.kind === "ready" && total > loadedRows.length;
+
+  // ── Row actions: ★ toggle, callback/appointment, nurture, quick note ──
+  const toggleStar = async (dealId: string) => {
+    setRowBusy(dealId);
+    setRowErr(null);
+    try {
+      const { data, error } = await supabase.rpc("processor_toggle_working", { p_deal_id: dealId });
+      if (error) throw new Error(error.message);
+      const on = (data as { working?: boolean } | null)?.working === true;
+      setWorkingSet((prev) => {
+        const next = new Set(prev);
+        if (on) next.add(dealId); else next.delete(dealId);
+        return next;
+      });
+    } catch (e) {
+      setRowErr(e instanceof Error ? e.message : "Couldn't update your working set.");
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  const saveSchedule = async (dealId: string, col: "callback_at" | "appointment_at", iso: string) => {
+    const patch: Record<string, unknown> =
+      col === "callback_at" ? { callback_at: iso, callback_source: "closer_promised" } : { appointment_at: iso };
+    await mustWrite("save the follow-up", supabase.from("deals").update(patch).eq("id", dealId));
+    void load();
+  };
+
+  const armOrFireNurture = (dealId: string) => {
+    if (nurtureArmed === dealId) {
+      setNurtureArmed(null);
+      setRowBusy(dealId);
+      setRowErr(null);
+      void (async () => {
+        try {
+          await updateDealStatus(dealId, "nurture");
+          void load();
+        } catch (e) {
+          setRowErr(e instanceof Error ? e.message : "Couldn't move to nurture.");
+        } finally {
+          setRowBusy(null);
+        }
+      })();
+    } else {
+      setNurtureArmed(dealId);
+      window.setTimeout(() => setNurtureArmed((cur) => (cur === dealId ? null : cur)), 4000);
+    }
+  };
+
+  const saveNote = async (r: DealRow) => {
+    const content = noteText.trim();
+    if (!content || !r.customer_id) return;
+    setRowBusy(r.id);
+    setRowErr(null);
+    try {
+      await addDealNote({ dealId: r.id, customerId: r.customer_id, content });
+      setNoteText("");
+      setNotesFor(null);
+    } catch (e) {
+      setRowErr(e instanceof Error ? e.message : "Couldn't save the note.");
+    } finally {
+      setRowBusy(null);
+    }
+  };
 
   const header = useMemo(
     () => (
@@ -395,6 +540,20 @@ export default function SetterDealList({
             {chip.label}
           </button>
         ))}
+        {/* ★ My working set — the setter's own starred deals (any other filter still applies). */}
+        <button
+          type="button"
+          onClick={() => setWorkingOnly((v) => !v)}
+          aria-pressed={workingOnly}
+          title="Only the deals you starred as your working set"
+          className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full border transition-colors ${
+            workingOnly
+              ? "border-amber-500 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300"
+              : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600"
+          }`}
+        >
+          <StarIcon className="w-3.5 h-3.5" /> My working set
+        </button>
         {/* By stage — the dropdown IS its own filter; empty value returns to All. */}
         <select
           value={filter.kind === "stage" ? filter.stage : ""}
@@ -454,6 +613,9 @@ export default function SetterDealList({
           </div>
         )}
 
+        {rowErr && (
+          <p className="mb-2 text-xs font-semibold text-red-600 dark:text-red-400">{rowErr}</p>
+        )}
         {state.kind === "ready" && rows.length > 0 && (
           <>
             {truncated && (
@@ -469,11 +631,34 @@ export default function SetterDealList({
                 const ns = nextStep(r);
                 const active = lastActiveAt(r);
                 const phone = prettyPhone(r.customer?.phone ?? null);
+                const p = appPct.get(r.id) ?? null;
+                const touchDays = daysSinceFirstTouch(r);
+                const stale = touchDays !== null && touchDays >= STALE_DAYS;
+                const starred = workingSet.has(r.id);
                 return (
                   <div
                     key={r.id}
-                    className="w-full px-3 py-2.5 flex items-start gap-2.5 border-t border-gray-100 dark:border-gray-800 first:border-t-0 hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors"
+                    className={`w-full px-3 py-2.5 border-t border-gray-100 dark:border-gray-800 first:border-t-0 transition-colors ${
+                      stale
+                        ? "bg-red-50/70 dark:bg-red-900/10 hover:bg-red-50 dark:hover:bg-red-900/20"
+                        : "hover:bg-gray-50 dark:hover:bg-gray-900"
+                    }`}
                   >
+                  <div className="flex items-start gap-2.5">
+                    {/* ★ working set — the setter's own claim */}
+                    <button
+                      type="button"
+                      disabled={rowBusy === r.id}
+                      onClick={() => void toggleStar(r.id)}
+                      title={starred ? "In your working set — click to remove" : "Star into your working set"}
+                      className="shrink-0 mt-0.5 disabled:opacity-40"
+                    >
+                      {starred ? (
+                        <StarSolid className="w-4 h-4 text-amber-400" />
+                      ) : (
+                        <StarIcon className="w-4 h-4 text-gray-300 hover:text-amber-400" />
+                      )}
+                    </button>
                     <button
                       type="button"
                       onClick={() => onOpen({ dealId: r.id })}
@@ -521,6 +706,38 @@ export default function SetterDealList({
                             ✍️ Signed
                           </span>
                         )}
+                        {/* App completeness — the exit rule: 100% leaves this list. */}
+                        {p && (
+                          <span
+                            title={p.pct >= 100 ? "Application complete" : `${p.left} required field${p.left === 1 ? "" : "s"} left`}
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full tabular-nums ${
+                              p.pct >= 100
+                                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                : p.pct >= 60
+                                  ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                                  : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                            }`}
+                          >
+                            app {p.pct}%
+                          </span>
+                        )}
+                        {/* The two-week clock — from the setter's FIRST TOUCH. */}
+                        {touchDays !== null ? (
+                          <span
+                            title={`${touchDays} day${touchDays === 1 ? "" : "s"} since your first touch${stale ? " — two weeks up: move to nurture" : ""}`}
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full tabular-nums ${
+                              stale
+                                ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                                : "bg-gray-100 text-gray-500 dark:bg-gray-700/60 dark:text-gray-300"
+                            }`}
+                          >
+                            {touchDays}d worked
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-400 dark:bg-gray-700/60">
+                            not touched
+                          </span>
+                        )}
                       </div>
                       {phone && (
                         <div className="mt-1 flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
@@ -538,6 +755,71 @@ export default function SetterDealList({
                     >
                       <BoltIcon className="w-3 h-3" /> Quick App
                     </button>
+                  </div>
+
+                  {/* Follow-up strip — schedule, note, and (when two weeks are up) nurture. */}
+                  <div className="mt-1.5 pl-6 flex flex-wrap items-center gap-2">
+                    <SchedulePicker
+                      kind="callback"
+                      value={r.callback_at}
+                      compact
+                      onSave={(iso) => saveSchedule(r.id, "callback_at", iso)}
+                    />
+                    <SchedulePicker
+                      kind="appointment"
+                      value={r.appointment_at}
+                      compact
+                      onSave={(iso) => saveSchedule(r.id, "appointment_at", iso)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNotesFor((cur) => (cur === r.id ? null : r.id));
+                        setNoteText("");
+                      }}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+                    >
+                      <PencilSquareIcon className="w-3 h-3" /> Note
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rowBusy === r.id}
+                      onClick={() => armOrFireNurture(r.id)}
+                      title={stale ? "Two weeks up — move to long-term nurture" : "Move to long-term nurture"}
+                      className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border transition-colors ${
+                        nurtureArmed === r.id
+                          ? "border-violet-500 bg-violet-100 dark:bg-violet-900/40 text-violet-800 dark:text-violet-200"
+                          : stale
+                            ? "border-violet-400 text-violet-600 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20"
+                            : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-violet-500 hover:text-violet-600"
+                      }`}
+                    >
+                      <MoonIcon className="w-3 h-3" />
+                      {nurtureArmed === r.id ? "Confirm?" : "Nurture"}
+                    </button>
+                  </div>
+
+                  {/* Inline quick-note editor */}
+                  {notesFor === r.id && (
+                    <div className="mt-1.5 pl-6 flex items-start gap-2">
+                      <textarea
+                        autoFocus
+                        value={noteText}
+                        onChange={(e) => setNoteText(e.target.value)}
+                        placeholder="What happened / what's next…"
+                        rows={2}
+                        className="flex-1 text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1.5 text-gray-900 dark:text-gray-100"
+                      />
+                      <button
+                        type="button"
+                        disabled={!noteText.trim() || rowBusy === r.id}
+                        onClick={() => void saveNote(r)}
+                        className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg bg-ocean-blue text-white hover:bg-deep-sea disabled:opacity-40"
+                      >
+                        {rowBusy === r.id ? "Saving…" : "Save"}
+                      </button>
+                    </div>
+                  )}
                   </div>
                 );
               })}
