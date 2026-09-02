@@ -1425,6 +1425,9 @@ export default function SetterPerformancePage() {
   // Productive contacts (the pipeline-side positive). null = UNREADABLE, which
   // renders as an error — never as "this setter produced nothing".
   const [productiveDeals, setProductiveDeals] = useState<ProductiveDeal[] | null>(null);
+  /** In-range application pushes grouped by the AUTHOR who sent them (distinct
+   *  deals + Σ ask) — the digest's apps columns. null = unreadable (falls back). */
+  const [appsByAuthor, setAppsByAuthor] = useState<Map<string, { apps: number; askTotal: number }> | null>(null);
   const [productiveError, setProductiveError] = useState<string | null>(null);
   const [productiveLoading, setProductiveLoading] = useState(true);
   const [productiveTruncated, setProductiveTruncated] = useState(false);
@@ -1689,6 +1692,46 @@ export default function SetterPerformancePage() {
       const rows = (data ?? []) as unknown as ProductiveDeal[];
       setProductiveDeals(rows);
       setProductiveTruncated(rows.length >= PRODUCTIVE_DEAL_CAP);
+      // ── Apps BY AUTHOR (who actually pushed the send) for the digest. The
+      // pipeline rungs stay assigned-book; the "what happened" digest must credit
+      // the person who did the work (Coloso 9/2: Kristine sent, Carlos was
+      // assigned — the digest showed Carlos). Blocked sends excluded. ──
+      try {
+        const { data: pushes } = await supabase
+          .from("activity_log")
+          .select("entity_id, logged_by, content")
+          .eq("entity_type", "deal")
+          .eq("subject", "application:pushed-to-ghl")
+          .not("content", "ilike", "BLOCKED%")
+          .gte("created_at", fromIso)
+          .lt("created_at", toIso)
+          .limit(1000);
+        const byAuthor = new Map<string, Set<string>>();
+        for (const p of (pushes ?? []) as { entity_id: string; logged_by: string | null }[]) {
+          if (!p.logged_by) continue;
+          const set = byAuthor.get(p.logged_by) ?? new Set<string>();
+          set.add(p.entity_id);
+          byAuthor.set(p.logged_by, set);
+        }
+        const allDealIds = [...new Set([...byAuthor.values()].flatMap((s) => [...s]))];
+        const askByDeal = new Map<string, number>();
+        if (allDealIds.length > 0) {
+          const { data: askRows } = await supabase
+            .from("deals").select("id, amount_requested").in("id", allDealIds);
+          for (const d of (askRows ?? []) as { id: string; amount_requested: number | null }[]) {
+            askByDeal.set(d.id, Number(d.amount_requested ?? 0) || 0);
+          }
+        }
+        const out = new Map<string, { apps: number; askTotal: number }>();
+        for (const [author, dealSet] of byAuthor) {
+          let ask = 0;
+          for (const id of dealSet) ask += askByDeal.get(id) ?? 0;
+          out.set(author, { apps: dealSet.size, askTotal: ask });
+        }
+        setAppsByAuthor(out);
+      } catch {
+        setAppsByAuthor(null); // unreadable ≠ zero — the digest falls back to assigned-book
+      }
     } catch (e) {
       // null, not [] — unreadable is not "nobody produced anything".
       setProductiveDeals(null);
@@ -2406,20 +2449,31 @@ export default function SetterPerformancePage() {
     for (const key of productiveByOwner?.keys() ?? []) {
       if (key !== UNATTRIBUTED_OWNER && !byId.has(key)) byId.set(key, { name: "", calls: [] });
     }
+    // Anyone who AUTHORED an app-send in range gets a row too (e.g. the processor
+    // sending on someone else's book with zero dials of her own).
+    for (const key of appsByAuthor?.keys() ?? []) {
+      if (!byId.has(key)) byId.set(key, { name: "", calls: [] });
+    }
     const rows = [...byId.entries()].map(([id, g]) => {
       const f = computeFunnel(g.calls);
       const p = computeProductive(productiveByOwner?.get(id) ?? [], range.from, range.to);
+      // Apps are credited to the person who SENT them (author), not the assigned
+      // book — "what happened" means who did it. Falls back to assigned-book
+      // counts only if the author read failed.
+      const authored = appsByAuthor?.get(id);
+      const apps = appsByAuthor !== null ? (authored?.apps ?? 0) : p.appsSent;
+      const askTotal = appsByAuthor !== null ? (authored?.askTotal ?? 0) : p.appsAskTotal;
       return {
         id,
         name: g.name || staffNames[id] || `Setter ${id.slice(0, 6)}…`,
         dials: f.dials, conversations: f.conversations, positives: f.positives,
-        appointments: p.appointments, apps: p.appsSent, askTotal: p.appsAskTotal,
+        appointments: p.appointments, apps, askTotal,
         statementsIn: p.statementsIn,
       };
     });
     rows.sort((a, b) => b.dials - a.dials || b.apps - a.apps);
     return rows;
-  }, [aggRows, productiveByOwner, staffNames, range]);
+  }, [aggRows, productiveByOwner, appsByAuthor, staffNames, range]);
 
   /** Calls dispositioned as an actual APPLICATION — the numerator for the
    *  industry app-per-conversation band, and shown next to it so the rate never
@@ -3259,7 +3313,7 @@ export default function SetterPerformancePage() {
                             <th className="px-3 py-1.5 text-right">Conversations</th>
                             <th className="px-3 py-1.5 text-right">Positives</th>
                             <th className="px-3 py-1.5 text-right">Appts</th>
-                            <th className="px-3 py-1.5 text-right">Apps sent</th>
+                            <th className="px-3 py-1.5 text-right" title="Credited to the person who SENT the application (not the assigned book)">Apps sent</th>
                             <th className="px-3 py-1.5 text-right">$ added</th>
                             <th className="px-3 py-1.5 text-right" title="Deals whose bank statements arrived in this range (assigned to this setter)">Stmts in</th>
                           </tr>
