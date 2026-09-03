@@ -93,7 +93,12 @@ export default function CallAuditTab() {
     }
   };
 
-  const review = async (auditId: string, item: SampleItem, verdict: "accept" | "decline") => {
+  const review = async (
+    auditId: string,
+    item: SampleItem,
+    verdict: "accept" | "decline",
+    newDisposition?: string,
+  ) => {
     setBusyCall(item.call_id);
     setErr(null);
     try {
@@ -101,7 +106,7 @@ export default function CallAuditTab() {
         p_audit_id: auditId,
         p_call_id: item.call_id,
         p_verdict: verdict,
-        p_new_disposition: verdict === "accept" ? item.suggested : null,
+        p_new_disposition: verdict === "accept" ? (newDisposition ?? item.suggested) : null,
       });
       if (error) throw new Error(error.message);
       await load();
@@ -111,6 +116,13 @@ export default function CallAuditTab() {
       setBusyCall(null);
     }
   };
+
+  // Manual fix on ANY sampled call — not just the flagged ones.
+  const [fixSel, setFixSel] = useState<Record<string, string>>({});
+  const DISPO_OPTIONS = [
+    "Voice Message", "No Answer", "Bad Number", "Not Interested", "Do Not Contact",
+    "Callback", "Appointment Set", "Partial Application", "Full Application", "Full App + Statements",
+  ];
 
   const n = (v: unknown) => Number(v ?? 0) || 0;
 
@@ -285,6 +297,55 @@ export default function CallAuditTab() {
                   </div>
                 </div>
               )}
+
+              {/* Every sampled call — fix ANY disposition, not just the flagged ones. */}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-gray-400 hover:text-ocean-blue">
+                  All sampled calls ({r.sample.length}) — click to review / fix any disposition
+                </summary>
+                <div className="mt-1.5 rounded-lg border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800">
+                  {r.sample.map((s) => (
+                    <div key={s.call_id} className="px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="font-semibold text-gray-900 dark:text-white">{s.et}</span>
+                        <span className="text-gray-500 dark:text-gray-400">{s.contact || s.phone || "?"}</span>
+                        <span className="text-gray-400">{s.seconds ?? "?"}s</span>
+                        <span className="px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-[10px] font-bold">
+                          {s.applied_disposition ?? s.disposition}
+                        </span>
+                        <span className="text-[10px] text-gray-400">({s.class.replace(/_/g, " ")})</span>
+                        {s.review === "accept" ? (
+                          <span className="ml-auto text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                            ✓ relabeled → {s.applied_disposition}
+                          </span>
+                        ) : (
+                          <span className="ml-auto flex items-center gap-1.5">
+                            <select
+                              value={fixSel[s.call_id] ?? ""}
+                              onChange={(e) => setFixSel((m) => ({ ...m, [s.call_id]: e.target.value }))}
+                              className="text-[10px] px-1.5 py-0.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100"
+                            >
+                              <option value="">fix to…</option>
+                              {DISPO_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                            <button
+                              type="button"
+                              disabled={!fixSel[s.call_id] || busyCall === s.call_id}
+                              onClick={() => void review(r.id, s, "accept", fixSel[s.call_id])}
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-ocean-blue text-white hover:bg-deep-sea disabled:opacity-40"
+                            >
+                              {busyCall === s.call_id ? "…" : "Apply"}
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                      {s.excerpt && (
+                        <p className="mt-1 text-[11px] italic text-gray-500 dark:text-gray-400 line-clamp-2">"{s.excerpt}"</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </details>
             </div>
           );
         })
