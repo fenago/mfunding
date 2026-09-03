@@ -29,7 +29,7 @@ function json(body: unknown, status = 200) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
-    const body = (await req.json().catch(() => ({}))) as { ghl_contact_id?: string };
+    const body = (await req.json().catch(() => ({}))) as { ghl_contact_id?: string; action?: string; url?: string };
 
     const db = serviceClient();
 
@@ -66,6 +66,33 @@ Deno.serve(async (req) => {
     }
 
     const cfg = await getGhlConfig(db);
+
+    // ── DOWNLOAD PROXY — the contact's UPLOADED files live behind GHL's private
+    // documents/download endpoint (bearer-only), so a bare browser click 401s.
+    // Proxy the bytes through here: validate the URL actually belongs to THIS
+    // contact's uploads, then fetch with the API token and stream it back. ──
+    if (body.action === "download") {
+      const reqUrl = String(body.url ?? "");
+      if (!reqUrl.startsWith("https://services.leadconnectorhq.com/documents/download/")) {
+        return json({ error: "Only GHL document-download URLs can be proxied." }, 400);
+      }
+      const uploads = await listContactFileUploads(cfg, contactId!);
+      const match = uploads.flatMap((u) => u.files).find((f) => f.url === reqUrl);
+      if (!match) return json({ error: "That file doesn't belong to this contact." }, 403);
+      const fileRes = await fetch(reqUrl, {
+        headers: { Authorization: `Bearer ${cfg.apiKey}`, Version: "2021-07-28" },
+      });
+      if (!fileRes.ok) return json({ error: `GHL download failed (${fileRes.status}).` }, 502);
+      const ct = fileRes.headers.get("content-type") ?? "application/octet-stream";
+      return new Response(fileRes.body, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": ct,
+          "Content-Disposition": `inline; filename="${(match.name || "file").replace(/[^\w. -]/g, "_")}"`,
+        },
+      });
+    }
 
     // 1) E-sign documents for this contact.
     // NOTE: the proposals/document API caps `limit` at 21 (422s above that).

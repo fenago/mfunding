@@ -337,6 +337,35 @@ export default function ProcessorDetailDrawer({
     [load, onChanged],
   );
 
+  // VibeReach UPLOADED files live behind GHL's bearer-only download endpoint —
+  // a bare link 401s in the browser. Proxy the bytes through ghl-docs-status
+  // (which validates the file belongs to this contact) and open the blob.
+  const [ghlFileBusy, setGhlFileBusy] = useState<string | null>(null);
+  const openGhlUpload = useCallback(async (url: string) => {
+    const ghlContactId = (state.kind === "ready" ? (state.detail.deal?.ghl_contact_id as string | null) : null) ?? null;
+    if (!ghlContactId) return;
+    setGhlFileBusy(url);
+    setActionErr(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("ghl-docs-status", {
+        body: { action: "download", ghl_contact_id: ghlContactId, url },
+      });
+      if (error) throw new Error(error.message);
+      if (data instanceof Blob) {
+        const obj = URL.createObjectURL(data);
+        window.open(obj, "_blank", "noopener,noreferrer");
+        setTimeout(() => URL.revokeObjectURL(obj), 60_000);
+      } else {
+        const err = (data as { error?: string } | null)?.error;
+        throw new Error(err || "The file came back in an unexpected format.");
+      }
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : "Couldn't open that file.");
+    } finally {
+      setGhlFileBusy(null);
+    }
+  }, [state]);
+
   const openDoc = useCallback(async (documentId: string, download: boolean) => {
     setActionErr(null);
     try {
@@ -771,14 +800,14 @@ export default function ProcessorDetailDrawer({
                               upload
                             </span>
                           </div>
-                          <a
-                            href={u.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue"
+                          <button
+                            type="button"
+                            disabled={ghlFileBusy === u.url}
+                            onClick={() => void openGhlUpload(u.url)}
+                            className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue disabled:opacity-50"
                           >
-                            <EyeIcon className="w-3 h-3" /> View
-                          </a>
+                            <EyeIcon className="w-3 h-3" /> {ghlFileBusy === u.url ? "Opening…" : "View"}
+                          </button>
                         </div>
                       ))}
                       {ghlFiles.docs.map((d2, i) => (
