@@ -251,14 +251,17 @@ export async function syncCallsForDeal(
       out.synced = fresh.length;
     }
 
-    // INBOUND, record-only: a live transfer rings our line and a closer must be
-    // able to grade it "disconnected at handoff", which requires the call to
-    // exist in the ledger. No telemetry and no timeline note — an inbound ring
-    // is not an outbound dial attempt.
+    // INBOUND: ledger row + — when ANSWERED — the same contact/spoke stamps and a
+    // timeline note. An answered inbound call IS a conversation (a taken live
+    // transfer once sat here for 16 minutes while the deal read "Never spoken
+    // to · Handoff MISSED" because this branch was record-only). What inbound
+    // still never does is count as a dial ATTEMPT — telemetry attempts stay
+    // outbound-only.
     const inbound = calls.filter((c) => c.direction === "inbound");
     if (inbound.length > 0) {
-      const { data: ins, error: inErr } = await db.from("ghl_call_log").upsert(
-        inbound.map((c) => ({
+      const freshIn: CallRecord[] = [];
+      for (const c of inbound) {
+        const { data: ins, error: inErr } = await db.from("ghl_call_log").upsert({
           ghl_message_id: c.id,
           deal_id: dealId,
           ghl_contact_id: contactId,
@@ -270,11 +273,55 @@ export async function syncCallsForDeal(
           from_number: c.from,
           to_number: c.to,
           called_at: c.calledAt,
-        })),
-        { onConflict: "ghl_message_id", ignoreDuplicates: true },
-      ).select("ghl_message_id");
-      if (inErr) out.syncError = `inbound ledger upsert failed: ${inErr.message}`;
-      else out.inboundRecorded = ins?.length ?? 0;
+        }, { onConflict: "ghl_message_id", ignoreDuplicates: true }).select("ghl_message_id");
+        if (inErr) { out.syncError = `inbound ledger upsert failed: ${inErr.message}`; continue; }
+        if (ins && ins.length > 0) { freshIn.push(c); continue; }
+        // Late finalization, same as outbound: GHL writes the record at ring time
+        // and settles status/duration after hangup — a frozen "ringing" inbound
+        // row would never stamp the conversation it turned out to be.
+        const { data: known } = await db.from("ghl_call_log")
+          .select("ghl_message_id, duration_seconds, call_status")
+          .eq("ghl_message_id", c.id).maybeSingle();
+        if (known && (
+          (c.durationSeconds != null && known.duration_seconds == null) ||
+          (c.status && c.status !== known.call_status)
+        )) {
+          await db.from("ghl_call_log")
+            .update({ duration_seconds: c.durationSeconds ?? known.duration_seconds, call_status: c.status })
+            .eq("ghl_message_id", c.id);
+          if (answered(c)) {
+            await db.from("deals").update({ contacted_at: c.calledAt })
+              .eq("id", dealId).is("contacted_at", null);
+          }
+          if (spokeCall(c)) {
+            await db.from("deals").update({ spoke_at: c.calledAt })
+              .eq("id", dealId).is("spoke_at", null);
+          }
+        }
+      }
+      out.inboundRecorded = freshIn.length;
+      for (const c of freshIn) {
+        if (answered(c)) {
+          await db.from("deals").update({ contacted_at: c.calledAt })
+            .eq("id", dealId).is("contacted_at", null);
+          const { error: logErr } = await db.from("activity_log").insert({
+            entity_type: "deal",
+            entity_id: dealId,
+            interaction_type: "call",
+            subject: `GHL call: inbound, ${fmtDuration(c.durationSeconds)}, answered${c.userName ? ` — taken by ${c.userName}` : ""}`,
+            content: JSON.stringify({
+              source: "ghl-call-history", via, ghl_message_id: c.id, status: c.status,
+              duration_seconds: c.durationSeconds, called_at: c.calledAt,
+              user: c.userName, from: c.from, to: c.to,
+            }),
+          });
+          if (logErr) console.error("[ghlCallSync] inbound activity_log insert failed:", logErr.message);
+        }
+        if (spokeCall(c)) {
+          await db.from("deals").update({ spoke_at: c.calledAt })
+            .eq("id", dealId).is("spoke_at", null);
+        }
+      }
     }
   } catch (e) {
     out.syncError = e instanceof Error ? e.message : String(e);

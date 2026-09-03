@@ -54,6 +54,7 @@ import {
   listCustomFields, updateContactCustomFields, addContactTags, getContact,
   type GhlConfig,
 } from "../_shared/ghl.ts";
+import { fetchContactCalls, syncCallsForDeal } from "../_shared/ghlCallSync.ts";
 import { ensureMerchantPortalUser } from "../_shared/merchantPortal.ts";
 import { fireAndForgetScore } from "../_shared/scoreLeadInvoke.ts";
 import { parseStatedTimeET, nextEtOccurrenceIso } from "../_shared/bestTime.ts";
@@ -1875,6 +1876,31 @@ Deno.serve(async (req) => {
             } catch { /* not a JSON error body */ }
           }
           if (ghlOpportunityId) await db.from("deals").update({ ghl_opportunity_id: ghlOpportunityId }).eq("id", dealId);
+        }
+        // ── Mirror the transfer CALL onto the deal at birth (best-effort) ──
+        // The inbound transfer often COMPLETES before this email-driven intake
+        // creates the deal, so GHL's Call-Completed event fires into "no deal
+        // for contact" and is lost until the nightly sweep — a taken 16-minute
+        // handoff then reads "Handoff MISSED · Never spoken to" all day. One
+        // targeted sync here catches a finished transfer immediately; one still
+        // in progress finalizes via the Call-Completed event when it ends.
+        try {
+          const conv = await ghlFetch<{ conversations?: Array<{ id: string }> }>(
+            cfg, "GET",
+            `/conversations/search?locationId=${cfg.locationId}&contactId=${encodeURIComponent(ghlContactId)}&sortBy=last_message_date&sort=desc&limit=3`,
+          );
+          const convIds = (conv.data?.conversations ?? []).map((c) => c.id).filter(Boolean);
+          if (convIds.length) {
+            const { calls } = await fetchContactCalls(cfg, {
+              conversationIds: convIds,
+              messagesPerConversation: 10,
+              maxUserLookups: 2,
+              sinceMs: Date.now() - 6 * 60 * 60 * 1000,
+            });
+            if (calls.length) await syncCallsForDeal(db, dealId, ghlContactId, calls, "live-transfer-intake");
+          }
+        } catch (e) {
+          console.error("live-transfer-intake: call mirror failed (non-fatal)", e instanceof Error ? e.message : String(e));
         }
       }
     } catch (e) {

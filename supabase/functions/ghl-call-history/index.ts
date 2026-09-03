@@ -160,8 +160,9 @@ function outcomeLabel(c: CallRecord): string {
  * activity_log row per new call, atomic telemetry stamp. Idempotent (ledger PK =
  * GHL message id). Used by BOTH the panel poll and the cron sweep — one code
  * path, so "logged when viewed" and "logged automatically" can never diverge.
- * INBOUND calls are also mirrored into the ledger (record-only — no telemetry, no
- * timeline note) so a live transfer can be graded "disconnected at handoff".
+ * INBOUND calls are mirrored into the ledger too; an ANSWERED inbound call also
+ * stamps contacted_at/spoke_at and writes a timeline note (it IS a conversation)
+ * but never counts as a dial attempt.
  */
 async function syncCallsForDeal(
   db: ReturnType<typeof serviceClient>,
@@ -255,28 +256,74 @@ async function syncCallsForDeal(
       synced = fresh.length;
     }
 
-    // INBOUND calls, record-only. Live transfers ring our line (inbound), and the
-    // closer needs to grade one as "disconnected at handoff" — but set_call_disposition
-    // requires the call to exist in this ledger. So mirror inbound TYPE_CALL rows here
-    // (dedup by GHL message id), WITHOUT touching telemetry or activity_log: an inbound
-    // ring is not an outbound dial attempt and isn't a contact until graded. The grade
-    // (via the RPC) writes its own timeline note.
+    // INBOUND: ledger row + — when ANSWERED — the same contact/spoke stamps and a
+    // timeline note. An answered inbound call IS a conversation (a taken live
+    // transfer once sat here for 16 minutes while the deal read "Never spoken
+    // to · Handoff MISSED" because this branch was record-only). What inbound
+    // still never does is count as a dial ATTEMPT — telemetry attempts stay
+    // outbound-only. KEEP IN LOCKSTEP with _shared/ghlCallSync.ts.
     const inbound = calls.filter((c) => c.direction === "inbound");
     if (inbound.length > 0) {
-      const rows = inbound.map((c) => ({
-        ghl_message_id: c.id,
-        deal_id: dealId,
-        ghl_contact_id: contactId,
-        direction: c.direction,
-        call_status: c.status,
-        duration_seconds: c.durationSeconds,
-        ghl_user_id: c.userId,
-        ghl_user_name: c.userName,
-        from_number: c.from,
-        to_number: c.to,
-        called_at: c.calledAt,
-      }));
-      await db.from("ghl_call_log").upsert(rows, { onConflict: "ghl_message_id", ignoreDuplicates: true });
+      const freshIn: CallRecord[] = [];
+      for (const c of inbound) {
+        const { data: ins, error: inErr } = await db.from("ghl_call_log").upsert({
+          ghl_message_id: c.id,
+          deal_id: dealId,
+          ghl_contact_id: contactId,
+          direction: c.direction,
+          call_status: c.status,
+          duration_seconds: c.durationSeconds,
+          ghl_user_id: c.userId,
+          ghl_user_name: c.userName,
+          from_number: c.from,
+          to_number: c.to,
+          called_at: c.calledAt,
+        }, { onConflict: "ghl_message_id", ignoreDuplicates: true }).select("ghl_message_id");
+        if (inErr) { syncError = `inbound ledger upsert failed: ${inErr.message}`; continue; }
+        if (ins && ins.length > 0) { freshIn.push(c); continue; }
+        // Late finalization, same as outbound: a frozen "ringing" inbound row
+        // would never stamp the conversation it turned out to be.
+        const { data: known } = await db.from("ghl_call_log")
+          .select("ghl_message_id, duration_seconds, call_status")
+          .eq("ghl_message_id", c.id).maybeSingle();
+        if (known && (
+          (c.durationSeconds != null && known.duration_seconds == null) ||
+          (c.status && c.status !== known.call_status)
+        )) {
+          await db.from("ghl_call_log")
+            .update({ duration_seconds: c.durationSeconds ?? known.duration_seconds, call_status: c.status })
+            .eq("ghl_message_id", c.id);
+          if (answered(c)) {
+            await db.from("deals").update({ contacted_at: c.calledAt })
+              .eq("id", dealId).is("contacted_at", null);
+          }
+          if (spokeCall(c)) {
+            await db.from("deals").update({ spoke_at: c.calledAt })
+              .eq("id", dealId).is("spoke_at", null);
+          }
+        }
+      }
+      for (const c of freshIn) {
+        if (answered(c)) {
+          await db.from("deals").update({ contacted_at: c.calledAt })
+            .eq("id", dealId).is("contacted_at", null);
+          await db.from("activity_log").insert({
+            entity_type: "deal",
+            entity_id: dealId,
+            interaction_type: "call",
+            subject: `GHL call: inbound, ${fmtDuration(c.durationSeconds)}, answered${c.userName ? ` — taken by ${c.userName}` : ""}`,
+            content: JSON.stringify({
+              source: "ghl-call-history", ghl_message_id: c.id, status: c.status,
+              duration_seconds: c.durationSeconds, called_at: c.calledAt,
+              user: c.userName, from: c.from, to: c.to,
+            }),
+          });
+        }
+        if (spokeCall(c)) {
+          await db.from("deals").update({ spoke_at: c.calledAt })
+            .eq("id", dealId).is("spoke_at", null);
+        }
+      }
     }
   } catch (e) {
     syncError = e instanceof Error ? e.message : String(e);
