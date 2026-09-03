@@ -200,7 +200,7 @@ export default function CallAuditTab() {
                     </h4>
                     <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
                       <span className={`px-2 py-0.5 rounded-full ${pill(sc.identity_opener_pct >= 80)}`}
-                        title='Opens with "this is <name> with Momentum" instead of gatekeeper-bait "I\'m looking for…"'>
+                        title={'Opens with "this is NAME with Momentum" instead of gatekeeper-bait "I\'m looking for..."'}>
                         identity opener {sc.identity_opener_pct}%
                       </span>
                       <span className={`px-2 py-0.5 rounded-full ${pill(sc.convs_with_a_no === 0 || sc.gave_up_after_first_no < sc.convs_with_a_no)}`}
