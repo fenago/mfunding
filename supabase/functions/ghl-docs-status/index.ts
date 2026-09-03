@@ -79,19 +79,18 @@ Deno.serve(async (req) => {
       const uploads = await listContactFileUploads(cfg, contactId!);
       const match = uploads.flatMap((u) => u.files).find((f) => f.url === reqUrl);
       if (!match) return json({ error: "That file doesn't belong to this contact." }, 403);
+      // GHL answers with a 307 to a TIME-LIMITED SIGNED storage URL that needs no
+      // auth — hand that URL back and let the browser open it directly. (Verified:
+      // the signed target serves 200 with the file's real content-type.)
       const fileRes = await fetch(reqUrl, {
+        redirect: "manual",
         headers: { Authorization: `Bearer ${cfg.apiKey}`, Version: "2021-07-28" },
       });
-      if (!fileRes.ok) return json({ error: `GHL download failed (${fileRes.status}).` }, 502);
-      const ct = fileRes.headers.get("content-type") ?? "application/octet-stream";
-      return new Response(fileRes.body, {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": ct,
-          "Content-Disposition": `inline; filename="${(match.name || "file").replace(/[^\w. -]/g, "_")}"`,
-        },
-      });
+      const signed = fileRes.headers.get("location");
+      if ((fileRes.status === 307 || fileRes.status === 302 || fileRes.status === 301) && signed) {
+        return json({ ok: true, url: signed, name: match.name });
+      }
+      return json({ error: `GHL download failed (${fileRes.status} — no signed URL returned).` }, 502);
     }
 
     // 1) E-sign documents for this contact.

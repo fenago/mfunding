@@ -58,6 +58,7 @@ import PlaybookTextSend from "../../components/admin/PlaybookTextSend";
 import AdHocSendMenu from "../../components/admin/AdHocSendMenu";
 import { mintAndCopyConnectBankLink } from "../../lib/connectBank";
 import { dateTimeET } from "../../utils/time";
+import { openGhlUploadViaProxy } from "../../lib/ghlDocs";
 import EmailHealthChip from "../../components/admin/EmailHealthChip";
 import EmailMerchantPanel from "../../components/admin/EmailMerchantPanel";
 import CallHistoryPanel from "../../components/admin/CallHistoryPanel";
@@ -1872,6 +1873,19 @@ function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; g
     const { data } = await supabase.storage.from("customer-documents").createSignedUrl(path, 600);
     if (data?.signedUrl) window.open(data.signedUrl, "_blank", "noreferrer");
   };
+  // Uploaded VibeReach files need the API bearer — a raw link 401s for staff, so
+  // they open through the download proxy (which returns GHL's signed URL).
+  const [uploadBusy, setUploadBusy] = useState<string | null>(null);
+  const viewGhlUpload = async (url: string) => {
+    setUploadBusy(url);
+    try {
+      await openGhlUploadViaProxy(supabase, ghlContactId, url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't open that file.");
+    } finally {
+      setUploadBusy(null);
+    }
+  };
   useEffect(() => { load(); checkAttached(); loadAppDocs(); }, [ghlContactId, customerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fileCount = uploads.reduce((n, u) => n + u.files.length, 0);
@@ -1938,7 +1952,14 @@ function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; g
                     <span key={j}>
                       {j > 0 && " · "}
                       {f.url ? (
-                        <a href={f.url} target="_blank" rel="noreferrer" className="text-ocean-blue hover:underline">{f.name}</a>
+                        <button
+                          type="button"
+                          disabled={uploadBusy === f.url}
+                          onClick={() => void viewGhlUpload(f.url!)}
+                          className="text-ocean-blue hover:underline disabled:opacity-50"
+                        >
+                          {uploadBusy === f.url ? "Opening…" : f.name}
+                        </button>
                       ) : (
                         <span className="text-gray-700 dark:text-gray-200">{f.name}</span>
                       )}

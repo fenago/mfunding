@@ -35,6 +35,38 @@ const docTs = (d: GhlDoc) => (d.updatedAt ? new Date(d.updatedAt).getTime() : 0)
  * group so the reader sees a single, unambiguous "latest" status instead of a
  * flat pile with no hierarchy.
  */
+/**
+ * Open an UPLOADED VibeReach file (a `documents/download/<id>` URL). Those URLs
+ * require the API bearer token, so a raw <a href> shows staff a login/403 page —
+ * the file must be opened through the `ghl-docs-status` download proxy, which
+ * validates the file belongs to the contact and returns GHL's time-limited
+ * SIGNED storage URL (public, no auth needed).
+ *
+ * ⚠ Call this synchronously from the click handler: it opens the tab BEFORE
+ * awaiting (popup blockers silently kill window.open after an await).
+ * Throws with a readable message on failure so callers can surface it.
+ */
+export async function openGhlUploadViaProxy(
+  supabase: { functions: { invoke: (name: string, opts: { body: Record<string, unknown> }) => Promise<{ data: unknown; error: { message: string } | null }> } },
+  ghlContactId: string,
+  url: string,
+): Promise<void> {
+  const tab = window.open("", "_blank");
+  try {
+    const { data, error } = await supabase.functions.invoke("ghl-docs-status", {
+      body: { action: "download", ghl_contact_id: ghlContactId, url },
+    });
+    if (error) throw new Error(error.message);
+    const signed = (data as { url?: string; error?: string } | null)?.url;
+    if (!signed) throw new Error((data as { error?: string } | null)?.error || "VibeReach didn't return a viewable link for that file.");
+    if (tab) tab.location.href = signed;
+    else window.location.assign(signed); // popup blocked → same-tab fallback
+  } catch (e) {
+    if (tab) tab.close();
+    throw e;
+  }
+}
+
 export function groupDocs(docs: GhlDoc[]): DocGroup[] {
   const map = new Map<string, GhlDoc[]>(); // insertion order = first-appearance order (stable)
   for (const d of docs) {

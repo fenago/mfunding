@@ -19,6 +19,7 @@ import { CheckIcon } from "@heroicons/react/24/solid";
 import supabase from "@/supabase";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { dateTimeET } from "@/utils/time";
+import { openGhlUploadViaProxy } from "@/lib/ghlDocs";
 import {
   applicationCompleteness,
   SECTION_LABEL,
@@ -347,18 +348,7 @@ export default function ProcessorDetailDrawer({
     setGhlFileBusy(url);
     setActionErr(null);
     try {
-      const { data, error } = await supabase.functions.invoke("ghl-docs-status", {
-        body: { action: "download", ghl_contact_id: ghlContactId, url },
-      });
-      if (error) throw new Error(error.message);
-      if (data instanceof Blob) {
-        const obj = URL.createObjectURL(data);
-        window.open(obj, "_blank", "noopener,noreferrer");
-        setTimeout(() => URL.revokeObjectURL(obj), 60_000);
-      } else {
-        const err = (data as { error?: string } | null)?.error;
-        throw new Error(err || "The file came back in an unexpected format.");
-      }
+      await openGhlUploadViaProxy(supabase, ghlContactId, url);
     } catch (e) {
       setActionErr(e instanceof Error ? e.message : "Couldn't open that file.");
     } finally {
