@@ -38,7 +38,12 @@ interface AuditRow {
 }
 
 function todayEt(): string {
-  return new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })).toISOString().slice(0, 10);
+  // en-CA formats as YYYY-MM-DD directly in the target zone. The previous
+  // parse-then-toISOString round-trip re-applied the BROWSER's offset, so on an
+  // ET machine after ~8 PM the tab defaulted to TOMORROW (empty day, no audit).
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
 }
 
 export default function CallAuditTab() {

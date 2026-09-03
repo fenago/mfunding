@@ -133,8 +133,11 @@ Deno.serve(async (req) => {
   if (!authed) return json({ error: "Not authorized" }, 401);
 
   const body = (await req.json().catch(() => ({}))) as { date?: string };
-  // ET day bounds. Default: today in ET.
-  const dayStr = body.date ?? new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })).toISOString().slice(0, 10);
+  // ET day bounds. Default: today in ET — via Intl (correct regardless of the
+  // server's own timezone; a parse+toISOString round-trip is offset-dependent).
+  const dayStr = body.date ?? new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
 
   const { data: apiKey } = await db.rpc("get_wavv_api_key");
   if (!apiKey || typeof apiKey !== "string") return json({ error: "WAVV_API_KEY missing from the vault" }, 500);
