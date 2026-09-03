@@ -64,6 +64,51 @@ function suggestFor(t: string): string {
   return "Not Interested";
 }
 
+// ── SCRIPT ANALYSIS (measurable, per conversation) ───────────────────────────
+// Scores each transcript against the owner's approved outcome-ladder script:
+//   identity_opener — leads with "this is <name> with Momentum/M Funding"
+//                     (vs the gatekeeper-bait "I'm looking for <name>")
+//   rebuttals       — how many times the setter kept selling AFTER the first
+//                     decline ("no thanks / not interested"). 0 = gave up on the
+//                     first soft no — the exact weakness in Paola's transcripts.
+//   capture_ask     — asked for cell / email / OK-to-text (the fixed first step)
+//   ladder_stepdown — offered the next rung (appointment / callback) instead of
+//                     just ending the call
+interface ScriptRead {
+  identity_opener: boolean;
+  rebuttals: number;
+  gave_up_after_first_no: boolean;
+  capture_ask: boolean;
+  ladder_stepdown: boolean;
+}
+
+const RE_IDENTITY = /this is\s+\w+[^.?!]{0,40}(momentum|m funding|mfunding)/i;
+const RE_LOOKING = /i'?m looking for/i;
+const RE_DECLINE = /not interested|no,? thank|i'?m (ok|okay|good)|don'?t (want|need)|no,? i'?m/ig;
+const RE_SELL = /offer|working capital|funding|qualify|capital|make sense|consider/ig;
+const RE_CAPTURE = /best (cell|number|email)|your (cell|email)|text you|ok to text|send you a text|what'?s your email/i;
+const RE_STEPDOWN = /appointment|schedule|call you back|specialist|tomorrow|later today|better time/i;
+
+function readScript(t: string): ScriptRead {
+  const identity = RE_IDENTITY.test(t);
+  // Position of the FIRST decline, then count sell-phrases after it — each one is
+  // a rebuttal attempt. Crude but consistent, so it's comparable day over day.
+  RE_DECLINE.lastIndex = 0;
+  const firstNo = RE_DECLINE.exec(t);
+  let rebuttals = 0;
+  if (firstNo) {
+    const after = t.slice(firstNo.index + firstNo[0].length);
+    rebuttals = (after.match(RE_SELL) ?? []).length > 0 ? (after.match(RE_DECLINE) ?? []).length : 0;
+  }
+  return {
+    identity_opener: identity && !RE_LOOKING.test(t.slice(0, 200)),
+    rebuttals,
+    gave_up_after_first_no: !!firstNo && rebuttals === 0,
+    capture_ask: RE_CAPTURE.test(t),
+    ladder_stepdown: RE_STEPDOWN.test(t),
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const started = Date.now();
@@ -168,8 +213,20 @@ Deno.serve(async (req) => {
       return true;
     }).slice(0, SAMPLE_CAP);
 
+    // Preserve accept/decline verdicts from any earlier run of this same day —
+    // a re-run must never wipe the owner's reviews.
+    const { data: prior } = await db
+      .from("setter_call_audits").select("sample")
+      .eq("audit_date", dayStr).eq("setter_name", setter).maybeSingle();
+    const priorReview = new Map<string, { review: string; applied_disposition?: string | null }>();
+    for (const it of ((prior?.sample ?? []) as Record<string, unknown>[])) {
+      if (it.review) priorReview.set(String(it.call_id), { review: String(it.review), applied_disposition: (it.applied_disposition as string | null) ?? null });
+    }
+
     const sample: Record<string, unknown>[] = [];
     let convs = 0, vmDropped = 0, vmListened = 0, mislabels = 0;
+    // Script aggregates (over conversation-class calls only).
+    let scIdentity = 0, scGaveUp = 0, scCapture = 0, scStepdown = 0, scRebuttals = 0, scWithNo = 0;
     for (const r of sampleCalls) {
       if (Date.now() - started > BUDGET_MS) break;
       let transcript = "";
@@ -191,6 +248,17 @@ Deno.serve(async (req) => {
         (cls === "conversation" && (d === "None" || d === "(unset)" || d === "Voice Message")) ||
         (cls === "vm_listened" && d !== "Voice Message" && d !== "No Answer");
       if (suspected) mislabels++;
+      // Script read — conversations only.
+      let script: ScriptRead | null = null;
+      if (cls === "conversation") {
+        script = readScript(transcript);
+        if (script.identity_opener) scIdentity++;
+        if (script.gave_up_after_first_no) { scGaveUp++; }
+        if (script.capture_ask) scCapture++;
+        if (script.ladder_stepdown) scStepdown++;
+        if (script.gave_up_after_first_no || script.rebuttals > 0) { scWithNo++; scRebuttals += script.rebuttals; }
+      }
+      const kept = priorReview.get(r.wavv_call_id);
       sample.push({
         call_id: r.wavv_call_id,
         et: new Date(r.started_at).toLocaleString("en-US", { timeZone: "America/New_York", hour12: false, hour: "2-digit", minute: "2-digit" }),
@@ -199,6 +267,8 @@ Deno.serve(async (req) => {
         suspected_mislabel: suspected,
         suggested: suspected ? (cls === "vm_listened" ? "Voice Message" : suggestFor(transcript)) : null,
         excerpt: transcript.slice(0, 260),
+        ...(script ? { script } : {}),
+        ...(kept ? kept : {}),
       });
     }
 
@@ -212,6 +282,16 @@ Deno.serve(async (req) => {
       none_unset: noneUnset, dispo_mix: dispoMix, hours,
       sample_size: sample.length, conversations: convs, vm_dropped: vmDropped, vm_listened: vmListened,
       suspected_mislabels: mislabels,
+      // Script quality over the analyzed conversations — measurable, comparable.
+      script: convs > 0 ? {
+        convs_analyzed: convs,
+        identity_opener_pct: Math.round((scIdentity / convs) * 100),
+        capture_ask_pct: Math.round((scCapture / convs) * 100),
+        ladder_stepdown_pct: Math.round((scStepdown / convs) * 100),
+        convs_with_a_no: scWithNo,
+        gave_up_after_first_no: scGaveUp,
+        avg_rebuttals_after_no: scWithNo > 0 ? Math.round((scRebuttals / scWithNo) * 10) / 10 : null,
+      } : null,
     };
 
     await db.from("setter_call_audits").upsert(

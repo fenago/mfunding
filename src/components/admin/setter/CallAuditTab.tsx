@@ -48,6 +48,7 @@ export default function CallAuditTab() {
   const [err, setErr] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [busyCall, setBusyCall] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -75,9 +76,11 @@ export default function CallAuditTab() {
     try {
       const { data, error } = await supabase.functions.invoke("setter-daily-audit", { body: { date } });
       if (error) throw new Error(error.message);
-      const r = data as { error?: string } | null;
+      const r = data as { error?: string; setters?: number } | null;
       if (r?.error) throw new Error(r.error);
       await load();
+      setFlash(`✓ Audit refreshed for ${date} — ${r?.setters ?? 0} setter(s) analyzed (transcripts re-pulled; your accept/decline verdicts are preserved).`);
+      setTimeout(() => setFlash(null), 6000);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Audit run failed.");
     } finally {
@@ -145,6 +148,9 @@ export default function CallAuditTab() {
           <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" /> {err}
         </div>
       )}
+      {flash && (
+        <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">{flash}</p>
+      )}
 
       {loading && !rows ? (
         <p className="text-sm text-gray-400">Loading…</p>
@@ -174,6 +180,51 @@ export default function CallAuditTab() {
                 <span className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 tabular-nums">{n(m.vm_dropped)} VMs dropped</span>
               </div>
               {r.summary && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{r.summary}</p>}
+
+              {/* Script quality — measurable, from the conversation transcripts. */}
+              {(() => {
+                const sc = (r.metrics as Record<string, unknown>).script as {
+                  convs_analyzed: number; identity_opener_pct: number; capture_ask_pct: number;
+                  ladder_stepdown_pct: number; convs_with_a_no: number; gave_up_after_first_no: number;
+                  avg_rebuttals_after_no: number | null;
+                } | null;
+                if (!sc || sc.convs_analyzed === 0) return null;
+                const pill = (ok: boolean) =>
+                  ok
+                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                    : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+                return (
+                  <div className="mt-3">
+                    <h4 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1.5">
+                      Script quality ({sc.convs_analyzed} conversations analyzed)
+                    </h4>
+                    <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.identity_opener_pct >= 80)}`}
+                        title='Opens with "this is <name> with Momentum" instead of gatekeeper-bait "I\'m looking for…"'>
+                        identity opener {sc.identity_opener_pct}%
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.convs_with_a_no === 0 || sc.gave_up_after_first_no < sc.convs_with_a_no)}`}
+                        title="Conversations where a decline was met with ZERO rebuttal — gave up on the first soft no">
+                        gave up after 1st no: {sc.gave_up_after_first_no}/{sc.convs_with_a_no}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.capture_ask_pct >= 50)}`}
+                        title="Asked for cell / email / OK-to-text (the fixed capture step of the approved script)">
+                        capture ask {sc.capture_ask_pct}%
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.ladder_stepdown_pct >= 50)}`}
+                        title="On resistance, offered the next rung (appointment / callback) instead of ending the call">
+                        ladder step-down {sc.ladder_stepdown_pct}%
+                      </span>
+                      {sc.avg_rebuttals_after_no !== null && (
+                        <span className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 tabular-nums"
+                          title="Average rebuttal attempts after the first decline (target: at least 1 clean step-down)">
+                          avg rebuttals {sc.avg_rebuttals_after_no}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Suspected mislabels with accept / decline */}
               {mislabels.length > 0 && (
