@@ -185,61 +185,134 @@ export default function CallAuditTab() {
                 <h3 className="text-sm font-bold text-gray-900 dark:text-white">{r.setter_name}</h3>
                 <span className="text-[11px] text-gray-400">{r.audit_date}</span>
               </div>
-              {/* Metric chips */}
-              <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-semibold">
-                <span className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 tabular-nums">{n(m.dials).toLocaleString()} dials</span>
-                <span className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 tabular-nums">{Math.round(n(m.talk_seconds) / 60).toLocaleString()}m line-time</span>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 tabular-nums">{n(m.human_outcomes)} human outcomes</span>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 tabular-nums">{n(m.positives)} positive</span>
-                <span className={`px-2 py-0.5 rounded-full tabular-nums ${n(m.none_unset) > 50 ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300" : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200"}`}>{n(m.none_unset)} None/unset</span>
-                <span className="px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 tabular-nums">{n(m.conversations)} convs in sample</span>
-                <span className={`px-2 py-0.5 rounded-full tabular-nums ${n(m.vm_listened) > 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300"}`}>{n(m.vm_listened)} VM greetings listened (no drop)</span>
-                <span className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 tabular-nums">{n(m.vm_dropped)} VMs dropped</span>
-              </div>
-              {r.summary && <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{r.summary}</p>}
-
-              {/* Script quality — measurable, from the conversation transcripts. */}
               {(() => {
                 const sc = (r.metrics as Record<string, unknown>).script as {
                   convs_analyzed: number; identity_opener_pct: number; capture_ask_pct: number;
                   ladder_stepdown_pct: number; convs_with_a_no: number; gave_up_after_first_no: number;
                   avg_rebuttals_after_no: number | null;
                 } | null;
-                if (!sc || sc.convs_analyzed === 0) return null;
-                const pill = (ok: boolean) =>
-                  ok
-                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                    : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+                // Colors mean ONE thing everywhere: green = good, red = fix this,
+                // grey = plain fact (no judgement).
+                const GOOD = "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300";
+                const BAD = "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+                const FACT = "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200";
+                const chip = (label: string, tone: string, help: string) => (
+                  <span key={label} title={help} className={`px-2 py-0.5 rounded-full tabular-nums cursor-help ${tone}`}>{label}</span>
+                );
+                const dials = n(m.dials), humans = n(m.human_outcomes), positives = n(m.positives);
+                const noneUnset = n(m.none_unset), vmListened = n(m.vm_listened), vmDropped = n(m.vm_dropped);
+                const noneShare = dials > 0 ? Math.round((noneUnset / dials) * 100) : 0;
+
+                // ── Coaching — plain-language recommendations derived from the numbers. ──
+                const coach: string[] = [];
+                if (noneUnset > 25)
+                  coach.push(`${noneUnset} calls (${noneShare}% of the day) ended with no real outcome recorded ("None" or nothing). Rule to coach: no call ends without a real disposition — their own scorecard under-counts them until they click.`);
+                if (vmListened > 0)
+                  coach.push(`Listened to ${vmListened} voicemail greetings all the way through WITHOUT leaving our message. Coach the one-button fix: when a machine answers, hit the Voicemail button — it drops our recorded message and dials the next lead. Listening wastes ~1 min per call and leaves the merchant nothing.`);
+                if (humans > 0 && positives === 0)
+                  coach.push(`Talked to ${humans} real people and logged ZERO wins (no Partial Application, Appointment, or Callback). Either the pitch isn't landing or wins aren't being clicked — spot-check two recordings from "All sampled calls" below.`);
+                if (sc && sc.convs_with_a_no > 0 && sc.gave_up_after_first_no >= Math.ceil(sc.convs_with_a_no / 2))
+                  coach.push(`Folded on the FIRST "no" in ${sc.gave_up_after_first_no} of ${sc.convs_with_a_no} conversations that hit resistance. Coach one clean step-down: acknowledge the no → "if the numbers made sense, would you look?" → offer the appointment.`);
+                if (sc && sc.identity_opener_pct < 80)
+                  coach.push(`Only ${sc.identity_opener_pct}% of conversations opened with "This is <name> with Momentum Funding." Opening with "I'm looking for…" invites gatekeeping — lead with identity.`);
+                if (sc && sc.capture_ask_pct < 50)
+                  coach.push(`Almost never asks for the cell / email / OK-to-text (${sc.capture_ask_pct}%). That's the FIRST step of the approved script — without it there's no follow-up channel.`);
+                if (sc && sc.ladder_stepdown_pct < 50)
+                  coach.push(`Rarely offers the fallback rung (appointment / callback) when the merchant resists (${sc.ladder_stepdown_pct}%). A "no" to the app should become a "yes" to a 10-minute appointment.`);
+                if (coach.length === 0)
+                  coach.push("Clean day — dispositions honest, voicemails dropped, script followed. Nothing to fix.");
+
                 return (
-                  <div className="mt-3">
-                    <h4 className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1.5">
-                      Script quality ({sc.convs_analyzed} conversations analyzed)
-                    </h4>
-                    <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
-                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.identity_opener_pct >= 80)}`}
-                        title={'Opens with "this is NAME with Momentum" instead of gatekeeper-bait "I\'m looking for..."'}>
-                        identity opener {sc.identity_opener_pct}%
-                      </span>
-                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.convs_with_a_no === 0 || sc.gave_up_after_first_no < sc.convs_with_a_no)}`}
-                        title="Conversations where a decline was met with ZERO rebuttal — gave up on the first soft no">
-                        gave up after 1st no: {sc.gave_up_after_first_no}/{sc.convs_with_a_no}
-                      </span>
-                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.capture_ask_pct >= 50)}`}
-                        title="Asked for cell / email / OK-to-text (the fixed capture step of the approved script)">
-                        capture ask {sc.capture_ask_pct}%
-                      </span>
-                      <span className={`px-2 py-0.5 rounded-full ${pill(sc.ladder_stepdown_pct >= 50)}`}
-                        title="On resistance, offered the next rung (appointment / callback) instead of ending the call">
-                        ladder step-down {sc.ladder_stepdown_pct}%
-                      </span>
-                      {sc.avg_rebuttals_after_no !== null && (
-                        <span className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 tabular-nums"
-                          title="Average rebuttal attempts after the first decline (target: at least 1 clean step-down)">
-                          avg rebuttals {sc.avg_rebuttals_after_no}
-                        </span>
-                      )}
+                  <>
+                    {/* THE DAY — plain facts. */}
+                    <div className="mt-3">
+                      <h4 className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">The day</h4>
+                      <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                        {chip(`${dials.toLocaleString()} dials`, FACT, "Outbound calls placed")}
+                        {chip(`${n(m.answered).toLocaleString()} answered`, FACT, "A person OR a machine picked up")}
+                        {chip(`${Math.round(n(m.talk_seconds) / 60).toLocaleString()} min on the line`, FACT, "Total connected time across all calls (3 parallel lines can exceed clock time)")}
+                      </div>
                     </div>
-                  </div>
+
+                    {/* OUTCOMES — did the talking produce anything? */}
+                    <div className="mt-2">
+                      <h4 className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Outcomes</h4>
+                      <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                        {chip(`${humans} real people reached`, FACT, "Calls they dispositioned with a human outcome (Interested/Not Interested/DNC/etc.)")}
+                        {chip(
+                          `${positives} wins`,
+                          positives > 0 ? GOOD : humans > 0 ? BAD : FACT,
+                          "Positive outcomes: Partial/Full Application, Appointment Set, Callback. Red = talked to people, won none.",
+                        )}
+                      </div>
+                    </div>
+
+                    {/* HYGIENE — can we trust their logging + voicemail habits? */}
+                    <div className="mt-2">
+                      <h4 className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Work hygiene</h4>
+                      <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                        {chip(
+                          `${noneUnset} calls with NO outcome recorded (${noneShare}%)`,
+                          noneUnset > 25 ? BAD : noneUnset > 0 ? FACT : GOOD,
+                          "Dispositioned 'None' or nothing at all — we don't know what happened on these calls. Target: 0.",
+                        )}
+                        {chip(
+                          `${vmListened} voicemails wasted`,
+                          vmListened > 0 ? BAD : GOOD,
+                          "Voicemail greetings they listened to all the way through WITHOUT leaving our message. The Voicemail button drops our recording in one press. Target: 0.",
+                        )}
+                        {chip(
+                          `${vmDropped} voicemails left`,
+                          vmDropped > 0 ? GOOD : FACT,
+                          "Voicemails where OUR recorded message was actually dropped for the merchant.",
+                        )}
+                        {chip(
+                          `${n(m.suspected_mislabels)} suspected mislabels`,
+                          n(m.suspected_mislabels) > 0 ? BAD : GOOD,
+                          "Sampled calls whose transcript contradicts the label they clicked — e.g. a real conversation logged as 'Voice Message'. Review them below.",
+                        )}
+                      </div>
+                    </div>
+
+                    {/* SCRIPT — how they actually sell, from the transcripts. */}
+                    {sc && sc.convs_analyzed > 0 && (
+                      <div className="mt-2">
+                        <h4 className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 mb-1">
+                          Script ({sc.convs_analyzed} conversations read)
+                        </h4>
+                        <div className="flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                          {chip(
+                            `opens with identity ${sc.identity_opener_pct}%`,
+                            sc.identity_opener_pct >= 80 ? GOOD : BAD,
+                            'Good opener: "This is NAME with Momentum Funding." Bad: "I\'m looking for…" (invites gatekeeping). Target: 80%+.',
+                          )}
+                          {chip(
+                            `gave up on first no: ${sc.gave_up_after_first_no} of ${sc.convs_with_a_no}`,
+                            sc.convs_with_a_no === 0 ? FACT : sc.gave_up_after_first_no === 0 ? GOOD : BAD,
+                            "Conversations where the merchant declined once and the setter made ZERO comeback. Target: 0 — every no gets one clean step-down.",
+                          )}
+                          {chip(
+                            `asks for cell/email ${sc.capture_ask_pct}%`,
+                            sc.capture_ask_pct >= 50 ? GOOD : BAD,
+                            "Asked for the cell, email, or OK-to-text — the script's required capture step. Target: 50%+ of conversations.",
+                          )}
+                          {chip(
+                            `offers appointment fallback ${sc.ladder_stepdown_pct}%`,
+                            sc.ladder_stepdown_pct >= 50 ? GOOD : BAD,
+                            "When the merchant resisted, offered the next rung (appointment / callback) instead of hanging up. Target: 50%+.",
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* COACHING — what to actually say to them tomorrow morning. */}
+                    <div className="mt-3 rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 p-3">
+                      <h4 className="text-[10px] font-semibold uppercase tracking-wide text-ocean-blue mb-1">💡 Coaching for tomorrow</h4>
+                      <ul className="space-y-1 text-xs text-gray-700 dark:text-gray-200 list-disc pl-4">
+                        {coach.map((c, i) => <li key={i}>{c}</li>)}
+                      </ul>
+                    </div>
+                  </>
                 );
               })()}
 
