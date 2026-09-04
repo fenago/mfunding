@@ -29,6 +29,7 @@ import {
   MCA_04_WORKFLOW_ID, MCA_04B_WORKFLOW_ID, MCA_04C_WORKFLOW_ID, PREFILL_TAG, PARTIAL_TAG,
   DOC_PREFILL, type SendMode, enrollWithRetry, verifyDocumentSent,
 } from "../_shared/application-fields.ts";
+import { applyAppAutofillRow } from "../_shared/appAutofill.ts";
 
 // TWO PARALLEL DOC PATHS (parallel GHL workflows):
 //  · MCA 04  — SELF-FILL: was SUPPOSED to send the original fillable application
@@ -378,6 +379,20 @@ Deno.serve(async (req) => {
   const { data: app, error: aErr } = await db
     .from("mca_applications").select("*").eq("deal_id", dealId).maybeSingle();
   if (aErr) return json({ error: `could not load application: ${aErr.message}` }, 500);
+
+  // Owner's autofill rules, applied server-side so a partial that nobody
+  // re-opened in a modal still gets them before the prefill guard / doc build:
+  // XXXX bank placeholders, home address ← business address, entity type from
+  // the name. Fill-empties only; the filled columns are persisted back so every
+  // surface (drawer, modals, completeness) agrees with what the doc printed.
+  if (app) {
+    const filled = applyAppAutofillRow(app as Record<string, unknown>);
+    if (Object.keys(filled).length > 0) {
+      const { error: fErr } = await db
+        .from("mca_applications").update(filled).eq("id", (app as { id: string }).id);
+      if (fErr) console.error("[push-application-to-ghl] autofill persist failed:", fErr.message);
+    }
+  }
 
   // ── GUARD 1 — NEVER SEND A "PREFILL" DOCUMENT WITH NOTHING TO PREFILL. ──
   // The 04B template is nothing but merge tags. GHL prints an EMPTY custom field as

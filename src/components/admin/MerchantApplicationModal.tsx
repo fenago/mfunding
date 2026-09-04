@@ -27,6 +27,7 @@ import supabase from "../../supabase";
 import { mustWrite, tryWrite } from "@/supabase/writes";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { REQUIRED_APPLICATION_FIELDS } from "@/lib/applicationCompleteness";
+import { applyAppAutofill } from "@/lib/appAutofill";
 import { updateDealStatus, updateCustomerAdditionalEmails } from "../../services/dealService";
 import EnrichmentCard, { type EnrichmentUseField } from "./EnrichmentCard";
 import type { DealWithCustomer } from "../../types/deals";
@@ -415,7 +416,11 @@ export default function MerchantApplicationModal({
         const dealUse = (deal.use_of_funds ?? "").trim();
         if (dealUse !== "" && dealUse !== next.use_of_funds.trim()) next.use_of_funds = dealUse;
 
-        setForm(next);
+        // Autofill rules on the DRAFT too (fill-empties only): a saved partial
+        // never loses what a human typed, but its blank routing/account, home
+        // address, and entity type get the owner's defaults instead of staying
+        // holes the processor has to notice.
+        setForm(applyAppAutofill(next));
         // Drift check: the customer's CURRENT contact info vs what the saved
         // application row holds. (e.g. closer fixed the email via Edit lead info
         // AFTER the draft was saved — the draft still has the old address.)
@@ -483,10 +488,13 @@ export default function MerchantApplicationModal({
           existing_positions: countOrZero(q.open_positions),
           existing_balance: countOrZero(q.positions_balance),
         };
-        setForm(seeded);
+        // Autofill rules (fill-empties only): bank placeholders, home address
+        // mirrored from the business address, entity type inferred from the name.
+        const filled = applyAppAutofill(seeded);
+        setForm(filled);
         // Only claim the date is an estimate if we actually estimated one.
         setStartDateFrom(startEst && tenure ? tenure : null);
-        setPrefilled(REQUIRED_KEYS.filter((k) => txt(seeded[k]) !== "").length);
+        setPrefilled(REQUIRED_KEYS.filter((k) => txt(filled[k]) !== "").length);
       }
       setLoading(false);
     })();
@@ -565,7 +573,28 @@ export default function MerchantApplicationModal({
     })();
   }, [drift?.email, drift?.prevEmail, deal.customer_id, cust?.email]);
 
-  function set<K extends keyof AppForm>(k: K, v: string) { setForm((f) => ({ ...f, [k]: v })); }
+  // Keystroke mirror (same behavior as the Quick App): while a home-address field
+  // is still TRACKING its business counterpart (empty, or equal to the
+  // pre-keystroke business value), typing into the business field updates both.
+  // The instant someone types something different into the home field itself,
+  // the link breaks and their value stands.
+  const HOME_MIRROR: Partial<Record<keyof AppForm, keyof AppForm>> = {
+    business_address: "owner_home_address",
+    business_city: "owner_home_city",
+    business_state: "owner_home_state",
+    business_zip: "owner_home_zip",
+  };
+  function set<K extends keyof AppForm>(k: K, v: string) {
+    setForm((f) => {
+      const next = { ...f, [k]: v };
+      const homeKey = HOME_MIRROR[k];
+      if (homeKey) {
+        const h = (f[homeKey] ?? "").trim();
+        if (h === "" || f[homeKey] === f[k]) next[homeKey] = v;
+      }
+      return next;
+    });
+  }
 
   const merchantEmail = useMemo(
     () => (form.business_email || form.owner_email || cust?.email || "").trim(),

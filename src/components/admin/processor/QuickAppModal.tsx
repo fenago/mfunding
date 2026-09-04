@@ -6,6 +6,7 @@ import type { DealWithCustomer } from "@/types/deals";
 import { mustWrite } from "@/supabase/writes";
 import { normalizePhoneForStorage } from "@/lib/phone";
 import { REQUIRED_APPLICATION_FIELDS, SECTION_LABEL, type AppSection } from "@/lib/applicationCompleteness";
+import { applyAppAutofill } from "@/lib/appAutofill";
 import { PLAYBOOKS } from "@/data/playbooks";
 
 /**
@@ -132,7 +133,12 @@ export default function QuickAppModal({
           }
           seed[key] = v || DEFAULTS[key] || "";
         }
-        setForm(seed);
+        // Seed-time autofill: home address mirrors the seeded business address and
+        // entity type is inferred from the name. The keystroke mirror below only
+        // fires when someone TYPES — data that arrived pre-filled (UCC/customer
+        // record) never went through it, which is why partials kept showing an
+        // empty home address next to a populated business address.
+        setForm(applyAppAutofill(seed));
       } catch (e) {
         if (alive) setErr(e instanceof Error ? e.message : "Couldn't load this deal.");
       } finally {
