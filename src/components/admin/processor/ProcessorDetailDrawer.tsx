@@ -115,10 +115,16 @@ function TouchTracker({ createdAt, touches }: { createdAt: string | null; touche
   const elapsed = Math.floor((now - created) / DAY_MS); // today's day index (0-based)
   const counts = new Array(14).fill(0) as number[];
   for (const t of touches) {
-    const idx = Math.floor((new Date(t.touched_at).getTime() - created) / DAY_MS);
+    let idx = Math.floor((new Date(t.touched_at).getTime() - created) / DAY_MS);
+    // The call that BIRTHED the deal precedes the deal row by minutes (a WAVV
+    // "Appointment Set" creates the opportunity after the call ends), which lands
+    // at idx -1. That call is day 1's touch — Glass Glow showed "day 1 missed"
+    // over the very call that created it. Older history (a re-dialed aged lead's
+    // calls from a prior campaign) stays out of this deal's 14 days.
+    if (idx === -1) idx = 0;
     if (idx >= 0 && idx < 14) counts[idx] += 1;
   }
-  const total = touches.length;
+  const total = counts.reduce((a, b) => a + b, 0);
   const missed = counts.filter((c, i) => i <= Math.min(elapsed, 13) && c === 0).length;
   return (
     <div>
@@ -623,6 +629,17 @@ export default function ProcessorDetailDrawer({
                         </li>
                       ))}
                     </ul>
+                    {/* An App-Sent deal with an incomplete INTERNAL record is normal on
+                        the fillable path (MCA 04): the merchant fills these fields on
+                        the document itself. Without this line the drawer reads as a
+                        contradiction — "App Sent" next to "19 fields left". */}
+                    {(deal?.status as string) === "application_sent" && (
+                      <p className="mt-1.5 text-[11px] text-sky-700 dark:text-sky-300">
+                        The application document <span className="font-semibold">was sent</span> to the merchant to
+                        complete + e-sign — these are the fields <span className="font-semibold">our record</span> is
+                        still missing. They come back with the signed document, or you can fill them from the call.
+                      </p>
+                    )}
                   </div>
                 )}
                 {gateApp && !gateStmts && (
