@@ -131,6 +131,9 @@ export default function EnrichmentCard({
   const [note, setNote] = useState<string | null>(null);
   const [seedDraft, setSeedDraft] = useState("");
   const [showSeed, setShowSeed] = useState(false);
+  // Which findings were pushed into the host form via onUse — purely visual ✓
+  // feedback; the host owns the actual write.
+  const [usedKeys, setUsedKeys] = useState<Set<string>>(new Set());
   const [showCandidates, setShowCandidates] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -412,9 +415,12 @@ export default function EnrichmentCard({
             </p>
             {onUse ? (
               <button type="button"
-                onClick={() => loadRows.forEach((f) => onUse(f.key, f.value as string))}
+                onClick={() => {
+                  loadRows.forEach((f) => onUse(f.key, f.value as string));
+                  setUsedKeys(new Set(loadRows.map((f) => f.key)));
+                }}
                 className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">
-                Use all
+                {usedKeys.size >= loadRows.length && loadRows.length > 0 ? "✓ All used — filled into the form" : "Use all"}
               </button>
             ) : confirmMode && unconfirmed.length > 0 ? (
               // Two-step arm/fire — this WRITES to the merchant record + GHL.
@@ -438,10 +444,20 @@ export default function EnrichmentCard({
                   <span className="w-28 shrink-0 text-[11px] text-gray-500 dark:text-gray-400">{f.label}</span>
                   <span className="flex-1 text-[11px] text-gray-800 dark:text-gray-100 break-all">{f.value}</span>
                   {onUse ? (
-                    <button type="button" onClick={() => onUse(f.key, f.value as string)}
-                      className="text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30">
-                      Use
-                    </button>
+                    usedKeys.has(f.key) ? (
+                      // The value WAS pushed into the form field on the tab below —
+                      // without this ✓ the click looked like a no-op (owner report 9/4).
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400"
+                        title="Filled into the application form below — check the matching field">
+                        <CheckCircleIcon className="w-3.5 h-3.5" /> used
+                      </span>
+                    ) : (
+                      <button type="button"
+                        onClick={() => { onUse(f.key, f.value as string); setUsedKeys((s) => new Set(s).add(f.key)); }}
+                        className="text-[11px] font-semibold px-2 py-0.5 rounded-lg border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30">
+                        Use
+                      </button>
+                    )
                   ) : confirmMode && isApplied ? (
                     <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
                       <CheckCircleIcon className="w-3.5 h-3.5" /> {f.key === "website" ? "in GHL" : "saved"}

@@ -287,6 +287,8 @@ export default function MerchantApplicationModal({
   // race the form state to find out what we'd otherwise be dropping.
   const [drift, setDrift] = useState<{ email?: string; prevEmail?: string; phone?: string } | null>(null);
   const [tab, setTab] = useState<Tab>("business");
+  // The partial/blank send paths are collapsed by default — see the accordion note.
+  const [altPathsOpen, setAltPathsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [existingId, setExistingId] = useState<string | null>(null);
   const [sentAt, setSentAt] = useState<string | null>(null);
@@ -595,6 +597,50 @@ export default function MerchantApplicationModal({
       return next;
     });
   }
+
+  // One-press "copy from business" (owner-requested, lives on the Owner and
+  // Banking tabs): home address + cell COPY OVER from the business fields (an
+  // explicit press means "make them match" — this is the one place a non-empty
+  // home value is replaced), and routing/account get the XXXX placeholder ONLY
+  // if empty (a real account number is never stomped by a placeholder).
+  const [copiedNote, setCopiedNote] = useState<string | null>(null);
+  function copyFromBusiness() {
+    setForm((f) => {
+      const next = { ...f };
+      const did: string[] = [];
+      const copy = (k: keyof AppForm, v: string, label: string) => {
+        if (v.trim() !== "" && next[k] !== v) { next[k] = v; did.push(label); }
+      };
+      const fillEmpty = (k: keyof AppForm, v: string, label: string) => {
+        if ((next[k] ?? "").trim() === "") { next[k] = v; did.push(label); }
+      };
+      copy("owner_home_address", f.business_address, "home address");
+      copy("owner_home_city", f.business_city, "home city");
+      copy("owner_home_state", f.business_state, "home state");
+      copy("owner_home_zip", f.business_zip, "home ZIP");
+      copy("owner_phone", f.business_phone, "cell phone");
+      fillEmpty("bank_routing_number", "XXXX", "routing → XXXX");
+      fillEmpty("bank_account_number", "XXXX", "account → XXXX");
+      setCopiedNote(did.length > 0 ? `Copied: ${did.join(", ")}` : "Nothing to copy — already in sync.");
+      return next;
+    });
+    setTimeout(() => setCopiedNote(null), 5000);
+  }
+  const copyBtn = (
+    <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={copyFromBusiness}
+        title="Home address + cell copy over from the business fields; empty routing/account get the XXXX placeholder"
+        className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-amber-400 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300 dark:hover:bg-amber-900/40"
+      >
+        ⚡ Copy from business — home address + cell + XXXX banking
+      </button>
+      {copiedNote && (
+        <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">{copiedNote}</span>
+      )}
+    </div>
+  );
 
   const merchantEmail = useMemo(
     () => (form.business_email || form.owner_email || cust?.email || "").trim(),
@@ -1355,6 +1401,7 @@ export default function MerchantApplicationModal({
 
               {tab === "owner" && (
                 <div className="grid sm:grid-cols-2 gap-4">
+                  {copyBtn}
                   <div><Label req>First name</Label>
                     <input className={inputCls} value={form.owner_first_name} onChange={(e) => set("owner_first_name", e.target.value)} /></div>
                   <div><Label req>Last name</Label>
@@ -1401,6 +1448,7 @@ export default function MerchantApplicationModal({
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     The application requires the merchant's primary business bank account. Get it while they're on the phone.
                   </p>
+                  {copyBtn}
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div><Label req>Bank name</Label>
                       <input className={inputCls} value={form.bank_name} onChange={(e) => set("bank_name", e.target.value)} /></div>
@@ -1629,6 +1677,18 @@ export default function MerchantApplicationModal({
           {/* PATH 3 — 04C PARTIAL: the default for a normal lead. Zero typing: we prefill
               what the vendor told us; the merchant completes EIN/SSN/addresses/banking on
               the document itself. */}
+          {/* Alternate sends live behind a CLOSED accordion (owner ruling 9/4): the
+              default motion is fill-the-form-and-send above; partial/blank are the
+              exception paths and should not sit in view inviting a shortcut. */}
+          <button
+            type="button"
+            onClick={() => setAltPathsOpen((v) => !v)}
+            className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          >
+            <span className={`inline-block transition-transform ${altPathsOpen ? "rotate-90" : ""}`}>▸</span>
+            Other ways to send (partial / blank app)
+          </button>
+          {altPathsOpen && (<>
           <div className="mt-3 flex items-center justify-end gap-2 rounded-lg border border-mint-green/40 bg-mint-green/5 px-3 py-2">
             <p className="text-xs text-gray-600 dark:text-gray-300 mr-auto">
               <b>Fastest path:</b> send it now with the lead's info prefilled — the merchant completes
@@ -1671,6 +1731,7 @@ export default function MerchantApplicationModal({
                   : "Send blank app (merchant fills it in)"}
             </button>
           </div>
+          </>)}
         </div>
       </div>
     </div>
