@@ -750,13 +750,17 @@ interface FunnelCounts {
   humans: number;
   conversations: number;
   positives: number;
+  /** Calls dispositioned as an actual application taken (APPLICATION_DISPOSITIONS)
+   *  — the owner's "Partial Apps" rung. A strict subset of `positives`: soft wins
+   *  like Callback/Appointment Set count as positive but never land here. */
+  partialApps: number;
   talkSeconds: number;
   connectedSeconds: number;
   uniqueLeads: number;
 }
 
 function computeFunnel(calls: SetterCall[]): FunnelCounts {
-  let dials = 0, connects = 0, humans = 0, conversations = 0, positives = 0;
+  let dials = 0, connects = 0, humans = 0, conversations = 0, positives = 0, partialApps = 0;
   let talkSeconds = 0, connectedSeconds = 0;
   const phones = new Set<string>();
   for (const r of calls) {
@@ -767,9 +771,10 @@ function computeFunnel(calls: SetterCall[]): FunnelCounts {
     if (reachedHuman(r)) humans++;
     if (isConversation(r)) conversations++;
     if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) positives++;
+    if (r.disposition && APPLICATION_DISPOSITIONS.includes(r.disposition)) partialApps++;
     if (r.phone) phones.add(r.phone);
   }
-  return { dials, connects, humans, conversations, positives, talkSeconds, connectedSeconds, uniqueLeads: phones.size };
+  return { dials, connects, humans, conversations, positives, partialApps, talkSeconds, connectedSeconds, uniqueLeads: phones.size };
 }
 
 interface FunnelStage {
@@ -859,6 +864,21 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       help: POSITIVE_DISPOSITIONS.join(" · "),
       count: f.positives, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.positives, f.conversations), targetKey: "positive_rate_pct",
+    },
+    // ── Partial apps (owner-requested 9/9): Positives is deliberately broad —
+    // Callback and Appointment Set count — so this rung isolates the subset that
+    // is an ACTUAL application taken on the call (the same APPLICATION_DISPOSITIONS
+    // vocabulary the per-setter cards use). Coloured by the industry 2–4%
+    // app-per-conversation band, the honest comparison for this numerator.
+    {
+      key: "partial_apps", label: "Partial apps", short: "Partial apps",
+      help:
+        "Calls dispositioned as an application actually taken: " +
+        APPLICATION_DISPOSITIONS.join(" · ") +
+        ". A subset of Positives — Interested, Callback and Appointment Set never count here.",
+      count: f.partialApps, stepLabel: "of conversations", stepShort: "of talks",
+      stepPct: pct(f.partialApps, f.conversations), targetKey: null,
+      benchmark: { id: "app_per_conversation", basis: "step" },
     },
   ];
 
