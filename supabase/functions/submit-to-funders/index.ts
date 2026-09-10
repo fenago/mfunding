@@ -893,6 +893,15 @@ Deno.serve(async (req) => {
   // Emails GHL accepted, awaiting the async-failure re-check after the loop.
   const pendingVerify: Array<{ submissionId: string; lenderId: string; name: string; messageId: string; resultIdx: number }> = [];
 
+  // Snapshot BEFORE the loop mutates any rows: had any funder already received
+  // this deal? A resubmit overwrites the existing rows' submitted_at to "now",
+  // which erased the history the merchant-notification guard relied on — Titan
+  // 9/10: Robert got the "your file is with our funding partners" email twice.
+  const { count: priorSendsBefore } = await db.from("deal_submissions")
+    .select("id", { count: "exact", head: true })
+    .eq("deal_id", dealId)
+    .not("submitted_at", "is", null);
+
   for (const lenderId of lenderIds) {
     const lender = lenderById.get(lenderId) ?? { id: lenderId, company_name: "Funder" };
     const name = (lender.company_name as string) ?? "Funder";
@@ -1066,13 +1075,13 @@ Deno.serve(async (req) => {
   let merchantNotified = false;
   const newSends = results.filter((r) => r.status === "sent").length;
   // One email per DEAL, ever: skip if any funder had already received this
-  // deal before this run (adding funders later shouldn't re-notify the merchant).
-  const { count: priorSends } = await db.from("deal_submissions")
-    .select("id", { count: "exact", head: true })
-    .eq("deal_id", dealId)
-    .not("submitted_at", "is", null)
-    .lt("submitted_at", nowIso);
-  if (cfg && ghlContactId && newSends > 0 && (priorSends ?? 0) === 0) {
+  // deal before this run (adding funders later shouldn't re-notify the
+  // merchant). Uses the pre-loop snapshot — by this point a resubmit has
+  // overwritten the old rows' submitted_at, so counting now would (and did)
+  // erase the history and double-notify. A fully-FAILED first run leaves
+  // submitted_at null (the async verify clears it), so the merchant is still
+  // notified exactly once: on the first run where something truly delivered.
+  if (cfg && ghlContactId && newSends > 0 && (priorSendsBefore ?? 0) === 0) {
     try {
       const first = (c.first_name as string | null) ?? "";
       const biz = (c.business_name as string | null) ?? "your business";
