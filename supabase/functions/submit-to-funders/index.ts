@@ -22,7 +22,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   corsHeaders, serviceClient, getGhlConfig, upsertContact, sendEmailToContact, latestEmailMessageId,
-  listContactFileUploads, sendMarker,
+  listContactFileUploads, sendMarker, ghlFetch,
 } from "../_shared/ghl.ts";
 
 function json(body: unknown, status = 200) {
@@ -152,10 +152,44 @@ function render(tpl: string, tokens: Record<string, string>): string {
 
 interface DocRow { id: string; document_type: string; filename: string | null; storage_path: string; status: string; file_size?: number | null }
 
-// Email attachment ceiling (GHL/SendGrid ~25MB total; stay under it). Anything
-// that would exceed it stays a secure link instead of failing the send.
-const MAX_ATTACH_BYTES = 20 * 1024 * 1024;
+// Email attachment ceiling. GHL fails the whole email at 25MB ("Maximum file
+// size allowed is 25 MB." — async, AFTER accepting the POST), and email
+// attachments carry ~33% base64 overhead, so 15MB of raw files is the safe
+// budget. Anything over stays a secure link instead of failing the send.
+// (Titan 9/9: ~35MB of statements rode through the old 20MB budget because
+// unknown sizes counted as ZERO — all three funder emails failed silently.)
+const MAX_ATTACH_BYTES = 15 * 1024 * 1024;
 const MAX_ATTACH_COUNT = 15;
+
+/** Resolve an attachment URL's true byte size before counting it against the
+ *  budget. Supabase signed URLs answer HEAD directly; GHL
+ *  /documents/download/ URLs answer a bearer'd manual-redirect with a signed
+ *  storage URL that then answers HEAD unauthenticated (ghl-docs-status
+ *  pattern). Returns null when the size cannot be learned — and an UNKNOWN
+ *  size must never attach (it was "unknown = 0 = attach freely" that sank the
+ *  Titan submissions); the file stays a link, which always delivers. */
+async function resolveAttachmentSize(url: string, apiKey: string | null): Promise<number | null> {
+  try {
+    if (/^https:\/\/services\.leadconnectorhq\.com\/documents\/download\//.test(url)) {
+      if (!apiKey) return null;
+      const r = await fetch(url, {
+        redirect: "manual",
+        headers: { Authorization: `Bearer ${apiKey}`, Version: "2021-07-28" },
+      });
+      try { await r.body?.cancel(); } catch { /* stream may already be closed */ }
+      const loc = r.headers.get("location");
+      if (!((r.status === 307 || r.status === 302 || r.status === 301) && loc)) return null;
+      const h = await fetch(loc, { method: "HEAD" });
+      const len = Number(h.headers.get("content-length"));
+      return Number.isFinite(len) && len > 0 ? len : null;
+    }
+    const h = await fetch(url, { method: "HEAD" });
+    const len = Number(h.headers.get("content-length"));
+    return Number.isFinite(len) && len > 0 ? len : null;
+  } catch {
+    return null;
+  }
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -704,11 +738,15 @@ Deno.serve(async (req) => {
     const docs: Array<{ label: string; filename: string; delivery: "attached" | "link" }> = [];
     let attachBytes = 0;
     // Add a signed URL as an attachment if there's room; return whether attached.
-    const tryAttach = (url: string, fname: string, size?: number | null): boolean => {
+    // The size is VERIFIED before it counts: a DB file_size when present, else a
+    // HEAD probe. A size we cannot learn never attaches — link instead.
+    const tryAttach = async (url: string, fname: string, size?: number | null): Promise<boolean> => {
       if (!wantAttach) return false;
       if (attachmentUrls.length >= MAX_ATTACH_COUNT) return false;
-      const sz = Number(size) || 0;
-      if (sz && attachBytes + sz > MAX_ATTACH_BYTES) return false; // known-oversized → keep as link
+      let sz = Number(size) || 0;
+      if (!sz) sz = (await resolveAttachmentSize(url, cfg?.apiKey ?? null)) ?? 0;
+      if (!sz) return false; // UNKNOWN size — never gamble the whole email on it
+      if (attachBytes + sz > MAX_ATTACH_BYTES) return false; // over budget → link
       attachmentUrls.push(url);
       attachedNames.push(fname);
       attachBytes += sz;
@@ -726,7 +764,7 @@ Deno.serve(async (req) => {
         const label = `${docLabel(slug)}${d.filename ? ` (${d.filename})` : ""}`;
         docLinkLines.push(`${label} — ${url}`);
         docLinkHtml.push(`<li><a href="${url}">${esc(label)}</a></li>`);
-        const attached = tryAttach(url, d.filename || `${slug}.pdf`, d.file_size);
+        const attached = await tryAttach(url, d.filename || `${slug}.pdf`, d.file_size);
         docs.push({ label: docLabel(slug), filename: d.filename || `${slug}.pdf`, delivery: attached ? "attached" : "link" });
         if (slug === "application") appLinkCount++;
       }
@@ -737,12 +775,12 @@ Deno.serve(async (req) => {
     // wants bank_statement, the stips bundle when it wants any non-bank stip.
     const wantsBank = attachSlugs.includes("bank_statement");
     const wantsStips = attachSlugs.some((s) => !["application", "signed_application", "bank_statement"].includes(s));
-    const pushGroup = (heading: string, files: Array<{ name: string; url: string }>) => {
+    const pushGroup = async (heading: string, files: Array<{ name: string; url: string }>) => {
       if (!files.length) return;
       docLinkLines.push(`${heading} (${files.length}):`);
       for (const f of files) {
         docLinkLines.push(`  ${f.name} — ${f.url}`);
-        const attached = tryAttach(f.url, f.name);
+        const attached = await tryAttach(f.url, f.name);
         docs.push({ label: heading, filename: f.name, delivery: attached ? "attached" : "link" });
       }
       docLinkHtml.push(
@@ -750,8 +788,8 @@ Deno.serve(async (req) => {
         files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a></li>`).join("") + `</ul></li>`,
       );
     };
-    if (wantsBank) pushGroup("Bank statements", ghlBank);
-    if (wantsStips) pushGroup("Stips documents", ghlStips);
+    if (wantsBank) await pushGroup("Bank statements", ghlBank);
+    if (wantsStips) await pushGroup("Stips documents", ghlStips);
 
     // Signed application PDFs live in GHL Documents & Contracts (e-sign), which is
     // API scope-blocked — we cannot fetch them. If the recipe wants the signed
@@ -852,6 +890,8 @@ Deno.serve(async (req) => {
   }
 
   const results: Array<Record<string, unknown>> = [];
+  // Emails GHL accepted, awaiting the async-failure re-check after the loop.
+  const pendingVerify: Array<{ submissionId: string; lenderId: string; name: string; messageId: string; resultIdx: number }> = [];
 
   for (const lenderId of lenderIds) {
     const lender = lenderById.get(lenderId) ?? { id: lenderId, company_name: "Funder" };
@@ -949,6 +989,7 @@ Deno.serve(async (req) => {
         });
         emailSent = sr.ok;
         if (!sr.ok) emailError = `GHL send failed: ${sr.error}`;
+        else if (sr.data?.messageId) sentPayload.ghl_message_id = sr.data.messageId;
       }
     }
 
@@ -975,6 +1016,47 @@ Deno.serve(async (req) => {
       status: emailSent ? "sent" : "send_failed",
       to, error: emailError, portal: portalOut, warning: docsWarning,
     });
+    if (emailSent && submissionId && sentPayload.ghl_message_id) {
+      pendingVerify.push({
+        submissionId, lenderId, name,
+        messageId: sentPayload.ghl_message_id as string,
+        resultIdx: results.length - 1,
+      });
+    }
+  }
+
+  // ── ASYNC-FAILURE VERIFICATION ────────────────────────────────────────────
+  // GHL accepts the email POST and can fail the message seconds later — the
+  // Titan 9/9 incident: all three funder emails failed with "Maximum file size
+  // allowed is 25 MB." AFTER a 2xx accept, and every submission read
+  // "submitted" while nothing delivered. So a 2xx accept is NOT delivery:
+  // settle, re-read each message, and downgrade any failure to a visible
+  // send_failed (status back to 'pending' + error → the board's retry chip).
+  // Runs BEFORE the merchant confirmation below so "your file went to N
+  // funders" can never be claimed off emails that died in the outbox.
+  if (pendingVerify.length > 0 && cfg) {
+    await new Promise((r) => setTimeout(r, 8000));
+    for (const v of pendingVerify) {
+      // sendEmailToContact's messageId is the EMAIL RECORD id — poll the email
+      // endpoint (the plain /messages/{id} endpoint 400s on it). Verified live
+      // 9/10: delivered sends read status delivered/clicked here.
+      const mr = await ghlFetch<Record<string, unknown>>(cfg, "GET", `/conversations/messages/email/${v.messageId}`);
+      if (!mr.ok || !mr.data) continue; // unreadable ≠ failed — leave as sent, don't guess
+      const msg = ((mr.data as { emailMessage?: Record<string, unknown> }).emailMessage ?? mr.data) as Record<string, unknown>;
+      const st = String(msg.status ?? "").toLowerCase();
+      if (!["failed", "undelivered", "bounced", "error"].includes(st)) continue;
+      const err = `GHL send failed after accept: ${String(msg.error ?? "unknown error")}`;
+      await db.from("deal_submissions")
+        .update({ status: "pending", error: err, submitted_at: null })
+        .eq("id", v.submissionId);
+      const res = results[v.resultIdx];
+      res.status = "send_failed";
+      res.error = err;
+      await logActivity(db, dealId, v.lenderId, v.name, {
+        to: res.to as string | undefined, emailSent: false, emailError: err,
+        subject: `[delivery check] ${String((res as Record<string, unknown>).subject ?? "")}`.trim(), resubmit,
+      });
+    }
   }
 
   const anySent = results.some((r) => r.status === "sent" || r.status === "portal_pending");
