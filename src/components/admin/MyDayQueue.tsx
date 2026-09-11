@@ -4,6 +4,7 @@ import { StarIcon as StarSolid } from "@heroicons/react/24/solid";
 import { getOpenDealsForQueue, updateDealStatus, fetchHandoffStates, setHandoffDropFlag, STIPS_PENDING_STATUSES, type QueueDeal, type HandoffState } from "../../services/dealService";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { useDealPins } from "../../hooks/useDealPins";
+import useIsProcessor from "../../hooks/useIsProcessor";
 import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import supabase from "../../supabase";
 import { dateKeyET, timeET } from "../../utils/time";
@@ -1178,7 +1179,14 @@ export default function MyDayQueue({ onPick }: { onPick: (d: QueueDeal) => void 
   // Admins/super-admins can flip Mine/All; a pure closer (no admin role) is
   // always scoped to their own book + unassigned. Default All for super_admin,
   // Mine for everyone else.
-  const canToggle = isAdmin;
+  //
+  // PROCESSORS also get the All toggle (owner ruling 9/11: "the processor needs
+  // to see everything from Revenue Playbook" — Kristine couldn't find SIS
+  // Financial because it sits in the owner's book). The DB already granted it
+  // (processor_select_all_deals RLS); this client-side clamp was the only thing
+  // still hiding the rest of the board from her. Regular closers stay walled.
+  const { isProcessor } = useIsProcessor();
+  const canToggle = isAdmin || isProcessor;
   const [scope, setScope] = useState<"mine" | "all">(isSuperAdmin ? "all" : "mine");
   const [query, setQuery] = useState("");
   const [deals, setDeals] = useState<QueueDeal[]>([]);
