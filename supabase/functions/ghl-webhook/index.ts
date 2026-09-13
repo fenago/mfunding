@@ -1440,7 +1440,20 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   const dealId = String(d.id);
   const dealStatus = d.status as string | null;
   const patch: Record<string, unknown> = {};
-  const movedStatus = mapped && mapped !== dealStatus;
+  let movedStatus = mapped && mapped !== dealStatus;
+  // A DNC'd merchant's dead deal must STAY dead. Liberty Electrical (9/11): the
+  // DND trigger killed the deal at 21:00:17; GHL's own stage webhook echoed the
+  // opp 3 seconds later and this mirror resurrected it to "new". The suppression
+  // flag is the compliance primitive — no GHL stage echo outranks it.
+  if (movedStatus && dealStatus === "dead") {
+    const { data: cust } = await db.from("customers")
+      .select("do_not_contact").eq("id", String(d.customer_id)).maybeSingle();
+    if (cust?.do_not_contact === true) {
+      movedStatus = false;
+      await logEvent(db, evt, evtTypeLabel(evt), "skipped",
+        `refused to resurrect dead deal ${d.deal_number ?? dealId} to "${mapped}" — customer is do-not-contact`);
+    }
+  }
   if (movedStatus) {
     patch.status = mapped;
     // Stamp the matching stage timestamp, but only if it's still null so an
