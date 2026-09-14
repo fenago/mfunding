@@ -33,6 +33,9 @@ verify_jwt = false   # GHL "disposition tag added" workflow webhook + cron — G
 [functions.dnd-enforce]
 verify_jwt = false   # called by the customers DND trigger via pg_net — no user JWT; auth enforced in-code via fail-closed shared-secret gate (?secret= / x-ghl-secret)
 
+[functions.deal-stage-sync]
+verify_jwt = false   # called by the deals.status trigger via pg_net — no user JWT; auth enforced in-code via fail-closed shared-secret gate (?secret= / x-ghl-secret)
+
 [functions.process-document]
 verify_jwt = false
 
