@@ -1471,11 +1471,16 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
   // FORWARD into an active stage. A genuine re-engagement still works, because
   // reviving a parked merchant goes through updateDealStatus here (which pushes
   // the new stage TO GHL), not through an inbound echo.
-  if (movedStatus && PARKED_STATUSES.includes(dealStatus ?? "") &&
-      !PARKED_STATUSES.includes(String(mapped))) {
+  // Covers parked → parked too, not just un-parking. ghl-sync sends BOTH
+  // `declined` and `dead` to the "Nurture / Re-engage" stage (there is no
+  // dedicated GHL stage for them — ghl-sync/index.ts:296 falls back), and this
+  // mirror maps that stage name back to `nurture`. So a declined or dead deal
+  // would round-trip into `nurture` and quietly rejoin the nurture book. An
+  // echo may not change a parked deal's status at all.
+  if (movedStatus && PARKED_STATUSES.includes(dealStatus ?? "")) {
     movedStatus = false;
     await logEvent(db, evt, evtTypeLabel(evt), "skipped",
-      `refused to un-park deal ${d.deal_number ?? dealId} (${dealStatus} → "${mapped}") — a GHL stage echo does not override a deliberate park`);
+      `refused to change parked deal ${d.deal_number ?? dealId} (${dealStatus} → "${mapped}") — a GHL stage echo does not override a deliberate park`);
   }
   if (movedStatus) {
     patch.status = mapped;
