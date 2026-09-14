@@ -953,6 +953,12 @@ const DEAL_MIRROR_COLS =
 // opportunity; that would resurrect a closed cycle.
 const TERMINAL_STATUSES = ["funded", "declined", "dead", "renewal_eligible", "restructure_executed", "servicing"];
 
+// Statuses that represent a DELIBERATE human park, as opposed to a stage the
+// pipeline moved through. Mirrors PARKED_STATUSES in src/services/dealService.ts
+// — keep the two in step. An inbound GHL stage echo must never move a deal OUT
+// of one of these (see the un-park guard in the stage mirror below).
+const PARKED_STATUSES = ["nurture", "declined", "dead"];
+
 /**
  * ADOPT, DON'T DUPLICATE.
  *
@@ -1453,6 +1459,23 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       await logEvent(db, evt, evtTypeLabel(evt), "skipped",
         `refused to resurrect dead deal ${d.deal_number ?? dealId} to "${mapped}" — customer is do-not-contact`);
     }
+  }
+  // A DELIBERATE PARK OUTRANKS A STALE STAGE ECHO.
+  // Parking is a human decision recorded here ("move to long-term nurture",
+  // "declined"); a GHL stage echo is just the CRM restating where the
+  // opportunity card happens to sit. Those echoes arrive constantly and can be
+  // seconds stale, so without this guard a park silently bounces back to
+  // contacted/application_sent and the deal reappears on the working board —
+  // the "I moved it and it moved back" complaint (owner, 9/13).
+  // Narrow on purpose: this only blocks an echo that would move a PARKED deal
+  // FORWARD into an active stage. A genuine re-engagement still works, because
+  // reviving a parked merchant goes through updateDealStatus here (which pushes
+  // the new stage TO GHL), not through an inbound echo.
+  if (movedStatus && PARKED_STATUSES.includes(dealStatus ?? "") &&
+      !PARKED_STATUSES.includes(String(mapped))) {
+    movedStatus = false;
+    await logEvent(db, evt, evtTypeLabel(evt), "skipped",
+      `refused to un-park deal ${d.deal_number ?? dealId} (${dealStatus} → "${mapped}") — a GHL stage echo does not override a deliberate park`);
   }
   if (movedStatus) {
     patch.status = mapped;

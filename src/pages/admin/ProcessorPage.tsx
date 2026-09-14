@@ -345,6 +345,26 @@ export default function ProcessorPage() {
               p_deal_id: dealId,
             });
             if (error) throw new Error(error.message);
+            // PUSH THE PARK TO GHL. processor_move_to_nurture only writes our own
+            // deals row — unlike updateDealStatus it never syncs — so before this,
+            // a "nurtured" merchant stayed OPEN in GHL at their old stage: still in
+            // GHL workflows, still dialable in VibeReach, and still showing the old
+            // stage on every GHL-fed surface. Verified 9/13: 14 of 14 sampled
+            // nurture deals were status:"open" in GHL. ghl-sync maps
+            // nurture → "Nurture / Re-engage" already, so one invoke closes the gap.
+            // Best-effort by design: the local park already succeeded and must not
+            // be rolled back over a sync hiccup — but the failure is SHOWN, never
+            // swallowed, so a half-applied park is visible instead of silent.
+            try {
+              const { error: syncErr } = await supabase.functions.invoke("ghl-sync", {
+                body: { entity: "deal", id: dealId },
+              });
+              if (syncErr) {
+                setRowErr(`Moved to nurture here, but VibeReach did not update — they may still be dialed. (${syncErr.message})`);
+              }
+            } catch (e) {
+              setRowErr(`Moved to nurture here, but VibeReach did not update — they may still be dialed. (${e instanceof Error ? e.message : "sync failed"})`);
+            }
             reloadAll();
           } catch (e) {
             setRowErr(e instanceof Error ? e.message : "Couldn't move to nurture.");
