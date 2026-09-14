@@ -146,9 +146,12 @@ function sinceText(iso: string | null): string {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
-/** When was this deal last actually touched — the newest of update/contact/spoke. */
+/** When was this merchant last actually WORKED — the newest genuine contact stamp.
+ *  Deliberately excludes updated_at: that is row-mutation time (any background job
+ *  or unrelated field edit bumps it), not evidence anyone touched the merchant. A
+ *  deal nobody has dialed returns null and the row honestly reads "—". */
 function lastActiveAt(r: DealRow): string | null {
-  const t = [r.updated_at, r.contacted_at, r.spoke_at, r.last_attempt_at]
+  const t = [r.contacted_at, r.spoke_at, r.last_attempt_at]
     .filter((v): v is string => !!v)
     .map((v) => Date.parse(v))
     .filter((n) => !Number.isNaN(n));
@@ -323,7 +326,12 @@ export default function SetterDealList({
         query = query.not("status", "in", "(nurture,declined,dead)");
       }
 
-      // Callbacks are most useful soonest-first; every other view is newest-touch first.
+      // Callbacks are most useful soonest-first; every other view is most-recently-
+      // CHANGED first. updated_at is row-mutation time, not a contact — it's the
+      // right ordering key here (a stage move or note counts as movement) but it is
+      // NOT what the per-row "last active" chip shows; that reads the contact stamps
+      // via lastActiveAt(). Only meaningful because score-lead no longer re-stamps
+      // the whole book nightly.
       query =
         filter.kind === "callbacks"
           ? query.order("callback_at", { ascending: true, nullsFirst: false })

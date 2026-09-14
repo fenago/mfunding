@@ -453,6 +453,10 @@ export default function ProcessorBoard({
                               {closerName(r)}
                             </span>
                             {r.customer?.phone && <span>{prettyPhone(r.customer.phone)}</span>}
+                            {/* Row-mutation time, not a contact — "updated" is the
+                                honest word for it. Only meaningful because
+                                score-lead no longer re-stamps every deal nightly;
+                                before that this always read as today. */}
                             {r.updated_at && (
                               <span title={`Last updated ${dateTimeET(r.updated_at)} ET`}>
                                 updated {dateTimeET(r.updated_at)}

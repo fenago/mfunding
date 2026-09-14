@@ -18,10 +18,13 @@
 //     underwrite-deal's auto mode).
 //   • staff JWT (closer/admin/super_admin) — manual re-score from the UI/curl.
 //
-// Idempotency: per (deal, inputs-hash). The deals columns are always refreshed
-// (cheap, idempotent); the EVENT row is skipped when the inputs hash matches the
-// latest event at the same score_version — so the nightly sweep doesn't bloat the
-// history with identical snapshots.
+// Idempotency: per (deal, inputs-hash). When the hash matches the latest event at
+// the same score_version, BOTH writes are skipped — the EVENT row (so the nightly
+// sweep doesn't bloat the history with identical snapshots) and the deals row
+// itself. The row skip is load-bearing, not an optimization: an UPDATE that writes
+// identical values still fires the deals_updated_at trigger, and a nightly sweep
+// over the whole book was resetting every deal's updated_at, which silently killed
+// every staleness / "last touched" reader in the app. See the guard in scoreOne().
 //
 // Compliance: internal scoring only, no merchant-facing copy. An MCA is a
 // purchase of future receivables, NOT a loan.
@@ -79,6 +82,9 @@ interface ScoredRow {
   expectedValue: number;
   topReason: string;
   eventLogged: boolean;
+  /** True when the score was identical to what was stored, so NO row write was
+   *  issued — the whole point of not bumping deals.updated_at every night. */
+  skippedRowWrite: boolean;
   error?: string;
 }
 
@@ -160,25 +166,8 @@ async function scoreOne(
   // Idempotency hash over everything that determines the score.
   const inputsHash = stableHash(JSON.stringify({ v: SCORE_VERSION, inputs }));
 
-  // 1) Current score → deals columns (loud writes: check .error).
-  const { error: updErr } = await db.from("deals").update({
-    lead_grade: result.grade,
-    lead_score: result.score,
-    expected_value: result.expectedValue,
-    score_reasons: result.reasons,
-    score_version: SCORE_VERSION,
-    scored_at: new Date().toISOString(),
-  }).eq("id", deal.id);
-  if (updErr) {
-    return {
-      dealId: deal.id, dealNumber: deal.deal_number ?? null, business: cust.business_name ?? null,
-      grade: result.grade, score: result.score, expectedValue: result.expectedValue, topReason,
-      eventLogged: false, error: `deals update failed: ${updErr.message}`,
-    };
-  }
-
-  // 2) History → append-only event (skip when inputs are unchanged at this version).
-  let eventLogged = false;
+  // Latest history event — read BEFORE the row write, because it also decides
+  // whether the row write happens at all (see the no-op guard below).
   const { data: lastEvent } = await db
     .from("lead_score_events")
     .select("inputs, version")
@@ -187,7 +176,55 @@ async function scoreOne(
     .limit(1)
     .maybeSingle();
   const lastHash = (lastEvent?.inputs as Any | undefined)?._hash as string | undefined;
-  if (!(lastEvent && lastEvent.version === SCORE_VERSION && lastHash === inputsHash)) {
+  const inputsUnchanged = !!lastEvent && lastEvent.version === SCORE_VERSION && lastHash === inputsHash;
+
+  // NO-OP GUARD. This function runs nightly over every non-VCF deal, and the
+  // row-level deals_updated_at trigger fires on ANY update — even one that writes
+  // byte-identical values. Before this guard, the sweep stamped updated_at on the
+  // entire book every morning, so updated_at could never report an age over ~24h
+  // and every staleness / "last touched" reader downstream was permanently dead.
+  //
+  // So: when the inputs hash is unchanged at this score_version AND the row already
+  // holds exactly these scoring values, write nothing. score_reasons is a pure
+  // function of the inputs, so an unchanged hash at the same version means the
+  // reasons match too — no jsonb comparison needed (and jsonb key order would make
+  // one unreliable anyway).
+  //
+  // scored_at therefore STOPS advancing on a no-op re-score: it now means "when the
+  // score last CHANGED", not "when we last ran the scorer". That is intentional and
+  // verified safe — nothing reads its value. The only references in the tree are the
+  // column declaration (20260714_lead_scoring.sql), the optional field on the
+  // DealRow type (src/types/deals.ts), and the deal_money_keys() masking list
+  // (20260827_setter_deal_money_wall.sql), which names the column but never reads it.
+  const rowMatches =
+    deal.score_version === SCORE_VERSION &&
+    deal.lead_grade === result.grade &&
+    Number(deal.lead_score) === result.score &&
+    Number(deal.expected_value) === result.expectedValue;
+  const skippedRowWrite = inputsUnchanged && rowMatches;
+
+  // 1) Current score → deals columns (loud writes: check .error).
+  if (!skippedRowWrite) {
+    const { error: updErr } = await db.from("deals").update({
+      lead_grade: result.grade,
+      lead_score: result.score,
+      expected_value: result.expectedValue,
+      score_reasons: result.reasons,
+      score_version: SCORE_VERSION,
+      scored_at: new Date().toISOString(),
+    }).eq("id", deal.id);
+    if (updErr) {
+      return {
+        dealId: deal.id, dealNumber: deal.deal_number ?? null, business: cust.business_name ?? null,
+        grade: result.grade, score: result.score, expectedValue: result.expectedValue, topReason,
+        eventLogged: false, skippedRowWrite: false, error: `deals update failed: ${updErr.message}`,
+      };
+    }
+  }
+
+  // 2) History → append-only event (skip when inputs are unchanged at this version).
+  let eventLogged = false;
+  if (!inputsUnchanged) {
     const { error: evErr } = await db.from("lead_score_events").insert({
       deal_id: deal.id,
       version: SCORE_VERSION,
@@ -212,7 +249,7 @@ async function scoreOne(
       return {
         dealId: deal.id, dealNumber: deal.deal_number ?? null, business: cust.business_name ?? null,
         grade: result.grade, score: result.score, expectedValue: result.expectedValue, topReason,
-        eventLogged: false, error: `event insert failed: ${evErr.message}`,
+        eventLogged: false, skippedRowWrite, error: `event insert failed: ${evErr.message}`,
       };
     }
     eventLogged = true;
@@ -221,6 +258,7 @@ async function scoreOne(
   return {
     dealId: deal.id, dealNumber: deal.deal_number ?? null, business: cust.business_name ?? null,
     grade: result.grade, score: result.score, expectedValue: result.expectedValue, topReason, eventLogged,
+    skippedRowWrite,
   };
 }
 
@@ -283,6 +321,9 @@ Deno.serve(async (req) => {
 
     const DEAL_SELECT =
       "id, deal_number, deal_type, status, amount_requested, is_renewal, use_of_funds, temperature, lead_qual, " +
+      // Stored score — read so a no-op re-score can skip the row write entirely
+      // (an identical UPDATE still fires deals_updated_at).
+      "lead_grade, lead_score, expected_value, score_version, " +
       "customer:customers!customer_id(id, business_name, monthly_revenue, time_in_business, credit_score_range, email_status, phone)";
 
     let deals: Any[] = [];
@@ -307,6 +348,9 @@ Deno.serve(async (req) => {
       trigger,
       scored: results.length,
       events_logged: results.filter((r) => r.eventLogged).length,
+      // Rows whose score was already correct — no write issued, updated_at untouched.
+      rows_unchanged: results.filter((r) => r.skippedRowWrite).length,
+      rows_written: results.filter((r) => !r.skippedRowWrite && !r.error).length,
       failed: failed.length,
       results,
     });

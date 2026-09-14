@@ -407,7 +407,19 @@ export function classify(deal: QueueDeal, now: number): Urgency | null {
   // moved to "contacted" (or qualifying, docs, etc.) disappeared from the queue.
   // Give each stage a nudge; anything unmapped still shows as low-priority
   // "in progress" so nothing open is ever invisible.
-  const since = deal.updated_at ?? deal.created_at ?? null;
+  // These cards exist to say "this stage has stalled", and the intra-rank tiebreak
+  // (oldest `since` floats up) is what surfaces neglect. So prefer a GENUINE work
+  // stamp — the newest dial/reach/conversation — over updated_at, which any
+  // background job or unrelated field edit bumps. updated_at stays as the fallback
+  // for a deal nobody has dialed yet (there it's the stage move that landed it
+  // here), then created_at.
+  const worked = [deal.last_attempt_at, deal.contacted_at, deal.spoke_at]
+    .filter((v): v is string => !!v)
+    .map((v) => Date.parse(v))
+    .filter((n) => !Number.isNaN(n));
+  const since = worked.length
+    ? new Date(Math.max(...worked)).toISOString()
+    : (deal.updated_at ?? deal.created_at);
   switch (deal.status) {
     case "contacted":
       return { rank: 7, badge: "☎️ Qualify this lead", why: "You've made contact — run the 3 qualifiers and move them forward.", since, tone: "blue" };
