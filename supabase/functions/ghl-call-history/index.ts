@@ -156,6 +156,58 @@ function outcomeLabel(c: CallRecord): string {
 }
 
 /**
+ * FORWARD-ONLY stage advance on contact. Stamping contacted_at alone left deals
+ * reading "New Lead" on the Processor board, the Playbook funnel and in GHL
+ * while Setter Performance (which reads contacted_at directly) counted them as
+ * Contacted — 50 live deals were in that split state.
+ *
+ * The status test lives in the UPDATE itself, so this is race-safe (no
+ * read-then-write) and can only ever move a deal one rung forward from New:
+ *   • already at qualifying / application_sent / submitted_to_funder / … → no-op,
+ *     a call mirror must never drag a deal backwards.
+ *   • parked or terminal (nurture, declined, dead, funded, renewal_eligible,
+ *     restructure_executed, servicing) → no-op, never resurrected by a call.
+ * deal_type is pinned to 'mca' because 'contacted' is not a rung on the VCF
+ * ladder — a VCF deal must never be moved onto an MCA stage.
+ *
+ * contacted_at is stamped by the callers (and, as a floor, by the
+ * deals_stamp_stage_timestamps trigger); this only moves the stage. The GHL
+ * opportunity is deliberately NOT pushed from here — the stage sync owns that
+ * and a second writer would double-write it.
+ *
+ * KEEP IN LOCKSTEP with _shared/ghlCallSync.ts. The only permitted difference
+ * there is its extra `via` key in the activity_log content, as everywhere else.
+ */
+async function advanceToContacted(
+  db: ReturnType<typeof serviceClient>,
+  dealId: string,
+  calledAt: string,
+): Promise<void> {
+  const { data, error } = await db.from("deals")
+    .update({ status: "contacted" })
+    .eq("id", dealId).eq("status", "new").eq("deal_type", "mca")
+    .select("id");
+  if (error) {
+    console.error("[ghl-call-history] stage advance to contacted failed:", error.message);
+    return;
+  }
+  if (!data || data.length === 0) return; // not at New — nothing moved, nothing to log
+  const { error: logErr } = await db.from("activity_log").insert({
+    entity_type: "deal",
+    entity_id: dealId,
+    interaction_type: "note",
+    subject: "Stage advanced: New Lead → Contacted (answered call)",
+    old_status: "new",
+    new_status: "contacted",
+    content: JSON.stringify({
+      source: "ghl-call-history",
+      reason: "answered_call_mirrored", called_at: calledAt,
+    }),
+  });
+  if (logErr) console.error("[ghl-call-history] stage-advance activity_log insert failed:", logErr.message);
+}
+
+/**
  * Reflect a contact's OUTBOUND dials into its deal: record-once ledger, one
  * activity_log row per new call, atomic telemetry stamp. Idempotent (ledger PK =
  * GHL message id). Used by BOTH the panel poll and the cron sweep — one code
@@ -216,7 +268,10 @@ async function syncCallsForDeal(
           await db.from("deals")
             .update({ contacted_at: c.calledAt })
             .eq("id", dealId).is("contacted_at", null);
+          await advanceToContacted(db, dealId, c.calledAt);
         }
+        // spoke_at needs no advance of its own: a ≥120s completed call is also
+        // answered, so the branch above has already moved the stage.
         // A finalized ≥120s call is a real conversation → stamp spoke_at (only if
         // still null; an earlier conversation always wins), same as contacted_at above.
         if (spokeCall(c)) {
@@ -253,6 +308,10 @@ async function syncCallsForDeal(
         p_spoke_at: spokeTs,
       });
       if (rpcErr) syncError = `telemetry stamp failed: ${rpcErr.message}`;
+      // The telemetry RPC coalesces contacted_at inside SQL, so the stage move
+      // has to be made here as well — this is the path a live dial takes, and
+      // it is where the New-Lead-with-a-contacted_at deals came from.
+      if (contactedTs) await advanceToContacted(db, dealId, contactedTs);
       synced = fresh.length;
     }
 
@@ -296,6 +355,7 @@ async function syncCallsForDeal(
           if (answered(c)) {
             await db.from("deals").update({ contacted_at: c.calledAt })
               .eq("id", dealId).is("contacted_at", null);
+            await advanceToContacted(db, dealId, c.calledAt);
           }
           if (spokeCall(c)) {
             await db.from("deals").update({ spoke_at: c.calledAt })
@@ -307,6 +367,7 @@ async function syncCallsForDeal(
         if (answered(c)) {
           await db.from("deals").update({ contacted_at: c.calledAt })
             .eq("id", dealId).is("contacted_at", null);
+          await advanceToContacted(db, dealId, c.calledAt);
           await db.from("activity_log").insert({
             entity_type: "deal",
             entity_id: dealId,
