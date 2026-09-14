@@ -106,6 +106,7 @@ const TextMessagesAdminPage = lazyWithReload(() => import("../pages/admin/TextMe
 const DialingMachinePage = lazyWithReload(() => import("../pages/admin/DialingMachinePage.tsx"));
 const UccMachineGuidePage = lazyWithReload(() => import("../pages/admin/UccMachineGuidePage.tsx"));
 const SetterGuidePage = lazyWithReload(() => import("../pages/admin/SetterGuidePage.tsx"));
+const CallScriptPage = lazyWithReload(() => import("../pages/admin/CallScriptPage.tsx"));
 const CampaignsPage = lazyWithReload(() => import("../pages/admin/CampaignsPage.tsx"));
 const LeadBudgetCalculatorPage = lazyWithReload(() => import("../pages/admin/LeadBudgetCalculatorPage.tsx"));
 const FunderDirectoryPage = lazyWithReload(() => import("../pages/admin/FunderDirectoryPage.tsx"));
@@ -578,6 +579,15 @@ export const routes: RouteObject[] = [
               {
                 path: "setter-guide",
                 element: <SetterGuidePage />,
+              },
+              // Easy Financing Script — the company's PRIMARY call script, read
+              // live on the phone. Same audience + same no-extra-guard treatment
+              // as the Setter Guide above: AdminProtectedRoute's isStaff check
+              // (closer + employee + admin + super_admin) is exactly the audience;
+              // merchants (role `user`) are bounced to "/".
+              {
+                path: "call-script",
+                element: <CallScriptPage />,
               },
               // Cold-email (Instantly) dashboard + strategy (admins + super_admin)
               {

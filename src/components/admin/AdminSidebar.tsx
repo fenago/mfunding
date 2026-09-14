@@ -34,6 +34,7 @@ import {
   WrenchScrewdriverIcon,
   PhoneArrowUpRightIcon,
   ChatBubbleLeftRightIcon,
+  ChatBubbleBottomCenterTextIcon,
   EnvelopeIcon,
   TableCellsIcon,
   RocketLaunchIcon,
@@ -126,6 +127,7 @@ const CLOSER_LENS_PATHS = new Set<string>([
   "/admin/dialing-machine", // 🔗 How the Dialing Machine Works — the lists→WAVV one-pager, every staff role
   "/admin/ucc-machine-guide", // 🔗 How the UCC Harvester Works — the sibling one-pager, every staff role
   "/admin/setter-guide", // 🛟 Setter Onboarding Guide — day-one read, every staff role (and pure setters, see canSee)
+  "/admin/call-script", // 📞 Easy Financing Script — the primary call script, read live (and pure setters, see canSee)
 ]);
 
 // NOTE: Grouping / order / collapsibility only. Every item keeps its exact
@@ -151,6 +153,10 @@ const navGroups: NavGroup[] = [
       // Setter Guide — day-one onboarding read; pure setters reach it via a canSee
       // exception (the one doc they must open before their first live call).
       { name: "Setter Guide", path: "/admin/setter-guide", icon: LifebuoyIcon, roles: OPS },
+      // Call Script — the Easy Financing Script, the company's PRIMARY call
+      // script. Read live mid-call, so it sits next to the Setter Guide and
+      // carries the same pure-setter canSee exception.
+      { name: "Call Script", path: "/admin/call-script", icon: ChatBubbleBottomCenterTextIcon, roles: OPS },
       { name: "Calendar", path: "/admin/calendar", icon: CalendarDaysIcon, roles: OPS },
       // Processor — whole-pipeline daily workspace. Visibility is NOT role-based:
       // it's gated in canSee() on isProcessor OR isSuperAdmin only (see below).
@@ -359,6 +365,9 @@ export default function AdminSidebar() {
       item.path !== "/admin/playbooks" &&
       item.path !== "/admin/my-profile" &&
       item.path !== "/admin/setter-guide" &&
+      // Call Script — the Easy Financing Script. A setter reads it live on every
+      // call, so it's on the setter's short list alongside the Setter Guide.
+      item.path !== "/admin/call-script" &&
       item.path !== "/admin/cheat-sheet" &&
       item.path !== "/admin/calendar" &&
       item.path !== "/admin/setter-performance" &&
