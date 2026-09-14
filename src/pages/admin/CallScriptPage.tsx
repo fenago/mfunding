@@ -266,7 +266,7 @@ export default function CallScriptPage() {
             <div className="tag">Opener A</div>
             <p className="say-line">
               Hi, this is <span className="var">(#Rep#)</span> from EASY FINANCING and I wanted to
-              give you a call because you&rsquo;ve inquired about a business loan and I wanted to
+              give you a call because you&rsquo;ve inquired about business funding and I wanted to
               see if you were able to get all the money that you needed for the business?
             </p>
           </div>
@@ -627,8 +627,8 @@ export default function CallScriptPage() {
             </div>
             <div className="youlbl">You say</div>
             <blockquote>
-              &ldquo;We want to ensure that you get the best loan possible, in all ways, that&rsquo;s
-              why we ask&rdquo;
+              &ldquo;We want to ensure that you get the best funding possible, in all ways,
+              that&rsquo;s why we ask&rdquo;
             </blockquote>
           </div>
         </section>
