@@ -1795,7 +1795,16 @@ export async function getDealStats(): Promise<{
   for (const deal of deals) {
     byStatus[deal.status] = (byStatus[deal.status] || 0) + 1;
     if (!deal.assigned_closer_id) unassigned += 1;
-    if (!["funded", "declined", "dead"].includes(deal.status)) {
+    // OPEN means WORKABLE, and it must mean the same thing here as everywhere
+    // else. This used to exclude only funded/declined/dead, so every parked deal
+    // counted as live pipeline: on 2026-09-13 that was 133 nurtured merchants
+    // carrying $8,740,000 — 45% of the headline "total pipeline" — plus the
+    // funded book (renewal_eligible/servicing), whose dollars are already
+    // counted in totalFunded. Meanwhile the FunnelBoard on this same page
+    // filters nurture out, so the two numbers on one screen disagreed.
+    // QUEUE_CLOSED_STATUSES is the canonical "not working pipeline" set shared
+    // with My Day and the Calendar — use it, don't grow a fourth list.
+    if (!QUEUE_CLOSED_STATUSES.includes(deal.status)) {
       totalPipeline += deal.amount_requested || 0;
       // Potential gross commission on this open application (amount × points).
       commissionInPlay += expectedCommissionInPlay(deal.amount_requested, !!deal.is_renewal);
