@@ -673,6 +673,14 @@ async function runWindow(
     }
     if (!cursorMode) for (const r of rows) attempted.add(r.id);
 
+    // CURSOR-MODE PROGRESS WATERMARK. Rows are ordered by id and handed to
+    // workers in order, but they FINISH out of order, so "highest id done" is not
+    // a safe cursor. This tracks completion per slot; the safe watermark is the
+    // longest completed PREFIX, because every row before it is provably finished.
+    // Without it a chunk that runs out of time advances nothing at all — see the
+    // note at the advance below.
+    const doneFlags = new Array<boolean>(rows.length).fill(false);
+
     const tagMap = await batchTagMap(db, Array.from(new Set(rows.map((r) => r.batch_id))));
 
     // ── Concurrent workers, paced by the shared token bucket ────────────────
@@ -713,8 +721,8 @@ async function runWindow(
           console.error("[lead-push-ghl] stamp failed (row stays loaded, will retry)",
             JSON.stringify({ lead_id: lead.id, error: error.message }));
           stampRetries++;
-        } else if (patch.status === "pushed") { pushed++; touchedBatches.add(lead.batch_id); }
-        else { errored++; touchedBatches.add(lead.batch_id); }
+        } else if (patch.status === "pushed") { pushed++; touchedBatches.add(lead.batch_id); doneFlags[i] = true; }
+        else { errored++; touchedBatches.add(lead.batch_id); doneFlags[i] = true; }
 
         // Progress every ~50 completions — live enough for the UI without a DB
         // write per contact.
@@ -738,7 +746,28 @@ async function runWindow(
     // out of order, so there is no safe "highest id done" mid-chunk — and
     // re-processing a chunk is harmless anyway (upsert + tag union are idempotent,
     // and drain mode has already left those rows non-selectable).
-    if (cursorMode && !bailed && rows.length) cursor = rows[rows.length - 1].id;
+    // ADVANCE THE CURSOR BY WORK ACTUALLY COMPLETED, INCLUDING ON A BAIL.
+    //
+    // This used to be `if (cursorMode && !bailed && rows.length)` — the cursor
+    // moved only when a WHOLE 250-row chunk finished inside the 50s window. Once
+    // GHL rate-limited us to ~2.3/s a chunk needed ~108s, so every window bailed,
+    // the cursor never moved off null, and each self-reinvoke re-fetched and
+    // re-pushed the SAME rows forever: `pushed` climbed into the thousands while
+    // the number of distinct leads tagged stayed frozen (observed 2026-09-14 —
+    // 6,835 "pushed" against 396 tags actually landed, burning GHL budget for
+    // nothing). Any cursor-mode job slower than ~5 rows/sec hit this, not just
+    // explicit-id ones.
+    //
+    // The longest completed PREFIX is the safe watermark: workers take rows in id
+    // order but finish out of order, so a gap means an earlier row is still in
+    // flight and the cursor must not pass it. Re-doing the few rows after the
+    // watermark on the next window is harmless — the GHL upsert and the tag union
+    // are both idempotent.
+    if (cursorMode && rows.length) {
+      let prefix = 0;
+      while (prefix < doneFlags.length && doneFlags[prefix]) prefix++;
+      if (prefix > 0) cursor = rows[prefix - 1].id;
+    }
 
     if (bailed) {
       await patchJob(db, job.id, {
