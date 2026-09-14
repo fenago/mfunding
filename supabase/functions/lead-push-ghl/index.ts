@@ -66,7 +66,14 @@ function concurrencyFor(rps: number): number {
   return Math.max(2, Math.min(MAX_CONCURRENCY, Math.ceil(rps * 1.4)));
 }
 const MAX_LEAD_IDS = 5000;   // explicit selections are hand-picked, not whole files
-const ID_WINDOW = 500;       // .in() window when an explicit id list is used
+// .in() window when an explicit id list is used. PostgREST takes the filter in
+// the QUERY STRING, so this window is really a URL-length budget: 500 UUIDs is a
+// ~20KB URL and the gateway in front of PostgREST drops it — the request never
+// reaches the database and Deno surfaces the confusing "TypeError: error sending
+// request". 100 UUIDs is ~4KB, comfortably inside the usual 8KB cap. Measured
+// 2026-09-14: at 500 every lead_ids job died on its count step; at 100 they run.
+// Raise this only against a real URL-length measurement, not a guess.
+const ID_WINDOW = 100;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
