@@ -1,0 +1,16 @@
+-- 20260914b — drop the stale zero-arg processor_stage_counts overload.
+--
+-- 20260913a added `processor_stage_counts(p_pipe text default 'mca')` to make the
+-- header counts use the same v_stages filter as processor_pipeline_rows. Because
+-- the signature changed, `create or replace` did NOT replace the original — it
+-- created a SECOND function, and both remained callable.
+--
+-- PostgREST then could not resolve `rpc/processor_stage_counts` with an empty
+-- body (the shape the Processor page sends) and returned PGRST203 "Could not
+-- choose the best candidate function". That broke the stage counts for EVERY
+-- processor, not just a new one — caught 2026-09-14 while verifying a second
+-- processor's access.
+--
+-- The p_pipe version has a default for its only argument, so dropping the
+-- zero-arg one leaves every existing no-arg caller working unchanged.
+drop function if exists public.processor_stage_counts();
