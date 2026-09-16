@@ -1,46 +1,78 @@
-// Setter Performance — the WAVV dial-floor scorecard.
+// Setter Performance — the dial-floor scorecard, across BOTH dialers.
 //
 // The ONLY dial-floor scorecard: it replaced the HotProspector one that used to
 // live at /admin/dialer, and that page has since been deleted with the rest of
 // the HP teardown (the historical hotprospector_* tables are untouched in the
-// DB — this page just never reads them). Setters dial with WAVV embedded in
-// VibeReach, so per-call activity comes from the WAVV Public API v3, mirrored into
-// public.wavv_calls every 10 minutes by the `wavv-sync` edge function. This page
-// reads the MIRROR for every aggregate and only calls the edge function for three
-// things: "Sync now", a recording URL, and a transcript.
+// DB — this page just never reads them).
+//
+// ── THE FLOOR DIALS FROM TWO PLACES, SO THIS PAGE COUNTS TWO PLACES ──────────
+// Most dials come from WAVV embedded in VibeReach (WAVV Public API v3, mirrored
+// into public.wavv_calls every 10 minutes by the `wavv-sync` edge function).
+// But a setter ALSO click-to-calls straight out of the Revenue Playbook, and
+// that call is logged by GHL/LeadConnector into public.ghl_call_log by the
+// `ghl-event-hook` push. Until 2026-09-16 this page read only the first table,
+// so a month of measured reality looked like this:
+//
+//   wavv_calls  outbound   34,716    ← all the page counted
+//   ghl_call_log outbound     473    ← counted nowhere, 458 of them Kristine's
+//
+// Owner report, 9/16: "I want to make sure that dials include ALL of the dials,
+// including dials from GHL, WAVV, everything." Both sources are now unioned and
+// DEDUPED in public.v_setter_dial_calls — see the migration
+// 20260916b_setter_dial_calls_union.sql for the dedupe rule and the measurements
+// behind it. `source` on every row says which system wrote it.
 //
 // MANAGERS ONLY. Closers must not see each other's stats — the route is
-// admin-gated and the wavv_calls RLS policy grants select to admin/super_admin
-// alone, so a closer session reads nothing even if it reaches the URL. The
-// Numbers tab (the attribution control surface) is additionally gated in the UI.
+// admin-gated. wavv_calls RLS grants select to closer/employee/admin/super_admin
+// and ghl_call_log RLS to is_ops_staff (admin/super_admin/employee); the two
+// roles that can open this page, admin and super_admin, satisfy BOTH, so nobody
+// who reaches the page can read one source and silently miss the other.
+// The Numbers tab (the attribution control surface) is additionally gated in
+// the UI.
 //
-// ── READ PATH: THE VIEWS, NOT THE TABLE ──────────────────────────────────────
-// Every call this page reads comes from public.v_wavv_outbound_setter_calls, and
-// the Numbers tab's worklist from public.v_wavv_outbound_caller_ids. Both are
-// security_invoker, so wavv_calls RLS still governs the rows. The view already
-// does three things this page must never redo by hand:
-//   • filters direction = 'outbound',
-//   • joins caller_id -> wavv_caller_setters -> profiles,
-//   • normalizes the mapping key.
-// So there is NO client-side join here and NO read of wavv_calls — a second
-// implementation of the join is a second thing to drift.
+// ── READ PATH: THE VIEWS, NOT THE TABLES ─────────────────────────────────────
+// Every call this page reads comes from public.v_setter_dial_calls, and the
+// Numbers tab's worklist from public.v_wavv_outbound_caller_ids (WAVV-only, by
+// design — it is the caller_id mapping surface). Both are security_invoker, so
+// the underlying RLS still governs the rows. The views already do what this page
+// must never redo by hand:
+//   • filter direction = 'outbound' on both sources,
+//   • join WAVV caller_id -> wavv_caller_setters -> profiles,
+//   • join GHL ghl_user_id -> closers -> profiles,
+//   • drop a GHL row that is the same physical call as a WAVV row.
+// So there is NO client-side join here and NO read of either base table — a
+// second implementation of the join is a second thing to drift.
 //
 // ── HONESTY RULES THIS PAGE OBEYS ────────────────────────────────────────────
 // 1. UNREADABLE IS NOT ZERO. If the WAVV key is invalid the sync cannot pull, and
 //    the page says so in a banner. It never renders an empty floor as "0 dials".
+//    A failed page of the range read fails the WHOLE load rather than quietly
+//    shrinking the funnel.
 // 2. A missing metric renders as a dimmed "—", never 0. A metric with no value,
 //    or no threshold to judge it against, renders GREY — never green.
-// 3. ATTRIBUTION IS NEVER INVENTED. WAVV's call object carries NO per-user field
-//    (agent_key / agent_name are null on every row, and team_id is one constant
-//    for the whole account) — this is permanent, not a sync bug, so there is no
-//    "reparse" that fixes it. The only dial-side identifier is caller_id, the
-//    number we dialed FROM, so per-setter attribution is an ADMIN-MAINTAINED MAP
-//    edited in the Numbers tab. A number with no setter shows under its own
-//    caller_label, never as a person. A number two setters share attributes
-//    wholly to whoever is assigned to it.
-// 4. INBOUND IS OUT OF SCOPE HERE. On an inbound row caller_id is the MERCHANT's
-//    number, so it can carry no setter attribution at all. The view excludes it
-//    and this page never adds it back.
+// 3. ATTRIBUTION IS NEVER INVENTED, and the two sources earn it differently.
+//    WAVV's call object carries NO usable per-user field (agent_name is null on
+//    every row and team_id is one constant for the account), so the only
+//    dial-side identifier is caller_id — the number we dialed FROM — and
+//    per-setter attribution is an ADMIN-MAINTAINED MAP edited in the Numbers tab.
+//    A WAVV number with no setter shows under its own caller_label, never as a
+//    person. GHL needs none of that: it stamps the user on the call, resolved
+//    through closers.ghl_user_id into the SAME profiles.id space, so a person's
+//    click-to-calls land on their existing row. A GHL user with no closers row
+//    keeps their name but stays is_attributed=false, so their pipeline columns
+//    render "—" rather than an invented zero.
+// 4. A GHL ROW IS A DIAL AND A CONNECT, AND NOTHING BELOW THAT. ghl_call_log has
+//    no disposition on 519 of its 521 rows and no human/voicemail signal at all,
+//    so those rows are EXCLUDED from Reached-a-human, Conversations, Positives
+//    and Partial apps — numerator AND denominator — and the funnel says so on the
+//    card. They are never scored as zeros, which would be the same lie in the
+//    opposite direction.
+// 5. INBOUND IS OUT OF SCOPE HERE. This is the OUTBOUND dial funnel; an inbound
+//    call is not a dial, and folding it in would let a scorecard rise because
+//    merchants called the setter. (This project does treat an answered inbound
+//    call as a real conversation — see _shared/ghlCallSync.ts — but that belongs
+//    on the deal timeline and in realtime_lead_call_history(), not in a count of
+//    dials made.) Both source branches of the view filter direction='outbound'.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -87,11 +119,17 @@ import {
 import { INDUSTRY_BENCHMARKS, benchmarkRag, benchmarkVerdict, type BenchmarkId } from "@/data/industryBenchmarks";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
-/** One row of public.v_wavv_outbound_setter_calls — an OUTBOUND call already
- *  resolved to its setter. `setter_id` null = the number it was dialed from has
- *  nobody assigned to it yet, which is missing attribution, not "no setter". */
+/** Which dialer wrote this row. Not cosmetic: it decides how far down the funnel
+ *  the row is allowed to count (see DIAL_SOURCE_NOTE and reachedHuman). */
+type DialSource = "wavv" | "ghl";
+
+/** One row of public.v_setter_dial_calls — an OUTBOUND call from either dialer,
+ *  already resolved to its setter. `setter_id` null = the call could not be tied
+ *  to a person's profiles.id, which is missing attribution, not "no setter". */
 interface SetterCall {
   wavv_call_id: string;
+  /** "wavv" = the VibeReach dialer, "ghl" = a Playbook click-to-call. */
+  source: DialSource;
   started_at: string | null;
   answered_at: string | null;
   ended_at: string | null;
@@ -118,10 +156,30 @@ interface SetterCall {
 // One unbroken string literal on purpose: the client is untyped, so supabase-js
 // infers the row shape by parsing this literal. Splitting it across a `+`
 // concatenation defeats that parse and the result degrades to GenericStringError.
-const CALL_COLS = "wavv_call_id,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
+const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
 
-const CALLS_VIEW = "v_wavv_outbound_setter_calls";
+/** BOTH dialers, deduped (20260916b_setter_dial_calls_union.sql). */
+const CALLS_VIEW = "v_setter_dial_calls";
+/** WAVV-only, deliberately: this is the caller_id→setter mapping worklist, and
+ *  GHL calls are attributed by user, not by the number they were dialed from. */
 const NUMBERS_VIEW = "v_wavv_outbound_caller_ids";
+
+/** True when a row carries the evidence the lower funnel rungs are made of: a
+ *  setter-typed disposition and WAVV's voicemail/no-answer outcome vocabulary.
+ *  GHL click-to-calls carry neither — ghl_call_log has a disposition on 2 of 521
+ *  rows and no human/machine signal whatsoever — so they count as a DIAL and a
+ *  CONNECT and then stop, rather than being scored as failures they were never
+ *  measured for. */
+function isScored(r: Pick<SetterCall, "source">): boolean {
+  return r.source !== "ghl";
+}
+
+/** The one sentence every surface uses to explain rule 4 in the file header, so
+ *  the wording cannot drift between the funnel card, the scorecard and the log. */
+const DIAL_SOURCE_NOTE =
+  "Dials and Connects count both dialers — WAVV (VibeReach) and GHL/LeadConnector click-to-calls from the Playbook. " +
+  "GHL calls carry no disposition and no voicemail signal, so they are excluded from Reached-a-human and every rung " +
+  "below it, on BOTH sides of those rates — never counted as zeros.";
 
 interface SyncState {
   watermark: string | null;
@@ -672,8 +730,16 @@ const VOICEMAIL_NOTE_PREFIX = "Played voicemail";
 /** REACHED A HUMAN = the call was answered and nothing about it says machine.
  *  Defined negatively (exclude the voicemail/no-answer tells) rather than by
  *  trusting `human`, and gated on an answer so it stays a strict subset of
- *  Connects — a rejected/disconnected/busy line reached nobody. */
-function reachedHuman(r: Pick<SetterCall, "answered_at" | "outcome" | "disposition" | "note">): boolean {
+ *  Connects — a rejected/disconnected/busy line reached nobody.
+ *
+ *  A GHL row can never answer this question. Its only status vocabulary is
+ *  completed / no-answer / busy, and "completed" covers a 3-second machine
+ *  pickup and a 7-minute talk alike (measured: 196 of the 445 completed rows in
+ *  30 days ran under 10 seconds). Returning false here is NOT a claim that the
+ *  call reached nobody — it is this predicate declining to guess, which is why
+ *  every rate built on it also removes GHL rows from its DENOMINATOR. */
+function reachedHuman(r: Pick<SetterCall, "answered_at" | "outcome" | "disposition" | "note" | "source">): boolean {
+  if (!isScored(r)) return false;
   if (!r.answered_at) return false;
   if (r.outcome && NON_HUMAN_OUTCOME_SET.has(r.outcome.toUpperCase())) return false;
   if (r.disposition && (NON_HUMAN_DISPOSITIONS as readonly string[]).includes(r.disposition)) return false;
@@ -747,6 +813,15 @@ function isConversation(r: Pick<SetterCall, "disposition">): boolean {
 interface FunnelCounts {
   dials: number;
   connects: number;
+  /** The GHL/LeadConnector share of `dials` and `connects`. Kept so the rungs
+   *  below Connects can subtract it from their denominator instead of being
+   *  quietly diluted by calls that could never have reached those rungs. */
+  ghlDials: number;
+  ghlConnects: number;
+  /** dials/connects MINUS the GHL rows — the population the human, conversation
+   *  and positive rungs are actually measured over. */
+  scoredDials: number;
+  scoredConnects: number;
   humans: number;
   conversations: number;
   positives: number;
@@ -761,20 +836,40 @@ interface FunnelCounts {
 
 function computeFunnel(calls: SetterCall[]): FunnelCounts {
   let dials = 0, connects = 0, humans = 0, conversations = 0, positives = 0, partialApps = 0;
+  let ghlDials = 0, ghlConnects = 0;
   let talkSeconds = 0, connectedSeconds = 0;
   const phones = new Set<string>();
   for (const r of calls) {
+    const scored = isScored(r);
     dials++;
+    if (!scored) ghlDials++;
     const secs = r.seconds ?? 0;
     talkSeconds += secs;
-    if (r.answered_at) { connects++; connectedSeconds += secs; }
-    if (reachedHuman(r)) humans++;
-    if (isConversation(r)) conversations++;
-    if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) positives++;
-    if (r.disposition && APPLICATION_DISPOSITIONS.includes(r.disposition)) partialApps++;
+    if (r.answered_at) {
+      connects++;
+      connectedSeconds += secs;
+      if (!scored) ghlConnects++;
+    }
+    // Everything below Connects needs a setter-typed disposition or WAVV's
+    // outcome vocabulary, so an unscorable row contributes to NEITHER side of
+    // these rates. reachedHuman() already refuses GHL rows; the other three are
+    // disposition tests and a GHL row's disposition is null, so they refuse it
+    // too — the explicit guard is here so a future disposition backfill on
+    // ghl_call_log cannot silently start scoring rows on a different vocabulary.
+    if (scored) {
+      if (reachedHuman(r)) humans++;
+      if (isConversation(r)) conversations++;
+      if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) positives++;
+      if (r.disposition && APPLICATION_DISPOSITIONS.includes(r.disposition)) partialApps++;
+    }
     if (r.phone) phones.add(r.phone);
   }
-  return { dials, connects, humans, conversations, positives, partialApps, talkSeconds, connectedSeconds, uniqueLeads: phones.size };
+  return {
+    dials, connects, ghlDials, ghlConnects,
+    scoredDials: dials - ghlDials, scoredConnects: connects - ghlConnects,
+    humans, conversations, positives, partialApps,
+    talkSeconds, connectedSeconds, uniqueLeads: phones.size,
+  };
 }
 
 interface FunnelStage {
@@ -808,6 +903,18 @@ interface FunnelStage {
   /** A second line under the rung's label — the Applications rung uses it for
    *  "X with statements". */
   secondaryLine?: ReactNode;
+  /** Overrides the denominator of the "% of <ofLabel>" line (and therefore of
+   *  any band judged on `ofTotal`) for THIS rung only. The bar width still uses
+   *  stage 0, so the funnel keeps its true shape.
+   *
+   *  Used where a rung is measured over a SMALLER population than stage 0: the
+   *  human/conversation rungs cannot include GHL click-to-calls, so dividing
+   *  them by all dials would report a rate for a denominator they were never
+   *  measured against — the same "counted as zero" error, wearing a percent
+   *  sign. Null/undefined = use stage 0, the old behaviour. */
+  shareBase?: number;
+  /** Names that overridden denominator, so the line says what it divided by. */
+  shareLabel?: string;
 }
 
 /** The deal-derived Applications rung, computed from `deals` (not calls) for the
@@ -826,22 +933,41 @@ interface AppsRung {
 
 function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] {
   const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
+  // Everything from "Reached a human" down is measured over WAVV rows only, so
+  // those rungs divide by the WAVV population, not by every dial. When there are
+  // no GHL rows in range the two are identical and nothing changes on screen.
+  const mixed = f.ghlDials > 0;
+  const scoredNote = mixed
+    ? ` Excludes ${f.ghlDials.toLocaleString()} GHL/LeadConnector click-to-call${f.ghlDials === 1 ? "" : "s"} on both sides of this rate — GHL logs no disposition and no voicemail signal, so those calls are not scorable here and are not counted as failures either.`
+    : "";
+  const scoredShare = mixed
+    ? { shareBase: f.scoredDials, shareLabel: "of WAVV dials" }
+    : {};
   const stages: FunnelStage[] = [
     {
-      key: "dials", label: "Dials", short: "Dials", help: "Outbound call rows in this range",
+      key: "dials", label: "Dials", short: "Dials",
+      help: `Outbound call rows in this range, from BOTH dialers.${mixed ? ` ${f.scoredDials.toLocaleString()} WAVV + ${f.ghlDials.toLocaleString()} GHL/LeadConnector click-to-calls, deduped.` : ""}`,
       count: f.dials, stepLabel: "—", stepShort: "—", stepPct: null, targetKey: null,
+      secondaryLine: mixed ? (
+        <span className="text-gray-400">
+          <b className="tabular-nums text-gray-600 dark:text-gray-300">{f.scoredDials.toLocaleString()}</b> WAVV
+          {" · "}
+          <b className="tabular-nums text-gray-600 dark:text-gray-300">{f.ghlDials.toLocaleString()}</b> GHL
+        </span>
+      ) : undefined,
     },
     {
       key: "connects", label: "Connects", short: "Connects",
-      help: "WAVV recorded an answer timestamp — INCLUDING answering machines",
+      help: "The line picked up — INCLUDING answering machines. WAVV rows carry an answer timestamp; a GHL row counts when LeadConnector's call_status is 'completed' or 'voicemail' ('no-answer' and 'busy' never do).",
       count: f.connects, stepLabel: "of dials answered", stepShort: "answered",
       stepPct: pct(f.connects, f.dials), targetKey: "answer_rate_pct",
     },
     {
       key: "human", label: "Reached a human", short: "Humans",
-      help: "Answered, and nothing about the call says machine: outcome is not VOICEMAIL / NO_VOICEMAIL / NO_ANSWER / NO_CALLBACK, the setter did not disposition it 'Voice Message' or 'No Answer', and no 'Played voicemail' note. WAVV's own human flag is NOT used — it marks voicemails as human.",
-      count: f.humans, stepLabel: "of answers were human", stepShort: "were human",
-      stepPct: pct(f.humans, f.connects), targetKey: null,
+      help: "Answered, and nothing about the call says machine: outcome is not VOICEMAIL / NO_VOICEMAIL / NO_ANSWER / NO_CALLBACK, the setter did not disposition it 'Voice Message' or 'No Answer', and no 'Played voicemail' note. WAVV's own human flag is NOT used — it marks voicemails as human." + scoredNote,
+      count: f.humans, stepLabel: "of WAVV answers were human", stepShort: "were human",
+      stepPct: pct(f.humans, f.scoredConnects), targetKey: null,
+      ...scoredShare,
       // Deliberately UNCOLOURED (grey). Reaching a human is a diagnostic count
       // between Connects and Conversations — there is no reliable MCA industry
       // standard for raw human-pickup, and the 3–5% "contact rate" band is a
@@ -850,9 +976,13 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       benchmark: null,
     },
     {
-      key: "conversations", label: "Conversations", short: "Conversations", help: CONVERSATION_HELP,
+      key: "conversations", label: "Conversations", short: "Conversations",
+      help: CONVERSATION_HELP + scoredNote,
       count: f.conversations, stepLabel: "of humans dispositioned as a talk", stepShort: "of humans talked",
       stepPct: pct(f.conversations, f.humans), targetKey: "conversation_rate_pct",
+      // The 3–5% band divides by DIALS, so with two sources in range it must
+      // divide by the dials it could actually have come from.
+      ...scoredShare,
       // The industry "3–5% of dials" cold-dial CONTACT rate is a real-conversation
       // rate (reached a live decision-maker and talked), NOT a raw human-pickup
       // rate — so the band lives here, judged against this rung's "% of dials"
@@ -861,9 +991,10 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
     },
     {
       key: "positives", label: "Positive dispositions", short: "Positives",
-      help: POSITIVE_DISPOSITIONS.join(" · "),
+      help: POSITIVE_DISPOSITIONS.join(" · ") + scoredNote,
       count: f.positives, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.positives, f.conversations), targetKey: "positive_rate_pct",
+      ...scoredShare,
     },
     // ── Partial apps (owner-requested 9/9): Positives is deliberately broad —
     // Callback and Appointment Set count — so this rung isolates the subset that
@@ -875,10 +1006,11 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       help:
         "Calls dispositioned as an application actually taken: " +
         APPLICATION_DISPOSITIONS.join(" · ") +
-        ". A subset of Positives — Interested, Callback and Appointment Set never count here.",
+        ". A subset of Positives — Interested, Callback and Appointment Set never count here." + scoredNote,
       count: f.partialApps, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.partialApps, f.conversations), targetKey: null,
       benchmark: { id: "app_per_conversation", basis: "step" },
+      ...scoredShare,
     },
   ];
 
@@ -1089,13 +1221,13 @@ function attributionName(r: { setter_name: string | null; caller_label: string |
 // when it is actually absent data.
 function Metric({ value, suffix = "", digits = 0 }: { value: number | null; suffix?: string; digits?: number }) {
   if (value === null || value === undefined || !Number.isFinite(value)) {
-    return <span className="text-gray-300 dark:text-gray-600" title="Not reported by WAVV for these calls">—</span>;
+    return <span className="text-gray-300 dark:text-gray-600" title="Not reported by the dialer for these calls">—</span>;
   }
   return <span>{value.toFixed(digits)}{suffix}</span>;
 }
 
 function Text({ value }: { value: string | null }) {
-  if (!value) return <span className="text-gray-300 dark:text-gray-600" title="Not reported by WAVV">—</span>;
+  if (!value) return <span className="text-gray-300 dark:text-gray-600" title="Not reported by the dialer">—</span>;
   return <span>{value}</span>;
 }
 
@@ -1175,6 +1307,11 @@ interface SetterRow {
   numbers: string[];        // caller_ids feeding this row
   dials: number;
   connects: number;
+  /** GHL/LeadConnector share of `dials`, and the answered subset of `connects`
+   *  that came from GHL. `human` and below are WAVV-only, so `scoredConnects` —
+   *  not `connects` — is the denominator of this row's human rate. */
+  ghlDials: number;
+  scoredConnects: number;
   human: number;
   conversations: number;
   positives: number;
@@ -1953,11 +2090,22 @@ export default function SetterPerformancePage() {
       // Contact type runs in Postgres, not on the fetched page — see the
       // HUMAN_OR_CLAUSES comment. Each .or() is appended as its own `or=` param
       // and PostgREST ANDs repeated params together.
+      //
+      // BOTH branches are WAVV-only, because "human or machine" is a question
+      // only WAVV's data can answer. Without that clause a GHL 'completed' row
+      // would pass all three HUMAN_OR_CLAUSES (its outcome is not in WAVV's
+      // machine vocabulary, its disposition and note are null) and the log would
+      // label a 3-second machine pickup a human contact. Sweeping those rows into
+      // "voicemail / no human" instead would be the same invention pointed the
+      // other way — a 7-minute GHL call was almost certainly a person.
+      //
+      // So the two options deliberately do NOT partition the range: GHL calls are
+      // in neither, and the filter's own labels say so. "All" still shows them.
       if (filterContact === "human") {
-        q = q.not("answered_at", "is", null);
+        q = q.eq("source", "wavv").not("answered_at", "is", null);
         for (const clause of HUMAN_OR_CLAUSES) q = q.or(clause);
       } else if (filterContact === "machine") {
-        q = q.or(NOT_HUMAN_OR_CLAUSE);
+        q = q.eq("source", "wavv").or(NOT_HUMAN_OR_CLAUSE);
       }
 
       // `recorded` is nullable, so "No recording" must claim the unknowns too —
@@ -2255,9 +2403,14 @@ export default function SetterPerformancePage() {
   }, []);
 
   // ── Per-setter aggregates ─────────────────────────────────────────────────
-  // Grouped on the view's own setter_id. A row the view could not attribute
-  // (setter_id null) groups under its caller_label — a number is never promoted
-  // into a person it was not assigned to.
+  // Grouped on the view's own setter_id, which both sources resolve into: WAVV
+  // through the caller_id map, GHL through closers.ghl_user_id. So a setter's
+  // WAVV dials and their Playbook click-to-calls land on ONE row rather than two.
+  //
+  // A row the view could not attribute (setter_id null) groups under its line —
+  // a number is never promoted into a person it was not assigned to. An
+  // unattributed GHL row is keyed by the name GHL itself stamped on the call, so
+  // two different unmapped GHL users never merge into one anonymous row.
   const setterRows = useMemo((): SetterRow[] => {
     interface Acc extends Omit<SetterRow, "uniqueLeads" | "activeDays" | "appointments" | "appsSent" | "funded" | "fundedAmount"> {
       phones: Set<string>; days: Set<string>; numberSet: Set<string>;
@@ -2265,25 +2418,40 @@ export default function SetterPerformancePage() {
     const acc = new Map<string, Acc>();
     for (const r of aggRows) {
       const attributed = !!r.setter_id;
-      const key = attributed ? r.setter_id! : `caller:${r.caller_id ?? "unknown"}`;
+      const key = attributed
+        ? r.setter_id!
+        : r.source === "ghl"
+          ? `ghl:${r.setter_name ?? "unknown"}`
+          : `caller:${r.caller_id ?? "unknown"}`;
       let row = acc.get(key);
       if (!row) {
         row = {
           key, name: attributionName(r), attributed, numbers: [],
-          dials: 0, connects: 0, human: 0, conversations: 0, positives: 0,
+          dials: 0, connects: 0, ghlDials: 0, scoredConnects: 0,
+          human: 0, conversations: 0, positives: 0,
           talkSeconds: 0, connectedSeconds: 0,
           phones: new Set<string>(), days: new Set<string>(), numberSet: new Set<string>(),
         };
         acc.set(key, row);
       }
+      const scored = isScored(r);
       if (r.caller_id) row.numberSet.add(r.caller_id);
       row.dials++;
+      if (!scored) row.ghlDials++;
       const secs = r.seconds ?? 0;
       row.talkSeconds += secs;
-      if (r.answered_at) { row.connects++; row.connectedSeconds += secs; }
-      if (reachedHuman(r)) row.human++;
-      if (isConversation(r)) row.conversations++;
-      if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) row.positives++;
+      if (r.answered_at) {
+        row.connects++;
+        row.connectedSeconds += secs;
+        if (scored) row.scoredConnects++;
+      }
+      // Same rule as computeFunnel: a GHL row is a dial and a connect, and is
+      // then absent from BOTH sides of every rate below.
+      if (scored) {
+        if (reachedHuman(r)) row.human++;
+        if (isConversation(r)) row.conversations++;
+        if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) row.positives++;
+      }
       if (r.phone) row.phones.add(r.phone);
       if (r.started_at) row.days.add(ymd(new Date(r.started_at)));
     }
@@ -2575,7 +2743,10 @@ export default function SetterPerformancePage() {
     }
 
     return {
-      contact_rate: pct(funnel.conversations, funnel.dials),
+      // ÷ scoredDials, not dials: a conversation can only come from a WAVV row
+      // (GHL logs no disposition), so dividing by every dial would grade the
+      // floor against calls that were never eligible to land in the numerator.
+      contact_rate: pct(funnel.conversations, funnel.scoredDials),
       app_per_conversation: pct(applicationDispositions, funnel.conversations),
       app_to_fund_cold: productiveTotals ? pct(productiveTotals.funded, productiveTotals.appsSent) : null,
       avg_advance: avgAdvance,
@@ -2647,6 +2818,17 @@ export default function SetterPerformancePage() {
   // the reader's own clock. The call-level timestamps elsewhere on the page are
   // stamped Eastern and labelled as such; the heatmap says which clock it is on
   // in its own caption rather than leaving the two to be conflated.
+  //
+  // WAVV ROWS ONLY, and this is the one tab where that is the honest scope.
+  // Every column here splits answered seconds into human talk vs time spent on
+  // a machine, and the concurrency sweep exists to prove that ONE WAVV line is
+  // dialed by several seats at once. A GHL click-to-call can do neither: there
+  // is no human/machine signal to split its seconds by, so its talk time would
+  // land wholly in "machine" — a fabricated number — and a LeadConnector line is
+  // not a shared dialer line, so it has nothing to say about concurrency. The
+  // tab states its own scope in the caption below.
+  const talkRows = useMemo(() => aggRows.filter(isScored), [aggRows]);
+  const talkGhlExcluded = aggRows.length - talkRows.length;
   const talk = useMemo(() => {
     interface Acc extends Omit<TalkRow, "lineNo" | "activeDays" | "activeHours" | "longestIdleGapMin" | "idleGapFrom" | "idleGapTo" | "peakConcurrent" | "peakConcurrentHuman"> {
       /** day -> hour -> counts, and the ordered dial starts used for idle gaps. */
@@ -2673,7 +2855,7 @@ export default function SetterPerformancePage() {
       return g;
     };
 
-    for (const r of aggRows) {
+    for (const r of talkRows) {
       const key = r.caller_id ?? "unknown";
       let row = acc.get(key);
       if (!row) {
@@ -2790,7 +2972,7 @@ export default function SetterPerformancePage() {
       for (let h = Math.max(0, minHour - 1); h <= Math.min(23, maxHour + 1); h++) hours.push(h);
     }
     return { rows, grids, days: dayList, hours };
-  }, [aggRows]);
+  }, [talkRows]);
 
   /** profiles.id → clocked shift for the range. A setter absent from this map
    *  logged no check-in; a NULL map means the clock could not be read at all. */
@@ -2926,13 +3108,25 @@ export default function SetterPerformancePage() {
   }, [aggRows, dealRows, range]);
 
   // ── Breakdowns ────────────────────────────────────────────────────────────
+  // DISPOSITION is scored over WAVV rows only. A disposition is a value a setter
+  // TYPES after the call, and the GHL click-to-call UI never asks for one — so
+  // folding 470 GHL rows into a "(none)" bucket would invent an under-
+  // dispositioning problem out of a source that has no dispositions to give, and
+  // would shrink every real disposition's share of the total at the same time.
+  //
+  // OUTCOME is scored over BOTH, because both sources genuinely report one. The
+  // two vocabularies are deliberately left in their own spelling — WAVV's
+  // upper-case VOICEMAIL / NO_ANSWER, GHL's lower-case completed / no-answer —
+  // so the table shows them as separate rows instead of silently merging two
+  // different measurement systems under one label.
   const breakdown = useCallback((field: "disposition" | "outcome") => {
+    const rows = field === "disposition" ? aggRows.filter(isScored) : aggRows;
     const counts = new Map<string, number>();
-    for (const r of aggRows) {
+    for (const r of rows) {
       const k = r[field] ?? "(none)";
       counts.set(k, (counts.get(k) ?? 0) + 1);
     }
-    const total = aggRows.length;
+    const total = rows.length;
     return [...counts.entries()]
       .map(([label, count]) => ({
         label, count,
@@ -2951,7 +3145,12 @@ export default function SetterPerformancePage() {
     const opts = new Map<string, string>();
     for (const r of aggRows) {
       if (!r.caller_id) continue;
-      const who = r.setter_name ?? r.caller_label;
+      // A WAVV line is 1:1 with the setter mapped to it, so naming the setter is
+      // accurate there. A LeadConnector line is NOT: several people click-to-call
+      // from the same number, so it is labelled as the line it is — otherwise
+      // whichever row happened to land last would put one person's name on
+      // everyone's calls.
+      const who = isScored(r) ? (r.setter_name ?? r.caller_label) : r.caller_label;
       opts.set(r.caller_id, `${prettyPhone(r.caller_id)}${who ? ` — ${who}` : ""}`);
     }
     return [...opts.entries()].sort((a, b) => a[1].localeCompare(b[1]));
@@ -2965,7 +3164,9 @@ export default function SetterPerformancePage() {
       else anyUnassigned = true;
     }
     const list = [...opts.entries()].sort((a, b) => a[1].localeCompare(b[1]));
-    if (anyUnassigned) list.push([UNASSIGNED_FILTER, "Unassigned numbers"]);
+    // Covers both kinds of missing attribution: a WAVV number nobody is mapped
+    // to, and a GHL user with no closers row. Both are setter_id null.
+    if (anyUnassigned) list.push([UNASSIGNED_FILTER, "Unattributed calls"]);
     return list;
   }, [aggRows]);
 
@@ -3043,6 +3244,10 @@ export default function SetterPerformancePage() {
 
   // ── Derived banner conditions ─────────────────────────────────────────────
   const keyInvalid = syncState?.key_invalid === true || syncState?.last_status === "key_invalid";
+  // Zero rows ACROSS BOTH SOURCES. The count comes from the union view, so the
+  // banner below can no longer claim "waiting for first sync" while GHL
+  // click-to-calls are sitting in the log — if any call from either dialer has
+  // ever been recorded, this is false.
   const neverSynced = (totalRowsEver ?? 0) === 0;
   const emptyRange = !neverSynced && aggRows.length === 0 && !loading;
   const logPages = logCount === null ? 0 : Math.ceil(logCount / LOG_PAGE_SIZE);
@@ -3078,9 +3283,13 @@ export default function SetterPerformancePage() {
             <PhoneIcon className="w-6 h-6 text-mint-green" /> Setter Performance
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1 max-w-3xl text-sm">
-            Outbound dial-floor activity from the <span className="font-medium">WAVV dialer</span> (embedded in
-            VibeReach), mirrored here every 10 minutes, joined to pipeline outcomes from{" "}
-            <span className="font-medium">Deals</span>.
+            Every outbound dial the floor makes, from <span className="font-medium">both</span> dialers: the{" "}
+            <span className="font-medium">WAVV dialer</span> (embedded in VibeReach, mirrored here every 10 minutes)
+            and <span className="font-medium">GHL/LeadConnector click-to-calls</span> placed from the Revenue Playbook
+            — unioned and de-duplicated, then joined to pipeline outcomes from{" "}
+            <span className="font-medium">Deals</span>. GHL calls carry no disposition, so they count as dials and
+            connects and are left out of the conversation and positive rates on{" "}
+            <span className="font-medium">both sides</span> rather than scored as zeros.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -3172,7 +3381,7 @@ export default function SetterPerformancePage() {
         <div className="alert">
           <InformationCircleIcon className="w-5 h-5" />
           <span>
-            Waiting for first sync — no outbound WAVV calls have been mirrored yet.
+            Waiting for first sync — no outbound calls have been recorded by either dialer yet.
             {keyInvalid ? " Fix the API key above, then press Sync now." : " Press Sync now, or wait for the 10-minute cron."}
           </span>
         </div>
@@ -3304,9 +3513,9 @@ export default function SetterPerformancePage() {
                 {/* Floor totals */}
                 <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                   {[
-                    { label: "Dials", value: funnel.dials, fmt: (v: number) => v.toLocaleString(), help: "Outbound call rows in this range" },
-                    { label: "Connects", value: funnel.connects, fmt: (v: number) => v.toLocaleString(), help: "WAVV recorded an answer — includes answering machines" },
-                    { label: "Humans", value: funnel.humans, fmt: (v: number) => v.toLocaleString(), help: "Answered and not a voicemail/no-answer — WAVV's own human flag is not used" },
+                    { label: "Dials", value: funnel.dials, fmt: (v: number) => v.toLocaleString(), help: `Outbound call rows in this range, both dialers.${funnel.ghlDials > 0 ? ` ${funnel.scoredDials.toLocaleString()} WAVV + ${funnel.ghlDials.toLocaleString()} GHL/LeadConnector.` : ""}` },
+                    { label: "Connects", value: funnel.connects, fmt: (v: number) => v.toLocaleString(), help: "The line picked up — includes answering machines. WAVV answer timestamp, or a GHL call_status of completed / voicemail." },
+                    { label: "Humans", value: funnel.humans, fmt: (v: number) => v.toLocaleString(), help: "Answered and not a voicemail/no-answer — WAVV's own human flag is not used. WAVV rows only; GHL reports no human-vs-machine signal." },
                     { label: "Conversations", value: funnel.conversations, fmt: (v: number) => v.toLocaleString(), help: CONVERSATION_HELP },
                     { label: "Talk time", value: funnel.talkSeconds, fmt: hms, help: "Total seconds across every dial in range" },
                     { label: "Unique leads", value: funnel.uniqueLeads, fmt: (v: number) => v.toLocaleString(), help: "Distinct merchant phone numbers dialed" },
@@ -3490,7 +3699,7 @@ export default function SetterPerformancePage() {
                       id="contact_rate"
                       value={industryValues.contact_rate ?? null}
                       label="Contact rate (cold dial)"
-                      basis={`${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.dials.toLocaleString()} dials · per dial — real conversations reaching a decision-maker, not raw pickups.`}
+                      basis={`${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.scoredDials.toLocaleString()} WAVV dials · per dial — real conversations reaching a decision-maker, not raw pickups.${funnel.ghlDials > 0 ? ` ${funnel.ghlDials.toLocaleString()} GHL click-to-call${funnel.ghlDials === 1 ? " is" : "s are"} excluded from both sides: GHL logs no disposition.` : ""}`}
                     />
                     <BenchmarkTile
                       id="app_per_conversation"
@@ -3719,8 +3928,8 @@ export default function SetterPerformancePage() {
                           <span className="font-semibold text-gray-900 dark:text-white">Answers are not contacts.</span>{" "}
                           {funnel.connects.toLocaleString()} of {funnel.dials.toLocaleString()} dials registered an answer
                           ({funnel.dials > 0 ? ((funnel.connects / funnel.dials) * 100).toFixed(0) : "—"}%), but only{" "}
-                          <b className="text-gray-900 dark:text-white">{funnel.connects > 0 ? ((funnel.humans / funnel.connects) * 100).toFixed(0) : "—"}%</b>{" "}
-                          of those reached a <b>human</b> — the rest are answering machines. Judge the floor on humans, not connects.
+                          <b className="text-gray-900 dark:text-white">{funnel.scoredConnects > 0 ? ((funnel.humans / funnel.scoredConnects) * 100).toFixed(0) : "—"}%</b>{" "}
+                          of the WAVV answers reached a <b>human</b> — the rest are answering machines. Judge the floor on humans, not connects.
                         </li>
                         <li>
                           <span className="font-semibold text-gray-900 dark:text-white">The tail is thin.</span>{" "}
@@ -3728,17 +3937,28 @@ export default function SetterPerformancePage() {
                           dispositioned as a real conversation, and <b className="text-gray-900 dark:text-white">{funnel.positives.toLocaleString()}</b>{" "}
                           calls carried a positive disposition ({POSITIVE_DISPOSITIONS.join(", ")}) — that is{" "}
                           <b className="text-gray-900 dark:text-white">
-                            {funnel.dials > 0 ? ((funnel.positives / funnel.dials) * 100).toFixed(2) : "—"}%
+                            {funnel.scoredDials > 0 ? ((funnel.positives / funnel.scoredDials) * 100).toFixed(2) : "—"}%
                           </b>{" "}
-                          of all dials.
+                          of {funnel.ghlDials > 0 ? "WAVV dials" : "all dials"}.
                         </li>
                         <li>
-                          <span className="font-semibold text-gray-900 dark:text-white">Dials per conversation:</span>{" "}
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {funnel.ghlDials > 0 ? "WAVV dials" : "Dials"} per conversation:
+                          </span>{" "}
                           <b className="text-gray-900 dark:text-white">
-                            {funnel.conversations > 0 ? Math.round(funnel.dials / funnel.conversations).toLocaleString() : "—"}
+                            {funnel.conversations > 0 ? Math.round(funnel.scoredDials / funnel.conversations).toLocaleString() : "—"}
                           </b>
                           {funnel.conversations > 0 && " dials buy one real conversation at the current list and script quality."}
                         </li>
+                        {funnel.ghlDials > 0 && (
+                          <li>
+                            <span className="font-semibold text-gray-900 dark:text-white">Two dialers are in this range.</span>{" "}
+                            <b className="text-gray-900 dark:text-white">{funnel.ghlDials.toLocaleString()}</b> of these dials
+                            are GHL/LeadConnector click-to-calls from the Playbook. They count as dials and connects; they carry
+                            no disposition, so they are excluded from the conversation and positive rates on both sides rather
+                            than dragging them down as zeros.
+                          </li>
+                        )}
                       </ul>
                     </div>
                   </div>
@@ -3915,7 +4135,7 @@ export default function SetterPerformancePage() {
               values={industryValues}
               rangeLabel={RANGE_LABELS[rangeKey]}
               basis={{
-                contact_rate: `${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.dials.toLocaleString()} dials · per dial — real conversations reaching a decision-maker, not raw pickups`,
+                contact_rate: `${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.scoredDials.toLocaleString()} WAVV dials · per dial — real conversations reaching a decision-maker, not raw pickups`,
                 app_per_conversation: `${applicationDispositions.toLocaleString()} app dispositions ÷ ${funnel.conversations.toLocaleString()} conversations`,
                 app_to_fund_cold: productiveTotals
                   ? `${productiveTotals.funded.toLocaleString()} funded ÷ ${productiveTotals.appsSent.toLocaleString()} apps sent (in-range stamps, different deals)`
@@ -3977,7 +4197,9 @@ export default function SetterPerformancePage() {
                         <thead className={THEAD}>
                           <tr>
                             <th className={`${TH} border-b-0`} />
-                            <th colSpan={8} className={`${TH} text-center border-b-0`}>Dialing (WAVV)</th>
+                            <th colSpan={8} className={`${TH} text-center border-b-0`} title={DIAL_SOURCE_NOTE}>
+                              Dialing (WAVV + GHL)
+                            </th>
                             <th colSpan={3} className={`${TH} ${GROUP_EDGE} text-center border-b-0`}>Pipeline (Deals)</th>
                           </tr>
                           <tr>
@@ -3998,7 +4220,10 @@ export default function SetterPerformancePage() {
                           {sortedSetterRows.map((r) => {
                             const dialsPerDay = r.activeDays > 0 ? r.dials / r.activeDays : null;
                             const answerRate = r.dials > 0 ? (r.connects / r.dials) * 100 : null;
-                            const humanRate = r.connects > 0 ? (r.human / r.connects) * 100 : null;
+                            // ÷ scoredConnects: GHL answers cannot be classified
+                            // human-or-machine, so they leave this rate entirely
+                            // instead of sitting in its denominator as failures.
+                            const humanRate = r.scoredConnects > 0 ? (r.human / r.scoredConnects) * 100 : null;
                             const dpd = targetFor("dials_per_day");
                             const dpdRag = ragOf(dialsPerDay, dpd.target);
                             return (
@@ -4007,14 +4232,32 @@ export default function SetterPerformancePage() {
                                   <div className="flex items-center gap-2">
                                     {r.name}
                                     {!r.attributed && (
-                                      <span className="badge badge-xs badge-ghost" title="This number has no setter assigned — assign it in the Numbers tab">
-                                        unassigned
+                                      <span
+                                        className="badge badge-xs badge-ghost"
+                                        title={r.key.startsWith("ghl:")
+                                          // GHL told us the NAME on the call; what is missing is the
+                                          // link to a profiles.id, so the Numbers tab is the wrong
+                                          // advice here and would send a manager on a dead errand.
+                                          ? "GHL names this user on the call, but no closers row maps their GHL user id to a staff account — so their pipeline columns cannot be joined. Set closers.ghl_user_id for them."
+                                          : "This number has no setter assigned — assign it in the Numbers tab"}
+                                      >
+                                        {r.key.startsWith("ghl:") ? "unlinked" : "unassigned"}
                                       </span>
                                     )}
                                   </div>
                                   <div className="text-xs text-gray-400 mt-0.5">{r.numbers.map(prettyPhone).join(" · ") || "—"}</div>
                                 </td>
-                                <td className={TD_NUM}>{r.dials.toLocaleString()}</td>
+                                <td className={TD_NUM}>
+                                  {r.dials.toLocaleString()}
+                                  {r.ghlDials > 0 && (
+                                    <div
+                                      className="text-[10px] font-normal text-gray-400"
+                                      title={`${(r.dials - r.ghlDials).toLocaleString()} WAVV dials + ${r.ghlDials.toLocaleString()} GHL/LeadConnector click-to-calls. ${DIAL_SOURCE_NOTE}`}
+                                    >
+                                      incl. {r.ghlDials.toLocaleString()} GHL
+                                    </div>
+                                  )}
+                                </td>
                                 <td className={TD_NUM}>
                                   <span className={`font-semibold ${RAG_TEXT[dpdRag]}`} title={dpd.target ? `Target ≥${dpd.target.green}/day green, ≥${dpd.target.amber} amber · over ${r.activeDays} day${r.activeDays === 1 ? "" : "s"} with activity` : "No threshold configured"}>
                                     <Metric value={dialsPerDay} />
@@ -4053,7 +4296,7 @@ export default function SetterPerformancePage() {
                             <td className={TD_NUM}>{funnel.connects.toLocaleString()}</td>
                             <td className={TD_NUM}><RagPct value={funnel.dials > 0 ? (funnel.connects / funnel.dials) * 100 : null} target={targetFor("answer_rate_pct").target} /></td>
                             <td className={TD_NUM}>{funnel.humans.toLocaleString()}</td>
-                            <td className={TD_NUM}><RagPct value={funnel.connects > 0 ? (funnel.humans / funnel.connects) * 100 : null} target={targetFor("human_rate_pct").target} /></td>
+                            <td className={TD_NUM}><RagPct value={funnel.scoredConnects > 0 ? (funnel.humans / funnel.scoredConnects) * 100 : null} target={targetFor("human_rate_pct").target} /></td>
                             <td className={TD_NUM}>{funnel.conversations.toLocaleString()}</td>
                             <td className={TD_NUM}>{funnel.positives.toLocaleString()}</td>
                             <td className={`${TD_NUM} ${GROUP_EDGE}`}>{sumOrDash(sortedSetterRows.map((r) => r.appointments))}</td>
@@ -4110,6 +4353,19 @@ export default function SetterPerformancePage() {
                       })()}{" "}
                       Per-line and floor-wide talk time below are real and measured. True per-setter talk time needs{" "}
                       <b>one WAVV number per setter</b>.
+                      {/* Scope, stated rather than silently applied: this tab is
+                          the one place on the page that is WAVV-only, because
+                          every column here splits answered seconds into human vs
+                          machine and a GHL row carries no such signal. */}
+                      {talkGhlExcluded > 0 && (
+                        <>
+                          {" "}This tab — and only this tab — counts <b>WAVV rows only</b>:{" "}
+                          <b>{talkGhlExcluded.toLocaleString()}</b> GHL/LeadConnector click-to-call
+                          {talkGhlExcluded === 1 ? "" : "s"} in this range are excluded, because GHL reports no
+                          human-vs-machine signal to split their seconds by and a LeadConnector number is not a shared
+                          dialer line. They are counted everywhere else on the page.
+                        </>
+                      )}
                     </div>
                     {/* The caveat carries its own proof, computed from the loaded
                         rows — not an assertion the reader has to take on trust. */}
@@ -4509,8 +4765,20 @@ export default function SetterPerformancePage() {
             emptyRange ? <EmptyRange total={totalRowsEver} /> : (
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 {[
-                  { title: "Dispositions (setter-selected)", rows: dispositionBreakdown, fill: "#007EA7", note: "What the setter marked after the call. Highlighted rows are the positive set." },
-                  { title: "Outcomes (dialer-reported)", rows: outcomeBreakdown, fill: "#8B5CF6", note: "What WAVV's telephony layer observed. Independent of what the setter marked." },
+                  {
+                    title: "Dispositions (setter-selected)", rows: dispositionBreakdown, fill: "#007EA7",
+                    note: "What the setter marked after the call. Highlighted rows are the positive set."
+                      + (funnel.ghlDials > 0
+                        ? ` WAVV rows only — the ${funnel.ghlDials.toLocaleString()} GHL click-to-call${funnel.ghlDials === 1 ? "" : "s"} in this range are excluded rather than piled into "(none)", because GHL never asks for a disposition.`
+                        : ""),
+                  },
+                  {
+                    title: "Outcomes (dialer-reported)", rows: outcomeBreakdown, fill: "#8B5CF6",
+                    note: "What the telephony layer observed, from both dialers. Independent of what the setter marked."
+                      + (funnel.ghlDials > 0
+                        ? " WAVV writes UPPER_CASE values and GHL lower-case ones; the two vocabularies are kept as separate rows on purpose."
+                        : ""),
+                  },
                 ].map((panel) => (
                   <div key={panel.title} className="card bg-base-100 border border-base-300 shadow-sm">
                     <div className="card-body p-4">
@@ -4840,7 +5108,7 @@ export default function SetterPerformancePage() {
                       <option value="all">All dispositions</option>
                       {dispositionOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
-                    <select className="select select-xs select-bordered" value={filterOutcome} onChange={(e) => setFilterOutcome(e.target.value)} title="What WAVV reported for the line itself">
+                    <select className="select select-xs select-bordered" value={filterOutcome} onChange={(e) => setFilterOutcome(e.target.value)} title="What the dialer reported for the line itself. WAVV writes UPPER_CASE values (VOICEMAIL, NO_ANSWER…); GHL/LeadConnector writes lower-case ones (completed, no-answer, busy). The two vocabularies are kept apart on purpose.">
                       <option value="all">All outcomes</option>
                       {outcomeOptions.map((o) => <option key={o} value={o}>{o}</option>)}
                     </select>
@@ -4848,11 +5116,11 @@ export default function SetterPerformancePage() {
                       className="select select-xs select-bordered"
                       value={filterContact}
                       onChange={(e) => setFilterContact(e.target.value as "all" | "human" | "machine")}
-                      title="Reached a human = answered, and nothing about the call says machine. Voicemail / no human is the exact complement, so it also holds lines that were never answered."
+                      title="Reached a human = answered, and nothing about the call says machine. Both options are WAVV-only: GHL/LeadConnector reports no human-vs-machine signal, so its calls belong to NEITHER option and appear only under 'Any contact type'. They are not hidden and not reclassified."
                     >
                       <option value="all">Any contact type</option>
-                      <option value="human">Reached a human</option>
-                      <option value="machine">Voicemail / no human</option>
+                      <option value="human">Reached a human (WAVV)</option>
+                      <option value="machine">Voicemail / no human (WAVV)</option>
                     </select>
                     <select
                       className="select select-xs select-bordered"
@@ -4891,7 +5159,7 @@ export default function SetterPerformancePage() {
                   </div>
                 ) : logRows.length === 0 ? (
                   <p className="text-sm text-gray-400 py-4">
-                    {neverSynced ? "Waiting for first sync — no outbound WAVV calls have been mirrored yet." : "No calls match these filters."}
+                    {neverSynced ? "Waiting for first sync — no outbound calls have been recorded by either dialer yet." : "No calls match these filters."}
                   </p>
                 ) : (
                   <div className={`${TABLE_WRAP} mt-3`}>
@@ -4924,13 +5192,23 @@ export default function SetterPerformancePage() {
                                 {r.started_at ? new Date(r.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : <Metric value={null} />}
                               </td>
                               <td className={`${TD} min-w-[11rem]`}>
-                                {r.setter_name ? (
-                                  <span className="font-medium text-gray-900 dark:text-white">{r.setter_name}</span>
-                                ) : (
-                                  <span className="text-gray-400 italic" title="This outbound number has no setter assigned — assign it in the Numbers tab">
-                                    {r.caller_label ?? prettyPhone(r.caller_id)}
-                                  </span>
-                                )}
+                                <span className="inline-flex items-center gap-1.5">
+                                  {r.setter_name ? (
+                                    <span className="font-medium text-gray-900 dark:text-white">{r.setter_name}</span>
+                                  ) : (
+                                    <span className="text-gray-400 italic" title="This outbound number has no setter assigned — assign it in the Numbers tab">
+                                      {r.caller_label ?? prettyPhone(r.caller_id)}
+                                    </span>
+                                  )}
+                                  {/* Which dialer placed it. Shown on GHL rows only:
+                                      WAVV is the default and badging 34,000 rows
+                                      would be noise, not information. */}
+                                  {!isScored(r) && (
+                                    <span className="badge badge-xs badge-outline shrink-0" title={DIAL_SOURCE_NOTE}>
+                                      GHL
+                                    </span>
+                                  )}
+                                </span>
                                 <div className="text-xs text-gray-400 mt-0.5">{prettyPhone(r.caller_id)}</div>
                               </td>
                               <td className={`${TD} min-w-[10rem]`}>
@@ -4945,12 +5223,26 @@ export default function SetterPerformancePage() {
                                   : <Text value={r.disposition} />}
                               </td>
                               <td className={`${TD} whitespace-nowrap`}>
-                                <span
-                                  className={`badge badge-sm ${live ? "badge-success" : "badge-ghost"}`}
-                                  title={live ? "Answered, and no voicemail/no-answer tell on the call" : "Voicemail, no answer, or never answered"}
-                                >
-                                  {live ? "live" : "machine"}
-                                </span>
+                                {/* UNKNOWN, not "machine". reachedHuman() returns
+                                    false for a GHL row because it declines to
+                                    guess, and printing that refusal as "machine"
+                                    would turn a gap in the data into a verdict
+                                    about the setter. */}
+                                {!isScored(r) ? (
+                                  <span
+                                    className="text-gray-300 dark:text-gray-600"
+                                    title="GHL/LeadConnector reports no human-vs-machine signal — its only status vocabulary is completed / no-answer / busy, and 'completed' covers a 3-second machine pickup and a 7-minute talk alike. Unknown, not machine."
+                                  >
+                                    —
+                                  </span>
+                                ) : (
+                                  <span
+                                    className={`badge badge-sm ${live ? "badge-success" : "badge-ghost"}`}
+                                    title={live ? "Answered, and no voicemail/no-answer tell on the call" : "Voicemail, no answer, or never answered"}
+                                  >
+                                    {live ? "live" : "machine"}
+                                  </span>
+                                )}
                               </td>
                               <td className={`${TD} max-w-[14rem]`}>
                                 {r.note
@@ -4959,7 +5251,14 @@ export default function SetterPerformancePage() {
                               </td>
                               <td className={`${TD} min-w-[13rem]`}>
                                 {!hasRecording ? (
-                                  <span className="text-gray-300 dark:text-gray-600 text-xs" title={r.recorded === null ? "WAVV did not report whether this call was recorded" : "This call was not recorded"}>
+                                  <span
+                                    className="text-gray-300 dark:text-gray-600 text-xs"
+                                    title={!isScored(r)
+                                      ? "Recordings are pulled from the WAVV API by call id; a GHL/LeadConnector click-to-call has no WAVV recording to fetch."
+                                      : r.recorded === null
+                                        ? "WAVV did not report whether this call was recorded"
+                                        : "This call was not recorded"}
+                                  >
                                     no recording
                                   </span>
                                 ) : m.url ? (
@@ -5292,9 +5591,14 @@ function StageBars({
         <div className={compact ? "space-y-2.5" : "space-y-3"}>
           {stages.map((s, i) => {
             const { target, isDefault } = s.targetKey ? targetFor(s.targetKey) : { target: null, isDefault: false };
+            // WIDTH always uses stage 0, so the bars still draw one funnel that
+            // narrows. Only the PERCENTAGE may be told to divide by a smaller,
+            // honest population — see FunnelStage.shareBase.
             const widthPct = total > 0 ? Math.max((s.count / total) * 100, s.count > 0 ? 1.5 : 0) : 0;
-            const sharePct = total > 0 ? (s.count / total) * 100 : null;
-            const ofDials = sharePct === null ? "—" : `${sharePct.toFixed(1)}% ${ofLabel}`;
+            const shareBase = s.shareBase ?? total;
+            const shareOf = s.shareBase != null ? (s.shareLabel ?? ofLabel) : ofLabel;
+            const sharePct = shareBase > 0 ? (s.count / shareBase) * 100 : null;
+            const ofDials = sharePct === null ? "—" : `${sharePct.toFixed(1)}% ${shareOf}`;
             // The industry chip goes next to whichever percentage it is
             // actually comparable to — see FunnelStage.benchmark.
             const bm = s.benchmark ? INDUSTRY_BENCHMARKS[s.benchmark.id] : null;
@@ -5372,7 +5676,7 @@ function StageBars({
                 title={judgedTitle}
               >
                 <span className="font-semibold tabular-nums">{sharePct === null ? "—" : `${sharePct.toFixed(1)}%`}</span>
-                <span className="opacity-70">{ofLabel}</span>
+                <span className="opacity-70">{shareOf}</span>
               </span>
             ) : (
               <span className={compact ? "truncate" : undefined}>{ofDials}</span>

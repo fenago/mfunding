@@ -756,7 +756,11 @@ export default function DialCeilingPanel({
                 <b>Volume = pace × occupancy.</b> This tab separates the two, because they need opposite
                 coaching: a setter dialing at a good pace for two hours of an eight-hour shift does not have a
                 pace problem. Everything here comes from <code>setter_dial_ceiling</code> and{" "}
-                <code>setter_dial_ceiling_daily</code>, scoped to the range picker above.
+                <code>setter_dial_ceiling_daily</code>, scoped to the range picker above — and both read{" "}
+                <b>WAVV rows only</b>, so dial counts here sit slightly below the ones on Funnel and Setters,
+                which also count GHL/LeadConnector click-to-calls. That is a difference in scope, not an error:
+                pace and occupancy are properties of a shared dialer line, and a click-to-call placed from the
+                Playbook is not one.
               </p>
             </div>
             <button type="button" className="btn btn-xs btn-ghost gap-1" onClick={() => void load()} disabled={loading}>
