@@ -282,10 +282,15 @@ Deno.serve(async (req) => {
     const lenderId = payload.lenderId ?? lenderIds[0];
     if (!dealId || !lenderId) return json({ error: "dealId and lenderId are required" }, 400);
 
-    // Closers may only act on their own deals (same guard as normal mode).
+    // Closers may only act on their own deals (same guard as normal mode) — but a
+    // PROCESSOR works the WHOLE board, so ownership never gates them (owner ruling
+    // 2026-09-16).
     if (callerRole === "closer") {
-      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
-      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+      const { data: proc } = await db.rpc("is_processor", { uid: caller.id });
+      if (!proc) {
+        const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+        if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+      }
     }
 
     const { data: sub } = await db
@@ -355,10 +360,15 @@ Deno.serve(async (req) => {
     const lenderId = payload.lenderId ?? lenderIds[0];
     if (!dealId || !lenderId) return json({ error: "dealId and lenderId are required" }, 400);
 
-    // Closers may only act on their own deals (same guard as normal mode).
+    // Closers may only act on their own deals (same guard as normal mode) — but a
+    // PROCESSOR works the WHOLE board, so ownership never gates them (owner ruling
+    // 2026-09-16).
     if (callerRole === "closer") {
-      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
-      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+      const { data: proc } = await db.rpc("is_processor", { uid: caller.id });
+      if (!proc) {
+        const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+        if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+      }
     }
 
     const { data: sub } = await db
@@ -436,10 +446,15 @@ Deno.serve(async (req) => {
     if (!subject) return json({ error: "subject is required" }, 400);
     if (!bodyText) return json({ error: "body is required" }, 400);
 
-    // Closers may only act on their own deals (same guard as normal mode).
+    // Closers may only act on their own deals (same guard as normal mode) — but a
+    // PROCESSOR works the WHOLE board, so ownership never gates them (owner ruling
+    // 2026-09-16).
     if (callerRole === "closer") {
-      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
-      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+      const { data: proc } = await db.rpc("is_processor", { uid: caller.id });
+      if (!proc) {
+        const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+        if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+      }
     }
 
     const { data: dealRow } = await db

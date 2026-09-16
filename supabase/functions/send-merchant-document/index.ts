@@ -68,6 +68,12 @@ Deno.serve(async (req) => {
 
   const { data: staff } = await db.rpc("is_ops_staff", { uid: caller.id });
   let allowed = staff === true;
+  // A PROCESSOR works the WHOLE board, so ownership never gates them (owner ruling
+  // 2026-09-16: processors and setters must be able to act on ANY record).
+  if (!allowed) {
+    const { data: proc } = await db.rpc("is_processor", { uid: caller.id });
+    allowed = proc === true;
+  }
   if (!allowed) {
     const { data: owns } = await db.rpc("closer_owns_customer", {
       uid: caller.id,

@@ -113,8 +113,14 @@ Deno.serve(async (req) => {
 
   if (callerRole === "closer") {
     if (!dealId) return json({ error: "Forbidden — this research isn't tied to a deal you own" }, 403);
-    const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
-    if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    // A PROCESSOR works the WHOLE board, so ownership never gates them.
+    // (Owner ruling 2026-09-16: processors and setters must be able to open and
+    // act on ANY record; Catherine hit "isn't assigned to you" on live deals.)
+    const { data: proc } = await db.rpc("is_processor", { uid: caller.id });
+    if (!proc) {
+      const { data: owns } = await db.rpc("closer_owns_deal", { uid: caller.id, d_id: dealId });
+      if (!owns) return json({ error: "Forbidden — this deal isn't assigned to you" }, 403);
+    }
   }
 
   // --- Load the merchant ---
