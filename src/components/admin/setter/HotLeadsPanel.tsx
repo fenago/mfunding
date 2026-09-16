@@ -314,7 +314,13 @@ function heatWhy(r: HotRow, h: Heat, now: number): string {
     case "working":
       return `${h.attempts} attempt${h.attempts === 1 ? "" : "s"} logged — on pace, keep going.`;
     case "connected":
-      return "A real conversation happened — this is a pipeline deal now, not a chase.";
+      if (r.spoke_at_source === "hand_logged") {
+        return "A setter reported a conversation here, so it has dropped out of the chase — on their word, not on a recorded call long enough to confirm it.";
+      }
+      if (!r.spoke_at_source) {
+        return "Marked as a conversation, though how that was established was not recorded — this stamp predates provenance tracking.";
+      }
+      return "A real conversation happened — a call that ran 2+ minutes. This is a pipeline deal now, not a chase.";
     case "parked":
       return "Closed out of the working pipeline — shown so it isn't silently dropped.";
   }
@@ -954,8 +960,25 @@ function HotLeadRow({
       <div className="flex items-start justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           {ui.flames && <span className="text-sm leading-none shrink-0">{ui.flames}</span>}
-          <span className={`text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0 ${ui.badge}`}>
-            {ui.label}
+          <span
+            className={`text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0 ${
+              h.tier === "connected" && r.spoke_at_source === "hand_logged"
+                ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-300 dark:bg-emerald-900/20 dark:text-emerald-300 dark:ring-emerald-800"
+                : ui.badge
+            }`}
+            title={r.spoke_at ? spokeAttribution(r.spoke_at_source, ago(r.spoke_at, now)).title : undefined}
+          >
+            {/* A lead leaves the top of this panel the moment it reads
+                "connected", and until today only a duration-verified call could
+                do that — now a button can. So the badge itself says which:
+                a setter's assertion is drawn as an assertion (outlined, and the
+                word "reported"), never as the same solid ✓ a five-minute
+                recorded call earns. The owner accepted self-certification on
+                condition it stays visibly distinguishable, and this is the row
+                where a lead actually gets deprioritised. */}
+            {h.tier === "connected" && r.spoke_at_source === "hand_logged"
+              ? "Spoke · reported"
+              : ui.label}
           </span>
           <span className="text-sm font-bold text-gray-900 dark:text-white truncate">
             {merchantName(r)}
