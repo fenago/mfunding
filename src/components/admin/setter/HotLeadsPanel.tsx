@@ -894,10 +894,24 @@ function HotLeadRow({
   const vendorContact = vendorField(r, "contact_name");
   const vendorFico = vendorField(r, "fico");
   const vendorDeposits = vendorField(r, "monthly_deposits");
-  // The real-time 5-minute clock. Only meaningful while the lead is untouched —
-  // once someone has reached out, speed-to-lead is already banked in the attempt.
+  // The real-time 5-minute clock. Only meaningful while the lead is UNTOUCHED —
+  // once someone has reached out, speed-to-lead is banked and the badge is just
+  // noise on a lead that is being worked (owner, 2026-09-16: "once we've called,
+  // I don't think we need that badge there").
+  //
+  // Gated on the TRUE call count, never on deals.first_attempt_at: that column is
+  // written by our own app paths and by the GHL telemetry mirror, and NOT by WAVV
+  // — the same blind spot that had this panel calling twelve dialed leads "NEVER
+  // DIALED". The Goldberg Group had a real WAVV dial and a null first_attempt_at,
+  // so it kept flashing "5-MIN WINDOW MISSED" at a setter who had already called.
+  //
+  // Unreadable history suppresses the badge too. "You missed the window" is an
+  // accusation, and this panel does not make accusations off a count it cannot
+  // prove — the same rule that governs the NEVER DIALED chip.
   const dueMs =
-    r.first_call_due_at && !r.first_attempt_at ? Date.parse(r.first_call_due_at) - now : null;
+    r.first_call_due_at && hist && hist.attempts === 0
+      ? Date.parse(r.first_call_due_at) - now
+      : null;
   // The last REAL dial, from the RPC — not deals.last_attempt_at, which is stale
   // whenever the newest call came through WAVV (Garden View was six hours behind).
   const lastAt = hist?.last_at ?? null;
