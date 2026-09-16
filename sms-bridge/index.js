@@ -204,8 +204,36 @@ xmpp.on("stanza", async (stanza) => {
     }
 
     if (!stanza.is("message")) return;
+
+    // ── A REJECTION IS A FAILURE, AND MUST LOOK LIKE ONE ────────────────────
+    // The gateway refuses a message ASYNCHRONOUSLY: xmpp.send() resolves fine,
+    // the row is marked 'sent', and the refusal arrives moments later as its
+    // own error stanza. This branch used to only log it — so the app reported
+    // "sent" on messages JMP had explicitly thrown away.
+    //
+    // That is not a cosmetic bug. On 2026-09-03 JMP began refusing every
+    // outbound message on this account with <policy-violation/>, and for the
+    // next 13 days the team watched 190 texts report as sent while none were
+    // delivered. A setter promised a merchant an application link that never
+    // existed. The system said everything was fine because nothing ever asked
+    // this stanza what it meant.
+    //
+    // The error stanza echoes the original id, and we send with id = row id,
+    // so the refusal maps straight back to the row.
     if (stanza.attrs.type === "error") {
       log("message error stanza:", stanza.toString());
+      const id = stanza.attrs.id;
+      const err = stanza.getChild("error");
+      // The condition element (policy-violation, service-unavailable, …) is the
+      // machine-readable cause; <text> is the human one. Keep both — "why" is
+      // the whole point of surfacing this.
+      const condition = err?.children?.find(
+        (c) => c?.attrs?.xmlns === "urn:ietf:params:xml:ns:xmpp-stanzas" && c.name !== "text",
+      )?.name;
+      const text = err?.getChildText("text");
+      const reason = [condition, text].filter(Boolean).join(" — ") || "rejected by the gateway";
+      if (id) await markFailed(id, `Gateway refused it: ${reason}`);
+      else log("error stanza carried no id — cannot mark the row failed");
       return;
     }
 
