@@ -124,8 +124,15 @@ interface CallEvent {
 }
 
 interface CallHistory {
-  /** The TRUE total. Always the full count, even when `calls` is capped. */
+  /** The TRUE total, LIFETIME. Always the full count, even when `calls` is
+   *  capped. This is what the row displays and the only count NEVER DIALED may
+   *  be judged on — if we have ever called them, they are not un-dialed. */
   attempts: number;
+  /** Dials at or after this lead arrived (deals.created_at). Everything that
+   *  asks "is this being worked NOW" — pace, blazing, the 5-minute badge —
+   *  reads this instead, so a prior campaign's dials cannot make a fresh
+   *  transfer look attended to. */
+  attempts_since_arrival: number;
   last_at: string | null;
   last_disposition: string | null;
   last_by: string | null;
@@ -412,7 +419,17 @@ export default function HotLeadsPanel({
       return {
         r,
         hist,
-        h: leadHeat({ ...r, true_attempts: hist ? hist.attempts : null }, now, isParked),
+        h: leadHeat(
+          {
+            ...r,
+            true_attempts: hist ? hist.attempts : null,
+            // Pace is measured over the lead's age, so it must be judged on the
+            // dials made since it arrived — not on the merchant's lifetime count.
+            attempts_since_arrival: hist ? hist.attempts_since_arrival : null,
+          },
+          now,
+          isParked,
+        ),
       };
     });
     // Hottest first; inside a tier, the one that has been waiting longest.
@@ -908,8 +925,14 @@ function HotLeadRow({
   // Unreadable history suppresses the badge too. "You missed the window" is an
   // accusation, and this panel does not make accusations off a count it cannot
   // prove — the same rule that governs the NEVER DIALED chip.
+  //
+  // Judged on dials SINCE THIS LEAD ARRIVED, not the merchant's lifetime count.
+  // The badge is a speed-to-lead statement about THIS arrival: having dialed the
+  // same merchant on a purchased list last month says nothing about whether this
+  // transfer was answered inside its five minutes, and letting that suppress the
+  // badge would hide a genuinely missed window.
   const dueMs =
-    r.first_call_due_at && hist && hist.attempts === 0
+    r.first_call_due_at && hist && hist.attempts_since_arrival === 0
       ? Date.parse(r.first_call_due_at) - now
       : null;
   // The last REAL dial, from the RPC — not deals.last_attempt_at, which is stale
