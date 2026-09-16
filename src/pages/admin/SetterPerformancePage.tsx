@@ -111,6 +111,7 @@ import AssignmentsPanel from "@/components/admin/AssignmentsPanel";
 import DialCeilingPanel, { type ProductiveSetterRow } from "@/components/admin/DialCeilingPanel";
 import SetterOpsTab from "@/components/admin/setter/SetterOpsTab";
 import CallAuditTab from "@/components/admin/setter/CallAuditTab";
+import DayRangeCalendar from "@/components/admin/setter/DayRangeCalendar";
 import TextMerchantPanel from "@/components/admin/TextMerchantPanel";
 import {
   BenchmarkChip, BenchmarkTile, BenchmarkLegend, IndustryComparisonCard,
@@ -1165,7 +1166,10 @@ function inRange(iso: string | null, from: Date, to: Date): boolean {
 
 type RangeKey = "today" | "yesterday" | "7d" | "30d" | "custom";
 const RANGE_LABELS: Record<RangeKey, string> = {
-  today: "Today", yesterday: "Yesterday", "7d": "Last 7 days", "30d": "Last 30 days", custom: "Custom",
+  // "Pick dates", not "Custom": the button opens a month grid, and the label
+  // should say what clicking it does. Owner, on hunting for last Tuesday in the
+  // old two-date-box version: "it's too hard to go into custom."
+  today: "Today", yesterday: "Yesterday", "7d": "Last 7 days", "30d": "Last 30 days", custom: "Pick dates",
 };
 /** Ranges that are ONE day wide. A trend drawn over one of these is a single
  *  dot — true, but useless — so the Trends tab widens away from them. */
@@ -1588,6 +1592,8 @@ export default function SetterPerformancePage() {
    *  auto-widen below never fires again for the session — an explicit choice is
    *  never overridden, and never silently undone. */
   const [rangePinned, setRangePinned] = useState(false);
+  /** Whether the month grid is showing. Opened by the "Pick dates" button. */
+  const [calOpen, setCalOpen] = useState(false);
   /** The single-day range Trends widened away from, held so leaving Trends can
    *  put it back. Null means "we did not touch the range". */
   const [widenedFrom, setWidenedFrom] = useState<RangeKey | null>(null);
@@ -1714,6 +1720,21 @@ export default function SetterPerformancePage() {
         return { from, to };
       }
     }
+  }, [rangeKey, customFrom, customTo]);
+
+  /** What the range is CALLED in prose, which is not what its button says.
+   *  The button reads "Pick dates" because that is what clicking it does; a
+   *  sentence like "shop values over Pick dates" is nonsense. So a picked span
+   *  names itself — "Tue, Sep 8" or "Sep 8 – Sep 14" — which is more use than
+   *  "Custom" ever was, and carries the weekday a manager is usually after. */
+  const rangeLabelText = useMemo(() => {
+    if (rangeKey !== "custom") return RANGE_LABELS[rangeKey];
+    const f = parseYmdLocal(customFrom);
+    const t = parseYmdLocal(customTo);
+    const short = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return customFrom === customTo
+      ? f.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+      : `${short(f)} – ${short(t)}`;
   }, [rangeKey, customFrom, customTo]);
 
   // ── Trends needs more than one day to BE a trend ──────────────────────────
@@ -3386,7 +3407,7 @@ export default function SetterPerformancePage() {
       {/* ── Range picker (applies to EVERY tab) ── */}
       {/* One segmented control, not five loose buttons: a single bordered track,
           evenly sized segments, the active one filled in the brand mint. */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="relative flex flex-wrap items-center gap-x-4 gap-y-2">
         <div
           role="group"
           aria-label="Date range"
@@ -3399,7 +3420,16 @@ export default function SetterPerformancePage() {
                 key={k}
                 type="button"
                 aria-pressed={active}
-                onClick={() => { setRangePinned(true); setWidenedFrom(null); setRangeKey(k); }}
+                aria-haspopup={k === "custom" ? "dialog" : undefined}
+                aria-expanded={k === "custom" ? calOpen : undefined}
+                onClick={() => {
+                  setRangePinned(true);
+                  setWidenedFrom(null);
+                  setRangeKey(k);
+                  // "Pick dates" opens the calendar; clicking it again while it
+                  // is open closes it, so the same button gets you back out.
+                  setCalOpen(k === "custom" ? !(rangeKey === "custom" && calOpen) : false);
+                }}
                 className={`rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-colors ${
                   active
                     ? "bg-mint-green text-gray-900 shadow-sm"
@@ -3412,14 +3442,16 @@ export default function SetterPerformancePage() {
           })}
         </div>
 
-        {rangeKey === "custom" && (
-          <div className="flex items-center gap-2">
-            <input type="date" className="input input-sm input-bordered" value={customFrom}
-              onChange={(e) => { setRangePinned(true); setCustomFrom(e.target.value); }} />
-            <span className="text-xs text-gray-400">to</span>
-            <input type="date" className="input input-sm input-bordered" value={customTo}
-              onChange={(e) => { setRangePinned(true); setCustomTo(e.target.value); }} />
-          </div>
+        {/* The calendar hangs off the button group rather than replacing it, so
+            the chosen span stays readable while you are picking. */}
+        {rangeKey === "custom" && calOpen && (
+          <DayRangeCalendar
+            from={customFrom}
+            to={customTo}
+            maxDay={ymd(localDayStart(0))}
+            onPick={(f, t) => { setRangePinned(true); setCustomFrom(f); setCustomTo(t); }}
+            onClose={() => setCalOpen(false)}
+          />
         )}
 
         <span className="text-xs text-gray-400">
@@ -3577,7 +3609,7 @@ export default function SetterPerformancePage() {
         <DialCeilingPanel
           fromIso={fromIso}
           toIso={toIso}
-          rangeLabel={RANGE_LABELS[rangeKey]}
+          rangeLabel={rangeLabelText}
           targetFor={targetFor}
           // The pipeline half. Computed ON THIS PAGE and handed down so the
           // Funnel tab and this tab read the same rows; the panel re-derives
@@ -3604,7 +3636,7 @@ export default function SetterPerformancePage() {
           error={sourceDealsError}
           truncated={sourceDealsTruncated}
           targetFor={targetFor}
-          rangeLabel={RANGE_LABELS[rangeKey]}
+          rangeLabel={rangeLabelText}
           anyNameUnknown={sourceCohorts[tab]?.groups.some((g) => g.nameUnknown) ?? false}
         />
       ) : loading ? (
@@ -4245,7 +4277,7 @@ export default function SetterPerformancePage() {
                 measured work above stays open. */}
             <IndustryComparisonCard
               values={industryValues}
-              rangeLabel={RANGE_LABELS[rangeKey]}
+              rangeLabel={rangeLabelText}
               basis={{
                 contact_rate: `${funnel.conversations.toLocaleString()} conversations ÷ ${funnel.scoredDials.toLocaleString()} WAVV dials · per dial — real conversations reaching a decision-maker, not raw pickups`,
                 app_per_conversation: `${applicationDispositions.toLocaleString()} app dispositions ÷ ${funnel.conversations.toLocaleString()} conversations`,
