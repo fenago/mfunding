@@ -110,6 +110,10 @@ export interface Deal {
    *  NEVER by a stage move. `contacted_at` is the looser ≥30s heuristic (voicemail
    *  pickups qualify), which is why it can't answer "did anyone actually talk to them". */
   spoke_at?: string | null;
+  /** How spoke_at was established — see spokeAttribution() in lib/realtimeLeads.
+   *  'wavv'/'ghl' = attested by call duration; 'hand_logged' = a setter reported
+   *  the conversation themselves; null = legacy stamp, source not recorded. */
+  spoke_at_source?: "wavv" | "ghl" | "hand_logged" | null;
   qualified_at: string | null;
   application_sent_at: string | null;
   docs_collected_at: string | null;

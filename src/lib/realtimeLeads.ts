@@ -194,3 +194,55 @@ export function leadHeat(
   if (deficit >= 1) return { ...base, tier: "hot" };
   return { ...base, tier: "working" };
 }
+
+// ── HOW DO WE KNOW THEY SPOKE? ───────────────────────────────────────────────
+//
+// The owner accepted a setter self-certifying a conversation (2026-09-16) on ONE
+// condition: that it stays visibly distinguishable from a conversation attested
+// by call duration. That condition lives or dies in the words on the badge, so
+// they are defined once, here, and every surface rendering "Spoke" uses them.
+//
+// A tooltip alone would not honour it — you have to hover to find out. The badge
+// text itself changes, so the difference survives a glance.
+export type SpokeSource = "wavv" | "ghl" | "hand_logged" | null | undefined;
+
+export interface SpokeAttribution {
+  /** Badge text, after the 🗣. */
+  label: string;
+  /** Tooltip — says who or what attested it, in words a setter would use. */
+  title: string;
+}
+
+export function spokeAttribution(source: SpokeSource, agoText: string): SpokeAttribution {
+  switch (source) {
+    case "wavv":
+    case "ghl":
+      return {
+        label: `Spoke ✓ ${agoText}`,
+        title:
+          `First real conversation ${agoText} ago — a call that ran 2+ minutes on ` +
+          `${source === "wavv" ? "the WAVV dialer" : "VibeReach/LeadConnector"}. ` +
+          `Attested by the call's own duration, not by anyone's report.`,
+      };
+    case "hand_logged":
+      return {
+        // "reported" is the whole point: a setter's word, shown as a setter's word.
+        label: `Spoke · reported ${agoText}`,
+        title:
+          `A setter reported this conversation ${agoText} ago when logging the call. ` +
+          `There is no recorded call long enough to confirm it independently — this ` +
+          `is their account of what happened, not a duration-attested conversation.`,
+      };
+    default:
+      // Legacy stamps (22 of them, 2026-07-17..08-18) sit on GHL calls of 0–98
+      // seconds, written before the 2-minute bar settled. UNREADABLE is not the
+      // same as attested: say so rather than implying a long call.
+      return {
+        label: `Spoke ✓ ${agoText}`,
+        title:
+          `Recorded as a conversation ${agoText} ago, but how it was established ` +
+          `was not recorded — this stamp predates provenance tracking, and the ` +
+          `call behind it may have been a short one.`,
+      };
+  }
+}

@@ -9,7 +9,7 @@ import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import supabase from "../../supabase";
 import { dateKeyET, timeET } from "../../utils/time";
 import { sourceMeta, SOURCE_TONE_CLASS, type SourceTone } from "../../lib/sourceLabel";
-import { handoffState } from "../../lib/realtimeLeads";
+import { handoffState, spokeAttribution } from "../../lib/realtimeLeads";
 import LeadGradeChip from "./LeadGradeChip";
 
 const HOUR = 3_600_000;
@@ -927,9 +927,9 @@ function QueueCard({
             <p className="mt-0.5">
               <span
                 className="inline-flex items-center gap-1 text-[11px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                title={`First real conversation ${ago(deal.spoke_at, now)} ago — a human confirmed it or a call ran 2+ minutes.`}
+                title={spokeAttribution(deal.spoke_at_source, ago(deal.spoke_at, now)).title}
               >
-                🗣 Spoke ✓ {ago(deal.spoke_at, now)}
+                🗣 {spokeAttribution(deal.spoke_at_source, ago(deal.spoke_at, now)).label}
               </span>
             </p>
           );

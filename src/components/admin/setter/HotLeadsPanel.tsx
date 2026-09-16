@@ -12,7 +12,7 @@ import supabase from "@/supabase";
 import { QUEUE_CLOSED_STATUSES, getDealById } from "@/services/dealService";
 import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
 import { REALTIME_LEAD_SOURCES, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
-import { handoffState, leadHeat, HEAT_RANK, type Heat, type HeatTier } from "@/lib/realtimeLeads";
+import { handoffState, leadHeat, spokeAttribution, HEAT_RANK, type Heat, type HeatTier } from "@/lib/realtimeLeads";
 import { dateTimeET } from "@/utils/time";
 import { useUserProfile } from "@/context/UserProfileContext";
 import SetterActionRail from "@/components/admin/setter/SetterActionRail";
@@ -72,7 +72,7 @@ const ROW_CAP = 200;
 const PREVIEW_ROWS = 8;
 
 const DEAL_COLS =
-  "id,deal_number,status,lead_source,created_at,created_by,first_call_due_at,first_attempt_at,last_attempt_at,contact_attempts,contacted_at,spoke_at,callback_at,callback_source,amount_requested,assigned_closer_id,ghl_contact_id,lead_qual,customer:customers!customer_id(business_name,first_name,last_name,phone,additional_phones,do_not_contact)";
+  "id,deal_number,status,lead_source,created_at,created_by,first_call_due_at,first_attempt_at,last_attempt_at,contact_attempts,contacted_at,spoke_at,spoke_at_source,callback_at,callback_source,amount_requested,assigned_closer_id,ghl_contact_id,lead_qual,customer:customers!customer_id(business_name,first_name,last_name,phone,additional_phones,do_not_contact)";
 
 interface HotCustomer {
   business_name: string | null;
@@ -97,6 +97,7 @@ interface HotRow {
   contact_attempts: number | null;
   contacted_at: string | null;
   spoke_at: string | null;
+  spoke_at_source: "wavv" | "ghl" | "hand_logged" | null;
   callback_at: string | null;
   callback_source: string | null;
   amount_requested: number | null;
@@ -1044,9 +1045,10 @@ function HotLeadRow({
         {r.spoke_at && (
           <span
             className="font-semibold text-emerald-600 dark:text-emerald-400"
-            title={`Confirmed conversation ${dateTimeET(r.spoke_at)}`}
+            title={spokeAttribution(r.spoke_at_source, dateTimeET(r.spoke_at)).title}
           >
-            🗣 spoke {dateTimeET(r.spoke_at)}
+            🗣 {r.spoke_at_source === "hand_logged" ? "spoke · reported" : "spoke"}{" "}
+            {dateTimeET(r.spoke_at)}
           </span>
         )}
       </div>
