@@ -1861,6 +1861,10 @@ export async function logContactAttempt(
      *  a contact — the merchant spoke to us. "Voicemail, scheduling a retry" is not.
      *  The picker asks; this carries the answer. */
     spoke?: boolean;
+    /** Human disposition for the audit row ("No answer", "Left voicemail"). The
+     *  `outcome` alone can't say it: "attempted" covers both. Defaults to the
+     *  outcome. Only used when channel === "call". */
+    label?: string;
   },
 ): Promise<void> {
   const { data: cur } = await supabase
@@ -1915,6 +1919,47 @@ export async function logContactAttempt(
   // nobody answered, the lead is still untouched in every sense the funnel cares about.
 
   await mustWrite("log contact attempt", supabase.from("deals").update(patch).eq("id", dealId));
+
+  // ── LEAVE A ROW, NOT JUST A COUNTER ────────────────────────────────────────
+  // Until 2026-09-16 this function moved ONLY counters on `deals`: it wrote no
+  // row anywhere. So a hand-logged dial was invisible to every surface that
+  // reconstructs call history from events — the Hot Leads panel's true attempt
+  // count (realtime_lead_call_history, 20260916a) and the processor drawer's
+  // 14-day tracker (processor_deal_detail) both read wavv_calls + ghl_call_log +
+  // activity_log call rows + processor_touches, and a logContactAttempt call
+  // landed in none of them. A setter could log "No answer" and watch the count
+  // not move, which is exactly the "your work doesn't count" bug those surfaces
+  // were just fixed to stop causing.
+  //
+  // The note SetterCallOutcome optionally rides along does NOT cover this: it
+  // goes through addDealNote, which keys activity_log to the CUSTOMER, not the
+  // deal — and only when the setter bothers to type one.
+  //
+  // Deliberately CALLS ONLY. A text or an email is a contact attempt worth
+  // counting on the deal, but the text/email panels already leave their own
+  // trail, and an 'sms'/'email' row here would double up on their surfaces.
+  // Nothing reads those interaction types as dials, so the call row is the only
+  // one that closes a real gap.
+  //
+  // Non-blocking on purpose: the attempt itself is already committed above. A
+  // failed audit row must not tell the setter their logged call didn't save —
+  // but tryWrite WARNS rather than swallowing, so it can't fail silently.
+  if (opts.channel === "call") {
+    // logged_by is what lets the reading surfaces name WHO dialed — the Hot Leads
+    // row resolves it through profiles, the same way it resolves a WAVV agent_key
+    // through closers.ghl_user_id.
+    const { data: auth } = await supabase.auth.getUser();
+    await tryWrite(
+      "log call audit row",
+      supabase.from("activity_log").insert({
+        entity_type: "deal",
+        entity_id: dealId,
+        interaction_type: "call",
+        subject: `Logged call: ${opts.label ?? opts.outcome}`,
+        logged_by: auth?.user?.id ?? null,
+      }),
+    );
+  }
 
   // Project the callback onto the closer's GHL calendar IMMEDIATELY (the 5-minute
   // sweep remains the reliability floor — this just closes the gap between "closer

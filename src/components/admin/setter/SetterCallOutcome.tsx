@@ -123,6 +123,10 @@ export default function SetterCallOutcome({
           channel: "call",
           callbackAt: callbackIso,
           spoke: def.outcome === "callback" ? spoke : undefined,
+          // The picker's own wording, so the audit row (and the Hot Leads panel
+          // reading it) says "Left voicemail" rather than "attempted" — `outcome`
+          // collapses no-answer and voicemail into one value.
+          label: def.label,
         });
       }
 
