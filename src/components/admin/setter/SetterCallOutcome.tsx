@@ -14,13 +14,21 @@ import type { DealWithCustomer, DealStatus } from "../../../types/deals";
  * end-to-end, without leaving the console. Every mutation reuses the EXACT
  * mechanism the Revenue Playbook / My Day use — nothing new is invented:
  *
- *   · Connected        → logContactAttempt(reached)   — stamps contacted_at + spoke_at,
- *                                                        advances New → Contacted
- *   · No answer        → logContactAttempt(attempted) — bumps contact_attempts + SLA clock
- *   · Left voicemail   → logContactAttempt(attempted)
+ *   · Connected        → logContactAttempt(reached)        — stamps contacted_at,
+ *                                                             advances New → Contacted
+ *   · No answer        → logContactAttempt(no_answer)      — bumps contact_attempts + SLA clock
+ *   · Left voicemail   → logContactAttempt(left_voicemail)
  *   · Callback         → logContactAttempt(callback, callbackAt[, spoke]) — writes
- *                                                        callback_at + fires callback-calendar-sync
- *   · Not interested   → updateDealStatus(nurture)     — the app's soft-no park (My Day pattern)
+ *                                                             callback_at + fires callback-calendar-sync
+ *   · Not interested   → logContactAttempt(not_interested) THEN updateDealStatus(nurture)
+ *
+ * "Not interested" used to ONLY park the deal. So a setter who got a live merchant
+ * on the phone and heard "no" moved no counter, stamped no contacted_at and left no
+ * row — their hardest call of the day counted as nothing. You only learn a merchant
+ * isn't interested by SPEAKING to them, so it is a contact; the processor drawer
+ * always read it that way. Log first, then park: the log stamps contacted_at and
+ * advances New → Contacted, and the park immediately supersedes the status with
+ * nurture.
  *
  * An optional note rides along via addDealNote (activity_log, author-stamped, then
  * best-effort GHL contact-note sync) so the disposition leaves a readable trail in
@@ -37,20 +45,21 @@ interface OutcomeDef {
   key: OutcomeKey;
   label: string;
   emoji: string;
-  /** How this maps onto the canonical mechanism. */
+  /** How this maps onto the canonical mechanism. `park` outcomes ALSO log — the
+   *  two are not alternatives (see the header). */
   kind: "attempt" | "park";
   outcome?: ContactOutcome;
-  /** Terminal stage for `park` outcomes (updateDealStatus). */
+  /** Terminal stage for `park` outcomes (updateDealStatus), applied after the log. */
   stage?: DealStatus;
   activeCls: string;
 }
 
 const OUTCOMES: OutcomeDef[] = [
   { key: "connected", label: "Connected", emoji: "🗣", kind: "attempt", outcome: "reached", activeCls: "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" },
-  { key: "no_answer", label: "No answer", emoji: "📵", kind: "attempt", outcome: "attempted", activeCls: "border-gray-400 bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200" },
-  { key: "voicemail", label: "Left voicemail", emoji: "📼", kind: "attempt", outcome: "attempted", activeCls: "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300" },
+  { key: "no_answer", label: "No answer", emoji: "📵", kind: "attempt", outcome: "no_answer", activeCls: "border-gray-400 bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200" },
+  { key: "voicemail", label: "Left voicemail", emoji: "📼", kind: "attempt", outcome: "left_voicemail", activeCls: "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300" },
   { key: "callback", label: "Callback", emoji: "🕐", kind: "attempt", outcome: "callback", activeCls: "border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" },
-  { key: "not_interested", label: "Not interested", emoji: "🚫", kind: "park", stage: "nurture", activeCls: "border-rose-500 bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" },
+  { key: "not_interested", label: "Not interested", emoji: "🚫", kind: "park", outcome: "not_interested", stage: "nurture", activeCls: "border-rose-500 bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" },
 ];
 
 const ARM_MS = 5000;
@@ -115,24 +124,31 @@ export default function SetterCallOutcome({
     setBusy(true);
     setError(null);
     try {
-      if (def.kind === "park" && def.stage) {
-        await updateDealStatus(deal.id, def.stage);
-      } else if (def.outcome) {
+      const trimmed = note.trim();
+
+      // LOG FIRST. Every disposition here is a dial that happened, "Not interested"
+      // very much included — parking the deal is what we do ABOUT the call, not a
+      // substitute for recording it.
+      if (def.outcome) {
         await logContactAttempt(deal.id, {
           outcome: def.outcome,
           channel: "call",
           callbackAt: callbackIso,
           spoke: def.outcome === "callback" ? spoke : undefined,
           // The picker's own wording, so the audit row (and the Hot Leads panel
-          // reading it) says "Left voicemail" rather than "attempted" — `outcome`
-          // collapses no-answer and voicemail into one value.
+          // reading it) says "Left voicemail" rather than the raw outcome.
           label: def.label,
+          note: trimmed || null,
         });
+      }
+      // …then park. This lands second on purpose: the log advances New → Contacted,
+      // and nurture must be the status that survives.
+      if (def.kind === "park" && def.stage) {
+        await updateDealStatus(deal.id, def.stage);
       }
 
       // Optional note — needs the customer to hang it off; the disposition itself is
       // already recorded on the deal above, so a missing customer id only skips the note.
-      const trimmed = note.trim();
       if (trimmed && deal.customer?.id) {
         const label = `${def.emoji} ${def.label}${callbackIso ? ` · callback ${dateTimeET(callbackIso)}` : ""}`;
         await addDealNote({

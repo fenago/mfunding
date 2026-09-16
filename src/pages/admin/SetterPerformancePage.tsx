@@ -1594,6 +1594,11 @@ export default function SetterPerformancePage() {
 
   const [aggRows, setAggRows] = useState<SetterCall[]>([]);
   const [aggregateTruncated, setAggregateTruncated] = useState(false);
+  /** Dials in range that belong to a KNOWN non-setter (public.dial_metric_exclusions
+   *  — tech support, admins, test lines). They are filtered out of every number on
+   *  this page, and then SAID OUT LOUD below, because a dial that leaves the count
+   *  without explanation is indistinguishable from a sync gap. null = unreadable. */
+  const [excludedDials, setExcludedDials] = useState<{ person: string; reason: string }[] | null>([]);
   // The server's exact call count for the active range — the ground truth the
   // folded row set is checked against.
   const [rangeTotal, setRangeTotal] = useState<number | null>(null);
@@ -1812,6 +1817,24 @@ export default function SetterPerformancePage() {
       // we chose to stop at. It is decided by the server's own count, so it can
       // no longer be fooled by — nor silently hide — a max-rows cut.
       setAggregateTruncated(rangeTotal > AGG_ROW_CAP);
+
+      // Who was left out, and why. Read AFTER the slice so a failure here can
+      // never blank the page — but it does set null, which renders as "couldn't
+      // check", not as "nobody was excluded".
+      const exRes = await supabase
+        .from("v_setter_dial_calls_excluded")
+        .select("excluded_person,excluded_reason")
+        .gte("started_at", fromIso)
+        .lt("started_at", toIso)
+        .limit(1000);
+      setExcludedDials(
+        exRes.error
+          ? null
+          : (exRes.data ?? []).map((r) => ({
+              person: (r as { excluded_person: string | null }).excluded_person ?? "Unknown",
+              reason: (r as { excluded_reason: string | null }).excluded_reason ?? "",
+            })),
+      );
     } catch (e) {
       // A failed read is UNREADABLE, not an empty floor — blank the slice and
       // show the error rather than letting stale rows imply fresh truth.
@@ -3446,6 +3469,45 @@ export default function SetterPerformancePage() {
             cover only the {aggRows.length.toLocaleString()} most recent calls in it. Narrow the range for
             exact totals. (The call log is queried separately and stays exact.)
           </span>
+        </div>
+      )}
+
+      {/* ── Non-setter dials — excluded, and therefore stated ──────────────────
+          Khalil Lyons is tech support, not a setter. Before this, his 3 calls
+          showed as an "unlinked" setter, which reads as an attribution defect
+          and invites someone to fix it by linking him — making support calls
+          count as sales activity forever. They are now excluded by
+          public.dial_metric_exclusions. An exclusion nobody can see is just
+          under-reporting with extra steps, so it gets a line. */}
+      {!dealsTabActive && !loading && excludedDials === null && (
+        <div className="alert alert-warning">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+          <span className="text-sm">
+            Could not check the non-setter exclusion list, so this page cannot say whether any
+            dials were left out of these numbers.
+          </span>
+        </div>
+      )}
+      {!dealsTabActive && !loading && excludedDials !== null && excludedDials.length > 0 && (
+        <div className="alert alert-info">
+          <InformationCircleIcon className="w-5 h-5 shrink-0" />
+          <div className="text-sm">
+            <span className="font-semibold">
+              {excludedDials.length.toLocaleString()} call{excludedDials.length === 1 ? "" : "s"} excluded
+              (non-setter)
+            </span>{" "}
+            — not counted in any number on this page.{" "}
+            {Array.from(
+              excludedDials.reduce((m, e) => m.set(e.person, (m.get(e.person) ?? 0) + 1), new Map<string, number>()),
+            )
+              .sort((a, b) => b[1] - a[1])
+              .map(([person, n]) => `${person} (${n})`)
+              .join(", ")}
+            .{" "}
+            <span className="opacity-70">
+              {Array.from(new Set(excludedDials.map((e) => e.reason).filter(Boolean))).join(" ")}
+            </span>
+          </div>
         </div>
       )}
 

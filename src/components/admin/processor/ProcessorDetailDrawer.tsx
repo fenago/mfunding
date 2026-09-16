@@ -696,10 +696,15 @@ export default function ProcessorDetailDrawer({
                       disabled={actionBusy === `log-${o.key}`}
                       onClick={() =>
                         void runRpc(
-                          "processor_log_contact",
+                          // The ONE contact-logging path (20260916c) — the same
+                          // function the setter console's "Log the call" panel
+                          // calls. processor_log_contact still exists as a
+                          // deprecated shim over it; nothing should call that.
+                          "log_contact_attempt",
                           {
                             p_deal_id: dealId,
                             p_outcome: o.key,
+                            p_channel: "call",
                             ...(note.trim() ? { p_note: note.trim() } : {}),
                           },
                           `log-${o.key}`,

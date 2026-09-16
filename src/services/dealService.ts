@@ -1847,7 +1847,26 @@ export async function getDealStats(): Promise<{
  * one the SLA is about. Every subsequent attempt still bumps last_attempt_at and the
  * counter.
  */
-export type ContactOutcome = "attempted" | "reached" | "callback";
+/**
+ * The full disposition vocabulary, union of what the two old paths accepted.
+ *
+ *   attempted / no_answer / left_voicemail / bad_number → we tried, no conversation
+ *   reached / not_interested                            → a conversation happened
+ *   callback                                            → a conversation only if `spoke`
+ *
+ * `not_interested` COUNTS AS CONTACT. You only ever learn a merchant isn't
+ * interested by speaking to them; the processor path always read it that way and
+ * the setter path did not, so the same call counted differently depending on which
+ * screen logged it.
+ */
+export type ContactOutcome =
+  | "attempted"
+  | "no_answer"
+  | "left_voicemail"
+  | "bad_number"
+  | "reached"
+  | "not_interested"
+  | "callback";
 
 export async function logContactAttempt(
   dealId: string,
@@ -1862,110 +1881,45 @@ export async function logContactAttempt(
      *  The picker asks; this carries the answer. */
     spoke?: boolean;
     /** Human disposition for the audit row ("No answer", "Left voicemail"). The
-     *  `outcome` alone can't say it: "attempted" covers both. Defaults to the
-     *  outcome. Only used when channel === "call". */
+     *  `outcome` alone can't say it: "attempted" covers both. Defaults to a
+     *  humanised outcome. Only used when channel === "call". */
     label?: string;
+    /** What was said. Lands in the audit row's content. */
+    note?: string | null;
   },
 ): Promise<void> {
-  const { data: cur } = await supabase
-    .from("deals")
-    .select("status, first_attempt_at, contacted_at, contact_attempts, callback_at")
-    .eq("id", dealId)
-    .maybeSingle();
-
-  const nowIso = new Date().toISOString();
-  const patch: Record<string, unknown> = {
-    last_attempt_at: nowIso,
-    first_touch_channel: opts.channel,
-    contact_attempts: Number(cur?.contact_attempts ?? 0) + 1,
-  };
-
-  // The SLA stamp. Once only — a third dial doesn't make us slower than the first.
-  if (!cur?.first_attempt_at) patch.first_attempt_at = nowIso;
-
-  if (opts.outcome === "reached") {
-    if (!cur?.contacted_at) patch.contacted_at = nowIso;
-    // Only ever move FORWARD out of New. A closer logging a late call must not drag a
-    // deal that's already at Submitted back to Contacted.
-    if (cur?.status === "new") patch.status = "contacted";
-    patch.callback_at = null; // we got them; nothing left to call back for
-  }
-
-  if (opts.outcome === "callback") {
-    patch.callback_at = opts.callbackAt ?? null;
-    // Set by a human, after talking to (or trying) the merchant — a real commitment.
-    patch.callback_source = "closer_promised";
-    // "They answered and asked for later" = a REACHED merchant with a scheduled next
-    // step. Count the contact, advance out of New — same rules as the reached outcome.
-    if (opts.spoke) {
-      if (!cur?.contacted_at) patch.contacted_at = nowIso;
-      if (cur?.status === "new") patch.status = "contacted";
-    }
-  }
-
-  // ANY attempt logged AFTER the callback came due settles it. The card existed to
-  // make this call happen; the call happened (answered or not). Leaving the DUE badge
-  // up after the closer demonstrably tried is how red badges stop meaning anything —
-  // the exact disease the SLA-MISSED fix cured last week.
-  if (
-    opts.outcome === "attempted" &&
-    cur?.callback_at &&
-    Date.parse(cur.callback_at) <= Date.now()
-  ) {
-    patch.callback_at = null;
-  }
-
-  // `attempted` (before any due time) sets neither contacted_at nor status: we tried,
-  // nobody answered, the lead is still untouched in every sense the funnel cares about.
-
-  await mustWrite("log contact attempt", supabase.from("deals").update(patch).eq("id", dealId));
-
-  // ── LEAVE A ROW, NOT JUST A COUNTER ────────────────────────────────────────
-  // Until 2026-09-16 this function moved ONLY counters on `deals`: it wrote no
-  // row anywhere. So a hand-logged dial was invisible to every surface that
-  // reconstructs call history from events — the Hot Leads panel's true attempt
-  // count (realtime_lead_call_history, 20260916a) and the processor drawer's
-  // 14-day tracker (processor_deal_detail) both read wavv_calls + ghl_call_log +
-  // activity_log call rows + processor_touches, and a logContactAttempt call
-  // landed in none of them. A setter could log "No answer" and watch the count
-  // not move, which is exactly the "your work doesn't count" bug those surfaces
-  // were just fixed to stop causing.
+  // ── A WRAPPER, NOT AN IMPLEMENTATION ───────────────────────────────────────
+  // Everything below the RPC boundary — the attempt counter, contacted_at, the
+  // new→contacted advance, the callback set/settle, the audit row — lives in
+  // public.log_contact_attempt (migration 20260916c). It used to live here AND,
+  // differently, in processor_log_contact, which is how a bug could be fixed on
+  // one screen and survive on the other.
   //
-  // The note SetterCallOutcome optionally rides along does NOT cover this: it
-  // goes through addDealNote, which keys activity_log to the CUSTOMER, not the
-  // deal — and only when the setter bothers to type one.
-  //
-  // Deliberately CALLS ONLY. A text or an email is a contact attempt worth
-  // counting on the deal, but the text/email panels already leave their own
-  // trail, and an 'sms'/'email' row here would double up on their surfaces.
-  // Nothing reads those interaction types as dials, so the call row is the only
-  // one that closes a real gap.
-  //
-  // Non-blocking on purpose: the attempt itself is already committed above. A
-  // failed audit row must not tell the setter their logged call didn't save —
-  // but tryWrite WARNS rather than swallowing, so it can't fail silently.
-  if (opts.channel === "call") {
-    // logged_by is what lets the reading surfaces name WHO dialed — the Hot Leads
-    // row resolves it through profiles, the same way it resolves a WAVV agent_key
-    // through closers.ghl_user_id.
-    const { data: auth } = await supabase.auth.getUser();
-    await tryWrite(
-      "log call audit row",
-      supabase.from("activity_log").insert({
-        entity_type: "deal",
-        entity_id: dealId,
-        interaction_type: "call",
-        subject: `Logged call: ${opts.label ?? opts.outcome}`,
-        logged_by: auth?.user?.id ?? null,
-      }),
-    );
-  }
+  // Doing it server-side is not just tidiness. The old client-side version:
+  //   · read contact_attempts and wrote back read+1, so two logs inside one
+  //     round trip lost one;
+  //   · wrote through the caller's RLS, and the closer UPDATE policies only
+  //     cover a deal the closer OWNS — so a setter logging a call on an
+  //     UNASSIGNED hot lead (most of the Hot Leads board) was rejected outright.
+  // The SECURITY DEFINER function authorises on the money wall's SELECT rule
+  // instead: own book + unassigned for a setter, any deal for ops/processors.
+  const { data, error } = await supabase.rpc("log_contact_attempt", {
+    p_deal_id: dealId,
+    p_outcome: opts.outcome,
+    p_channel: opts.channel,
+    p_label: opts.label ?? null,
+    p_note: opts.note ?? null,
+    p_callback_at: opts.callbackAt ?? null,
+    p_spoke: opts.spoke ?? false,
+  });
+  if (error) throw new Error(error.message);
 
   // Project the callback onto the closer's GHL calendar IMMEDIATELY (the 5-minute
   // sweep remains the reliability floor — this just closes the gap between "closer
   // sets a 1-hour callback" and "it appears on the calendar"). Fire-and-forget:
-  // the calendar must never block or fail the callback itself.
-  if ("callback_at" in patch) {
+  // the calendar must never block or fail the callback itself. The server tells us
+  // whether the promise actually moved, so a no-op log doesn't wake the sync.
+  if ((data as { callback_touched?: boolean } | null)?.callback_touched) {
     supabase.functions.invoke("callback-calendar-sync", { body: { deal_id: dealId } }).catch(() => {});
   }
 }
