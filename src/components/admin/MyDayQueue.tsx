@@ -9,6 +9,7 @@ import { DEAL_STATUS_CONFIG } from "../../types/deals";
 import supabase from "../../supabase";
 import { dateKeyET, timeET } from "../../utils/time";
 import { sourceMeta, SOURCE_TONE_CLASS, type SourceTone } from "../../lib/sourceLabel";
+import { handoffState } from "../../lib/realtimeLeads";
 import LeadGradeChip from "./LeadGradeChip";
 
 const HOUR = 3_600_000;
@@ -611,27 +612,9 @@ const TONE_HINT: Record<SourceTone, string> = {
   neutral: "The lead source on this deal is not one we have a description for — shown exactly as it is stored.",
 };
 
-// ── Was the warm handoff actually taken? ──
-// A live transfer means a human was mid-phone-call the moment this deal was born.
-// Captured: a closer created the deal at hello via "Start the call" (created_by is
-// set — the intake's own deals are service-role and carry NULL), OR a confirmed
-// conversation landed inside the transfer window around creation. The window
-// reaches BACKWARD too: when the vendor email runs 20-80 min late, the closer's
-// call finishes before the intake's deal even exists, so contacted_at can predate
-// created_at. No capture signal once the grace period passes = the merchant was
-// on the line and nobody got them — the single worst miss on the board.
-const HANDOFF_WINDOW_MS = 15 * 60 * 1000;
-const HANDOFF_GRACE_MS = 10 * 60 * 1000;
-function handoffState(d: QueueDeal, now: number): "captured" | "missed" | null {
-  if (d.lead_source !== "live_transfer") return null;
-  if (d.created_by) return "captured";
-  if (d.contacted_at && Date.parse(d.contacted_at) <= Date.parse(d.created_at) + HANDOFF_WINDOW_MS) {
-    return "captured";
-  }
-  // Too early to call it: the handoff may literally be happening right now.
-  if (now - Date.parse(d.created_at) < HANDOFF_GRACE_MS) return null;
-  return "missed";
-}
+// Was the warm handoff actually taken? The rule lives in src/lib/realtimeLeads.ts
+// so this queue and the Hot Leads panel in Setter Operations grade a live transfer
+// the same way — see that file for why each capture signal counts.
 
 // ── One-tap dropped-handoff flag, straight from the card ──
 // The fast path to the same ground truth the CallHistoryPanel chip writes

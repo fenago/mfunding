@@ -44,6 +44,25 @@ const SOURCE_MAP: Record<string, SourceMeta> = {
   referral: { label: "Referral", tone: "referral" },
 };
 
+/**
+ * Every lead_source that means "someone is (or just was) on the phone" — the
+ * REAL-TIME class: Synergy live transfers and real-time appointments. These are
+ * the most expensive leads we buy ($50–100+) and the most perishable.
+ *
+ * Derived from the map above rather than hand-listed, so adding a new real-time
+ * vendor source to SOURCE_MAP with tone "transfer" automatically lights it up on
+ * every surface that hunts for hot leads (the Hot Leads panel's DB filter reads
+ * this array directly).
+ */
+export const REALTIME_LEAD_SOURCES: string[] = Object.entries(SOURCE_MAP)
+  .filter(([, meta]) => meta.tone === "transfer")
+  .map(([key]) => key);
+
+/** Is this a real-time lead (live transfer / real-time appointment)? */
+export function isRealtimeLead(leadSource?: string | null): boolean {
+  return sourceMeta(leadSource).tone === "transfer";
+}
+
 function titleCase(raw: string): string {
   return raw
     .replace(/[_-]+/g, " ")

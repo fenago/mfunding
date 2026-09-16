@@ -18,6 +18,7 @@ import SetterDealMeta from "@/components/admin/setter/SetterDealMeta";
 import SetterConnectBank from "@/components/admin/setter/SetterConnectBank";
 import SetterChecklist from "@/components/admin/setter/SetterChecklist";
 import ProcessorBoard from "@/components/admin/setter/ProcessorBoard";
+import HotLeadsPanel from "@/components/admin/setter/HotLeadsPanel";
 import useIsProcessor from "@/hooks/useIsProcessor";
 
 /**
@@ -219,6 +220,14 @@ export default function SetterOpsTab() {
 
   return (
     <div className="space-y-4">
+      {/* 🔥 HOT — real-time leads from the last 7 days, pinned ABOVE everything else.
+          Live transfers and real-time appointments are the most expensive and most
+          perishable leads we buy, and they were getting buried in the general queue.
+          This is the first thing the page shows and it reads its own list through the
+          same RLS every other list here obeys (admins/processors see the board, a
+          plain closer sees their own book + unassigned). A row loads the merchant
+          into the console below via the same pullUp as the search box. */}
+      <HotLeadsPanel onOpen={pullUp} />
       {/* Always-visible reminder: the no-friction way a merchant can get docs to us. */}
       <div className="rounded-lg border border-ocean-blue/30 bg-ocean-blue/5 dark:bg-ocean-blue/10 px-3 py-2 text-xs text-gray-700 dark:text-gray-200">
         📎 Merchants can always email their documents (bank statements, ID, etc.) to{" "}

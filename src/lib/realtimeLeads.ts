@@ -1,0 +1,125 @@
+/**
+ * REAL-TIME LEAD LOGIC — the one place that decides whether a live transfer was
+ * caught, and how badly a real-time lead is being neglected.
+ *
+ * Why it lives here and not in a component: My Day (MyDayQueue) and the Hot Leads
+ * panel in Setter Operations both have to answer "was this handoff taken?" and they
+ * must never disagree. handoffState() used to be a private function inside
+ * MyDayQueue; it now lives here and My Day imports it, so there is exactly one
+ * definition to change.
+ */
+
+// ── Was the warm handoff actually taken? ──
+// A live transfer means a human was mid-phone-call the moment this deal was born.
+// Captured: a closer created the deal at hello via "Start the call" (created_by is
+// set — the intake's own deals are service-role and carry NULL), OR a confirmed
+// conversation landed inside the transfer window around creation. The window
+// reaches BACKWARD too: when the vendor email runs 20-80 min late, the closer's
+// call finishes before the intake's deal even exists, so contacted_at can predate
+// created_at. No capture signal once the grace period passes = the merchant was
+// on the line and nobody got them — the single worst miss on the board.
+export const HANDOFF_WINDOW_MS = 15 * 60 * 1000;
+export const HANDOFF_GRACE_MS = 10 * 60 * 1000;
+
+/** The minimum a row must carry for handoffState() to grade it. Both QueueDeal and
+ *  the Hot Leads panel's narrow row satisfy this structurally. */
+export interface HandoffCandidate {
+  lead_source: string | null;
+  created_by?: string | null;
+  contacted_at: string | null;
+  created_at: string;
+}
+
+export function handoffState(
+  d: HandoffCandidate,
+  now: number,
+): "captured" | "missed" | null {
+  if (d.lead_source !== "live_transfer") return null;
+  if (d.created_by) return "captured";
+  if (d.contacted_at && Date.parse(d.contacted_at) <= Date.parse(d.created_at) + HANDOFF_WINDOW_MS) {
+    return "captured";
+  }
+  // Too early to call it: the handoff may literally be happening right now.
+  if (now - Date.parse(d.created_at) < HANDOFF_GRACE_MS) return null;
+  return "missed";
+}
+
+// ── HOW HARD IS THIS LEAD BEING NEGLECTED? ───────────────────────────────────
+//
+// The owner's instruction for real-time leads is "call those immediately and
+// repeatedly", so heat is NOT just age — a three-day-old lead that has been dialed
+// five times is being worked, and a twenty-minute-old one nobody has touched is an
+// emergency. Heat is therefore the GAP between the attempts a lead of this age
+// should have collected and the attempts it actually has.
+//
+// The ladder below is the "repeatedly" part made explicit. It is deliberately
+// coarse — it decides a colour, not a commission.
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+
+/** Attempts a real-time lead of this age should already have on it. */
+export function expectedAttempts(ageMs: number): number {
+  if (ageMs < 5 * MIN) return 0;
+  if (ageMs < HOUR) return 1;
+  if (ageMs < 4 * HOUR) return 2;
+  if (ageMs < 24 * HOUR) return 3;
+  if (ageMs < 72 * HOUR) return 5;
+  return 6;
+}
+
+/**
+ * blazing  — brand new and untouched. The live transfer is ON THE LINE / the
+ *            real-time email clock is running. Nothing outranks this.
+ * burning  — badly behind on attempts (3+ short of pace). Expensive lead rotting.
+ * hot      — behind on attempts (1–2 short). Needs another dial today.
+ * working  — on or ahead of pace, no conversation yet. Being worked; stay calm.
+ * connected— a real conversation happened (spoke_at). Not a chase any more.
+ * parked   — nurture/declined/dead/funded etc. Kept visible for honesty, never loud.
+ */
+export type HeatTier = "blazing" | "burning" | "hot" | "working" | "connected" | "parked";
+
+/** Rank for sorting — lower is hotter. */
+export const HEAT_RANK: Record<HeatTier, number> = {
+  blazing: 0,
+  burning: 1,
+  hot: 2,
+  working: 3,
+  connected: 4,
+  parked: 5,
+};
+
+export interface HeatInput {
+  created_at: string;
+  status: string | null;
+  contact_attempts: number | null;
+  spoke_at: string | null;
+  /** Terminal / parked statuses — pass the shared QUEUE_CLOSED_STATUSES set. */
+}
+
+export interface Heat {
+  tier: HeatTier;
+  /** How many attempts short of pace this lead is. Negative = ahead of pace. */
+  deficit: number;
+  attempts: number;
+  ageMs: number;
+}
+
+export function leadHeat(
+  d: HeatInput,
+  now: number,
+  isParked: (status: string | null) => boolean,
+): Heat {
+  const ageMs = Math.max(0, now - Date.parse(d.created_at));
+  const attempts = d.contact_attempts ?? 0;
+  const deficit = expectedAttempts(ageMs) - attempts;
+  const base = { deficit, attempts, ageMs };
+
+  if (isParked(d.status)) return { ...base, tier: "parked" };
+  if (d.spoke_at) return { ...base, tier: "connected" };
+  // The first hour with nobody having lifted a finger is the whole reason this
+  // panel exists — it outranks the pace maths entirely.
+  if (attempts === 0 && ageMs < HOUR) return { ...base, tier: "blazing" };
+  if (deficit >= 3) return { ...base, tier: "burning" };
+  if (deficit >= 1) return { ...base, tier: "hot" };
+  return { ...base, tier: "working" };
+}
