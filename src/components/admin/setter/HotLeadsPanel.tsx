@@ -6,13 +6,20 @@ import {
   ExclamationTriangleIcon,
   FireIcon,
   PhoneIcon,
+  WrenchScrewdriverIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
-import { QUEUE_CLOSED_STATUSES } from "@/services/dealService";
-import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
+import { QUEUE_CLOSED_STATUSES, getDealById } from "@/services/dealService";
+import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
 import { REALTIME_LEAD_SOURCES, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
 import { handoffState, leadHeat, HEAT_RANK, type Heat, type HeatTier } from "@/lib/realtimeLeads";
 import { dateTimeET } from "@/utils/time";
+import { useUserProfile } from "@/context/UserProfileContext";
+import SetterActionRail from "@/components/admin/setter/SetterActionRail";
+import SetterCommsPanel from "@/components/admin/setter/SetterCommsPanel";
+import SetterCallOutcome from "@/components/admin/setter/SetterCallOutcome";
+import SetterNotes from "@/components/admin/setter/SetterNotes";
+import BookAppointmentControl from "@/components/admin/BookAppointmentControl";
 
 /**
  * HotLeadsPanel — the 🔥 HOT section pinned to the TOP of the Setter Operations
@@ -65,13 +72,15 @@ const ROW_CAP = 200;
 const PREVIEW_ROWS = 8;
 
 const DEAL_COLS =
-  "id,deal_number,status,lead_source,created_at,created_by,first_call_due_at,first_attempt_at,last_attempt_at,contact_attempts,contacted_at,spoke_at,callback_at,callback_source,amount_requested,assigned_closer_id,ghl_contact_id,lead_qual,customer:customers!customer_id(business_name,first_name,last_name,phone,do_not_contact)";
+  "id,deal_number,status,lead_source,created_at,created_by,first_call_due_at,first_attempt_at,last_attempt_at,contact_attempts,contacted_at,spoke_at,callback_at,callback_source,amount_requested,assigned_closer_id,ghl_contact_id,lead_qual,customer:customers!customer_id(business_name,first_name,last_name,phone,additional_phones,do_not_contact)";
 
 interface HotCustomer {
   business_name: string | null;
   first_name: string | null;
   last_name: string | null;
   phone: string | null;
+  /** Second/third numbers — the ones that matter when the main line goes nowhere. */
+  additional_phones: string[] | null;
   do_not_contact: boolean | null;
 }
 
@@ -195,6 +204,38 @@ function vendorField(r: HotRow, key: string): string | undefined {
   return s;
 }
 
+/**
+ * The vendor's qualification answers worth showing, in the order a setter reads
+ * them on a call. Deliberately an ALLOW-LIST: lead_qual also carries the raw
+ * email plumbing (_email_from, _email_subject, _email_to) and the vendor's own
+ * agent label, none of which help anyone dial. Measured 2026-09-16: all 25 keys
+ * are present on every one of the 20 live real-time leads, so this is a choice
+ * about noise, not availability.
+ */
+const VENDOR_DETAIL_FIELDS: { key: string; label: string }[] = [
+  { key: "contact_name", label: "Ask for" },
+  { key: "best_time", label: "Best time" },
+  { key: "phone", label: "Phone (vendor)" },
+  { key: "email", label: "Email (vendor)" },
+  { key: "state", label: "State" },
+  { key: "industry", label: "Industry" },
+  { key: "monthly_deposits", label: "Monthly deposits" },
+  { key: "requested_amount", label: "Wants" },
+  { key: "use_of_funds", label: "Use of funds" },
+  { key: "fico", label: "FICO (stated)" },
+  { key: "time_as_owner", label: "Time as owner" },
+  { key: "is_owner", label: "Is the owner" },
+  { key: "need_money_now", label: "Needs it now" },
+  { key: "open_positions", label: "Open positions" },
+  { key: "positions_balance", label: "Positions balance" },
+  { key: "processes_cc", label: "Processes cards" },
+  { key: "has_equity", label: "Has equity" },
+  { key: "property_paid_down", label: "Property paid down" },
+  { key: "difficulty_approved", label: "Had trouble getting approved" },
+];
+
+const hasVendorDetail = (r: HotRow) => VENDOR_DETAIL_FIELDS.some((f) => vendorField(r, f.key));
+
 // ── The visual ladder. Everything escalates together: flames, badge, row edge. ──
 const TIER_UI: Record<
   HeatTier,
@@ -281,6 +322,10 @@ export default function HotLeadsPanel({
   const [now, setNow] = useState(() => Date.now());
   const [showAll, setShowAll] = useState(false);
   const [showParked, setShowParked] = useState(false);
+  // Accordion: the id of the ONE row whose action drawer is open. One at a time,
+  // because each drawer loads a full deal and mounts the console's whole action
+  // set — a panel with eight of those open stops being a triage list.
+  const [openActions, setOpenActions] = useState<string | null>(null);
   // Foldable, remembered, and DEFAULT COLLAPSED (owner ruling 2026-09-16).
   // The header still carries the whole alarm — the flame, the count, and
   // "N need calling now" — so a folded panel is a one-line summons rather than a
@@ -517,7 +562,19 @@ export default function HotLeadsPanel({
               )}
               <div className="mt-3 space-y-1.5">
                 {visible.map(({ r, h, hist }) => (
-                  <HotLeadRow key={r.id} r={r} h={h} hist={hist} now={now} onOpen={onOpen} />
+                  <HotLeadRow
+                    key={r.id}
+                    r={r}
+                    h={h}
+                    hist={hist}
+                    now={now}
+                    onOpen={onOpen}
+                    actionsOpen={openActions === r.id}
+                    onToggleActions={() =>
+                      setOpenActions((v) => (v === r.id ? null : r.id))
+                    }
+                    onDealChanged={() => void load(false)}
+                  />
                 ))}
               </div>
               {live.length > PREVIEW_ROWS && (
@@ -552,7 +609,19 @@ export default function HotLeadsPanel({
               {showParked && (
                 <div className="mt-2 space-y-1.5">
                   {parked.map(({ r, h, hist }) => (
-                    <HotLeadRow key={r.id} r={r} h={h} hist={hist} now={now} onOpen={onOpen} />
+                    <HotLeadRow
+                      key={r.id}
+                      r={r}
+                      h={h}
+                      hist={hist}
+                      now={now}
+                      onOpen={onOpen}
+                      actionsOpen={openActions === r.id}
+                      onToggleActions={() =>
+                        setOpenActions((v) => (v === r.id ? null : r.id))
+                      }
+                      onDealChanged={() => void load(false)}
+                    />
                   ))}
                 </div>
               )}
@@ -627,6 +696,169 @@ function MiniTracker({ createdAt, calls }: { createdAt: string; calls: CallEvent
   );
 }
 
+/**
+ * HotLeadActions — everything a setter or processor needs to work a hot lead,
+ * inline on the row, so nobody bounces between screens on the most perishable
+ * leads we buy.
+ *
+ * NOTHING HERE IS NEW. Every control is the SAME component the Operations console
+ * mounts (SetterOpsTab), bound to the same deal and firing the same RPCs and edge
+ * functions:
+ *   · SetterActionRail   → Quick App, full application (both with the
+ *                          ensureDealStageAtLeast wiring), Send docs
+ *                          (AdHocSendMenu), and Do Not Contact (SetterDndButton).
+ *   · SetterCommsPanel   → Text (TextMerchantPanel, the JMP/sms-send path — NOT
+ *                          GHL) and Email (EmailMerchantPanel).
+ *   · SetterCallOutcome  → log the disposition (connected / no answer / voicemail
+ *                          / callback / not interested → nurture) through
+ *                          logContactAttempt + updateDealStatus, with the ET
+ *                          callback picker and an optional note.
+ *   · BookAppointmentControl → book a real appointment (emails the invite).
+ *   · SetterNotes        → free-text notes on the deal.
+ * A duplicate send path here would be a second thing to keep correct, and the
+ * first one to drift.
+ *
+ * LAZY, AND ONE AT A TIME. The panel renders up to 200 rows; loading a full
+ * DealWithCustomer for each would be 200 reads to render a list nobody has asked
+ * to act on yet. The deal loads on expand, and the panel keeps a single row open
+ * (accordion), so the dense scan-list stays a scan-list.
+ *
+ * getDealById is the same loader the console uses, including its get_deal_lite
+ * fallback — so a processor opening a lead assigned to another setter still gets
+ * the row (money-masked) instead of an empty drawer.
+ */
+function HotLeadActions({
+  dealId,
+  onDealChanged,
+}: {
+  dealId: string;
+  /** Re-read the panel so counts, heat and the tracker reflect what just happened. */
+  onDealChanged: () => void;
+}) {
+  const { effectiveUserId } = useUserProfile();
+  const [deal, setDeal] = useState<DealWithCustomer | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(true);
+  // BookAppointmentControl requires an onNotify; a local line keeps this drawer
+  // self-contained, exactly as SetterChecklist does for the same control.
+  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
+
+  const loadDeal = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await getDealById(dealId);
+      // UNREADABLE ≠ "no such deal": say the read failed and offer a retry rather
+      // than rendering an empty action set that looks like there's nothing to do.
+      if (!res) {
+        setError("Couldn't load this merchant's record — the actions can't be shown.");
+        return;
+      }
+      setDeal(res.deal);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't load this merchant's record.");
+    } finally {
+      setBusy(false);
+    }
+  }, [dealId]);
+
+  useEffect(() => {
+    void loadDeal();
+  }, [loadDeal]);
+
+  // Any action inside re-reads the deal AND tells the panel, so the attempt count
+  // and heat on the row behind the drawer move the moment a call is logged.
+  const refresh = useCallback(() => {
+    void loadDeal();
+    onDealChanged();
+  }, [loadDeal, onDealChanged]);
+
+  const notify = useCallback((text: string, tone: "ok" | "error" = "ok") => {
+    setToast({ text, tone });
+    setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  return (
+    // Stops the row's own onClick from firing — a tap on a button in here must not
+    // also yank the merchant into the console above.
+    <div
+      className="mt-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40 p-3 space-y-3 cursor-default"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      role="presentation"
+    >
+      {busy && !deal && (
+        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+          <span className="loading loading-spinner loading-xs" /> Loading the merchant's record…
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-2 rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+          <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold">{error}</div>
+            <button
+              type="button"
+              onClick={() => void loadDeal()}
+              className="mt-1 font-semibold text-ocean-blue hover:underline"
+            >
+              Try again →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deal && (
+        <>
+          {/* APPLY + SEND + take them off the list. autoOpen is deliberately OFF:
+              in the console the application modal pops on load because a merchant
+              is on the line, but a list row popping a full-screen modal on expand
+              would fight the setter scanning the panel. */}
+          <SetterActionRail deal={deal} onRefresh={refresh} />
+
+          {/* TEXT + EMAIL — the 5-minute speed-to-lead touch. */}
+          <SetterCommsPanel deal={deal} onRefresh={refresh} />
+
+          {/* BOOK IT. Sits next to the vendor's stated best time on the row above,
+              which is the whole reason it belongs here: a setter reads "10am PST"
+              and books against it without changing screens. */}
+          <div className="flex flex-wrap items-center gap-3">
+            <BookAppointmentControl
+              dealId={deal.id}
+              appointmentAt={deal.appointment_at}
+              appointmentSyncedAt={deal.appointment_synced_at}
+              appointmentSyncError={deal.appointment_sync_error}
+              ownerUserId={effectiveUserId}
+              onRefresh={refresh}
+              onNotify={notify}
+            />
+          </div>
+
+          {/* LOG THE CALL (also the callback + not-interested/nurture park) beside
+              the notes, the same pairing the console uses at the bottom. */}
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <SetterCallOutcome deal={deal} onRefresh={refresh} />
+            <SetterNotes deal={deal} onRefresh={refresh} />
+          </div>
+        </>
+      )}
+
+      {toast && (
+        <p
+          className={`text-xs font-medium ${
+            toast.tone === "error"
+              ? "text-red-600 dark:text-red-400"
+              : "text-emerald-600 dark:text-emerald-400"
+          }`}
+        >
+          {toast.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** One lead. The whole row opens the merchant in the console above — the same
  *  onOpen({ dealId }) every other list on this page uses. */
 function HotLeadRow({
@@ -635,6 +867,9 @@ function HotLeadRow({
   hist,
   now,
   onOpen,
+  actionsOpen,
+  onToggleActions,
+  onDealChanged,
 }: {
   r: HotRow;
   h: Heat;
@@ -642,7 +877,14 @@ function HotLeadRow({
   hist: CallHistory | null;
   now: number;
   onOpen: (lookup: { dealId: string }) => void;
+  /** Accordion — the panel keeps at most one action drawer open. */
+  actionsOpen: boolean;
+  onToggleActions: () => void;
+  onDealChanged: () => void;
 }) {
+  // The vendor's own qualification answers, folded away by default so the rows
+  // stay scannable. Everything in here is the VENDOR's claim, never our file.
+  const [showVendor, setShowVendor] = useState(false);
   const ui = TIER_UI[h.tier];
   const src = sourceMeta(r.lead_source);
   const handoff = handoffState(r, now);
@@ -849,36 +1091,130 @@ function HotLeadRow({
         )}
       </div>
 
-      {/* Dial it without leaving the page. VibeReach first — its call button records
-          and auto-logs, which is what keeps the attempt count above honest. */}
-      {r.customer?.phone && (
-        <div className="mt-1 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          {r.ghl_contact_id ? (
-            <a
-              href={`https://app.vibereach.io/v2/location/t7NmVR4WCy927j4Zon4b/contacts/detail/${r.ghl_contact_id}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-ocean-blue hover:underline"
-              title="Open in VibeReach — its call button dials, records, and auto-logs the attempt"
-            >
-              <PhoneIcon className="w-3 h-3" />
-              {prettyPhone(r.customer.phone)}
-            </a>
+      {/* ── THE ACTION BAR ────────────────────────────────────────────────────
+          A compact primary set inline — dial, VibeReach, work it, open it — with
+          everything else behind "Work this lead". The owner's rule for this panel
+          is that the heat and the attempt count are the reason it exists, so the
+          buttons sit UNDER them and stay one line. */}
+      <div
+        className="mt-1.5 flex items-center gap-1.5 flex-wrap"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        role="presentation"
+      >
+        {/* CLICK TO DIAL. Hands the number to whatever the machine uses for tel:
+            (softphone/WAVV), for the setter who is not already sitting in
+            VibeReach. The dial is not itself a logged attempt — that is what
+            "Work this lead → Log the call" is for, and the count above only ever
+            moves on a real recorded call. */}
+        {r.customer?.phone && (
+          <a
+            href={`tel:${r.customer.phone.replace(/[^0-9+]/g, "")}`}
+            className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+            title={`Dial ${prettyPhone(r.customer.phone)} — then log the outcome under "Work this lead"`}
+          >
+            <PhoneIcon className="w-3 h-3" />
+            {prettyPhone(r.customer.phone)}
+          </a>
+        )}
+
+        {/* The second number matters most on a hot lead nobody can reach. */}
+        {(r.customer?.additional_phones ?? []).map((p) => (
+          <a
+            key={p}
+            href={`tel:${p.replace(/[^0-9+]/g, "")}`}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-emerald-500/60 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors"
+            title={`Second number on file — dial ${prettyPhone(p)}`}
+          >
+            <PhoneIcon className="w-3 h-3" />
+            {prettyPhone(p)}
+          </a>
+        ))}
+
+        {/* WORK IT — the whole action set, lazily loaded (see HotLeadActions). */}
+        <button
+          type="button"
+          onClick={onToggleActions}
+          aria-expanded={actionsOpen}
+          className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full transition-colors ${
+            actionsOpen
+              ? "bg-ocean-blue text-white"
+              : "bg-ocean-blue/10 text-ocean-blue hover:bg-ocean-blue/20 dark:bg-ocean-blue/20"
+          }`}
+          title="Application, text, email, send docs, log the call, set a callback or appointment, nurture, DND — without leaving this panel"
+        >
+          <WrenchScrewdriverIcon className="w-3 h-3" />
+          {actionsOpen ? "Hide actions" : "Work this lead"}
+          {actionsOpen ? (
+            <ChevronDownIcon className="w-3 h-3" />
           ) : (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300">
-              <PhoneIcon className="w-3 h-3" />
-              {prettyPhone(r.customer.phone)}
-            </span>
+            <ChevronRightIcon className="w-3 h-3" />
           )}
+        </button>
+
+        {r.ghl_contact_id && (
+          <a
+            href={`https://app.vibereach.io/v2/location/t7NmVR4WCy927j4Zon4b/contacts/detail/${r.ghl_contact_id}`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue transition-colors"
+            title="Open in VibeReach — its call button dials, records, and auto-logs the attempt"
+          >
+            VibeReach ↗
+          </a>
+        )}
+
+        <button
+          type="button"
+          onClick={() => onOpen({ dealId: r.id })}
+          className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-ocean-blue hover:text-ocean-blue transition-colors"
+          title="Load this merchant into the full console below"
+        >
+          Open in console
+        </button>
+
+        {hasVendorDetail(r) && (
           <button
             type="button"
-            onClick={() => onOpen({ dealId: r.id })}
-            className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-ocean-blue text-white hover:bg-deep-sea transition-colors"
+            onClick={() => setShowVendor((v) => !v)}
+            className="text-[11px] font-semibold px-2 py-0.5 rounded-full text-gray-500 dark:text-gray-400 hover:text-ocean-blue transition-colors"
+            title="Everything the lead vendor collected on their qualification call"
           >
-            Open in console
+            {showVendor ? "Hide vendor detail" : "Vendor detail"} {showVendor ? "↑" : "↓"}
           </button>
+        )}
+      </div>
+
+      {/* The rest of the vendor's qualification answers. Folded by default — these
+          rows are scanned, not studied — and labelled as the vendor's claim, not
+          our verified file. */}
+      {showVendor && (
+        <div
+          className="mt-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-gray-900/40 px-2.5 py-2"
+          onClick={(e) => e.stopPropagation()}
+          role="presentation"
+        >
+          <div className="text-[10px] font-bold uppercase tracking-wide text-gray-400 mb-1">
+            What the vendor collected
+          </div>
+          <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-1">
+            {VENDOR_DETAIL_FIELDS.map(({ key, label }) => {
+              const v = vendorField(r, key);
+              if (!v) return null;
+              return (
+                <div key={key} className="min-w-0">
+                  <dt className="text-[10px] text-gray-400">{label}</dt>
+                  <dd className="text-[11px] font-semibold text-gray-800 dark:text-gray-100 truncate" title={v}>
+                    {v}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
         </div>
       )}
+
+      {actionsOpen && <HotLeadActions dealId={r.id} onDealChanged={onDealChanged} />}
     </div>
   );
 }
