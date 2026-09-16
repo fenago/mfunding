@@ -5,7 +5,7 @@ const footerLinks = {
   businessLoans: [
     { name: 'Merchant Cash Advance', href: '/business-loans/merchant-cash-advance' },
     { name: 'Equipment Financing', href: '/business-loans/equipment-financing' },
-    { name: 'Startup Loans', href: '/business-loans/startup-loans' },
+    { name: 'Startup Funding', href: '/business-loans/startup-loans' },
     { name: 'SBA 7(a) Loan', href: '/business-loans/sba-loans' },
     { name: 'Business Term Loan', href: '/business-loans/term-loans' },
     { name: 'Line of Credit', href: '/business-loans/line-of-credit' },
@@ -21,7 +21,6 @@ const footerLinks = {
     { name: 'Guides & Articles', href: '/resources' },
     { name: 'Funding Glossary', href: '/resources/glossary' },
     { name: 'How It Works', href: '/#how-it-works' },
-    { name: 'MCA Debt Relief', href: '/debt-relief' },
     { name: 'Apply Now', href: '/apply' },
   ],
   company: [
@@ -65,9 +64,9 @@ export default function Footer() {
             </div>
           </div>
 
-          {/* Business Loans */}
+          {/* Business Funding */}
           <div>
-            <h4 className="font-semibold text-white mb-4">Business Loans</h4>
+            <h4 className="font-semibold text-white mb-4">Business Funding</h4>
             <ul className="space-y-3">
               {footerLinks.businessLoans.map((link) => (
                 <li key={link.name}>

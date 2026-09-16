@@ -101,7 +101,7 @@ export const products: LoanProduct[] = [
     slug: "merchant-cash-advance",
     name: "Merchant Cash Advance (MCA)",
     shortName: "Merchant Cash Advance",
-    tagline: "Fast capital when you need it most — no credit score required",
+    tagline: "Fast capital when you need it most — approved on revenue, not credit score",
     icon: BoltIcon,
     color: "#00D49D",
     hero: {
@@ -111,14 +111,14 @@ export const products: LoanProduct[] = [
       subheadline:
         "You've got the jobs lined up and the crew ready to go. Don't let a cash flow gap cost you the work you've already earned.",
       description:
-        "A Merchant Cash Advance puts working capital in your hands within 24 hours — no credit score requirement, no collateral, no red tape. You repay as a percentage of your daily sales, so payments adjust with your business.",
+        "A Merchant Cash Advance puts working capital in your hands within 24 hours — approved on your revenue rather than your credit score, with no collateral and no red tape. You repay as a percentage of your daily sales, so payments adjust with your business.",
       approvalTime: "24 Hours",
       amountRange: "$20K – $5M",
     },
     specs: [
       { label: "Funding Amount", value: "$20,000 – $5,000,000" },
       { label: "Term Length", value: "3 to 18 Months" },
-      { label: "Min. Credit Score", value: "None Required" },
+      { label: "Min. Credit Score", value: "Flexible — revenue-based review" },
       { label: "Annual Revenue", value: "$360,000 ($30K/mo)" },
       { label: "Time in Business", value: "1 Year" },
       { label: "Approval Time", value: "24 Hours (Same Day Funding)" },
@@ -126,9 +126,9 @@ export const products: LoanProduct[] = [
     ],
     benefits: [
       {
-        title: "No Credit Score Requirement",
+        title: "Approved on Revenue, Not Credit Score",
         description:
-          "Banks judge you on a number. We judge you on your business. Past credit issues won't hold you back — all that matters is your monthly revenue.",
+          "Banks judge you on a number. We judge you on your business. A rough patch in your credit history won't disqualify you — what drives the decision is your monthly revenue.",
         icon: ShieldCheckIcon,
       },
       {
@@ -169,7 +169,7 @@ export const products: LoanProduct[] = [
     ],
     highlights: [
       "Approvals of 50%-150% of Average Monthly Sales",
-      "No Minimum Credit Score Required",
+      "Revenue-Based Approval",
       "All Industries Qualify",
       "24-Hour Approval & Same-Day Funding",
     ],
@@ -182,7 +182,7 @@ export const products: LoanProduct[] = [
       {
         question: "How is this different from a bank loan?",
         answer:
-          "Banks require 680+ credit scores, 2+ years in business, mountains of paperwork, and weeks of waiting. An MCA from Momentum Funding requires no minimum credit score, just 1 year in business, minimal documents, and you can be funded the same day you apply. The trade-off is a higher cost of capital — but for many business owners, the speed and accessibility are worth it.",
+          "Banks require 680+ credit scores, 2+ years in business, mountains of paperwork, and weeks of waiting. An MCA from Momentum Funding is underwritten on your revenue rather than your credit score, needs just 1 year in business and minimal documents, and you can be funded the same day you apply. The trade-off is a higher cost of capital — but for many business owners, the speed and accessibility are worth it.",
       },
       {
         question: "What's a factor rate?",
@@ -347,11 +347,11 @@ export const products: LoanProduct[] = [
     },
   },
 
-  // ── Personal / Startup Loans ──
+  // ── Startup Funding ──
   {
     slug: "startup-loans",
-    name: "Personal & Startup Loans",
-    shortName: "Startup Loans",
+    name: "Startup Funding",
+    shortName: "Startup Funding",
     tagline: "Fund your new business — even with zero time in business",
     icon: RocketLaunchIcon,
     color: "#8B5CF6",
@@ -362,7 +362,7 @@ export const products: LoanProduct[] = [
       subheadline:
         "Every successful business started somewhere. You've got the skills, the drive, and the plan. Don't let a lack of business history hold you back.",
       description:
-        "Our personal and startup loan program is designed for entrepreneurs who are ready to launch. With rates as low as 6% and no time-in-business requirement, this is your on-ramp to building something real.",
+        "Our startup funding program is designed for entrepreneurs who are ready to launch. It's underwritten on your personal credit profile rather than business history, so with rates as low as 6% and no time-in-business requirement, it's your on-ramp to building something real.",
       approvalTime: "24 Hours",
       amountRange: "$20K – $500K",
     },
@@ -407,14 +407,14 @@ export const products: LoanProduct[] = [
         icon: CalendarDaysIcon,
       },
       {
-        title: "Personal & Business Use",
+        title: "Flexible Use of Funds",
         description:
           "Use funds for business startup costs, equipment, working capital, or to bridge the gap while your new venture ramps up.",
         icon: DocumentTextIcon,
       },
     ],
     documents: [
-      "Online Loan Application",
+      "Online Application",
       "Tax Returns (if approved)",
       "Bank Statements",
       "Pay Stubs",
@@ -448,17 +448,17 @@ export const products: LoanProduct[] = [
       {
         question: "Why does funding take 1-2 weeks after approval?",
         answer:
-          "Because this loan is based on personal credit rather than business revenue, there's a more thorough verification process after initial approval. This includes an analyst phone call, document verification, and final underwriting. The extra time ensures you get the best terms possible.",
+          "Because this program is underwritten on personal credit rather than business revenue, there's a more thorough verification process after initial approval. This includes an analyst phone call, document verification, and final underwriting. The extra time ensures you get the best terms possible.",
       },
       {
         question: "Can I use this to fund a franchise?",
         answer:
-          "Yes. Many of our startup loan clients use the capital to fund franchise fees, initial buildout costs, and early operating expenses. As long as you meet the credit requirements, the use of funds is flexible.",
+          "Yes. Many of our startup funding clients use the capital to fund franchise fees, initial buildout costs, and early operating expenses. As long as you meet the credit requirements, the use of funds is flexible.",
       },
       {
         question: "What if my credit score is below 700?",
         answer:
-          "If your credit score is below 700, this particular program may not be the right fit. However, our Merchant Cash Advance has no credit score requirement, and our Business Term Loan accepts scores as low as 500. We'll help you find the right option.",
+          "If your credit score is below 700, this particular program may not be the right fit. However, our Merchant Cash Advance is underwritten on your revenue rather than your credit score, and our Business Term Loan considers scores as low as 500. We'll help you find the right option.",
       },
     ],
     calculatorConfig: {

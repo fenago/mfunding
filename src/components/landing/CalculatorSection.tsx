@@ -162,7 +162,7 @@ export default function CalculatorSection() {
             </span>
           </h2>
           <p className="text-text-secondary text-lg max-w-2xl mx-auto">
-            Get an instant estimate. No credit check. No commitment.
+            Get an instant estimate. No application. No commitment.
           </p>
         </motion.div>
 
@@ -197,7 +197,7 @@ export default function CalculatorSection() {
                       <CurrencyDollarIcon className="w-6 h-6" />
                     </div>
                     <p className="text-sm font-medium leading-snug pt-2">
-                      No Minimum Credit Score
+                      Revenue-Based Approval
                     </p>
                   </div>
 

@@ -12,32 +12,32 @@ const faqs: FAQItem[] = [
   {
     question: "How fast can I get business funding?",
     answer: "Most business owners receive funding within 24-48 hours of approval. Our streamlined application process takes just 5 minutes, and you'll typically hear back within a few hours. We understand that when you need capital, you need it now—not next month.",
-    keywords: ["fast business funding", "quick business loans", "same day funding"],
+    keywords: ["fast business funding", "quick business capital", "same day funding"],
   },
   {
     question: "What credit score do I need for a merchant cash advance?",
-    answer: "Unlike traditional bank loans, we focus on your business performance, not just your credit score. We work with business owners who have credit scores as low as 500. What matters most is your monthly revenue ($10K+ minimum) and time in business (6+ months). Your past credit struggles don't define your business's future.",
-    keywords: ["merchant cash advance credit score", "bad credit business loan", "MCA requirements"],
+    answer: "Unlike traditional bank financing, we focus on your business performance, not just your credit score. What matters most is your monthly revenue ($10K+ minimum) and time in business (6+ months). Credit is one factor we review, not the only one — a rough stretch in your credit history doesn't automatically rule you out.",
+    keywords: ["merchant cash advance credit score", "business funding credit requirements", "MCA requirements"],
   },
   {
     question: "Can I get business funding if the bank turned me down?",
     answer: "Yes! We specialize in helping business owners who have been declined by traditional banks. Many businesses that meet baseline criteria get approved, though amounts and terms vary by your business profile. We look at your business's current performance and cash flow, not just your past credit history. A bank rejection is where most of our customers start.",
-    keywords: ["business loan denied", "bank turned down", "alternative business financing"],
+    keywords: ["declined by the bank", "bank turned down", "alternative business financing"],
   },
   {
     question: "What documents do I need to apply?",
     answer: "Our application is simple. You'll need: 3 months of business bank statements, a valid ID, and basic business information. That's it. No tax returns, no lengthy financial statements, no waiting weeks for a decision. Most applications are completed in under 5 minutes.",
-    keywords: ["business loan documents", "MCA application requirements"],
+    keywords: ["business funding documents", "MCA application requirements"],
   },
   {
     question: "Will applying affect my credit score?",
     answer: "No. Checking your rate with us uses a soft credit pull, which does not impact your credit score. You can see your options with no obligation and no credit impact. We only do a hard pull if you accept an offer and move forward—and we'll always let you know first.",
-    keywords: ["soft credit check", "no credit impact", "check business loan rate"],
+    keywords: ["soft credit pull", "no credit impact", "check your funding rate"],
   },
   {
     question: "How much funding can I qualify for?",
     answer: "Funding amounts range from $25,000 to $3,000,000 depending on your business revenue and the type of funding. Most small businesses qualify for $50,000 to $250,000. As a general rule, you can typically qualify for up to 100-150% of your average monthly revenue. Use our calculator above for an instant estimate.",
-    keywords: ["business funding amount", "how much can I borrow", "MCA funding limits"],
+    keywords: ["business funding amount", "how much funding can I get", "MCA funding limits"],
   },
   {
     question: "What's the difference between an MCA and a business loan?",
@@ -47,7 +47,7 @@ const faqs: FAQItem[] = [
   {
     question: "Do I need collateral for business funding?",
     answer: "No collateral is required for merchant cash advances or business lines of credit. Your home, car, and personal assets are never at risk. For equipment financing, the equipment itself serves as collateral—but that's the only type of funding where any collateral is involved.",
-    keywords: ["unsecured business funding", "no collateral business loan", "business funding without collateral"],
+    keywords: ["unsecured business funding", "no collateral business capital", "business funding without collateral"],
   },
   {
     question: "How much does a merchant cash advance cost?",
@@ -61,7 +61,7 @@ const faqs: FAQItem[] = [
   },
   {
     question: "Is a merchant cash advance right for my business?",
-    answer: "It's a strong fit when you need capital fast, have steady revenue or card sales, and are covering a clear short-term need or opportunity—especially if a bank turned you down or can't move quickly enough. It costs more than a traditional bank loan and payments are frequent, so it's best for a defined purpose with a clear return. If a lower-cost option fits you better, we'll tell you—no pressure.",
+    answer: "It's a strong fit when you need capital fast, have steady revenue or card sales, and are covering a clear short-term need or opportunity—especially if a bank turned you down or can't move quickly enough. It costs more than traditional bank financing and payments are frequent, so it's best for a defined purpose with a clear return. If a lower-cost option fits you better, we'll tell you—no pressure.",
     keywords: ["is an MCA right for me", "when to use merchant cash advance", "MCA pros and cons"],
   },
   {

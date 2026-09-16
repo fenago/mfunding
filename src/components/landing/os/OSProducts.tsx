@@ -47,13 +47,13 @@ const PRODUCTS: Product[] = [
     name: "Business Term Loan",
     blurb: "A lump sum with fixed, predictable payments.",
     spec: "$10K – $500K",
-    href: "/business-loans/term-loan",
+    href: "/business-loans/term-loans",
   },
   {
     name: "Startup Funding",
     blurb: "Early-stage capital based on potential, not just history.",
     spec: "ASK",
-    href: "/business-loans/startup-funding",
+    href: "/business-loans/startup-loans",
   },
 ];
 

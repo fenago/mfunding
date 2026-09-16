@@ -157,7 +157,7 @@ export const creProducts: CREProduct[] = [
     highlights: [
       "Close in as Little as 2 Weeks",
       "Up to 80% LTV + 100% Rehab",
-      "No Minimum Credit Score Options",
+      "Flexible Credit Requirements",
       "Foreign Nationals Eligible",
     ],
     restrictions: [
@@ -183,7 +183,7 @@ export const creProducts: CREProduct[] = [
           "Single-family homes, multifamily, condos, townhouses, offices, industrial/warehouse, mixed-use, retail, and more. We do NOT lend on primary residences, vacant land, or mobile homes. The property must be in a non-rural U.S. area with sufficient market comparables.",
       },
       {
-        question: "I have bad credit — can I still get a bridge loan?",
+        question: "My credit isn't perfect — can I still get a bridge loan?",
         answer:
           "Yes. Strong property value can offset lower credit; a soft credit review (not a hard pull) is standard, with 50-65% LTV available. The loan is primarily underwritten based on the property value and the deal itself. That said, borrowers with 640+ credit scores and investor experience will qualify for better terms (up to 80% LTV and lower rates).",
       },

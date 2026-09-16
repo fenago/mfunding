@@ -64,7 +64,7 @@ export default function OSProblem() {
         <p className="osp-stat">
           <span className="osp-stat-num os-mono">~80%</span>
           <span className="osp-stat-txt">
-            Industry-wide, most small-business bank loan applications are declined or
+            Industry-wide, most small-business bank financing applications are declined or
             under-funded. A profitable business gets a <span className="os-amber">no</span> for
             reasons that have nothing to do with whether it can pay.
           </span>

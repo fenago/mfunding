@@ -22,7 +22,7 @@ const pros = [
 ];
 
 const cons = [
-  'Costs more than a traditional bank loan.',
+  'Costs more than traditional bank financing.',
   'Daily or weekly payments can tighten cash flow.',
   'Paying early doesn’t lower a fixed factor-rate fee.',
   'A merchant cash advance won’t build your business credit.',

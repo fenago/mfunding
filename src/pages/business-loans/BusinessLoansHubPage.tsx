@@ -19,7 +19,7 @@ const HUB_FAQS = [
       'Most business owners are approved within hours and funded within 24 to 48 hours. Merchant cash advances and lines of credit are the fastest; SBA loans take longer because of additional underwriting, but offer lower costs and larger amounts.',
   },
   {
-    question: 'Can I qualify with bad credit?',
+    question: "Can I qualify if my credit isn't strong?",
     answer:
       'Yes. For products like merchant cash advances we focus on your business revenue and cash flow rather than your personal credit score, so business owners with credit scores as low as 500 can qualify. Stronger credit unlocks lower-cost products like term loans and SBA loans.',
   },
@@ -136,7 +136,7 @@ export default function BusinessLoansHubPage() {
               </tr>
             </thead>
             <tbody>
-              <tr><td className="hub-td-name">Merchant Cash Advance</td><td>Same day–48 hrs</td><td>$5K–$5M</td><td>None (revenue-based)</td><td>Fast cash, lower credit</td></tr>
+              <tr><td className="hub-td-name">Merchant Cash Advance</td><td>Same day–48 hrs</td><td>$5K–$5M</td><td>Flexible (revenue-based)</td><td>Speed, flexible credit</td></tr>
               <tr><td className="hub-td-name">Line of Credit</td><td>1–3 days</td><td>$10K–$1.25M</td><td>Fair+</td><td>Flexible, recurring needs</td></tr>
               <tr><td className="hub-td-name">Equipment Financing</td><td>2–5 days</td><td>Up to $3M</td><td>Fair+</td><td>Buying equipment/vehicles</td></tr>
               <tr><td className="hub-td-name">Term Loan</td><td>2–7 days</td><td>$25K–$500K</td><td>Good</td><td>Predictable growth capital</td></tr>

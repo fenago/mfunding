@@ -10,7 +10,7 @@ import { useUserProfile } from '../../context/UserProfileContext';
 import supabase from '../../supabase';
 
 const navLinks = [
-  { name: 'Business Loans', href: '/business-loans' },
+  { name: 'Business Funding', href: '/business-loans' },
   { name: 'Real Estate', href: '/real-estate' },
   { name: 'How It Works', href: '/#how-it-works' },
   { name: 'Success Stories', href: '/#case-study' },
