@@ -52,7 +52,7 @@ const PROGRAMS = [
       "An attorney-led team renegotiates your existing advances directly with your funders — turning crushing daily debits into one realistic payment, with no new borrowing.",
     points: [
       "Many clients lower payments by 50–75% (results vary)",
-      "No minimum credit score and no collateral required",
+      "Credit score is not the deciding factor, and no collateral is required",
       "Built for $50,000+ in total business debt",
       "Most qualified applicants are accepted into the program",
       "No upfront, out-of-pocket fees",

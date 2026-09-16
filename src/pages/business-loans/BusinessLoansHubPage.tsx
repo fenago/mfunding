@@ -11,7 +11,7 @@ const HUB_FAQS = [
   {
     question: 'What types of business funding does Momentum Funding offer?',
     answer:
-      'Momentum Funding offers six core products: merchant cash advances, business lines of credit, equipment financing, SBA 7(a) loans, business term loans, and startup loans. We match each business with the option that fits its revenue, time in business, and goals.',
+      'Momentum Funding offers six core products: merchant cash advances, business lines of credit, equipment financing, SBA 7(a) loans, business term loans, and startup funding. We match each business with the option that fits its revenue, time in business, and goals.',
   },
   {
     question: 'How fast can I get business funding?',
@@ -46,7 +46,7 @@ export default function BusinessLoansHubPage() {
       <style>{HUB_CSS}</style>
       <SEO
         title="Business Loans & Funding Options"
-        description="Explore Momentum Funding's 6 business financing products: Merchant Cash Advance, Equipment Financing, Startup Loans, SBA 7(a) Loans, Term Loans, and Lines of Credit. Get funded in as little as 24 hours."
+        description="Explore Momentum Funding's 6 business financing products: Merchant Cash Advance, Equipment Financing, Startup Funding, SBA 7(a) Loans, Term Loans, and Lines of Credit. Get funded in as little as 24 hours."
         keywords="business loans, merchant cash advance, equipment financing, SBA loans, business term loan, line of credit, small business funding, fast business loans"
         canonical="https://mfunding.net/business-loans"
         structuredData={[
