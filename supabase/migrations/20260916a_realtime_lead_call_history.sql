@@ -88,6 +88,7 @@ as $function$
 declare
   v_uid   uuid := auth.uid();
   v_ops   boolean;
+  v_proc  boolean;
   v_out   jsonb;
   -- Matches ROW_CAP in HotLeadsPanel.tsx. A caller asking for more than the panel
   -- can render is not the panel.
@@ -108,6 +109,12 @@ begin
   end if;
 
   v_ops := public.is_ops_staff(v_uid);
+  -- A PROCESSOR works the WHOLE board (owner ruling; same exemption the deals
+  -- RLS and the processor_* RPCs already carry). Without this a processor's
+  -- hot-lead rows come back EMPTY, which the panel correctly renders as
+  -- "call history unreadable" — honest, but useless to the people who work
+  -- these leads all day.
+  v_proc := public.is_processor(v_uid);
 
   with visible as (
     -- The money wall's own SELECT predicate, re-stated. Ops staff see everything;
@@ -119,6 +126,7 @@ begin
      where d.id = any (p_deal_ids)
        and (
          v_ops
+         or v_proc
          or d.assigned_closer_id is null
          or d.assigned_closer_id = v_uid
          or d.created_by = v_uid
