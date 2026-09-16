@@ -189,7 +189,7 @@ const RECS: Record<CategoryKey, { good: string; poor: string }> = {
   },
   debt: {
     good: "Low existing debt means you have room to take on new funding on favorable terms.",
-    poor: "Existing advance debt is heavy. A debt-relief restructure could free up daily cash flow before adding anything new.",
+    poor: "Existing advance debt is heavy. It's worth reviewing your current positions with a specialist before adding anything new.",
   },
   growth: {
     good: "You're well-positioned to deploy capital into growth.",
@@ -462,9 +462,8 @@ export default function BusinessHealthScorecardPage() {
                       {isDistress ? (
                         <>
                           Thanks, {form.contact_first_name || "there"}! Your debt load graded{" "}
-                          <strong>{debtGrade}</strong>. A debt-relief specialist will reach out within
-                          24 hours to review your positions and build a plan to lower your daily
-                          payments before taking on anything new.
+                          <strong>{debtGrade}</strong>. A funding specialist will reach out within
+                          24 hours to review your positions before you take on anything new.
                         </>
                       ) : (
                         <>
@@ -479,8 +478,8 @@ export default function BusinessHealthScorecardPage() {
                   <AssessNote>
                     This scorecard is an <strong>estimate for educational purposes only</strong> — not
                     financial advice, an offer, an approval, or a guarantee. A merchant cash advance is
-                    a purchase of future receivables, not a loan. Estimated debt-relief outcomes vary
-                    and are never guaranteed.
+                    a purchase of future receivables, not a loan. Estimated outcomes vary and are
+                    never guaranteed.
                   </AssessNote>
 
                   <div>

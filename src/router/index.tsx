@@ -44,16 +44,12 @@ import OptinPage from "../pages/OptinPage.tsx";
 import ApplyPage from "../pages/ApplyPage.tsx";
 import SendAppPage from "../pages/SendAppPage.tsx";
 import ConnectBankPage from "../pages/ConnectBankPage.tsx";
-import VCFReliefPage from "../pages/VCFReliefPage.tsx";
-import VCFSavingsCalculatorPage from "../pages/calculators/VCFSavingsCalculatorPage.tsx";
 import MCAFundingCalculatorPage from "../pages/calculators/MCAFundingCalculatorPage.tsx";
 import MCACostCalculatorPage from "../pages/calculators/MCACostCalculatorPage.tsx";
 import CloserEarningsCalculatorPage from "../pages/calculators/CloserEarningsCalculatorPage.tsx";
 import FundingReadinessScorePage from "../pages/assessments/FundingReadinessScorePage.tsx";
 import FundingMatcherPage from "../pages/assessments/FundingMatcherPage.tsx";
 import FundingAffordabilityPage from "../pages/assessments/FundingAffordabilityPage.tsx";
-import MCADebtStressTestPage from "../pages/assessments/MCADebtStressTestPage.tsx";
-import ReliefQualifierPage from "../pages/assessments/ReliefQualifierPage.tsx";
 import BusinessHealthScorecardPage from "../pages/assessments/BusinessHealthScorecardPage.tsx";
 import CashFlowGapAnalyzerPage from "../pages/assessments/CashFlowGapAnalyzerPage.tsx";
 import FreeToolsPage from "../pages/FreeToolsPage.tsx";
@@ -214,10 +210,13 @@ export const routes: RouteObject[] = [
         path: "/terms",
         element: <TermsOfServicePage />,
       },
-      {
-        path: "/unit-economics",
-        element: <UnitEconomicsPage />,
-      },
+      // /unit-economics was PUBLIC and UNGUARDED — it printed cost per lead,
+      // close rate and net revenue per funded deal for every channel, plus a
+      // "VCF Debt Relief" line, to anyone who typed the URL. The identical page
+      // is already served behind SuperAdminProtectedRoute at
+      // /admin/unit-economics, so this route granted the public exactly what
+      // the admin route exists to restrict. Removed 2026-09-16; use the admin
+      // one. Do not re-add a public alias for a super-admin page.
       {
         path: "/business-loans",
         element: <BusinessLoansHubPage />,
@@ -259,19 +258,26 @@ export const routes: RouteObject[] = [
         path: "/send-app",
         element: <SendAppPage />,
       },
-      {
-        path: "/debt-relief",
-        element: <VCFReliefPage />,
-      },
+      // ── /debt-relief and /calculators/mca-debt-relief are DELIBERATELY UNROUTED ──
+      // Debt relief and debt consolidation are a PROHIBITED content category for
+      // A2P 10DLC — not restricted, prohibited. A carrier reviewing this brand
+      // opens mfunding.net, sees debt relief, and denies the registration, which
+      // is very likely part of why registration has been refused repeatedly.
+      // Texting is worth more to this business than these two public pages.
+      //
+      // The VCF pipeline itself is UNTOUCHED: deal_type 'vcf', the VCF stages,
+      // the VCF GHL pipeline, the admin surfaces and every existing VCF deal all
+      // still work. This removes PUBLIC marketing exposure only.
+      //
+      // VCFReliefPage.tsx and VCFSavingsCalculatorPage are kept on disk on
+      // purpose — if this ever runs again it belongs on its own domain and
+      // brand, away from the brand that needs A2P approval. Re-adding the route
+      // here is not the fix; a separate site is.
       {
         // Public, tokenized bank-connect page (logged out) — a closer texts this
         // link; the merchant connects their bank via Plaid to verify revenue.
         path: "/connect-bank/:token",
         element: <ConnectBankPage />,
-      },
-      {
-        path: "/calculators/mca-debt-relief",
-        element: <VCFSavingsCalculatorPage />,
       },
       {
         path: "/calculators/how-much-can-i-get",
@@ -297,14 +303,12 @@ export const routes: RouteObject[] = [
         path: "/assessments/how-much-can-you-handle",
         element: <FundingAffordabilityPage />,
       },
-      {
-        path: "/assessments/mca-debt-stress-test",
-        element: <MCADebtStressTestPage />,
-      },
-      {
-        path: "/assessments/do-you-qualify-for-relief",
-        element: <ReliefQualifierPage />,
-      },
+      // Also unrouted, same reason: both are debt-relief funnels. The Relief
+      // Qualifier asks "Do You Qualify for MCA Relief?" and routes to a
+      // debt-relief partner; the Stress Test sells "a path to lower payments"
+      // and files a hardship_reason. Under A2P that is the prohibited category
+      // wearing a calculator's clothes, and a reviewer reads the page, not the
+      // route name. Pages kept on disk for a separate domain.
       {
         path: "/assessments/business-health-scorecard",
         element: <BusinessHealthScorecardPage />,

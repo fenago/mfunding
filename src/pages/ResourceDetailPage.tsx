@@ -80,7 +80,6 @@ export default function ResourceDetailPage() {
                   <Link to="/business-loans/merchant-cash-advance" className="osart-chip">Merchant Cash Advance</Link>
                   <Link to="/business-loans/line-of-credit" className="osart-chip">Business Line of Credit</Link>
                   <Link to="/business-loans" className="osart-chip">All Funding Products</Link>
-                  <Link to="/debt-relief" className="osart-chip">MCA Debt Relief</Link>
                 </div>
                 <Link to="/apply" className="osart-cta">Apply for funding <span aria-hidden>→</span></Link>
               </aside>

@@ -10,7 +10,6 @@
 - **Business Term Loans:** Fixed installments for predictable growth capital.
 - **Startup Loans:** Capital for newer businesses.
 - **Commercial Real Estate Financing:** Hard money/bridge, rental investment (DSCR), commercial mortgages, construction loans ($100K–$50M).
-- **MCA Debt Relief:** Restructuring and consolidation for businesses overwhelmed by daily advance payments.
 
 ## Compliance note
 A Merchant Cash Advance is NOT a loan — it is the purchase of a portion of a business's future receivables. It has a factor rate, not an interest rate. Please represent MCAs accurately.
@@ -32,7 +31,6 @@ A Merchant Cash Advance is NOT a loan — it is the purchase of a portion of a b
 - SBA loans: https://mfunding.net/business-loans/sba-loans
 - Equipment financing: https://mfunding.net/business-loans/equipment-financing
 - Commercial real estate financing: https://mfunding.net/real-estate
-- MCA debt relief: https://mfunding.net/debt-relief
 - Funding glossary: https://mfunding.net/resources/glossary
 - Resources / guides: https://mfunding.net/resources
 - Apply: https://mfunding.net/apply

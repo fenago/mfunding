@@ -2,15 +2,12 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import supabase from "../supabase";
 import {
-  LifebuoyIcon,
   BanknotesIcon,
   CalculatorIcon,
   BriefcaseIcon,
   ClipboardDocumentCheckIcon,
   MagnifyingGlassIcon,
   ScaleIcon,
-  ExclamationTriangleIcon,
-  HandRaisedIcon,
   ChartBarSquareIcon,
 } from "@heroicons/react/24/outline";
 import SEO from "../components/seo/SEO";
@@ -25,12 +22,6 @@ interface ToolCard {
 }
 
 const CALCULATORS: ToolCard[] = [
-  {
-    to: "/calculators/mca-debt-relief",
-    title: "MCA Debt Relief Savings",
-    desc: "Estimate how much you could save by restructuring stacked merchant cash advances.",
-    icon: LifebuoyIcon,
-  },
   {
     to: "/calculators/how-much-can-i-get",
     title: "How Much Can I Get?",
@@ -69,18 +60,6 @@ const ASSESSMENTS: ToolCard[] = [
     title: "How Much Can You Handle?",
     desc: "Gauge a responsible funding amount your cash flow can comfortably support.",
     icon: ScaleIcon,
-  },
-  {
-    to: "/assessments/mca-debt-stress-test",
-    title: "MCA Debt Stress Test",
-    desc: "Pressure-test your existing advances to see if your payments are sustainable.",
-    icon: ExclamationTriangleIcon,
-  },
-  {
-    to: "/assessments/do-you-qualify-for-relief",
-    title: "Do You Qualify for Relief?",
-    desc: "Check whether your situation qualifies for an MCA debt-relief program.",
-    icon: HandRaisedIcon,
   },
   {
     to: "/assessments/business-health-scorecard",
@@ -135,7 +114,7 @@ export default function FreeToolsPage() {
     <ToolShell>
       <SEO
         title="Free Business Funding Tools & Calculators"
-        description="Free calculators and assessments to plan your business funding — estimate working capital, analyze cash flow gaps, stress-test MCA debt, and grade your financial health."
+        description="Free calculators and assessments to plan your business funding — estimate working capital, analyze cash flow gaps, match to the right product, and grade your financial health."
         keywords="free business funding tools, MCA calculator, cash flow analyzer, business health scorecard, working capital calculator"
       />
 
@@ -147,8 +126,8 @@ export default function FreeToolsPage() {
           </Display>
           <Lede>
             Plan smarter before you fund. Estimate your working capital, analyze seasonal cash-flow
-            gaps, stress-test existing advances, and grade your financial health — all free, with{" "}
-            <strong>no credit impact</strong>.
+            gaps, find the right product for your business, and grade your financial health — all
+            free, with <strong>no credit impact</strong>.
           </Lede>
         </div>
       </OSSection>

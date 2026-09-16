@@ -123,8 +123,8 @@ export default function BusinessLoansHubPage() {
             Momentum Funding is a funding marketplace, not a single lender. We submit your profile to a network
             of funders and lenders, then present you the strongest offers — so you compare real options instead
             of taking the first quote. There are no upfront fees; we are paid by the funder when your deal
-            closes. Already carrying advances and feeling the daily payments? Our{' '}
-            <Link to="/debt-relief">MCA debt relief</Link> program can help you restructure.
+            closes. Already carrying advances and feeling the daily payments? Talk to us about restructuring
+            options before you take on more.
           </p>
         </div>
 
