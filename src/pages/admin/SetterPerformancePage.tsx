@@ -130,6 +130,11 @@ interface SetterCall {
   wavv_call_id: string;
   /** "wavv" = the VibeReach dialer, "ghl" = a Playbook click-to-call. */
   source: DialSource;
+  /** 'ghl' on a WAVV row that absorbed a GHL duplicate during dedupe, so the
+   *  Call log can say a second copy existed instead of letting it vanish.
+   *  ONLY selected by the Call log (LOG_COLS) — undefined on aggregate rows,
+   *  which is why this is optional rather than `string | null`. */
+  also_seen_in?: string | null;
   started_at: string | null;
   answered_at: string | null;
   ended_at: string | null;
@@ -157,6 +162,18 @@ interface SetterCall {
 // infers the row shape by parsing this literal. Splitting it across a `+`
 // concatenation defeats that parse and the result degrades to GenericStringError.
 const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
+
+/** The Call log asks for ONE column the aggregate pass does not: `also_seen_in`,
+ *  the dedupe audit trail. It is a correlated EXISTS in the view, so it costs a
+ *  probe per row — and Postgres prunes it from the plan entirely when it is not
+ *  selected (verified on the live plan: the CALL_COLS query shows no SubPlan,
+ *  this one does). Hence two lists. The aggregate pass reads up to 20,000 rows
+ *  across 18 parallel pages and must not pay for a column it never renders; the
+ *  log reads 50.
+ *
+ *  Keep this a single unbroken literal for the same reason CALL_COLS is one —
+ *  supabase-js infers the row shape by parsing the literal. */
+const LOG_COLS = "wavv_call_id,source,also_seen_in,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
 
 /** BOTH dialers, deduped (20260916b_setter_dial_calls_union.sql). */
 const CALLS_VIEW = "v_setter_dial_calls";
@@ -1647,6 +1664,16 @@ export default function SetterPerformancePage() {
   const [filterMinSeconds, setFilterMinSeconds] = useState<string>("");
   const [filterOutcome, setFilterOutcome] = useState<string>("all");
   const [filterContact, setFilterContact] = useState<"all" | "human" | "machine">("all");
+  /** The drill-down the owner asked for: "see what was called from WAVV and what
+   *  was called from GHL". Applied server-side on the union view's own `source`,
+   *  so the filtered COUNT and the paging stay exact. */
+  const [filterSource, setFilterSource] = useState<"all" | DialSource>("all");
+  /** "Reached a human" / "voicemail" are WAVV-only questions, so under GHL-only
+   *  the contact filter is not applied at all rather than silently returning an
+   *  empty page. Everything downstream — query, filter count, the clear button —
+   *  reads THIS, never filterContact directly. */
+  const contactFilterApplies = filterSource !== "ghl";
+  const effectiveContact = contactFilterApplies ? filterContact : "all";
   const [filterRecording, setFilterRecording] = useState<"all" | "yes" | "no">("all");
   /** What the user is typing, and what has actually been sent. Debounced so a
    *  10-character name is one server round trip, not ten. */
@@ -2065,13 +2092,24 @@ export default function SetterPerformancePage() {
   // caller_id filters use BARE 10-digit strings: the mapping table's normalizing
   // trigger fires on WRITE only, so a read filter must already be normalized.
   // Every value offered by the filters comes from the view itself, so it is.
+  //
+  // THIS IS THE DRILL-DOWN, so it reads the SAME union view the aggregates do.
+  // If the log read one table while the funnel read two, the audit surface would
+  // disagree with the number it exists to audit — a second copy of exactly the
+  // bug being fixed. The `count: "exact"` below is a TRUE union count: PostgREST
+  // counts the view, so it spans both sources and every filter applied here,
+  // including the source filter itself. It is not an approximation.
   const loadLog = useCallback(async () => {
     setLogLoading(true);
     try {
       let q = supabase.from(CALLS_VIEW)
-        .select(CALL_COLS, { count: "exact" })
+        .select(LOG_COLS, { count: "exact" })
         .gte("started_at", fromIso)
         .lt("started_at", toIso);
+
+      // The owner's drill-down. One equality on the view's own column, so it
+      // composes with every other filter and with the exact count.
+      if (filterSource !== "all") q = q.eq("source", filterSource);
 
       if (filterSetter !== "all") {
         if (filterSetter === UNASSIGNED_FILTER) q = q.is("setter_id", null);
@@ -2101,10 +2139,18 @@ export default function SetterPerformancePage() {
       //
       // So the two options deliberately do NOT partition the range: GHL calls are
       // in neither, and the filter's own labels say so. "All" still shows them.
-      if (filterContact === "human") {
+      //
+      // And because both branches pin source = wavv, combining one of them with
+      // "GHL only" would AND two contradictory equalities and return an empty
+      // page — a filter combination that looks like "there are no such calls"
+      // when it really means "that question does not apply here". So the contact
+      // filter is NEUTRALISED under GHL-only, the select is disabled, and the UI
+      // says why. effectiveContact is what the query, the filter count and the
+      // chip all read, so the three cannot disagree about what is applied.
+      if (effectiveContact === "human") {
         q = q.eq("source", "wavv").not("answered_at", "is", null);
         for (const clause of HUMAN_OR_CLAUSES) q = q.or(clause);
-      } else if (filterContact === "machine") {
+      } else if (effectiveContact === "machine") {
         q = q.eq("source", "wavv").or(NOT_HUMAN_OR_CLAUSE);
       }
 
@@ -2139,16 +2185,16 @@ export default function SetterPerformancePage() {
     }
     setLogLoading(false);
   }, [
-    fromIso, toIso, filterSetter, filterNumber, filterDisposition, filterMinSeconds,
-    filterOutcome, filterContact, filterRecording, logSearchApplied, logPage,
+    fromIso, toIso, filterSource, filterSetter, filterNumber, filterDisposition, filterMinSeconds,
+    filterOutcome, effectiveContact, filterRecording, logSearchApplied, logPage,
   ]);
 
   useEffect(() => { void loadLog(); }, [loadLog]);
   // Any filter or range change restarts pagination — page 3 of a different
   // filter is a different question.
   useEffect(() => { setLogPage(0); }, [
-    fromIso, toIso, filterSetter, filterNumber, filterDisposition, filterMinSeconds,
-    filterOutcome, filterContact, filterRecording, logSearchApplied,
+    fromIso, toIso, filterSource, filterSetter, filterNumber, filterDisposition, filterMinSeconds,
+    filterOutcome, effectiveContact, filterRecording, logSearchApplied,
   ]);
   // Debounce the search box so typing does not fire a query per keystroke.
   useEffect(() => {
@@ -3183,17 +3229,21 @@ export default function SetterPerformancePage() {
     return [...seen].sort();
   }, [aggRows]);
 
+  // Counts what is ACTUALLY applied: effectiveContact, not filterContact, so the
+  // badge never advertises a filter the query is ignoring.
   const logFilterCount =
+    (filterSource !== "all" ? 1 : 0) +
     (filterSetter !== "all" ? 1 : 0) +
     (filterNumber !== "all" ? 1 : 0) +
     (filterDisposition !== "all" ? 1 : 0) +
     (filterOutcome !== "all" ? 1 : 0) +
-    (filterContact !== "all" ? 1 : 0) +
+    (effectiveContact !== "all" ? 1 : 0) +
     (filterRecording !== "all" ? 1 : 0) +
     (filterMinSeconds.trim() ? 1 : 0) +
     (logSearch.trim() ? 1 : 0);
 
   const clearLogFilters = useCallback(() => {
+    setFilterSource("all");
     setFilterSetter("all");
     setFilterNumber("all");
     setFilterDisposition("all");
@@ -5049,7 +5099,8 @@ export default function SetterPerformancePage() {
                     )}
                   </div>
                   <p className="text-xs text-gray-400">
-                    Dials, connects, human contacts and conversations from WAVV (outbound); appointments from Deals by
+                    Dials and connects from both dialers (outbound); human contacts and conversations from WAVV only,
+                    since GHL logs neither; appointments from Deals by
                     <code className="mx-1">appointment_at</code>. Days with no calls simply do not appear —
                     the axis is the days that had activity, not a zero-filled calendar. Humans exclude voicemails,
                     and a conversation is a call the setter dispositioned as a real talk.
@@ -5096,6 +5147,20 @@ export default function SetterPerformancePage() {
                       onChange={(e) => setLogSearch(e.target.value)}
                       title="Matches the merchant's contact name or phone number across the whole range, not just this page"
                     />
+                    {/* The source drill-down, first in the row because it is the
+                        coarsest cut and the one that answers "what came from
+                        where". Server-side, so the count beside the tab title is
+                        the true count of the filtered union. */}
+                    <select
+                      className={`select select-xs select-bordered ${filterSource !== "all" ? "border-mint-green text-mint-green" : ""}`}
+                      value={filterSource}
+                      onChange={(e) => setFilterSource(e.target.value as "all" | DialSource)}
+                      title={DIAL_SOURCE_NOTE}
+                    >
+                      <option value="all">Both dialers</option>
+                      <option value="wavv">WAVV only</option>
+                      <option value="ghl">GHL only</option>
+                    </select>
                     <select className="select select-xs select-bordered" value={filterSetter} onChange={(e) => setFilterSetter(e.target.value)}>
                       <option value="all">All setters</option>
                       {setterFilterOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
@@ -5114,11 +5179,14 @@ export default function SetterPerformancePage() {
                     </select>
                     <select
                       className="select select-xs select-bordered"
-                      value={filterContact}
+                      value={effectiveContact}
+                      disabled={!contactFilterApplies}
                       onChange={(e) => setFilterContact(e.target.value as "all" | "human" | "machine")}
-                      title="Reached a human = answered, and nothing about the call says machine. Both options are WAVV-only: GHL/LeadConnector reports no human-vs-machine signal, so its calls belong to NEITHER option and appear only under 'Any contact type'. They are not hidden and not reclassified."
+                      title={contactFilterApplies
+                        ? "Reached a human = answered, and nothing about the call says machine. Both options are WAVV-only: GHL/LeadConnector reports no human-vs-machine signal, so its calls belong to NEITHER option and appear only under 'Any contact type'. They are not hidden and not reclassified."
+                        : "Not applicable to GHL calls — GHL/LeadConnector reports no human-vs-machine signal at all. Switch the source back to 'Both dialers' or 'WAVV only' to use this filter."}
                     >
-                      <option value="all">Any contact type</option>
+                      <option value="all">{contactFilterApplies ? "Any contact type" : "Contact type — n/a for GHL"}</option>
                       <option value="human">Reached a human (WAVV)</option>
                       <option value="machine">Voicemail / no human (WAVV)</option>
                     </select>
@@ -5150,7 +5218,9 @@ export default function SetterPerformancePage() {
                 <p className="text-xs text-gray-400">
                   Outbound calls only — an inbound call's caller ID is the merchant, so it carries no setter attribution.
                   Every filter runs in the database across the <b>whole date range</b>, not just the page on screen, and
-                  they all apply together.
+                  they all apply together. The count beside the title is the <b>true count of both dialers</b> under the
+                  filters you have set, not one table's. Every row shows the system that placed it in the{" "}
+                  <b>Source</b> column; use <b>WAVV only</b> / <b>GHL only</b> above to split them.
                 </p>
 
                 {logLoading ? (
@@ -5167,6 +5237,7 @@ export default function SetterPerformancePage() {
                       <thead className={THEAD}>
                         <tr>
                           <th className={TH}>Time</th>
+                          <th className={TH} title={DIAL_SOURCE_NOTE}>Source</th>
                           <th className={TH}>Attributed to</th>
                           <th className={TH}>Contact</th>
                           <th className={TH_NUM}>Duration</th>
@@ -5191,24 +5262,49 @@ export default function SetterPerformancePage() {
                               <td className={`${TD} whitespace-nowrap`}>
                                 {r.started_at ? new Date(r.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : <Metric value={null} />}
                               </td>
-                              <td className={`${TD} min-w-[11rem]`}>
-                                <span className="inline-flex items-center gap-1.5">
-                                  {r.setter_name ? (
-                                    <span className="font-medium text-gray-900 dark:text-white">{r.setter_name}</span>
-                                  ) : (
-                                    <span className="text-gray-400 italic" title="This outbound number has no setter assigned — assign it in the Numbers tab">
-                                      {r.caller_label ?? prettyPhone(r.caller_id)}
-                                    </span>
-                                  )}
-                                  {/* Which dialer placed it. Shown on GHL rows only:
-                                      WAVV is the default and badging 34,000 rows
-                                      would be noise, not information. */}
-                                  {!isScored(r) && (
-                                    <span className="badge badge-xs badge-outline shrink-0" title={DIAL_SOURCE_NOTE}>
-                                      GHL
-                                    </span>
-                                  )}
+                              {/* SOURCE — on every row, both values. The reader
+                                  must never have to infer which system placed a
+                                  call, because not being able to ask that
+                                  question is why 473 GHL dials went unnoticed.
+                                  Labelled "GHL" rather than "VibeReach": WAVV is
+                                  itself embedded in VibeReach, so that name would
+                                  fit both and distinguish neither. */}
+                              <td className={`${TD} whitespace-nowrap`}>
+                                <span
+                                  className={`badge badge-sm ${isScored(r)
+                                    ? "bg-sky-500/15 border-sky-500/40 text-sky-700 dark:text-sky-300"
+                                    : "bg-violet-500/15 border-violet-500/40 text-violet-700 dark:text-violet-300"}`}
+                                  title={isScored(r)
+                                    ? "WAVV dialer session, mirrored from the WAVV Public API by wavv-sync."
+                                    : "GHL / LeadConnector click-to-call placed from the Revenue Playbook, logged by the ghl-event-hook push."}
+                                >
+                                  {isScored(r) ? "WAVV" : "GHL"}
                                 </span>
+                                {/* Dedupe left a trace rather than a hole. */}
+                                {r.also_seen_in === "ghl" && (
+                                  <div
+                                    className="text-[10px] text-gray-400 mt-0.5"
+                                    title="A GHL/LeadConnector row for this same merchant and moment was folded into this one by de-duplication, so the call is counted once. The WAVV record is kept because it is the dialer's own."
+                                  >
+                                    also in GHL
+                                  </div>
+                                )}
+                              </td>
+                              <td className={`${TD} min-w-[11rem]`}>
+                                {/* The Source column beside this one carries the
+                                    dialer, so this cell stays about the person. */}
+                                {r.setter_name ? (
+                                  <span className="font-medium text-gray-900 dark:text-white">{r.setter_name}</span>
+                                ) : (
+                                  <span
+                                    className="text-gray-400 italic"
+                                    title={isScored(r)
+                                      ? "This outbound number has no setter assigned — assign it in the Numbers tab"
+                                      : "GHL did not name a user on this call, and no closers row maps it to a staff account"}
+                                  >
+                                    {r.caller_label ?? prettyPhone(r.caller_id)}
+                                  </span>
+                                )}
                                 <div className="text-xs text-gray-400 mt-0.5">{prettyPhone(r.caller_id)}</div>
                               </td>
                               <td className={`${TD} min-w-[10rem]`}>
@@ -5218,9 +5314,24 @@ export default function SetterPerformancePage() {
                               <td className={TD_NUM}>{r.seconds === null ? <Metric value={null} /> : hms(r.seconds)}</td>
                               <td className={`${TD} whitespace-nowrap`}><Text value={r.outcome} /></td>
                               <td className={`${TD} whitespace-nowrap`}>
-                                {r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)
-                                  ? <span className="font-semibold text-emerald-600 dark:text-emerald-400">{r.disposition}</span>
-                                  : <Text value={r.disposition} />}
+                                {/* A GHL row has no disposition because GHL never
+                                    asks for one — that is NOT the same finding as
+                                    a WAVV call a setter failed to disposition, and
+                                    the Disposition Review tab treats the latter as
+                                    a coaching item. So it is labelled, not dashed
+                                    into the same bucket. */}
+                                {!isScored(r) && !r.disposition ? (
+                                  <span
+                                    className="text-xs text-gray-400 italic"
+                                    title="GHL/LeadConnector does not ask the caller for a disposition, so there is none to show. This is not an un-dispositioned call — it is a call from a system that has no dispositions, and it is excluded from the conversation and positive rates rather than scored as a miss."
+                                  >
+                                    n/a for GHL
+                                  </span>
+                                ) : r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition) ? (
+                                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">{r.disposition}</span>
+                                ) : (
+                                  <Text value={r.disposition} />
+                                )}
                               </td>
                               <td className={`${TD} whitespace-nowrap`}>
                                 {/* UNKNOWN, not "machine". reachedHuman() returns
@@ -5259,7 +5370,12 @@ export default function SetterPerformancePage() {
                                         ? "WAVV did not report whether this call was recorded"
                                         : "This call was not recorded"}
                                   >
-                                    no recording
+                                    {/* "no recording" on a GHL row would read as
+                                        "this call was not recorded", a claim about
+                                        the call. The truth is about the SOURCE:
+                                        recordings come from the WAVV API by call
+                                        id, and a GHL row has no WAVV id. */}
+                                    {isScored(r) ? "no recording" : "n/a for GHL"}
                                   </span>
                                 ) : m.url ? (
                                   <audio controls preload="none" src={m.url} className="w-52 h-8" />
@@ -5276,9 +5392,11 @@ export default function SetterPerformancePage() {
                                 {!hasRecording ? (
                                   <span
                                     className="text-gray-300 dark:text-gray-600"
-                                    title="This call was not recorded, so there is nothing to transcribe — WAVV only transcribes recorded calls"
+                                    title={isScored(r)
+                                      ? "This call was not recorded, so there is nothing to transcribe — WAVV only transcribes recorded calls"
+                                      : "Transcripts come from the WAVV API, which has no record of a GHL/LeadConnector call. Not available for this source."}
                                   >
-                                    —
+                                    {isScored(r) ? "—" : <span className="text-xs italic">n/a for GHL</span>}
                                   </span>
                                 ) : (
                                   <>
