@@ -16,6 +16,7 @@ import {
   ArrowPathIcon,
   NoSymbolIcon,
   QuestionMarkCircleIcon,
+  ArrowTopRightOnSquareIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import { mustWrite } from "@/supabase/writes";
@@ -38,6 +39,38 @@ interface BalRow {
 const LOW: Record<string, { red: number; amber: number }> = {
   batchdata: { red: 5, amber: 20 },
   phone_validation: { red: 2, amber: 10 },
+};
+
+/**
+ * Where to go to put money in. Account pages, not marketing pages — the point
+ * of seeing a red balance here is to act on it without first remembering which
+ * portal that provider lives behind.
+ *
+ * Apollo is labelled differently on purpose. It has no wallet at all — that's
+ * the same reason its balance reads "No API" above — so the link goes to the
+ * plan page rather than promising a top-up that doesn't exist.
+ */
+const TOP_UP: Record<string, { href: string; label: string; hint: string }> = {
+  batchdata: {
+    href: "https://app.batchdata.com/",
+    label: "Add funds",
+    hint: "app.batchdata.com → Billing → wallet top-up",
+  },
+  apollo: {
+    href: "https://app.apollo.io/#/settings/billing",
+    label: "Plan & billing",
+    hint: "Apollo has no wallet — credits come with the plan",
+  },
+  phone_validation: {
+    href: "https://console.twilio.com/us1/billing/manage-billing/billing-overview",
+    label: "Add funds",
+    hint: "Twilio Console → Current balance → Add Funds",
+  },
+  realphonevalidation: {
+    href: "https://my.realvalidation.com/",
+    label: "Add funds",
+    hint: "My Account → Add Funds ($25 minimum; auto-recharge available)",
+  },
 };
 
 function moneyTone(v: number | null, key: string): Tone {
@@ -336,6 +369,18 @@ export default function ProviderBalanceStrip({ variant = "page" }: { variant?: "
               )}
             </div>
             {r.note && <p className="text-[11px] text-gray-400 dark:text-gray-500">{r.note}</p>}
+            {TOP_UP[r.key] && (
+              <a
+                href={TOP_UP[r.key].href}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={TOP_UP[r.key].hint}
+                className="mt-auto pt-1.5 inline-flex items-center gap-1 text-xs text-ocean-blue hover:underline self-start"
+              >
+                {TOP_UP[r.key].label}
+                <ArrowTopRightOnSquareIcon className="w-3 h-3 shrink-0" />
+              </a>
+            )}
           </div>
         ))}
       </div>
