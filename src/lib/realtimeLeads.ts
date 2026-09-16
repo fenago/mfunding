@@ -123,6 +123,15 @@ export interface HeatInput {
    * buried because we once called the same merchant, which is the exact
    * complaint this panel was built to answer.
    *
+   * The cut is made on the UNIFIED event stream (realtime_lead_call_history),
+   * not inside deal_call_events' window — and that distinction is load-bearing.
+   * The window scopes the WAVV branch only, because WAVV is phone-keyed and
+   * needs attributing to a deal; ghl_call_log and activity_log rows are
+   * deal-keyed and pass through unwindowed, so they routinely predate the deal.
+   * Measured 2026-09-16: 91 deals carry deal-keyed call rows older than the deal
+   * itself (110 GHL rows, worst 14), one of them in the live hot window. Cutting
+   * inside the window would have looked right and fixed none of them.
+   *
    * `undefined`/`null` means UNREADABLE, same as true_attempts.
    */
   attempts_since_arrival?: number | null;
