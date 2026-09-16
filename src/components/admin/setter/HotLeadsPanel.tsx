@@ -210,13 +210,16 @@ export default function HotLeadsPanel({
   const [now, setNow] = useState(() => Date.now());
   const [showAll, setShowAll] = useState(false);
   const [showParked, setShowParked] = useState(false);
-  // Foldable, remembered — but DEFAULT EXPANDED. This is the alarm; it does not
-  // get to start life hidden.
+  // Foldable, remembered, and DEFAULT COLLAPSED (owner ruling 2026-09-16).
+  // The header still carries the whole alarm — the flame, the count, and
+  // "N need calling now" — so a folded panel is a one-line summons rather than a
+  // hidden section. Only a viewer who has explicitly expanded it before (the
+  // stored "0") reopens expanded, so the choice sticks per person.
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("hotLeadsCollapsed") === "1";
+      return localStorage.getItem("hotLeadsCollapsed") !== "0";
     } catch {
-      return false;
+      return true;
     }
   });
   useEffect(() => {
