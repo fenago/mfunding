@@ -93,6 +93,20 @@ export interface HeatInput {
   status: string | null;
   contact_attempts: number | null;
   spoke_at: string | null;
+  /**
+   * The TRUE dial count, from the realtime_lead_call_history RPC — the union of
+   * WAVV, GHL/LeadConnector, activity_log call rows and manual touches.
+   *
+   * This exists because deals.contact_attempts is NOT the number of dials. It is
+   * fed by the GHL telemetry path and the processor's log buttons, and misses
+   * every WAVV call — and WAVV is the primary dialer. Scoring heat off it told a
+   * setter "NEVER DIALED" about a merchant they had called the day before
+   * (MF-2026-0337, measured 2026-09-16), which is the fastest way to teach a team
+   * that the flames mean nothing.
+   *
+   * `undefined`/`null` means UNREADABLE, never zero — see attemptsKnown below.
+   */
+  true_attempts?: number | null;
   /** Terminal / parked statuses — pass the shared QUEUE_CLOSED_STATUSES set. */
 }
 
@@ -102,6 +116,12 @@ export interface Heat {
   deficit: number;
   attempts: number;
   ageMs: number;
+  /**
+   * False when the real call history could not be read. `attempts` is then the
+   * deals.contact_attempts FLOOR — a known undercount — so no surface may render
+   * it as a fact and none may say "never dialed".
+   */
+  attemptsKnown: boolean;
 }
 
 export function leadHeat(
@@ -110,15 +130,19 @@ export function leadHeat(
   isParked: (status: string | null) => boolean,
 ): Heat {
   const ageMs = Math.max(0, now - Date.parse(d.created_at));
-  const attempts = d.contact_attempts ?? 0;
+  const attemptsKnown = d.true_attempts !== undefined && d.true_attempts !== null;
+  const attempts = attemptsKnown ? (d.true_attempts as number) : (d.contact_attempts ?? 0);
   const deficit = expectedAttempts(ageMs) - attempts;
-  const base = { deficit, attempts, ageMs };
+  const base = { deficit, attempts, ageMs, attemptsKnown };
 
   if (isParked(d.status)) return { ...base, tier: "parked" };
   if (d.spoke_at) return { ...base, tier: "connected" };
   // The first hour with nobody having lifted a finger is the whole reason this
-  // panel exists — it outranks the pace maths entirely.
-  if (attempts === 0 && ageMs < HOUR) return { ...base, tier: "blazing" };
+  // panel exists — it outranks the pace maths entirely. But "blazing" accuses a
+  // named setter of doing nothing, so it may only fire on a count we can PROVE.
+  // With an unreadable history the lead still lands on the pace ladder below; it
+  // just doesn't scream UNTOUCHED at someone who may well have dialed.
+  if (attemptsKnown && attempts === 0 && ageMs < HOUR) return { ...base, tier: "blazing" };
   if (deficit >= 3) return { ...base, tier: "burning" };
   if (deficit >= 1) return { ...base, tier: "hot" };
   return { ...base, tier: "working" };

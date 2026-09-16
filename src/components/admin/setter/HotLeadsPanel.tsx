@@ -12,6 +12,7 @@ import { QUEUE_CLOSED_STATUSES } from "@/services/dealService";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { REALTIME_LEAD_SOURCES, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
 import { handoffState, leadHeat, HEAT_RANK, type Heat, type HeatTier } from "@/lib/realtimeLeads";
+import { dateTimeET } from "@/utils/time";
 
 /**
  * HotLeadsPanel — the 🔥 HOT section pinned to the TOP of the Setter Operations
@@ -29,15 +30,30 @@ import { handoffState, leadHeat, HEAT_RANK, type Heat, type HeatTier } from "@/l
  * REALTIME_LEAD_SOURCES in src/lib/sourceLabel.ts, the same map every other surface
  * uses to label a lead, so a new real-time vendor source lights up here for free.
  *
- * ACCESS — this is a plain `deals` select with NO closer filter, so RLS decides who
- * sees what, exactly as it already does elsewhere on this page: an admin or a
- * processor sees the whole board, a plain closer sees their own book plus unassigned
- * (the money wall, 20260827_setter_deal_money_wall.sql). No new data access, no RPC,
- * no bypass.
+ * ACCESS — the lead list is a plain `deals` select with NO closer filter, so RLS
+ * decides who sees what, exactly as it already does elsewhere on this page: an admin
+ * or a processor sees the whole board, a plain closer sees their own book plus
+ * unassigned (the money wall, 20260827_setter_deal_money_wall.sql). The call history
+ * comes from realtime_lead_call_history(), which re-derives that same visibility
+ * itself rather than trusting the ids it is handed. No new data access, no bypass.
  *
- * HONESTY (readers-must-distinguish-unreadable): a failed read renders a RED "the
- * read failed" box and NEVER "0 hot leads". A genuine zero renders one calm line —
- * no alarming empty box, which would teach the team to ignore the flames.
+ * WHERE THE CALL COUNT COMES FROM (20260916a) — NOT deals.contact_attempts.
+ * That column is fed by the GHL telemetry path and the processor's log buttons and
+ * misses every WAVV dial, and WAVV is the primary dialer. On 2026-09-16 this panel
+ * told the team that The Goldberg Group (MF-2026-0337) had NEVER BEEN DIALED when
+ * Kristine Gidoc had called them the previous afternoon; it undercounted Lmt of San
+ * Diego 1-against-3 and showed Garden View a last-attempt stamp six hours stale. A
+ * false accusation is worse than no alarm, because it teaches the team that the
+ * flames are noise — and then the genuinely untouched live transfer gets ignored
+ * with the rest. The RPC unions WAVV, GHL/LeadConnector, activity_log call rows and
+ * manual touches, dedupes across sources, and returns the individual calls.
+ *
+ * HONESTY (readers-must-distinguish-unreadable): a failed lead read renders a RED
+ * "the read failed" box and NEVER "0 hot leads". A failed CALL-HISTORY read renders
+ * an amber "call history unreadable" chip on the row and NEVER "NEVER DIALED" —
+ * "nobody called this merchant" is an accusation about a named person and may only
+ * be made from a count we can prove. A genuine zero renders one calm line — no
+ * alarming empty box, which would teach the team to ignore the flames.
  */
 
 // The window the owner asked for. Anything older stops being a speed-to-lead
@@ -86,6 +102,47 @@ type LoadState =
   | { kind: "error"; message: string }
   | { kind: "ready"; rows: HotRow[] };
 
+// ── TRUE call history, from realtime_lead_call_history(uuid[]) ────────────────
+/** One real dial, from whichever source recorded it. */
+interface CallEvent {
+  at: string;
+  /** wavv | ghl | activity | manual — which system recorded the dial. */
+  source: string;
+  disposition: string | null;
+  seconds: number | null;
+  /** The person who dialed, where the source could name them. */
+  who: string | null;
+}
+
+interface CallHistory {
+  /** The TRUE total. Always the full count, even when `calls` is capped. */
+  attempts: number;
+  last_at: string | null;
+  last_disposition: string | null;
+  last_by: string | null;
+  last_source: string | null;
+  calls: CallEvent[];
+}
+
+/** Keyed by deal id. A deal ABSENT from the map is unreadable, not zero. */
+type HistoryState =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; byDeal: Record<string, CallHistory> };
+
+/** How many days of the chase the row's tracker shows. Matches TouchTracker in
+ *  ProcessorDetailDrawer — same window, same "day 1 = arrival" rule. */
+const TRACKER_DAYS = 14;
+const DAY_MS = 24 * 3_600_000;
+
+/** Human label for where a dial was recorded, so "who called" is never a mystery. */
+const SOURCE_WORD: Record<string, string> = {
+  wavv: "WAVV",
+  ghl: "VibeReach",
+  activity: "logged",
+  manual: "logged by hand",
+};
+
 const PARKED = new Set<string>(QUEUE_CLOSED_STATUSES);
 const isParked = (status: string | null) => !!status && PARKED.has(status);
 
@@ -122,12 +179,19 @@ function countdown(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** The merchant's own answer to "best time to reach you" — free text from the
- *  vendor email, displayed and never parsed (same rule as My Day). */
-function bestTimeToCall(r: HotRow): string | undefined {
-  const raw = r.lead_qual && typeof r.lead_qual === "object" ? r.lead_qual["best_time"] : null;
-  const s = typeof raw === "string" ? raw.trim() : "";
-  if (!s || /^(n\/?a|none|any|anytime)$/i.test(s)) return undefined;
+/**
+ * A field the LEAD VENDOR supplied in the intake email, parked on deals.lead_qual
+ * by the live-transfer/real-time intake function. Free text — displayed verbatim,
+ * never parsed into a decision (same rule as My Day).
+ *
+ * Every one of these is the vendor's claim, not ours and not the merchant's file,
+ * so everything rendered from here is labelled "Vendor says". The owner asked
+ * where "10am PST" came from; the answer is this object, and now the row says so.
+ */
+function vendorField(r: HotRow, key: string): string | undefined {
+  const raw = r.lead_qual && typeof r.lead_qual === "object" ? r.lead_qual[key] : null;
+  const s = typeof raw === "string" ? raw.trim() : typeof raw === "number" ? String(raw) : "";
+  if (!s || /^(n\/?a|none|any|anytime|no|unknown|-)$/i.test(s)) return undefined;
   return s;
 }
 
@@ -182,6 +246,12 @@ const TIER_UI: Record<
 
 /** The one line that says, in words, WHY this lead is the colour it is. */
 function heatWhy(r: HotRow, h: Heat, now: number): string {
+  // With the true call history unreadable, every sentence below that quotes an
+  // attempt count would be quoting a number we know is short (contact_attempts
+  // misses WAVV). Say that instead of guessing out loud.
+  if (!h.attemptsKnown) {
+    return `Arrived ${ago(r.created_at, now)}. The real call history couldn't be read, so the dial count below is a floor, not a fact — check VibeReach before assuming nobody has called.`;
+  }
   switch (h.tier) {
     case "blazing":
       return r.lead_source === "live_transfer"
@@ -207,6 +277,7 @@ export default function HotLeadsPanel({
   onOpen: (lookup: { dealId: string }) => void;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const [history, setHistory] = useState<HistoryState>({ kind: "loading" });
   const [now, setNow] = useState(() => Date.now());
   const [showAll, setShowAll] = useState(false);
   const [showParked, setShowParked] = useState(false);
@@ -243,10 +314,32 @@ export default function HotLeadsPanel({
     if (error) {
       // UNREADABLE ≠ zero. Never let a failed read render as "no hot leads".
       setState({ kind: "error", message: error.message });
+      setHistory({ kind: "error", message: "the lead list itself could not be read" });
       return;
     }
-    setState({ kind: "ready", rows: (data ?? []) as unknown as HotRow[] });
+    const rows = (data ?? []) as unknown as HotRow[];
+    setState({ kind: "ready", rows });
     setNow(Date.now());
+
+    // ── The TRUE dial counts, in one round trip for the whole panel. ──
+    // Second read on purpose: the lead list is RLS-filtered `deals`, while the
+    // call history has to union four tables (one of them phone-keyed, so it needs
+    // SECURITY DEFINER) and cannot be expressed as a PostgREST join.
+    if (rows.length === 0) {
+      setHistory({ kind: "ready", byDeal: {} });
+      return;
+    }
+    const hist = await supabase.rpc("realtime_lead_call_history", {
+      p_deal_ids: rows.map((x) => x.id),
+    });
+    if (hist.error) {
+      setHistory({ kind: "error", message: hist.error.message });
+      return;
+    }
+    setHistory({
+      kind: "ready",
+      byDeal: (hist.data ?? {}) as Record<string, CallHistory>,
+    });
   }, []);
 
   useEffect(() => {
@@ -265,7 +358,18 @@ export default function HotLeadsPanel({
 
   const { live, parked, liveCount } = useMemo(() => {
     const rows = state.kind === "ready" ? state.rows : [];
-    const scored = rows.map((r) => ({ r, h: leadHeat(r, now, isParked) }));
+    const byDeal = history.kind === "ready" ? history.byDeal : null;
+    const scored = rows.map((r) => {
+      // null = unreadable (the RPC failed, or this deal is outside what the
+      // caller may see). leadHeat treats that as "unknown", never as zero, so a
+      // row can never scream UNTOUCHED on the strength of a missing read.
+      const hist = byDeal ? (byDeal[r.id] ?? null) : null;
+      return {
+        r,
+        hist,
+        h: leadHeat({ ...r, true_attempts: hist ? hist.attempts : null }, now, isParked),
+      };
+    });
     // Hottest first; inside a tier, the one that has been waiting longest.
     scored.sort(
       (a, b) =>
@@ -279,7 +383,7 @@ export default function HotLeadsPanel({
       parked: scored.filter((s) => s.h.tier === "parked"),
       liveCount: liveRows.length,
     };
-  }, [state, now]);
+  }, [state, history, now]);
 
   // The number that earns the flame in the header: leads actually being neglected.
   const urgentCount = live.filter((s) => s.h.tier === "blazing" || s.h.tier === "burning").length;
@@ -394,12 +498,26 @@ export default function HotLeadsPanel({
             <>
               <p className="mt-1.5 text-[11px] text-gray-600 dark:text-gray-300">
                 These are the leads we <b>pay the most for</b> and they go cold fastest. Call them{" "}
-                <b>immediately and repeatedly</b> — the attempt count on each row is how many dials
-                it has actually had.
+                <b>immediately and repeatedly</b> — the attempt count on each row is every real dial
+                from every source (WAVV, VibeReach, and anything logged by hand).
               </p>
+              {history.kind === "error" && (
+                <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-200">
+                  <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold">Couldn't read the call history.</div>
+                    <div className="mt-0.5">
+                      The dial counts below fall back to the deal's own counter, which{" "}
+                      <b>misses every WAVV call</b> — treat them as a floor, not a fact, and don't
+                      conclude anyone failed to call.
+                    </div>
+                    <div className="mt-0.5 font-mono opacity-80">{history.message}</div>
+                  </div>
+                </div>
+              )}
               <div className="mt-3 space-y-1.5">
-                {visible.map(({ r, h }) => (
-                  <HotLeadRow key={r.id} r={r} h={h} now={now} onOpen={onOpen} />
+                {visible.map(({ r, h, hist }) => (
+                  <HotLeadRow key={r.id} r={r} h={h} hist={hist} now={now} onOpen={onOpen} />
                 ))}
               </div>
               {live.length > PREVIEW_ROWS && (
@@ -433,8 +551,8 @@ export default function HotLeadsPanel({
               </button>
               {showParked && (
                 <div className="mt-2 space-y-1.5">
-                  {parked.map(({ r, h }) => (
-                    <HotLeadRow key={r.id} r={r} h={h} now={now} onOpen={onOpen} />
+                  {parked.map(({ r, h, hist }) => (
+                    <HotLeadRow key={r.id} r={r} h={h} hist={hist} now={now} onOpen={onOpen} />
                   ))}
                 </div>
               )}
@@ -446,27 +564,101 @@ export default function HotLeadsPanel({
   );
 }
 
+/**
+ * A 14-day chase tracker sized to live inside a hot-lead row.
+ *
+ * Same idea and the same arithmetic as TouchTracker in ProcessorDetailDrawer —
+ * one cell per day since the lead arrived, green with a count where it was
+ * called, light red for an elapsed day with none, grey for days not yet reached —
+ * shrunk from that drawer's 24px cells to 12px so fourteen of them fit on a row
+ * the setter is scanning, not studying. The day label moves into the tooltip,
+ * which also carries the real dates and dispositions.
+ *
+ * The day -1 fold is deliberate and matches the drawer: a WAVV call that ends in
+ * "Appointment Set" MINTS the deal, so the call that created the lead is stamped
+ * minutes before the deal row exists. Without the fold, day 1 shows red over the
+ * very call that produced the merchant.
+ */
+function MiniTracker({ createdAt, calls }: { createdAt: string; calls: CallEvent[] }) {
+  const created = Date.parse(createdAt);
+  const now = Date.now();
+  const elapsed = Math.floor((now - created) / DAY_MS);
+  const counts = new Array(TRACKER_DAYS).fill(0) as number[];
+  for (const c of calls) {
+    let idx = Math.floor((Date.parse(c.at) - created) / DAY_MS);
+    if (idx === -1) idx = 0;
+    if (idx >= 0 && idx < TRACKER_DAYS) counts[idx] += 1;
+  }
+  const missed = counts.filter((c, i) => i <= Math.min(elapsed, TRACKER_DAYS - 1) && c === 0).length;
+
+  return (
+    <div className="mt-1 flex items-center gap-1.5">
+      <div className="flex gap-[2px]">
+        {counts.map((c, i) => {
+          const future = i > elapsed;
+          const today = i === elapsed && elapsed < TRACKER_DAYS;
+          const cls = future
+            ? "bg-gray-100 dark:bg-gray-800"
+            : c > 0
+              ? "bg-emerald-500 text-white"
+              : "bg-red-100 text-red-400 dark:bg-red-900/30 dark:text-red-400";
+          return (
+            <div
+              key={i}
+              title={`Day ${i + 1}${today ? " (today)" : ""} — ${
+                future ? "not reached yet" : c > 0 ? `${c} call${c === 1 ? "" : "s"}` : "no calls"
+              }`}
+              className={`w-3 h-3.5 rounded-[2px] flex items-center justify-center text-[8px] font-bold leading-none ${cls} ${
+                today ? "ring-1 ring-ocean-blue" : ""
+              }`}
+            >
+              {future ? "" : c > 0 ? c : ""}
+            </div>
+          );
+        })}
+      </div>
+      <span className="text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
+        {TRACKER_DAYS}-day chase
+        {missed > 0 && elapsed < TRACKER_DAYS
+          ? ` · ${missed} silent day${missed === 1 ? "" : "s"}`
+          : ""}
+      </span>
+    </div>
+  );
+}
+
 /** One lead. The whole row opens the merchant in the console above — the same
  *  onOpen({ dealId }) every other list on this page uses. */
 function HotLeadRow({
   r,
   h,
+  hist,
   now,
   onOpen,
 }: {
   r: HotRow;
   h: Heat;
+  /** TRUE call history for this deal. `null` = unreadable, NEVER "zero calls". */
+  hist: CallHistory | null;
   now: number;
   onOpen: (lookup: { dealId: string }) => void;
 }) {
   const ui = TIER_UI[h.tier];
   const src = sourceMeta(r.lead_source);
   const handoff = handoffState(r, now);
-  const stated = bestTimeToCall(r);
+  // Vendor-supplied facts. Labelled as the vendor's claim wherever they render,
+  // because that is exactly what the owner asked: where did "10am PST" come from?
+  const bestTime = vendorField(r, "best_time");
+  const vendorContact = vendorField(r, "contact_name");
+  const vendorFico = vendorField(r, "fico");
+  const vendorDeposits = vendorField(r, "monthly_deposits");
   // The real-time 5-minute clock. Only meaningful while the lead is untouched —
   // once someone has reached out, speed-to-lead is already banked in the attempt.
   const dueMs =
     r.first_call_due_at && !r.first_attempt_at ? Date.parse(r.first_call_due_at) - now : null;
+  // The last REAL dial, from the RPC — not deals.last_attempt_at, which is stale
+  // whenever the newest call came through WAVV (Garden View was six hours behind).
+  const lastAt = hist?.last_at ?? null;
 
   return (
     <div
@@ -522,27 +714,68 @@ function HotLeadRow({
 
       <p className="mt-1 text-[11px] text-gray-700 dark:text-gray-200">{heatWhy(r, h, now)}</p>
 
-      {/* ATTEMPTS + LAST TOUCH — the two numbers the owner asked to be visible. */}
+      {/* HOW MANY TIMES, AND EXACTLY WHEN. Both owner complaints answered on one
+          line: a count from the real union of every dialer, and the ABSOLUTE date
+          and time in ET (the business runs on ET) with the relative age kept
+          alongside it, because "1d ago" alone never told anyone when to call back. */}
       <div className="mt-1 flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px]">
-        <span
-          className={`font-bold ${
-            h.attempts === 0
-              ? "text-red-600 dark:text-red-400"
-              : "text-gray-700 dark:text-gray-200"
-          }`}
-          title="Dial attempts logged on this deal, including auto-audited GHL calls"
-        >
-          📞 {h.attempts === 0 ? "NEVER DIALED" : `${h.attempts} attempt${h.attempts === 1 ? "" : "s"}`}
-        </span>
-        <span className="text-gray-500 dark:text-gray-400">
-          {r.last_attempt_at ? `last tried ${ago(r.last_attempt_at, now)}` : "no touch yet"}
-        </span>
+        {!h.attemptsKnown ? (
+          <span
+            className="font-bold text-amber-700 dark:text-amber-300"
+            title="The call-history read failed, so this row cannot say how many times this merchant was dialed. It is NOT a claim that nobody called."
+          >
+            📞 CALL HISTORY UNREADABLE
+          </span>
+        ) : (
+          <span
+            className={`font-bold ${
+              h.attempts === 0
+                ? "text-red-600 dark:text-red-400"
+                : "text-gray-700 dark:text-gray-200"
+            }`}
+            title="Every real dial on this merchant — WAVV, VibeReach/LeadConnector, and anything logged by hand — deduped so one call is never counted twice."
+          >
+            📞{" "}
+            {h.attempts === 0
+              ? "NEVER DIALED"
+              : `${h.attempts} call${h.attempts === 1 ? "" : "s"}`}
+          </span>
+        )}
+
+        {lastAt ? (
+          <span className="text-gray-600 dark:text-gray-300">
+            last called <b className="font-semibold">{dateTimeET(lastAt)}</b>{" "}
+            <span className="text-gray-400 dark:text-gray-500">({ago(lastAt, now)})</span>
+            {hist?.last_disposition ? ` — ${hist.last_disposition}` : ""}
+            {hist?.last_by ? ` · ${hist.last_by}` : ""}
+            {hist?.last_source && SOURCE_WORD[hist.last_source]
+              ? ` · ${SOURCE_WORD[hist.last_source]}`
+              : ""}
+          </span>
+        ) : h.attemptsKnown ? (
+          <span className="text-gray-500 dark:text-gray-400">no call on record yet</span>
+        ) : // The floor from deals.contact_attempts. Shown only to say "at least
+        // this much happened" — never as the count.
+        (r.contact_attempts ?? 0) > 0 && r.last_attempt_at ? (
+          <span className="text-gray-500 dark:text-gray-400">
+            deal counter says at least {r.contact_attempts}, last {dateTimeET(r.last_attempt_at)}
+          </span>
+        ) : null}
+
         {r.spoke_at && (
-          <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-            🗣 spoke {ago(r.spoke_at, now)}
+          <span
+            className="font-semibold text-emerald-600 dark:text-emerald-400"
+            title={`Confirmed conversation ${dateTimeET(r.spoke_at)}`}
+          >
+            🗣 spoke {dateTimeET(r.spoke_at)}
           </span>
         )}
       </div>
+
+      {/* The 14-day chase at a glance. Only where we can read the real calls — a
+          tracker drawn from an unreadable history would paint fourteen red days
+          over a merchant somebody called every morning. */}
+      {hist && <MiniTracker createdAt={r.created_at} calls={hist.calls} />}
 
       {/* The time-critical extras, only when they mean something. */}
       <div className="mt-1 flex items-center gap-x-2 gap-y-1 flex-wrap text-[10px]">
@@ -564,12 +797,41 @@ function HotLeadRow({
             ⚡ Handoff taken
           </span>
         )}
-        {stated && (
+        {/* PROVENANCE, spelled out. The owner asked "they said 10am PST — was that
+            given to us in the real-time lead?" It was: the vendor collected it on
+            the qualification call and put it in the intake email, and the intake
+            function parked it on deals.lead_qual. Saying "Vendor says" on the chip
+            means nobody has to wonder again whose claim this is. */}
+        {bestTime && (
           <span
             className="font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-            title="The merchant's own answer to “best time to reach you” — call at their time, don't just satisfy a stopwatch."
+            title="Supplied by the lead vendor in the intake email, from their qualification call with the merchant. Call at their time — don't just satisfy a stopwatch."
           >
-            🕐 They said "{stated}"
+            🕐 Vendor says best time: {bestTime}
+          </span>
+        )}
+        {vendorContact && (
+          <span
+            className="font-semibold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+            title="The person the vendor spoke to — ask for them by name."
+          >
+            👤 Ask for {vendorContact}
+          </span>
+        )}
+        {vendorDeposits && (
+          <span
+            className="font-semibold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+            title="Monthly deposits as stated to the lead vendor — unverified until the bank statements land."
+          >
+            🏦 Vendor says {vendorDeposits}/mo
+          </span>
+        )}
+        {vendorFico && (
+          <span
+            className="font-semibold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+            title="FICO as stated to the lead vendor — self-reported, not a pull."
+          >
+            📊 Vendor says FICO {vendorFico}
           </span>
         )}
         {r.amount_requested != null && r.amount_requested > 0 && (
