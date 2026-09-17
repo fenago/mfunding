@@ -118,6 +118,11 @@ import {
   type BenchmarkValues,
 } from "@/components/admin/IndustryBenchmarks";
 import { INDUSTRY_BENCHMARKS, benchmarkRag, benchmarkVerdict, type BenchmarkId } from "@/data/industryBenchmarks";
+import {
+  signaturesByCustomer,
+  type DocCompletion,
+  type SignatureState,
+} from "@/lib/applicationSignature";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** Which dialer wrote this row. Not cosmetic: it decides how far down the funnel
@@ -227,7 +232,15 @@ interface NumberRow {
 
 interface DealRow {
   id: string;
+  customer_id: string | null;
   assigned_closer_id: string | null;
+  /** WHO SENT THE APPLICATION — not who the deal is assigned to. These are
+   *  different people often enough to matter: see the "Apps sent" column note. */
+  application_sent_by: string | null;
+  /** 'recorded' | 'inferred' | 'unknown' | null (null = never sent). An INFERRED
+   *  attribution was reconstructed from the activity log after the fact and is
+   *  counted separately so a reconstruction never passes as a recorded fact. */
+  application_sent_attribution: string | null;
   appointment_at: string | null;
   application_sent_at: string | null;
   funded_at: string | null;
@@ -1342,7 +1355,15 @@ interface SetterRow {
   uniqueLeads: number;
   // Pipeline side — only meaningful for a real setter (deals join on profiles.id)
   appointments: number | null;
+  /** Applications this setter SENT in range (deals.application_sent_by). */
   appsSent: number | null;
+  /** How many of those carry a RECONSTRUCTED sender rather than a recorded one. */
+  appsSentInferred: number | null;
+  /** Of the applications they sent, how many came back SIGNED. null = the
+   *  signature ledger was unreadable, which renders "—", never 0. */
+  appsSigned: number | null;
+  /** Sent applications whose signature state could not be established. */
+  appsSignatureUnknown: number | null;
   funded: number | null;
   fundedAmount: number | null;
 }
@@ -1611,6 +1632,9 @@ export default function SetterPerformancePage() {
   const [totalRowsEver, setTotalRowsEver] = useState<number | null>(null);
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   const [dealRows, setDealRows] = useState<DealRow[] | null>(null);
+  /** Signature state per customer for the applications sent in range.
+   *  null = UNREADABLE, which renders "—", never "nobody signed". */
+  const [appSignatures, setAppSignatures] = useState<Map<string, SignatureState> | null>(new Map());
   const [dealsError, setDealsError] = useState<string | null>(null);
   // Productive contacts (the pipeline-side positive). null = UNREADABLE, which
   // renders as an error — never as "this setter produced nothing".
@@ -1876,7 +1900,7 @@ export default function SetterPerformancePage() {
     try {
       const { data, error } = await supabase
         .from("deals")
-        .select("id,assigned_closer_id,appointment_at,application_sent_at,funded_at,amount_funded,status")
+        .select("id,customer_id,assigned_closer_id,application_sent_by,application_sent_attribution,appointment_at,application_sent_at,funded_at,amount_funded,status")
         .or(
           `and(appointment_at.gte.${fromIso},appointment_at.lt.${toIso}),` +
           `and(application_sent_at.gte.${fromIso},application_sent_at.lt.${toIso}),` +
@@ -1884,10 +1908,56 @@ export default function SetterPerformancePage() {
         )
         .limit(5000);
       if (error) throw new Error(error.message);
-      setDealRows((data ?? []) as DealRow[]);
+      const rows = (data ?? []) as DealRow[];
+      setDealRows(rows);
+
+      // ── DID THOSE APPLICATIONS COME BACK SIGNED? ──
+      // Scoped to the merchants whose application actually went out in range —
+      // a bounded handful, not the whole 5,000-row pull. A FAILED read sets the
+      // map to null, which renders the Signed column as "—" for everyone rather
+      // than accusing every setter of sending applications nobody signed.
+      const custIds = Array.from(
+        new Set(
+          rows
+            .filter((d) => d.application_sent_at)
+            .map((d) => d.customer_id)
+            .filter((v): v is string => !!v),
+        ),
+      );
+      if (custIds.length === 0) {
+        setAppSignatures(new Map());
+      } else {
+        // Two reads: who signed, and who we ever LOOKED AT. The completions
+        // ledger is lazy (written only when someone opens a contact's docs), so
+        // without the second read an absent row would read as "didn't sign" for
+        // merchants nobody has ever checked — and the Signed column would accuse
+        // setters of sending applications that went unanswered when we simply
+        // never looked. See signaturesByCustomer.
+        const [comps, checkedRows] = await Promise.all([
+          supabase
+            .from("ghl_doc_completions")
+            .select("customer_id, doc_name, completed_seen_at")
+            .in("customer_id", custIds),
+          supabase.from("customers").select("id, ghl_docs_checked_at").in("id", custIds),
+        ]);
+        setAppSignatures(
+          comps.error || checkedRows.error
+            ? null
+            : signaturesByCustomer(
+                (comps.data ?? []) as DocCompletion[],
+                custIds,
+                new Map(
+                  ((checkedRows.data ?? []) as { id: string; ghl_docs_checked_at: string | null }[])
+                    .filter((c) => !!c.ghl_docs_checked_at)
+                    .map((c) => [c.id, c.ghl_docs_checked_at]),
+                ),
+              ),
+        );
+      }
     } catch (e) {
       // null (not []) so the pipeline columns render "—", never a fabricated 0.
       setDealRows(null);
+      setAppSignatures(null);
       setDealsError(e instanceof Error ? e.message : "Failed to read deals");
     }
   }, [fromIso, toIso]);
@@ -2502,7 +2572,7 @@ export default function SetterPerformancePage() {
   // unattributed GHL row is keyed by the name GHL itself stamped on the call, so
   // two different unmapped GHL users never merge into one anonymous row.
   const setterRows = useMemo((): SetterRow[] => {
-    interface Acc extends Omit<SetterRow, "uniqueLeads" | "activeDays" | "appointments" | "appsSent" | "funded" | "fundedAmount"> {
+    interface Acc extends Omit<SetterRow, "uniqueLeads" | "activeDays" | "appointments" | "appsSent" | "appsSentInferred" | "appsSigned" | "appsSignatureUnknown" | "funded" | "fundedAmount"> {
       phones: Set<string>; days: Set<string>; numberSet: Set<string>;
     }
     const acc = new Map<string, Acc>();
@@ -2548,23 +2618,73 @@ export default function SetterPerformancePage() {
 
     // Pipeline half. Only a mapped setter has a profiles.id to join deals on;
     // an unassigned number gets null (renders "—"), never 0.
-    const byCloser = new Map<string, { appts: number; apps: number; funded: number; amount: number }>();
+    //
+    // ── TWO DIFFERENT PEOPLE, TWO DIFFERENT KEYS ──
+    // "Apps sent" used to be keyed on assigned_closer_id, i.e. it counted
+    // applications sent on deals ASSIGNED to this setter regardless of who
+    // actually sent them — while its help text said "Deals whose application was
+    // sent in this range", which everyone read as "that this setter sent". Those
+    // are different claims and they disagree whenever a processor or another
+    // setter sends the application on somebody else's deal.
+    //
+    // It is now keyed on deals.application_sent_by — who actually pressed send.
+    // Appointments and funded stay on assigned_closer_id, which is the right key
+    // for those (they are questions about the setter's book), and their labels
+    // say so.
+    //
+    // 36 of the 63 recorded sends were RECONSTRUCTED from the activity log after
+    // the fact rather than recorded at the time, so those are tallied separately
+    // and shown as an "≈N inferred" note. A reconstruction that presents as a
+    // recorded fact is the same bug in a smaller box.
+    const byCloser = new Map<
+      string,
+      {
+        appts: number;
+        apps: number;
+        appsInferred: number;
+        appsSigned: number;
+        appsSignatureUnknown: number;
+        funded: number;
+        amount: number;
+      }
+    >();
+    const blank = () => ({
+      appts: 0,
+      apps: 0,
+      appsInferred: 0,
+      appsSigned: 0,
+      appsSignatureUnknown: 0,
+      funded: 0,
+      amount: 0,
+    });
     if (dealRows) {
       for (const d of dealRows) {
-        if (!d.assigned_closer_id) continue;
-        const b = byCloser.get(d.assigned_closer_id) ?? { appts: 0, apps: 0, funded: 0, amount: 0 };
-        if (inRange(d.appointment_at, range.from, range.to)) b.appts++;
-        if (inRange(d.application_sent_at, range.from, range.to)) b.apps++;
-        if (inRange(d.funded_at, range.from, range.to) && d.status === "funded") {
-          b.funded++;
-          b.amount += d.amount_funded ?? 0;
+        if (d.assigned_closer_id) {
+          const b = byCloser.get(d.assigned_closer_id) ?? blank();
+          if (inRange(d.appointment_at, range.from, range.to)) b.appts++;
+          if (inRange(d.funded_at, range.from, range.to) && d.status === "funded") {
+            b.funded++;
+            b.amount += d.amount_funded ?? 0;
+          }
+          byCloser.set(d.assigned_closer_id, b);
         }
-        byCloser.set(d.assigned_closer_id, b);
+        // The application half — keyed on the SENDER, not the assignee.
+        if (d.application_sent_by && inRange(d.application_sent_at, range.from, range.to)) {
+          const b = byCloser.get(d.application_sent_by) ?? blank();
+          b.apps++;
+          if (d.application_sent_attribution === "inferred") b.appsInferred++;
+          // Signed? appSignatures === null means the ledger read FAILED, so
+          // every one of these is "unknown" and the column renders "—".
+          const sig = appSignatures && d.customer_id ? appSignatures.get(d.customer_id) : null;
+          if (!appSignatures || !sig || sig.kind === "unknown") b.appsSignatureUnknown++;
+          else if (sig.kind === "signed") b.appsSigned++;
+          byCloser.set(d.application_sent_by, b);
+        }
       }
     }
 
     return [...acc.values()].map(({ phones, days, numberSet, ...row }) => {
-      const deal = row.attributed && dealRows ? (byCloser.get(row.key) ?? { appts: 0, apps: 0, funded: 0, amount: 0 }) : null;
+      const deal = row.attributed && dealRows ? (byCloser.get(row.key) ?? blank()) : null;
       return {
         ...row,
         numbers: [...numberSet],
@@ -2572,11 +2692,18 @@ export default function SetterPerformancePage() {
         activeDays: days.size,
         appointments: deal ? deal.appts : null,
         appsSent: deal ? deal.apps : null,
+        /** How many of appsSent carry a RECONSTRUCTED sender, not a recorded one. */
+        appsSentInferred: deal ? deal.appsInferred : null,
+        /** Of the applications this setter sent, how many came back SIGNED.
+         *  null when the signature ledger could not be read at all. */
+        appsSigned: deal && appSignatures ? deal.appsSigned : null,
+        /** Sent applications whose signature state we could not establish. */
+        appsSignatureUnknown: deal ? deal.appsSignatureUnknown : null,
         funded: deal ? deal.funded : null,
         fundedAmount: deal ? deal.amount : null,
       };
     });
-  }, [aggRows, dealRows, range]);
+  }, [aggRows, dealRows, appSignatures, range]);
 
   const sortedSetterRows = useMemo(() => {
     const val = (r: SetterRow, k: SortKey): number | string => {
@@ -2591,6 +2718,7 @@ export default function SetterPerformancePage() {
         case "talk":          return r.talkSeconds;
         case "appointments":  return r.appointments ?? -1;
         case "appsSent":      return r.appsSent ?? -1;
+        case "appsSigned":    return r.appsSigned ?? -1;
         case "funded":        return r.funded ?? -1;
       }
     };
@@ -4416,7 +4544,49 @@ export default function SetterPerformancePage() {
                                 </td>
                                 <td className={TD_NUM}>{r.positives.toLocaleString()}</td>
                                 <td className={`${TD_NUM} ${GROUP_EDGE}`}>{r.appointments === null ? <Metric value={null} /> : r.appointments.toLocaleString()}</td>
-                                <td className={TD_NUM}>{r.appsSent === null ? <Metric value={null} /> : r.appsSent.toLocaleString()}</td>
+                                <td className={TD_NUM}>
+                                  {r.appsSent === null ? <Metric value={null} /> : (
+                                    <span>
+                                      {r.appsSent.toLocaleString()}
+                                      {/* A reconstructed sender is not a recorded
+                                          one, and must not pass as one. */}
+                                      {r.appsSentInferred ? (
+                                        <span
+                                          className="text-[10px] text-amber-600 dark:text-amber-400 ml-1"
+                                          title={`${r.appsSentInferred} of these have a sender we reconstructed from the activity log after the fact, not one recorded at the time. Our best reading, not proof.`}
+                                        >
+                                          ≈{r.appsSentInferred}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className={TD_NUM}>
+                                  {r.appsSigned === null ? <Metric value={null} /> : (
+                                    <span
+                                      className={
+                                        r.appsSent && r.appsSigned === 0
+                                          ? "text-red-600 dark:text-red-400 font-semibold"
+                                          : undefined
+                                      }
+                                      title={
+                                        r.appsSent
+                                          ? `${r.appsSigned} of the ${r.appsSent} application(s) they sent came back signed.`
+                                          : undefined
+                                      }
+                                    >
+                                      {r.appsSigned.toLocaleString()}
+                                      {r.appsSignatureUnknown ? (
+                                        <span
+                                          className="text-[10px] text-amber-600 dark:text-amber-400 ml-1"
+                                          title={`${r.appsSignatureUnknown} of their sends have a signature state we could not establish — these are NOT counted as unsigned.`}
+                                        >
+                                          ?{r.appsSignatureUnknown}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  )}
+                                </td>
                                 <td className={TD_NUM}>
                                   {r.funded === null ? <Metric value={null} /> : (
                                     <span title={r.fundedAmount ? `${usd(r.fundedAmount)} funded` : undefined}>
@@ -4429,7 +4599,7 @@ export default function SetterPerformancePage() {
                             );
                           })}
                           {sortedSetterRows.length === 0 && (
-                            <tr><td colSpan={12} className="text-center text-sm text-gray-400 py-8">No outbound calls in this range.</td></tr>
+                            <tr><td colSpan={13} className="text-center text-sm text-gray-400 py-8">No outbound calls in this range.</td></tr>
                           )}
                         </tbody>
                         <tfoot>
@@ -4445,6 +4615,7 @@ export default function SetterPerformancePage() {
                             <td className={TD_NUM}>{funnel.positives.toLocaleString()}</td>
                             <td className={`${TD_NUM} ${GROUP_EDGE}`}>{sumOrDash(sortedSetterRows.map((r) => r.appointments))}</td>
                             <td className={TD_NUM}>{sumOrDash(sortedSetterRows.map((r) => r.appsSent))}</td>
+                            <td className={TD_NUM}>{sumOrDash(sortedSetterRows.map((r) => r.appsSigned))}</td>
                             <td className={TD_NUM}>{sumOrDash(sortedSetterRows.map((r) => r.funded))}</td>
                           </tr>
                         </tfoot>
@@ -4697,7 +4868,7 @@ export default function SetterPerformancePage() {
                             );
                           })}
                           {talk.rows.length === 0 && (
-                            <tr><td colSpan={12} className="text-center text-sm text-gray-400 py-8">No outbound calls in this range.</td></tr>
+                            <tr><td colSpan={13} className="text-center text-sm text-gray-400 py-8">No outbound calls in this range.</td></tr>
                           )}
                         </tbody>
                         <tfoot>
@@ -5676,7 +5847,7 @@ export default function SetterPerformancePage() {
 // ── Small shared pieces ──────────────────────────────────────────────────────
 type SortKey =
   | "name" | "dials" | "dialsPerDay" | "connects" | "human" | "conversations"
-  | "positives" | "talk" | "appointments" | "appsSent" | "funded";
+  | "positives" | "talk" | "appointments" | "appsSent" | "appsSigned" | "funded";
 
 /** `groupStart` marks the first PIPELINE column, which carries the vertical rule
  *  separating it from the dialing group. */
@@ -5690,9 +5861,10 @@ const SETTER_COLUMNS: { key: SortKey | null; label: string; align: string; help?
   { key: null,            label: "Human %",   align: "text-right", help: "Humans ÷ connects" },
   { key: "conversations", label: "Convos",    align: "text-right", help: CONVERSATION_HELP },
   { key: "positives",     label: "Positive",  align: "text-right", help: "Interested · Appointment Set · Full Application · Callback" },
-  { key: "appointments",  label: "Appts",     align: "text-right", help: "Deals with an appointment booked in this range", groupStart: true },
-  { key: "appsSent",      label: "Apps sent", align: "text-right", help: "Deals whose application was sent in this range" },
-  { key: "funded",        label: "Funded",    align: "text-right", help: "Deals funded in this range" },
+  { key: "appointments",  label: "Appts",     align: "text-right", help: "Deals in THIS SETTER'S BOOK (assigned to them) with an appointment booked in this range", groupStart: true },
+  { key: "appsSent",      label: "Apps sent", align: "text-right", help: "Applications THIS SETTER SENT in this range — keyed on who pressed send (deals.application_sent_by), not on who the deal is assigned to. An \u2248N note means N of them have a sender we reconstructed from the activity log after the fact rather than recorded at the time; treat those as our best reading, not as proof." },
+  { key: "appsSigned",    label: "Signed",    align: "text-right", help: "Of the applications this setter sent in range, how many the merchant actually SIGNED. Sending is not the outcome — a sent application nobody signed is a deal stopped dead. \"?N\" means N of their sends have a signature state we could not read; \u2014 means the signature ledger itself was unreadable." },
+  { key: "funded",        label: "Funded",    align: "text-right", help: "Deals in THIS SETTER'S BOOK funded in this range" },
 ];
 
 /** Sum a column of possibly-null values. If ANY value is unknown the total is

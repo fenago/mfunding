@@ -9,17 +9,19 @@ import {
   WrenchScrewdriverIcon,
 } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
-import { QUEUE_CLOSED_STATUSES, getDealById } from "@/services/dealService";
-import { DEAL_STATUS_CONFIG, type DealStatus, type DealWithCustomer } from "@/types/deals";
+import { QUEUE_CLOSED_STATUSES } from "@/services/dealService";
+import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { REALTIME_LEAD_SOURCES, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
 import { handoffState, leadHeat, spokeAttribution, HEAT_RANK, type Heat, type HeatTier } from "@/lib/realtimeLeads";
 import { dateTimeET } from "@/utils/time";
-import { useUserProfile } from "@/context/UserProfileContext";
-import SetterActionRail from "@/components/admin/setter/SetterActionRail";
-import SetterCommsPanel from "@/components/admin/setter/SetterCommsPanel";
-import SetterCallOutcome from "@/components/admin/setter/SetterCallOutcome";
-import SetterNotes from "@/components/admin/setter/SetterNotes";
-import BookAppointmentControl from "@/components/admin/BookAppointmentControl";
+import ChaseTracker from "@/components/admin/shared/ChaseTracker";
+import LeadActionsDrawer from "@/components/admin/shared/LeadActionsDrawer";
+import {
+  loadCallHistory,
+  CALL_SOURCE_WORD,
+  type CallHistory,
+  type HistoryState,
+} from "@/lib/callHistory";
 
 /**
  * HotLeadsPanel — the 🔥 HOT section pinned to the TOP of the Setter Operations
@@ -112,53 +114,11 @@ type LoadState =
   | { kind: "error"; message: string }
   | { kind: "ready"; rows: HotRow[] };
 
-// ── TRUE call history, from realtime_lead_call_history(uuid[]) ────────────────
-/** One real dial, from whichever source recorded it. */
-interface CallEvent {
-  at: string;
-  /** wavv | ghl | activity | manual — which system recorded the dial. */
-  source: string;
-  disposition: string | null;
-  seconds: number | null;
-  /** The person who dialed, where the source could name them. */
-  who: string | null;
-}
-
-interface CallHistory {
-  /** The TRUE total, LIFETIME. Always the full count, even when `calls` is
-   *  capped. This is what the row displays and the only count NEVER DIALED may
-   *  be judged on — if we have ever called them, they are not un-dialed. */
-  attempts: number;
-  /** Dials at or after this lead arrived (deals.created_at). Everything that
-   *  asks "is this being worked NOW" — pace, blazing, the 5-minute badge —
-   *  reads this instead, so a prior campaign's dials cannot make a fresh
-   *  transfer look attended to. */
-  attempts_since_arrival: number;
-  last_at: string | null;
-  last_disposition: string | null;
-  last_by: string | null;
-  last_source: string | null;
-  calls: CallEvent[];
-}
-
-/** Keyed by deal id. A deal ABSENT from the map is unreadable, not zero. */
-type HistoryState =
-  | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "ready"; byDeal: Record<string, CallHistory> };
-
-/** How many days of the chase the row's tracker shows. Matches TouchTracker in
- *  ProcessorDetailDrawer — same window, same "day 1 = arrival" rule. */
-const TRACKER_DAYS = 14;
-const DAY_MS = 24 * 3_600_000;
-
-/** Human label for where a dial was recorded, so "who called" is never a mystery. */
-const SOURCE_WORD: Record<string, string> = {
-  wavv: "WAVV",
-  ghl: "VibeReach",
-  activity: "logged",
-  manual: "logged by hand",
-};
+// ── TRUE call history ─────────────────────────────────────────────────────────
+// The types, the RPC call and the source labels now live in @/lib/callHistory,
+// and the 14-day tracker in @/components/admin/shared/ChaseTracker, so the
+// processor's application-chase queue reads and draws the same history through
+// the same code instead of carrying a second copy of it.
 
 const PARKED = new Set<string>(QUEUE_CLOSED_STATUSES);
 const isParked = (status: string | null) => !!status && PARKED.has(status);
@@ -384,21 +344,7 @@ export default function HotLeadsPanel({
     // Second read on purpose: the lead list is RLS-filtered `deals`, while the
     // call history has to union four tables (one of them phone-keyed, so it needs
     // SECURITY DEFINER) and cannot be expressed as a PostgREST join.
-    if (rows.length === 0) {
-      setHistory({ kind: "ready", byDeal: {} });
-      return;
-    }
-    const hist = await supabase.rpc("realtime_lead_call_history", {
-      p_deal_ids: rows.map((x) => x.id),
-    });
-    if (hist.error) {
-      setHistory({ kind: "error", message: hist.error.message });
-      return;
-    }
-    setHistory({
-      kind: "ready",
-      byDeal: (hist.data ?? {}) as Record<string, CallHistory>,
-    });
+    setHistory(await loadCallHistory(rows.map((x) => x.id)));
   }, []);
 
   useEffect(() => {
@@ -657,231 +603,6 @@ export default function HotLeadsPanel({
   );
 }
 
-/**
- * A 14-day chase tracker sized to live inside a hot-lead row.
- *
- * Same idea and the same arithmetic as TouchTracker in ProcessorDetailDrawer —
- * one cell per day since the lead arrived, green with a count where it was
- * called, light red for an elapsed day with none, grey for days not yet reached —
- * shrunk from that drawer's 24px cells to 12px so fourteen of them fit on a row
- * the setter is scanning, not studying. The day label moves into the tooltip,
- * which also carries the real dates and dispositions.
- *
- * The day -1 fold is deliberate and matches the drawer: a WAVV call that ends in
- * "Appointment Set" MINTS the deal, so the call that created the lead is stamped
- * minutes before the deal row exists. Without the fold, day 1 shows red over the
- * very call that produced the merchant.
- */
-function MiniTracker({ createdAt, calls }: { createdAt: string; calls: CallEvent[] }) {
-  const created = Date.parse(createdAt);
-  const now = Date.now();
-  const elapsed = Math.floor((now - created) / DAY_MS);
-  const counts = new Array(TRACKER_DAYS).fill(0) as number[];
-  for (const c of calls) {
-    let idx = Math.floor((Date.parse(c.at) - created) / DAY_MS);
-    if (idx === -1) idx = 0;
-    if (idx >= 0 && idx < TRACKER_DAYS) counts[idx] += 1;
-  }
-  const missed = counts.filter((c, i) => i <= Math.min(elapsed, TRACKER_DAYS - 1) && c === 0).length;
-
-  return (
-    <div className="mt-1 flex items-center gap-1.5">
-      <div className="flex gap-[2px]">
-        {counts.map((c, i) => {
-          const future = i > elapsed;
-          const today = i === elapsed && elapsed < TRACKER_DAYS;
-          const cls = future
-            ? "bg-gray-100 dark:bg-gray-800"
-            : c > 0
-              ? "bg-emerald-500 text-white"
-              : "bg-red-100 text-red-400 dark:bg-red-900/30 dark:text-red-400";
-          return (
-            <div
-              key={i}
-              title={`Day ${i + 1}${today ? " (today)" : ""} — ${
-                future ? "not reached yet" : c > 0 ? `${c} call${c === 1 ? "" : "s"}` : "no calls"
-              }`}
-              className={`w-3 h-3.5 rounded-[2px] flex items-center justify-center text-[8px] font-bold leading-none ${cls} ${
-                today ? "ring-1 ring-ocean-blue" : ""
-              }`}
-            >
-              {future ? "" : c > 0 ? c : ""}
-            </div>
-          );
-        })}
-      </div>
-      <span className="text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
-        {TRACKER_DAYS}-day chase
-        {missed > 0 && elapsed < TRACKER_DAYS
-          ? ` · ${missed} silent day${missed === 1 ? "" : "s"}`
-          : ""}
-      </span>
-    </div>
-  );
-}
-
-/**
- * HotLeadActions — everything a setter or processor needs to work a hot lead,
- * inline on the row, so nobody bounces between screens on the most perishable
- * leads we buy.
- *
- * NOTHING HERE IS NEW. Every control is the SAME component the Operations console
- * mounts (SetterOpsTab), bound to the same deal and firing the same RPCs and edge
- * functions:
- *   · SetterActionRail   → Quick App, full application (both with the
- *                          ensureDealStageAtLeast wiring), Send docs
- *                          (AdHocSendMenu), and Do Not Contact (SetterDndButton).
- *   · SetterCommsPanel   → Text (TextMerchantPanel, the JMP/sms-send path — NOT
- *                          GHL) and Email (EmailMerchantPanel).
- *   · SetterCallOutcome  → log the disposition (connected / no answer / voicemail
- *                          / callback / not interested → nurture) through
- *                          logContactAttempt + updateDealStatus, with the ET
- *                          callback picker and an optional note.
- *   · BookAppointmentControl → book a real appointment (emails the invite).
- *   · SetterNotes        → free-text notes on the deal.
- * A duplicate send path here would be a second thing to keep correct, and the
- * first one to drift.
- *
- * LAZY, AND ONE AT A TIME. The panel renders up to 200 rows; loading a full
- * DealWithCustomer for each would be 200 reads to render a list nobody has asked
- * to act on yet. The deal loads on expand, and the panel keeps a single row open
- * (accordion), so the dense scan-list stays a scan-list.
- *
- * getDealById is the same loader the console uses, including its get_deal_lite
- * fallback — so a processor opening a lead assigned to another setter still gets
- * the row (money-masked) instead of an empty drawer.
- */
-function HotLeadActions({
-  dealId,
-  onDealChanged,
-}: {
-  dealId: string;
-  /** Re-read the panel so counts, heat and the tracker reflect what just happened. */
-  onDealChanged: () => void;
-}) {
-  const { effectiveUserId } = useUserProfile();
-  const [deal, setDeal] = useState<DealWithCustomer | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(true);
-  // BookAppointmentControl requires an onNotify; a local line keeps this drawer
-  // self-contained, exactly as SetterChecklist does for the same control.
-  const [toast, setToast] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
-
-  const loadDeal = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await getDealById(dealId);
-      // UNREADABLE ≠ "no such deal": say the read failed and offer a retry rather
-      // than rendering an empty action set that looks like there's nothing to do.
-      if (!res) {
-        setError("Couldn't load this merchant's record — the actions can't be shown.");
-        return;
-      }
-      setDeal(res.deal);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load this merchant's record.");
-    } finally {
-      setBusy(false);
-    }
-  }, [dealId]);
-
-  useEffect(() => {
-    void loadDeal();
-  }, [loadDeal]);
-
-  // Any action inside re-reads the deal AND tells the panel, so the attempt count
-  // and heat on the row behind the drawer move the moment a call is logged.
-  const refresh = useCallback(() => {
-    void loadDeal();
-    onDealChanged();
-  }, [loadDeal, onDealChanged]);
-
-  const notify = useCallback((text: string, tone: "ok" | "error" = "ok") => {
-    setToast({ text, tone });
-    setTimeout(() => setToast(null), 4000);
-  }, []);
-
-  return (
-    // Stops the row's own onClick from firing — a tap on a button in here must not
-    // also yank the merchant into the console above.
-    <div
-      className="mt-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/40 p-3 space-y-3 cursor-default"
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => e.stopPropagation()}
-      role="presentation"
-    >
-      {busy && !deal && (
-        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-          <span className="loading loading-spinner loading-xs" /> Loading the merchant's record…
-        </div>
-      )}
-
-      {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
-          <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
-          <div>
-            <div className="font-bold">{error}</div>
-            <button
-              type="button"
-              onClick={() => void loadDeal()}
-              className="mt-1 font-semibold text-ocean-blue hover:underline"
-            >
-              Try again →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {deal && (
-        <>
-          {/* APPLY + SEND + take them off the list. autoOpen is deliberately OFF:
-              in the console the application modal pops on load because a merchant
-              is on the line, but a list row popping a full-screen modal on expand
-              would fight the setter scanning the panel. */}
-          <SetterActionRail deal={deal} onRefresh={refresh} />
-
-          {/* TEXT + EMAIL — the 5-minute speed-to-lead touch. */}
-          <SetterCommsPanel deal={deal} onRefresh={refresh} />
-
-          {/* BOOK IT. Sits next to the vendor's stated best time on the row above,
-              which is the whole reason it belongs here: a setter reads "10am PST"
-              and books against it without changing screens. */}
-          <div className="flex flex-wrap items-center gap-3">
-            <BookAppointmentControl
-              dealId={deal.id}
-              appointmentAt={deal.appointment_at}
-              appointmentSyncedAt={deal.appointment_synced_at}
-              appointmentSyncError={deal.appointment_sync_error}
-              ownerUserId={effectiveUserId}
-              onRefresh={refresh}
-              onNotify={notify}
-            />
-          </div>
-
-          {/* LOG THE CALL (also the callback + not-interested/nurture park) beside
-              the notes, the same pairing the console uses at the bottom. */}
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <SetterCallOutcome deal={deal} onRefresh={refresh} />
-            <SetterNotes deal={deal} onRefresh={refresh} />
-          </div>
-        </>
-      )}
-
-      {toast && (
-        <p
-          className={`text-xs font-medium ${
-            toast.tone === "error"
-              ? "text-red-600 dark:text-red-400"
-              : "text-emerald-600 dark:text-emerald-400"
-          }`}
-        >
-          {toast.text}
-        </p>
-      )}
-    </div>
-  );
-}
 
 /** One lead. The whole row opens the merchant in the console above — the same
  *  onOpen({ dealId }) every other list on this page uses. */
@@ -1051,8 +772,8 @@ function HotLeadRow({
             <span className="text-gray-400 dark:text-gray-500">({ago(lastAt, now)})</span>
             {hist?.last_disposition ? ` — ${hist.last_disposition}` : ""}
             {hist?.last_by ? ` · ${hist.last_by}` : ""}
-            {hist?.last_source && SOURCE_WORD[hist.last_source]
-              ? ` · ${SOURCE_WORD[hist.last_source]}`
+            {hist?.last_source && CALL_SOURCE_WORD[hist.last_source]
+              ? ` · ${CALL_SOURCE_WORD[hist.last_source]}`
               : ""}
           </span>
         ) : h.attemptsKnown ? (
@@ -1079,7 +800,7 @@ function HotLeadRow({
       {/* The 14-day chase at a glance. Only where we can read the real calls — a
           tracker drawn from an unreadable history would paint fourteen red days
           over a merchant somebody called every morning. */}
-      {hist && <MiniTracker createdAt={r.created_at} calls={hist.calls} />}
+      {hist && <ChaseTracker startAt={r.created_at} calls={hist.calls} />}
 
       {/* The time-critical extras, only when they mean something. */}
       <div className="mt-1 flex items-center gap-x-2 gap-y-1 flex-wrap text-[10px]">
@@ -1193,7 +914,7 @@ function HotLeadRow({
           </a>
         ))}
 
-        {/* WORK IT — the whole action set, lazily loaded (see HotLeadActions). */}
+        {/* WORK IT — the whole action set, lazily loaded (see LeadActionsDrawer). */}
         <button
           type="button"
           onClick={onToggleActions}
@@ -1276,7 +997,7 @@ function HotLeadRow({
         </div>
       )}
 
-      {actionsOpen && <HotLeadActions dealId={r.id} onDealChanged={onDealChanged} />}
+      {actionsOpen && <LeadActionsDrawer dealId={r.id} onDealChanged={onDealChanged} />}
     </div>
   );
 }

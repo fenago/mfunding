@@ -25,10 +25,14 @@ import ProcessorDetailDrawer from "@/components/admin/processor/ProcessorDetailD
 import GateTracker from "@/components/admin/processor/GateTracker";
 import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import ProcessorScoreboard from "@/components/admin/processor/ProcessorScoreboard";
+import ApplicationChaseTab from "@/components/admin/processor/ApplicationChaseTab";
+import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import { signatureFromStamps } from "@/lib/applicationSignature";
 import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import {
   closerLabel,
+  hasReachedApplicationSent,
   isInterested,
   matchesSegment,
   merchantName,
@@ -162,7 +166,7 @@ export default function ProcessorPage() {
   const [counts, setCounts] = useState<CountsState>({ kind: "loading" });
   const [list, setList] = useState<ListState>({ kind: "idle" });
   const [pipe, setPipe] = useState<Pipe>("mca");
-  const [view, setView] = useState<"funnel" | "board">("funnel");
+  const [view, setView] = useState<"funnel" | "board" | "chase">("funnel");
   const [bucket, setBucket] = useState<BucketKey>("all");
   const [stage, setStage] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort>("recent");
@@ -571,6 +575,9 @@ export default function ProcessorPage() {
           {(
             [
               { key: "funnel", label: "Interested → Ready" },
+              // The application chase — partial → unsigned → signed → statements
+              // → GO/NO-GO, each bucket naming what she has to chase.
+              { key: "chase", label: "Application chase" },
               { key: "board", label: "Whole board (by stage)" },
             ] as const
           ).map((v) => (
@@ -625,7 +632,17 @@ export default function ProcessorPage() {
         </div>
       )}
 
-      {/* 3. The lead list */}
+      {/* 3a. THE APPLICATION CHASE — its own tab, its own queue RPC. */}
+      {view === "chase" && (
+        <ApplicationChaseTab
+          onOpen={setSelectedDealId}
+          onQuickApp={setQuickAppDealId}
+          onChanged={reloadAll}
+        />
+      )}
+
+      {/* 3b. The lead list */}
+      {view !== "chase" && (
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         {/* Controls */}
         <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -858,14 +875,33 @@ export default function ProcessorPage() {
                               {r.deal_number && (
                                 <span className="text-[10px] text-gray-400">#{r.deal_number}</span>
                               )}
-                              {r.application_signed_at && (
-                                <span
-                                  title={`Application signed ${new Date(r.application_signed_at).toLocaleDateString()}`}
-                                  className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                                >
-                                  ✍️ Signed
-                                </span>
-                              )}
+                              {/* SIGNED **OR UNSIGNED** — this used to render a
+                                  ✍️ Signed chip only when signed, which meant an
+                                  unsigned application looked identical to one
+                                  nobody had ever sent. That silence is exactly
+                                  the owner's complaint (49 of 63 sent
+                                  applications are unsigned), so the shared badge
+                                  now speaks in every state. `sentAt` comes from
+                                  the row's stage, the only send signal this RPC
+                                  carries — see the prop comment below. */}
+                              <ApplicationSignatureBadge
+                                signature={signatureFromStamps({
+                                  appSignedAt: r.application_signed_at,
+                                  // processor_pipeline_rows() resolves the
+                                  // signature in SQL but has no "did we ever
+                                  // check?" channel, and the completions ledger
+                                  // is lazy — only 16 of 339 merchants have ever
+                                  // been looked at. So an absent stamp here does
+                                  // NOT mean unsigned, and this surface says
+                                  // "unknown" rather than accusing. The
+                                  // Application chase tab reads
+                                  // processor_application_queue, which carries
+                                  // the tri-state, and can resolve it.
+                                  readable: false,
+                                })}
+                                sentAt={hasReachedApplicationSent(r) || null}
+                                hideWhenNothingSent
+                              />
                             </div>
                           </td>
 
@@ -1070,6 +1106,7 @@ export default function ProcessorPage() {
           </>
         )}
       </div>
+      )}
 
       {/* Board view keeps a pointer back to the funnel for new processors. */}
       {view === "board" && (

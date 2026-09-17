@@ -132,6 +132,35 @@ export function isInterested(pipe: Pipe, status: string | null | undefined): boo
   return !!status && INTERESTED_STAGES[pipe].has(status);
 }
 
+/**
+ * Has this deal's application actually gone out?
+ *
+ * processor_pipeline_rows() does not carry deals.application_sent_at, so the
+ * stage is the only send signal this surface has. That is enough to decide
+ * whether an "UNSIGNED" badge is meaningful (it is only meaningful once
+ * something was sent) but NOT enough to date it — ApplicationSignatureBadge
+ * takes `true` for exactly this case and omits the date rather than inventing
+ * one.
+ *
+ * `nurture` is deliberately excluded even though it sorts last in the MCA stage
+ * array: a parked deal tells you nothing about whether an application was sent.
+ */
+const SENT_OR_LATER = new Set([
+  "application_sent",
+  "docs_collected",
+  "bank_statements",
+  "submitted_to_funder",
+  "offer_received",
+  "offer_presented",
+  "offer_accepted",
+  "funded",
+  "renewal_eligible",
+]);
+
+export function hasReachedApplicationSent(r: PipelineRow): boolean {
+  return !!r.status && SENT_OR_LATER.has(r.status);
+}
+
 /** Gate ③ — bank statements are in (count when the RPC provides it). */
 export function hasStatements(r: PipelineRow): boolean {
   return !!r.has_bank_statements || (r.bank_statement_count ?? 0) > 0;

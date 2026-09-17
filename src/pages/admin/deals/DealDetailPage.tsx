@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
   ArrowLeftIcon,
@@ -42,6 +42,8 @@ import SendForSignature from "../../../components/admin/SendForSignature";
 import RenewalProjectionEditor from "../../../components/admin/RenewalProjectionEditor";
 import DealAssistant from "../../../components/admin/DealAssistant";
 import { useActivityLog } from "../../../hooks/useActivityLog";
+import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import useApplicationSignatures from "@/hooks/useApplicationSignatures";
 
 // Required stip document types for a deal
 const REQUIRED_STIPS = [
@@ -77,6 +79,10 @@ export default function DealDetailPage() {
   const [closerOptions, setCloserOptions] = useState<CloserOption[]>([]);
   const [isReassigning, setIsReassigning] = useState(false);
   const [reassignWarning, setReassignWarning] = useState<string | null>(null);
+  // Did this merchant SIGN their application? Read above the early returns, as
+  // hooks must be. A failed read renders "Signature unknown", never "unsigned".
+  const signatureCustomerIds = useMemo(() => [deal?.customer_id], [deal?.customer_id]);
+  const { signatureFor } = useApplicationSignatures(signatureCustomerIds);
 
   useEffect(() => {
     if (id) fetchDeal();
@@ -345,6 +351,15 @@ export default function DealDetailPage() {
               <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>
                 {statusConfig.label}
               </span>
+              {/* A stage of "Application Sent" says nothing about whether the
+                  merchant SIGNED it — 49 of 63 sent applications were unsigned
+                  when the owner raised this. The badge goes wherever the stage
+                  goes. */}
+              <ApplicationSignatureBadge
+                signature={signatureFor(deal.customer_id)}
+                sentAt={deal.application_sent_at}
+                size="sm"
+              />
               <span className="px-2 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
                 {typeConfig.shortLabel}
               </span>
@@ -658,7 +673,7 @@ export default function DealDetailPage() {
                 { label: "Created", value: deal.created_at },
                 { label: "Contacted", value: deal.contacted_at },
                 { label: "Qualified", value: deal.qualified_at },
-                { label: "App Sent", value: deal.application_sent_at },
+                { label: "App Sent", value: deal.application_sent_at, badge: true },
                 { label: "Docs Collected", value: deal.docs_collected_at },
                 { label: "Submitted to Funder", value: deal.submitted_at },
                 { label: "Offer Received", value: deal.offer_received_at },
@@ -666,10 +681,22 @@ export default function DealDetailPage() {
                 { label: "Funded", value: deal.funded_at },
                 { label: "Declined", value: deal.declined_at },
               ].map((item) => (
-                <div key={item.label} className="flex justify-between">
+                <div key={item.label} className="flex justify-between items-center gap-2">
                   <span className="text-gray-500">{item.label}:</span>
-                  <span className={item.value ? "text-gray-900 dark:text-white" : "text-gray-300 dark:text-gray-600"}>
-                    {item.value ? new Date(item.value).toLocaleString() : "--"}
+                  <span className="flex items-center gap-1.5">
+                    {/* The App Sent row is the one the owner was reading as
+                        progress. It now says, in the same line, whether the
+                        merchant actually signed. */}
+                    {item.badge && (
+                      <ApplicationSignatureBadge
+                        signature={signatureFor(deal.customer_id)}
+                        sentAt={deal.application_sent_at}
+                        hideWhenNothingSent
+                      />
+                    )}
+                    <span className={item.value ? "text-gray-900 dark:text-white" : "text-gray-300 dark:text-gray-600"}>
+                      {item.value ? new Date(item.value).toLocaleString() : "--"}
+                    </span>
                   </span>
                 </div>
               ))}

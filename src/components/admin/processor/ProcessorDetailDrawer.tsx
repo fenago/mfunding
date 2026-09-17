@@ -28,7 +28,17 @@ import {
 import SchedulePicker from "./SchedulePicker";
 import GateTracker from "./GateTracker";
 import QuickAppModal from "./QuickAppModal";
-import { appComplete, hasStatements, qaPassed, toDealArg, type Pipe, type PipelineRow } from "./types";
+import {
+  appComplete,
+  hasReachedApplicationSent,
+  hasStatements,
+  qaPassed,
+  toDealArg,
+  type Pipe,
+  type PipelineRow,
+} from "./types";
+import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import { signatureFromStamps } from "@/lib/applicationSignature";
 
 // ── The QA checklist — UI-owned, stable keys (persisted as jsonb via
 // processor_save_qa). Every item must be ticked before QA can be marked passed.
@@ -525,6 +535,32 @@ export default function ProcessorDetailDrawer({
               <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${chip.cls}`}>
                 {chip.label}
               </span>
+              {/* "Application Sent" in the stage chip says nothing about whether
+                  the merchant actually signed it — 49 of 63 sent applications
+                  were unsigned when the owner raised this. The badge sits right
+                  next to the chip so the two are read together. */}
+              <ApplicationSignatureBadge
+                signature={signatureFromStamps({
+                  appSignedAt:
+                    row?.application_signed_at ??
+                    (typeof deal?.application_signed_at === "string"
+                      ? deal.application_signed_at
+                      : null),
+                  // No readability channel on this RPC, and the completions
+                  // ledger is lazy — an absent stamp is "we never looked", not
+                  // "they didn't sign". Say unknown; the Application chase tab
+                  // has the button that settles it.
+                  readable: false,
+                })}
+                sentAt={
+                  typeof deal?.application_sent_at === "string"
+                    ? deal.application_sent_at
+                    : row
+                      ? hasReachedApplicationSent(row) || null
+                      : null
+                }
+                size="sm"
+              />
             </div>
             <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2 flex-wrap">
               {typeof deal?.deal_number === "string" && <span>#{deal.deal_number}</span>}

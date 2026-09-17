@@ -12,7 +12,7 @@
 // UNREADABLE ≠ 0%: if the draft read fails we say "couldn't read application status",
 // never a false "0% complete".
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PencilSquareIcon, CheckCircleIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import supabase from "@/supabase";
 import type { DealWithCustomer } from "@/types/deals";
@@ -24,6 +24,8 @@ import {
 } from "@/lib/applicationCompleteness";
 import MerchantApplicationModal from "@/components/admin/MerchantApplicationModal";
 import { ensureDealStageAtLeast } from "@/services/dealService";
+import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import useApplicationSignatures from "@/hooks/useApplicationSignatures";
 
 /** Glance status the wrapper checklist mirrors on its step-1 badge. */
 export interface AppProgressStatus {
@@ -50,6 +52,13 @@ const SECTION_ORDER: AppSection[] = ["business", "owner", "banking", "funding"];
 export default function SetterAppProgress({ deal, onRefresh, onStatus }: Props) {
   const [state, setState] = useState<ReadState>({ phase: "loading" });
   const [showApp, setShowApp] = useState(false);
+  // 100% filled is NOT the finish line — the merchant still has to sign it, and
+  // 49 of 63 sent applications were unsigned when the owner raised this. The
+  // meter said "ready to send" and nothing on this block said whether it had
+  // come back. A failed ledger read renders "Signature unknown", never
+  // "unsigned".
+  const signatureCustomerIds = useMemo(() => [deal.customer_id], [deal.customer_id]);
+  const { signatureFor } = useApplicationSignatures(signatureCustomerIds);
 
   // Report status up without making onStatus a load() dependency (parents may pass
   // a fresh function each render).
@@ -211,6 +220,11 @@ export default function SetterAppProgress({ deal, onRefresh, onStatus }: Props) 
             <CheckCircleIcon className="w-4 h-4 text-emerald-500" />
           ) : null}
           <span className="text-sm font-bold text-gray-900 dark:text-white">Application</span>
+          <ApplicationSignatureBadge
+            signature={signatureFor(deal.customer_id)}
+            sentAt={deal.application_sent_at}
+            size="sm"
+          />
         </div>
         {openBtn}
       </div>

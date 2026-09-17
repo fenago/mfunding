@@ -23,6 +23,13 @@ import type { PlaybookLookup } from "@/hooks/usePlaybookContact";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
 import { dateTimeET, etWallClockToUtcIso } from "@/utils/time";
+import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
+import {
+  signaturesByCustomer,
+  signatureUnknown,
+  type DocCompletion,
+  type SignatureState,
+} from "@/lib/applicationSignature";
 
 /**
  * SetterDealList — the setter's own book, rendered under the search box as the
@@ -51,7 +58,7 @@ const DEAL_CAP = 50;
 // One unbroken literal — supabase-js infers the row shape by parsing it, so a
 // split string degrades the type to GenericStringError.
 const DEAL_COLS =
-  "id,deal_number,status,previous_status,lead_source,updated_at,created_at,contacted_at,spoke_at,last_attempt_at,callback_at,callback_source,appointment_at,appointment_promised_at,stips_promised_by,amount_requested,use_of_funds,customer_id,customer:customers!customer_id(business_name,first_name,last_name,phone,email,monthly_revenue,industry)";
+  "id,deal_number,status,previous_status,lead_source,updated_at,created_at,contacted_at,spoke_at,last_attempt_at,callback_at,callback_source,appointment_at,appointment_promised_at,stips_promised_by,application_sent_at,amount_requested,use_of_funds,customer_id,customer:customers!customer_id(business_name,first_name,last_name,phone,email,monthly_revenue,industry)";
 
 interface DealCustomer {
   business_name: string | null;
@@ -79,6 +86,7 @@ interface DealRow {
   appointment_at: string | null;
   appointment_promised_at: string | null;
   stips_promised_by: string | null;
+  application_sent_at: string | null;
   amount_requested: number | null;
   use_of_funds: string | null;
   customer_id: string | null;
@@ -272,8 +280,10 @@ export default function SetterDealList({
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [filter, setFilter] = useState<QueueFilter>({ kind: "all" });
   const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
-  // Customer ids whose application has been signed (from ghl_doc_completions).
-  const [signedCustomers, setSignedCustomers] = useState<Set<string>>(new Set());
+  // Signature state per customer, from the completion ledger. A MAP, not a Set,
+  // because "we couldn't read it" is a third state and must never render as
+  // "unsigned" — see src/lib/applicationSignature.ts.
+  const [signatures, setSignatures] = useState<Map<string, SignatureState>>(new Map());
   // Documents on file per customer: total + bank-statement count.
   const [docCounts, setDocCounts] = useState<Map<string, { total: number; statements: number }>>(new Map());
   // Per-deal application completeness (pct + fields left) — the exit rule: a deal
@@ -345,15 +355,30 @@ export default function SetterDealList({
       // the completion ledger (no GHL call) → a ✍️ Signed badge on the row.
       const custIds = Array.from(new Set(rows.map((r) => r.customer_id).filter(Boolean))) as string[];
       if (custIds.length > 0) {
-        const [{ data: comps }, { data: docs }] = await Promise.all([
-          supabase.from("ghl_doc_completions").select("customer_id, doc_name").in("customer_id", custIds),
+        const [{ data: comps, error: compsErr }, { data: checkedRows, error: checkedErr }, { data: docs }] = await Promise.all([
+          supabase.from("ghl_doc_completions").select("customer_id, doc_name, completed_seen_at").in("customer_id", custIds),
+          // Who we have ever LOOKED AT. Without this an absent completion row is
+          // indistinguishable from never having checked, and a merchant who did
+          // sign would render UNSIGNED. See signaturesByCustomer.
+          supabase.from("customers").select("id, ghl_docs_checked_at").in("id", custIds),
           supabase.from("customer_documents").select("customer_id, document_type").in("customer_id", custIds),
         ]);
-        const signed = new Set<string>();
-        for (const c of (comps ?? []) as { customer_id: string; doc_name: string | null }[]) {
-          if (c.customer_id && /application|prefill|partial/i.test(c.doc_name ?? "")) signed.add(c.customer_id);
-        }
-        setSignedCustomers(signed);
+        // Both errors are checked, not ignored: a failed read makes every one of
+        // these merchants "signature unknown" rather than silently unsigned.
+        setSignatures(
+          signaturesByCustomer(
+            compsErr ? null : ((comps ?? []) as DocCompletion[]),
+            custIds,
+            checkedErr
+              ? null
+              : new Map(
+                  ((checkedRows ?? []) as { id: string; ghl_docs_checked_at: string | null }[])
+                    .filter((c) => !!c.ghl_docs_checked_at)
+                    .map((c) => [c.id, c.ghl_docs_checked_at]),
+                ),
+            (compsErr ?? checkedErr)?.message ?? "the signature ledger could not be read",
+          ),
+        );
         const dc = new Map<string, { total: number; statements: number }>();
         for (const doc of (docs ?? []) as { customer_id: string; document_type: string | null }[]) {
           const cur = dc.get(doc.customer_id) ?? { total: 0, statements: 0 };
@@ -363,7 +388,7 @@ export default function SetterDealList({
         }
         setDocCounts(dc);
       } else {
-        setSignedCustomers(new Set());
+        setSignatures(new Map());
         setDocCounts(new Map());
       }
       // ── Application completeness per deal (the exit rule) + the setter's ★s ──
@@ -717,14 +742,20 @@ export default function SetterDealList({
                             {ns.label}
                           </span>
                         )}
-                        {r.customer_id && signedCustomers.has(r.customer_id) && (
-                          <span
-                            title="Application signed"
-                            className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                          >
-                            ✍️ Signed
-                          </span>
-                        )}
+                        {/* SIGNED **OR UNSIGNED**. This used to render only when
+                            signed, so an unsigned application looked exactly like
+                            one nobody had sent — the owner's complaint, and the
+                            setter's half of it. One shared badge, all states. */}
+                        <ApplicationSignatureBadge
+                          signature={
+                            r.customer_id
+                              ? (signatures.get(r.customer_id) ??
+                                 signatureUnknown("this merchant was not in the batch that was read"))
+                              : signatureUnknown("this deal has no merchant record attached")
+                          }
+                          sentAt={r.application_sent_at}
+                          hideWhenNothingSent
+                        />
                         {/* Documents on file — total + how many are bank statements. */}
                         {(() => {
                           const dcs = r.customer_id ? docCounts.get(r.customer_id) : null;
