@@ -96,6 +96,8 @@ export interface ApplicationQueueRow {
   deal_status: string;
   deal_type: string | null;
   customer_id: string;
+  /** The merchant's GHL contact id — for an on-demand document refresh. */
+  ghl_contact_id: string | null;
   do_not_contact: boolean;
   assigned_closer_id: string | null;
   assigned_closer_name: string | null;

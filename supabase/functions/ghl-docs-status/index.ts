@@ -94,11 +94,49 @@ Deno.serve(async (req) => {
     }
 
     // 1) E-sign documents for this contact.
-    // NOTE: the proposals/document API caps `limit` at 21 (422s above that).
-    const docsRes = await ghlFetch<{ documents?: Record<string, unknown>[] }>(
-      cfg, "GET", `/proposals/document?locationId=${cfg.locationId}&limit=20`,
-    );
-    const documentsError = docsRes.ok ? null : `docs list failed (${docsRes.status}): ${docsRes.error ?? ""}`;
+    //
+    // ⚠ THIS USED TO BE A SINGLE `limit=20` CALL, AND IT HID MOST MERCHANTS' DOCS.
+    // /proposals/document has NO per-contact filter (contactId, contact_id and
+    // recipientId are all rejected outright), so it lists the LOCATION's
+    // documents and we filter to this contact afterwards. With limit=20 and no
+    // paging that meant only the 20 newest documents location-wide were ever
+    // considered. Measured 2026-09-17: the location holds 268 documents; 61
+    // contacts have a document still awaiting signature, and only 8 of them fall
+    // inside that window. The other 53 — 44 of whom have a portal login, 15 on a
+    // live deal — opened their portal and were shown NOTHING to sign, because
+    // their document had aged out of the top 20. The signing link exists; we just
+    // never looked far enough back to find it.
+    //
+    // `limit` caps at 21 (422 above) and `skip=N` works, so the set is walkable.
+    // 268 documents is 13 calls; the cap below bounds it as the account grows.
+    const PAGE = 21;
+    const MAX_PAGES = 30; // 630 documents — raise with the account, not silently
+    const rawDocs: Record<string, unknown>[] = [];
+    let docsTotal: number | null = null;
+    let documentsError: string | null = null;
+    let docsCrawlComplete = false;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const res = await ghlFetch<{ documents?: Record<string, unknown>[]; total?: number }>(
+        cfg,
+        "GET",
+        `/proposals/document?locationId=${cfg.locationId}&limit=${PAGE}&skip=${page * PAGE}`,
+      );
+      if (!res.ok) {
+        // UNREADABLE. Keep what we have (a link we can see is still usable), but
+        // the crawl did not complete, so absence proves nothing downstream.
+        documentsError = `docs list failed (${res.status}): ${res.error ?? ""}`;
+        break;
+      }
+      const got = res.data?.documents ?? [];
+      if (typeof res.data?.total === "number") docsTotal = res.data.total;
+      rawDocs.push(...got);
+      if (got.length === 0) { docsCrawlComplete = true; break; }
+      if (docsTotal !== null && rawDocs.length >= docsTotal) { docsCrawlComplete = true; break; }
+    }
+    if (!documentsError && !docsCrawlComplete) {
+      documentsError = `docs list truncated at ${rawDocs.length} of ${docsTotal ?? "?"} (raise MAX_PAGES)`;
+    }
 
     // The merchant flow (Revenue Playbook Rail 1) e-signs the application +
     // Broker Compensation Disclosure (+ the funder agreement at offer stage).
@@ -111,7 +149,7 @@ Deno.serve(async (req) => {
       /Bank Verification\s*&\s*Credit Authorization/i,
     ];
 
-    const documents = (docsRes.data?.documents ?? [])
+    const documents = rawDocs
       .filter((d) => !UNWIRED_TEMPLATES.some((re) => re.test((d.name as string) ?? "")))
       .map((d) => {
         const recips = (d.recipients as Record<string, unknown>[] | undefined) ?? [];
@@ -287,10 +325,11 @@ Deno.serve(async (req) => {
     // contact is a recipient on — so a full page of 20 that matched nothing
     // proves nothing, and is deliberately NOT stamped.
     try {
-      const rawCount = (docsRes.data?.documents ?? []).length;
-      const sawWholeList = rawCount < 20;          // not truncated → absence is real
-      const sawThisContact = documents.length > 0; // their own record came back
-      if (docsRes.ok && (sawWholeList || sawThisContact)) {
+      // The crawl above now walks the ENTIRE location document set, so a
+      // completed crawl is definitive: if this contact has no signature in it,
+      // they have none. (The old heuristic — "fewer than 20 came back, so we saw
+      // everything" — is gone with the single-page read that forced it.)
+      if (docsCrawlComplete && !documentsError) {
         const { error: stampErr } = await db
           .from("customers")
           .update({ ghl_docs_checked_at: new Date().toISOString() })
