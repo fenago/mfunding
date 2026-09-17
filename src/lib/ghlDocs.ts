@@ -4,6 +4,44 @@
 // PlaybooksPage's DocsBack section so multiple surfaces (the Revenue Playbook and
 // the Setter Operations console) render the SAME grouped view without duplicating
 // the collapse-copies logic. Read-only shaping — no fetching, no side effects.
+//
+// ── IF YOU ARE ADDING A CALLER OF ghl-docs-status, READ THIS ────────────────
+// The function caches the location-wide document list for 60s (isolate-local).
+// That cache exists because paginating the list to fix a real bug — 53 of 61
+// contacts with a document awaiting signature were invisible, 44 of them with a
+// portal login who opened it and were shown nothing to sign — multiplied the
+// function's cost by the page count, on a path the merchant portal polls on load
+// and focus. It turned ~226 invocations/day into ~2,900 GHL calls against a
+// 200k/day account cap, and the multiplier grows with the document count.
+//
+// So the cache is the default and should stay the default. Pass
+// `{ refresh: true }` ONLY when this test is met:
+//
+//     DOES A STALE READ HERE PRODUCE AN ACCUSATION?
+//
+// Not "is this after a send" — that is the wrong question and it lets too much
+// through. The question is whether a ≤60s-old answer would make this surface
+// assert something false ABOUT A PERSON. Two of the twelve callers qualify:
+//
+//   PlaybooksPage's post-send guard — a cached pre-send list has no application
+//     in it, so it announces "the send may have failed" about a send that just
+//     succeeded. That accuses a closer.
+//   AdHocSendMenu — a closer sends a document, reopens the menu to copy its
+//     signing link, and inside the window the link is missing, implying they
+//     never sent it. They send it twice, and the merchant gets two.
+//
+// The other ten are mount-time panels, context bars and the portal poll: a
+// 60-second-old document list is simply a slightly old document list, which
+// accuses nobody. They keep the cache.
+//
+// ⚠ The cache is ISOLATE-LOCAL. `refresh: true` guarantees the response YOU get
+// is fresh; it does not flush other isolates, which may still serve a ≤60s copy
+// to a different caller. Sound for a caller that reads its own response — do not
+// lean on it to make a SUBSEQUENT poll fresh.
+//
+// The same question governs "NEVER DIALED", "UNSIGNED" and "the send failed"
+// elsewhere in this codebase: a claim about what a person did or failed to do
+// may only be made from data we can prove.
 
 /** One document as GHL reports it: a proposal/estimate/contract sent to the
  *  merchant, its current status, whether it's signed, when it last changed, and

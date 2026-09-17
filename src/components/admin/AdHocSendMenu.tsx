@@ -103,7 +103,9 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
     if (!open || !ghlContactId) return;
     let cancelled = false;
     setSentLinks(null);
-    // refresh: true — this menu is where a closer SENDS a document and then
+    // refresh: true (the rule for when: see the "adding a caller of
+    // ghl-docs-status" note in src/lib/ghlDocs.ts). This menu is where a
+    // closer SENDS a document and then
     // reopens it to copy that document's signing link. Within the 60s cache
     // window the link they just created would be missing, the menu would say the
     // document was never sent, and the obvious response is to send it a second

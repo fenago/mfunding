@@ -841,7 +841,9 @@ export default function PlaybooksPage() {
       // Best-effort: a status-check failure must never break step completion.
       if (didAdvance && step.stageKey === "application_sent" && deal.ghl_contact_id) {
         supabase.functions
-          // refresh: true — MANDATORY here. ghl-docs-status caches the
+          // refresh: true — MANDATORY here (the rule for when: see the
+          // "adding a caller of ghl-docs-status" note in src/lib/ghlDocs.ts).
+          // ghl-docs-status caches the
           // location-wide document list for 60s, and this fires SECONDS after a
           // send. A cached pre-send list has no application in it, so the guard
           // would announce "the send may have failed" about a send that just
