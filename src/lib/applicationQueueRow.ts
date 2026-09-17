@@ -103,10 +103,31 @@ export interface ApplicationQueueRow {
   app_sent_at: string | null;
   app_sent_by: string | null;
   app_sent_by_name: string | null;
-  /** null when the application was never sent — nothing to attribute. */
+  /**
+   * null when there is no send to attribute — either the application was never
+   * sent, or app_sent_at is a phantom stamp (see born_at_application_sent).
+   */
   app_sent_attribution: AppSentAttribution | null;
   /** Human-readable evidence (or the lack of it), for the badge tooltip. */
   app_sent_attribution_basis: string | null;
+  /**
+   * app_sent_at was stamped by the GHL opportunity mirror when the deal was
+   * created, not by a send we made: the timestamp lands milliseconds BEFORE
+   * created_at, created_by is null, and no application draft exists. Four live
+   * rows, so the "63 sent" is really 59.
+   *
+   * These rows carry NO sender (app_sent_by / app_sent_attribution are null) —
+   * there is no send to attribute.
+   *
+   * ⚠ It means "we have no record of sending it", NOT "the merchant never got
+   * it": MF-2026-0273 is flagged AND signed, so a send happened inside GHL.
+   * Give these their own bucket with their own action rather than leaving them
+   * in the signature-chasing list — an unsigned one is "send it or close it";
+   * a signed one means only our record is missing. Chasing a signature on an
+   * application that was never sent is the exact harm this flag prevents
+   * (MF-2026-0324 is still sitting at status application_sent).
+   */
+  born_at_application_sent: boolean;
 
   app_signed_at: string | null;
   app_signed_state: SignatureState;
@@ -166,4 +187,14 @@ export function isApplicationSigned(row: ApplicationQueueRow): boolean {
  */
 export function isSignatureKnown(row: ApplicationQueueRow): boolean {
   return row.app_signed_state !== "unchecked";
+}
+
+/**
+ * Did WE actually send this application? False for a phantom stamp the GHL
+ * mirror wrote at deal creation. Use it to keep those rows out of the
+ * signature-chasing bucket — chasing a signature on an application nobody sent
+ * is wasted work, and it is what MF-2026-0324 would otherwise cause.
+ */
+export function isRealSend(row: ApplicationQueueRow): boolean {
+  return row.app_sent_at !== null && !row.born_at_application_sent;
 }
