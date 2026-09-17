@@ -1,5 +1,6 @@
 import supabase from "../supabase";
 import type { Campaign } from "./campaignService";
+import { isApplicationDoc } from "../utils/signing";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Campaign Audit — a REAL-TIME, per-campaign read of lead QUALITY, built to answer
@@ -305,7 +306,7 @@ export async function getCampaignAudit(campaigns: Campaign[]): Promise<Record<st
     await supabase.rpc("recompute_phone_status", { p_customer_ids: customerIds });
   }
 
-  const [callByDeal, custMap, uwByDeal, docCustomerIds, appDocCustomerIds, esignCustomerIds] = await Promise.all([
+  const [callByDeal, custMap, uwByDeal, docCustomerIds, appDocCustomerIds, esign] = await Promise.all([
     fetchCallSummaries(deals, dealIds, contactIds),
     fetchCustomers(customerIds),
     fetchLatestUnderwriting(dealIds),
@@ -320,7 +321,7 @@ export async function getCampaignAudit(campaigns: Campaign[]): Promise<Record<st
   const out: Record<string, AuditMetrics> = {};
   for (const c of campaigns) {
     out[c.id] = foldCampaign(
-      c, byCampaign[c.id] ?? [], callByDeal, custMap, uwByDeal, docCustomerIds, appDocCustomerIds, esignCustomerIds,
+      c, byCampaign[c.id] ?? [], callByDeal, custMap, uwByDeal, docCustomerIds, appDocCustomerIds, esign,
       phoneLookup,
     );
   }
@@ -432,16 +433,37 @@ async function fetchCustomersWithDocs(customerIds: string[], docType: string | n
   return set;
 }
 
-async function fetchEsignCompletions(customerIds: string[]): Promise<Set<string>> {
-  const set = new Set<string>();
-  if (customerIds.length === 0) return set;
+/**
+ * E-sign completions, split into the two questions that were being conflated.
+ *
+ * `any` — this merchant e-signed SOMETHING. That is what the `esignCompletions`
+ *   metric is named after and it stays as it was.
+ * `application` — this merchant signed their APPLICATION, judged by
+ *   isApplicationDoc (the shared rule, which excludes /disclosure/i first).
+ *
+ * WHY THEY ARE NOT THE SAME. "App returned" was counting ANY completion, so a
+ * merchant who signed only the Broker Compensation Disclosure — a separate
+ * one-page document that can be signed without ever opening the application —
+ * was counted as having returned their application. Measured 2026-09-17 across
+ * the 327 deals carrying a campaign_id: 17 had some completion, 15 had an
+ * actual application, so that funnel step read 17 when the truth was 15.
+ */
+async function fetchEsignCompletions(
+  customerIds: string[],
+): Promise<{ any: Set<string>; application: Set<string> }> {
+  const out = { any: new Set<string>(), application: new Set<string>() };
+  if (customerIds.length === 0) return out;
   const { data, error } = await supabase
     .from("ghl_doc_completions")
-    .select("customer_id")
+    .select("customer_id, doc_name")
     .in("customer_id", customerIds);
-  if (error) return set; // no ops-staff policy → degrades to 0, surfaced as "—"
-  for (const r of (data ?? []) as { customer_id: string }[]) if (r.customer_id) set.add(r.customer_id);
-  return set;
+  if (error) return out; // no ops-staff policy → degrades to 0, surfaced as "—"
+  for (const r of (data ?? []) as { customer_id: string; doc_name: string | null }[]) {
+    if (!r.customer_id) continue;
+    out.any.add(r.customer_id);
+    if (isApplicationDoc(r.doc_name)) out.application.add(r.customer_id);
+  }
+  return out;
 }
 
 // ── The fold — all math for one campaign ─────────────────────────────────────
@@ -453,7 +475,7 @@ function foldCampaign(
   uwByDeal: Map<string, UwRow>,
   docCustomerIds: Set<string>,
   appDocCustomerIds: Set<string>,
-  esignCustomerIds: Set<string>,
+  esign: { any: Set<string>; application: Set<string> },
   phoneLookup: PhoneLookupConfig,
 ): AuditMetrics {
   const leads = deals.length;
@@ -541,14 +563,17 @@ function foldCampaign(
     if (has(d.merchant_reply_at)) merchantReplies += 1;
     if (has(cust?.email_last_opened_at)) emailOpens += 1;
     if (d.customer_id && docCustomerIds.has(d.customer_id)) docCustomers.add(d.customer_id);
-    if (d.customer_id && esignCustomerIds.has(d.customer_id)) esignCustomers.add(d.customer_id);
+    if (d.customer_id && esign.any.has(d.customer_id)) esignCustomers.add(d.customer_id);
 
     // ── funnel ──
     if (has(d.qualified_at)) qualified += 1;
     if (has(d.application_sent_at)) appSent += 1;
-    // App RETURNED: a signed application on file — an application-type document OR
-    // any e-sign completion (the signed app/agreement) for this deal's customer.
-    if (d.customer_id && (appDocCustomerIds.has(d.customer_id) || esignCustomerIds.has(d.customer_id))) appReturned += 1;
+    // App RETURNED: a signed APPLICATION on file — an application-type document,
+    // or an e-sign completion of the application itself. Deliberately NOT "any
+    // e-sign completion": that counted the Broker Compensation Disclosure, which
+    // a merchant can sign without ever opening the application, and inflated this
+    // step by 2 of 17 on live data.
+    if (d.customer_id && (appDocCustomerIds.has(d.customer_id) || esign.application.has(d.customer_id))) appReturned += 1;
     if (has(d.docs_collected_at) || has(d.bank_statements_at)) docs += 1;
     if (has(d.submitted_at)) submitted += 1;
     if (has(d.offer_received_at) || has(d.offer_presented_at)) offer += 1;

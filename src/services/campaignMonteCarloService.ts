@@ -1,5 +1,6 @@
 import supabase from "../supabase";
 import type { Campaign } from "./campaignService";
+import { isApplicationDoc } from "../utils/signing";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Campaign Monte Carlo — the DATA layer.
@@ -77,7 +78,12 @@ export interface CampaignMcInputs {
 // ── The application doc. The merchant "returned the app" when they completed the
 // 04 / PREFILL application — NOT the broker compensation disclosure (which is a
 // separate signature and would over-count). See [[two-path-doc-send]].
-const APP_DOC_RE = /\b04|prefill|application/i;
+//
+// The test is isApplicationDoc, the shared rule, not the local /\b04|prefill|
+// application/i this replaced. That spelling agreed with it on every doc name
+// the account holds, but it had no disclosure guard — so the day a template is
+// named "Application Disclosure" it starts counting exactly the over-count the
+// comment above says it must avoid.
 const COMPLETED = "completed";
 
 const num = (v: unknown): number | null => {
@@ -169,7 +175,7 @@ async function fetchAppReturns(customerIds: string[]): Promise<Set<string>> {
     .in("customer_id", customerIds);
   if (error) return set;
   for (const r of (data ?? []) as { customer_id: string | null; doc_name: string | null }[]) {
-    if (r.customer_id && r.doc_name && APP_DOC_RE.test(r.doc_name)) set.add(r.customer_id);
+    if (r.customer_id && isApplicationDoc(r.doc_name)) set.add(r.customer_id);
   }
   return set;
 }
