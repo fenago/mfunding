@@ -177,12 +177,18 @@ export function chaseVerdict(
   if (row.qa_decision) return { ...base, bucket: "decided" };
   if ((row.statements_count ?? 0) > 0) return { ...base, bucket: "statements" };
   // SIGNED OUTRANKS A MISSING SEND RECORD, deliberately. MF-2026-0113 (Express
-  // Redemption) signed on 2026-07-22 with no application_sent_at at all, and
-  // MF-2026-0273 is a phantom that is also signed: in both, a send plainly
-  // happened — inside GHL, outside our record. The processor's next action on a
-  // signed deal is bank statements either way, and routing them here is also
-  // what guarantees we never offer a blind re-send on a signed application. The
-  // missing send record is still shown, as a chip on the row.
+  // Redemption) signed on 2026-07-22 with no application_sent_at at all: a send
+  // plainly happened, inside GHL and outside our record. The processor's next
+  // action on a signed deal is bank statements regardless of what our paperwork
+  // says, and routing it here is also what GUARANTEES we never offer a blind
+  // re-send on a signed application. The missing send record is still shown, as
+  // a chip on the row.
+  //
+  // The property that matters is "past `unsigned`", NOT "reaches this line".
+  // MF-2026-0273 is the other signed row with no send record and it never gets
+  // here — it carries 25 bank statements, so it returned at `statements` above.
+  // Both are safe from a re-send offer, by different rungs. Do not read this
+  // comment as "every signed phantom lands in `signed`".
   if (signature.kind === "signed") return { ...base, bucket: "signed" };
   // Complete-but-not-signed is the chase-the-signature bucket — but ONLY for a
   // send we can actually account for. Chasing a signature on an application

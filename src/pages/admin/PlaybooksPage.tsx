@@ -841,7 +841,14 @@ export default function PlaybooksPage() {
       // Best-effort: a status-check failure must never break step completion.
       if (didAdvance && step.stageKey === "application_sent" && deal.ghl_contact_id) {
         supabase.functions
-          .invoke("ghl-docs-status", { body: { ghl_contact_id: deal.ghl_contact_id } })
+          // refresh: true — MANDATORY here. ghl-docs-status caches the
+          // location-wide document list for 60s, and this fires SECONDS after a
+          // send. A cached pre-send list has no application in it, so the guard
+          // would announce "the send may have failed" about a send that just
+          // succeeded — an accusation manufactured out of a stale read. The
+          // cache is right for the mount-time readers; it is wrong for a check
+          // whose whole job is to observe something that just changed.
+          .invoke("ghl-docs-status", { body: { ghl_contact_id: deal.ghl_contact_id, refresh: true } })
           .then(({ data }) => {
             const docs = (data?.documents ?? []) as Array<{ name?: string }>;
             // isApplicationDoc, not a local regex: this decides whether to accuse

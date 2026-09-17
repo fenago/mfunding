@@ -103,7 +103,13 @@ export default function AdHocSendMenu({ dealId, merchantEmail, ghlContactId }: P
     if (!open || !ghlContactId) return;
     let cancelled = false;
     setSentLinks(null);
-    supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId } })
+    // refresh: true — this menu is where a closer SENDS a document and then
+    // reopens it to copy that document's signing link. Within the 60s cache
+    // window the link they just created would be missing, the menu would say the
+    // document was never sent, and the obvious response is to send it a second
+    // time. A deliberate menu-open is a cheap place to spend a fresh crawl; the
+    // cache exists to absorb mount-time and polling reads, not this one.
+    supabase.functions.invoke("ghl-docs-status", { body: { ghl_contact_id: ghlContactId, refresh: true } })
       .then(({ data }) => {
         if (cancelled || data?.error) { if (!cancelled) setSentLinks([]); return; }
         setSentLinks(((data?.documents ?? []) as SentDocLink[]).filter((d) => d.url));
