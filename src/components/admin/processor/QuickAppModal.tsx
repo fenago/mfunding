@@ -100,16 +100,20 @@ export default function QuickAppModal({
         const cust = (found.deal?.customer ?? {}) as unknown as Record<string, unknown>;
         const app = (appRow ?? {}) as Record<string, unknown>;
         setExistingId((app.id as string) ?? null);
-        // Signed? Check the completion ledger for this merchant (no GHL call).
-        const custId = s(deal.customer_id);
-        if (custId) {
-          const { data: comps } = await supabase
-            .from("ghl_doc_completions").select("doc_name").eq("customer_id", custId);
-          const isSigned = ((comps ?? []) as { doc_name: string | null }[]).some(
-            (c) => /application|prefill|partial/i.test(c.doc_name ?? ""),
-          );
-          if (alive) setSigned(isSigned);
-        }
+        // Signed? deal_application_status(), not a direct read of the completion
+        // ledger with a local regex. Two reasons it matters here:
+        //   · The doc-name rule lives in SQL (is_application_doc_name). The
+        //     inline /application|prefill|partial/i this replaced was one of the
+        //     private copies that made the '04C MCA PARTIAL' bug possible.
+        //   · The ledger on its own cannot distinguish "not signed" from "not
+        //     read yet". This chip only ever claims the POSITIVE, so it was never
+        //     wrong — but reading it through the RPC means it stays right if that
+        //     ever changes, and the app now has no direct ledger reads left.
+        const { data: st } = await supabase.rpc("deal_application_status", {
+          p_deal_ids: [dealId],
+        });
+        const row = ((st ?? []) as unknown as { app_signed_state?: string }[])[0];
+        if (alive) setSigned(row?.app_signed_state === "signed");
         const seed: Form = {};
         for (const { key } of REQUIRED_APPLICATION_FIELDS) {
           let v = s(app[key]);

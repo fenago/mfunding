@@ -80,6 +80,7 @@ import { expectedCommissionInPlay, COMMISSION_DEFAULTS } from "../../types/commi
 import { useCloserSplits, type CloserSplits } from "../../hooks/useCloserSplits";
 import { useUserProfile } from "../../context/UserProfileContext";
 import { CalculatorIcon } from "@heroicons/react/24/outline";
+import { isApplicationDoc } from "../../utils/signing";
 
 // The NEW lead-path playbooks (Synergy imports/email + cold email). Only these
 // fold their shared close steps when browsing; the original flows are untouched.
@@ -843,7 +844,11 @@ export default function PlaybooksPage() {
           .invoke("ghl-docs-status", { body: { ghl_contact_id: deal.ghl_contact_id } })
           .then(({ data }) => {
             const docs = (data?.documents ?? []) as Array<{ name?: string }>;
-            const appOut = docs.some((d) => /application|04b|04c/i.test(d.name ?? ""));
+            // isApplicationDoc, not a local regex: this decides whether to accuse
+            // a closer of a failed send, and a matcher that drifted onto the
+            // broker disclosure would call a real send a failure (or miss a real
+            // failure by matching the disclosure that IS out).
+            const appOut = docs.some((d) => isApplicationDoc(d.name ?? ""));
             if (!appOut) {
               notify(
                 "⚠️ Stage moved to App Sent, but GHL shows NO application out for signature — the send may have failed. Use Send docs to actually send it.",
@@ -1775,9 +1780,15 @@ function SignedAppActionBanner({ customerId, attached, onUploaded }: { customerI
 // ✓ signed (emerald) / ⏳ current status (amber).
 function DocsBackChips({ groups }: { groups: DocGroup[] | null }) {
   if (!groups || groups.length === 0) return null;
+  // The APPLICATION branch is isApplicationDoc, not a local regex — the same
+  // classifier the chips beside it, the send paths and the SQL all use. This one
+  // only picks a LABEL rather than gating anything, but "Application" on a chip
+  // is read as a statement about which document is out for signature, and a
+  // matcher that drifted onto a disclosure would put that word on the wrong row.
+  // Falling through to the truncated real name is the safe failure here.
   const short = (name: string) =>
     /broker\s*compensation|broker\s*agreement/i.test(name) ? "Broker agmt"
-    : /application|04b|04c/i.test(name) ? "Application"
+    : isApplicationDoc(name) ? "Application"
     : /tcpa|consent/i.test(name) ? "Consent"
     : name.length > 16 ? `${name.slice(0, 14)}…` : name;
   return (

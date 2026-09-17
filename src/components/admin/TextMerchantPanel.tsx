@@ -20,6 +20,7 @@ import {
   type SmsDocAttachment,
 } from "@/lib/sms";
 import { loadActiveSmsLines, defaultLine, type SmsLine } from "@/lib/smsLines";
+import { isApplicationDoc } from "@/utils/signing";
 
 /**
  * Text a merchant on the company line — an inline compose that goes out through
@@ -352,8 +353,12 @@ export default function TextMerchantPanel({
   // COMPLETE application, so the sign-link templates use the merchant's own sent
   // e-sign document; when it hasn't been sent yet the chip is disabled with the
   // reason (be proactive: never text a link that doesn't exist). ──
+  // isApplicationDoc, not a local regex. This picks the link we TEXT A MERCHANT,
+  // so a classifier that drifted onto the Broker Compensation Disclosure would
+  // send them the wrong document to sign. The shared rule excludes /disclosure/i
+  // before it tests anything else.
   const appDoc = useMemo(
-    () => (sentLinks ?? []).find((l) => /application|prefill|partial/i.test(l.name) && l.url),
+    () => (sentLinks ?? []).find((l) => isApplicationDoc(l.name) && l.url),
     [sentLinks],
   );
   const appSignUrl = appDoc?.url ?? null;
