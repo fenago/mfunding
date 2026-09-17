@@ -44,7 +44,7 @@
 // every surface must render it as "confirm whether they signed" rather than as a
 // failure to chase. See src/lib/applicationSignature.ts.
 
-import { queueRowCompleteness, type ApplicationQueueRow } from "@/lib/applicationQueueRow";
+import { queueRowCompleteness, isRealSend, type ApplicationQueueRow } from "@/lib/applicationQueueRow";
 import type { SignatureState } from "@/lib/applicationSignature";
 
 export type ChaseBucket = "partial" | "unsigned" | "signed" | "statements" | "decided";
@@ -135,6 +135,19 @@ export interface ChaseVerdict {
   /** False when the signature ledger was unreadable. A row in the `unsigned`
    *  bucket with this false must NOT be rendered as a failure to chase. */
   signatureKnown: boolean;
+  /**
+   * Did WE actually send this application? False for BOTH of the no-send cases:
+   * never sent at all, and a PHANTOM stamp the VibeReach opportunity mirror
+   * wrote during deal creation (application_sent_at landing 12-15ms before
+   * created_at, created_by null, no draft — 4 live rows, so "63 sent" is
+   * really 59). A false here means no send date, no days-since-sent and no
+   * sender may be rendered: there is no send to describe.
+   */
+  realSend: boolean;
+  /** The phantom case specifically — stamped, but by the mirror, not by a send. */
+  phantomSend: boolean;
+  /** No stamp at all. */
+  neverSent: boolean;
 }
 
 /**
@@ -149,21 +162,34 @@ export function chaseVerdict(
   signature: SignatureState,
 ): ChaseVerdict {
   const { pct, missing } = queueRowCompleteness(row);
+  const real = isRealSend(row);
   const base = {
     appPct: pct,
     missingCount: missing.length,
     neverStarted: !row.app_row_exists,
     signatureKnown: signature.kind !== "unknown",
+    realSend: real,
+    phantomSend: row.born_at_application_sent,
+    neverSent: row.app_sent_at === null,
   };
 
   // Backwards down the ladder — furthest genuine progress wins.
   if (row.qa_decision) return { ...base, bucket: "decided" };
   if ((row.statements_count ?? 0) > 0) return { ...base, bucket: "statements" };
+  // SIGNED OUTRANKS A MISSING SEND RECORD, deliberately. MF-2026-0113 (Express
+  // Redemption) signed on 2026-07-22 with no application_sent_at at all, and
+  // MF-2026-0273 is a phantom that is also signed: in both, a send plainly
+  // happened — inside GHL, outside our record. The processor's next action on a
+  // signed deal is bank statements either way, and routing them here is also
+  // what guarantees we never offer a blind re-send on a signed application. The
+  // missing send record is still shown, as a chip on the row.
   if (signature.kind === "signed") return { ...base, bucket: "signed" };
-  // Complete-but-not-signed is the chase-the-signature bucket. An UNCONFIRMED
-  // signature lands here too — it is still the work item — but signatureKnown is
-  // false and the row must say "confirm whether they signed", never accuse.
-  if (missing.length === 0) return { ...base, bucket: "unsigned" };
+  // Complete-but-not-signed is the chase-the-signature bucket — but ONLY for a
+  // send we can actually account for. Chasing a signature on an application
+  // nobody sent is the exact wasted work born_at_application_sent exists to
+  // prevent, so a phantom or never-sent row falls through to `partial`, whose
+  // instruction says "nothing was sent" rather than "chase the signature".
+  if (missing.length === 0 && real) return { ...base, bucket: "unsigned" };
   return { ...base, bucket: "partial" };
 }
 
@@ -171,6 +197,20 @@ export function chaseVerdict(
 export function chaseInstruction(v: ChaseVerdict): string {
   switch (v.bucket) {
     case "partial":
+      // A PHANTOM must never be described as something that "went out" — the
+      // stage was stamped by the VibeReach mirror when the deal was created, not
+      // by a send. MF-2026-0324 is still sitting at status application_sent with
+      // nothing sent to anybody, and telling the processor it "went out and
+      // nothing came back" would send her chasing a merchant who was never
+      // contacted with an application at all.
+      if (v.phantomSend) {
+        return "⚠ Nothing was ever sent. The stage was stamped by the VibeReach mirror when this deal was created — no application left our system and no draft exists. Send it, or close the deal out.";
+      }
+      if (v.neverSent) {
+        return v.neverStarted
+          ? "No application has been sent and none has been started. Get them on the phone and fill it in with them."
+          : `Not sent yet — the application is ${v.appPct}% done, ${v.missingCount} mandatory field${v.missingCount === 1 ? "" : "s"} still missing. Finish it, then send it.`;
+      }
       return v.neverStarted
         ? "The application went out and nothing has come back — no draft on file at all. Get them on the phone and fill it in with them."
         : `Application is ${v.appPct}% done — ${v.missingCount} mandatory field${v.missingCount === 1 ? "" : "s"} still missing. Chase the rest.`;
@@ -179,6 +219,12 @@ export function chaseInstruction(v: ChaseVerdict): string {
         ? "Every mandatory field is filled and the merchant has NOT signed it. The signature is the only thing between this deal and bank statements — chase it."
         : "Every mandatory field is filled, but nobody has ever checked this merchant's signed documents, so we cannot say whether they signed. Hit “Check signature” before chasing them for one they may already have given.";
     case "signed":
+      // Signed with no send record: the send happened in GHL, outside our
+      // system. Say that, and do NOT suggest re-sending an application the
+      // merchant has already signed.
+      if (!v.realSend) {
+        return "Signed — but we have no record of ever sending it, so the send happened inside VibeReach. Don't re-send it. Chase the bank statements, and let someone fix the record.";
+      }
       return "Signed and on file. Nothing can move until the bank statements land — chase those.";
     case "statements":
       return "Application and statements are both in. This is waiting on a GO / NO-GO decision.";

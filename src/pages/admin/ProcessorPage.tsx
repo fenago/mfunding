@@ -27,7 +27,7 @@ import QuickAppModal from "@/components/admin/processor/QuickAppModal";
 import ProcessorScoreboard from "@/components/admin/processor/ProcessorScoreboard";
 import ApplicationChaseTab from "@/components/admin/processor/ApplicationChaseTab";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
-import { signatureFromStamps } from "@/lib/applicationSignature";
+import useApplicationSignatures from "@/hooks/useApplicationSignatures";
 import { MCA_PIPELINE, VCF_PIPELINE } from "@/data/pipelines";
 import { DEAL_STATUS_CONFIG, type DealStatus } from "@/types/deals";
 import {
@@ -235,6 +235,15 @@ export default function ProcessorPage() {
   }, [loadCounts, loadRows]);
 
   const allRows = useMemo(() => (list.kind === "ready" ? list.rows : []), [list]);
+
+  // WAS IT SIGNED? processor_pipeline_rows resolves a signature timestamp but
+  // carries no "have we read this merchant's documents yet" channel, so on its
+  // own this board could only ever say "unknown" for anything not positively
+  // signed. deal_application_status() is local-tables-only, money-wall-aware and
+  // safe on a list, and returns the real three-state verdict plus the phantom
+  // flag — so the board says the same thing the Application chase tab says.
+  const rowDealIds = useMemo(() => allRows.map((r) => r.id), [allRows]);
+  const { signatureFor, sentAtFor } = useApplicationSignatures(rowDealIds);
 
   // The working funnel: interested-but-not-yet-submission-ready.
   const inScopeRows = useMemo(
@@ -885,21 +894,14 @@ export default function ProcessorPage() {
                                   the row's stage, the only send signal this RPC
                                   carries — see the prop comment below. */}
                               <ApplicationSignatureBadge
-                                signature={signatureFromStamps({
-                                  appSignedAt: r.application_signed_at,
-                                  // processor_pipeline_rows() resolves the
-                                  // signature in SQL but has no "did we ever
-                                  // check?" channel, and the completions ledger
-                                  // is lazy — only 16 of 339 merchants have ever
-                                  // been looked at. So an absent stamp here does
-                                  // NOT mean unsigned, and this surface says
-                                  // "unknown" rather than accusing. The
-                                  // Application chase tab reads
-                                  // processor_application_queue, which carries
-                                  // the tri-state, and can resolve it.
-                                  readable: false,
-                                })}
-                                sentAt={hasReachedApplicationSent(r) || null}
+                                signature={signatureFor(r.id)}
+                                // sentAtFor returns null for a phantom stamp —
+                                // one the VibeReach mirror wrote at deal
+                                // creation — so the badge never reports a send
+                                // that never happened. Falling back to the stage
+                                // keeps the badge alive for a row the status RPC
+                                // didn't answer for.
+                                sentAt={sentAtFor(r.id) ?? (hasReachedApplicationSent(r) || null)}
                                 hideWhenNothingSent
                               />
                             </div>
@@ -1125,6 +1127,8 @@ export default function ProcessorPage() {
         dealId={selectedDealId}
         row={selectedRow}
         pipe={pipe}
+        signature={signatureFor(selectedDealId)}
+        signatureSentAt={sentAtFor(selectedDealId)}
         onClose={() => setSelectedDealId(null)}
         onChanged={reloadAll}
       />

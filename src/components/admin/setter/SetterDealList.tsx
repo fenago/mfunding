@@ -25,11 +25,9 @@ import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "@/lib/sourceLabel";
 import { dateTimeET, etWallClockToUtcIso } from "@/utils/time";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
 import {
-  signaturesByCustomer,
-  signatureUnknown,
-  type DocCompletion,
-  type SignatureState,
-} from "@/lib/applicationSignature";
+  signatureFromStatus,
+  type DealApplicationStatus,
+} from "@/hooks/useApplicationSignatures";
 
 /**
  * SetterDealList — the setter's own book, rendered under the search box as the
@@ -280,10 +278,10 @@ export default function SetterDealList({
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [filter, setFilter] = useState<QueueFilter>({ kind: "all" });
   const [quickAppDealId, setQuickAppDealId] = useState<string | null>(null);
-  // Signature state per customer, from the completion ledger. A MAP, not a Set,
-  // because "we couldn't read it" is a third state and must never render as
-  // "unsigned" — see src/lib/applicationSignature.ts.
-  const [signatures, setSignatures] = useState<Map<string, SignatureState>>(new Map());
+  // Application send + signature state per DEAL, from deal_application_status().
+  // A deal absent from this map was not answered for, which renders "signature
+  // unknown" — never "unsigned". See src/hooks/useApplicationSignatures.ts.
+  const [appStatus, setAppStatus] = useState<Map<string, DealApplicationStatus>>(new Map());
   // Documents on file per customer: total + bank-statement count.
   const [docCounts, setDocCounts] = useState<Map<string, { total: number; statements: number }>>(new Map());
   // Per-deal application completeness (pct + fields left) — the exit rule: a deal
@@ -351,33 +349,26 @@ export default function SetterDealList({
       if (error) throw new Error(error.message);
       const rows = (data ?? []) as unknown as DealRow[];
       setState({ kind: "ready", rows, total: count ?? rows.length });
-      // Which of these merchants have a SIGNED application? One extra query against
-      // the completion ledger (no GHL call) → a ✍️ Signed badge on the row.
+      // Was the application SENT, and did the merchant SIGN it? One RPC —
+      // deal_application_status — rather than this component reading the
+      // completion ledger itself. It applies the SQL doc-name rule, returns the
+      // three-state signature (a merchant we have not read yet is 'unchecked',
+      // never "unsigned"), and flags a phantom send so a stage the VibeReach
+      // mirror stamped is not drawn as a send we made.
       const custIds = Array.from(new Set(rows.map((r) => r.customer_id).filter(Boolean))) as string[];
       if (custIds.length > 0) {
-        const [{ data: comps, error: compsErr }, { data: checkedRows, error: checkedErr }, { data: docs }] = await Promise.all([
-          supabase.from("ghl_doc_completions").select("customer_id, doc_name, completed_seen_at").in("customer_id", custIds),
-          // Who we have ever LOOKED AT. Without this an absent completion row is
-          // indistinguishable from never having checked, and a merchant who did
-          // sign would render UNSIGNED. See signaturesByCustomer.
-          supabase.from("customers").select("id, ghl_docs_checked_at").in("id", custIds),
+        const [{ data: appStatus, error: appStatusErr }, { data: docs }] = await Promise.all([
+          supabase.rpc("deal_application_status", { p_deal_ids: rows.map((r) => r.id) }),
           supabase.from("customer_documents").select("customer_id, document_type").in("customer_id", custIds),
         ]);
-        // Both errors are checked, not ignored: a failed read makes every one of
-        // these merchants "signature unknown" rather than silently unsigned.
-        setSignatures(
-          signaturesByCustomer(
-            compsErr ? null : ((comps ?? []) as DocCompletion[]),
-            custIds,
-            checkedErr
-              ? null
-              : new Map(
-                  ((checkedRows ?? []) as { id: string; ghl_docs_checked_at: string | null }[])
-                    .filter((c) => !!c.ghl_docs_checked_at)
-                    .map((c) => [c.id, c.ghl_docs_checked_at]),
-                ),
-            (compsErr ?? checkedErr)?.message ?? "the signature ledger could not be read",
-          ),
+        // The error is checked, not ignored: a failed read leaves the map empty,
+        // and an absent deal reads as "signature unknown", never as unsigned.
+        setAppStatus(
+          appStatusErr
+            ? new Map()
+            : new Map(
+                ((appStatus ?? []) as unknown as DealApplicationStatus[]).map((r) => [r.deal_id, r]),
+              ),
         );
         const dc = new Map<string, { total: number; statements: number }>();
         for (const doc of (docs ?? []) as { customer_id: string; document_type: string | null }[]) {
@@ -388,7 +379,7 @@ export default function SetterDealList({
         }
         setDocCounts(dc);
       } else {
-        setSignatures(new Map());
+        setAppStatus(new Map());
         setDocCounts(new Map());
       }
       // ── Application completeness per deal (the exit rule) + the setter's ★s ──
@@ -746,16 +737,21 @@ export default function SetterDealList({
                             signed, so an unsigned application looked exactly like
                             one nobody had sent — the owner's complaint, and the
                             setter's half of it. One shared badge, all states. */}
-                        <ApplicationSignatureBadge
-                          signature={
-                            r.customer_id
-                              ? (signatures.get(r.customer_id) ??
-                                 signatureUnknown("this merchant was not in the batch that was read"))
-                              : signatureUnknown("this deal has no merchant record attached")
-                          }
-                          sentAt={r.application_sent_at}
-                          hideWhenNothingSent
-                        />
+                        {(() => {
+                          const st = appStatus.get(r.id);
+                          return (
+                            <ApplicationSignatureBadge
+                              signature={signatureFromStatus(st)}
+                              // null for a phantom stamp too: the VibeReach
+                              // mirror wrote that date at deal creation, so
+                              // billing it as a send would make the badge read
+                              // "Sent 12 Sep · UNSIGNED" about an application
+                              // that never left.
+                              sentAt={st && !st.born_at_application_sent ? st.app_sent_at : null}
+                              hideWhenNothingSent
+                            />
+                          );
+                        })()}
                         {/* Documents on file — total + how many are bank statements. */}
                         {(() => {
                           const dcs = r.customer_id ? docCounts.get(r.customer_id) : null;

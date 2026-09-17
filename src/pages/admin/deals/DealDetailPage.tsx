@@ -80,9 +80,11 @@ export default function DealDetailPage() {
   const [isReassigning, setIsReassigning] = useState(false);
   const [reassignWarning, setReassignWarning] = useState<string | null>(null);
   // Did this merchant SIGN their application? Read above the early returns, as
-  // hooks must be. A failed read renders "Signature unknown", never "unsigned".
-  const signatureCustomerIds = useMemo(() => [deal?.customer_id], [deal?.customer_id]);
-  const { signatureFor } = useApplicationSignatures(signatureCustomerIds);
+  // hooks must be. A failed read renders "Signature unknown", never "unsigned",
+  // and sentAtFor returns null for a phantom stamp so the badge never reports a
+  // send that didn't happen.
+  const signatureDealIds = useMemo(() => [deal?.id], [deal?.id]);
+  const { signatureFor, sentAtFor } = useApplicationSignatures(signatureDealIds);
 
   useEffect(() => {
     if (id) fetchDeal();
@@ -356,8 +358,8 @@ export default function DealDetailPage() {
                   when the owner raised this. The badge goes wherever the stage
                   goes. */}
               <ApplicationSignatureBadge
-                signature={signatureFor(deal.customer_id)}
-                sentAt={deal.application_sent_at}
+                signature={signatureFor(deal.id)}
+                sentAt={sentAtFor(deal.id)}
                 size="sm"
               />
               <span className="px-2 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
@@ -689,8 +691,8 @@ export default function DealDetailPage() {
                         merchant actually signed. */}
                     {item.badge && (
                       <ApplicationSignatureBadge
-                        signature={signatureFor(deal.customer_id)}
-                        sentAt={deal.application_sent_at}
+                        signature={signatureFor(deal.id)}
+                        sentAt={sentAtFor(deal.id)}
                         hideWhenNothingSent
                       />
                     )}

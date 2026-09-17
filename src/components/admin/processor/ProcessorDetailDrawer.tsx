@@ -38,7 +38,7 @@ import {
   type PipelineRow,
 } from "./types";
 import ApplicationSignatureBadge from "@/components/admin/ApplicationSignatureBadge";
-import { signatureFromStamps } from "@/lib/applicationSignature";
+import type { SignatureState } from "@/lib/applicationSignature";
 
 // ── The QA checklist — UI-owned, stable keys (persisted as jsonb via
 // processor_save_qa). Every item must be ticked before QA can be marked passed.
@@ -234,6 +234,8 @@ export default function ProcessorDetailDrawer({
   dealId,
   row,
   pipe,
+  signature,
+  signatureSentAt,
   onClose,
   onChanged,
 }: {
@@ -242,6 +244,13 @@ export default function ProcessorDetailDrawer({
    *  drawer and the list can never disagree. */
   row: PipelineRow | null;
   pipe: Pipe;
+  /** Resolved ONCE on the page (deal_application_status) and handed down, for
+   *  the same reason `row` is: the drawer and the list behind it must not be
+   *  able to disagree about whether the merchant signed. */
+  signature: SignatureState;
+  /** The send date, or null when there is no send to date — never sent, or a
+   *  phantom stamp the VibeReach mirror wrote at deal creation. */
+  signatureSentAt: string | null;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -539,25 +548,14 @@ export default function ProcessorDetailDrawer({
                   the merchant actually signed it — 49 of 63 sent applications
                   were unsigned when the owner raised this. The badge sits right
                   next to the chip so the two are read together. */}
+              {/* The verdict is resolved ONCE on the page (deal_application_status)
+                  and handed down, so the drawer and the row behind it can never
+                  disagree about whether a merchant signed. */}
               <ApplicationSignatureBadge
-                signature={signatureFromStamps({
-                  appSignedAt:
-                    row?.application_signed_at ??
-                    (typeof deal?.application_signed_at === "string"
-                      ? deal.application_signed_at
-                      : null),
-                  // No readability channel on this RPC, and the completions
-                  // ledger is lazy — an absent stamp is "we never looked", not
-                  // "they didn't sign". Say unknown; the Application chase tab
-                  // has the button that settles it.
-                  readable: false,
-                })}
+                signature={signature}
                 sentAt={
-                  typeof deal?.application_sent_at === "string"
-                    ? deal.application_sent_at
-                    : row
-                      ? hasReachedApplicationSent(row) || null
-                      : null
+                  signatureSentAt ??
+                  (row ? hasReachedApplicationSent(row) || null : null)
                 }
                 size="sm"
               />

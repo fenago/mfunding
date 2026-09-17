@@ -16,19 +16,33 @@
 // on this tab sends her to another screen to do the work.
 //
 // ── WHY THIS TAB EXISTS AT ALL ──────────────────────────────────────────────
-// Measured live 2026-09-17: 63 deals have an application sent and only 14 have a
-// signed application on file. The stage chip alone was telling the team those
-// deals had moved when the merchant had not put pen to paper, so "Complete but
-// UNSIGNED" is the loudest bucket here, by instruction.
+// Measured live 2026-09-17: 63 deals carry an application_sent_at, and of those
+// only 16 have a signed application on file. The stage chip alone was telling
+// the team those deals had moved when the merchant had not put pen to paper, so
+// "Complete but UNSIGNED" is the loudest bucket here, by instruction.
 //
-// But the honest headline is "14 signed, 49 NOT ESTABLISHED", not "49 unsigned":
-// ghl_doc_completions is a lazy mirror written only when someone opens a
-// contact's documents, and only 16 of 339 customers have ever been looked at
-// (customers.ghl_docs_checked_at). So most rows start amber, and the "Check
-// signature" button — which calls ghl-docs-status live and writes the
-// readability stamp — is what turns amber into the real answer. Shipping a red
-// UNSIGNED on all 49 would have sent the processor chasing signatures some of
-// those merchants had already given.
+// TWO THINGS TURNED OUT NOT TO BE TRUE OF THAT HEADLINE, and both shaped the UI:
+//
+//  1. Four of the 63 "sends" were never sends. The VibeReach opportunity mirror
+//     created the deal already in the Application Sent stage and the stage
+//     trigger back-stamped it inside the insert — application_sent_at lands
+//     12-15 MILLISECONDS before created_at, with no sending user and no draft.
+//     born_at_application_sent flags them. They are kept OUT of the signature
+//     bucket (isRealSend), carry a "⚠ no send on record" chip wherever they
+//     land, and show no send date, no days-since-sent and no sender — there is
+//     no send to describe. MF-2026-0324 is still sitting at status
+//     application_sent with nothing ever sent to anybody; without this the
+//     processor would be chasing a signature on it.
+//
+//  2. Absence of a signature briefly could not be trusted at all.
+//     ghl_doc_completions was a lazy mirror written only when a human opened a
+//     contact's documents — 16 of 339 customers ever. ghl-doc-sweep now reads
+//     every completed document in the account in two API calls, hourly, and
+//     'unchecked' is normally zero. The unknown branch stays because a crawl can
+//     fail, and on that day the honest output is "we don't know", not fifty
+//     accusations. There is deliberately NO "check this one merchant" button:
+//     the GHL proposals API rejects contactId / contact_id / recipientId, so it
+//     would have nothing to call.
 //
 // ── NOTHING HERE IS FORKED ──────────────────────────────────────────────────
 //   · ChaseTracker       — the 14-day tracker, extracted from HotLeadsPanel.
@@ -42,11 +56,13 @@
 //
 // ── UNREADABLE IS NEVER ZERO, AND NEVER "NO" ────────────────────────────────
 // A failed queue read renders a red "this is not an empty queue" box, never an
-// empty tab. A merchant whose e-signed documents have never been checked renders
-// "Signature unknown" in amber and an instruction to CONFIRM — never the red
-// UNSIGNED badge, which is in practice an accusation that the signature was not
-// chased. A failed call-history read suppresses the tracker rather than painting
-// fourteen red days over a merchant somebody called every morning.
+// empty tab. A merchant whose e-signed documents have not been read renders
+// "Signature unknown" in amber — never the red UNSIGNED badge, which is in
+// practice an accusation that the signature was not chased. A failed
+// call-history read suppresses the tracker rather than painting fourteen red
+// days over a merchant somebody called every morning. And a send we cannot
+// account for is never counted, dated, attributed or chased as though it were
+// one.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -81,6 +97,7 @@ import {
 import {
   isAttributionRecorded,
   isAttributionAssumed,
+  isRealSend,
   type ApplicationQueueRow,
 } from "@/lib/applicationQueueRow";
 import {
@@ -172,18 +189,6 @@ export default function ApplicationChaseTab({
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [rowErr, setRowErr] = useState<string | null>(null);
   const armTimer = useRef<number | null>(null);
-  // ── RESOLVING "signature unknown" ──
-  // ghl_doc_completions is a LAZY mirror: it is only written when someone
-  // actually opens a contact's documents (see ghl-docs-status), so for most
-  // merchants an absent completion means "nobody ever looked", NOT "they didn't
-  // sign". Measured 2026-09-17: only 16 of 339 customers have ever been checked.
-  // Rendering all of those as UNSIGNED would send the processor chasing
-  // signatures merchants may already have given — so they render amber, and
-  // THIS is the button that turns amber into a real answer.
-  const [contactIds, setContactIds] = useState<Map<string, string | null> | null>(null);
-  const [checking, setChecking] = useState<Set<string>>(new Set());
-  const [bulkCheck, setBulkCheck] = useState<{ done: number; total: number } | null>(null);
-
   const load = useCallback(async (showSpinner: boolean) => {
     if (showSpinner) setQueue({ kind: "loading" });
     const { data, error } = await supabase.rpc("processor_application_queue");
@@ -197,67 +202,8 @@ export default function ApplicationChaseTab({
     setQueue({ kind: "ready", rows });
     setNow(Date.now());
 
-    // The VibeReach contact behind each merchant — what "Check signature" needs.
-    // The queue RPC doesn't carry it, so one batched read. null = unreadable,
-    // which simply hides the button rather than pretending the check is possible.
-    const custIds = Array.from(new Set(rows.map((r) => r.customer_id).filter(Boolean)));
-    if (custIds.length > 0) {
-      const { data: cust, error: custErr } = await supabase
-        .from("customers")
-        .select("id, ghl_contact_id")
-        .in("id", custIds);
-      setContactIds(
-        custErr
-          ? null
-          : new Map(
-              ((cust ?? []) as { id: string; ghl_contact_id: string | null }[]).map((c) => [
-                c.id,
-                c.ghl_contact_id,
-              ]),
-            ),
-      );
-    } else {
-      setContactIds(new Map());
-    }
-
     setHistory(await loadCallHistory(rows.map((r) => r.deal_id)));
   }, []);
-
-  /**
-   * Ask GHL whether this merchant's documents came back, and write the answer to
-   * the ledger. ghl-docs-status stamps customers.ghl_docs_checked_at only when
-   * the read could genuinely have seen this contact's documents, so a successful
-   * call is what makes a subsequent "not signed" trustworthy.
-   */
-  const checkSignature = useCallback(
-    async (customerId: string): Promise<boolean> => {
-      const contactId = contactIds?.get(customerId);
-      if (!contactId) return false;
-      setChecking((s) => new Set(s).add(customerId));
-      try {
-        const { error } = await supabase.functions.invoke("ghl-docs-status", {
-          body: { ghl_contact_id: contactId },
-        });
-        if (error) {
-          setRowErr(`Couldn't check that merchant's signed documents: ${error.message}`);
-          return false;
-        }
-        return true;
-      } catch (e) {
-        setRowErr(
-          `Couldn't check that merchant's signed documents: ${e instanceof Error ? e.message : "request failed"}`,
-        );
-        return false;
-      } finally {
-        setChecking((s) => {
-          const next = new Set(s);
-          next.delete(customerId);
-          return next;
-        });
-      }
-    },
-    [contactIds],
-  );
 
   useEffect(() => {
     void load(true);
@@ -329,16 +275,20 @@ export default function ApplicationChaseTab({
           .toLowerCase();
         return hay.includes(q);
       })
-      // Longest-rotting first: the merchant who has been sitting on an unsigned
-      // application for three weeks is the one she needs to see at the top.
-      // A never-sent row sorts last (-1) rather than producing a NaN comparator.
+      // Longest-rotting first, with one exception that outranks everything: a
+      // row whose SEND RECORD is missing sorts to the very top of its bucket.
+      // Those are the ones nobody can reason about from the pipeline — a signed
+      // application with no send (MF-2026-0113) or a stage stamped by the mirror
+      // (MF-2026-0324) — and they stay invisible precisely because their clocks
+      // read as normal. Their day count is meaningless, so it can't rank them.
       .sort((a, b) => {
+        const anomaly = (s: ScoredRow) => (s.v.realSend ? 0 : 1);
         const days = (s: ScoredRow) => s.r.days_since_app_sent ?? -1;
         const sent = (s: ScoredRow) => {
           const t = s.r.app_sent_at ? Date.parse(s.r.app_sent_at) : NaN;
           return Number.isFinite(t) ? t : 0;
         };
-        return days(b) - days(a) || sent(a) - sent(b);
+        return anomaly(b) - anomaly(a) || days(b) - days(a) || sent(a) - sent(b);
       });
   }, [inScope, bucket, search]);
 
@@ -385,40 +335,11 @@ export default function ApplicationChaseTab({
     [nurtureArmed, reload],
   );
 
-  /** Every visible row we could resolve but haven't. */
-  const uncheckedVisible = useMemo(
-    () =>
-      visible.filter(
-        (s) => !s.v.signatureKnown && !!contactIds?.get(s.r.customer_id),
-      ),
-    [visible, contactIds],
+  /** Visible rows whose signature status we cannot vouch for. */
+  const unconfirmedVisible = useMemo(
+    () => visible.filter((s) => !s.v.signatureKnown).length,
+    [visible],
   );
-
-  /**
-   * Resolve every unconfirmed signature in view. Three at a time: this is a real
-   * GHL call per merchant against a location capped at 200k/day, and it is
-   * bounded by what is on screen — it is never a sweep over the book.
-   */
-  const checkAllVisible = useCallback(async () => {
-    const targets = uncheckedVisible.map((s) => s.r.customer_id);
-    if (targets.length === 0) return;
-    setRowErr(null);
-    setBulkCheck({ done: 0, total: targets.length });
-    const queueIds = [...targets];
-    let done = 0;
-    const worker = async () => {
-      for (;;) {
-        const id = queueIds.shift();
-        if (!id) return;
-        await checkSignature(id);
-        done += 1;
-        setBulkCheck({ done, total: targets.length });
-      }
-    };
-    await Promise.all([worker(), worker(), worker()]);
-    setBulkCheck(null);
-    void load(false);
-  }, [uncheckedVisible, checkSignature, load]);
 
   const loading = queue.kind === "loading";
 
@@ -435,8 +356,11 @@ export default function ApplicationChaseTab({
           <span className="underline decoration-2 decoration-red-500 font-bold">
             A complete application sitting unsigned is a deal stopped dead
           </span>{" "}
-          — that bucket is the loudest one below on purpose. Pick a bucket, work the
-          rows: everything you need is on the row.
+          — that bucket is the loudest one below on purpose. Anything marked{" "}
+          <span className="font-bold text-amber-700 dark:text-amber-300">⚠ no send on record</span>{" "}
+          sorts to the top of its bucket: the stage says sent but nothing of ours
+          ever went out, so it needs sending or closing, not chasing. Pick a
+          bucket, work the rows: everything you need is on the row.
         </p>
       </div>
 
@@ -539,34 +463,28 @@ export default function ApplicationChaseTab({
           </div>
         )}
 
-        {/* UNCONFIRMED SIGNATURES — say why, and offer the fix.
-            This is the honest alternative to painting every unchecked merchant
-            with a red UNSIGNED badge: we know what we don't know, we say so, and
-            the button turns it into a real answer. */}
-        {queue.kind === "ready" && uncheckedVisible.length > 0 && (
+        {/* UNCONFIRMED SIGNATURES — say why, and say what fixes it.
+            There is NO per-contact signature lookup to offer: the GHL proposals
+            API rejects contactId / contact_id / recipientId outright, so a
+            "check this one merchant" button would have nothing to call. What
+            refreshes this is ghl-doc-sweep, which reads every completed document
+            in the account in two API calls and runs hourly. Since it went live
+            this count is normally zero — it reappears only when a crawl fails or
+            for a merchant outside the sweep's reach, which is exactly when the
+            processor needs to be told rather than quietly shown "unsigned". */}
+        {queue.kind === "ready" && unconfirmedVisible > 0 && (
           <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-200">
             <ExclamationTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
             <div className="min-w-0">
               <div className="font-bold">
-                {uncheckedVisible.length} of these merchants have never had their signed
-                documents checked.
+                {unconfirmedVisible} of these merchants have no confirmed signature status.
               </div>
               <div className="mt-0.5">
-                We keep a copy of e-signed documents only for merchants somebody has actually
-                looked up, so for these we genuinely <b>cannot say</b> whether the application
-                came back — and telling you they didn't sign would send you chasing signatures
-                some of them may already have given. Checking reads VibeReach live and settles it.
+                For these we genuinely <b>cannot say</b> whether the application came back —
+                telling you they didn't sign would send you chasing signatures some of them may
+                already have given. The hourly signature sweep normally settles this on its own;
+                if the number stays up, the sweep is failing and somebody should look.
               </div>
-              <button
-                type="button"
-                onClick={() => void checkAllVisible()}
-                disabled={bulkCheck !== null}
-                className="mt-1.5 inline-flex items-center gap-1 font-bold text-ocean-blue hover:underline disabled:opacity-60"
-              >
-                {bulkCheck
-                  ? `Checking ${bulkCheck.done} of ${bulkCheck.total}…`
-                  : `Check all ${uncheckedVisible.length} now →`}
-              </button>
             </div>
           </div>
         )}
@@ -650,11 +568,6 @@ export default function ApplicationChaseTab({
                     nurtureArmed={nurtureArmed === s.r.deal_id}
                     onNurture={() => armOrFireNurture(s.r.deal_id)}
                     busy={rowBusy === s.r.deal_id}
-                    canCheckSignature={!!contactIds?.get(s.r.customer_id)}
-                    checkingSignature={checking.has(s.r.customer_id)}
-                    onCheckSignature={async () => {
-                      if (await checkSignature(s.r.customer_id)) void load(false);
-                    }}
                   />
                 ))}
               </div>
@@ -677,7 +590,12 @@ export default function ApplicationChaseTab({
  * reconstructions, so this is the common case, not the edge case.
  */
 function AttributionChip({ r }: { r: ChaseRow }) {
-  if (!r.app_sent_at) return null; // never sent → nothing to attribute.
+  // No send → nobody to attribute. TWO distinct cases reach here: never stamped
+  // at all, and a PHANTOM stamp the VibeReach mirror wrote at deal creation.
+  // Before born_at_application_sent existed, MF-2026-0324 rendered "sent by
+  // Carlos Marquez (assumed)" — a fabricated name on an event that never
+  // happened. The row's own "no send on record" chip says what actually holds.
+  if (!isRealSend(r)) return null;
   const who = r.app_sent_by_name?.trim();
   const mode = r.app_sent_attribution;
   const basis = r.app_sent_attribution_basis ? ` (${r.app_sent_attribution_basis})` : "";
@@ -739,9 +657,6 @@ function ChaseRowCard({
   nurtureArmed,
   onNurture,
   busy,
-  canCheckSignature,
-  checkingSignature,
-  onCheckSignature,
 }: {
   s: ScoredRow;
   now: number;
@@ -753,11 +668,6 @@ function ChaseRowCard({
   nurtureArmed: boolean;
   onNurture: () => void;
   busy: boolean;
-  /** False when we have no VibeReach contact for this merchant — the check is
-   *  then genuinely impossible and the button is hidden rather than broken. */
-  canCheckSignature: boolean;
-  checkingSignature: boolean;
-  onCheckSignature: () => void;
 }) {
   const { r, v, signature, hist } = s;
   const meta = CHASE_BUCKETS[v.bucket];
@@ -787,6 +697,38 @@ function ChaseRowCard({
           {r.deal_number && <span className="text-[10px] text-gray-400">#{r.deal_number}</span>}
           {/* THE BADGE. Every surface that says "application sent" now says this too. */}
           <ApplicationSignatureBadge signature={signature} sentAt={r.app_sent_at} />
+          {/* NO SEND ON RECORD. Four live deals carry an application_sent_at the
+              VibeReach mirror stamped during deal creation — 12-15ms BEFORE
+              created_at, no sending user, no draft. They are spread across
+              buckets (3 partial, 1 statements today), so the chip goes on the
+              row rather than being implied by one bucket.
+              It means "we have no record of sending it", NOT "the merchant never
+              got it": MF-2026-0273 is flagged AND signed, so a send happened
+              inside GHL. The wording says which. */}
+          {v.phantomSend && (
+            <span
+              className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 ring-1 ring-inset ring-amber-300 dark:ring-amber-800"
+              title={
+                (r.app_sent_attribution_basis ??
+                  "The Application Sent stage was stamped by the VibeReach opportunity mirror when this deal was created, not by a send we made.") +
+                (signature.kind === "signed"
+                  ? " The merchant HAS signed, so a send did happen — inside VibeReach, outside our record. Do not re-send."
+                  : " No application left our system and no draft exists.")
+              }
+            >
+              ⚠ no send on record
+            </span>
+          )}
+          {/* Signed with no stamp at all — MF-2026-0113 signed 2026-07-22 while
+              the deal still sits at 'contacted'. Same class of gap, other way up. */}
+          {!v.phantomSend && v.neverSent && signature.kind === "signed" && (
+            <span
+              className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 ring-1 ring-inset ring-amber-300 dark:ring-amber-800"
+              title="The merchant signed the application, but nothing in our system ever recorded sending it — the send happened inside VibeReach. Don't re-send; the record needs fixing."
+            >
+              ⚠ signed, but no send on record
+            </span>
+          )}
           {r.do_not_contact && (
             <span
               className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white"
@@ -796,18 +738,34 @@ function ChaseRowCard({
             </span>
           )}
         </div>
-        {/* THE 14-DAY CLOCK, in words. */}
+        {/* THE 14-DAY CLOCK, in words — but only where a send actually happened.
+            A phantom carries an application_sent_at that is really the moment the
+            VibeReach mirror created the deal, so "8d since sent" would be a
+            measurement of nothing. */}
         <span
           className={`text-[11px] font-bold shrink-0 tabular-nums ${
-            overdue ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"
+            !v.realSend
+              ? "text-amber-700 dark:text-amber-300"
+              : overdue
+                ? "text-red-600 dark:text-red-400"
+                : "text-gray-500 dark:text-gray-400"
           }`}
-          title={r.app_sent_at ? `Application sent ${dateTimeET(r.app_sent_at)}` : undefined}
+          title={
+            v.phantomSend
+              ? r.app_sent_attribution_basis ??
+                "The Application Sent stage was stamped by the VibeReach mirror when this deal was created, not by a send we made."
+              : v.realSend && r.app_sent_at
+                ? `Application sent ${dateTimeET(r.app_sent_at)}`
+                : "No application has been sent to this merchant."
+          }
         >
-          {days === null
-            ? "never sent"
-            : overdue
-              ? `${days}d since sent — 14 days up`
-              : `${days}d since sent · ${14 - days}d left`}
+          {!v.realSend
+            ? "⚠ no send on record"
+            : days === null
+              ? "sent"
+              : overdue
+                ? `${days}d since sent — 14 days up`
+                : `${days}d since sent · ${14 - days}d left`}
         </span>
       </div>
 
@@ -823,16 +781,25 @@ function ChaseRowCard({
 
       {/* Line 3 — the working facts. */}
       <div className="mt-1 flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px]">
+        {/* attempts_since_sent counts dials at or after application_sent_at — so
+            on a PHANTOM it would count from the moment the mirror created the
+            deal and then label that "since it was sent". "NOT CHASED SINCE IT
+            WAS SENT" is an accusation, and it may not be made about a send that
+            never happened. */}
         <span
           className={`font-bold ${
-            (r.attempts_since_sent ?? 0) === 0
+            v.realSend && (r.attempts_since_sent ?? 0) === 0
               ? "text-red-600 dark:text-red-400"
               : "text-gray-700 dark:text-gray-200"
           }`}
-          title="Real dials on this merchant since the application went out — WAVV, VibeReach/LeadConnector and anything logged by hand, deduped."
+          title={
+            v.realSend
+              ? "Real dials on this merchant since the application went out — WAVV, VibeReach/LeadConnector and anything logged by hand, deduped."
+              : "No send to count from, so there is no since-sent figure. Open the merchant to see their full call history."
+          }
         >
           📞{" "}
-          {r.app_sent_at === null
+          {!v.realSend
             ? "—"
             : (r.attempts_since_sent ?? 0) === 0
               ? "NOT CHASED SINCE IT WAS SENT"
@@ -849,6 +816,14 @@ function ChaseRowCard({
           </span>
         ) : (
           <span className="text-gray-500 dark:text-gray-400">no call on record yet</span>
+        )}
+        {signature.kind === "signed" && r.app_signed_at && (
+          <span
+            className="font-semibold text-emerald-700 dark:text-emerald-300"
+            title={`The merchant signed ${dateTimeET(r.app_signed_at)}. This is their real signature time from the VibeReach e-sign record, not when our copy noticed it.`}
+          >
+            ✍️ signed {ago(r.app_signed_at, now)}
+          </span>
         )}
         {r.last_conversation_at && (
           <span className="font-semibold text-emerald-600 dark:text-emerald-400">
@@ -886,8 +861,9 @@ function ChaseRowCard({
         )}
       </div>
 
-      {/* The 14-day chase, per day. Only where the real calls could be read. */}
-      {hist && r.app_sent_at && (
+      {/* The 14-day chase, per day. Needs BOTH a readable call history and a real
+          send to count from — a phantom's stamp is the mirror's clock, not ours. */}
+      {hist && v.realSend && r.app_sent_at && (
         <ChaseTracker startAt={r.app_sent_at} calls={hist.calls} label="14-day chase since sent" />
       )}
 
@@ -911,20 +887,6 @@ function ChaseRowCard({
         >
           <BoltIcon className="w-3 h-3" /> Quick App
         </button>
-        {/* Turn "Signature unknown" into a real answer for THIS merchant. Only
-            shown where it can actually do something. */}
-        {!v.signatureKnown && canCheckSignature && (
-          <button
-            type="button"
-            onClick={onCheckSignature}
-            disabled={checkingSignature}
-            className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200 hover:bg-amber-200 dark:hover:bg-amber-900/60 disabled:opacity-60"
-            title="Read this merchant's documents from VibeReach right now and settle whether the application came back signed."
-          >
-            <ArrowPathIcon className={`w-3 h-3 ${checkingSignature ? "animate-spin" : ""}`} />
-            {checkingSignature ? "Checking…" : "Check signature"}
-          </button>
-        )}
         <button
           type="button"
           onClick={onToggleActions}

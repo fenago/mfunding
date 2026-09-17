@@ -119,10 +119,9 @@ import {
 } from "@/components/admin/IndustryBenchmarks";
 import { INDUSTRY_BENCHMARKS, benchmarkRag, benchmarkVerdict, type BenchmarkId } from "@/data/industryBenchmarks";
 import {
-  signaturesByCustomer,
-  type DocCompletion,
-  type SignatureState,
-} from "@/lib/applicationSignature";
+  signatureFromStatus,
+  type DealApplicationStatus,
+} from "@/hooks/useApplicationSignatures";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** Which dialer wrote this row. Not cosmetic: it decides how far down the funnel
@@ -1632,9 +1631,9 @@ export default function SetterPerformancePage() {
   const [totalRowsEver, setTotalRowsEver] = useState<number | null>(null);
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   const [dealRows, setDealRows] = useState<DealRow[] | null>(null);
-  /** Signature state per customer for the applications sent in range.
-   *  null = UNREADABLE, which renders "—", never "nobody signed". */
-  const [appSignatures, setAppSignatures] = useState<Map<string, SignatureState> | null>(new Map());
+  /** Application send + signature state per DEAL for the applications sent in
+   *  range. null = UNREADABLE, which renders "—", never "nobody signed". */
+  const [appStatus, setAppStatus] = useState<Map<string, DealApplicationStatus> | null>(new Map());
   const [dealsError, setDealsError] = useState<string | null>(null);
   // Productive contacts (the pipeline-side positive). null = UNREADABLE, which
   // renders as an error — never as "this setter produced nothing".
@@ -1911,53 +1910,35 @@ export default function SetterPerformancePage() {
       const rows = (data ?? []) as DealRow[];
       setDealRows(rows);
 
-      // ── DID THOSE APPLICATIONS COME BACK SIGNED? ──
-      // Scoped to the merchants whose application actually went out in range —
-      // a bounded handful, not the whole 5,000-row pull. A FAILED read sets the
-      // map to null, which renders the Signed column as "—" for everyone rather
-      // than accusing every setter of sending applications nobody signed.
-      const custIds = Array.from(
-        new Set(
-          rows
-            .filter((d) => d.application_sent_at)
-            .map((d) => d.customer_id)
-            .filter((v): v is string => !!v),
-        ),
-      );
-      if (custIds.length === 0) {
-        setAppSignatures(new Map());
+      // ── DID THOSE APPLICATIONS COME BACK SIGNED, AND WERE THEY REALLY SENT? ──
+      // One RPC (deal_application_status) rather than this page reading the
+      // completion ledger itself: it applies the SQL doc-name rule, returns the
+      // three-state signature so an unread merchant is 'unchecked' rather than
+      // "didn't sign", and flags a PHANTOM send — a stage the VibeReach mirror
+      // stamped at deal creation, which must not be credited to any setter.
+      // Scoped to the deals whose application went out in range, a bounded
+      // handful, not the whole 5,000-row pull. A FAILED read sets the map to
+      // null, which renders the Signed column as "—" for everyone rather than
+      // accusing every setter of sending applications nobody signed.
+      const sentDealIds = rows.filter((d) => d.application_sent_at).map((d) => d.id);
+      if (sentDealIds.length === 0) {
+        setAppStatus(new Map());
       } else {
-        // Two reads: who signed, and who we ever LOOKED AT. The completions
-        // ledger is lazy (written only when someone opens a contact's docs), so
-        // without the second read an absent row would read as "didn't sign" for
-        // merchants nobody has ever checked — and the Signed column would accuse
-        // setters of sending applications that went unanswered when we simply
-        // never looked. See signaturesByCustomer.
-        const [comps, checkedRows] = await Promise.all([
-          supabase
-            .from("ghl_doc_completions")
-            .select("customer_id, doc_name, completed_seen_at")
-            .in("customer_id", custIds),
-          supabase.from("customers").select("id, ghl_docs_checked_at").in("id", custIds),
-        ]);
-        setAppSignatures(
-          comps.error || checkedRows.error
+        const { data: st, error: stErr } = await supabase.rpc("deal_application_status", {
+          p_deal_ids: sentDealIds,
+        });
+        setAppStatus(
+          stErr
             ? null
-            : signaturesByCustomer(
-                (comps.data ?? []) as DocCompletion[],
-                custIds,
-                new Map(
-                  ((checkedRows.data ?? []) as { id: string; ghl_docs_checked_at: string | null }[])
-                    .filter((c) => !!c.ghl_docs_checked_at)
-                    .map((c) => [c.id, c.ghl_docs_checked_at]),
-                ),
+            : new Map(
+                ((st ?? []) as unknown as DealApplicationStatus[]).map((r) => [r.deal_id, r]),
               ),
         );
       }
     } catch (e) {
       // null (not []) so the pipeline columns render "—", never a fabricated 0.
       setDealRows(null);
-      setAppSignatures(null);
+      setAppStatus(null);
       setDealsError(e instanceof Error ? e.message : "Failed to read deals");
     }
   }, [fromIso, toIso]);
@@ -2668,15 +2649,26 @@ export default function SetterPerformancePage() {
           }
           byCloser.set(d.assigned_closer_id, b);
         }
-        // The application half — keyed on the SENDER, not the assignee.
-        if (d.application_sent_by && inRange(d.application_sent_at, range.from, range.to)) {
+        // The application half — keyed on the SENDER, not the assignee, and only
+        // for a send that actually happened. A PHANTOM carries an
+        // application_sent_at the VibeReach mirror stamped at deal creation; it
+        // has no sender at all, so it can never be credited to anyone. (It is
+        // also why `apps` here can be smaller than a raw count of
+        // application_sent_at — 4 of the 63 stamps are not sends.)
+        const st = appStatus?.get(d.id);
+        const phantom = st?.born_at_application_sent ?? false;
+        if (d.application_sent_by && !phantom && inRange(d.application_sent_at, range.from, range.to)) {
           const b = byCloser.get(d.application_sent_by) ?? blank();
           b.apps++;
-          if (d.application_sent_attribution === "inferred") b.appsInferred++;
-          // Signed? appSignatures === null means the ledger read FAILED, so
-          // every one of these is "unknown" and the column renders "—".
-          const sig = appSignatures && d.customer_id ? appSignatures.get(d.customer_id) : null;
-          if (!appSignatures || !sig || sig.kind === "unknown") b.appsSignatureUnknown++;
+          // Only rung 1 is a recorded fact; every other rung is a reconstruction
+          // and is counted separately so it can be shown as one.
+          if (d.application_sent_attribution && d.application_sent_attribution !== "recorded") {
+            b.appsInferred++;
+          }
+          // Signed? appStatus === null means the read FAILED, so every one of
+          // these is "unknown" and the column renders "—".
+          const sig = st ? signatureFromStatus(st) : null;
+          if (!appStatus || !sig || sig.kind === "unknown") b.appsSignatureUnknown++;
           else if (sig.kind === "signed") b.appsSigned++;
           byCloser.set(d.application_sent_by, b);
         }
@@ -2696,14 +2688,14 @@ export default function SetterPerformancePage() {
         appsSentInferred: deal ? deal.appsInferred : null,
         /** Of the applications this setter sent, how many came back SIGNED.
          *  null when the signature ledger could not be read at all. */
-        appsSigned: deal && appSignatures ? deal.appsSigned : null,
+        appsSigned: deal && appStatus ? deal.appsSigned : null,
         /** Sent applications whose signature state we could not establish. */
         appsSignatureUnknown: deal ? deal.appsSignatureUnknown : null,
         funded: deal ? deal.funded : null,
         fundedAmount: deal ? deal.amount : null,
       };
     });
-  }, [aggRows, dealRows, appSignatures, range]);
+  }, [aggRows, dealRows, appStatus, range]);
 
   const sortedSetterRows = useMemo(() => {
     const val = (r: SetterRow, k: SortKey): number | string => {

@@ -57,8 +57,8 @@ export default function SetterAppProgress({ deal, onRefresh, onStatus }: Props) 
   // meter said "ready to send" and nothing on this block said whether it had
   // come back. A failed ledger read renders "Signature unknown", never
   // "unsigned".
-  const signatureCustomerIds = useMemo(() => [deal.customer_id], [deal.customer_id]);
-  const { signatureFor } = useApplicationSignatures(signatureCustomerIds);
+  const signatureDealIds = useMemo(() => [deal.id], [deal.id]);
+  const { signatureFor, sentAtFor } = useApplicationSignatures(signatureDealIds);
 
   // Report status up without making onStatus a load() dependency (parents may pass
   // a fresh function each render).
@@ -221,8 +221,8 @@ export default function SetterAppProgress({ deal, onRefresh, onStatus }: Props) 
           ) : null}
           <span className="text-sm font-bold text-gray-900 dark:text-white">Application</span>
           <ApplicationSignatureBadge
-            signature={signatureFor(deal.customer_id)}
-            sentAt={deal.application_sent_at}
+            signature={signatureFor(deal.id)}
+            sentAt={sentAtFor(deal.id)}
             size="sm"
           />
         </div>
