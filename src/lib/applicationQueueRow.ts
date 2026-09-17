@@ -14,8 +14,39 @@
 import type { DealWithCustomer } from "@/types/deals";
 import { applicationCompleteness, type CompletenessResult } from "./applicationCompleteness";
 
-/** How we know who sent the application. See deals.application_sent_attribution. */
-export type AppSentAttribution = "recorded" | "inferred" | "unknown";
+/**
+ * Which rung of the attribution ladder produced app_sent_by. Owner ruling: every
+ * sent application shows a name — but a name that came from a fallback must never
+ * render like a name that came from a record.
+ *
+ *   'recorded'          mca_applications.sent_by, or auth.uid() captured as the
+ *                       stage was stamped. Assert this one plainly.
+ *   'inferred'          nearest person active on the deal within ±10 min.
+ *   'inferred_same_day' nearest person active within ±24 h.
+ *   'assumed_owner'     NO evidence at all — this is simply the closer the deal
+ *                       is assigned to right now. Say so: "nobody recorded who
+ *                       sent it". Never show it as an assertion.
+ *   'unknown'           no evidence and no assigned closer either.
+ *
+ * NULL means the application was never sent, so there is nothing to attribute —
+ * do not render "sent by" at all.
+ */
+export type AppSentAttribution =
+  | "recorded"
+  | "inferred"
+  | "inferred_same_day"
+  | "assumed_owner"
+  | "unknown";
+
+/** True only for rung 1 — the one rung that may be stated without qualification. */
+export function isAttributionRecorded(a: AppSentAttribution | null): boolean {
+  return a === "recorded";
+}
+
+/** True when the name came from a fallback, not from evidence about the send. */
+export function isAttributionAssumed(a: AppSentAttribution | null): boolean {
+  return a === "assumed_owner" || a === "unknown";
+}
 
 /**
  * Signature readability, three states on purpose.
@@ -74,7 +105,7 @@ export interface ApplicationQueueRow {
   app_sent_by_name: string | null;
   /** null when the application was never sent — nothing to attribute. */
   app_sent_attribution: AppSentAttribution | null;
-  /** Human-readable evidence, for the "inferred" tooltip. */
+  /** Human-readable evidence (or the lack of it), for the badge tooltip. */
   app_sent_attribution_basis: string | null;
 
   app_signed_at: string | null;
