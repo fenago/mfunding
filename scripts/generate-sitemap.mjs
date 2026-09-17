@@ -36,8 +36,13 @@ const STATIC = [
   { loc: '/real-estate/rental-investment', priority: '0.8' },
   { loc: '/real-estate/commercial-mortgage', priority: '0.8' },
   { loc: '/real-estate/construction-loans', priority: '0.8' },
-  { loc: '/debt-relief', changefreq: 'monthly', priority: '0.8' },
-  { loc: '/calculators/mca-debt-relief', changefreq: 'monthly', priority: '0.7' },
+  // /debt-relief and /calculators/mca-debt-relief are GONE — unrouted 2026-09-16
+  // because debt relief is a PROHIBITED content category for A2P 10DLC and the
+  // brand needs SMS approved. Do not re-add: this generator overwrites
+  // public/sitemap.xml on every `npm run build`, so an entry here is what
+  // actually reaches Google and a carrier's reviewer. Removing the URLs from the
+  // committed sitemap without removing them HERE achieved nothing for a day —
+  // the next build put them straight back.
   { loc: '/calculators/how-much-can-i-get', changefreq: 'monthly', priority: '0.7' },
   { loc: '/calculators/advance-cost', changefreq: 'monthly', priority: '0.7' },
   { loc: '/about', changefreq: 'monthly', priority: '0.6' },
