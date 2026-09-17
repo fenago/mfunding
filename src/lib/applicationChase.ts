@@ -29,6 +29,28 @@
 // Over ALL 63 deals with an application sent, including parked ones:
 // partial 36 · unsigned 10 · signed 2 · statements 14 · decided 1.
 //
+// ── THE NO-RE-SEND INVARIANT ────────────────────────────────────────────────
+// A merchant who has SIGNED their application must never be told to send one.
+// Offering that is the mistake that reaches the merchant: they get a second
+// copy of a document they already signed, from a company that apparently isn't
+// keeping track. Two rows make it live rather than theoretical — MF-2026-0113
+// signed with no application_sent_at at all, and MF-2026-0273 signed on a
+// phantom stamp — because both look, from the send record alone, exactly like
+// someone who was never sent anything.
+//
+// There are exactly TWO places in this file that can tell someone to send: the
+// `unsigned` bucket, and the phantom branch of `partial`'s instruction. BOTH
+// test `isSigned` themselves. Neither test is reachable today — the `signed`
+// bucket returns before either — and that is the point: the guarantee is a
+// property of each branch, not of the order the branches happen to sit in. A
+// refactor that reorders the ladder cannot silently make a signed application
+// re-sendable, which it otherwise could, with no error and no test to catch it
+// (this repo has no test runner).
+//
+// This is the same lesson as is_phantom_application_send, which used to depend
+// on "no draft exists" — true when written, and quietly false the moment a
+// processor opened the deal and started typing.
+//
 // ── COMPLETENESS IS NOT REDEFINED HERE ──────────────────────────────────────
 // "Partial vs complete" is applicationCompleteness() — the same definition
 // MerchantApplicationModal gates its Send button on. If those two ever disagree
@@ -136,6 +158,14 @@ export interface ChaseVerdict {
    *  bucket with this false must NOT be rendered as a failure to chase. */
   signatureKnown: boolean;
   /**
+   * The merchant has signed. Carried on the verdict — rather than left for each
+   * caller to re-derive from the signature — so the two branches that can offer
+   * to SEND an application can each refuse to do so on their own, instead of
+   * relying on being positioned after the `signed` check. See THE NO-RE-SEND
+   * INVARIANT below.
+   */
+  isSigned: boolean;
+  /**
    * Did WE actually send this application? False for BOTH of the no-send cases:
    * never sent at all, and a PHANTOM stamp the VibeReach opportunity mirror
    * wrote during deal creation (application_sent_at landing 12-15ms before
@@ -168,6 +198,7 @@ export function chaseVerdict(
     missingCount: missing.length,
     neverStarted: !row.app_row_exists,
     signatureKnown: signature.kind !== "unknown",
+    isSigned: signature.kind === "signed",
     realSend: real,
     phantomSend: row.born_at_application_sent,
     neverSent: row.app_sent_at === null,
@@ -195,7 +226,14 @@ export function chaseVerdict(
   // nobody sent is the exact wasted work born_at_application_sent exists to
   // prevent, so a phantom or never-sent row falls through to `partial`, whose
   // instruction says "nothing was sent" rather than "chase the signature".
-  if (missing.length === 0 && real) return { ...base, bucket: "unsigned" };
+  // `!base.isSigned` is REDUNDANT TODAY — the `signed` check above already
+  // returned. It is here so the no-re-send invariant is a property of this
+  // branch rather than of where the branch happens to sit: move this line above
+  // the signed check in a future refactor and a signed application would
+  // silently become re-sendable, with no error and no test to catch it (this
+  // repo has no test runner). Cheap insurance against the same shape of bug as
+  // the phantom predicate that used to depend on mutable state.
+  if (missing.length === 0 && real && !base.isSigned) return { ...base, bucket: "unsigned" };
   return { ...base, bucket: "partial" };
 }
 
@@ -210,6 +248,13 @@ export function chaseInstruction(v: ChaseVerdict): string {
       // nothing came back" would send her chasing a merchant who was never
       // contacted with an application at all.
       if (v.phantomSend) {
+        // Same invariant, enforced locally: this is the other sentence in the
+        // file that tells someone to SEND an application, so it refuses on its
+        // own when the merchant has already signed rather than trusting that a
+        // signed row never reaches `partial`.
+        if (v.isSigned) {
+          return "⚠ Signed, but nothing in our system ever recorded sending it — the stage was stamped by the VibeReach mirror. Do NOT re-send it. Chase the bank statements, and let someone fix the record.";
+        }
         return "⚠ Nothing was ever sent. The stage was stamped by the VibeReach mirror when this deal was created — no application left our system and no draft exists. Send it, or close the deal out.";
       }
       if (v.neverSent) {
