@@ -461,3 +461,15 @@ verify_jwt = true
 # service_role-only RPCs get_jmp_account_key / set_jmp_account_key.
 [functions.jmp-account-key]
 verify_jwt = true
+
+# ghl-doc-sweep: the e-signature mirror, as an actual sweep. Crawls the GHL
+# proposals COMPLETED set (2 calls today: status=completed pages at limit=21 with
+# skip=N — probed live; there is NO per-contact filter, and offset/page are
+# rejected), records completions into ghl_doc_completions with the merchant's
+# real signedDate, and — only when the crawl read the whole set — stamps
+# customers.ghl_docs_checked_at so an absent signature can honestly read
+# "not signed" instead of "never looked". Cron-only: verify_jwt = false, auth is
+# the fail-closed shared-secret gate (?secret= / x-ghl-secret), same as
+# ghl-email-doc-sweep.
+[functions.ghl-doc-sweep]
+verify_jwt = false
