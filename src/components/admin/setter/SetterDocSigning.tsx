@@ -3,6 +3,7 @@ import { DocumentCheckIcon, ArrowPathIcon, ExclamationCircleIcon } from "@heroic
 import type { DealWithCustomer } from "../../../types/deals";
 import supabase from "../../../supabase";
 import { groupDocs, type DocGroup, type GhlDoc } from "../../../lib/ghlDocs";
+import { isApplicationDoc } from "../../../utils/signing";
 import { dateTimeET } from "../../../utils/time";
 
 /**
@@ -23,9 +24,18 @@ type DocKind = { label: string; match: (name: string) => boolean };
 
 // The two docs a setter must clear. Name-matching mirrors DocsBackChips' short()
 // classifier so the same GHL docs map to the same buckets across the app.
+// The APPLICATION test is isApplicationDoc() from src/utils/signing.ts — the one
+// classifier for a live GHL document — not a local regex. It used to be
+// /application|04b|04c/i here, a fifth private copy of a rule that has already
+// bitten this codebase once: a sibling copy read /application|prefill/i and so
+// missed '04C MCA PARTIAL', which is the DEFAULT send path, marking signed
+// applications on the most common template as unsigned. The broker test stays
+// local because it is this component's own question, and isApplicationDoc
+// already excludes anything matching /disclosure/i before it tests anything
+// else, so the two chips cannot claim the same document.
 const DOC_KINDS: DocKind[] = [
   { label: "Broker agreement", match: (n) => /broker\s*compensation|broker\s*agreement/i.test(n) },
-  { label: "Application", match: (n) => /application|04b|04c/i.test(n) },
+  { label: "Application", match: (n) => isApplicationDoc(n) },
 ];
 
 function DocKindChip({ label, group }: { label: string; group: DocGroup | null }) {

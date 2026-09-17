@@ -15,7 +15,9 @@
 // drift bug with a delay fuse. The readers call the RPC.
 //
 // What is left here is presentation-layer: the shape the badge consumes, and the
-// two adapters that map an RPC row onto it.
+// one adapter that maps a queue row onto it. (deal_application_status rows are
+// mapped by signatureFromStatus in src/hooks/useApplicationSignatures.ts, next
+// to the hook that reads them.)
 //
 // ── WHY THE OWNER ASKED FOR THIS ────────────────────────────────────────────
 // 2026-09-17: "in many places i see 'application sent' but there is not a
@@ -31,8 +33,10 @@
 // human opened a contact's documents (16 of 339 customers ever), so absence
 // meant "nobody looked" far more often than "they didn't sign"; ghl-doc-sweep
 // now refreshes the whole account hourly in two API calls and 'unchecked' is
-// normally zero. The third state stays because a crawl can fail, and the day it
-// does, the honest output is "we don't know" — not fifty accusations.
+// zero across the board. The third state stays for two live reasons: a crawl can
+// fail, and a customer with no VibeReach contact id can never be proven either
+// way (there is one). The day a sweep breaks, the honest output is "we don't
+// know" — not three hundred accusations.
 
 /**
  * The signature answer. THREE states, never two.
@@ -107,32 +111,4 @@ export function signatureFromQueueRow(row: {
     // Only claim disclosure-only when the disclosure check itself succeeded.
     disclosureSignedAt: row.disclosure_state === "signed" ? row.disclosure_signed_at : null,
   };
-}
-
-/**
- * Map a bare signature timestamp onto the badge's shape, for the one surface
- * still fed by an RPC that has no readability channel.
- *
- * `readable: false` is the honest setting for processor_pipeline_rows(): it
- * resolves application_signed_at in SQL but returns no unchecked/not_signed
- * distinction, so an absent stamp there cannot be reported as "unsigned".
- * A positive signature always wins and is reported regardless.
- */
-export function signatureFromStamps(opts: {
-  appSignedAt: string | null | undefined;
-  disclosureSignedAt?: string | null;
-  readable?: boolean;
-  unknownMessage?: string;
-}): SignatureState {
-  // Positive evidence stands on its own — a completion row is a fact.
-  if (opts.appSignedAt) {
-    return { kind: "signed", signedAt: opts.appSignedAt, docName: null };
-  }
-  if (opts.readable === false) {
-    return signatureUnknown(
-      opts.unknownMessage ??
-        "this view can't tell whether the merchant's documents have been read, so an absent signature proves nothing",
-    );
-  }
-  return { kind: "unsigned", disclosureSignedAt: opts.disclosureSignedAt ?? null };
 }
