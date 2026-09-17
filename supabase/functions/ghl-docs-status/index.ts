@@ -26,10 +26,39 @@ function json(body: unknown, status = 200) {
   });
 }
 
+// ── Location-wide document-list cache ────────────────────────────────────────
+// Paginating the document list (below) fixed a real bug but multiplied this
+// function's GHL cost by the page count: measured 226 invocations in 24h, which
+// went from 226 GHL calls to ~2,900, and the multiplier GROWS with the number of
+// documents the account has ever created. That is the cost-scales-with-the-book
+// shape the ghl-standing-consumers-ledger convention exists to contain.
+//
+// The list is LOCATION-WIDE and identical for every caller, so one crawl can
+// serve them all. Portal polling clusters (load + focus + focus…): measured
+// bursts of 4-8 calls in the same minute, i.e. ~100 GHL calls for one merchant's
+// session, which this collapses to one crawl.
+//
+// Isolate-local on purpose — nothing is persisted, so the per-recipient signing
+// links (bearer tokens) never leave process memory, which already held them.
+// That makes it a best-effort reduction rather than a guarantee: several isolates
+// each keep their own copy. Good enough, and it cannot leak.
+//
+// ⚠ ONLY A COMPLETE CRAWL IS EVER CACHED. Serving a cached partial as though it
+// were whole is exactly the failure-reads-as-success trap the rest of this file
+// is about.
+const DOC_CACHE_TTL_MS = 60_000;
+let docCache: { at: number; docs: Record<string, unknown>[]; total: number | null } | null = null;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
-    const body = (await req.json().catch(() => ({}))) as { ghl_contact_id?: string; action?: string; url?: string };
+    const body = (await req.json().catch(() => ({}))) as {
+      ghl_contact_id?: string;
+      action?: string;
+      url?: string;
+      /** Skip the 60s document-list cache (use right after a merchant signs). */
+      refresh?: boolean;
+    };
 
     const db = serviceClient();
 
@@ -111,12 +140,26 @@ Deno.serve(async (req) => {
     // 268 documents is 13 calls; the cap below bounds it as the account grows.
     const PAGE = 21;
     const MAX_PAGES = 30; // 630 documents — raise with the account, not silently
-    const rawDocs: Record<string, unknown>[] = [];
+    let rawDocs: Record<string, unknown>[] = [];
     let docsTotal: number | null = null;
     let documentsError: string | null = null;
     let docsCrawlComplete = false;
+    let docsFromCache = false;
 
-    for (let page = 0; page < MAX_PAGES; page++) {
+    // `refresh: true` bypasses the cache — for the moment a merchant returns
+    // from signing, where a 60s-stale "not signed" would be the wrong answer to
+    // show the person who just signed.
+    const cached = !body.refresh && docCache && Date.now() - docCache.at < DOC_CACHE_TTL_MS
+      ? docCache
+      : null;
+    if (cached) {
+      rawDocs = cached.docs;
+      docsTotal = cached.total;
+      docsCrawlComplete = true; // only complete crawls are ever cached
+      docsFromCache = true;
+    }
+
+    for (let page = 0; !docsFromCache && page < MAX_PAGES; page++) {
       const res = await ghlFetch<{ documents?: Record<string, unknown>[]; total?: number }>(
         cfg,
         "GET",
@@ -136,6 +179,10 @@ Deno.serve(async (req) => {
     }
     if (!documentsError && !docsCrawlComplete) {
       documentsError = `docs list truncated at ${rawDocs.length} of ${docsTotal ?? "?"} (raise MAX_PAGES)`;
+    }
+    // Cache ONLY a crawl that read the whole set — never a partial or errored one.
+    if (!docsFromCache && docsCrawlComplete && !documentsError) {
+      docCache = { at: Date.now(), docs: rawDocs, total: docsTotal };
     }
 
     // The merchant flow (Revenue Playbook Rail 1) e-signs the application +
@@ -348,7 +395,16 @@ Deno.serve(async (req) => {
     // Strip the internal doc id — the client GhlDocument shape doesn't carry it.
     const documentsOut = documents.map(({ id: _id, ...rest }) => rest);
 
-    return json({ ok: true, documents: documentsOut, uploads, documents_error: documentsError });
+    return json({
+      ok: true,
+      documents: documentsOut,
+      uploads,
+      documents_error: documentsError,
+      // Explicit so a caller can tell a fresh read from a ≤60s cached one
+      // instead of inferring it. Pass { refresh: true } to force a fresh crawl.
+      documents_cached: docsFromCache,
+      documents_scanned: rawDocs.length,
+    });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);
   }
