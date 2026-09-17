@@ -245,9 +245,20 @@ Deno.serve(async (req) => {
             }
 
             // (c) Signed application → tick the funder-submit checklist gate.
-            // Match rule: the doc name mentions "application" or "prefill"
-            // (covers MCA_Merchant_Funding_Application and "04B MCA PREFILL").
-            if (dealId && /application|prefill/i.test(doc.name)) {
+            // Match rule lives in ONE place: public.is_application_doc_name().
+            // The old inline /application|prefill/i test here did not match
+            // '04C MCA PARTIAL', so a merchant who signed that never ticked the
+            // gate. Never re-inline the rule — ask the database.
+            let isApplicationDoc = false;
+            try {
+              const { data: isApp, error: isAppErr } =
+                await db.rpc("is_application_doc_name", { p_name: doc.name });
+              if (isAppErr) throw isAppErr;
+              isApplicationDoc = isApp === true;
+            } catch (e) {
+              console.warn("[ghl-docs-status] doc-name classify failed:", e instanceof Error ? e.message : e);
+            }
+            if (dealId && isApplicationDoc) {
               try {
                 await db.rpc("ghl_mark_checklist_key", { p_deal_id: dealId, p_key: "application" });
               } catch (e) {
@@ -259,6 +270,37 @@ Deno.serve(async (req) => {
       }
     } catch (e) {
       console.warn("[ghl-docs-status] completion-sync skipped:", e instanceof Error ? e.message : e);
+    }
+
+    // 1c) READABILITY LEDGER — what makes an absent signature mean "not signed".
+    //
+    // ghl_doc_completions is filled ONLY here, and only when someone actually
+    // opens a contact's documents. So a customer with no completion row may
+    // simply never have been looked at, and every reader that renders that as
+    // "unsigned" is reporting a failure as a success. customers.ghl_docs_checked_at
+    // is the marker that we DID look — processor_application_queue() and
+    // deal_application_status() return 'unchecked' until it is set.
+    //
+    // It is only honest to stamp it when this read could actually have seen this
+    // contact's documents. The GHL call above lists the LOCATION's documents
+    // capped at 20 (the endpoint 422s above 21) and then filters to the ones this
+    // contact is a recipient on — so a full page of 20 that matched nothing
+    // proves nothing, and is deliberately NOT stamped.
+    try {
+      const rawCount = (docsRes.data?.documents ?? []).length;
+      const sawWholeList = rawCount < 20;          // not truncated → absence is real
+      const sawThisContact = documents.length > 0; // their own record came back
+      if (docsRes.ok && (sawWholeList || sawThisContact)) {
+        const { error: stampErr } = await db
+          .from("customers")
+          .update({ ghl_docs_checked_at: new Date().toISOString() })
+          .eq("ghl_contact_id", contactId);
+        if (stampErr) {
+          console.warn("[ghl-docs-status] readability stamp failed:", stampErr.message);
+        }
+      }
+    } catch (e) {
+      console.warn("[ghl-docs-status] readability stamp skipped:", e instanceof Error ? e.message : e);
     }
 
     // 2) Uploaded files on the contact's FILE_UPLOAD custom fields.

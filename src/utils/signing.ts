@@ -5,9 +5,10 @@
 // (signed in-app) and real GHL Documents & Contracts (opened in a new tab). The
 // merchant never sees the distinction.
 //
-// ONE-APPLICATION RULE (owner decision): application-family docs = names matching
-// /application|prefill/i (covers the fillable MCA application and the 04B prefill,
-// native or GHL). Because both variants can be sent, we collapse them so the
+// ONE-APPLICATION RULE (owner decision): application-family docs are the three
+// live application templates — '04B MCA PREFILL', '04C MCA PARTIAL' and
+// 'MCA_Merchant_Funding_Application' — and never a disclosure. Because more than
+// one variant can be sent, we collapse them so the
 // merchant is never asked to sign an application twice:
 //   1. If ANY application-family doc is signed/completed → every OTHER
 //      application-family doc is hidden entirely (only the signed one survives,
@@ -18,10 +19,28 @@
 
 import type { MerchantDocument, GhlDocument } from "../services/portalService";
 
-const APPLICATION_RE = /application|prefill/i;
+// KEEP IN LOCKSTEP with public.is_application_doc_name(text) (migration
+// 20260917a). The previous rule here was /application|prefill/i, which does NOT
+// match '04C MCA PARTIAL' — the DEFAULT send path (AppSendButtons path 3). A
+// merchant who signed an 04C therefore read as having no application at all:
+// resolveApplication() returned state 'none' and the one-application rule never
+// collapsed it. Two live merchants were in that state.
+const APPLICATION_NAMES = [
+  "04B MCA PREFILL",
+  "04C MCA PARTIAL",
+  "MCA_Merchant_Funding_Application",
+];
+// Defensive: a renamed or newly added application template still reads as one.
+const APPLICATION_RE = /funding[ _-]*application|mca[ _]*(prefill|partial)/i;
+// A disclosure is never the application, whatever else its name contains.
+const DISCLOSURE_RE = /disclosure/i;
 
 export function isApplicationDoc(name: string | null | undefined): boolean {
-  return APPLICATION_RE.test(name ?? "");
+  const n = (name ?? "").trim();
+  if (!n) return false;
+  if (DISCLOSURE_RE.test(n)) return false;
+  if (APPLICATION_NAMES.includes(n)) return true;
+  return APPLICATION_RE.test(n);
 }
 
 export interface Signable {
