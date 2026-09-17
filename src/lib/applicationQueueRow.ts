@@ -115,8 +115,13 @@ export interface ApplicationQueueRow {
   /**
    * app_sent_at was stamped by the GHL opportunity mirror when the deal was
    * created, not by a send we made: the timestamp lands milliseconds BEFORE
-   * created_at, created_by is null, and no application draft exists. Four live
-   * rows, so the "63 sent" is really 59.
+   * created_at and there is no creating user. Four live rows, so the "63 sent"
+   * is really 59.
+   *
+   * It rests only on immutable creation facts. An earlier version also required
+   * "no application draft", which a processor filling in the application would
+   * have flipped — the flag would have vanished mid-work and the row would have
+   * gone back to naming a sender for an event that never happened.
    *
    * These rows carry NO sender (app_sent_by / app_sent_attribution are null) —
    * there is no send to attribute.
