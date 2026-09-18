@@ -2015,6 +2015,12 @@ export default function SetterPerformancePage() {
   const [rangeTotal, setRangeTotal] = useState<number | null>(null);
   const [totalRowsEver, setTotalRowsEver] = useState<number | null>(null);
   const [syncState, setSyncState] = useState<SyncState | null>(null);
+  /** Calls still carrying the stub signature — written while the line was ringing
+   *  and never finalised (20260918f). `unrecoverable` are the ones we have ASKED
+   *  WAVV about and which WAVV cannot finalise either; the rest are still
+   *  questions. null means the count itself could not be read, which renders as
+   *  nothing rather than as a reassuring zero. */
+  const [stubs, setStubs] = useState<{ total: number; unrecoverable: number } | null>(null);
   const [dealRows, setDealRows] = useState<DealRow[] | null>(null);
   /** Application send + signature state per DEAL for the applications sent in
    *  range. null = UNREADABLE, which renders "—", never "nobody signed". */
@@ -2184,7 +2190,7 @@ export default function SetterPerformancePage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [stateRes, targetRes, countRes, rangeCountRes] = await Promise.all([
+      const [stateRes, targetRes, countRes, rangeCountRes, stubRes, stubBadRes] = await Promise.all([
         supabase.from("platform_settings").select("value").eq("key", "wavv_sync").maybeSingle(),
         supabase.from("platform_settings").select("value").eq("key", "ph_dialer_kpi_targets").maybeSingle(),
         supabase.from(CALLS_VIEW).select("wavv_call_id", { count: "exact", head: true }),
@@ -2196,6 +2202,12 @@ export default function SetterPerformancePage() {
           .select("wavv_call_id", { count: "exact", head: true })
           .gte("started_at", fromIso)
           .lt("started_at", toIso),
+        // Stub health. NOT range-scoped: a call frozen three weeks ago is still
+        // a wrong row on somebody's scorecard today, and scoping it to the
+        // picker would hide it behind a date choice.
+        supabase.from("v_wavv_unfinalized_calls").select("wavv_call_id", { count: "exact", head: true }),
+        supabase.from("v_wavv_unfinalized_calls").select("wavv_call_id", { count: "exact", head: true })
+          .not("refetch_state", "is", null),
       ]);
 
       if (stateRes.error) throw new Error(stateRes.error.message);
@@ -2203,6 +2215,14 @@ export default function SetterPerformancePage() {
       if (rangeCountRes.error) throw new Error(rangeCountRes.error.message);
 
       setSyncState((stateRes.data?.value ?? null) as SyncState | null);
+      // A failed count stays NULL — the banner then says nothing at all, rather
+      // than "0 frozen calls", which is the reassuring-zero this whole page
+      // exists to refuse.
+      setStubs(
+        stubRes.error || stubBadRes.error
+          ? null
+          : { total: stubRes.count ?? 0, unrecoverable: stubBadRes.count ?? 0 },
+      );
       // A failed/absent targets read leaves targets null — every RAG then reads
       // "no target" (grey), which is the honest state, not a silent all-green.
       setTargets(targetRes.error ? null : ((targetRes.data?.value ?? null) as Record<string, KpiTarget> | null));
@@ -4440,6 +4460,59 @@ export default function SetterPerformancePage() {
               that were already mirrored; anything below may be stale or incomplete — it is not a report that
               the floor was quiet.
               {syncState?.last_error ? <div className="mt-1 opacity-80">{syncState.last_error}</div> : null}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── THE SYNC FAILED FOR A REASON THAT IS NOT THE KEY ─────────────────
+          Until now only key_invalid raised a banner, so ANY other sync failure
+          was invisible here: the header said "Last sync 2 minutes ago" in grey
+          and the page rendered whatever had already been mirrored. That is
+          precisely what happened on 2026-09-18 — a broken trigger (20260918g)
+          made every upsert fail for 25 minutes while the floor kept dialling,
+          and this page showed a quiet, healthy-looking scorecard throughout.
+          A stalled mirror is not a quiet floor. */}
+      {!dealsTabActive && !keyInvalid && syncState?.last_status === "error" && (
+        <div className="alert alert-warning">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+          <div>
+            <div className="font-semibold">The WAVV sync last failed — calls after that point may be missing.</div>
+            <div className="text-sm opacity-90">
+              Everything below is what was mirrored BEFORE the failure. It is not a report that the floor was
+              quiet. The sync does not advance its watermark past calls it could not read, so nothing is lost —
+              a successful run picks up from where it stopped.
+              {syncState.last_error ? <div className="mt-1 opacity-80">{syncState.last_error}</div> : null}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── FROZEN CALLS ─────────────────────────────────────────────────────
+          A row written while the line was still ringing keeps answered_at,
+          seconds and outcome empty forever — byte-identical to a dial nobody
+          picked up. So it does not read as a broken record, it reads as a
+          setter who missed. Measured: two of these turned out to be a 25-minute
+          and a 13-minute conversation, both dispositioned by the setter.
+          Shown here because the recovery job is automatic but its FAILURES were
+          previously visible only in a database view nobody opens. */}
+      {!dealsTabActive && stubs && stubs.total > 0 && (
+        <div className="alert alert-warning">
+          <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+          <div>
+            <div className="font-semibold">
+              {stubs.total.toLocaleString()} call{stubs.total === 1 ? "" : "s"} never finalised
+              {stubs.unrecoverable > 0 && ` — ${stubs.unrecoverable.toLocaleString()} of them unrecoverable`}
+            </div>
+            <div className="text-sm opacity-90">
+              These rows show no answer, no duration and no outcome because the mirror caught them mid-dial.
+              They look exactly like calls nobody picked up, so treat them as UNKNOWN, never as a miss by whoever
+              dialled.{" "}
+              {stubs.unrecoverable > 0
+                ? `${stubs.unrecoverable.toLocaleString()} ${stubs.unrecoverable === 1 ? "has" : "have"} been re-requested from WAVV, which has no final record for ${stubs.unrecoverable === 1 ? "it" : "them"} either — genuinely unfinished, not lost by us.`
+                : "They are re-requested from WAVV automatically on every sync."}
+              {stubs.total > stubs.unrecoverable &&
+                ` ${(stubs.total - stubs.unrecoverable).toLocaleString()} ${stubs.total - stubs.unrecoverable === 1 ? "is" : "are"} still an open question.`}
             </div>
           </div>
         </div>
