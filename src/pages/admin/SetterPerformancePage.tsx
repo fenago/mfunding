@@ -4409,6 +4409,39 @@ export default function SetterPerformancePage() {
                         </p>
                       </>
                     )}
+
+                    {/* ── THE SIGNPOST ──────────────────────────────────────
+                        This card LOOKS like the complete list of good outcomes.
+                        Its chips read "Full Application 0", and the owner twice
+                        concluded — reasonably — that nothing else existed, with
+                        the Applications panel sitting just below the fold. So
+                        the card itself says what is down there.
+
+                        Rendered ONLY on a genuine count of 1 or more:
+                        `applicationRows === null` is an unreadable pipeline and
+                        must never become "0 applications were also sent", and a
+                        true zero says nothing at all, because a line reading "0
+                        applications" is noise on most days.
+
+                        It lives OUTSIDE the positives-empty branch on purpose: a
+                        day with a sent application and no positive disposition
+                        at all is the version of this confusion that hurts most. */}
+                    {applicationRows !== null && applicationRows.length > 0 && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 border-t border-base-300 pt-2">
+                        <button
+                          type="button"
+                          onClick={jumpToApplications}
+                          className="font-semibold text-mint-green hover:underline underline-offset-2"
+                          title="Jump to the applications actually sent in this range"
+                        >
+                          {applicationRows.length.toLocaleString()} application
+                          {applicationRows.length === 1 ? "" : "s"} →
+                        </button>{" "}
+                        {applicationRows.length === 1 ? "was" : "were"} also <b>sent</b> in this range. That is an
+                        application <b>on file</b>, not a disposition typed on a call, so it is not in the table
+                        above — it is listed below in <b>Applications sent in this range</b>.
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -6551,10 +6584,24 @@ function FunnelCard({
           ofLabel="of dials"
           jumps={{
             ...(onPositivesClick
-              ? { positives: { onJump: onPositivesClick, title: "Jump to every positive-disposition call in this range" } }
+              ? {
+                  positives: {
+                    onJump: onPositivesClick,
+                    title: "Jump to every positive-disposition call in this range",
+                    linkLabel: (n: number) =>
+                      n === 1 ? "see the 1 call →" : `see all ${n.toLocaleString()} calls →`,
+                  },
+                }
               : {}),
             ...(onApplicationsClick
-              ? { applications: { onJump: onApplicationsClick, title: "Jump to the applications actually sent in this range" } }
+              ? {
+                  applications: {
+                    onJump: onApplicationsClick,
+                    title: "Jump to the applications actually sent in this range",
+                    linkLabel: (n: number) =>
+                      n === 1 ? "see the 1 application →" : `see all ${n.toLocaleString()} applications →`,
+                  },
+                }
               : {}),
           }}
         />
@@ -6579,12 +6626,18 @@ function StageBars({
   /** Names the denominator: "of dials" on the dial funnel, "of leads" on the
    *  pipeline one. Never guessed from the data. */
   ofLabel: string;
-  /** Stage key → its drill-down. That stage's count renders as a link into the
-   *  list of rows behind it. A map rather than a single key because EVERY
-   *  number on this page is supposed to have a list behind it — the Applications
-   *  rung was the one that did not, which is how a real application that was
-   *  actually sent ended up visible nowhere on the page. */
-  jumps?: Record<string, { onJump: () => void; title: string }>;
+  /** Stage key → its drill-down, drawn as a SELF-DESCRIBING link beside the
+   *  count. A map rather than a single key because EVERY number on this page is
+   *  supposed to have a list behind it — the Applications rung was the one that
+   *  did not, which is how a real application that was actually sent ended up
+   *  visible nowhere on the page.
+   *
+   *  `linkLabel` gets the rung's count and must return words, not a glyph. The
+   *  first version of this drew "1 ↓" and the owner missed the panel twice: a
+   *  bare arrow beside a number reads as decoration, or worse, as a trend
+   *  indicator — which on a funnel is a confidently wrong guess. The link has to
+   *  say what clicking it does. */
+  jumps?: Record<string, { onJump: () => void; title: string; linkLabel: (count: number) => string }>;
 }) {
   const total = stages[0]?.count ?? 0;
   return (
@@ -6701,18 +6754,21 @@ function StageBars({
             // UNREADABLE draws "—", never "0" — an unloaded source must not read
             // as an empty result (see readers-must-distinguish-unreadable).
             const countText = s.unreadable ? "—" : s.count.toLocaleString();
-            const countNode = jumpable ? (
+            // The count stays the funnel's plain figure; the DRILL-DOWN is the
+            // worded link below it. See FunnelStage jumps / linkLabel.
+            const countNode = (
+              <span className={`${countBase} text-gray-900 dark:text-white`}>{countText}</span>
+            );
+            const jumpNode = jumpable ? (
               <button
                 type="button"
                 onClick={jump.onJump}
                 title={jump.title}
-                className={`${countBase} text-mint-green hover:underline underline-offset-2`}
+                className={`${compact ? "text-[10px]" : "text-xs"} font-medium text-mint-green hover:underline underline-offset-2 whitespace-nowrap`}
               >
-                {countText} <span aria-hidden="true">↓</span>
+                {jump.linkLabel(s.count)}
               </button>
-            ) : (
-              <span className={`${countBase} text-gray-900 dark:text-white`}>{countText}</span>
-            );
+            ) : null;
 
             // The kind-of-fact chip. Printed on the rung in BOTH densities —
             // the whole point is that it is legible without hovering.
@@ -6767,6 +6823,7 @@ function StageBars({
                   {s.secondaryLine && (
                     <div className="text-[10px] text-gray-400">{s.secondaryLine}</div>
                   )}
+                  {jumpNode && <div>{jumpNode}</div>}
                 </div>
               );
             }
@@ -6785,6 +6842,10 @@ function StageBars({
                   {s.secondaryLine && (
                     <div className="text-[11px] text-gray-400 mt-0.5">{s.secondaryLine}</div>
                   )}
+                  {/* The drill-down sits under the LABEL, on the reading edge of
+                      the row, rather than tucked against the right margin where
+                      an arrow once went unnoticed twice. */}
+                  {jumpNode && <div className="mt-0.5">{jumpNode}</div>}
                 </div>
                 <div className="flex-1 min-w-0">{bar}</div>
                 <div className="w-full sm:w-56 shrink-0 flex flex-wrap items-center justify-between sm:justify-end gap-x-3 gap-y-1">
