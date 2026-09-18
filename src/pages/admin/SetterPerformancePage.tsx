@@ -122,7 +122,7 @@ import {
   signatureFromStatus,
   type DealApplicationStatus,
 } from "@/hooks/useApplicationSignatures";
-import { isPhantomApplicationSend } from "@/lib/phantomApplicationSend";
+import { isPhantomApplicationSend, phantomDivergence } from "@/lib/phantomApplicationSend";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** Which dialer wrote this row. Not cosmetic: it decides how far down the funnel
@@ -3001,6 +3001,32 @@ export default function SetterPerformancePage() {
     };
   }, [positiveCalls]);
 
+  // ── THE MIRROR CHECKS ITSELF ──────────────────────────────────────────────
+  // The rung folds its phantom test from creation facts on the deal row, because
+  // gating it on an RPC would paint the unfiltered number first and correct it a
+  // beat later — showing the owner a wrong number, which is the failure this
+  // whole task exists to close. The cost of that choice is a second copy of a
+  // rule, and the only way a copy fails is SILENTLY.
+  //
+  // So: `appStatus` carries the canonical born_at_application_sent and arrives a
+  // moment later anyway. When it does, every in-range stamped deal present in
+  // both is compared, and any disagreement is RENDERED on the panel by deal
+  // number. Not a console.warn — nine copies of the document-name rule drifted
+  // with nothing watching, and one of them was wrong the entire time.
+  //
+  // Free: no query, one pass over rows both sides already hold. Deals the RPC
+  // did not return are skipped, because absence is unknown, not a contradiction.
+  const phantomMirrorDivergence = useMemo(
+    () =>
+      phantomDivergence(
+        (productiveDeals ?? []).filter((d) => inRange(d.application_sent_at, range.from, range.to)),
+        (d) => d.id,
+        (d) => d.deal_number ?? d.customer?.business_name?.trim() ?? `deal ${d.id.slice(0, 8)}`,
+        appStatus,
+      ),
+    [productiveDeals, range, appStatus],
+  );
+
   /** The funnel's Applications count is a jump link into those exact deals. */
   const jumpToApplications = useCallback(() => {
     applicationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -4417,6 +4443,37 @@ export default function SetterPerformancePage() {
                         </div>
                       )}
                     </div>
+
+                    {/* ── THE TRIPWIRE FIRED ────────────────────────────────
+                        This page's copy of the phantom-send rule and the
+                        database's canonical one gave different answers. One of
+                        them is wrong, so the count above is not trustworthy
+                        until they agree again — said on screen, by deal, rather
+                        than logged where nobody looks. */}
+                    {phantomMirrorDivergence.length > 0 && (
+                      <div className="alert alert-warning text-sm">
+                        <ExclamationTriangleIcon className="w-5 h-5 shrink-0" />
+                        <span>
+                          <b>
+                            The phantom-send rule disagrees with itself on{" "}
+                            {phantomMirrorDivergence.length.toLocaleString()} deal
+                            {phantomMirrorDivergence.length === 1 ? "" : "s"}
+                          </b>{" "}
+                          — this page's copy (<code>src/lib/phantomApplicationSend.ts</code>) and the database's{" "}
+                          <code>public.is_phantom_application_send</code> no longer give the same answer, so{" "}
+                          <b>the count above may be wrong</b> until they are reconciled. The SQL one is canonical.
+                          <ul className="mt-1 list-disc pl-5">
+                            {phantomMirrorDivergence.map((v) => (
+                              <li key={v.dealId}>
+                                <b>{v.label}</b> — this page says{" "}
+                                {v.mirror ? "mirror stamp (excluded)" : "a real send (counted)"}, the database says{" "}
+                                {v.canonical ? "mirror stamp" : "a real send"}
+                              </li>
+                            ))}
+                          </ul>
+                        </span>
+                      </div>
+                    )}
 
                     {/* ── WHAT WAS EXCLUDED, AND WHY ────────────────────────
                         Said out loud, never silently dropped: a count that falls

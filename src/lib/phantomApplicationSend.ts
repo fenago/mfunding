@@ -35,10 +35,27 @@
 // answer, so the two implementations cannot disagree over time — only over a
 // deliberate edit. If you change the rule, change it in BOTH, and the SQL one
 // goes first. Do not write a third copy: import this one.
+//
+// AND THE MIRROR CHECKS ITSELF. Wherever the canonical flag is available beside
+// this function's verdict, compare them and show the disagreement — see
+// phantomDivergence() below and its one live caller on the Setter Performance
+// funnel. A mirror that hopes is how nine copies of the document-name rule
+// drifted, one of them counting the broker disclosure as a returned
+// application, with nothing watching to notice.
 
 /** How close to `created_at` a stamp must land to be the creating transaction's
- *  own clock rather than a send. The live rows are 12-15 ms out; no deal with a
- *  real send is within 5 s of its own creation. Matches the SQL's 2 s. */
+ *  own clock rather than a send. Matches the SQL's 2 s.
+ *
+ *  MEASURED BOOK-WIDE, 2026-09-18, over all 64 stamps:
+ *    · the 4 phantoms land at −15.027 ms … −12.469 ms. NEGATIVE: the stage
+ *      trigger stamped them fractionally BEFORE the row it belongs to existed.
+ *    · the nearest of the 60 real sends is 23.242 s out.
+ *    · real sends inside the 2 s threshold: ZERO.
+ *    · stamped deals missing created_at (unclassifiable): ZERO.
+ *
+ *  So the threshold sits in an empty gap with ~10× headroom to the nearest real
+ *  send. Do NOT read that as room to widen it: 23 s is the whole margin, not the
+ *  90 s an earlier note claimed by measuring only the created_by-is-null rows. */
 const PHANTOM_WINDOW_MS = 2_000;
 
 /** The three creation facts the rule is made of. Any row carrying them fits —
@@ -65,4 +82,52 @@ export function isPhantomApplicationSend(d: PhantomSendInputs): boolean {
   const created = Date.parse(d.created_at);
   if (!Number.isFinite(sent) || !Number.isFinite(created)) return false;
   return Math.abs(sent - created) <= PHANTOM_WINDOW_MS;
+}
+
+/** One deal on which this mirror and the canonical SQL flag disagree. */
+export interface PhantomDivergence {
+  dealId: string;
+  /** Shown to a human, so the deal is identifiable without a lookup. */
+  label: string;
+  /** What this module said. */
+  mirror: boolean;
+  /** What public.is_phantom_application_send said, via the server. */
+  canonical: boolean;
+}
+
+/**
+ * THE TRIPWIRE. Compares this mirror's verdict against the canonical
+ * `born_at_application_sent` for every deal present in BOTH, and returns the
+ * disagreements.
+ *
+ * A caller MUST render what comes back — visibly, naming the deals. The point
+ * is not to log it; it is that the moment the SQL rule is edited and this copy
+ * is not (or the reverse), somebody looking at the screen finds out. Silence
+ * here is the only failure mode a mirror has, and a console warning is silence.
+ *
+ * Deals the server did not return are SKIPPED, not counted as agreement and not
+ * counted as divergence: absence is unknown (RLS, a slow load, a partial read),
+ * and an unknown announced as a contradiction would train people to ignore this.
+ *
+ * Costs one pass over the rows both sides already hold. No query.
+ */
+export function phantomDivergence<T extends PhantomSendInputs>(
+  rows: T[],
+  idOf: (row: T) => string,
+  labelOf: (row: T) => string,
+  /** deal id → the canonical flag. `null` = not loaded / unreadable → no check. */
+  canonicalByDeal: ReadonlyMap<string, { born_at_application_sent: boolean }> | null,
+): PhantomDivergence[] {
+  if (!canonicalByDeal || canonicalByDeal.size === 0) return [];
+  const out: PhantomDivergence[] = [];
+  for (const row of rows) {
+    const id = idOf(row);
+    const canonicalRow = canonicalByDeal.get(id);
+    if (!canonicalRow) continue; // unknown, not a contradiction
+    const mirror = isPhantomApplicationSend(row);
+    if (mirror !== canonicalRow.born_at_application_sent) {
+      out.push({ dealId: id, label: labelOf(row), mirror, canonical: canonicalRow.born_at_application_sent });
+    }
+  }
+  return out;
 }
