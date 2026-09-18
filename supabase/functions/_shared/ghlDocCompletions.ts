@@ -185,11 +185,20 @@ export interface FreshSignature {
 export interface RecordOutcome {
   /** Rows this call inserted. Only these produce side effects. */
   recorded: number;
+  /** Of `recorded`, the ones we could NOT attribute to a merchant. */
+  recordedUnattributed: number;
+  /**
+   * Rows that existed with a null customer_id and which this call could finally
+   * attribute. These DO fire side effects if the signature is still fresh — the
+   * day a merchant record appears for a signer we did not know is exactly when
+   * their signature should surface.
+   */
+  healed: number;
   /** Pre-existing rows whose signed_at was missing and is now filled in. */
   backfilled: number;
   /** Rows another writer (the sweep, or a concurrent hook) inserted first. */
   alreadyPresent: number;
-  /** Signatures we could not attach to a merchant — NEVER silently dropped. */
+  /** Signatures we could not attach to a merchant. Recorded, never dropped. */
   unresolved: UnresolvedCompletion[];
   /** Contact ids appended to a merchant's identity set as a result of a signature. */
   aliasesAdded: string[];
@@ -201,8 +210,8 @@ export interface RecordOutcome {
 }
 
 const EMPTY_OUTCOME = (): RecordOutcome => ({
-  recorded: 0, backfilled: 0, alreadyPresent: 0, unresolved: [], aliasesAdded: [],
-  fresh: [], timelineNotes: 0, checklistTicks: 0, error: null,
+  recorded: 0, recordedUnattributed: 0, healed: 0, backfilled: 0, alreadyPresent: 0,
+  unresolved: [], aliasesAdded: [], fresh: [], timelineNotes: 0, checklistTicks: 0, error: null,
 });
 
 /**
@@ -264,9 +273,36 @@ export async function recordCompletions(
   // Contact ids we only learned about because a document was signed against them.
   const aliasByCustomer = new Map<string, Set<string>>();
 
+  /** A signature is "fresh" if the merchant signed it recently enough that
+   *  announcing it is news rather than history. Only attributed rows qualify —
+   *  there is no deal to note it on without a merchant. */
+  const markFresh = (c: Completion, cust: { id: string; businessName: string | null }) => {
+    const signedMs = c.signedAt ? Date.parse(c.signedAt) : NaN;
+    if (!Number.isFinite(signedMs) || Date.now() - signedMs > windowMs) return;
+    out.fresh.push({
+      customerId: cust.id,
+      businessName: cust.businessName ?? "The merchant",
+      docName: c.docName,
+      signedAt: c.signedAt,
+      documentId: c.documentId,
+      isApplication: false, // decided by the DB below — never by a guess here
+    });
+  };
+
   for (const c of completions) {
     const cust = byContact.get(c.contactId)
       ?? (c.recipientEmail ? byEmail.get(c.recipientEmail) : undefined);
+
+    // A signature we cannot attribute is STILL RECORDED, with the reason. It used
+    // to be counted and skipped, which meant it existed only as an integer in one
+    // cron run's response body — no card, no badge, no note, nothing a human
+    // would ever see. That is "did not sign" wearing the costume of "we did not
+    // look", which is the failure this whole day of work was about.
+    const unresolvedReason = cust
+      ? null
+      : (ambiguous.has(`contact:${c.contactId}`) || (c.recipientEmail && ambiguous.has(`email:${c.recipientEmail}`))
+        ? "identifier maps to more than one merchant — refused to guess"
+        : "no merchant on file for this signer");
 
     if (!cust) {
       out.unresolved.push({
@@ -274,26 +310,24 @@ export async function recordCompletions(
         docName: c.docName,
         contactId: c.contactId,
         recipientEmail: c.recipientEmail,
-        reason: ambiguous.has(`contact:${c.contactId}`) || (c.recipientEmail && ambiguous.has(`email:${c.recipientEmail}`))
-          ? "identifier maps to more than one merchant — refused to guess"
-          : "no merchant on file for this signer",
+        reason: unresolvedReason as string,
       });
-      continue;
-    }
-
-    // The signature itself is evidence that this contact belongs to this
-    // merchant. Append it (never clobber the primary pointer) so the NEXT read
-    // of this merchant already knows where their documents live.
-    if (!byContact.has(c.contactId)) {
+    } else if (!byContact.has(c.contactId)) {
+      // The signature itself is evidence that this contact belongs to this
+      // merchant. Append it (never clobber the primary pointer) so the NEXT read
+      // of this merchant already knows where their documents live.
       if (!aliasByCustomer.has(cust.id)) aliasByCustomer.set(cust.id, new Set());
       aliasByCustomer.get(cust.id)!.add(c.contactId);
     }
 
     const { error: insErr } = await db.from("ghl_doc_completions").insert({
       document_id: c.documentId,
-      customer_id: cust.id,
+      customer_id: cust?.id ?? null,
       doc_name: c.docName,
       signed_at: c.signedAt,
+      ghl_contact_id: c.contactId,
+      recipient_email: c.recipientEmail,
+      unresolved_reason: unresolvedReason,
     });
 
     if (insErr) {
@@ -301,35 +335,61 @@ export async function recordCompletions(
         console.warn(`[${opts.via}] completion insert failed for ${c.documentId}:`, insErr.message);
         continue;
       }
-      // Someone else recorded this signature. Fill in signed_at if the older row
-      // predates that column, and do NOT re-fire side effects.
+      // Someone else recorded this signature already.
       out.alreadyPresent++;
-      if (c.signedAt) {
-        const { data: existing } = await db
-          .from("ghl_doc_completions").select("signed_at").eq("document_id", c.documentId).maybeSingle();
-        if (existing && !existing.signed_at) {
-          const { error: upErr } = await db
-            .from("ghl_doc_completions").update({ signed_at: c.signedAt }).eq("document_id", c.documentId);
-          if (upErr) console.warn(`[${opts.via}] signed_at backfill failed:`, upErr.message);
-          else out.backfilled++;
+      const { data: existing } = await db
+        .from("ghl_doc_completions")
+        .select("customer_id, signed_at")
+        .eq("document_id", c.documentId)
+        .maybeSingle();
+      if (!existing) continue;
+
+      // HEAL. document_id is the primary key, so a row recorded orphaned would
+      // otherwise stay orphaned forever — a later, better resolution would just
+      // collide and skip. Adopting it here is what makes recording an orphan
+      // strictly better than dropping one. The `.is(null)` guard means two
+      // concurrent healers cannot both claim it.
+      if (!existing.customer_id && cust) {
+        const { data: healedRows, error: healErr } = await db
+          .from("ghl_doc_completions")
+          .update({
+            customer_id: cust.id,
+            unresolved_reason: null,
+            ghl_contact_id: c.contactId,
+            recipient_email: c.recipientEmail,
+          })
+          .eq("document_id", c.documentId)
+          .is("customer_id", null)
+          .select("document_id");
+        if (healErr) {
+          console.warn(`[${opts.via}] attribution heal failed for ${c.documentId}:`, healErr.message);
+        } else if ((healedRows ?? []).length > 0) {
+          out.healed++;
+          out.alreadyPresent--;
+          // A signature that has only now become attributable is news, if it is
+          // still recent — this is the card that should appear the moment a
+          // merchant record catches up with a signer we did not know.
+          markFresh(c, cust);
         }
+      }
+
+      if (!existing.signed_at && c.signedAt) {
+        const { error: upErr } = await db
+          .from("ghl_doc_completions").update({ signed_at: c.signedAt }).eq("document_id", c.documentId);
+        if (upErr) console.warn(`[${opts.via}] signed_at backfill failed:`, upErr.message);
+        else out.backfilled++;
       }
       continue;
     }
 
     out.recorded++;
-
-    const signedMs = c.signedAt ? Date.parse(c.signedAt) : NaN;
-    if (Number.isFinite(signedMs) && Date.now() - signedMs <= windowMs) {
-      out.fresh.push({
-        customerId: cust.id,
-        businessName: cust.businessName ?? "The merchant",
-        docName: c.docName,
-        signedAt: c.signedAt,
-        documentId: c.documentId,
-        isApplication: false, // decided by the DB below — never by a guess here
-      });
+    if (!cust) {
+      // Recorded, deliberately silent: there is no merchant and therefore no deal
+      // to put a note on. public.unattributed_doc_signatures is where it surfaces.
+      out.recordedUnattributed++;
+      continue;
     }
+    markFresh(c, cust);
   }
 
   // ── Persist newly-learned contact ids (best-effort; never breaks a recording).
