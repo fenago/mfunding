@@ -148,7 +148,19 @@ interface SetterCall {
   ended_at: string | null;
   seconds: number | null;
   outcome: string | null;
+  /** RAW. Exactly what the setter typed, WAVV's literal "None" included, and
+   *  never a derived value. Use it to ask "did they disposition this call?";
+   *  use `dispositionOf()` to ask "what happened on this call?". */
   disposition: string | null;
+  /** What a COUNTER reads: the typed disposition, or one DERIVED from an
+   *  artifact when the setter left the hole (20260918d). Always read through
+   *  `dispositionOf()`, and never render it without the `derived` marker. */
+  disposition_effective?: string | null;
+  /** 'typed' | 'derived' | null. NULL means no disposition at all. */
+  disposition_source?: string | null;
+  /** Full sentence naming the artifact, the delay and the person. */
+  disposition_derived_reason?: string | null;
+  disposition_derived_at?: string | null;
   human: boolean | null;
   recorded: boolean | null;
   phone: string | null;
@@ -169,7 +181,7 @@ interface SetterCall {
 // One unbroken string literal on purpose: the client is untyped, so supabase-js
 // infers the row shape by parsing this literal. Splitting it across a `+`
 // concatenation defeats that parse and the result degrades to GenericStringError.
-const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
+const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,outcome,disposition,disposition_effective,disposition_source,disposition_derived_reason,disposition_derived_at,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
 
 /** The Call log asks for ONE column the aggregate pass does not: `also_seen_in`,
  *  the dedupe audit trail. It is a correlated EXISTS in the view, so it costs a
@@ -181,7 +193,7 @@ const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,o
  *
  *  Keep this a single unbroken literal for the same reason CALL_COLS is one —
  *  supabase-js infers the row shape by parsing the literal. */
-const LOG_COLS = "wavv_call_id,source,also_seen_in,started_at,answered_at,ended_at,seconds,outcome,disposition,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
+const LOG_COLS = "wavv_call_id,source,also_seen_in,started_at,answered_at,ended_at,seconds,outcome,disposition,disposition_effective,disposition_source,disposition_derived_reason,disposition_derived_at,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
 
 /** BOTH dialers, deduped (20260916b_setter_dial_calls_union.sql). */
 const CALLS_VIEW = "v_setter_dial_calls";
@@ -747,6 +759,12 @@ const POSITIVE_DISPOSITIONS = [
   // string stays so historical rows keep counting. (The GHL tag is still
   // wavv-interested — tag-based stage sync is unaffected by the rename.)
   "Full App + Statements", "Full Application", "Partial Application", "Appointment Set", "Interested", "Callback",
+  // DERIVED ONLY (20260918d). WAVV has never written this string, so a row
+  // carrying it is derived by construction — a second guarantee on top of
+  // disposition_source. Deliberately NOT on APPLICATION_DISPOSITIONS below: the
+  // evidence says an application went OUT, not that a complete one came back,
+  // and the Applications rung already counts that send from application_sent_at.
+  "Application Sent",
 ];
 
 /** The subset of positives that is actually an APPLICATION — the numerator for
@@ -777,9 +795,12 @@ const APPLICATION_DISPOSITIONS = ["Full App + Statements", "Full Application", "
 const CONVERSATION_DISPOSITIONS = [
   "Full App + Statements", "Full Application", "Interested", "Not Interested",
   "Appointment Set", "Callback", "Do Not Contact",
+  // Derived, never typed — see POSITIVE_DISPOSITIONS.
+  "Application Sent",
 ];
 const CONVERSATION_HELP =
-  `Conversation = the setter reached a live person and dispositioned the call (${CONVERSATION_DISPOSITIONS.join(" · ")}). Voicemails are excluded. Undispositioned calls — including WAVV's literal "None" — are not counted, so under-dispositioning under-reports this.`;
+  `Conversation = the setter reached a live person and dispositioned the call (${CONVERSATION_DISPOSITIONS.join(" · ")}). Voicemails are excluded. Undispositioned calls — including WAVV's literal "None" — are not counted, so under-dispositioning under-reports this. ` +
+  `The ONE exception is marked "derived": a call the setter never dispositioned still counts when they themselves sent the merchant an application within 45 minutes of it and no nearer call was dispositioned — you cannot send an application without having talked to someone. A derived value is always labelled, never counted as an application taken, and never written back over the setter's own record.`;
 
 // ── "None" IS NOT AN OUTCOME, AND IS NOT SILENTLY ABSORBED ───────────────────
 // WAVV ships a literal "None" disposition and the 8/22 outcome-ladder rename
@@ -801,6 +822,57 @@ const REVIEW_MIN_SECONDS = 60;
 
 function isUndispositioned(r: Pick<SetterCall, "disposition">): boolean {
   return !r.disposition || (UNDISPOSITIONED_VALUES as readonly string[]).includes(r.disposition);
+}
+
+// ── TYPED vs DERIVED (20260918d_derived_dispositions.sql) ────────────────────
+// A call the setter never dispositioned can still have a knowable outcome: you
+// cannot send a merchant an application without having talked to them, so when
+// an application goes out within 45 minutes of a dial, BY THE PERSON WHO MADE
+// THAT DIAL, and no nearer dial was dispositioned, the view derives one.
+//
+// This is NOT the re-absorption of "None" that the block above forbids. "None"
+// on its own still counts as nothing, because nothing was recorded. What counts
+// here is an ARTIFACT — an application document that physically went out —
+// carried on a separate column with its own provenance. Three calls in 90 days
+// qualify; the refusals are visible in v_setter_dial_calls_derivation_audit.
+//
+// THE RULE THAT MUST NEVER BE BROKEN: a derived value may never render as
+// though a setter typed it. Count with dispositionOf(); render with
+// isDerived() beside it, every single time.
+
+/** What happened on this call: the typed disposition, or the derived one.
+ *  Falls back to the raw column so a caller that predates the view columns
+ *  still behaves exactly as it did. */
+function dispositionOf(r: Pick<SetterCall, "disposition" | "disposition_effective">): string | null {
+  return r.disposition_effective ?? r.disposition;
+}
+
+/** True when dispositionOf() is an inference from an artifact rather than a
+ *  value a human chose. Never collapse this into "no disposition". */
+function isDerived(r: Pick<SetterCall, "disposition_source">): boolean {
+  return r.disposition_source === "derived";
+}
+
+/** The marker that keeps the promise. Rendered immediately after any derived
+ *  disposition, everywhere one is shown, carrying the reason as its tooltip so
+ *  a reader can always see WHICH artifact produced the value and WHO made it.
+ *  Renders nothing at all for a typed value, so it is safe to drop in beside
+ *  every disposition without a conditional at the call site. */
+function DerivedMark({ call }: { call: Pick<SetterCall, "disposition_source" | "disposition_derived_reason"> }) {
+  if (!isDerived(call)) return null;
+  return (
+    <span
+      className="ml-1 rounded-full border border-amber-400/50 bg-amber-400/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400 cursor-help"
+      title={
+        `DERIVED, not typed. The setter never dispositioned this call — this value is inferred from what happened next: ` +
+        `${call.disposition_derived_reason ?? "an artifact shortly after the call"}. ` +
+        `You cannot send a merchant an application without having talked to them, so the application is the evidence the conversation happened. ` +
+        `The setter's own record is still empty; this does not overwrite it.`
+      }
+    >
+      derived
+    </span>
+  );
 }
 
 /** A REAL TALK WITH NO HONEST OUTCOME: answered, nothing about it says machine,
@@ -889,8 +961,9 @@ function sanitizeSearch(q: string): string {
   return q.replace(/[,()"\\%*]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function isConversation(r: Pick<SetterCall, "disposition">): boolean {
-  return !!r.disposition && CONVERSATION_DISPOSITIONS.includes(r.disposition);
+function isConversation(r: Pick<SetterCall, "disposition" | "disposition_effective">): boolean {
+  const d = dispositionOf(r);
+  return !!d && CONVERSATION_DISPOSITIONS.includes(d);
 }
 
 /** Last ten digits of a phone, or "" when there aren't ten. The one place this
@@ -1012,11 +1085,15 @@ function computeFunnel(calls: SetterCall[]): FunnelCounts {
     if (scored) {
       if (reachedHuman(r)) humans++;
       if (isConversation(r)) conversations++;
-      if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) {
+      // dispositionOf(), so a conversation proved by the application it produced
+      // counts once — on the same merchant × disposition key as a typed one, so
+      // a derived row and a typed row on the same merchant never double-count.
+      const dispo = dispositionOf(r);
+      if (dispo && POSITIVE_DISPOSITIONS.includes(dispo)) {
         positiveCalls++;
-        positiveKeys.add(`${merchantKey(r)}|${r.disposition}`);
-        if (APPLICATION_DISPOSITIONS.includes(r.disposition)) {
-          appKeys.add(`${merchantKey(r)}|${r.disposition}`);
+        positiveKeys.add(`${merchantKey(r)}|${dispo}`);
+        if (APPLICATION_DISPOSITIONS.includes(dispo)) {
+          appKeys.add(`${merchantKey(r)}|${dispo}`);
         }
       }
     }
@@ -2650,10 +2727,13 @@ export default function SetterPerformancePage() {
   // `positiveRows`, which folds these onto merchants — see the memo there.
   // Built from the SAME aggRows; no extra query.
   const positiveCalls = useMemo(() => {
-    const rows = aggRows.filter((r) => r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition));
+    const rows = aggRows.filter((r) => {
+      const d = dispositionOf(r);
+      return !!d && POSITIVE_DISPOSITIONS.includes(d);
+    });
     return rows.sort((a, b) => {
-      const da = POSITIVE_DISPOSITIONS.indexOf(a.disposition!);
-      const db = POSITIVE_DISPOSITIONS.indexOf(b.disposition!);
+      const da = POSITIVE_DISPOSITIONS.indexOf(dispositionOf(a)!);
+      const db = POSITIVE_DISPOSITIONS.indexOf(dispositionOf(b)!);
       if (da !== db) return da - db;
       return (b.started_at ?? "").localeCompare(a.started_at ?? "");
     });
@@ -2797,7 +2877,12 @@ export default function SetterPerformancePage() {
     const merchantKey = makeMerchantKey(aggRows);
     const groups = new Map<string, SetterCall[]>();
     for (const r of positiveCalls) {
-      const key = `${merchantKey(r)}|${r.disposition}`;
+      // dispositionOf(), matching computeFunnel's keyer exactly. If this folded
+      // on the RAW column while the rung counted the effective one, a derived
+      // row would group under "null" and the list would disagree with the number
+      // above it — the precise class of silent disagreement this page keeps
+      // paying for.
+      const key = `${merchantKey(r)}|${dispositionOf(r)}`;
       const list = groups.get(key);
       if (list) list.push(r);
       else groups.set(key, [r]);
@@ -2813,7 +2898,7 @@ export default function SetterPerformancePage() {
       }
       rows.push({
         key,
-        disposition: lead.disposition!,
+        disposition: dispositionOf(lead)!,
         calls,
         lead,
         longerThanLead:
@@ -2918,8 +3003,9 @@ export default function SetterPerformancePage() {
         if (isConversation(r)) row.conversations++;
         // MERCHANT × disposition, exactly as computeFunnel folds it — a repeat
         // call to a merchant this setter already scored is not a second win.
-        if (r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition)) {
-          row.positiveKeys.add(`${merchantKey(r)}|${r.disposition}`);
+        const rowDispo = dispositionOf(r);
+        if (rowDispo && POSITIVE_DISPOSITIONS.includes(rowDispo)) {
+          row.positiveKeys.add(`${merchantKey(r)}|${rowDispo}`);
         }
       }
       if (r.phone) row.phones.add(r.phone);
@@ -3330,7 +3416,10 @@ export default function SetterPerformancePage() {
         [];
       if (calls.length === 0) return { kind: "none", latest: null, calls: 0 };
       const latest = [...calls].sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
-      if (calls.some((c) => c.disposition && POSITIVE_DISPOSITIONS.includes(c.disposition))) {
+      if (calls.some((c) => {
+        const d2 = dispositionOf(c);
+        return !!d2 && POSITIVE_DISPOSITIONS.includes(d2);
+      })) {
         return { kind: "positive", latest, calls: calls.length };
       }
       if (calls.every(isUndispositioned)) {
@@ -4777,9 +4866,15 @@ export default function SetterPerformancePage() {
                                     )}
                                   </td>
                                   <td className={TD}>
+                                    {/* row.disposition, not r.disposition: the row
+                                        was folded on the EFFECTIVE value, so the
+                                        chip has to print that same value or a
+                                        derived row would render blank under a
+                                        heading that counted it. */}
                                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.green}`}>
-                                      {r.disposition}
+                                      {row.disposition}
                                     </span>
+                                    <DerivedMark call={r} />
                                   </td>
                                   <td className={`${TD} text-right whitespace-nowrap`}>
                                     <div className="inline-flex items-center gap-3">
@@ -4849,7 +4944,8 @@ export default function SetterPerformancePage() {
                                             >
                                               {c.seconds === null ? "—" : durationText(c.seconds)}
                                             </span>
-                                            <span className="text-gray-500 dark:text-gray-400">{c.disposition}</span>
+                                            <span className="text-gray-500 dark:text-gray-400">{dispositionOf(c)}</span>
+                                            <DerivedMark call={c} />
                                             {c.wavv_call_id === r.wavv_call_id && (
                                               <span className="rounded-full border border-mint-green/40 bg-mint-green/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-mint-green">
                                                 shown above
@@ -6484,9 +6580,22 @@ export default function SetterPerformancePage() {
                                   {hms(r.seconds ?? 0)}
                                 </td>
                                 <td className={TD}>
+                                  {/* The RAW column on purpose — this tab exists to
+                                      show what the setter did or did not type, and
+                                      is the coaching surface for it. A derivation
+                                      does not make the gap disappear, so the chip
+                                      still says "not set"; the marker beside it
+                                      says we recovered the answer anyway, and from
+                                      what. Both facts, neither hidden by the other. */}
                                   <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${RAG_CHIP.amber}`}>
                                     {r.disposition ?? "not set"}
                                   </span>
+                                  {isDerived(r) && (
+                                    <span className="ml-1 text-xs text-emerald-600 dark:text-emerald-400" title={r.disposition_derived_reason ?? undefined}>
+                                      → {dispositionOf(r)}
+                                      <DerivedMark call={r} />
+                                    </span>
+                                  )}
                                 </td>
                                 <td className={TD}>
                                   {unreadable ? (
@@ -6804,10 +6913,16 @@ export default function SetterPerformancePage() {
                                   >
                                     n/a for GHL
                                   </span>
-                                ) : r.disposition && POSITIVE_DISPOSITIONS.includes(r.disposition) ? (
-                                  <span className="font-semibold text-emerald-600 dark:text-emerald-400">{r.disposition}</span>
+                                ) : dispositionOf(r) && POSITIVE_DISPOSITIONS.includes(dispositionOf(r)!) ? (
+                                  <>
+                                    <span className="font-semibold text-emerald-600 dark:text-emerald-400">{dispositionOf(r)}</span>
+                                    <DerivedMark call={r} />
+                                  </>
                                 ) : (
-                                  <Text value={r.disposition} />
+                                  <>
+                                    <Text value={dispositionOf(r)} />
+                                    <DerivedMark call={r} />
+                                  </>
                                 )}
                               </td>
                               <td className={`${TD} whitespace-nowrap`}>
