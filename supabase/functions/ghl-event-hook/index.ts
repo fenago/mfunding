@@ -19,6 +19,14 @@
 //   emails → ghl_email_doc_log (PK = GHL email-record id, CLAIMED before any
 //            work) + customer_documents + activity_log, via the sweep's own
 //            _shared/ghlEmailDocs.ts — literally the same code, not a copy.
+//   docs   → ghl_doc_completions (PK = GHL document id) + activity_log + the
+//            funder-submit checklist, via _shared/ghlDocCompletions.ts, which
+//            ghl-doc-sweep reads from too. The primary key makes the race
+//            harmless: whoever inserts first fires the side effects once, and
+//            the loser gets a 23505 and counts it as "already present".
+//            Added 2026-09-18, because a signature was taking up to 60 minutes
+//            (cron 62, `12 * * * *`) to become visible and a merchant was on the
+//            phone with the owner for most of one of them.
 // Whichever path arrives first claims the record; the other finds it claimed and
 // does nothing. Running both is redundancy, not double-counting.
 //
@@ -39,6 +47,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient, getGhlConfig, ghlFetch, type GhlConfig } from "../_shared/ghl.ts";
 import { fetchContactCalls, syncCallsForDeal } from "../_shared/ghlCallSync.ts";
 import { scrapeInboundEmailDocsForDeal, type EmailDocDeal } from "../_shared/ghlEmailDocs.ts";
+import { crawlCompletedDocs, flattenCompletions, recordCompletions } from "../_shared/ghlDocCompletions.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const VIA = "ghl-event-hook";
@@ -54,6 +63,17 @@ const MAX_CONVERSATIONS = 1;
 const MESSAGES_PER_CONVERSATION = 20;
 const MAX_USER_LOOKUPS = 3;
 const DEFAULT_WINDOW_HOURS = 24;
+
+// ── type=document ────────────────────────────────────────────────────────────
+// There is NO per-document and NO per-contact filter on /proposals/document (see
+// _shared/ghlDocCompletions.ts for the live probe), so a signature event cannot
+// be answered with a targeted fetch. What it CAN be answered with is a shallow
+// read of the newest completed documents: an event that just fired is by
+// definition about one of them. Four pages = 84 newest signatures, so the cost is
+// capped at 4 GHL calls per signature FOREVER — it does not grow with the book
+// and it does not grow with the archive. The hourly sweep still reads the whole
+// set, which is what keeps anything older than this window covered.
+const DOC_HOOK_PAGES = 4;
 
 // Deals the sweeps consider "still working" — mirrored so the hook prefers the
 // same deal the sweep would have picked for this contact.
@@ -99,7 +119,7 @@ function extractContactId(body: Record<string, unknown>): string | null {
   return null;
 }
 
-type EventType = "call" | "email" | "generic";
+type EventType = "call" | "email" | "document" | "generic";
 
 interface DealRow {
   id: string;
@@ -164,7 +184,13 @@ Deno.serve(async (req) => {
   if (!expected || provided !== expected) return json({ error: "forbidden" }, 403);
 
   const rawType = (url.searchParams.get("type") ?? "generic").toLowerCase();
-  const type: EventType = rawType === "call" ? "call" : rawType === "email" ? "email" : "generic";
+  const type: EventType = rawType === "call"
+    ? "call"
+    : rawType === "email"
+    ? "email"
+    : rawType === "document" || rawType === "doc"
+    ? "document"
+    : "generic";
 
   // One receipt per POST, always written, whatever happens after this point.
   const actions: Record<string, unknown> = {};
@@ -182,6 +208,76 @@ Deno.serve(async (req) => {
   try {
     const body = await readBody(req);
     contactId = extractContactId(body);
+
+    // ── type=document — a merchant signed something ─────────────────────────
+    // Deliberately handled BEFORE the contact-id requirement below. A signature
+    // is identified by the DOCUMENT's recipient, which the crawl gives us; the
+    // triggering contact id is useful context but must never be the thing that
+    // decides whether we look. On 2026-09-18 a merchant's eight documents were
+    // all filed against a contact his deal was not linked to, and every reader
+    // said "Nothing sent yet" while the owner had him on the phone — so this
+    // path resolves through the shared identity resolver (contact id AND
+    // recipient email) and records what it cannot resolve rather than dropping it.
+    if (type === "document") {
+      let cfg: GhlConfig;
+      try {
+        cfg = await getGhlConfig(db);
+      } catch (e) {
+        actions.reason = "ghl not configured";
+        actions.error = e instanceof Error ? e.message : String(e);
+        return await finish();
+      }
+
+      const crawl = await crawlCompletedDocs(cfg, { maxPages: DOC_HOOK_PAGES });
+      actions.ghl_calls = crawl.ghlCalls;
+      actions.daily_remaining = crawl.dailyRemaining;
+      actions.budget_readable = crawl.dailyRemaining !== null;
+      actions.completed_docs_seen = crawl.docs.length;
+      actions.completed_docs_reported = crawl.reportedTotal;
+      // The hook's crawl is SHALLOW ON PURPOSE. It is never a proof of absence,
+      // so it never stamps customers.ghl_docs_checked_at — that stays the
+      // sweep's job, and only on a crawl that reached `total`.
+      actions.crawl_complete = crawl.complete;
+      actions.proves_absence = false;
+      if (crawl.error) actions.crawl_error = crawl.error;
+
+      if (crawl.docs.length === 0) {
+        actions.reason = crawl.error
+          ? "document list unreadable — recorded nothing, the sweep still covers this"
+          : "no completed documents in the location";
+        ok = !crawl.error;
+        return await finish();
+      }
+
+      const completions = flattenCompletions(crawl.docs);
+      const r = await recordCompletions(db, completions, { via: VIA });
+      actions.signatures_seen = completions.length;
+      actions.recorded_new = r.recorded;
+      actions.already_present = r.alreadyPresent;
+      actions.signed_at_backfilled = r.backfilled;
+      actions.aliases_added = r.aliasesAdded;
+      actions.timeline_notes = r.timelineNotes;
+      actions.checklist_ticks = r.checklistTicks;
+      actions.applications_signed = r.fresh.filter((f) => f.isApplication).length;
+      actions.fresh_signatures = r.fresh.map((f) => ({
+        document_id: f.documentId,
+        doc_name: f.docName,
+        signed_at: f.signedAt,
+        customer_id: f.customerId,
+        // An APPLICATION and a Broker Compensation Disclosure are different
+        // documents. Saying which is which here stops a disclosure from ever
+        // reading downstream as "the application came back signed".
+        is_application: f.isApplication,
+      }));
+      // Signatures we could not attach to a merchant are REPORTED, not dropped —
+      // this is the count that was silently 6 before today.
+      actions.unresolved = r.unresolved;
+      actions.unresolved_count = r.unresolved.length;
+      if (r.error) actions.error = r.error;
+      ok = !r.error;
+      return await finish();
+    }
+
     if (!contactId) {
       actions.reason = "no contact id";
       actions.body_keys = Object.keys(body).slice(0, 20);
