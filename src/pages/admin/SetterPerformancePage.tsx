@@ -160,7 +160,18 @@ interface SetterCall {
   disposition_source?: string | null;
   /** Full sentence naming the artifact, the delay and the person. */
   disposition_derived_reason?: string | null;
-  disposition_derived_at?: string | null;
+  /** The moment of the EVIDENCE — when the application went out — NOT when the
+   *  derivation was computed. Named `_from_at` because the short name read as
+   *  the latter. */
+  disposition_derived_from_at?: string | null;
+  /** THE LINK, present even when NO derivation was allowed: an application or
+   *  appointment followed this call inside the window. `outcome_followed_refusal`
+   *  is NULL when the derivation stands, and otherwise says why it does not.
+   *  This is what lets Disposition Review see a call that produced an
+   *  application but earned no derivation — an unanswered one, for instance. */
+  outcome_followed_at?: string | null;
+  outcome_followed_kind?: string | null;
+  outcome_followed_refusal?: string | null;
   human: boolean | null;
   recorded: boolean | null;
   phone: string | null;
@@ -181,7 +192,7 @@ interface SetterCall {
 // One unbroken string literal on purpose: the client is untyped, so supabase-js
 // infers the row shape by parsing this literal. Splitting it across a `+`
 // concatenation defeats that parse and the result degrades to GenericStringError.
-const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,outcome,disposition,disposition_effective,disposition_source,disposition_derived_reason,disposition_derived_at,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
+const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,outcome,disposition,disposition_effective,disposition_source,disposition_derived_reason,disposition_derived_from_at,outcome_followed_at,outcome_followed_kind,outcome_followed_refusal,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
 
 /** The Call log asks for ONE column the aggregate pass does not: `also_seen_in`,
  *  the dedupe audit trail. It is a correlated EXISTS in the view, so it costs a
@@ -193,7 +204,7 @@ const CALL_COLS = "wavv_call_id,source,started_at,answered_at,ended_at,seconds,o
  *
  *  Keep this a single unbroken literal for the same reason CALL_COLS is one —
  *  supabase-js infers the row shape by parsing the literal. */
-const LOG_COLS = "wavv_call_id,source,also_seen_in,started_at,answered_at,ended_at,seconds,outcome,disposition,disposition_effective,disposition_source,disposition_derived_reason,disposition_derived_at,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
+const LOG_COLS = "wavv_call_id,source,also_seen_in,started_at,answered_at,ended_at,seconds,outcome,disposition,disposition_effective,disposition_source,disposition_derived_reason,disposition_derived_from_at,outcome_followed_at,outcome_followed_kind,outcome_followed_refusal,human,recorded,phone,contact_id,contact_name,caller_id,setter_id,setter_name,caller_label,is_attributed,note,summary";
 
 /** BOTH dialers, deduped (20260916b_setter_dial_calls_union.sql). */
 const CALLS_VIEW = "v_setter_dial_calls";
@@ -880,7 +891,27 @@ function DerivedMark({ call }: { call: Pick<SetterCall, "disposition_source" | "
  *  reachedHuman() already requires the answer, so this is a strict subset of
  *  Humans — never of Dials. */
 function needsDispositionReview(r: SetterCall): boolean {
-  return reachedHuman(r) && (r.seconds ?? 0) >= REVIEW_MIN_SECONDS && isUndispositioned(r);
+  if (!isUndispositioned(r)) return false;
+  // AN UNDISPOSITIONED CALL THAT PRODUCED AN APPLICATION REACHES REVIEW NO
+  // MATTER WHAT ELSE IS TRUE OF IT.
+  //
+  // The duration+answered test below is a proxy for "this was probably a real
+  // talk". `outcome_followed_at` is not a proxy at all: an application or an
+  // appointment demonstrably came out of this call's window. Requiring the proxy
+  // AS WELL made this tab blind to exactly the calls it exists to catch —
+  // Rafael Badia's 09-18 dial carries answered_at NULL and seconds NULL, so it
+  // failed `reachedHuman` and `>= 60s` twice over while an application went out
+  // twelve minutes later. The one surface built to find that gap could not see
+  // it.
+  //
+  // This matters MORE than the derivation does. A derivation guesses on
+  // Catherine's behalf; this puts the call in front of a human who can ask her
+  // what actually happened. It is also the honest home for every call the
+  // derivation REFUSED — `outcome_followed_refusal` says why it was refused, so
+  // the reviewer sees the artifact, the call, and the reason we would not score
+  // it automatically.
+  if (r.outcome_followed_at) return true;
+  return reachedHuman(r) && (r.seconds ?? 0) >= REVIEW_MIN_SECONDS;
 }
 
 /** Outcomes WAVV reports for a machine or an unanswered line. NO_CALLBACK is on
@@ -1034,6 +1065,10 @@ interface FunnelCounts {
   scoredConnects: number;
   humans: number;
   conversations: number;
+  /** Derived, deliberately OUTSIDE the headline `conversations`. */
+  conversationsDerived: number;
+  /** MERCHANTS the derivation would add to `positives`, deliberately OUTSIDE it. */
+  positivesDerived: number;
   /** MERCHANTS × DISPOSITION with a positive disposition — not calls. See the
    *  makeMerchantKey memo: one merchant called back twice is one callback. */
   positives: number;
@@ -1055,6 +1090,8 @@ interface FunnelCounts {
 function computeFunnel(calls: SetterCall[]): FunnelCounts {
   let dials = 0, connects = 0, humans = 0, conversations = 0;
   let positiveCalls = 0;
+  /** Derived, kept OUT of the headline `conversations` — see the block below. */
+  let conversationsDerived = 0;
   let ghlDials = 0, ghlConnects = 0;
   let talkSeconds = 0, connectedSeconds = 0;
   const phones = new Set<string>();
@@ -1065,6 +1102,10 @@ function computeFunnel(calls: SetterCall[]): FunnelCounts {
   const merchantKey = makeMerchantKey(calls);
   const positiveKeys = new Set<string>();
   const appKeys = new Set<string>();
+  // Merchant-keyed (no disposition), purely so `positivesDerived` can report how
+  // many merchants the derivation ADDS rather than how many it touches.
+  const typedPositiveMerchants = new Set<string>();
+  const derivedPositiveMerchants = new Set<string>();
   for (const r of calls) {
     const scored = isScored(r);
     dials++;
@@ -1084,16 +1125,36 @@ function computeFunnel(calls: SetterCall[]): FunnelCounts {
     // ghl_call_log cannot silently start scoring rows on a different vocabulary.
     if (scored) {
       if (reachedHuman(r)) humans++;
-      if (isConversation(r)) conversations++;
-      // dispositionOf(), so a conversation proved by the application it produced
-      // counts once — on the same merchant × disposition key as a typed one, so
-      // a derived row and a typed row on the same merchant never double-count.
+      // ── HEADLINE COUNTS ARE TYPED-ONLY. DERIVED IS COUNTED BESIDE THEM. ────
+      // Not timidity — the owner watched Positives go 5 -> 4 this morning when
+      // the merchant-fold landed, after raising that double-count "50 times".
+      // If a derived positive silently pushed it back to 5 tomorrow, the same
+      // number would carry the opposite meaning and read as the fix being
+      // reverted. So the typed number stays exactly where he last saw it and the
+      // derivation is shown next to it, using this page's EXISTING vocabulary
+      // for a reconstructed fact ("≈N inferred" beside appsSent), not a second
+      // one invented here.
       const dispo = dispositionOf(r);
+      const derived = isDerived(r);
+      if (isConversation(r)) {
+        if (derived) conversationsDerived++;
+        else conversations++;
+      }
       if (dispo && POSITIVE_DISPOSITIONS.includes(dispo)) {
-        positiveCalls++;
-        positiveKeys.add(`${merchantKey(r)}|${dispo}`);
-        if (APPLICATION_DISPOSITIONS.includes(dispo)) {
-          appKeys.add(`${merchantKey(r)}|${dispo}`);
+        if (derived) {
+          // Merchant-keyed, NOT merchant|disposition — the question this answers
+          // is "how many MORE merchants would this add", and a derived
+          // "Application Sent" key could never collide with a typed key on the
+          // same merchant, so a disposition-keyed set would always claim to be
+          // additional even when it was not.
+          derivedPositiveMerchants.add(merchantKey(r));
+        } else {
+          positiveCalls++;
+          positiveKeys.add(`${merchantKey(r)}|${dispo}`);
+          typedPositiveMerchants.add(merchantKey(r));
+          if (APPLICATION_DISPOSITIONS.includes(dispo)) {
+            appKeys.add(`${merchantKey(r)}|${dispo}`);
+          }
         }
       }
     }
@@ -1103,7 +1164,13 @@ function computeFunnel(calls: SetterCall[]): FunnelCounts {
     dials, connects, ghlDials, ghlConnects,
     scoredDials: dials - ghlDials, scoredConnects: connects - ghlConnects,
     humans, conversations,
+    /** Conversations proved by an artifact rather than typed. NOT in
+     *  `conversations` — render beside it as "≈N derived". */
+    conversationsDerived,
     positives: positiveKeys.size,
+    /** MERCHANTS the derivation would ADD to positives, i.e. those not already
+     *  carrying a typed positive. NOT in `positives`. */
+    positivesDerived: [...derivedPositiveMerchants].filter((m) => !typedPositiveMerchants.has(m)).length,
     positiveCallsFolded: positiveCalls - positiveKeys.size,
     partialApps: appKeys.size,
     talkSeconds, connectedSeconds, uniqueLeads: phones.size,
@@ -1240,6 +1307,12 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       // The 3–5% band divides by DIALS, so with two sources in range it must
       // divide by the dials it could actually have come from.
       ...scoredShare,
+      secondaryLine: f.conversationsDerived > 0 ? (
+        <span className="text-amber-600 dark:text-amber-400">
+          ≈<b className="tabular-nums">{f.conversationsDerived.toLocaleString()}</b> more, derived — an answered call
+          nobody dispositioned, followed by an application the same setter sent. Not in the count above.
+        </span>
+      ) : undefined,
       // The industry "3–5% of dials" cold-dial CONTACT rate is a real-conversation
       // rate (reached a live decision-maker and talked), NOT a raw human-pickup
       // rate — so the band lives here, judged against this rung's "% of dials"
@@ -1258,6 +1331,17 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
       count: f.positives, stepLabel: "of conversations", stepShort: "of talks",
       stepPct: pct(f.positives, f.conversations), targetKey: "positive_rate_pct",
       ...scoredShare,
+      // THE COUNT ABOVE STAYS TYPED-ONLY. This number went 5 -> 4 the morning the
+      // merchant-fold landed, after the owner had raised the double-count
+      // repeatedly; a derived positive folded silently into it would send it back
+      // to 5 with the opposite meaning and read as the fix being reverted.
+      secondaryLine: f.positivesDerived > 0 ? (
+        <span className="text-amber-600 dark:text-amber-400">
+          ≈<b className="tabular-nums">{f.positivesDerived.toLocaleString()}</b> more merchant
+          {f.positivesDerived === 1 ? "" : "s"} on a derived disposition, inferred from an application the
+          setter sent after an answered call they never dispositioned. Not in the count above.
+        </span>
+      ) : undefined,
     },
     // ── Partial apps (owner-requested 9/9): Positives is deliberately broad —
     // Callback and Appointment Set count — so this rung isolates the subset that
@@ -1621,7 +1705,12 @@ interface SetterRow {
   scoredConnects: number;
   human: number;
   conversations: number;
+  /** Conversations proved by an artifact rather than typed. Deliberately NOT in
+   *  `conversations` — rendered beside it as "≈N derived". */
+  conversationsDerived: number;
   positives: number;
+  /** MERCHANTS the derivation would ADD to `positives`. Deliberately NOT in it. */
+  positivesDerived: number;
   talkSeconds: number;
   connectedSeconds: number;
   activeDays: number;
@@ -2957,12 +3046,15 @@ export default function SetterPerformancePage() {
   // unattributed GHL row is keyed by the name GHL itself stamped on the call, so
   // two different unmapped GHL users never merge into one anonymous row.
   const setterRows = useMemo((): SetterRow[] => {
-    interface Acc extends Omit<SetterRow, "uniqueLeads" | "activeDays" | "appointments" | "appsSent" | "appsSentInferred" | "appsSigned" | "appsSignatureUnknown" | "funded" | "fundedAmount"> {
+    interface Acc extends Omit<SetterRow, "uniqueLeads" | "activeDays" | "appointments" | "appsSent" | "appsSentInferred" | "appsSigned" | "appsSignatureUnknown" | "funded" | "fundedAmount" | "positivesDerived"> {
       phones: Set<string>; days: Set<string>; numberSet: Set<string>;
       /** merchant|disposition — the same unit computeFunnel counts on. Kept as a
        *  set rather than a counter so this table can never disagree with the
        *  funnel about what one positive is. */
       positiveKeys: Set<string>;
+      /** Merchant-keyed, so `positivesDerived` can say how many this ADDS. */
+      typedPositiveMerchants: Set<string>;
+      derivedPositiveMerchants: Set<string>;
     }
     const acc = new Map<string, Acc>();
     const merchantKey = makeMerchantKey(aggRows);
@@ -2978,10 +3070,11 @@ export default function SetterPerformancePage() {
         row = {
           key, name: attributionName(r), attributed, numbers: [],
           dials: 0, connects: 0, ghlDials: 0, scoredConnects: 0,
-          human: 0, conversations: 0, positives: 0,
+          human: 0, conversations: 0, conversationsDerived: 0, positives: 0,
           talkSeconds: 0, connectedSeconds: 0,
           phones: new Set<string>(), days: new Set<string>(), numberSet: new Set<string>(),
           positiveKeys: new Set<string>(),
+          typedPositiveMerchants: new Set<string>(), derivedPositiveMerchants: new Set<string>(),
         };
         acc.set(key, row);
       }
@@ -3000,12 +3093,23 @@ export default function SetterPerformancePage() {
       // then absent from BOTH sides of every rate below.
       if (scored) {
         if (reachedHuman(r)) row.human++;
-        if (isConversation(r)) row.conversations++;
+        // Typed-only headline, derived counted beside it — exactly as
+        // computeFunnel splits them, so a setter's card and the combined card
+        // can never mean different things by the same word.
+        const rowDispo = dispositionOf(r);
+        const rowDerived = isDerived(r);
+        if (isConversation(r)) {
+          if (rowDerived) row.conversationsDerived++;
+          else row.conversations++;
+        }
         // MERCHANT × disposition, exactly as computeFunnel folds it — a repeat
         // call to a merchant this setter already scored is not a second win.
-        const rowDispo = dispositionOf(r);
         if (rowDispo && POSITIVE_DISPOSITIONS.includes(rowDispo)) {
-          row.positiveKeys.add(`${merchantKey(r)}|${rowDispo}`);
+          if (rowDerived) row.derivedPositiveMerchants.add(merchantKey(r));
+          else {
+            row.positiveKeys.add(`${merchantKey(r)}|${rowDispo}`);
+            row.typedPositiveMerchants.add(merchantKey(r));
+          }
         }
       }
       if (r.phone) row.phones.add(r.phone);
@@ -3090,11 +3194,12 @@ export default function SetterPerformancePage() {
       }
     }
 
-    return [...acc.values()].map(({ phones, days, numberSet, positiveKeys, ...row }) => {
+    return [...acc.values()].map(({ phones, days, numberSet, positiveKeys, typedPositiveMerchants, derivedPositiveMerchants, ...row }) => {
       const deal = row.attributed && dealRows ? (byCloser.get(row.key) ?? blank()) : null;
       return {
         ...row,
         positives: positiveKeys.size,
+        positivesDerived: [...derivedPositiveMerchants].filter((m) => !typedPositiveMerchants.has(m)).length,
         numbers: [...numberSet],
         uniqueLeads: phones.size,
         activeDays: days.size,
@@ -5896,8 +6001,32 @@ export default function SetterPerformancePage() {
                                 <td className={TD_NUM}><RagPct value={humanRate} target={targetFor("human_rate_pct").target} /></td>
                                 <td className={TD_NUM}>
                                   <span title={`${hms(r.talkSeconds)} total talk time across all dials`}>{r.conversations.toLocaleString()}</span>
+                                  {r.conversationsDerived ? (
+                                    <span
+                                      className="text-[10px] text-amber-600 dark:text-amber-400 ml-1"
+                                      title={`${r.conversationsDerived} more answered call${r.conversationsDerived === 1 ? " was" : "s were"} never dispositioned but produced an application this setter sent within 45 minutes. Counted beside the typed number, not inside it — you cannot send an application without having talked to someone, but they did not record the talk.`}
+                                    >
+                                      ≈{r.conversationsDerived}
+                                    </span>
+                                  ) : null}
                                 </td>
-                                <td className={TD_NUM}>{r.positives.toLocaleString()}</td>
+                                <td className={TD_NUM}>
+                                  <span>
+                                    {r.positives.toLocaleString()}
+                                    {/* Same vocabulary as ≈N inferred beside
+                                        appsSent: a reconstructed fact shown
+                                        beside the recorded count, never folded
+                                        into it. */}
+                                    {r.positivesDerived ? (
+                                      <span
+                                        className="text-[10px] text-amber-600 dark:text-amber-400 ml-1"
+                                        title={`${r.positivesDerived} more merchant${r.positivesDerived === 1 ? "" : "s"} would count here on a DERIVED disposition — an answered call this setter never dispositioned, followed within 45 minutes by an application they themselves sent. Inferred from the application, not typed by them, so it is shown beside the count and not inside it.`}
+                                      >
+                                        ≈{r.positivesDerived}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                </td>
                                 <td className={`${TD_NUM} ${GROUP_EDGE}`}>{r.appointments === null ? <Metric value={null} /> : r.appointments.toLocaleString()}</td>
                                 <td className={TD_NUM}>
                                   {r.appsSent === null ? <Metric value={null} /> : (
