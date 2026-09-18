@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizePhoneForStorage } from "@/lib/phone";
+import useApplicationSignatures from "@/hooks/useApplicationSignatures";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   MapIcon,
@@ -4867,6 +4868,27 @@ function StepCard({
   // treats as "we don't know", never as a send.
   const [docEvidence, setDocEvidence] = useState<DocEvidence>({ kind: "checking" });
 
+  // ── THE SQL VERDICT, FOR THE ONE CLAIM ONLY IT CAN LICENSE ────────────────
+  // `deal_send_evidence` filters on `is_application_doc_name`, so `has_evidence`
+  // means the FUNDING APPLICATION specifically — not a disclosure that happens
+  // to be on the contact. That is the difference this receipt could not make on
+  // its own: two merchants in this book signed ONLY the Broker Compensation
+  // Disclosure, and a tired reader seeing documents listed under a green receipt
+  // moves on. The SQL already knows; making the human re-derive it by scanning
+  // names is the same mistake as making the browser re-derive it, one layer up.
+  //
+  // SCOPED TO THIS STEP. The ids array is empty on every other step, and the
+  // hook does no RPC for an empty array — so one card in the playbook asks, not
+  // all of them.
+  const wantsVerdict = step.stageKey === "application_sent" && !!deal?.id;
+  const verdictIds = useMemo(() => (wantsVerdict && deal ? [deal.id] : []), [wantsVerdict, deal]);
+  const { statusFor: sendStatusFor } = useApplicationSignatures(verdictIds);
+  /** 'has_evidence' is the ONLY verdict that licenses the strong headline.
+   *  Everything else — including both unknowns and a read that never ran —
+   *  leaves the receipt exactly as it shipped: the names, and the reader
+   *  judging. An upgrade on the good path, never a new failure mode. */
+  const appVerdict = wantsVerdict ? sendStatusFor(deal!.id)?.send_evidence ?? null : null;
+
   const [values, setValues] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
   const [outcome, setOutcome] = useState("call");
@@ -5243,7 +5265,18 @@ function StepCard({
                     application. Classifying the names is NOT done here: that
                     rule is SQL's is_application_doc_name and a client copy of it
                     has already been wrong once. */}
-                📨 Sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — read back from GHL:{" "}
+                {/* ── THE ONE CLAIM THE SQL CAN LICENSE AND THIS PANEL CANNOT ──
+                    On `has_evidence` the verdict has already applied
+                    is_application_doc_name across the merchant's whole contact
+                    set, so the headline may name the APPLICATION rather than
+                    leaving the reader to scan for it. Every other verdict —
+                    both unknowns, never_sent, and a read that never ran — gets
+                    exactly what shipped before: the names, and the reader
+                    judging. The strong claim is an upgrade on the good path and
+                    is never allowed to become a new failure mode on a bad one. */}
+                {appVerdict === "has_evidence"
+                  ? <>✅ <b>Application sent</b> to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — confirmed against GHL:{" "}</>
+                  : <>📨 Sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — read back from GHL:{" "}</>}
                 <b>{docEvidence.names.join(", ")}</b>
               </span>
               <button
@@ -5265,8 +5298,18 @@ function StepCard({
             </div>
             <p className="text-[11px] text-gray-500 dark:text-gray-400">
               Those are the documents VibeReach holds for this merchant, read back after the fact —{" "}
-              <b>not a list of what we meant to send</b>. Check the names: if the funding application is not among
-              them, it was not sent. The live status above says which are signed. <b>Sent is not signed.</b>
+              <b>not a list of what we meant to send</b>.{" "}
+              {appVerdict === "has_evidence" ? (
+                <>
+                  The funding application <b>is</b> among them — checked by name across every contact this merchant
+                  is known by, not by eye.
+                </>
+              ) : (
+                <>
+                  Check the names: if the funding application is not among them, it was not sent.
+                </>
+              )}{" "}
+              The live status above says which are signed. <b>Sent is not signed.</b>
             </p>
           </div>
         )}
