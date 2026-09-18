@@ -13,6 +13,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient, getGhlConfig, ghlFetch } from "../_shared/ghl.ts";
+import { recordSentDocument } from "../_shared/documentIndex.ts";
 
 // MCA_Merchant_Funding_Application (the blank fillable variant).
 const TEMPLATE_ID = "6a457dd566f3ba043829e318";
@@ -26,10 +27,11 @@ function json(body: unknown, status = 200) {
   });
 }
 
-/** Is this doc the BLANK fillable application (application-family, not the prefill)? */
-function isBlankApplication(name: string): boolean {
-  return /application/i.test(name) && !/prefill/i.test(name);
-}
+// NOTE: the "is this the blank application?" rule used to live here as a local
+// regex. It now lives ONLY in public.merchant_pending_blank_application()
+// (`~* 'application'` AND NOT `~* 'prefill'`), which is what actually gates the
+// send. Deleted rather than left behind: a second copy that nobody calls is a
+// copy that silently disagrees the day someone does call it.
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -43,34 +45,77 @@ Deno.serve(async (req) => {
     if (userErr || !caller) return json({ ok: false, message: "Invalid session" }, 401);
 
     // Resolve the merchant's own contact — never trust a client-supplied id.
-    const { data: cust } = await db
+    // A merchant can own several customer rows (one owner, several businesses),
+    // and a row can know a contact only as an ALIAS — the primary pointer moves
+    // around (see _shared/merchantIdentity.ts). Take the first row that knows any
+    // contact at all, rather than requiring the primary to be set.
+    const { data: custRows } = await db
       .from("customers")
-      .select("id, ghl_contact_id")
+      .select("id, ghl_contact_id, ghl_contact_ids")
       .eq("user_id", caller.id)
-      .not("ghl_contact_id", "is", null)
-      .limit(1)
-      .maybeSingle();
-    const contactId = (cust?.ghl_contact_id as string | null | undefined) ?? undefined;
+      .order("created_at", { ascending: true })
+      .limit(5);
+    const cust = (custRows ?? []).find((r) =>
+      !!r.ghl_contact_id || ((r.ghl_contact_ids as string[] | null) ?? []).length > 0);
+    const contactId = (cust?.ghl_contact_id as string | null | undefined)
+      ?? ((cust?.ghl_contact_ids as string[] | null | undefined) ?? [])[0]
+      ?? undefined;
     if (!contactId) {
       return json({ ok: false, message: "We couldn't find your account details — please contact your specialist." });
     }
 
     const cfg = await getGhlConfig(db);
 
-    // Rate-limit: don't stack blank applications on the same contact.
-    const listRes = await ghlFetch<{ documents?: Record<string, unknown>[] }>(
-      cfg, "GET", `/proposals/document?locationId=${cfg.locationId}&limit=20`,
+    // ── RATE LIMIT: don't stack blank applications on the same merchant. ──────
+    //
+    // This used to read the twenty newest documents LOCATION-WIDE and look for
+    // this merchant's pending application among them, with no date guard at all.
+    // Measured against the document index: 45 pending applications across 32
+    // contacts sit outside that window, so for 32 merchants the guard answered
+    // "nothing pending" FOREVER and every click minted another one. Same shape as
+    // the 20-document window that told 44 merchants they had nothing to sign.
+    //
+    // It also depended on GHL returning documents newest-first, which is an
+    // undocumented default — /proposals/document takes no sort parameter, and
+    // this repo sends explicit sort params to five other GHL endpoints. Correct
+    // for incidental reasons.
+    //
+    // The index answers it properly: complete (receipt-verified), scoped to the
+    // merchant's whole CONTACT SET rather than one pointer, and refreshed on every
+    // staff/portal read — so minutes old, not hours. Zero GHL calls.
+    const { data: guardRows, error: guardErr } = await db.rpc(
+      "merchant_pending_blank_application",
+      { p_customer_id: cust!.id },
     );
-    const hasPendingBlank = (listRes.data?.documents ?? []).some((d) => {
-      if (!isBlankApplication(String(d.name ?? ""))) return false;
-      const recips = (d.recipients as Record<string, unknown>[] | undefined) ?? [];
-      const mine = recips.find((r) => r.id === contactId);
-      return !!mine && mine.hasCompleted !== true && String(d.status ?? "") !== "completed";
-    });
-    if (hasPendingBlank) {
+    const guard = (Array.isArray(guardRows) ? guardRows[0] : guardRows) as
+      | { verdict: string; pending_docs: number; evidence_age_seconds: number | null }
+      | null
+      | undefined;
+
+    // A pending document we can SEE. This message is TRUE in this branch, and
+    // only in this branch.
+    if (guard?.verdict === "pending") {
       return json({
         ok: false,
         message: "You already have a blank application ready to fill out — check your documents or your email.",
+      });
+    }
+
+    // ── UNREADABLE / STALE: refuse the mint, and say WHAT IS TRUE. ────────────
+    // The old code could only say "you already have one", which to a merchant
+    // holding nothing is a flat lie — and is the class of sentence this whole
+    // day was spent removing. We do not mint, because we cannot rule out a
+    // pending one and a duplicate is a real cost to them; and we do not pretend
+    // the refusal is about their documents when it is about our read.
+    if (guardErr || !guard || guard.verdict !== "clear") {
+      console.warn("[request-blank-application] guard not clear:", guardErr?.message ?? guard?.verdict);
+      return json({
+        ok: false,
+        message:
+          "We couldn't check your documents just now, so we haven't sent another application — " +
+          "this isn't a problem with your account. Please try again in a minute, or message your specialist and they'll send one straight over.",
+        // For staff reading the network tab; never rendered to the merchant.
+        reason: guardErr ? `guard unreadable: ${guardErr.message}` : `guard verdict: ${guard?.verdict ?? "none"}`,
       });
     }
 
@@ -94,8 +139,31 @@ Deno.serve(async (req) => {
       return json({ ok: false, message: "We couldn't send a fresh application right now — please try again in a minute." });
     }
 
-    const referenceId = (sendRes.data?.links ?? [])[0]?.referenceId as string | undefined;
+    const link = (sendRes.data?.links ?? [])[0] ?? {};
+    const referenceId = link.referenceId as string | undefined;
     const url = referenceId ? `https://link.vibereach.io/documents/v1/${referenceId}?locale=en-US` : null;
+
+    // ── INDEX WHAT WE JUST CREATED, IMMEDIATELY. ─────────────────────────────
+    // The guard above reads an index refreshed by crawls and portal reads. The
+    // case it most has to get right is the merchant who clicks twice in a row,
+    // and that one cannot wait for a crawl: the second click must see the
+    // document the first click made. So the send records its own row.
+    // Best-effort — the merchant already has their application; a failed index
+    // write must not turn a successful send into an error.
+    const newDocId = (link.documentId as string | undefined) ?? (link._id as string | undefined);
+    if (newDocId) {
+      const rec = await recordSentDocument(db, {
+        documentId: newDocId,
+        contactId: (link.recipientId as string | undefined) ?? contactId,
+        docName: "MCA_Merchant_Funding_Application",
+        docStatus: "sent",
+      });
+      if (!rec.ok) console.warn("[request-blank-application] index write failed:", rec.error);
+    } else {
+      // No document id came back, so the next click cannot see this one in the
+      // index and could mint a duplicate. Say so in the log rather than assume.
+      console.warn("[request-blank-application] send returned no documentId — this mint is not indexed");
+    }
 
     // Activity note on the deal (best-effort; never blocks the response).
     if (deal?.id) {
