@@ -122,6 +122,7 @@ import {
   signatureFromStatus,
   type DealApplicationStatus,
 } from "@/hooks/useApplicationSignatures";
+import { isPhantomApplicationSend } from "@/lib/phantomApplicationSend";
 
 // ── Types (mirror the live view contracts) ───────────────────────────────────
 /** Which dialer wrote this row. Not cosmetic: it decides how far down the funnel
@@ -340,7 +341,7 @@ interface SourceDeal {
 // customers is deliberately whole-book (qualification data a setter must see to
 // qualify), so monthly_revenue embeds cleanly — but it still only surfaces for a
 // deal row the caller could read.
-const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,previous_status,lead_source,assigned_closer_id,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,first_name,last_name,monthly_revenue,phone)";
+const PRODUCTIVE_DEAL_COLS = "id,deal_number,status,previous_status,lead_source,assigned_closer_id,created_at,created_by,ghl_contact_id,contacted_at,qualified_at,application_sent_at,docs_collected_at,bank_statements_at,appointment_at,appointment_promised_at,funded_at,amount_requested,customer:customers!customer_id(business_name,first_name,last_name,monthly_revenue,phone)";
 /** Same reasoning as SOURCE_DEAL_CAP — must not exceed PostgREST max-rows, or
  *  the `>= CAP` truncation test can never fire and the tab under-reports in
  *  silence. */
@@ -355,6 +356,10 @@ interface ProductiveDeal {
   previous_status: string | null;
   lead_source: string | null;
   assigned_closer_id: string | null;
+  /** Creation facts, carried for ONE reason: isPhantomApplicationSend. A stamp
+   *  laid down inside the creating transaction by a service_role writer is the
+   *  GHL mirror's clock, not a send. */
+  created_at: string | null;
   created_by: string | null;
   ghl_contact_id: string | null;
   contacted_at: string | null;
@@ -416,6 +421,32 @@ function productiveAppointmentAt(d: ProductiveDeal): string | null {
   return d.appointment_at ?? d.appointment_promised_at;
 }
 
+/** ── THE ONE GATE ON "AN APPLICATION WAS SENT IN THIS RANGE" ────────────────
+ *  The Applications funnel rung, its drill-down list, the Productive-contacts
+ *  "app sent" chip and the ask total all ask this ONE function, so the number
+ *  and the list behind it cannot drift — not now, and not the next time
+ *  somebody adds a fourth reader.
+ *
+ *  It is two tests, and the second one is the point: a stamp must be IN RANGE,
+ *  and it must be a SEND. Four deals in the book carry an application_sent_at
+ *  the GHL opportunity mirror wrote at deal creation (see
+ *  isPhantomApplicationSend). Counting those made the funnel say 21 on Last 30
+ *  Days while the per-setter "Apps sent" column on the same page said 17 — that
+ *  column has excluded phantoms since it was keyed on the sender. Two numbers
+ *  on one page that ought to agree is the exact complaint this whole task
+ *  started from.
+ *
+ *  A phantom is NOT hidden: it is counted separately and said out loud. */
+function countsAsApplicationSent(d: ProductiveDeal, from: Date, to: Date): boolean {
+  return inRange(d.application_sent_at, from, to) && !isPhantomApplicationSend(d);
+}
+
+/** The other half of the same gate: an in-range stamp that is NOT a send. Kept
+ *  beside it so the two can never be defined to overlap or to leave a gap. */
+function isPhantomApplicationInRange(d: ProductiveDeal, from: Date, to: Date): boolean {
+  return inRange(d.application_sent_at, from, to) && isPhantomApplicationSend(d);
+}
+
 interface ProductiveCounts {
   /** Distinct deals carrying at least one in-range stamp — the headline. */
   deals: number;
@@ -428,6 +459,10 @@ interface ProductiveCounts {
   /** Σ amount_requested over the in-range applications (partials included) — the
    *  dollars ADDED TO THE PIPELINE by this range's applications. */
   appsAskTotal: number;
+  /** In-range application_sent_at stamps that were NOT sends — the GHL mirror's
+   *  own clock. Excluded from appsSent and REPORTED, never silently dropped: a
+   *  count that falls with no explanation is its own mystery. */
+  appsPhantom: number;
   /** Deals whose bank statements ARRIVED in range (bank_statements_at or
    *  docs_collected_at stamp) — the docs-chase payoff. */
   statementsIn: number;
@@ -436,15 +471,22 @@ interface ProductiveCounts {
 }
 
 function computeProductive(deals: ProductiveDeal[], from: Date, to: Date): ProductiveCounts {
-  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appsWithStatements: 0, appsAskTotal: 0, statementsIn: 0, appointments: 0, funded: 0 };
+  const c: ProductiveCounts = { deals: 0, contacted: 0, qualified: 0, appsSent: 0, appsWithStatements: 0, appsAskTotal: 0, appsPhantom: 0, statementsIn: 0, appointments: 0, funded: 0 };
   for (const d of deals) {
     const contacted = inRange(d.contacted_at, from, to);
     const qualified = inRange(d.qualified_at, from, to);
-    const appSent = inRange(d.application_sent_at, from, to);
+    // ONE gate, shared with the drill-down list — a mirror stamp is not a send.
+    const appSent = countsAsApplicationSent(d, from, to);
+    if (isPhantomApplicationInRange(d, from, to)) c.appsPhantom++;
     const stmtsIn = inRange(d.bank_statements_at, from, to) || inRange(d.docs_collected_at, from, to);
     const appt = inRange(productiveAppointmentAt(d), from, to);
     const funded = inRange(d.funded_at, from, to);
     if (stmtsIn) c.statementsIn++;
+    // A deal whose ONLY in-range stamp is a phantom send is not productive work
+    // — nobody did anything, a mirror imported a row — so it no longer counts as
+    // a productive contact either. Live today: all four phantoms also carry an
+    // in-range contacted_at and qualified_at, so this changes no headline now;
+    // it is here so a mirror import can never become somebody's "contact".
     if (!(contacted || qualified || appSent || appt || funded)) continue;
     c.deals++;
     if (contacted) c.contacted++;
@@ -993,6 +1035,10 @@ interface AppsRung {
   /** Σ amount_requested across the in-range applications — dollars added to the
    *  pipeline (partials included). */
   askTotal: number;
+  /** In-range stamps EXCLUDED from `applications` because they were never sends
+   *  (the GHL mirror wrote them at deal creation). Printed on the rung: a count
+   *  that quietly drops is a second mystery, not a fix for the first. */
+  phantomExcluded: number;
 }
 
 function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] {
@@ -1093,10 +1139,11 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
     const applications = apps?.applications ?? 0;
     const withStatements = apps?.withStatements ?? 0;
     const askTotal = apps?.askTotal ?? 0;
+    const phantomExcluded = apps?.phantomExcluded ?? 0;
     stages.push({
       key: "applications", label: "Applications", short: "Apps",
       help:
-        "Distinct deals whose application_sent_at falls in this range, attributed to the assigned setter — a real application on file, NOT a typed disposition. \"with statements\" = those that also reached the Bank Statements rung (a bank_statements_at / docs_collected_at stamp, or a current/pre-park status at Bank Statements or deeper).",
+        "Distinct deals whose application_sent_at falls in this range AND is a real send, attributed to the assigned setter — an application on file, NOT a typed disposition. A stamp the GHL opportunity mirror wrote when it imported the deal is excluded and counted separately; it means we have no record of a send, not that the merchant never received one. \"with statements\" = those that also reached the Bank Statements rung (a bank_statements_at / docs_collected_at stamp, or a current/pre-park status at Bank Statements or deeper).",
       count: applications,
       stepLabel: "of conversations", stepShort: "of talks",
       stepPct: unreadable ? null : pct(applications, f.conversations),
@@ -1120,6 +1167,12 @@ function funnelStagesOf(f: FunnelCounts, apps?: AppsRung | null): FunnelStage[] 
               </b>{" "}
               added to pipeline
             </>
+          )}
+          {phantomExcluded > 0 && (
+            <div className="text-amber-600 dark:text-amber-400">
+              <b className="tabular-nums">{phantomExcluded.toLocaleString()}</b> excluded: stamped by the GHL
+              mirror, no send on record
+            </div>
           )}
         </>
       ),
@@ -2859,7 +2912,12 @@ export default function SetterPerformancePage() {
   const appsRungCombined = useMemo(
     (): AppsRung | null =>
       productiveTotals
-        ? { applications: productiveTotals.appsSent, withStatements: productiveTotals.appsWithStatements, askTotal: productiveTotals.appsAskTotal }
+        ? {
+            applications: productiveTotals.appsSent,
+            withStatements: productiveTotals.appsWithStatements,
+            askTotal: productiveTotals.appsAskTotal,
+            phantomExcluded: productiveTotals.appsPhantom,
+          }
         : null,
     [productiveTotals],
   );
@@ -2873,16 +2931,20 @@ export default function SetterPerformancePage() {
     const m = new Map<string, AppsRung>();
     for (const [key, deals] of productiveByOwner) {
       const c = computeProductive(deals, range.from, range.to);
-      m.set(key, { applications: c.appsSent, withStatements: c.appsWithStatements, askTotal: c.appsAskTotal });
+      m.set(key, {
+        applications: c.appsSent,
+        withStatements: c.appsWithStatements,
+        askTotal: c.appsAskTotal,
+        phantomExcluded: c.appsPhantom,
+      });
     }
     return m;
   }, [productiveByOwner, range]);
 
   // ── Applications sent in this range — the rung's own drill-down ────────────
-  // THE EXACT DEALS the Applications rung counted, one row each. Same filter the
-  // rung uses (computeProductive: application_sent_at inside the range), so the
-  // list length IS the rung's number — it cannot drift from it, because it is
-  // the same predicate over the same rows.
+  // THE EXACT DEALS the Applications rung counted, one row each. Both call
+  // countsAsApplicationSent() — literally the same function over the same rows —
+  // so the list length IS the rung's number and cannot drift from it.
   //
   // Why this exists: every other figure on the page had a list behind it, and
   // this one did not. "Positive dispositions" lists DISPOSITIONS, so an
@@ -2894,7 +2956,19 @@ export default function SetterPerformancePage() {
   const applicationRows = useMemo((): ProductiveDeal[] | null => {
     if (!productiveDeals) return null;
     return productiveDeals
-      .filter((d) => inRange(d.application_sent_at, range.from, range.to))
+      .filter((d) => countsAsApplicationSent(d, range.from, range.to))
+      .sort((a, b) => (b.application_sent_at ?? "").localeCompare(a.application_sent_at ?? ""));
+  }, [productiveDeals, range]);
+
+  /** The in-range stamps the list and the rung BOTH excluded — kept so the panel
+   *  can name them rather than letting a smaller number go unexplained. These
+   *  are never offered a chase action: there is no send here to follow up, and
+   *  the four live rows are exactly the wasted work the processor's phantom
+   *  bucket exists to prevent (MF-2026-0324 SINGING MIMI is one of them). */
+  const phantomApplicationRows = useMemo((): ProductiveDeal[] | null => {
+    if (!productiveDeals) return null;
+    return productiveDeals
+      .filter((d) => isPhantomApplicationInRange(d, range.from, range.to))
       .sort((a, b) => (b.application_sent_at ?? "").localeCompare(a.application_sent_at ?? ""));
   }, [productiveDeals, range]);
 
@@ -4016,7 +4090,7 @@ export default function SetterPerformancePage() {
                           // failed and the rung draws "—".
                           const setterId = g.key.startsWith("setter:") ? g.key.slice("setter:".length) : null;
                           const appsForScope: AppsRung | null | undefined = setterId
-                            ? (appsBySetter === null ? null : (appsBySetter.get(setterId) ?? { applications: 0, withStatements: 0, askTotal: 0 }))
+                            ? (appsBySetter === null ? null : (appsBySetter.get(setterId) ?? { applications: 0, withStatements: 0, askTotal: 0, phantomExcluded: 0 }))
                             : undefined;
                           return (
                             <FunnelCard
@@ -4315,13 +4389,25 @@ export default function SetterPerformancePage() {
                       {applicationRows !== null && applicationRows.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
                           {[
-                            { label: "sent", n: applicationRows.length },
-                            { label: "with statements", n: applicationRows.filter(dealReachedStatements).length },
+                            { label: "sent", n: applicationRows.length, tone: "count" as const },
+                            {
+                              label: "with statements",
+                              n: applicationRows.filter(dealReachedStatements).length,
+                              tone: "count" as const,
+                            },
+                            // Never green: an exclusion is not an achievement.
+                            ...(phantomApplicationRows && phantomApplicationRows.length > 0
+                              ? [{ label: "excluded", n: phantomApplicationRows.length, tone: "excluded" as const }]
+                              : []),
                           ].map((k) => (
                             <span
                               key={k.label}
                               className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${
-                                k.n > 0 ? RAG_CHIP.green : RAG_CHIP.none
+                                k.tone === "excluded"
+                                  ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                                  : k.n > 0
+                                    ? RAG_CHIP.green
+                                    : RAG_CHIP.none
                               }`}
                             >
                               {k.label}
@@ -4331,6 +4417,65 @@ export default function SetterPerformancePage() {
                         </div>
                       )}
                     </div>
+
+                    {/* ── WHAT WAS EXCLUDED, AND WHY ────────────────────────
+                        Said out loud, never silently dropped: a count that falls
+                        from 21 to 17 with no explanation is a second mystery.
+                        Folded shut by default (reference content folds; active
+                        work stays open) and offered NO chase action — there is
+                        no send here to follow up on, which is the whole point.
+                        MF-2026-0324 SINGING MIMI is one of these, and a closer
+                        chasing a signature on it is the exact wasted work the
+                        processor's phantom bucket exists to prevent. */}
+                    {phantomApplicationRows && phantomApplicationRows.length > 0 && (
+                      <details className="rounded-md border border-amber-500/30 bg-amber-500/5">
+                        <summary className="cursor-pointer select-none px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+                          <b className="tabular-nums">{phantomApplicationRows.length.toLocaleString()}</b>{" "}
+                          in-range stamp{phantomApplicationRows.length === 1 ? " is" : "s are"} excluded from the
+                          count above — the GHL mirror wrote {phantomApplicationRows.length === 1 ? "it" : "them"}{" "}
+                          at import, no send on record
+                        </summary>
+                        <div className="border-t border-amber-500/20 px-3 py-2 space-y-2">
+                          <p className="text-xs text-gray-500 dark:text-gray-400 max-w-3xl">
+                            These deals carry an <code>application_sent_at</code> stamped inside the transaction
+                            that created them, by the GHL opportunity mirror rather than by anybody sending
+                            anything — milliseconds before <code>created_at</code>, with no user attached. They are
+                            excluded from the <b>Applications</b> rung and from the list above, which is why that
+                            number now agrees with the <b>Apps sent</b> column on the setter table, where the same
+                            exclusion has always applied.{" "}
+                            <b className="text-gray-700 dark:text-gray-200">
+                              This means we have no record of a send — not that the merchant never got an
+                              application.
+                            </b>{" "}
+                            One of these (MF-2026-0273) came back <b>signed</b>, so it plainly did reach the
+                            merchant, through GHL, before this system saw the deal. Nothing here is offered a
+                            re-send: there is no send to repeat.
+                          </p>
+                          <ul className="space-y-1">
+                            {phantomApplicationRows.map((d) => (
+                              <li key={d.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+                                <span className="tabular-nums text-gray-400" title={localTimeTitle(d.application_sent_at)}>
+                                  {etStamp(d.application_sent_at)}
+                                </span>
+                                <span className="text-gray-900 dark:text-white">
+                                  {d.customer?.business_name?.trim() || customerPersonName(d) || "Unnamed merchant"}
+                                </span>
+                                {d.deal_number && (
+                                  <span className="tabular-nums text-gray-400">{d.deal_number}</span>
+                                )}
+                                <Link
+                                  to={`/admin/playbooks?deal=${encodeURIComponent(d.id)}`}
+                                  className="text-gray-500 dark:text-gray-400 hover:underline underline-offset-2"
+                                  title="Open the deal to look at it. There is no send here to chase."
+                                >
+                                  Open →
+                                </Link>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </details>
+                    )}
 
                     {/* UNREADABLE IS NOT ZERO. A failed pipeline read renders as
                         an error here, exactly as the rung renders "—" — never as
@@ -4354,6 +4499,18 @@ export default function SetterPerformancePage() {
                         The pipeline read fine — this is a real zero, not a failed read. A call dispositioned
                         “Full Application” with no application actually sent still shows in{" "}
                         <b>Partial apps</b> above and correctly shows nothing here.
+                        {phantomApplicationRows && phantomApplicationRows.length > 0 && (
+                          <>
+                            {" "}
+                            <b className="text-amber-600 dark:text-amber-400">
+                              The {phantomApplicationRows.length.toLocaleString()} excluded stamp
+                              {phantomApplicationRows.length === 1 ? "" : "s"} above{" "}
+                              {phantomApplicationRows.length === 1 ? "is" : "are"} why this is not blank
+                              upstream
+                            </b>{" "}
+                            — they are mirror imports, not sends.
+                          </>
+                        )}
                       </div>
                     ) : (
                       <>
@@ -4508,9 +4665,10 @@ export default function SetterPerformancePage() {
                         </div>
                         <p className="text-xs text-gray-400">
                           {applicationRows.length.toLocaleString()} application
-                          {applicationRows.length === 1 ? "" : "s"} carry an <code>application_sent_at</code>{" "}
-                          stamp inside this range — the same rows, and the same count, as the funnel's{" "}
-                          <b>Applications</b> rung. Newest first. <b>Setter</b> is the deal's owner
+                          {applicationRows.length === 1 ? "" : "s"} carry a real{" "}
+                          <code>application_sent_at</code> stamp inside this range — the same rows, and the same
+                          count, as the funnel's <b>Applications</b> rung, because both apply one shared test.
+                          Newest first. <b>Setter</b> is the deal's owner
                           (<code>assigned_closer_id</code>, falling back to <code>created_by</code>) — the same
                           attribution the rung uses, which is not necessarily whoever pressed send; the{" "}
                           <b>Apps sent</b> column on the setter table is the who-pressed-send figure. Times are
