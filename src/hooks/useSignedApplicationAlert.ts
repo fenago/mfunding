@@ -49,7 +49,17 @@ import type { CornerAlert } from "../lib/cornerAlert";
 // ── ONE ALERT PER SIGNATURE, ACROSS RELOADS ─────────────────────────────────
 // Fired document ids are remembered in localStorage, so a refresh does not
 // re-fire yesterday's card (and an F5 does not resurrect one you dismissed).
-// Surviving a refresh cleanly matters more than being clever about it.
+// Surviving a refresh cleanly matters more than being clever about it. An id is
+// recorded ONLY when a card was actually raised — see the note at the mark site;
+// recording a zero-row answer is how the heal below gets swallowed.
+//
+// ── A SIGNATURE CAN ARRIVE WITHOUT A MERCHANT, AND GET ONE LATER ────────────
+// A completion whose signer we cannot map to a customer is recorded with a null
+// customer_id (it used to be dropped, which meant a signature no human could
+// ever see) and ADOPTED by a later run that can resolve it. That adoption is an
+// UPDATE, not an INSERT, so this hook listens to both — otherwise the merchant
+// whose record was created after they signed would never raise a card, which is
+// this feature's own failure mode wearing a different hat.
 
 /** How recent the SIGNATURE must be for a card. The sweep is hourly; this
  *  tolerates a couple of missed runs while never reaching back to history. */
@@ -148,9 +158,19 @@ export function useSignedApplicationAlert(opts?: {
       if (!docId) return;
       if (seenRef.current[docId]) return;
 
-      // FRESHNESS FIRST, before any round trip. A backfill of historical
-      // completions is the common case for this table; it must cost nothing and
-      // announce nothing. No signed_at ⇒ we cannot date it ⇒ we stay quiet.
+      // NOT ATTRIBUTED YET. Since 2026-09-18 the write path RECORDS a signature
+      // whose signer it cannot map to a customer (customer_id null) instead of
+      // dropping it, and HEALS it later when the merchant becomes known. There
+      // is no merchant to name on a card yet, so we stay quiet — and because the
+      // heal is an UPDATE we are subscribed to, this row comes back to us the
+      // moment it has one.
+      if (!row.customer_id) return;
+
+      // FRESHNESS, before any round trip. A backfill of historical completions is
+      // the common case for this table; it must cost nothing and announce
+      // nothing. No signed_at ⇒ we cannot date it ⇒ we stay quiet. A heal is
+      // re-checked here on purpose: adopting a July signature today is
+      // bookkeeping, not news.
       const signedMs = row.signed_at ? Date.parse(row.signed_at) : NaN;
       if (!Number.isFinite(signedMs) || Date.now() - signedMs > SIGNED_FRESH_MS) return;
 
@@ -169,9 +189,17 @@ export function useSignedApplicationAlert(opts?: {
         return;
       }
       const rows = (data as AlertRow[] | null) ?? [];
-      markSeen(docId);
       const r = rows[0];
+      // ⚠️ MARK SEEN ONLY WHEN A CARD ACTUALLY FIRES — never on a zero-row
+      // answer. Zero rows is not a verdict for all time: an unattributed
+      // signature becomes attributable when it is healed, and a deal assigned to
+      // me later becomes visible to me. Marking here (the first version did)
+      // burned the document id on the orphan's INSERT and then silently swallowed
+      // its heal, which is precisely the case the heal was built for. The cost of
+      // not marking is one cheap RPC per redelivered event on a row that will
+      // never qualify, against ~41 signatures in the account's lifetime.
       if (!r) return;
+      markSeen(docId);
 
       const business =
         r.business_name || r.contact_name || "This merchant";
@@ -205,14 +233,32 @@ export function useSignedApplicationAlert(opts?: {
       }
     }
 
-    // INSERT only. ghl-doc-sweep inserts a row the first time it sees a
-    // completion and thereafter only UPDATEs it (a signed_at backfill), so one
-    // signature is one INSERT — the stream is naturally one-card-per-signature.
+    // INSERT *and* UPDATE, for one reason: A HEAL IS AN UPDATE.
+    //
+    // The common path is still the INSERT — a completion is written once, keyed
+    // on document_id, and never re-inserted. But a signature by a signer we
+    // could not map lands with customer_id null and is ADOPTED later by an
+    // UPDATE; on an INSERT-only subscription that merchant's card would never
+    // appear, which is the whole failure this feature exists to stop, arriving
+    // by a different door.
+    //
+    // The extra UPDATE traffic is harmless and self-limiting: a document already
+    // carded is in `seen`, an unattributed one is skipped on customer_id, and a
+    // signed_at backfill on a historical row dies at the freshness gate. Every
+    // path costs at most one small RPC, and this table sees ~41 rows in its
+    // lifetime — not a stream.
     const channel = supabase
       .channel("signed-application-alerts")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "ghl_doc_completions" },
+        (payload) => {
+          void fireSignature(payload.new as DocCompletionRow);
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "ghl_doc_completions" },
         (payload) => {
           void fireSignature(payload.new as DocCompletionRow);
         },
