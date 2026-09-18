@@ -210,6 +210,18 @@ export default function CallHistoryPanel({ ghlContactId, dealId }: { ghlContactI
   const [error, setError] = useState<string | null>(null);
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [synced, setSynced] = useState(0);
+  // ── THIS PANEL READS ONE DIALER, AND USED TO SPEAK FOR BOTH ──────────────
+  // "No calls through VibeReach yet for this merchant" is computed from the GHL
+  // TYPE_CALL records alone. The floor dials through WAVV, whose rows live in
+  // v_setter_dial_calls and never appear in that read — so on 2026-09-18 this
+  // line sat under Joyce Derian while FOUR WAVV dials existed, one of them the
+  // 271-second call that produced her "Full Application" disposition. A panel
+  // that says nobody called is an accusation aimed at the setter who called.
+  //
+  // null = we could not count them, which is NOT zero and never renders as
+  // "no WAVV dials either".
+  const [wavvDials, setWavvDials] = useState<number | null>(null);
+  const [wavvUnreadable, setWavvUnreadable] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -222,6 +234,16 @@ export default function CallHistoryPanel({ ghlContactId, dealId }: { ghlContactI
       if (error) throw new Error("Could not reach VibeReach for call history");
       setCalls((data?.calls ?? []) as CallRecord[]);
       setSynced((data?.synced as number) ?? 0);
+      // Cheap head-count on the OTHER dialer, so an empty GHL list can never be
+      // reported as silence. Counted, not listed — Setter Performance is where
+      // the WAVV calls are worked.
+      const wavv = await supabase
+        .from("v_setter_dial_calls")
+        .select("wavv_call_id", { count: "exact", head: true })
+        .eq("contact_id", ghlContactId)
+        .eq("source", "wavv");
+      setWavvUnreadable(!!wavv.error);
+      setWavvDials(wavv.error ? null : wavv.count ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load call history");
     }
@@ -241,7 +263,15 @@ export default function CallHistoryPanel({ ghlContactId, dealId }: { ghlContactI
     <div className="mt-3 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-3">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-gray-700 dark:text-gray-200 flex items-center gap-1.5">
-          <PhoneIcon className="w-4 h-4 text-ocean-blue" /> Calls through VibeReach
+          <PhoneIcon className="w-4 h-4 text-ocean-blue" /> Calls through GHL / LeadConnector
+          {wavvDials !== null && wavvDials > 0 && (
+            <span
+              className="font-normal text-[10px] rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400"
+              title={`${wavvDials} dial${wavvDials === 1 ? "" : "s"} to this merchant came through WAVV and are not listed in this panel. Setter Performance has them.`}
+            >
+              +{wavvDials} on WAVV
+            </span>
+          )}
         </span>
         <button type="button" onClick={load} className="text-[11px] text-ocean-blue hover:underline inline-flex items-center gap-1">
           {loading ? <ArrowPathIcon className="w-3 h-3 animate-spin" /> : "↻"} Refresh
@@ -252,7 +282,23 @@ export default function CallHistoryPanel({ ghlContactId, dealId }: { ghlContactI
       ) : error ? (
         <p className="text-xs text-red-500">{error}</p>
       ) : calls.length === 0 ? (
-        <p className="text-xs text-gray-400">No calls through VibeReach yet for this merchant.</p>
+        <p className="text-xs text-gray-400">
+          No <b>GHL / LeadConnector</b> calls on this contact.{" "}
+          {wavvUnreadable ? (
+            <span className="text-amber-600 dark:text-amber-400">
+              WAVV dials could not be counted, so this is <b>not</b> a claim that nobody called.
+            </span>
+          ) : wavvDials === null ? (
+            <span className="text-gray-400">WAVV dials are not shown here.</span>
+          ) : wavvDials > 0 ? (
+            <span className="text-amber-600 dark:text-amber-400">
+              <b>{wavvDials}</b> WAVV dial{wavvDials === 1 ? "" : "s"} exist{wavvDials === 1 ? "s" : ""} for this
+              merchant and are not shown here — see <b>Setter Performance</b>. This merchant <b>was</b> called.
+            </span>
+          ) : (
+            <span className="text-gray-400">No WAVV dials either.</span>
+          )}
+        </p>
       ) : (
         <div className="space-y-2">
           {calls.map((c) => {

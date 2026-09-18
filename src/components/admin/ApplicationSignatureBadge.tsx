@@ -38,6 +38,26 @@ interface Props {
   size?: BadgeSize;
   /** Show the "Sent <date>" half too, for surfaces that don't already say it. */
   showSent?: boolean;
+  /**
+   * WAS A DOCUMENT ACTUALLY SENT? — the third thing `sentAt` cannot tell you.
+   *
+   * `sentAt` is `deals.application_sent_at`, and a GHL pipeline stage move
+   * stamps that with nobody attached. Joyce Derian / MF-2026-0363: a stage move
+   * stamped the deal 27 seconds after a draft was opened, the draft never left
+   * (`sent_to_merchant_at` NULL), and she has ZERO documents — yet this badge
+   * read a stamp plus no signature and printed red UNSIGNED, which accuses a
+   * merchant of ignoring an application she was never sent.
+   *
+   *   "confirmed" — a document demonstrably went out.
+   *   "none"      — we LOOKED and nothing was ever sent → "NEVER SENT".
+   *   "unknown"   — not established (the default, and today's behaviour).
+   *
+   * Pass "none" ONLY off a real document read. There is no safe way to infer it
+   * from the deal row: Joyce carries an assigned closer, so the attribution
+   * ladder reports "assumed_owner" for her exactly as it does for a genuine
+   * send. Guessing here would re-create the bug in a new place.
+   */
+  sendEvidence?: "confirmed" | "none" | "unknown";
   /** Suppress the badge entirely when nothing has been sent AND nothing signed.
    *  Lists use this so rows with no application at all stay quiet. */
   hideWhenNothingSent?: boolean;
@@ -67,6 +87,7 @@ export default function ApplicationSignatureBadge({
   sentAt = null,
   size = "xs",
   showSent = false,
+  sendEvidence = "unknown",
   hideWhenNothingSent = false,
   className = "",
 }: Props) {
@@ -103,6 +124,29 @@ export default function ApplicationSignatureBadge({
       >
         <CheckBadgeIcon className={icon} />
         Signed{when ? ` ${when}` : ""}
+      </span>
+    );
+  }
+
+  // ── NEVER SENT. Established by a document read, not by the absence of a
+  //    stamp — so it outranks the stamp, which is the whole point: the stamp is
+  //    what is wrong. "Unsigned" is only meaningful if something was SENT. ──
+  if (sendEvidence === "none") {
+    if (hideWhenNothingSent) return null;
+    return (
+      <span
+        className={`${base} bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200 ring-1 ring-inset ring-gray-400/50 dark:ring-gray-500 ${className}`}
+        title={
+          `NEVER SENT — nothing to sign. We read this merchant's documents and there are none, so no application ` +
+          `ever reached them.` +
+          (typeof sentAt === "string"
+            ? ` The deal carries an "application sent" stamp (${dateTimeET(sentAt)}), but a pipeline stage move writes that stamp without sending anything.`
+            : "") +
+          ` This is NOT a merchant who ignored their application — the chase here is to SEND it.`
+        }
+      >
+        <ExclamationTriangleIcon className={icon} />
+        NEVER SENT — nothing to sign
       </span>
     );
   }

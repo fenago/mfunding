@@ -1856,7 +1856,29 @@ function DocsBackChips({ groups }: { groups: DocGroup[] | null }) {
   );
 }
 
-function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; ghlContactId: string; customerId: string }) {
+/**
+ * DID A DOCUMENT ACTUALLY GO OUT TO THIS MERCHANT?
+ *
+ * Four states, and "checking" and "unreadable" are NOT "none". `deals.
+ * application_sent_at` cannot answer this: a GHL pipeline stage move stamps it
+ * with nobody attached, so the stamp proves a stage changed, not that anything
+ * was sent. Joyce Derian / MF-2026-0363 is the case — Kristine opened the
+ * application draft at 3:14:20 and 27 seconds later a stage move stamped the
+ * deal. The draft is still a draft (`sent_to_merchant_at` NULL, `sent_by` NULL)
+ * and the merchant has ZERO documents in GHL. The receipt below told the owner
+ * she had been sent "app + disclosure + upload link".
+ *
+ * DocsBackPanel already fetches the real answer, one element up the page, and
+ * already refuses to turn a failed read into an empty list. This carries that
+ * answer to the receipt rather than computing a second, weaker one.
+ */
+type DocEvidence =
+  | { kind: "checking" }
+  | { kind: "sent"; count: number }
+  | { kind: "none" }
+  | { kind: "unreadable"; why: string };
+
+function DocsBackPanel({ dealId, ghlContactId, customerId, onDocEvidence }: { dealId: string; ghlContactId: string; customerId: string; onDocEvidence?: (e: DocEvidence) => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<GhlDoc[]>([]);
@@ -1908,15 +1930,23 @@ function DocsBackPanel({ dealId, ghlContactId, customerId }: { dealId: string; g
         setUploads([]);
         setContactCount(1);
         setScopeCaveat(null);
+        onDocEvidence?.({ kind: "unreadable", why: state.why });
         throw new Error(state.why);
       }
+      // The receipt below asserts a send. It gets its evidence from here — the
+      // read that actually looked — and never from the stage stamp.
+      onDocEvidence?.(state.docs.length > 0 ? { kind: "sent", count: state.docs.length } : { kind: "none" });
       setDocs(state.docs);
       setUploads((data as GhlDocsStatus)?.uploads ?? []);
       setUploadsError((data as GhlDocsStatus)?.uploads_error ?? null);
       setContactCount(state.contactCount);
       setScopeCaveat(state.caveat);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load doc status");
+      const why = e instanceof Error ? e.message : "Could not load doc status";
+      setError(why);
+      // A THROWN read is unreadable too. Without this the receipt would sit on
+      // "checking" forever and silently fall back to its old confident sentence.
+      onDocEvidence?.({ kind: "unreadable", why });
     }
     setLoading(false);
   }
@@ -4802,6 +4832,11 @@ function StepCard({
   const tsCol = step.stageKey ? STAGE_DONE_AT[step.stageKey] : undefined;
   const doneAt = deal && tsCol ? (deal[tsCol] as string | null) : null;
 
+  // What DocsBackPanel found when it looked. "checking" until it reports, and
+  // it stays "checking" when the panel isn't rendered at all — which the receipt
+  // treats as "we don't know", never as a send.
+  const [docEvidence, setDocEvidence] = useState<DocEvidence>({ kind: "checking" });
+
   const [values, setValues] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
   const [outcome, setOutcome] = useState("call");
@@ -5056,7 +5091,7 @@ function StepCard({
 
         {/* Live doc status — what's signed + what they uploaded, straight from GHL */}
         {(step.stageKey === "application_sent" || step.stageKey === "bank_statements") && interactive && deal?.ghl_contact_id && (
-          <DocsBackPanel dealId={deal.id} ghlContactId={deal.ghl_contact_id} customerId={deal.customer_id} />
+          <DocsBackPanel dealId={deal.id} ghlContactId={deal.ghl_contact_id} customerId={deal.customer_id} onDocEvidence={setDocEvidence} />
         )}
 
         {/* Real dials through GHL/VibeReach — audited call history. Shown on the
@@ -5072,16 +5107,32 @@ function StepCard({
           <CallHistoryPanel ghlContactId={deal.ghl_contact_id} dealId={deal.id} />
         )}
 
-        {/* Docs receipt — when the send-docs step fired. "Sent" only means it LEFT
-            our system; the DocsBackPanel above is the source of truth for whether
-            the merchant actually got it. Always offer a Resend (first send skipped,
-            merchant lost the email, wrong contact fixed, etc.). */}
-        {step.stageKey === "application_sent" && done && (
-          <div className="mt-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs space-y-1.5">
+        {/* ── DOCS RECEIPT — IT MAY ONLY CLAIM WHAT WAS LOOKED UP ──────────
+            This block used to read "📨 Application sent to e-sign {date} — app
+            + disclosure + upload link" off `doneAt`, which is just the stage
+            timestamp. It named three specific documents on the strength of a
+            stage having moved. For Joyce Derian / MF-2026-0363 a GHL stage move
+            stamped the deal 27 seconds after Kristine opened the draft; the
+            draft never left, the merchant has zero documents, and the owner was
+            told all three had been sent to her.
+
+            The caveat under it was false in the same way — "'Sent' means it left
+            our system" is a claim, and here nothing left our system.
+
+            So the receipt now renders off `docEvidence`, which comes from the
+            read that actually looked at the merchant's documents. Four states,
+            and three of them are not "sent". */}
+        {step.stageKey === "application_sent" && done && docEvidence.kind === "none" && (
+          <div className="mt-3 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 px-3 py-2 text-xs space-y-1.5">
+            <div className="font-semibold text-red-700 dark:text-red-300">
+              ⚠ The stage was moved{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — but <u>no document was ever sent</u>.
+            </div>
+            <p className="text-red-700/90 dark:text-red-300/90">
+              We looked at this merchant's e-sign documents and there are <b>none</b>. Moving the pipeline stage
+              stamps the deal; it does not send anything. Nothing is waiting for their signature because nothing
+              reached them — <b>send it below</b>.
+            </p>
             <div className="flex flex-wrap items-center gap-3">
-              <span className="font-medium text-emerald-700 dark:text-emerald-300">
-                📨 Application sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} — app + disclosure + upload link
-              </span>
               <button
                 type="button"
                 onClick={() => onSendDocs(true)}
@@ -5119,9 +5170,63 @@ function StepCard({
             <p className="text-[11px] text-amber-700 dark:text-amber-300">
               ⚠ Resending replaces nothing — it re-fires the same documents. Safe to hit again if the first send failed.
             </p>
+          </div>
+        )}
+
+        {/* ── A SEND WE CAN ACTUALLY EVIDENCE ──────────────────────────────
+            Documents exist on this merchant, so something did go out. It still
+            does not name WHICH documents unless it counted them — the old line
+            asserted "app + disclosure + upload link" on every deal regardless of
+            what was really there. */}
+        {step.stageKey === "application_sent" && done && docEvidence.kind === "sent" && (
+          <div className="mt-3 rounded-md bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 px-3 py-2 text-xs space-y-1.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-medium text-emerald-700 dark:text-emerald-300">
+                📨 Application sent to e-sign{doneAt ? ` ${fmtWhen(doneAt)}` : ""} —{" "}
+                <b>{docEvidence.count}</b> document{docEvidence.count === 1 ? "" : "s"} on file for this merchant
+              </span>
+              <button
+                type="button"
+                onClick={() => onSendDocs(true)}
+                title="Re-send the ORIGINAL application + disclosure + upload link, no prefill (e.g. it never arrived, or you fixed their email)"
+                className="inline-flex items-center gap-1 rounded-lg border border-ocean-blue/50 text-ocean-blue px-2.5 py-1 font-semibold hover:bg-ocean-blue/5"
+              >
+                ↻ Resend original docs
+              </button>
+              <button
+                type="button"
+                onClick={onFillApplication}
+                title="Edit / pre-fill the application, then re-send it to sign"
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 px-2.5 py-1 font-semibold hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                ✍️ Fill &amp; resend
+              </button>
+            </div>
             <p className="text-[11px] text-gray-500 dark:text-gray-400">
-              “Sent” means it left our system — <b>confirm the merchant actually received it</b> in the live status above. If nothing shows there or they never got it, hit <b>Resend</b>.
+              Documents exist on their record — <b>the live status above says which, and whether any are signed</b>.
+              Sent is not signed.
             </p>
+          </div>
+        )}
+
+        {/* ── WE COULD NOT LOOK, OR HAVE NOT LOOKED YET ────────────────────
+            Neither of these may fall through to the confident receipt. The
+            "checking" branch also covers the case where DocsBackPanel is not
+            mounted at all (a deal with no VibeReach contact id), which is
+            precisely when a stage stamp is least trustworthy. */}
+        {step.stageKey === "application_sent" && done && docEvidence.kind === "unreadable" && (
+          <div className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 px-3 py-2 text-xs">
+            <b className="text-amber-700 dark:text-amber-300">The stage says sent{doneAt ? ` ${fmtWhen(doneAt)}` : ""}, and we could not check it.</b>{" "}
+            <span className="text-amber-700/90 dark:text-amber-300/90">
+              Reading this merchant's documents failed ({docEvidence.why}), so we cannot tell you whether anything
+              actually went out. That is <b>unknown</b>, not sent and not missing — retry the live status above.
+            </span>
+          </div>
+        )}
+        {step.stageKey === "application_sent" && done && docEvidence.kind === "checking" && (
+          <div className="mt-3 rounded-md border border-gray-200 dark:border-gray-700 px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+            The stage says sent{doneAt ? ` ${fmtWhen(doneAt)}` : ""}. Checking whether a document actually went out…{" "}
+            <span className="text-gray-400">A stage move alone does not send anything.</span>
           </div>
         )}
 

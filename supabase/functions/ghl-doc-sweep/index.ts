@@ -48,7 +48,41 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { corsHeaders, serviceClient, getGhlConfig } from "../_shared/ghl.ts";
 import {
   crawlCompletedDocs, flattenCompletions, recordCompletions,
+  DOC_PAGE, type ProposalDoc,
 } from "../_shared/ghlDocCompletions.ts";
+import { ghlFetch } from "../_shared/ghl.ts";
+
+/**
+ * Crawl EVERY document, not just the completed ones — the evidence half of
+ * "was an application actually sent?". Mirrors crawlCompletedDocs' contract
+ * exactly, including the part that matters most: `complete` is true ONLY when the
+ * fetch count reached the reported total, so a caller can never mistake a short
+ * read for an empty account.
+ */
+async function crawlAllDocs(
+  cfg: Parameters<typeof ghlFetch>[0],
+  maxPages: number,
+): Promise<{ docs: ProposalDoc[]; reportedTotal: number | null; complete: boolean; error: string | null }> {
+  const out: { docs: ProposalDoc[]; reportedTotal: number | null; complete: boolean; error: string | null } =
+    { docs: [], reportedTotal: null, complete: false, error: null };
+  for (let page = 0; page < maxPages; page++) {
+    const res = await ghlFetch<{ documents?: ProposalDoc[]; total?: number }>(
+      cfg, "GET",
+      `/proposals/document?locationId=${cfg.locationId}&limit=${DOC_PAGE}&skip=${page * DOC_PAGE}`,
+    );
+    if (!res.ok) {
+      out.error = `document index page ${page} failed (${res.status}): ${res.error ?? ""}`;
+      return out;
+    }
+    const got = res.data?.documents ?? [];
+    if (typeof res.data?.total === "number") out.reportedTotal = res.data.total;
+    out.docs.push(...got);
+    if (got.length === 0) { out.complete = true; return out; }
+    if (out.reportedTotal !== null && out.docs.length >= out.reportedTotal) { out.complete = true; return out; }
+  }
+  out.error = `document index stopped at ${out.docs.length} of ${out.reportedTotal ?? "?"} after ${maxPages} pages`;
+  return out;
+}
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -149,6 +183,58 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── 3b. ?full=1 — INDEX EVERY DOCUMENT, NOT JUST THE SIGNED ONES.
+    //
+    // The completed-only crawl above answers "who has SIGNED". It cannot answer
+    // "was anything ever SENT": an unsigned application is invisible to it, and so
+    // is a merchant who was sent nothing at all — those two look identical there,
+    // which is the same empty-vs-unreadable confusion that cost the day.
+    // public.application_claims_vs_evidence() needs the other half, so this indexes
+    // every document and who it was addressed to.
+    //
+    // DAILY, not hourly: 282 documents at 21/page is 14 calls, ~0.01% of the 200k
+    // cap, scaling with documents ever created rather than with the size of the
+    // book (ghl-standing-consumers-ledger).
+    let indexed = 0;
+    let indexComplete: boolean | null = null;
+    if (url.searchParams.get("full") === "1") {
+      const all = await crawlAllDocs(cfg, MAX_PAGES);
+      indexComplete = all.complete && !all.error;
+      const rows = all.docs.flatMap((d) => {
+        const documentId = (d._id ?? d.documentId) as string | undefined;
+        if (!documentId) return [];
+        return (d.recipients ?? [])
+          .filter((r) => !!r.id && (r.entityName ?? "contacts") === "contacts")
+          .map((r) => ({
+            document_id: documentId,
+            contact_id: r.id as string,
+            recipient_email: (r.email ?? "").trim().toLowerCase() || null,
+            doc_name: d.name ?? "Document",
+            doc_status: d.status ?? null,
+            doc_created_at: (d as { createdAt?: string }).createdAt ?? null,
+            seen_at: new Date().toISOString(),
+          }));
+      });
+      for (let i = 0; i < rows.length; i += 200) {
+        const { error: upErr } = await db
+          .from("ghl_document_recipients")
+          .upsert(rows.slice(i, i + 200), { onConflict: "document_id,contact_id" });
+        if (upErr) { console.warn("[ghl-doc-sweep] document index upsert failed:", upErr.message); break; }
+        indexed += rows.slice(i, i + 200).length;
+      }
+      // THE RECEIPT IS THE POINT. Without it an empty index and a failed crawl are
+      // indistinguishable, and the check would report a merchant as never-sent
+      // because OUR read broke — which is exactly how Brideau Insurance got
+      // reported as having no documents off a 273-of-282 read.
+      const { error: recErr } = await db.from("ghl_document_crawls").insert({
+        complete: indexComplete,
+        fetched: all.docs.length,
+        reported_total: all.reportedTotal,
+        error: all.error,
+      });
+      if (recErr) console.warn("[ghl-doc-sweep] crawl receipt failed:", recErr.message);
+    }
+
     // ── 4. THE READABILITY STAMP — only on a crawl that read the whole set.
     //      This is what turns "no completion row" from "unknown" into a real
     //      "not signed" for the chase scope. If the crawl was short or errored,
@@ -194,6 +280,9 @@ Deno.serve(async (req) => {
       timeline_notes: rec.timelineNotes,
       checklist_ticks: rec.checklistTicks,
       customers_marked_checked: markedChecked,
+      // ?full=1 only: the document index behind application_claims_vs_evidence().
+      documents_indexed: indexed,
+      document_index_complete: indexComplete,
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "unknown error" }, 500);

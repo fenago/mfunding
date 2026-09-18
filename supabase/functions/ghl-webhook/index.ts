@@ -1586,12 +1586,35 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
     await logEvent(db, evt, evtTypeLabel(evt), "skipped",
       `refused to change parked deal ${d.deal_number ?? dealId} (${dealStatus} → "${mapped}") — a GHL stage echo does not override a deliberate park`);
   }
+  // A STAGE MOVE IS SOMEBODY SAYING WHERE THE DEAL IS. FOR ONE COLUMN, THAT IS
+  // NOT THE SAME AS EVIDENCE.
+  //
+  // Joyce Derian (MF-2026-0363, 2026-09-18): Kristine created an application
+  // DRAFT at 19:14:20 — status 'draft', sent_to_merchant_at NULL, sent_by NULL —
+  // and moved the card 27 seconds later. This mirror stamped
+  // application_sent_at = 19:14:47.84. A complete read of all 282 GHL documents
+  // (282 fetched of 282 reported) finds her zero documents. Nothing was ever
+  // sent, and the deal has read "application sent" ever since.
+  //
+  // Every OTHER column in STATUS_TIMESTAMP_MAP records "the deal reached this
+  // stage", and a stage move genuinely IS that event — contacted_at, funded_at,
+  // declined_at all stay. application_sent_at is different in kind: the whole app
+  // reads it as "an application DOCUMENT went to the merchant". It drives the
+  // chase clock, the processor queue and sender attribution, and it has its own
+  // verifiable source — push-application-to-ghl, which stamps it when a document
+  // actually goes out. A card position is not that source, so it no longer writes
+  // to it. (CLAUDE.md's rule that a status change must stamp its *_at still holds
+  // for every other stage; this is the one column where the stamp was asserting
+  // something the mover never claimed.)
+  const applicationStageWithoutSend = movedStatus && mapped === "application_sent" && !d.application_sent_at;
   if (movedStatus) {
     patch.status = mapped;
     // Stamp the matching stage timestamp, but only if it's still null so an
     // earlier real timestamp (e.g. the deal was already funded once) is kept.
     const tsCol = STATUS_TIMESTAMP_MAP[mapped as string];
-    if (tsCol && !d[tsCol]) patch[tsCol] = new Date().toISOString();
+    if (tsCol && tsCol !== "application_sent_at" && !d[tsCol]) {
+      patch[tsCol] = new Date().toISOString();
+    }
     // Funded with no known amount yet → capture the opportunity's value so
     // funded-by-month analytics (and the commission below) aren't blind.
     if (mapped === "funded" && d.amount_funded == null && monetary != null) {
@@ -1607,6 +1630,37 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       return;
     }
     await log(db, "deal", dealId, `ghl:${evtTypeLabel(evt)}`, { from: dealStatus, to: patch.status, evt });
+  }
+
+  // The card says Application Sent and we have no send of our own. Say that on
+  // the deal — the stage is real, the send is unproven, and the person asking
+  // "did this go out?" is looking at this timeline.
+  if (applicationStageWithoutSend) {
+    await db.from("activity_log").insert({
+      entity_type: "deal", entity_id: dealId, interaction_type: "note",
+      subject: "ghl:stage-moved-to-application-sent",
+      content:
+        `The VibeReach card was moved to "Application Sent", so the deal's stage now reads that. ` +
+        `No application_sent_at was recorded, because a card position is not evidence a document went out — ` +
+        `nothing here sent one. If an application WAS sent from inside VibeReach it will show on the ` +
+        `merchant's documents; if it was not, it still needs sending.`,
+    });
+  }
+
+  // A funded date taken from a card drag is the moment WE SAW the card move, not
+  // necessarily the day the money landed — and a commission is created from it
+  // (CLAUDE.md: a status change to funded must fire commission creation, and the
+  // mirror skipping that was a real hole). So the commission stays, and the
+  // provenance of its date goes on the record where it can be audited.
+  if (movedStatus && mapped === "funded" && !d.funded_at) {
+    await db.from("activity_log").insert({
+      entity_type: "deal", entity_id: dealId, interaction_type: "note",
+      subject: "ghl:funded-by-stage-move",
+      content:
+        `funded_at was stamped from a VibeReach stage move, which is when the card was seen at Funded — ` +
+        `not necessarily the day the funder paid. The commission is created from it. If the real funding ` +
+        `date differs, correct it on the deal so the commission and the funded-by-month numbers agree with reality.`,
+    });
   }
 
   // A deal dragged to Funded inside GHL owes a commission — the mirror used to
