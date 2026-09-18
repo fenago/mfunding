@@ -34,11 +34,20 @@ export interface SignedAppsBadge {
   refetch: () => void;
 }
 
-export function useSignedAppsBadge(): SignedAppsBadge {
+export function useSignedAppsBadge(opts?: {
+  /**
+   * Only read the count for someone who can actually see the pill (the
+   * Processor nav item is processor / super-admin only). A setter's browser
+   * should not call an RPC whose answer it will never render. Default true.
+   */
+  enabled?: boolean;
+}): SignedAppsBadge {
+  const enabled = opts?.enabled ?? true;
   const [count, setCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
+    if (!enabled) return;
     const { data, error: err } = await supabase.rpc("signed_apps_awaiting_statements");
     if (err) {
       // Keep the last known count if we had one — but remember that it is stale
@@ -52,7 +61,7 @@ export function useSignedAppsBadge(): SignedAppsBadge {
     } else {
       setError("the signed-application count came back in a shape we don't understand");
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     void refetch();

@@ -323,7 +323,10 @@ export default function AdminSidebar() {
   const unreadSms = useUnreadSms();
   // Merchants who SIGNED their application and still owe bank statements →
   // badge on "Processor", the screen where that chase actually happens.
-  const signedApps = useSignedAppsBadge();
+  // Read only for the people who can see the Processor item at all (same gate as
+  // canSee below) — a setter's browser should not ask for a number it can never
+  // show. `isProcessor` arrives a beat late; the hook refetches when it flips.
+  const signedApps = useSignedAppsBadge({ enabled: isSuperAdmin || isProcessor });
   const { mode, cycleMode } = useTheme();
   const ThemeIcon = mode === "dark" ? MoonIcon : mode === "light" ? SunIcon : ComputerDesktopIcon;
   const themeLabel = mode === "dark" ? "Dark" : mode === "light" ? "Light" : "System";
