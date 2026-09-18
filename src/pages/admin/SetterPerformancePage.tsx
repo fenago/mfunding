@@ -4984,7 +4984,7 @@ export default function SetterPerformancePage() {
                                   </td>
                                   <td className={TD}>
                                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                      <span className="truncate">{attributionName(r)}</span>
+                                      <span className="truncate min-w-0">{attributionName(r)}</span>
                                       {!r.setter_id && (
                                         <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
                                           unassigned
@@ -6832,8 +6832,8 @@ export default function SetterPerformancePage() {
                                   {etStamp(r.started_at)}
                                 </td>
                                 <td className={TD}>
-                                  <div className="flex items-center gap-2">
-                                    <span className="truncate">{attributionName(r)}</span>
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span className="truncate min-w-0">{attributionName(r)}</span>
                                     {!r.setter_id && (
                                       <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
                                         unassigned
@@ -8460,8 +8460,8 @@ function PipeCells({
   return (
     <>
       <td className={`${TD} font-medium text-gray-900 dark:text-white min-w-[11rem]`}>
-        <div className="flex items-center gap-2">
-          <span className="truncate" title={name}>{name}</span>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="truncate min-w-0" title={name}>{name}</span>
           {unassigned && (
             <span
               className="shrink-0 badge badge-xs badge-ghost"
