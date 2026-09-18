@@ -15,6 +15,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { CheckCircleIcon as CheckCircleSolid } from "@heroicons/react/24/solid";
 import supabase from "../../../supabase";
+import RetiredDuplicateBadge from "../../../components/admin/RetiredDuplicateBadge";
 import { getDealById, updateDealStatus, updateDeal, submitToFunder, submitToMultipleFunders, updateSubmission, reactivateDeal, listActiveCloserOptions, reassignDealCloser, dealHasCommission, type CloserOption } from "../../../services/dealService";
 import { useUserProfile } from "../../../context/UserProfileContext";
 import { listCampaigns, type Campaign } from "../../../services/campaignService";
@@ -343,6 +344,14 @@ export default function DealDetailPage() {
           <ArrowLeftIcon className="w-4 h-4" />
           Back to deals
         </Link>
+
+        {/* If this row was retired as a duplicate, say so BEFORE anything else on
+            the page — someone who opened it is about to work a dead copy. */}
+        <RetiredDuplicateBadge
+          lostReason={deal.lost_reason}
+          duplicateOf={deal.duplicate_of}
+          variant="block"
+        />
 
         <div className="flex items-start justify-between">
           <div>

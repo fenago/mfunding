@@ -20,6 +20,7 @@ import {
 import DealCreateModal from "./DealCreateModal";
 import { expectedCommissionInPlay } from "../../../types/commissions";
 import LeadGradeChip from "../../../components/admin/LeadGradeChip";
+import RetiredDuplicateBadge from "../../../components/admin/RetiredDuplicateBadge";
 import { sourceLabel, sourceMeta, SOURCE_TONE_CLASS } from "../../../lib/sourceLabel";
 
 // Sentinel for the closer <select>: "" already means "All Closers", so the
@@ -450,6 +451,12 @@ export default function DealListPage() {
                               Renewal
                             </span>
                           )}
+                          {/* A retired duplicate is the unexplained second row on a
+                              merchant. Name it rather than hide it. */}
+                          <RetiredDuplicateBadge
+                            lostReason={deal.lost_reason}
+                            duplicateOf={deal.duplicate_of}
+                          />
                         </Link>
                       </td>
                       <td className="px-6 py-4">

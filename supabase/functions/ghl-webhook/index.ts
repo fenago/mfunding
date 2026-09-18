@@ -1011,9 +1011,53 @@ async function adoptOrphanDeal(
    * contact has more than one orphan deal — see the multi-business note below. */
   oppName: string | null,
 ): Promise<AdoptResult> {
+  // ── A MERCHANT IS A SET OF CONTACT IDS, NOT ONE. ──────────────────────────
+  // This used to be .eq("ghl_contact_id", contactId) — the single stored pointer.
+  // That pointer moves: push-application-to-ghl points it at the contact owning
+  // the APPLICATION's email, send-merchant-email points it at the one owning
+  // CUSTOMERS.EMAIL, and on a merchant with two addresses they take turns (see
+  // _shared/merchantIdentity.ts). When the deal's pointer had swung to the
+  // merchant's other contact, an opportunity arriving on this one could not see
+  // that deal — and the create path below would mint the second deal this whole
+  // function exists to prevent.
+  //
+  // So search every contact id the merchant is known by. The name tiebreak below
+  // is unchanged and still does the deciding, so a wider candidate pool cannot
+  // cause a wrong adoption — it only stops us missing the right one.
+  const { data: idRows, error: idErr } = await db.rpc("customer_ids_for_ghl", {
+    p_contact_ids: [contactId], p_emails: [],
+  });
+  if (idErr) {
+    // Same doctrine as the candidate read below: an unreadable identity is not an
+    // empty one. Creating here risks a duplicate (data corruption someone unpicks
+    // by hand); refusing risks a missed create (GHL re-fires and the next attempt
+    // adopts). Refuse.
+    await logEvent(db, evt, evtTypeLabel(evt), "error",
+      `identity expansion failed: ${idErr.message} — created nothing; GHL will re-fire`);
+    return ADOPT_REFUSED;
+  }
+  const custIds = [...new Set(((idRows ?? []) as Array<{ customer_id: string }>).map((r) => r.customer_id))];
+  let searchContactIds = [contactId];
+  if (custIds.length > 0) {
+    const { data: custRows, error: custErr } = await db
+      .from("customers").select("ghl_contact_id, ghl_contact_ids").in("id", custIds);
+    if (custErr) {
+      await logEvent(db, evt, evtTypeLabel(evt), "error",
+        `identity expansion failed: ${custErr.message} — created nothing; GHL will re-fire`);
+      return ADOPT_REFUSED;
+    }
+    searchContactIds = [...new Set([
+      contactId,
+      ...(custRows ?? []).flatMap((c) => [
+        c.ghl_contact_id as string | null,
+        ...((c.ghl_contact_ids as string[] | null) ?? []),
+      ]),
+    ].filter((v): v is string => !!v))];
+  }
+
   const { data: candidates, error } = await db.from("deals")
     .select("id, deal_number, status, created_at, customers(business_name)")
-    .eq("ghl_contact_id", contactId)
+    .in("ghl_contact_id", searchContactIds)
     .eq("deal_type", dealType)
     .is("ghl_opportunity_id", null)
     .not("status", "in", `(${TERMINAL_STATUSES.join(",")})`)
@@ -1402,11 +1446,45 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       } catch { /* best-effort; falls back to the configured strategy */ }
     }
     if (dialerId) insert.assigned_closer_id = dialerId;
-    // Stamp the stage timestamp for whatever status this opportunity was created
-    // at (it's a fresh row, so the column is null by definition).
-    const createTsCol = STATUS_TIMESTAMP_MAP[status];
-    if (createTsCol) insert[createTsCol] = new Date().toISOString();
-    if (status === "funded" && monetary != null) insert.amount_funded = monetary;
+
+    // ── DO NOT STAMP A STAGE TIMESTAMP ON AN IMPORT. ─────────────────────────
+    //
+    // This used to be:
+    //     const createTsCol = STATUS_TIMESTAMP_MAP[status];
+    //     if (createTsCol) insert[createTsCol] = new Date().toISOString();
+    //
+    // and it wrote "WE NOTICED IT IS AT THIS STAGE" as "WE DID THE THING THAT PUTS
+    // IT AT THIS STAGE". An opportunity that has been sitting at Application Sent
+    // in GHL for a week arrives here and gets application_sent_at = now(), which
+    // every reader then reports as a send that this system performed, at a time it
+    // did not happen, by nobody.
+    //
+    // The fingerprint is the giveaway: new Date() runs a few ms BEFORE the row's
+    // created_at default fires, so these land 12-15 ms BEFORE the deal existed —
+    // an application sent before its own deal was created. Four such rows exist
+    // (public.is_phantom_application_send finds them), and the newest,
+    // MF-2026-0324 SINGING MIMI MUSIC STUDIO on 2026-09-09, is NOT one of the old
+    // duplicate artifacts: real opportunity id, no lost_reason, the merchant's only
+    // deal, twelve days after the duplicate bug was fixed. So this fires in normal
+    // operation and would have kept firing.
+    //
+    // `status` still mirrors GHL — that IS what the pipeline says, and it is true.
+    // What we will not do is invent a timestamp for an event we never observed.
+    // A stage a deal arrived in already is honestly recorded as a NULL timestamp:
+    // readers that gate on `*_at` are asking "when did we do this", and the
+    // answer is that we didn't. Readers that need the stage read `status` (and
+    // deals_stage_rank), which is why processor_application_queue already admits a
+    // deal on stage rank alone.
+    const importedAtStage = STATUS_TIMESTAMP_MAP[status] ? status : null;
+
+    // FUNDED ON IMPORT IS NEVER A FUNDING EVENT WE CAN ACT ON.
+    // The old code stamped funded_at = now() here and the branch below minted a
+    // commission from it — real money on a fabricated date, for a funding this
+    // system never saw happen. It has never fired (0 rows), but that is luck about
+    // which stages imports have arrived in, not a safeguard. Refuse, and make the
+    // refusal a fact someone can find rather than a silent no-op.
+    const fundedOnImport = status === "funded";
+    if (fundedOnImport && monetary != null) insert.amount_funded = monetary;
     const { data: newDeal, error: insErr } = await db.from("deals").insert(insert).select("id, deal_number").maybeSingle();
     if (insErr || !newDeal) {
       await logEvent(db, evt, evtTypeLabel(evt), "error",
@@ -1424,16 +1502,42 @@ async function handleOpportunity(db: DB, evt: Record<string, unknown>) {
       // Receipt: this event MINTED a deal (vs. "adopted" — see adoptOrphanDeal).
       await logEvent(db, evt, evtTypeLabel(evt), "created",
         `deal ${newDeal.deal_number ?? newDeal.id} auto-created for ${dealType} opportunity at stage "${status}" (no existing or adoptable deal for this contact)`);
-      // An opportunity created straight at Funded still owes a commission.
-      if (status === "funded") {
-        await createCommissionForFundedDeal(db, {
-          id: newDeal.id as string,
-          amount_funded: (insert.amount_funded as number | null) ?? null,
-          amount_requested: monetary,
-          assigned_closer_id: null,
-          is_renewal: false,
-          lead_source: "ghl_other",
-        }, monetary);
+
+      // The deal arrived already at a stage. Say so ON THE DEAL, where the person
+      // wondering "who sent this application?" is looking — the absent timestamp
+      // is honest but silent, and silence is what made today expensive.
+      if (importedAtStage) {
+        await db.from("activity_log").insert({
+          entity_type: "deal", entity_id: newDeal.id, interaction_type: "note",
+          subject: "ghl:imported-at-stage",
+          content:
+            `This deal was created by the VibeReach opportunity mirror ALREADY at stage "${importedAtStage}" — ` +
+            `the opportunity existed at that stage before we knew about it. No ${STATUS_TIMESTAMP_MAP[importedAtStage]} ` +
+            `was recorded, because nothing here performed that step and we do not know when it happened. ` +
+            `The stage is real; the missing timestamp is the honest answer to "when did WE do this", not a gap to fill in.`,
+        });
+      }
+
+      // ── FUNDED ON IMPORT: REFUSE THE COMMISSION, LOUDLY. ────────────────────
+      // Commission is money. Minting one from an imported stage means paying on a
+      // funding this system never witnessed, dated to the moment we happened to
+      // notice. A human confirms a funding, or it does not get paid.
+      if (fundedOnImport) {
+        const amt = (insert.amount_funded as number | null) ?? monetary;
+        const detail =
+          `deal ${newDeal.deal_number ?? newDeal.id} was imported from VibeReach ALREADY at Funded` +
+          (amt != null ? ` (${amt})` : "") +
+          ` — NO COMMISSION WAS CREATED and no funded_at was stamped. This mirror did not witness the funding and ` +
+          `cannot date it, so paying from it would be paying on a fabricated date. If this funding is real, open the ` +
+          `deal and set it to Funded here: that path stamps funded_at and creates the commission with a person behind it.`;
+        // Two places on purpose — the sync log is where an operator looks for
+        // "what did the webhook do", the deal timeline is where the money question
+        // gets asked. A refusal nobody can find is the same as a silent no-op.
+        await logEvent(db, evt, evtTypeLabel(evt), "commission_refused", detail);
+        await db.from("activity_log").insert({
+          entity_type: "deal", entity_id: newDeal.id, interaction_type: "note",
+          subject: "ghl:funded-on-import — commission NOT created", content: detail,
+        });
       }
     }
     return;

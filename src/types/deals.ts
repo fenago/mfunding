@@ -89,6 +89,13 @@ export interface Deal {
   id: string;
   customer_id: string;
   deal_number: string | null;
+  /** Why a dead/declined deal closed (enum in the DB). */
+  lost_reason?: string | null;
+  /** When this deal was RETIRED as a duplicate, the deal it was merged INTO.
+   *  Set together with status 'dead' + lost_reason 'duplicate'. NULL on a row
+   *  marked duplicate whose survivor we cannot name — render that as "retired",
+   *  never as "duplicate of" something unnamed. */
+  duplicate_of_deal_id?: string | null;
   deal_type: DealType;
   /** Products the merchant is shopping for (multi-select, ≥1). Deal-scoped truth;
    *  synced to product-* tags on the GHL contact. Defaults to '{mca}'. */
@@ -250,6 +257,9 @@ export interface Deal {
 }
 
 export interface DealWithCustomer extends Deal {
+  /** The surviving deal this row was merged into, when it was retired as a
+   *  duplicate. Joined so a list can name it without a second round-trip. */
+  duplicate_of?: { id: string; deal_number: string | null } | null;
   customer?: {
     id: string;
     first_name: string;

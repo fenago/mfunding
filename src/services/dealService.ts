@@ -59,7 +59,8 @@ export async function getAllDeals(filters?: DealFilters): Promise<DealWithCustom
       ),
       closer:profiles!assigned_closer_id (
         id, first_name, last_name
-      )
+      ),
+      duplicate_of:deals!duplicate_of_deal_id ( id, deal_number )
     `)
     .order("created_at", { ascending: false });
 
@@ -368,7 +369,8 @@ export async function getDealById(id: string): Promise<{
       ),
       closer:profiles!assigned_closer_id (
         id, first_name, last_name
-      )
+      ),
+      duplicate_of:deals!duplicate_of_deal_id ( id, deal_number )
     `)
     .eq("id", id)
     .single();
