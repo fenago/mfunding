@@ -324,6 +324,11 @@ Deno.serve(async (req) => {
           // Completed when THIS contact's recipient record is done, or the whole
           // doc reads completed.
           signed: recip.hasCompleted === true || (d.status as string) === "completed",
+          // The merchant's REAL signature time, kept internally for the ledger and
+          // stripped from the response. Without it the completion row falls back to
+          // completed_seen_at — WHEN WE NOTICED — which is a different fact and the
+          // one that reads as months of delay on a signature we only just found.
+          signedAt: (recip.signedDate as string | undefined) ?? (d.updatedAt as string) ?? null,
           updatedAt: (d.updatedAt as string) ?? null,
           isExpired: d.isExpired === true,
           // Per-recipient viewer/signing link (fillable or pre-filled). Bearer link
@@ -376,11 +381,54 @@ Deno.serve(async (req) => {
             const { data: ins, error: insErr } = await db
               .from("ghl_doc_completions")
               .upsert(
-                { document_id: doc.id, customer_id: customerId, doc_name: doc.name },
+                {
+                  document_id: doc.id,
+                  customer_id: customerId,
+                  doc_name: doc.name,
+                  signed_at: doc.signedAt,
+                },
                 { onConflict: "document_id", ignoreDuplicates: true },
               )
               .select("document_id");
-            if (insErr || !ins || ins.length === 0) continue; // already handled (or insert failed)
+            if (insErr) continue;
+
+            let recorded = (ins?.length ?? 0) > 0;
+
+            // ── ADOPT AN ORPHAN. ────────────────────────────────────────────
+            // The sweep now records a signature it cannot attribute as a row with
+            // a NULL customer_id (_shared/ghlDocCompletions.ts + migration
+            // 20260918e), so the signature is never lost while the merchant is
+            // unknown. But ignoreDuplicates means the upsert above does NOTHING
+            // against such a row — so without this, a merchant whose signature was
+            // orphaned would stay orphaned forever, even as a human sits looking
+            // at their documents with the identity resolved on screen.
+            //
+            // That is the common shape, not an edge case: a live-transfer merchant
+            // signs before their customer row exists.
+            //
+            // `.is("customer_id", null)` is the whole safety of it — this can only
+            // ever fill a blank, never move a signature from one merchant to
+            // another. Whoever attributed a row knew more than this pass does.
+            if (!recorded) {
+              const { data: adopted, error: adoptErr } = await db
+                .from("ghl_doc_completions")
+                .update({
+                  customer_id: customerId,
+                  unresolved_reason: null,
+                  signed_at: doc.signedAt,
+                })
+                .eq("document_id", doc.id)
+                .is("customer_id", null)
+                .select("document_id");
+              if (adoptErr) {
+                console.warn("[ghl-docs-status] orphan adopt failed:", adoptErr.message);
+              } else if ((adopted?.length ?? 0) > 0) {
+                // Nobody has ever announced this signature — it had no merchant to
+                // announce it to. Fall through and fire the side effects now.
+                recorded = true;
+              }
+            }
+            if (!recorded) continue; // already attributed by an earlier pass
 
             // (a) Merchant portal message + bell. Canonical copy from the one
             // reviewed source ('signature_signed' -> "Thanks for signing").
@@ -520,7 +568,7 @@ Deno.serve(async (req) => {
     }
 
     // Strip the internal doc id — the client GhlDocument shape doesn't carry it.
-    const documentsOut = documents.map(({ id: _id, ...rest }) => rest);
+    const documentsOut = documents.map(({ id: _id, signedAt: _signedAt, ...rest }) => rest);
 
     return json({
       ok: true,
