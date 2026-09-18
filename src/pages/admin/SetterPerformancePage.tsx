@@ -4983,7 +4983,7 @@ export default function SetterPerformancePage() {
                                     )}
                                   </td>
                                   <td className={TD}>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                       <span className="truncate">{attributionName(r)}</span>
                                       {!r.setter_id && (
                                         <span className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
@@ -4993,7 +4993,7 @@ export default function SetterPerformancePage() {
                                     </div>
                                   </td>
                                   <td className={TD}>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                       <Text value={r.contact_name} />
                                       {/* The fold, said out loud and openable.
                                           Quiet styling: this is context, not an
@@ -5507,7 +5507,22 @@ export default function SetterPerformancePage() {
                                       )}
                                     </td>
                                     <td className={TD}>
-                                      <div className="flex items-center gap-2">
+                                      {/* ── WRAP, NEVER TRUNCATE ───────────
+                                          Every badge below is shrink-0 and the
+                                          cell has no overflow rule, so a
+                                          non-wrapping row painted the badge ON
+                                          TOP of the Business column the moment
+                                          a merchant name took two lines. Fixed
+                                          by wrapping, not by clipping: these
+                                          badges ARE the column's purpose —
+                                          "no disposition on the call ⚠" is the
+                                          coaching signal and "disposition
+                                          derived, not typed ⚠" is what stops a
+                                          derivation from silently healing it. A
+                                          badge ellipsised to win a layout fight
+                                          defeats its own reason for existing,
+                                          so it takes a second line instead. */}
+                                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                         <Text value={person} />
                                         {alsoDispositioned && (
                                           <button
@@ -6039,7 +6054,7 @@ export default function SetterPerformancePage() {
                             return (
                               <tr key={r.key} className={TR}>
                                 <td className={`${TD} font-medium text-gray-900 dark:text-white min-w-[13rem]`}>
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                     {r.name}
                                     {!r.attributed && (
                                       <span
