@@ -3408,27 +3408,45 @@ export default function SetterPerformancePage() {
       /** The most recent call, for naming a time / a disposition. */
       latest: SetterCall | null;
       calls: number;
+      /** kind "positive" ONLY: every positive behind it is DERIVED, so no setter
+       *  actually typed one. The logging gap is still open — see the memo on the
+       *  chip. False for a typed positive, and meaningless on the other kinds. */
+      derivedOnly: boolean;
     } => {
       const digits = last10(d.customer?.phone);
       const calls =
         (d.ghl_contact_id ? byContact.get(d.ghl_contact_id) : undefined) ??
         (digits ? byPhone.get(digits) : undefined) ??
         [];
-      if (calls.length === 0) return { kind: "none", latest: null, calls: 0 };
+      if (calls.length === 0) return { kind: "none", latest: null, calls: 0, derivedOnly: false };
       const latest = [...calls].sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
-      if (calls.some((c) => {
+      // ── A DERIVED POSITIVE DOES NOT CLOSE THE LOGGING GAP ──────────────
+      // 20260918d derives a disposition from the application that followed the
+      // call, which correctly puts Rafael Badia in the table above — but it does
+      // NOT mean anybody typed a disposition. Collapsing both into one
+      // "also on a call" badge silently heals the exact coaching signal this
+      // chip was built for, which is why the positives are split by provenance
+      // here rather than counted. The Disposition Review tab keeps both facts
+      // side by side for the same reason; this row now does too.
+      const positives = calls.filter((c) => {
         const d2 = dispositionOf(c);
         return !!d2 && POSITIVE_DISPOSITIONS.includes(d2);
-      })) {
-        return { kind: "positive", latest, calls: calls.length };
+      });
+      if (positives.length > 0) {
+        return {
+          kind: "positive",
+          latest,
+          calls: calls.length,
+          derivedOnly: positives.every(isDerived),
+        };
       }
       if (calls.every(isUndispositioned)) {
-        return { kind: "undispositioned", latest, calls: calls.length };
+        return { kind: "undispositioned", latest, calls: calls.length, derivedOnly: false };
       }
       const dispositioned = [...calls]
         .filter((c) => !isUndispositioned(c))
         .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))[0];
-      return { kind: "dispositioned", latest: dispositioned ?? latest, calls: calls.length };
+      return { kind: "dispositioned", latest: dispositioned ?? latest, calls: calls.length, derivedOnly: false };
     };
   }, [aggRows]);
 
@@ -5332,6 +5350,31 @@ export default function SetterPerformancePage() {
                                             also on a call ↑
                                           </button>
                                         )}
+                                        {/* ── BOTH FACTS, NEITHER HIDING THE
+                                            OTHER ────────────────────────────
+                                            The merchant IS in the table above —
+                                            but only because the disposition was
+                                            DERIVED from this very application.
+                                            Nobody typed one. Without this the
+                                            derivation silently heals the
+                                            coaching signal: Rafael Badia would
+                                            read "also on a call ↑" as though
+                                            Catherine had dispositioned the call
+                                            she never dispositioned. */}
+                                        {callState.kind === "positive" && callState.derivedOnly && (
+                                          <span
+                                            className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
+                                            title={
+                                              `The disposition on that call was DERIVED from this application, not typed. ` +
+                                              (callState.latest?.disposition_derived_reason
+                                                ? `${callState.latest.disposition_derived_reason}. `
+                                                : "") +
+                                              `The conversation is real and now counts, but the setter still left the call undispositioned — that gap is coachable and does not disappear because we recovered the answer.`
+                                            }
+                                          >
+                                            disposition derived, not typed ⚠
+                                          </span>
+                                        )}
                                         {/* ── THE GAP, NAMED ON THE ROW ──────
                                             The application is real. The call is
                                             real. Nobody dispositioned it, so it
@@ -5485,7 +5528,11 @@ export default function SetterPerformancePage() {
                           <b className="text-amber-600 dark:text-amber-400">no disposition on the call ⚠</b> marks a
                           merchant whose calls in this range were never dispositioned: the application is real, but
                           the call earns no conversation and no positive-disposition credit, which is why they appear
-                          here and not in <b>Positive dispositions</b> above.
+                          here and not in <b>Positive dispositions</b> above.{" "}
+                          <b className="text-amber-600 dark:text-amber-400">disposition derived, not typed ⚠</b> means
+                          the opposite half of that story: the merchant <b>is</b> in the table above, but only because
+                          the disposition was <b>derived from this very application</b> rather than chosen by the
+                          setter. The conversation counts; the logging gap is still open.
                           {productiveTruncated && (
                             <span className="text-amber-600 dark:text-amber-400">
                               {" "}This range hit the {PRODUCTIVE_DEAL_CAP.toLocaleString()}-deal read cap, so
