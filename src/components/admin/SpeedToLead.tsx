@@ -19,10 +19,22 @@ import { dateTimeET } from "@/utils/time";
  * rate out of deals that never had a clock. They are excluded here and the exclusion is
  * stated on screen.
  *
- * THE ARITHMETIC IS THE DATABASE'S. `deal_sla_met(deals)` and
- * `deal_speed_to_lead_seconds(deals)` are IMMUTABLE SQL functions selected as PostgREST
- * computed columns, so this screen cannot drift from any other consumer of the same
- * rule.
+ * THE ARITHMETIC IS THE DATABASE'S — public.deal_speed_to_lead(uuid[]), which judges the
+ * clock on public.deal_call_events, the canonical wavv + ghl + hand-logged union.
+ *
+ * ⚠ IT USED TO READ deals.first_attempt_at, WHICH IS BLIND TO WAVV — the dialer the
+ * setters actually use — and is back-filled from contacted_at by the stage-timestamp
+ * trigger. So this panel was judging setters on when the MERCHANT PICKED UP, or on a
+ * stage move. Measured 2026-09-18: it branded dials of 28, 35, 105 and 111 SECONDS as
+ * 12 minutes, 21.8 hours, 20.3 hours and 43.6 hours late. The headline barely moved
+ * (54.2% -> 58.2%) because errors ran in both directions and cancelled; what was wrong
+ * was fifteen individual judgements about named people's work, and nobody is managed
+ * against the mean.
+ *
+ * TRI-STATE, BECAUSE A MISS IS AN ACCUSATION. A deal whose call history cannot be read
+ * renders as `unverified` and NEVER as met and NEVER as missed. If the RPC itself fails,
+ * EVERY row is unverified and the panel says so — it does not fall back to the blind
+ * column, which would be the old bug returning silently.
  *
  * HONESTY. Sample sizes are shown on everything. Below MIN_RELIABLE_N the SLA
  * percentage is suppressed rather than rendered as a rate — with a handful of leads,
@@ -41,8 +53,19 @@ type SpeedDeal = {
   first_call_due_at: string | null;
   contact_attempts: number | null;
   callback_at: string | null;
+  /** LEGACY, kept only to count how many verdicts the canonical rule corrects. */
   deal_sla_met: boolean | null;
   deal_speed_to_lead_seconds: number | null;
+};
+
+/** One row of public.deal_speed_to_lead(uuid[]) — the canonical judgement. */
+type SpeedVerdict = {
+  deal_id: string;
+  first_attempt_at: string | null;
+  first_attempt_source: "call" | "stamp" | null;
+  speed_seconds: number | null;
+  sla_verdict: "met" | "missed" | "no_clock" | "never_worked" | "unverified";
+  verdict_basis: string | null;
 };
 
 const SELECT =
@@ -91,6 +114,10 @@ function Tile({
 
 export default function SpeedToLead() {
   const [deals, setDeals] = useState<SpeedDeal[]>([]);
+  const [verdicts, setVerdicts] = useState<Map<string, SpeedVerdict>>(new Map());
+  /** The canonical judgement could not be read. NOT the same as "no misses" —
+   *  every row renders unverified and the panel says why. */
+  const [verdictError, setVerdictError] = useState<string | null>(null);
   const [liveTransfers, setLiveTransfers] = useState(0);
   const [loading, setLoading] = useState(true);
 
@@ -104,8 +131,28 @@ export default function SpeedToLead() {
         .eq("lead_source", "live_transfer")
         .neq("deal_type", "vcf"),
     ]);
-    setDeals((rt.data ?? []) as unknown as SpeedDeal[]);
+    const rows = (rt.data ?? []) as unknown as SpeedDeal[];
+    setDeals(rows);
     setLiveTransfers(lt.count ?? 0);
+
+    // The canonical verdicts. On failure we keep NOTHING — falling back to the
+    // blind computed columns would quietly restore the bug this panel exists to
+    // have fixed, and it would look identical on screen.
+    if (rows.length === 0) {
+      setVerdicts(new Map());
+      setVerdictError(null);
+    } else {
+      const { data, error } = await supabase.rpc("deal_speed_to_lead", {
+        p_deal_ids: rows.map((d) => d.id),
+      });
+      if (error) {
+        setVerdicts(new Map());
+        setVerdictError(error.message);
+      } else {
+        setVerdicts(new Map(((data ?? []) as SpeedVerdict[]).map((v) => [v.deal_id, v])));
+        setVerdictError(null);
+      }
+    }
     setLoading(false);
   };
 
@@ -115,22 +162,39 @@ export default function SpeedToLead() {
 
   const calc = useMemo(() => {
     const total = deals.length;
-    const worked = deals.filter((d) => d.first_attempt_at); // has a first attempt = has a measurement
+    const v = (d: SpeedDeal): SpeedVerdict | undefined => verdicts.get(d.id);
+    /** UNREADABLE wins over everything. If the canonical judgement is missing —
+     *  the RPC failed, or it returned no row for this deal — the verdict is
+     *  `unverified`, never a fallback to the blind column. */
+    const verdictOf = (d: SpeedDeal): SpeedVerdict["sla_verdict"] =>
+      verdictError ? "unverified" : (v(d)?.sla_verdict ?? "unverified");
+
+    const worked = deals.filter((d) => v(d)?.first_attempt_at);
     const speeds = worked
-      .map((d) => d.deal_speed_to_lead_seconds)
+      .map((d) => v(d)?.speed_seconds)
       .filter((s): s is number => typeof s === "number" && Number.isFinite(s));
 
-    // SLA is only judged where the DB says it can be judged (clock exists AND worked).
-    const judged = deals.filter((d) => d.deal_sla_met !== null);
-    const met = judged.filter((d) => d.deal_sla_met === true).length;
+    const judged = deals.filter((d) => verdictOf(d) === "met" || verdictOf(d) === "missed");
+    const met = deals.filter((d) => verdictOf(d) === "met").length;
+    const unverified = deals.filter((d) => verdictOf(d) === "unverified").length;
+    const untouched = deals.filter((d) => verdictOf(d) === "never_worked").length;
+    const noClock = deals.filter((d) => verdictOf(d) === "no_clock").length;
+    /** First attempt known only from the legacy stamp — the call mirror predates
+     *  the lead, so its silence proves nothing. Shown, never hidden. */
+    const fromStamp = deals.filter((d) => v(d)?.first_attempt_source === "stamp").length;
 
-    // No first_attempt_at → no SLA verdict. Do NOT call these misses. Split them.
-    const unattempted = deals.filter((d) => !d.first_attempt_at);
-    const reachedAnyway = unattempted.filter((d) => d.contacted_at).length; // attempt never stamped
-    const untouched = unattempted.filter((d) => !d.contacted_at).length; // genuinely never worked
-
-    // Deals with no clock at all shouldn't exist inside realtime_appt — flag if they do.
-    const noClock = deals.filter((d) => !d.first_call_due_at).length;
+    // ── HOW MANY JUDGEMENTS THE CANONICAL RULE CORRECTS ────────────────────
+    // The owner has read this panel before. A verdict that changes under him
+    // has to arrive as an explained correction, not as a number that differs
+    // from the one he remembers. Computed against the legacy columns still
+    // selected above, purely so the delta can be named on screen.
+    let flippedToMet = 0;
+    let flippedToMiss = 0;
+    for (const d of deals) {
+      const now = verdictOf(d);
+      if (d.deal_sla_met === false && now === "met") flippedToMet++;
+      if (d.deal_sla_met === true && now === "missed") flippedToMiss++;
+    }
 
     return {
       total,
@@ -140,12 +204,19 @@ export default function SpeedToLead() {
       judgedN: judged.length,
       met,
       slaReliable: judged.length >= MIN_RELIABLE_N,
-      reachedAnyway,
+      unverified,
       untouched,
       noClock,
-      rows: [...worked].sort((a, b) => (b.first_attempt_at ?? "").localeCompare(a.first_attempt_at ?? "")).slice(0, 8),
+      fromStamp,
+      flippedToMet,
+      flippedToMiss,
+      verdictOf,
+      v,
+      rows: [...worked]
+        .sort((a, b) => (v(b)?.first_attempt_at ?? "").localeCompare(v(a)?.first_attempt_at ?? ""))
+        .slice(0, 8),
     };
-  }, [deals]);
+  }, [deals, verdicts, verdictError]);
 
   const thin = calc.judgedN < MIN_RELIABLE_N;
 
@@ -186,6 +257,23 @@ export default function SpeedToLead() {
         </span>
       </div>
 
+      {/* ── THE JUDGEMENT ITSELF IS UNREADABLE ───────────────────────────────
+          If the canonical RPC fails there is no honest SLA on this screen. It
+          does NOT fall back to the blind computed columns: that would restore
+          the exact defect this panel was fixed for, and would look identical.
+          Every badge below reads `unverified` while this is up. */}
+      {verdictError && (
+        <div className="mb-4 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 flex items-start gap-2">
+          <ExclamationTriangleIcon className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+          <div className="text-sm text-red-900 dark:text-red-200">
+            <b>Speed to lead cannot be judged right now.</b> The canonical call history could not be read, so every
+            lead below shows <b>unverified</b> — that is unreadable, <b>not</b> a clean sheet and <b>not</b> a wall of
+            misses. Nobody should be managed on this panel until it clears.
+            <div className="mt-1 text-[11px] opacity-80">{verdictError}</div>
+          </div>
+        </div>
+      )}
+
       {calc.workedN === 0 ? (
         <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 flex items-start gap-2">
           <ExclamationTriangleIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
@@ -211,10 +299,10 @@ export default function SpeedToLead() {
               tone={calc.slaReliable ? "neutral" : "warn"}
             />
             <Tile
-              label="No attempt recorded"
-              value={String(calc.untouched + calc.reachedAnyway)}
-              sub={`${calc.untouched} never worked · ${calc.reachedAnyway} reached, attempt unstamped`}
-              tone={calc.untouched > 0 ? "warn" : "neutral"}
+              label="No verdict"
+              value={String(calc.untouched + calc.unverified)}
+              sub={`${calc.untouched} never worked · ${calc.unverified} unverifiable`}
+              tone={calc.untouched > 0 || calc.unverified > 0 ? "warn" : "neutral"}
             />
           </div>
 
@@ -230,12 +318,42 @@ export default function SpeedToLead() {
             </div>
           )}
 
-          {calc.reachedAnyway > 0 && (
+          {/* ── THE CORRECTION, NAMED ON SCREEN ──────────────────────────────
+              The owner has read this panel before. A verdict that moves under
+              him must arrive explained, not as a number that differs from the
+              one he remembers. */}
+          {(calc.flippedToMet > 0 || calc.flippedToMiss > 0) && (
+            <div className="mt-3 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-900/30 px-4 py-3 text-sm text-sky-900 dark:text-sky-200">
+              <b>
+                {calc.flippedToMet + calc.flippedToMiss} verdict
+                {calc.flippedToMet + calc.flippedToMiss === 1 ? "" : "s"} changed when this panel stopped judging on{" "}
+                <code>first_attempt_at</code>.
+              </b>{" "}
+              That column is blind to WAVV — the dialer the setters actually use — and is back-filled from{" "}
+              <code>contacted_at</code>, so it measured when the <i>merchant picked up</i>, or a stage move.{" "}
+              {calc.flippedToMet > 0 && (
+                <>
+                  <b>{calc.flippedToMet}</b> lead{calc.flippedToMet === 1 ? " was" : "s were"} shown as missed and{" "}
+                  {calc.flippedToMet === 1 ? "was" : "were"} answered inside the clock — dials of 28 and 35 seconds were
+                  rendering as 12 minutes and 21.8 hours late.{" "}
+                </>
+              )}
+              {calc.flippedToMiss > 0 && (
+                <>
+                  <b>{calc.flippedToMiss}</b> went the other way and had been flattered by the old column.{" "}
+                </>
+              )}
+              The headline rate barely moves, because the two directions largely cancel — what was wrong was the
+              per-lead judgements, and nobody is managed against an average.
+            </div>
+          )}
+
+          {calc.fromStamp > 0 && (
             <p className="mt-3 text-[11px] text-gray-500 dark:text-gray-400">
-              <b>{calc.reachedAnyway}</b> real-time lead{calc.reachedAnyway === 1 ? " was" : "s were"} reached
-              (contacted_at is set) with <b>no first_attempt_at</b> — the outreach happened but was never stamped, so it
-              can't be scored. Those are excluded from the SLA denominator rather than counted as misses. Until every
-              attempt is stamped, the SLA sample will keep growing slower than the lead count.
+              <b>{calc.fromStamp}</b> lead{calc.fromStamp === 1 ? "'s" : "s'"} first attempt is known only from{" "}
+              <code>first_attempt_at</code>, with no mirrored call to corroborate it — these pre-date the WAVV mirror
+              entirely. They are counted as attempts, not as misses: <b>the call mirror's silence about a call placed
+              before it existed is not evidence that nobody dialled.</b>
             </p>
           )}
           {calc.noClock > 0 && (
@@ -257,35 +375,73 @@ export default function SpeedToLead() {
                 </tr>
               </thead>
               <tbody>
-                {calc.rows.map((d) => (
+                {calc.rows.map((d) => {
+                  const ver = calc.v(d);
+                  const verdict = calc.verdictOf(d);
+                  return (
                   <tr key={d.id} className="border-b border-gray-100 dark:border-gray-700/50">
                     <td className="py-2 pr-3 text-gray-600 dark:text-gray-300">
                       {d.created_at ? dateTimeET(d.created_at) : "—"}
                     </td>
                     <td className="py-2 px-3 text-gray-600 dark:text-gray-300">
-                      {d.first_attempt_at ? dateTimeET(d.first_attempt_at) : "—"}
+                      {ver?.first_attempt_at ? dateTimeET(ver.first_attempt_at) : "—"}
+                      {ver?.first_attempt_source === "stamp" && (
+                        <span
+                          className="ml-1 text-[10px] text-amber-600 dark:text-amber-400 cursor-help"
+                          title="No mirrored call corroborates this — it comes from deals.first_attempt_at, and this lead pre-dates the WAVV mirror. Counted as an attempt because the mirror's silence about a call placed before it existed is not evidence that nobody dialled."
+                        >
+                          stamp only
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums font-semibold text-gray-900 dark:text-white">
-                      {dur(d.deal_speed_to_lead_seconds)}
+                      {dur(ver?.speed_seconds ?? null)}
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums text-gray-500 dark:text-gray-400">
                       {d.contact_attempts ?? 0}
                     </td>
                     <td className="py-2 pl-3 text-right">
-                      {d.deal_sla_met === null ? (
+                      {/* TRI-STATE. `unverified` is never a miss and never a met —
+                          a red badge here is an accusation about a named person's
+                          response time and has to clear the same bar as any other
+                          claim this app makes. */}
+                      {verdict === "no_clock" ? (
                         <span className="text-[11px] text-gray-400 dark:text-gray-500">no clock</span>
-                      ) : d.deal_sla_met ? (
-                        <span className="inline-flex rounded-md bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[11px] font-semibold">
+                      ) : verdict === "unverified" ? (
+                        <span
+                          className="inline-flex rounded-md bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 text-[11px] font-semibold cursor-help"
+                          title={verdictError
+                            ? `The canonical call history could not be read, so this lead cannot be judged either way. This is unreadable, NOT a met and NOT a miss. ${verdictError}`
+                            : (ver?.verdict_basis ?? "This lead's call history cannot be read, so it is not judged either way.")}
+                        >
+                          unverified
+                        </span>
+                      ) : verdict === "never_worked" ? (
+                        <span
+                          className="inline-flex rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 text-[11px] font-semibold cursor-help"
+                          title={ver?.verdict_basis ?? "No dial on record from any source since this lead arrived."}
+                        >
+                          never worked
+                        </span>
+                      ) : verdict === "met" ? (
+                        <span
+                          className="inline-flex rounded-md bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 text-[11px] font-semibold cursor-help"
+                          title={ver?.verdict_basis ?? ""}
+                        >
                           met ✓
                         </span>
                       ) : (
-                        <span className="inline-flex rounded-md bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-1.5 py-0.5 text-[11px] font-semibold">
+                        <span
+                          className="inline-flex rounded-md bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-1.5 py-0.5 text-[11px] font-semibold cursor-help"
+                          title={ver?.verdict_basis ?? ""}
+                        >
                           missed ✗
                         </span>
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -294,9 +450,11 @@ export default function SpeedToLead() {
 
       <div className="mt-3 space-y-1.5 border-t border-gray-200 dark:border-gray-700 pt-3 text-[11px] text-gray-500 dark:text-gray-400">
         <p>
-          <b>Speed to lead</b> = <code>first_attempt_at</code> − <code>created_at</code>. <b>SLA met</b> ={" "}
-          <code>first_attempt_at ≤ first_call_due_at</code> (the 5-minute deadline). Both come straight from the
-          database functions, so this page and the closer's queue can never disagree.
+          <b>Speed to lead</b> = the first dial on record − <code>created_at</code>, judged by{" "}
+          <code>deal_speed_to_lead()</code> against <code>deal_call_events</code> — the canonical WAVV + GHL +
+          hand-logged union — so it sees the dialer the setters actually use. Only calls{" "}
+          <b>at or after the lead arrived</b> count; the call window otherwise reaches back into the merchant's earlier
+          history, and 18 of these leads have a call up to 41 days before they existed.
         </p>
         <p>
           <b>Live transfers are excluded on purpose.</b> The merchant is already on the phone, so there is no clock and
